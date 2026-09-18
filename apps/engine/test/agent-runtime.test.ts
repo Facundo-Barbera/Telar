@@ -768,11 +768,17 @@ test("the turns a fold cost ride the same reading the meter does", async () => {
  * ------------------------------------------------------------------ */
 
 /** A model that never stops asking for tools, which is the shape of the turn
- *  the issue reports: 16 calls and no answer. */
+ *  the issue reports: 16 calls and no answer.
+ *
+ *  EACH LAP ASKS A DIFFERENT QUESTION, and that is load-bearing since #592: a
+ *  byte-identical repeat is now answered from the within-turn memo without
+ *  reaching the wall, so a fixture that asked for `{}` every lap would be
+ *  measuring the memo instead of the cap. The reported turn's calls differed
+ *  too — what it wasted laps on was variety, not one call sixteen times. */
 const greedy = (laps: number): Step[] =>
   Array.from({ length: laps }, (_, index) => ({
     text: index === 0 ? "let me look." : "",
-    toolCalls: [{ id: `call_${index}`, name: "sessions_list", args: {}, type: "tool_call" as const }],
+    toolCalls: [{ id: `call_${index}`, name: "sessions_list", args: { limit: index + 1 }, type: "tool_call" as const }],
   }));
 
 test("a turn that reaches the lap cap ends with an answer rather than a recursion error", async () => {
@@ -1086,5 +1092,242 @@ test("effort and access are reported on the state a composer reads", async () =>
   expect(set.access).toBe("auto");
   // And a cleared pill disappears from the state rather than reading as a value.
   expect(agent.patch({ effort: "" }).effort).toBeUndefined();
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * 11 — the same read, paid for once (#592).
+ *
+ * One measured turn called `fleet_status` twice for a byte-identical 6,628
+ * characters and `sessions_requests` three times for an identical 133, and
+ * every lap after the duplicate resent it. What these hold is that the repeat
+ * costs a pointer, that ONLY a repeat does, and that the memo is gone by the
+ * next turn — a memo that outlived its turn would be a stale fleet, which is a
+ * correctness bug and much worse than the waste it replaces.
+ * ------------------------------------------------------------------ */
+
+/** A wall of named tools, each answering a body a test can recognise. Not
+ *  `wall()` above, which is fixed to four names and none of them a read this
+ *  scenario is about. */
+function reads(landed: Landed[], names: readonly string[], answer: (name: string, args: Record<string, unknown>) => string = (name) => `${name} body`): SocketTool[] {
+  return names.map((name) => ({
+    name,
+    description: `the ${name} tool`,
+    shape: {},
+    run: async (args: Record<string, unknown>, context?: { toolCallId?: string }) => {
+      landed.push({ name, args, ...(context?.toolCallId ? { toolCallId: context.toolCallId } : {}) });
+      return { content: [{ type: "text" as const, text: answer(name, args) }] };
+    },
+  }));
+}
+
+const call = (id: string, name: string, args: Record<string, unknown> = {}): ToolCall => ({ id, name, args });
+
+test("an identical read on a later lap answers with a pointer, and the turn still completes", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime(
+    [
+      { toolCalls: [call("call_1", "fleet_status", { limit: 20 })] },
+      { toolCalls: [call("call_2", "fleet_status", { limit: 20 })] },
+      { text: "Two sessions are running." },
+    ],
+    reads(landed, ["fleet_status"], () => "the whole fleet, at length"),
+  );
+
+  agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  // THE WALL WAS READ ONCE. The model asked twice and the second never landed.
+  expect(landed.filter((one) => one.name === "fleet_status")).toHaveLength(1);
+  const results = model.seen.flat().filter((message) => message.getType() === "tool");
+  const second = results.find((message) => (message as { tool_call_id?: string }).tool_call_id === "call_2");
+  expect(String(second?.content)).toContain("You already called fleet_status");
+  expect(String(second?.content)).toContain("was not read again");
+  // AND IT IS A POINTER, NOT THE PAYLOAD — which is the entire saving, because
+  // every later lap resends whatever this was.
+  expect(String(second?.content)).not.toContain("the whole fleet, at length");
+  // The turn is unharmed: it answered.
+  expect(agent.thread({ limit: 200 }).rows.at(-1)!.detail.text).toBe("Two sessions are running.");
+  agent.close();
+});
+
+test("the repeat is still a row, so a person can see how the turn was spent", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "sessions_requests", { sessionId: "session_a" })] },
+      { toolCalls: [call("call_2", "sessions_requests", { sessionId: "session_a" })] },
+      { text: "nothing is waiting" },
+    ],
+    reads(landed, ["sessions_requests"]),
+  );
+  agent.submit({ text: "anything waiting on me?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  const calls = agent.thread({ limit: 200 }).rows.filter((row) => row.kind === "tool_call");
+  expect(calls).toHaveLength(2);
+  expect(String(calls[1]!.detail.output)).toContain("You already called sessions_requests");
+  agent.close();
+});
+
+test("two identical reads in ONE message are one read", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      {
+        toolCalls: [
+          call("call_1", "fleet_status", { limit: 20 }),
+          call("call_2", "fleet_status", { limit: 20 }),
+          call("call_3", "sessions_list", {}),
+        ],
+      },
+      { text: "done" },
+    ],
+    reads(landed, ["fleet_status", "sessions_list"]),
+  );
+  agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  // The batch runs concurrently, so "the second one is a repeat" has to be
+  // settled before any of them starts. First position wins.
+  expect(landed.filter((one) => one.name === "fleet_status")).toHaveLength(1);
+  expect(landed.filter((one) => one.name === "sessions_list")).toHaveLength(1);
+  agent.close();
+});
+
+test("differing arguments are not memoised, and a smaller limit is not a subset", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "fleet_status", { limit: 20 })] },
+      { toolCalls: [call("call_2", "fleet_status", { limit: 10 })] },
+      { toolCalls: [call("call_3", "sessions_outline", { sessionId: "session_a", limit: 20 })] },
+      { text: "done" },
+    ],
+    reads(landed, ["fleet_status", "sessions_outline"]),
+  );
+  agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  expect(landed.map((one) => one.name)).toEqual(["fleet_status", "fleet_status", "sessions_outline"]);
+  expect(landed[1]!.args).toEqual({ limit: 10 });
+  agent.close();
+});
+
+test("argument ORDER and stray whitespace are the same call; case is not", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "sessions_find", { q: "the lap cap", limit: 5 })] },
+      // Same call, keys the other way round and the phrase re-typed loosely.
+      { toolCalls: [call("call_2", "sessions_find", { limit: 5, q: "  the   lap cap " })] },
+      // NOT the same call: reasoning about case would be exactly the cleverness
+      // that turns a token saving into a wrong answer.
+      { toolCalls: [call("call_3", "sessions_find", { q: "The Lap Cap", limit: 5 })] },
+      { text: "done" },
+    ],
+    reads(landed, ["sessions_find"]),
+  );
+  agent.submit({ text: "where did we talk about the lap cap?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  expect(landed).toHaveLength(2);
+  expect(landed[1]!.args).toEqual({ q: "The Lap Cap", limit: 5 });
+  agent.close();
+});
+
+test("a call that LANDS something is never memoised — two identical writes both go", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "notes_write", { title: "ping", body: "again" })] },
+      { toolCalls: [call("call_2", "notes_write", { title: "ping", body: "again" })] },
+      { text: "written twice" },
+    ],
+    reads(landed, ["notes_write"]),
+  );
+  agent.submit({ text: "write it twice" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  // A person can ask for the same thing twice. Swallowing the second while
+  // answering with a pointer would be work the Agent believes it did and
+  // nobody received. `notes_write` is the honest case to hold this on: it is
+  // ungated AND outside the effect ledger, so the memo is the only mechanism
+  // that could have eaten it.
+  expect(landed.filter((one) => one.name === "notes_write")).toHaveLength(2);
+  agent.close();
+});
+
+test("a repeated send answers from the effect ledger, not from the memo", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime(
+    [
+      { toolCalls: [call("call_1", "sessions_send", { sessionId: "session_a", input: "ping", intent: "report" })] },
+      { toolCalls: [call("call_2", "sessions_send", { sessionId: "session_a", input: "ping", intent: "report" })] },
+      { text: "done" },
+    ],
+    reads(landed, ["sessions_send"]),
+  );
+  agent.submit({ text: "tell it" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  // THE LEDGER IS UNTOUCHED BY #592 and still owns this path — it exists so a
+  // REPLAYED node cannot send twice, it is keyed on the thread rather than the
+  // turn, and it answers with the RECORDED ANSWER rather than a pointer. What
+  // must not happen is the memo quietly taking the lander's path over.
+  const second = model.seen
+    .flat()
+    .filter((message) => message.getType() === "tool")
+    .find((message) => (message as { tool_call_id?: string }).tool_call_id === "call_2");
+  expect(String(second?.content)).toContain("already made on this thread");
+  expect(String(second?.content)).not.toContain("You already called");
+  agent.close();
+});
+
+test("a read that FAILED is asked again rather than pointed at its own refusal", async () => {
+  const landed: Landed[] = [];
+  const tools = reads(landed, ["sessions_answer"]).map((tool) => ({
+    ...tool,
+    run: async (args: Record<string, unknown>, context?: { toolCallId?: string }) => {
+      landed.push({ name: "sessions_answer", args, ...(context?.toolCallId ? { toolCallId: context.toolCallId } : {}) });
+      return { content: [{ type: "text" as const, text: "the store hiccuped" }], isError: true };
+    },
+  }));
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "sessions_answer", { sessionId: "session_a" })] },
+      { toolCalls: [call("call_2", "sessions_answer", { sessionId: "session_a" })] },
+      { text: "done" },
+    ],
+    tools as unknown as SocketTool[],
+  );
+  agent.submit({ text: "what did it say?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  expect(landed).toHaveLength(2);
+  agent.close();
+});
+
+test("the memo does not survive into the next turn", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "fleet_status", { limit: 20 })] },
+      { text: "two are running" },
+      // A SECOND TURN, asking the identical question.
+      { toolCalls: [call("call_2", "fleet_status", { limit: 20 })] },
+      { text: "still two" },
+    ],
+    reads(landed, ["fleet_status"]),
+  );
+
+  agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the first turn");
+  agent.submit({ text: "and now?" });
+  await until(() => agent.state().runId === undefined, "the second turn");
+
+  // A memo that outlived its turn would answer the second question from the
+  // first question's fleet, which is a wrong answer rather than a cheap one.
+  expect(landed.filter((one) => one.name === "fleet_status")).toHaveLength(2);
   agent.close();
 });

@@ -80,7 +80,7 @@ import crypto from "node:crypto";
 import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
 import { agentToolSpecs, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
-import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
+import { approvalRequest, DECLINED_ANSWER, needsApproval, readsOnly, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING } from "./briefing";
 import { answerOrphanedCalls, compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
 import { assistantText } from "./content";
@@ -152,6 +152,97 @@ function effectKey(name: string, args: Record<string, unknown>): string {
  *  second turn they did not ask for. */
 function ledgerKey(name: string, args: Record<string, unknown>): string | undefined {
   return name === "sessions_send" || name === "sessions_create" ? effectKey(name, args) : undefined;
+}
+
+/**
+ * THE SAME READ, PAID FOR ONCE — the within-turn memo (#592).
+ *
+ * ── WHAT IT IS FOR ──────────────────────────────────────────────────────────
+ * Measured on one stopped turn: `fleet_status` twice for a BYTE-IDENTICAL 6,628
+ * characters, `sessions_requests` three times for an identical 133. ~7,900
+ * characters of pure duplicate — and because every lap resends the whole
+ * history, a duplicate that lands at lap 2 is paid for again at laps 3 through
+ * 8. The briefing already asked for this ("call fleet_status ONCE") and the
+ * model did it twice regardless, which is the argument for a mechanism: a rule
+ * a model can ignore should become one that does not depend on it.
+ *
+ * ── THE THREE PROPERTIES IT HAS TO HAVE ─────────────────────────────────────
+ *   1. IT MUST NOT SURVIVE THE TURN. A memo that outlived one would hand the
+ *      Agent a stale fleet on the next question — a correctness bug, and far
+ *      worse than the waste it replaces. So the store is a `Set` created inside
+ *      `buildGraph`, which `runTurn` calls once per turn and a resume calls
+ *      again: the memo is scoped by the LIFETIME OF AN OBJECT rather than by a
+ *      clearing rule somebody has to remember to write. Nothing about it is
+ *      checkpointed; `state.effects` is deliberately not reused, because that
+ *      ledger is the thing that DOES persist.
+ *   2. READS ONLY, and structurally so — `readsOnly` answers from the one table
+ *      in `approval.ts`, which fails towards "lands" for a name it has not been
+ *      taught. Two identical `sessions_send` calls are not a duplicate: a person
+ *      can ask for the same message twice, and swallowing the second while
+ *      returning a pointer would silently drop work the Agent believes it did.
+ *   3. IT HOLDS NO PAYLOAD. A `Set` of keys, not a `Map` of answers — the repeat
+ *      returns a POINTER, so there is structurally no stale body to serve.
+ *
+ * ── WHY IT CANNOT MAKE A TURN WRONG ─────────────────────────────────────────
+ * Within one turn the Agent has no way to act on a difference between two reads
+ * anyway, and anything that DID change arrives as a notification on the next
+ * one. The one honest edge is the trim: if the first answer is old enough to
+ * fall out of the window while the pointer is still in it, the pointer names
+ * something the model can no longer read. The memo makes that strictly LESS
+ * likely than not having it — it is removing the bytes that push the window
+ * over — so it is noted rather than guarded.
+ */
+const MEMO_ARGS_SHOWN = 120;
+
+/**
+ * THE ARGUMENTS, CANONICAL — order-insensitive and whitespace-insensitive, and
+ * DELIBERATELY NOT SEMANTICALLY CLEVER.
+ *
+ * Keys are sorted, so `{a,b}` and `{b,a}` are one call. Strings are trimmed and
+ * their internal runs of whitespace collapsed, so a re-typed argument with a
+ * stray space is one call. `undefined` members drop, because `JSON.stringify`
+ * drops them anyway and a key explicitly set to nothing is a key not passed.
+ *
+ * NOTHING ELSE IS TOUCHED. `{limit:20}` and `{limit:10}` are DIFFERENT calls and
+ * must stay different: reasoning about whether the smaller answer is a subset of
+ * the larger is exactly the kind of cleverness that turns a token saving into a
+ * wrong answer. Case is meaning too, and array order is meaning.
+ */
+function canonicalArgs(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalArgs);
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, member]) => member !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    return Object.fromEntries(entries.map(([key, member]) => [key, canonicalArgs(member)]));
+  }
+  if (typeof value === "string") return value.trim().replace(/\s+/g, " ");
+  return value;
+}
+
+/** One read's identity for the turn, or `undefined` for a call that lands
+ *  something. Hashed for `effectKey`'s reason: a key is compared, never read. */
+function memoKey(name: string, args: Record<string, unknown>): string | undefined {
+  if (!readsOnly(name)) return undefined;
+  return `${name}:${crypto.createHash("sha256").update(JSON.stringify(canonicalArgs(args ?? {}))).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * WHAT A REPEAT GETS INSTEAD OF THE PAYLOAD.
+ *
+ * IT NAMES THE CALL, with its arguments, because "you already did that" against
+ * a batch of six reads is not something a model can pair with anything. The
+ * arguments are the canonical form clipped hard — a pointer that quoted a long
+ * `q` would start costing what it was written to save.
+ *
+ * AND IT SAYS THE ANSWER IS ABOVE, which is the whole instruction: the first
+ * call's result is in this same thread, unchanged, and the model's next move is
+ * to use it rather than to reach for a different phrasing of the same read.
+ */
+function memoPointer(name: string, args: Record<string, unknown>): string {
+  const shown = JSON.stringify(canonicalArgs(args ?? {}));
+  const clipped = shown.length > MEMO_ARGS_SHOWN ? `${shown.slice(0, MEMO_ARGS_SHOWN)}…` : shown;
+  return `You already called ${name}(${clipped}) on this turn; its answer is above and was not read again. Nothing changes mid-turn — use that answer, or act.`;
 }
 
 const AgentGraphState = Annotation.Root({
@@ -1153,6 +1244,17 @@ export class AgentRuntime {
   private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string; access?: AgentSettings["access"]; digest?: string; brief?: boolean }) {
     const byName = new Map(context.tools.map((tool) => [tool.name, tool]));
     /**
+     * THE READS THIS TURN HAS ALREADY PAID FOR — see `memoKey` (#592).
+     *
+     * ITS SCOPE IS THIS OBJECT'S LIFETIME, and that is the point: `runTurn`
+     * builds one graph per turn and a resumed turn builds another, so the memo
+     * begins empty on every turn without anything having to clear it. A resume
+     * starting cold is the conservative direction too — the aborted attempt's
+     * `ToolMessage`s were never committed, so its reads must genuinely run
+     * again rather than be pointed at answers that are not in the thread.
+     */
+    const memo = new Set<string>();
+    /**
      * BOUND AS FUNCTION DEFINITIONS, NOT AS LANGCHAIN TOOL OBJECTS.
      *
      * The wall already produces a JSON Schema for its own MCP socket
@@ -1364,6 +1466,33 @@ export class AgentRuntime {
       }
 
       /**
+       * PASS 1.5 — WHICH OF THESE CALLS IS A REPEAT, DECIDED BEFORE ANY OF THEM
+       * RUNS (#592).
+       *
+       * IT IS A SEPARATE PASS BECAUSE THE BATCH RUNS CONCURRENTLY. Two identical
+       * reads in ONE message would otherwise both find the memo empty and both
+       * run — the model asked for `fleet_status` twice in the same breath, and
+       * "the second one is a repeat" has to be settled while that is still a
+       * question about a list rather than a race between two promises. Deciding
+       * it here also makes it deterministic: the FIRST position wins, whatever
+       * order the work finishes in.
+       *
+       * A repeat is a key already answered on an earlier lap of this turn, or an
+       * earlier position in this same batch.
+       */
+      const repeats = new Set<number>();
+      const batch = new Set<string>();
+      calls.forEach((call, index) => {
+        const key = memoKey(call.name, (call.args ?? {}) as Record<string, unknown>);
+        if (!key) return;
+        if (memo.has(key) || batch.has(key)) {
+          repeats.add(index);
+          return;
+        }
+        batch.add(key);
+      });
+
+      /**
        * PASS 2 — THE EFFECTS, ALL OF THEM AT ONCE (#570).
        *
        * ── WHY CONCURRENTLY ────────────────────────────────────────────────────
@@ -1416,7 +1545,7 @@ export class AgentRuntime {
        * version that starts inferring one cannot put it back.
        */
       const settled = await Promise.all(
-        calls.map(async (call): Promise<{ message: ToolMessage; effect?: [string, string] }> => {
+        calls.map(async (call, index): Promise<{ message: ToolMessage; effect?: [string, string] }> => {
           const id = call.id ?? "";
           const args = (call.args ?? {}) as Record<string, unknown>;
           const key = ledgerKey(call.name, args);
@@ -1433,6 +1562,23 @@ export class AgentRuntime {
             const message = `There is no tool called ${call.name} in this conversation. Use one of the tools you were given.`;
             this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: message, status: "failed" });
             return { message: new ToolMessage({ tool_call_id: id, content: message }) };
+          }
+          /**
+           * A READ THIS TURN ALREADY HAS — THE POINTER, NOT THE PAYLOAD (#592).
+           *
+           * BELOW THE LEDGER AND THE GATE, and that ordering is deliberate: a
+           * memoised call is a read, reads are never gated, and the two checks
+           * above answer questions this one must not be able to shadow.
+           *
+           * IT STILL WRITES A ROW, because a call the model MADE is a thing that
+           * happened and the transcript is where a person sees how a turn was
+           * spent. The row carries the pointer as its output, so the duplicate
+           * is visible rather than silently missing.
+           */
+          if (repeats.has(index)) {
+            const pointer = memoPointer(call.name, args);
+            this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: pointer, status: "completed" });
+            return { message: new ToolMessage({ tool_call_id: id, content: pointer }) };
           }
           let text: string;
           let failed = false;
@@ -1462,6 +1608,17 @@ export class AgentRuntime {
            * turn then resends at the smaller size.
            */
           this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: text, status: failed ? "failed" : "completed" });
+          /**
+           * ONLY A READ THAT ANSWERED IS REMEMBERED (#592).
+           *
+           * A FAILURE IS NOT "the answer has not been re-read" — it is "that did
+           * not work", and a store that hiccuped once inside a turn should be
+           * allowed to answer the second time it is asked. The saving is in the
+           * payloads anyway: a duplicate `fleet_status` is 6,628 characters and
+           * a duplicate refusal is ninety.
+           */
+          const memoised = memoKey(call.name, args);
+          if (memoised && !failed) memo.add(memoised);
           return {
             message: new ToolMessage({ tool_call_id: id, content: minifyToolResult(text) }),
             ...(key ? { effect: [key, text] as [string, string] } : {}),

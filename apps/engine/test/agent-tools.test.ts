@@ -18,7 +18,7 @@ import { collectTools, toolInputSchema } from "../src/mcp-socket";
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
 import { agentFleetTools, agentQueryTools, agentToolSpecs, collectAgentTools, type AgentFleetCapability, type AgentQueryCapability, type FleetSessionRow } from "../src/agent/tools";
 import { AGENT_SELF_ID } from "../src/agent/identity";
-import { approvalRequest, needsApproval } from "../src/agent/approval";
+import { approvalRequest, classifiedTools, needsApproval, readsOnly } from "../src/agent/approval";
 import type { NotesCapability } from "../src/notes-tools/tools";
 import type { Session, Turn } from "@telar/engine-client";
 
@@ -49,6 +49,53 @@ test("every read on both walls is ungated", () => {
     "notes_projects", "notes_list", "notes_read", "notes_write",
   ];
   for (const name of reads) expect(needsApproval({ name, args: {} })).toBe(false);
+});
+
+/**
+ * THE READS/LANDS SPLIT IS THE MEMO'S WHOLE SAFETY (#592).
+ *
+ * The within-turn memo answers a repeat with a pointer instead of the payload,
+ * and the one thing it must never do is answer a repeated WRITE that way — a
+ * person can legitimately ask for the same message twice, and a swallowed
+ * second `sessions_send` is work the Agent believes it did and nobody received.
+ *
+ * SO THE TABLE IS HELD AGAINST THE WALL ITSELF rather than against a copy of
+ * itself: a tool added to either wall and classified nowhere fails HERE, which
+ * is the only place the omission is visible before it is a silent bug.
+ */
+test("every tool the Agent is given is classified as a read or a lander", () => {
+  const whole = collectAgentTools({
+    sessions: noSessions(),
+    notes: noNotes(),
+    query: noQueries(),
+    fleet: emptyFleet(),
+    github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
+    memory: { remember: () => ({ sections: {} }), recall: () => [] },
+  }).map((tool) => tool.name);
+  const classified = new Set(classifiedTools());
+  for (const name of whole) expect(classified.has(name)).toBe(true);
+  // And nothing classified has left the wall, so the table cannot rot quietly
+  // into a list of tools that no longer exist.
+  for (const name of classified) expect(whole).toContain(name);
+});
+
+test("the ten calls that land something are never memoisable", () => {
+  for (const name of [
+    "sessions_create", "sessions_send", "sessions_stop", "sessions_settle", "sessions_subscribe",
+    "sessions_unsubscribe", "sessions_resolve_request", "notes_write", "notes_delete", "remember",
+  ]) {
+    expect(readsOnly(name)).toBe(false);
+  }
+  // A GATE IS NOT THE TEST FOR THIS, and that is why the table exists: five of
+  // the ten above are deliberately ungated, so `needsApproval` would have read
+  // them as reads.
+  for (const name of ["sessions_settle", "sessions_subscribe", "sessions_unsubscribe", "notes_write", "remember"]) {
+    expect(needsApproval({ name, args: {} })).toBe(false);
+    expect(readsOnly(name)).toBe(false);
+  }
+  // A name nobody classified is a lander, because that is the direction whose
+  // failure is waste rather than lost work.
+  expect(readsOnly("some_tool_added_next_year")).toBe(false);
 });
 
 test("the ask names the call it is about, so a surface need not re-derive it", () => {
