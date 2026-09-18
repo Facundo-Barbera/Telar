@@ -25,7 +25,7 @@ import { expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { AgentCredentialError, agentChatModel } from "../src/agent/model";
 import { DEFAULT_GO_MODEL } from "../src/agent/go";
 import { TELAR_ENGINE_VERSION } from "../src/version";
@@ -479,5 +479,60 @@ test("a caller's own ceiling wins, and a budget that would not fit under it is d
     // The alternative — raising the ceiling to fit the budget — would overrule
     // the one thing the caller actually asked for.
     expect("thinking" in body).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Prompt caching — #563 item 3.
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE BREAKPOINTS THE ANTHROPIC SHAPE TAKES, AND THE TWO ROUTES THAT MUST NOT
+ * SEE THEM.
+ *
+ * ASSERTED FROM THE SOCKET, like everything else in this file, and for a sharper
+ * reason than usual: `cache_control` is added by a `fetch` wrapper AFTER
+ * `@langchain/anthropic` has finished building the request, so there is no
+ * configuration object anywhere that could be inspected instead. What was sent
+ * is the only thing that is true.
+ */
+test("the messages route carries cache breakpoints on its tools, its system block and its last message", async () => {
+  await withServer(async (base, seen) => {
+    const model = agentChatModel({ threadId: "thread_abc", model: ON_MESSAGES, agentDir: agentDirWith("k"), base, streaming: false });
+    await model
+      .bindTools!([{ type: "function", function: { name: "sessions_list", description: "the rail", parameters: { type: "object", properties: {} } } }] as never)
+      .invoke([new SystemMessage("the briefing"), new HumanMessage("hello")]);
+
+    const body = seen()[0]!.body as { system?: unknown; tools?: unknown[]; messages?: unknown[] };
+    const ephemeral = { type: "ephemeral" };
+
+    // THE LARGEST BLOCK FIRST. Anthropic's prompt order is tools → system →
+    // messages, so a breakpoint on the last tool is what keeps ~14 KB of tool
+    // definitions cached when the system block changes — and it changes on every
+    // turn, because `remember` rewrites the standing state and the digest is
+    // rebuilt per turn.
+    expect((body.tools as Record<string, unknown>[]).at(-1)!.cache_control).toEqual(ephemeral);
+    // A STRING SYSTEM PROMPT BECOMES ONE MARKED TEXT BLOCK — the field has
+    // nowhere to live on a bare string.
+    expect(body.system).toEqual([{ type: "text", text: "the briefing", cache_control: ephemeral }]);
+    // AND THE CONVERSATION SO FAR, on the last message's last content block.
+    const last = (body.messages as Record<string, unknown>[]).at(-1)!;
+    expect((last.content as Record<string, unknown>[]).at(-1)!.cache_control).toEqual(ephemeral);
+  });
+});
+
+test("neither OpenAI-shaped route is given a field its API does not have", async () => {
+  await withServer(async (base, seen) => {
+    const agentDir = agentDirWith("k");
+    await agentChatModel({ threadId: "thread_abc", agentDir, base, streaming: false }).invoke("hello");
+    await agentChatModel({ threadId: "thread_abc", model: ON_RESPONSES, agentDir, base, streaming: false }).invoke("hello");
+    /**
+     * THE POINT IS NOT THAT THE FIELD WOULD BE REJECTED. It is that on these two
+     * routes the caching is the PROVIDER'S and automatic, and it holds only
+     * while the prefix is byte-identical between calls — so a field added here
+     * would be the very thing that stops the cache working. The most useful
+     * thing this wrapper can do for them is leave the body alone.
+     */
+    for (const call of seen()) expect(JSON.stringify(call.body)).not.toContain("cache_control");
   });
 });
