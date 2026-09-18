@@ -79,6 +79,18 @@ const COMMANDS = [
   { id: "focus-composer", label: "Focus Composer", group: "Conversation", icon: "text-cursor", defaultChord: "CommandOrControl+L" },
   { id: "send", label: "Send", group: "Conversation", icon: "send", defaultChord: "CommandOrControl+Return" },
   { id: "stop-turn", label: "Stop Turn", group: "Conversation", icon: "square", defaultChord: "CommandOrControl+." },
+  // SPEAK INTO THE MESSAGE BOX, FROM THE KEYBOARD (#588). The same toggle the
+  // mic button is: pressing it starts, pressing it again stops, and both go
+  // through one running dictation rather than two state machines — see
+  // apps/web/lib/dictation/registry.ts.
+  //
+  // NO MENU ROW. It is not a File action, and `dictation.provider` is `off` on
+  // every Mac until somebody chooses one, so a menu item would be inert on most
+  // of them — worse than no row, by the rule at the top of this file. The
+  // palette finds it by name on the Macs where it can run.
+  //
+  // ⌘D IS FREE: ⇧⌘D is Open Diff and stays, and nothing here has a plain D.
+  { id: "toggle-dictation", label: "Dictate", group: "Conversation", icon: "mic", defaultChord: "CommandOrControl+D" },
   // The session's workspace folder, shown in Finder (#384) — the same verb the
   // header's Open menu carries, from the keyboard. `menu: "file"` because it is
   // about a folder on disk, which is what a File menu is for; the handler lives

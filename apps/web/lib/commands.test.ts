@@ -41,6 +41,7 @@ const EXPECTED_IDS: CommandId[] = [
   "focus-composer",
   "send",
   "stop-turn",
+  "toggle-dictation",
   "reveal-in-finder",
   "pin-session",
   "search-sessions",
@@ -159,6 +160,30 @@ describe("the registry is the one source of truth", () => {
     // And it is nobody else's chord — the guard above proves the table as a
     // whole, this names the collision #408 was warned about (#402's go-to-file).
     expect(keymapConflicts(defaultKeymap())["pin-session"]).toBeUndefined();
+  });
+
+  test("⌘D dictates, and it is a command rather than a menu row", () => {
+    // #588. It has to be in the registry for Settings › Keybindings to draw a
+    // rebindable row at all; it must NOT carry a menu, because dictation is off
+    // on every Mac until somebody chooses a provider and a permanently inert
+    // menu row is worse than none.
+    const dictate = COMMANDS.find((command) => command.id === "toggle-dictation");
+    expect(dictate).toMatchObject({ label: "Dictate", group: "Conversation", icon: "mic", defaultChord: "CommandOrControl+D" });
+    expect(dictate?.menu).toBeUndefined();
+    expect(defaultKeymap()["toggle-dictation"]).toBe("CommandOrControl+D");
+    // AND IT IS NOBODY ELSE'S CHORD. The table-wide guard above proves the set;
+    // this names the near miss the owner checked before choosing it — ⇧⌘D is
+    // Open Diff, and the two are different chords.
+    expect(keymapConflicts(defaultKeymap())["toggle-dictation"]).toBeUndefined();
+    expect(defaultKeymap()["open-diff"]).toBe("CommandOrControl+Shift+D");
+  });
+
+  test("⌘D still fires with the caret in the message box, which is where it is pressed from", () => {
+    // The focus rule only suppresses chords with no command/control modifier,
+    // and this one has one — but the composer holds focus essentially always,
+    // so a dictation chord that the focus rule ate would never fire at all.
+    const pressed = { metaKey: true, key: "d", code: "KeyD", target: { isContentEditable: true } };
+    expect(resolveWebCommandKeyAction(defaultKeymap(), pressed)).toBe("toggle-dictation");
   });
 
   test("only a toggle carries an alternate label", () => {

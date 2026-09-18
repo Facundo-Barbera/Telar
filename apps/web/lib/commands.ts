@@ -58,6 +58,7 @@ export type CommandId =
   | "focus-composer"
   | "send"
   | "stop-turn"
+  | "toggle-dictation"
   | "reveal-in-finder"
   | "pin-session"
   | "search-sessions"
