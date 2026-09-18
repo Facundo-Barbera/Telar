@@ -174,7 +174,7 @@ import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRec
 import { commitSessionWork, gitOverview, gitOverviewAsync, projectRemoteAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, notificationLabel, peerNotification, wakeNotification } from "./notification";
+import { MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
 import {
   DEFAULT_ISSUE_FILTER,
   DEFAULT_PULL_FILTER,
@@ -10237,6 +10237,12 @@ export class EngineStore {
        * "and the run has ended" before it acts. Suppressed, the errand simply
        * never closed. The result says what was produced; the completion says
        * the turn is over, and a coordinator gets both.
+       *
+       * STILL TRUE AFTER #590. What that issue folds is the second ROW, by
+       * merging the ending into the result still waiting in the queue — the
+       * fact is carried, listed and spoken, never dropped. If you are here
+       * because two notices about one run look redundant, read
+       * `mergeIntoWaitingResult` below; suppression has been tried.
        */
       const wakeReason: WakeReason = {
         kind,
@@ -10244,6 +10250,24 @@ export class EngineStore {
         runId: turn.runId,
         ...(context.request ? { requestId: context.request.id } : {}),
       };
+      /**
+       * ONE ERRAND CLOSING, NOT TWO ANNOUNCEMENTS — issue #590 half 2.
+       *
+       * The result this run already sent is still WAITING in this subscriber's
+       * queue, unread. Announcing its ending beside it is a second row and a
+       * second notice about one errand, which is the complaint — so the ending
+       * is merged into the notification that is already waiting. Both facts
+       * survive (see `mergeRunOutcome`); what does not is the second row.
+       *
+       * NOT WHEN THE WAKE WOULD INTERRUPT. `completionWake: always` on a busy
+       * subscriber is an opt-in to hearing this NOW, and folding it into a turn
+       * still waiting in the queue would quietly take that back.
+       */
+      const interrupting = (subscription.completionWake ?? "settled_only") === "always" && this.hasLiveTurn(subscriberId);
+      if (!interrupting && this.mergeIntoWaitingResult(subscriberId, targetSessionId, notification, kind)) {
+        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
+        continue;
+      }
       /**
        * SETTLED ONLY, BY DEFAULT — #550 clause 3.
        *
@@ -10491,6 +10515,72 @@ export class EngineStore {
     // The ROW is rewritten with the turn: the transcript's notification says
     // what the turn says, or a person reads a superseded line beside a turn that
     // will announce something else.
+    this.rewriteNotificationItem(subscriberId, waiting);
+    // The strip redraws from `turn.accepted`; re-announcing the same run id
+    // with `replayed: true` is how a client learns the words changed.
+    this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
+    return true;
+  }
+
+  /**
+   * FOLD A RUN'S ENDING INTO THE RESULT IT ALREADY SENT — issue #590 half 2.
+   * True when one was found and the wake is spoken for.
+   *
+   * THE SAME KEY AS EVERYWHERE ELSE: the session that acted and the run it
+   * acted in. A peer's message names its sender's run on `agentSourceRunId`,
+   * which is precisely the run the wake is about — so this is "the errand this
+   * ending belongs to", not a guess from matching words.
+   *
+   * ONLY A TURN NOBODY HAS READ. `queued` is the whole condition: a turn that
+   * has been claimed is in front of a model already, and one that ran is
+   * history. Rewriting either would be editing something the recipient has
+   * been told, which is a worse failure than a second row.
+   *
+   * `input` IS NOT TOUCHED, unlike `coalesceQueuedWake`'s rewrite. A wake's
+   * prose is the engine's own and replaceable; a peer's message body is the
+   * only copy there is, and `sessions_read` hands it back whole. The
+   * notification is rewritten, the message is not, and no `wakeReason` is
+   * stamped on — a peer's turn that started reading as a wake would be
+   * coalescible, and the next coalesce would overwrite that body.
+   */
+  private mergeIntoWaitingResult(subscriberId: string, targetSessionId: string, notification: NotificationDetail, kind: WakeKind): boolean {
+    // AN ENDING, NOT A PARKED REQUEST. "Someone is waiting on you" is a thing
+    // to act on rather than an outcome, and folding it under a result would
+    // hide the one notification a person is meant to answer.
+    if (!TERMINAL_WAKE_KINDS.includes(kind)) return false;
+    const queue = this.readQueue(subscriberId);
+    const waiting = queue.turns.find(
+      (candidate) =>
+        candidate.state === "queued" &&
+        candidate.origin === "session" &&
+        !candidate.wakeReason &&
+        candidate.notification?.kind === "peer_message" &&
+        candidate.sender?.sessionId === targetSessionId &&
+        candidate.agentSourceRunId === notification.runId,
+    );
+    if (!waiting?.notification) return false;
+    /**
+     * A MERGE IS A DELIVERY TOO — `coalesceQueuedWake`'s rule, for the same
+     * reason: the waiting turn has already been announced, and past the cap the
+     * newer fact goes to the mailbox rather than rewriting a row nobody has
+     * read for a third time. The completion is not lost there — it stays
+     * PENDING and `sessions_status` reports it.
+     */
+    const deliveries = (waiting.notification.deliveries ?? 1) + 1;
+    if (deliveries > MAX_DELIVERIES) {
+      this.holdNotification(subscriberId, notification);
+      return true;
+    }
+    const at = this.now();
+    const merged: NotificationDetail = { ...mergeRunOutcome(waiting.notification, notification), deliveries };
+    waiting.notification = merged;
+    // THE NOTICE AND THE NOTIFICATION ARE ONE STRING (#550). `agentNotice` is
+    // derived from the body and nothing else, so a merge that moved one and
+    // left the other is the drift that field exists to prevent.
+    waiting.agentNotice = merged.body;
+    waiting.updatedAt = at;
+    this.writeQueue(subscriberId, queue);
+    this.touchSession(subscriberId, at);
     this.rewriteNotificationItem(subscriberId, waiting);
     // The strip redraws from `turn.accepted`; re-announcing the same run id
     // with `replayed: true` is how a client learns the words changed.

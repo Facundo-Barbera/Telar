@@ -1012,6 +1012,38 @@ const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message
  */
 export type TurnResponse = { boundary?: JournalItem; items: JournalItem[] };
 
+/**
+ * ONE ARRIVAL, ONE ROW — issue #590.
+ *
+ * An arrival that OPENED a turn is stored in two places on purpose
+ * (`notification.ts`): on the TURN, for readers holding a turn and not its
+ * items, and on the turn's first ITEM, written at accept so a queued wake is
+ * visible in the transcript while the session is still busy. Both are right.
+ * What nobody decided was which of them DRAWS it when both are present — and
+ * for a turn opened by a notification, both always are. So one `sessions_send`
+ * painted two rows, and a wake — which has no message on either side, so both
+ * rows fall back to the same summary — painted two identical ones.
+ *
+ * THE TURN ROW IS THE ONE THAT STAYS. It is passed `turn.prompt`, so a peer's
+ * message shows the head of what was actually SENT rather than the head of the
+ * engine's envelope about it; two assignments on one screen can be told apart
+ * by the first and cannot by the second.
+ *
+ * KEYED ON THE ITEM'S ID, which the engine mints from the run
+ * (`writeNotificationItem`) — never on matching summaries or kinds. A text
+ * heuristic would eventually eat a real second arrival from the same session,
+ * which is the failure that costs someone an errand.
+ *
+ * A NOTIFICATION THAT LANDED MID-TURN IS UNTOUCHED. Its row is written by the
+ * driver's seam with an id of its own, it has no turn row, and drawing it is
+ * exactly what the item row is for.
+ */
+export function withoutOpeningNotification(turn: Pick<JournalTurn, "runId" | "origin" | "items" | "notification">): readonly JournalItem[] {
+  if (!turn.notification || (turn.origin !== "session" && turn.origin !== "provider")) return turn.items;
+  const drawn = `notification_${turn.runId}`;
+  return turn.items.filter((item) => item.id !== drawn);
+}
+
 export function splitAtMessageBoundaries(items: readonly JournalItem[]): TurnResponse[] {
   const responses: TurnResponse[] = [{ items: [] }];
   for (const item of items) {

@@ -59,7 +59,7 @@ import { Composer, MAX_ATTACHMENTS } from "./composer";
 // turn header here. It is now an adapter onto `notificationLabel`, which is the
 // one function every notification verb in this app comes from (#572) — so this
 // header cannot name a happening differently from the row below it.
-import { ActivityGroup, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
+import { ActivityGroup, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
@@ -950,7 +950,7 @@ function SessionTurnBody({
    * `responses.length === 1` is every turn nobody steered, and it renders
    * exactly as it did before. See `splitAtMessageBoundaries`.
    */
-  const responses = splitAtMessageBoundaries(turn.items);
+  const responses = splitAtMessageBoundaries(withoutOpeningNotification(turn));
   const answering = responses.at(-1)!;
   const earlier = responses.slice(0, -1);
   // The closing-prose split applies to the LAST response only: that is the one
