@@ -97,6 +97,21 @@ const OUTLINE_PAGE_DEFAULT = 20;
 const OUTLINE_PAGE_MAX = 100;
 const ANSWER_SLICE_DEFAULT = 8_000;
 const ANSWER_SLICE_MAX = 64_000;
+/**
+ * THE BACKSTOP THIS ANSWER NEEDS, RATHER THAN THE TOOLKIT'S DEFAULT (#608).
+ *
+ * A DEFECT FOUND WHILE MEASURING THE PAGING: `json()` clamps at 16,000 and this
+ * tool will hand over a 64,000-character slice, so any caller taking the tool at
+ * its word got JSON cut off mid-string with a marker appended — text it could
+ * still read, but a reply whose `more` and `totalChars` were no longer parseable
+ * and whose slices no longer concatenated into the answer.
+ *
+ * `MAX_RUN_ANSWER_CHARS` in `sessions-tools/tools.ts` is the same judgment for
+ * the same reason: a slice that is VERBATIM by contract cannot be clipped by a
+ * backstop that knows nothing about it. The budget is the largest slice the tool
+ * may legitimately be asked for, plus room for the envelope around it.
+ */
+const ANSWER_MAX_CHARS = ANSWER_SLICE_MAX + 2_000;
 
 const FIND =
   "Which conversation was this — a lexical search over every session, each hit carrying the line that matched. " +
@@ -107,6 +122,67 @@ const OUTLINE =
 
 const ANSWER =
   "What one turn concluded — the answer alone, without its events. Defaults to the latest turn that said something.";
+
+/**
+ * THE FIRST CALL IS THE WHOLE ANSWER WHERE THE ANSWER FITS (#608).
+ *
+ * ── THE MEASURED FAILURE IS NOT A DEFAULT THAT IS TOO SMALL ─────────────────
+ * The default slice is 8,000 characters and every wasteful read in the log asked
+ * for LESS: limits of 2,500, 2,400, 3,000, 4,000. Worst case, 20,273 characters
+ * fetched across eight overlapping windows for an answer of 6,127 — and an
+ * 883-character answer read five times at 2500/4000/4000/3000/4000, where the
+ * limit was never the constraint at all. The model was discovering the size by
+ * trial, and a bigger default would not have changed one of those calls.
+ *
+ * ── SO `limit` IS A CEILING A CALLER MAY RAISE, NOT ONE IT MAY LOWER ────────
+ * Anything at or under the default slice is served WHOLE, whatever was asked
+ * for. The overrun is bounded by the default itself — a caller asking for 2,500
+ * can be handed at most 8,000, which is what it would have got by omitting the
+ * argument — and it buys `more: false` on the first call, which is both the
+ * honest answer to "is that all of it" and the signal the turn's dedup keys on.
+ *
+ * Above the default the number is the caller's again: a 40,000-character answer
+ * is paged, because that IS a case where the window is the constraint.
+ */
+const ANSWER_WHOLE_UNDER = ANSWER_SLICE_DEFAULT;
+
+/**
+ * WHAT A `sessions_answer` REPLY SAYS ABOUT THE RUN IT RESOLVED TO (#608).
+ *
+ * ── WHY THE TURN'S MEMO CANNOT DERIVE THIS FROM THE ARGUMENTS ───────────────
+ * #592's memo keys on the literal arguments, and the waste this answers has
+ * arguments that DIFFER while the payload does not: `{from: 0, limit: 2500}` and
+ * `{from: 2500, limit: 2400}` are two calls for one run's text, and an omitted
+ * `runId` is a third spelling of the same read. The identity that matters is the
+ * RESOLVED `(sessionId, runId)`, and only the reply knows it.
+ *
+ * ── AND IT LIVES HERE, BESIDE THE TOOL THAT WRITES THE SHAPE ────────────────
+ * `runtime.ts` owns the memo; this owns what a reply looks like. Reading the
+ * reply's JSON in the graph would put a parser for this tool's output two files
+ * away from the `json(...)` call that produces it, which is how a field rename
+ * silently turns a dedup off.
+ *
+ * `latest` SEPARATES THE TWO SPELLINGS. A reply to a call that NAMED a runId
+ * says nothing about which turn is newest — it may well be an old one — so only
+ * a resolution the store made for us is worth remembering as "the latest".
+ */
+export type AnswerIdentity = { sessionId: string; runId: string; latest: boolean; whole: boolean };
+
+export function answerIdentity(name: string, args: Record<string, unknown>, text: string): AnswerIdentity | undefined {
+  if (name !== "sessions_answer") return undefined;
+  const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
+  if (!sessionId) return undefined;
+  let reply: { runId?: unknown; more?: unknown };
+  try {
+    reply = JSON.parse(text) as { runId?: unknown; more?: unknown };
+  } catch {
+    // An error answer is not JSON, and a shape this cannot read is simply not
+    // memoised — the failure direction is a duplicate page, never a wrong one.
+    return undefined;
+  }
+  if (typeof reply?.runId !== "string" || !reply.runId) return undefined;
+  return { sessionId, runId: reply.runId, latest: typeof args.runId !== "string" || !args.runId, whole: reply.more === false };
+}
 
 /**
  * WHEN THERE IS NOTHING TO READ, SAY SO IN A SENTENCE THAT CLOSES (#592).
@@ -199,17 +275,32 @@ export function agentQueryTools(tool: ToolFactory, capability: AgentQueryCapabil
         sessionId: z.string().min(1),
         runId: z.string().min(1).optional().describe("Omit for the latest turn that left text — the usual case after a wake."),
         from: z.number().int().min(0).optional().describe("Character offset; the reply says the total."),
-        limit: z.number().int().min(1).max(ANSWER_SLICE_MAX).optional().describe(`Default ${ANSWER_SLICE_DEFAULT}.`),
+        limit: z.number().int().min(1).max(ANSWER_SLICE_MAX).optional().describe(`Default ${ANSWER_SLICE_DEFAULT}, which is also the least it sends.`),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
         try {
+          const answered = await capability.answer(sessionId, {
+            ...(typeof args.runId === "string" && args.runId ? { runId: args.runId } : {}),
+            from: typeof args.from === "number" ? Math.max(0, args.from) : 0,
+            // A FLOOR, NOT A DEFAULT — see `ANSWER_WHOLE_UNDER`.
+            limit: Math.max(clamp(args.limit, ANSWER_SLICE_DEFAULT, ANSWER_SLICE_MAX), ANSWER_WHOLE_UNDER),
+          });
+          /**
+           * THE ANSWER SAYS WHETHER IT IS ALL OF IT, in the sentence rather than
+           * only in a boolean. `more` and `totalChars` have been in this reply
+           * since #516 and nothing read them; a model that is told in words does
+           * not have to infer "there is no more" from two fields agreeing.
+           */
+          const next = answered.next ?? answered.from + answered.text.length;
           return json(
-            await capability.answer(sessionId, {
-              ...(typeof args.runId === "string" && args.runId ? { runId: args.runId } : {}),
-              from: typeof args.from === "number" ? Math.max(0, args.from) : 0,
-              limit: clamp(args.limit, ANSWER_SLICE_DEFAULT, ANSWER_SLICE_MAX),
-            }),
+            {
+              ...answered,
+              note: answered.more
+                ? `Characters ${answered.from}-${next} of ${answered.totalChars}. Continue with sessions_answer(sessionId: "${sessionId}", runId: "${answered.runId}", from: ${next}).`
+                : `That is the whole answer (${answered.totalChars} characters). There is no more of it to fetch, at any offset or limit — do not read this run again.`,
+            },
+            ANSWER_MAX_CHARS,
           );
         } catch (error) {
           const said = failure(error);

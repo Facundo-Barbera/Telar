@@ -79,7 +79,7 @@ import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interr
 import crypto from "node:crypto";
 import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
-import { agentToolSpecs, onSpokenWall, withheldFromSpokenTurn, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
+import { agentToolSpecs, answerIdentity, onSpokenWall, withheldFromSpokenTurn, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, readsOnly, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING, AGENT_SPOKEN_BRIEFING } from "./briefing";
 import { answerOrphanedCalls, compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
@@ -318,6 +318,61 @@ function memoPointer(name: string, args: Record<string, unknown>): string {
   const shown = JSON.stringify(canonicalArgs(args ?? {}));
   const clipped = shown.length > MEMO_ARGS_SHOWN ? `${shown.slice(0, MEMO_ARGS_SHOWN)}…` : shown;
   return `You already called ${name}(${clipped}) on this turn; its answer is above and was not read again. Nothing changes mid-turn — use that answer, or act.`;
+}
+
+/**
+ * THE SECOND KEY THE SAME MEMO HOLDS — one RUN, however it was asked for (#608).
+ *
+ * ── WHY THE ARGUMENT KEY ABOVE CANNOT SEE THIS ──────────────────────────────
+ * `memoKey` is deliberately literal: `{limit:20}` and `{limit:10}` are two calls
+ * because deciding whether one answer contains the other is the cleverness that
+ * turns a saving into a wrong answer. The measured waste walks straight through
+ * that rule — `sessions_answer` re-read with a different `from` and `limit`, and
+ * with `runId` sometimes named and sometimes omitted, for text the turn already
+ * had whole. Worst case: 20,273 characters for a 6,127-character answer.
+ *
+ * ── SO IT KEYS ON THE RESOLVED PAIR, AND ONLY WHEN THE TEXT IS FINISHED ─────
+ * `(sessionId, runId)` after the store has resolved what "the latest turn" meant,
+ * and only once a reply has said `more: false`. That is the difference between
+ * "we have seen some of this" and "there is nothing left to fetch", and it is
+ * the whole guard: a half-read run is NOT memoised, so a caller genuinely paging
+ * a 40,000-character answer is never handed a pointer in the middle of it.
+ *
+ * ── ONE SET, TWO KEYS — BESIDE #592 RATHER THAN PARALLEL TO IT ──────────────
+ * Both keys live in the same `memo`, are decided in the same pass, and produce
+ * the same kind of pointer. The namespace prefix keeps them from colliding, and
+ * the lifetime argument above covers both without being made twice.
+ */
+function answerRunKey(sessionId: string, runId: string): string {
+  return `run:${sessionId}:${runId}`;
+}
+
+/**
+ * WHICH RUN A `sessions_answer` CALL IS ABOUT, BEFORE IT RUNS.
+ *
+ * A NAMED `runId` IS THE PAIR OUTRIGHT. An omitted one means "the latest turn
+ * that said something", which only the store knows — so it is answered from what
+ * THIS TURN has already resolved, and `undefined` before the turn has resolved
+ * it once. That is the conservative direction: the first such call always runs.
+ *
+ * Only a resolution the STORE made is recorded as "the latest" — see
+ * `answerIdentity`'s `latest`, which is why a call that named an old runId
+ * cannot teach this map that the old turn is the newest one.
+ */
+function answerRunFor(name: string, args: Record<string, unknown>, latest: ReadonlyMap<string, string>): { sessionId: string; runId: string } | undefined {
+  if (name !== "sessions_answer") return undefined;
+  const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
+  if (!sessionId) return undefined;
+  const runId = typeof args.runId === "string" && args.runId ? args.runId : latest.get(sessionId);
+  return runId ? { sessionId, runId } : undefined;
+}
+
+/** What a re-read of a run this turn already has whole gets instead of the text.
+ *  It names the RUN rather than the arguments, because the arguments are the one
+ *  thing that differed — a pointer quoting them would read as "you asked
+ *  something else" and invite a third spelling. */
+function runPointer(sessionId: string, runId: string): string {
+  return `You already have the whole answer for run ${runId} of ${sessionId} on this turn; it is above and was not read again. Every offset and limit of it is already there — use it, or act.`;
 }
 
 const AgentGraphState = Annotation.Root({
@@ -1398,6 +1453,22 @@ export class AgentRuntime {
      */
     const memo = new Set<string>();
     /**
+     * WHAT "THE LATEST TURN" RESOLVED TO, PER SESSION, ON THIS TURN (#608).
+     *
+     * Written only from a reply to a call that OMITTED `runId`, so it holds the
+     * store's own resolution and never a guess. Its lifetime is the memo's, for
+     * the memo's reason: a mapping that outlived the turn would answer "the
+     * latest" with a turn that has since been overtaken.
+     *
+     * THE ONE EDGE, STATED RATHER THAN GUARDED: a peer that finishes a turn
+     * while this one is running makes "the latest" older than the truth, and a
+     * second omitted-runId read is pointed at the first resolution. That is the
+     * memo's existing premise — nothing changes mid-turn, and what did arrives
+     * as a notification on the next one — and `fleet_status` has been just as
+     * stale since #592. An explicit `runId` is unaffected either way.
+     */
+    const latestAnswered = new Map<string, string>();
+    /**
      * BOUND AS FUNCTION DEFINITIONS, NOT AS LANGCHAIN TOOL OBJECTS.
      *
      * The wall already produces a JSON Schema for its own MCP socket
@@ -1653,14 +1724,31 @@ export class AgentRuntime {
        *
        * A repeat is a key already answered on an earlier lap of this turn, or an
        * earlier position in this same batch.
+       *
+       * IT CARRIES THE POINTER RATHER THAN A BARE FLAG (#608), because there are
+       * now two ways to be a repeat and they do not read the same: one says "you
+       * made this exact call", the other says "you already have this run's whole
+       * answer, under different arguments". Deciding which sentence applies is
+       * the same decision as deciding that it IS a repeat, so it is made once,
+       * here, rather than reconstructed where the message is built.
+       *
+       * THE RUN CHECK GOES FIRST. A call can be both — the same arguments twice
+       * AFTER the run is known whole — and naming the run is the more useful of
+       * the two sentences, since it also forecloses the next re-spelling.
        */
-      const repeats = new Set<number>();
+      const repeats = new Map<number, string>();
       const batch = new Set<string>();
       calls.forEach((call, index) => {
-        const key = memoKey(call.name, (call.args ?? {}) as Record<string, unknown>);
+        const args = (call.args ?? {}) as Record<string, unknown>;
+        const run = answerRunFor(call.name, args, latestAnswered);
+        if (run && memo.has(answerRunKey(run.sessionId, run.runId))) {
+          repeats.set(index, runPointer(run.sessionId, run.runId));
+          return;
+        }
+        const key = memoKey(call.name, args);
         if (!key) return;
         if (memo.has(key) || batch.has(key)) {
-          repeats.add(index);
+          repeats.set(index, memoPointer(call.name, args));
           return;
         }
         batch.add(key);
@@ -1772,8 +1860,8 @@ export class AgentRuntime {
            * spent. The row carries the pointer as its output, so the duplicate
            * is visible rather than silently missing.
            */
-          if (repeats.has(index)) {
-            const pointer = memoPointer(call.name, args);
+          const pointer = repeats.get(index);
+          if (pointer !== undefined) {
             this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: pointer, status: "completed" });
             return { message: new ToolMessage({ tool_call_id: id, content: pointer }) };
           }
@@ -1816,6 +1904,21 @@ export class AgentRuntime {
            */
           const memoised = memoKey(call.name, args);
           if (memoised && !failed) memo.add(memoised);
+          /**
+           * AND WHICH RUN THAT WAS, IF IT WAS ONE (#608).
+           *
+           * TWO FACTS OUT OF ONE REPLY, and they are recorded independently. The
+           * resolution is worth keeping even from a PARTIAL read — it is what
+           * lets a later omitted-`runId` call be recognised as the same run at
+           * all — while the run itself is only closed once a reply has said
+           * `more: false`. A half-read run therefore teaches the map what "the
+           * latest" means without ever short-circuiting the rest of the paging.
+           */
+          const identity = failed ? undefined : answerIdentity(call.name, args, text);
+          if (identity) {
+            if (identity.latest) latestAnswered.set(identity.sessionId, identity.runId);
+            if (identity.whole) memo.add(answerRunKey(identity.sessionId, identity.runId));
+          }
           return {
             message: new ToolMessage({ tool_call_id: id, content: minifyToolResult(text) }),
             ...(key ? { effect: [key, text] as [string, string] } : {}),

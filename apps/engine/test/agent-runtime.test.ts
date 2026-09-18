@@ -29,7 +29,9 @@ import type { ToolCall } from "@langchain/core/messages/tool";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ChatResult } from "@langchain/core/outputs";
 import type { NotificationDetail, WakeKind } from "@telar/engine-client";
-import type { SocketTool } from "../src/mcp-socket";
+import { collectTools, type SocketTool } from "../src/mcp-socket";
+import { sessionsTools } from "../src/sessions-tools/tools";
+import { agentFleetTools, agentQueryTools } from "../src/agent/tools";
 import { wakeNotification } from "../src/notification";
 import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING, AGENT_SPOKEN_BRIEFING } from "../src/agent/briefing";
 import { AgentRuntime, type AgentStreamEvent } from "../src/agent/runtime";
@@ -1715,5 +1717,345 @@ test("the memo does not survive into the next turn", async () => {
   // A memo that outlived its turn would answer the second question from the
   // first question's fleet, which is a wrong answer rather than a cheap one.
   expect(landed.filter((one) => one.name === "fleet_status")).toHaveLength(2);
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * 12 — one run's answer, however it was asked for (#608).
+ *
+ * #592's memo keys on the LITERAL arguments, and the measured waste walks
+ * straight through that: `sessions_answer` re-read with a different `from` and
+ * `limit`, and with `runId` sometimes named and sometimes omitted, for text the
+ * turn already had whole. 20,273 characters fetched for a 6,127-character
+ * answer across eight overlapping windows; 15,384 over seven calls for one of
+ * 3,556. What these hold is that the key is the RESOLVED `(sessionId, runId)`,
+ * that it closes only on `more: false`, and that a run still being paged is
+ * never short-circuited.
+ * ------------------------------------------------------------------ */
+
+/**
+ * A `sessions_answer` wall over one body, answering the real reply shape — the
+ * resolved runId, the slice, and whether anything is left. `runId` omitted
+ * resolves to `latest`, which is what the store does.
+ *
+ * THE FLOOR IS MODELLED HERE BECAUSE THE TWO HALVES OF #608 DEPEND ON EACH
+ * OTHER: the dedup below closes on `more: false`, and the floor (`limit` is a
+ * ceiling a caller may raise, never lower — see `ANSWER_WHOLE_UNDER`) is what
+ * makes the FIRST call say it. A fake that honoured a 2,500 limit literally
+ * would page forever and dedup nothing, which is the bug, not the fix.
+ */
+function answers(landed: Landed[], body: string, latest = "run_1"): SocketTool[] {
+  return [
+    {
+      name: "sessions_answer",
+      description: "what one turn concluded",
+      shape: {},
+      run: async (args: Record<string, unknown>, context?: { toolCallId?: string }) => {
+        landed.push({ name: "sessions_answer", args, ...(context?.toolCallId ? { toolCallId: context.toolCallId } : {}) });
+        const from = typeof args.from === "number" ? args.from : 0;
+        const limit = Math.max(typeof args.limit === "number" ? args.limit : 8_000, 8_000);
+        const text = body.slice(from, from + limit);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ runId: typeof args.runId === "string" ? args.runId : latest, sequence: 1, text, from, totalChars: body.length, more: from + text.length < body.length }),
+            },
+          ],
+        };
+      },
+    },
+  ];
+}
+
+test("a second window onto a run this turn already has whole is a pointer", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime(
+    [
+      // The measured shape: a first read that got everything, then the same run
+      // again under arguments no literal-key memo can match.
+      { toolCalls: [call("call_1", "sessions_answer", { sessionId: "session_a", limit: 2_500 })] },
+      { toolCalls: [call("call_2", "sessions_answer", { sessionId: "session_a", from: 2_500, limit: 2_400 })] },
+      // And a third spelling: the runId named outright this time.
+      { toolCalls: [call("call_3", "sessions_answer", { sessionId: "session_a", runId: "run_1" })] },
+      { text: "it finished the migration" },
+    ],
+    answers(landed, "z".repeat(6_127)),
+  );
+
+  agent.submit({ text: "what did it conclude?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  // THE WALL WAS READ ONCE. Two of the three never landed.
+  expect(landed).toHaveLength(1);
+  const results = model.seen.flat().filter((message) => message.getType() === "tool");
+  const content = (id: string) => String(results.find((message) => (message as { tool_call_id?: string }).tool_call_id === id)?.content);
+  for (const id of ["call_2", "call_3"]) {
+    expect(content(id)).toContain("You already have the whole answer for run run_1 of session_a");
+    expect(content(id)).toContain("was not read again");
+    // A POINTER, NOT THE PAYLOAD — the entire saving, since every later lap
+    // resends whatever this was.
+    expect(content(id)).not.toContain("zzzz");
+  }
+  // It names the RUN rather than the arguments: the arguments are the one thing
+  // that differed, and quoting them invites a fourth spelling.
+  expect(content("call_2")).not.toContain("2400");
+  expect(agent.thread({ limit: 200 }).rows.at(-1)!.detail.text).toBe("it finished the migration");
+  agent.close();
+});
+
+test("a run still being paged is never short-circuited", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "sessions_answer", { sessionId: "session_a", limit: 10_000 })] },
+      { toolCalls: [call("call_2", "sessions_answer", { sessionId: "session_a", from: 10_000, limit: 10_000 })] },
+      { toolCalls: [call("call_3", "sessions_answer", { sessionId: "session_a", from: 20_000, limit: 10_000 })] },
+      // NOW it is whole, and only now does a repeat cost a pointer.
+      { toolCalls: [call("call_4", "sessions_answer", { sessionId: "session_a", from: 0, limit: 30_000 })] },
+      { text: "done" },
+    ],
+    // 25,000 characters: three pages, the third of which ends it.
+    answers(landed, "y".repeat(25_000)),
+  );
+
+  agent.submit({ text: "read me the whole thing" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  // THREE READS LANDED AND THE FOURTH DID NOT. A memo that closed on the first
+  // page would have handed back a pointer to a third of the answer.
+  expect(landed).toHaveLength(3);
+  expect(landed.map((one) => one.args.from)).toEqual([undefined, 10_000, 20_000]);
+  agent.close();
+});
+
+test("a different session's answer is a different run, and a failure is not memoised", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "sessions_answer", { sessionId: "session_a" })] },
+      // SAME runId, DIFFERENT session — the key is the pair, not the run alone.
+      { toolCalls: [call("call_2", "sessions_answer", { sessionId: "session_b" })] },
+      { text: "both said something" },
+    ],
+    answers(landed, "short"),
+  );
+  agent.submit({ text: "what did they say?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+  expect(landed).toHaveLength(2);
+  agent.close();
+});
+
+test("an answer that could not be read is not memoised, and the retry runs", async () => {
+  const landed: Landed[] = [];
+  // A MISS IS NOT JSON, so there is no run to key on and the second call runs —
+  // the failure direction is a duplicate page, never a wrong one.
+  const failing: SocketTool[] = [
+    {
+      name: "sessions_answer",
+      description: "what one turn concluded",
+      shape: {},
+      run: async (args: Record<string, unknown>) => {
+        landed.push({ name: "sessions_answer", args });
+        return { content: [{ type: "text" as const, text: 'Could not read the answer from "session_a": no turn with that runId is in this session.' }], isError: true };
+      },
+    },
+  ];
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "sessions_answer", { sessionId: "session_a", runId: "run_guess" })] },
+      { toolCalls: [call("call_2", "sessions_answer", { sessionId: "session_a", runId: "run_other" })] },
+      { text: "there is nothing there" },
+    ],
+    failing,
+  );
+  agent.submit({ text: "what did it say?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+  expect(landed).toHaveLength(2);
+  agent.close();
+});
+
+/**
+ * THE 10:17 TURN, REPLAYED AGAINST THE REAL TOOLS (#608).
+ *
+ * ── WHAT WAS MEASURED, ALREADY RUNNING #601 AND #592 ────────────────────────
+ *   sessions_answer {sessionId, limit: 2500}            → 2,661
+ *   fleet_status    {}                                  → 3,877
+ *   sessions_answer {sessionId, from: 2500, limit: 2400} → 2,545  paginating by guess
+ *   fleet_status    {}                                  →   145  #592's memo, working
+ *   sessions_status {sessionId, turns: 2}               →   759  fleet_status said this
+ *   sessions_read   {sessionId, after: 4100, limit: 14} → 8,568  raw events
+ *                                                        ------
+ *                                                        18,555 over six calls
+ *
+ * ── WHAT THIS REPLAY CAN AND CANNOT SHOW ────────────────────────────────────
+ * The model is SCRIPTED, so the six laps are fixed by the script and this test
+ * cannot prove a real model stops asking — only the fleet answer's own sentence
+ * and the tool descriptions can do that, and they are held where they are read.
+ * What it does prove is the half that does not depend on the model: how many of
+ * those six calls reach the wall at all, and what the six answers cost.
+ *
+ * THE FIRST `fleet_status` IS LEGITIMATE AND STAYS SO — #601 left it open
+ * deliberately. The question is about a session working RIGHT NOW, and the
+ * digest carries transitions, so a running session has no row in it and the
+ * Agent genuinely could not know without asking. The waste is the second call
+ * onwards, and the fixture below keeps that first call honest by making the
+ * session it is about actually be working.
+ *
+ * THE TOOLS ARE THE REAL ONES. A fake wall would be measuring the fixture.
+ */
+function replayWall(landed: Landed[]): SocketTool[] {
+  const answer = "It finished the migration and left a note about the index. ".repeat(100).slice(0, 4_900);
+  const events = Array.from({ length: 60 }, (_, index) => ({
+    id: 4_100 + index,
+    at: 1_000 + index,
+    sessionId: "session_peer",
+    runId: `run_${Math.floor(index / 10)}`,
+    type: index % 3 === 0 ? "item.completed" : "item.started",
+    item: { id: `item_${index}`, runId: `run_${Math.floor(index / 10)}`, title: `a step the session took, number ${index}`, status: "completed", detail: { type: "command", command: `bun run something --with-a-flag ${index}` } },
+  }));
+  const turns = Array.from({ length: 6 }, (_, index) => ({
+    runId: `run_${index}`,
+    sessionId: "session_peer",
+    sequence: index + 1,
+    input: `do the ${index}th piece of work\nand a second line nobody needs`,
+    origin: "session",
+    state: index === 5 ? "running" : "completed",
+    ...(index === 4 ? { resultText: answer } : {}),
+  }));
+
+  const counted = (tools: SocketTool[]): SocketTool[] =>
+    tools.map((tool) => ({
+      ...tool,
+      run: async (args: Record<string, unknown>, context?: { toolCallId?: string }) => {
+        landed.push({ name: tool.name, args, ...(context?.toolCallId ? { toolCallId: context.toolCallId } : {}) });
+        return tool.run(args, context);
+      },
+    }));
+
+  return [
+    ...counted(
+      collectTools(agentQueryTools as never, {
+        find: async () => ({ sessions: [], index: "like", more: false }),
+        outline: async () => ({ turns: [], total: 0, more: false }),
+        answer: async (_id: string, options: { from: number; limit: number }) => {
+          const text = answer.slice(options.from, options.from + options.limit);
+          const more = options.from + text.length < answer.length;
+          return { runId: "run_4", sequence: 5, text, from: options.from, totalChars: answer.length, more, ...(more ? { next: options.from + text.length } : {}) };
+        },
+      } as never),
+    ),
+    ...counted(
+      collectTools(agentFleetTools as never, {
+        rail: async () => ({ sessions: [{ id: "session_peer", title: "the index migration", projectId: "p0", activity: "working" }], projects: [{ id: "p0", name: "Telar" }] }),
+        subscribed: async () => ["session_peer"],
+        who: () => "session_peer is on the index migration.",
+        session: async () => undefined,
+        lastTurn: async () => ({ state: "running", answer }),
+        openRequests: async () => 0,
+        unread: () => ({}),
+        since: () => 1,
+      } as never),
+    ),
+    ...counted(
+      collectTools(sessionsTools as never, {
+        self: { sessionId: "agent" },
+        read: async () => events,
+        status: async () => ({ session: { id: "session_peer", title: "the index migration", activity: "working", projectId: "p0" }, turns }),
+      } as never),
+    ).filter((tool) => tool.name === "sessions_read" || tool.name === "sessions_status"),
+  ];
+}
+
+test("the 10:17 turn replayed: two of its six calls never reach the wall, and the six answers cost a fraction", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime(
+    [
+      { toolCalls: [call("call_1", "sessions_answer", { sessionId: "session_peer", limit: 2_500 })] },
+      { toolCalls: [call("call_2", "fleet_status", {})] },
+      { toolCalls: [call("call_3", "sessions_answer", { sessionId: "session_peer", from: 2_500, limit: 2_400 })] },
+      { toolCalls: [call("call_4", "fleet_status", {})] },
+      { toolCalls: [call("call_5", "sessions_status", { sessionId: "session_peer", turns: 2 })] },
+      { toolCalls: [call("call_6", "sessions_read", { sessionId: "session_peer", after: 4_100, limit: 14 })] },
+      { text: "It finished the migration." },
+    ],
+    replayWall(landed),
+  );
+
+  agent.submit({ text: "how is the migration going?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  const results = model.seen.flat().filter((message) => message.getType() === "tool");
+  const size = (id: string) => String(results.find((message) => (message as { tool_call_id?: string }).tool_call_id === id)?.content ?? "").length;
+  const costs = Object.fromEntries(["call_1", "call_2", "call_3", "call_4", "call_5", "call_6"].map((id) => [id, size(id)]));
+
+  // TWO OF THE SIX NEVER REACHED THE WALL. The second `sessions_answer` is the
+  // one that is new: its arguments differ from the first's, so #592's key could
+  // not see it, and the resolved `(sessionId, runId)` can.
+  expect(landed.filter((one) => one.name === "sessions_answer")).toHaveLength(1);
+  expect(landed.filter((one) => one.name === "fleet_status")).toHaveLength(1);
+  expect(landed).toHaveLength(4);
+
+  // THE FIRST `sessions_answer` IS NOW THE WHOLE ANSWER — 2,500 was asked for
+  // and 4,900 was sent, which is what makes the second call a pointer rather
+  // than a legitimate continuation.
+  const first = JSON.parse(String(results.find((message) => (message as { tool_call_id?: string }).tool_call_id === "call_1")?.content)) as { more: boolean; totalChars: number };
+  expect(first.more).toBe(false);
+  expect(first.totalChars).toBe(4_900);
+
+  // THE RE-READ AND THE REPEAT COST POINTERS, both well under their payloads:
+  // 2,545 and 145 measured, against a sentence each.
+  expect(costs.call_3).toBeLessThan(400);
+  expect(costs.call_4).toBeLessThan(400);
+
+  // AND THE JOURNAL READ IS THE FOLD. 8,568 characters of raw events was the
+  // single most expensive call of the turn; the question behind it was "what has
+  // this session been doing", which is this shape.
+  expect(costs.call_6).toBeLessThan(3_000);
+
+  /**
+   * ONLY THE CALLS WHOSE SHAPE CHANGED ARE COMPARED, and that is the honest
+   * bound rather than a flattering one. This fixture's fleet is ONE session and
+   * the measured one was thirteen, so `fleet_status` here is 441 characters
+   * against 3,877 and `sessions_status` 64 against 759 — sizes that belong to
+   * the fixture, not to the fix. Summing all six would report the fixture's
+   * smallness as a saving.
+   *
+   * The four that this PR actually moves are calls 1, 3, 4 and 6: 13,919
+   * characters when measured, and the ceiling below is comfortably under it.
+   *
+   * NOTE WHAT CALL 1 DOES — it GROWS, 2,661 to ~5,100, because it now sends the
+   * whole 4,900-character answer instead of the 2,500 that was asked for. That
+   * is the trade and it is worth stating plainly: across this pair alone the
+   * characters are a wash. What is bought is the LAP. The second read is
+   * answered by the first, and a lap is not one payload — every later lap of the
+   * turn resends the whole history, so removing one is worth far more than the
+   * ninety characters the note costs. The character saving lives in the worse
+   * cases the issue measured: 20,273 fetched for a 6,127-character answer across
+   * eight overlapping windows, and an 883-character answer read five times.
+   */
+  expect(costs.call_1 + costs.call_3 + costs.call_4 + costs.call_6).toBeLessThan(8_000);
+  agent.close();
+});
+
+test("the run memo does not survive into the next turn either", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [call("call_1", "sessions_answer", { sessionId: "session_a" })] },
+      { text: "it said one thing" },
+      { toolCalls: [call("call_2", "sessions_answer", { sessionId: "session_a" })] },
+      { text: "and now another" },
+    ],
+    answers(landed, "the answer"),
+  );
+  agent.submit({ text: "what did it say?" });
+  await until(() => agent.state().runId === undefined, "the first turn");
+  agent.submit({ text: "and now?" });
+  await until(() => agent.state().runId === undefined, "the second turn");
+
+  // A run memo that outlived its turn would answer the second question with the
+  // first turn's answer, after the session has since said something else.
+  expect(landed).toHaveLength(2);
   agent.close();
 });
