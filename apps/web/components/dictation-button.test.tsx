@@ -21,7 +21,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Composer } from "@/components/composer";
 import { resolveWebCommandKeyAction } from "@/lib/command-keys";
-import { keymapSnapshot, runCommand } from "@/lib/commands";
+import { keymapSnapshot, restoreDefaultKeymap, runCommand, setChord } from "@/lib/commands";
 import { installPageApi } from "@/lib/page-api";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
@@ -144,6 +144,17 @@ beforeEach(() => {
   language = "multi";
   keyterms = ["Telar", "Zarigüeya"];
   caretAt = { x: 120, y: 400 };
+  // NOBODY'S REBINDING SURVIVES INTO THE NEXT TEST. The keymap is a module-level
+  // store backed by localStorage, so a test that moves Dictate onto another key
+  // would move it for every test after it.
+  restoreDefaultKeymap();
+  // A MAC KEYBOARD, because the caps are what the tooltip says and happy-dom's
+  // user agent is a Linux one — which would have every assertion below reading
+  // "Ctrl+D" while the app this ships in is a Mac app.
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+  });
   // ONE LINE HIGH AND ZERO WIDE, which is what a real collapsed caret rect is.
   // Height matters: `caretRectIn` reads a zero-height rect as "no layout yet"
   // and falls through to its own fallbacks.
@@ -619,6 +630,52 @@ describe("the chord refuses wherever the button does", () => {
     // Settings, the projects list. Nobody has claimed the command, so the key
     // is silent rather than beeping about a surface that is not there.
     expect(await chord()).toBe(false);
+  });
+});
+
+describe("the tooltip names the chord that is actually bound", () => {
+  test("it reads the keymap, and says the same key the chord fires on", async () => {
+    const host = await mounted(<Box kind="session" />);
+    expect(micIn(host).getAttribute("title")).toBe("Dictate (⌘D) — speak into the message box");
+  });
+
+  test("and it says so while listening too, because that press is the one that stops it", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+    expect(button.getAttribute("title")).toBe("Stop dictating (⌘D)");
+  });
+
+  test("a rebind moves the tooltip with it", async () => {
+    // THE WHOLE POINT OF READING THE KEYMAP. A hardcoded "⌘D" would keep
+    // promising a key that now belongs to somebody else's command.
+    const host = await mounted(<Box kind="session" />);
+    await act(async () => {
+      setChord("toggle-dictation", "CommandOrControl+Shift+M");
+    });
+    // Caps in the registry's canonical modifier order, which is what every
+    // other surface that draws a chord already shows — the keybindings row, the
+    // rail's hints, the palette.
+    expect(micIn(host).getAttribute("title")).toBe("Dictate (⌘⇧M) — speak into the message box");
+    // And it is not a label the tooltip invented: the new chord is the one that
+    // now works, and the old one does nothing.
+    expect(await chord()).toBe(false);
+    expect(tokenCalls).toBe(0);
+  });
+
+  test("an unbound Dictate promises no key at all", async () => {
+    // "" is a real value in the keymap — deliberately cleared in the pane — and
+    // a tooltip with an empty bracket in it would be worse than none.
+    const host = await mounted(<Box kind="session" />);
+    await act(async () => {
+      setChord("toggle-dictation", "");
+    });
+    expect(micIn(host).getAttribute("title")).toBe("Dictate — speak into the message box");
+    // The button is still a button. Unbinding a chord takes the chord away, not
+    // the control.
+    await press(micIn(host));
+    expect(tokenCalls).toBe(1);
   });
 });
 

@@ -44,11 +44,28 @@
 
 import { MicIcon } from "lucide-react";
 import type { ComposerDictation } from "@/lib/dictation/use-composer-dictation";
+import { keyCapText, useKeyCapPlatform } from "@/lib/key-caps";
+import { useKeymap } from "@/lib/use-command-keys";
 import { DictationCaretPill } from "./dictation-caret-pill";
 import { cn } from "@/lib/utils";
 
 export function DictationButton({ dictation, className }: { dictation: ComposerDictation; className?: string }) {
   const { phase, error, toggle, available, caret } = dictation;
+  /**
+   * THE CHORD THE TOOLTIP NAMES, READ FROM THE LIVE KEYMAP (#588) — never the
+   * literal "⌘D". A person who moved Dictate onto another key in Settings ›
+   * Keybindings must see the key they chose, and a person who UNBOUND it must
+   * see no chord at all rather than one that does nothing. Same store the
+   * dispatcher matches against, so the tooltip and the key cannot disagree.
+   *
+   * Above the early return, because it is a hook.
+   */
+  const keymap = useKeymap();
+  const platform = useKeyCapPlatform();
+  const chord = keyCapText(keymap["toggle-dictation"] ?? "", platform);
+  /** Empty for an unbound command — the tooltip is then the sentence it was
+   *  before this button had a chord at all, rather than an empty bracket. */
+  const chordSuffix = chord === "" ? "" : ` (${chord})`;
 
   // NO BUTTON WHERE NOBODY ASKED FOR ONE, and none where the browser cannot
   // record. `available` is both facts, answered once for the button and the
@@ -64,7 +81,12 @@ export function DictationButton({ dictation, className }: { dictation: ComposerD
         type="button"
         aria-label={listening ? "Stop dictating" : "Dictate"}
         aria-pressed={listening}
-        title={listening ? "Stop dictating" : "Dictate (speak into the message box)"}
+        // THE NAME STAYS THE NAME, the chord is an aside. `aria-label` is
+        // deliberately left alone: a screen reader gets the chord from the
+        // application's own keybindings, and a button whose NAME changed when
+        // somebody rebound a key would be a button nothing could be told to
+        // press by name.
+        title={listening ? `Stop dictating${chordSuffix}` : `Dictate${chordSuffix} — speak into the message box`}
         // THE BOX KEEPS THE CARET. Without this the press blurs the composer,
         // and the first words land at a caret that is no longer anywhere — the
         // same reason every other control in this row does it.
