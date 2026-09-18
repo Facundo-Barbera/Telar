@@ -108,6 +108,25 @@ describe("what rows draw", () => {
     expect(items[1]).toMatchObject({ kind: "failure", status: "failed", message: "the model refused" });
   });
 
+  test("a failed turn's reason is drawn once, though the row now carries it twice (#602)", () => {
+    // The engine writes the reason to BOTH `message` and `text` so a reader with
+    // no log to fold — the voice client — is told something instead of nothing.
+    // This screen folds the log, so it must still print one failure and never a
+    // second bubble holding the same sentence.
+    const reason = "400 Error from provider (Console Go): Upstream request failed";
+    const items = agentItems([row(1, "turn_done", { status: "failed", message: reason, text: reason })]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "failure", status: "failed", message: reason });
+  });
+
+  test("a failed turn with no reason at all still reads as a failure", () => {
+    // A row written by an engine too old to carry the sentence. The screen says
+    // the turn failed rather than drawing nothing, which is the whole of #602.
+    const items = agentItems([row(1, "turn_done", { status: "failed" })]);
+    expect(items[0]).toMatchObject({ kind: "failure", status: "failed" });
+    expect(items[0]).not.toHaveProperty("message");
+  });
+
   test("turn_started and the request rows are not drawn as messages", () => {
     // `turn_started` says nothing the user message above it does not, and an
     // open approval is LIVE state — a card drawn from history would resurrect

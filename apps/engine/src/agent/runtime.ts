@@ -86,6 +86,7 @@ import { answerOrphanedCalls, compactToolResults, foldOldTurns, minifyToolResult
 import { assistantText } from "./content";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
+import { AgentEraLog, type EraStore } from "./eras";
 import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
 import { clearStanding, preferencesOf, readStanding, rememberSection, renderStanding } from "./memory";
 import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRecallHit, type AgentRow } from "./thread-log";
@@ -178,6 +179,40 @@ const OUT_OF_LAPS_SPOKEN = `${OUT_OF_LAPS_OPENING}, and say what you did not get
  *  `Math.min` rather than a choice, so this can only ever take laps away. */
 function lapCeiling(configured: number, brief: boolean | undefined): number {
   return brief === true ? Math.min(configured, BRIEF_MAX_LAPS) : configured;
+}
+
+/**
+ * WHAT A FAILED TURN SAYS WHEN THE ERROR SAID NOTHING (#602).
+ *
+ * Measured over 119 turns on the dogfood Mac: seven ended `failed`, five of them
+ * without reaching the model at all. Every one of those did carry a reason — but
+ * `error.message` is free to be the empty string (`new Error()`, a thrown
+ * `undefined`, a rejection carrying a bare object), and an empty reason is the
+ * one outcome this issue exists to forbid. A person who is told nothing re-asks
+ * and pays for the same turn again, so "failed, and I cannot say why" has to be
+ * a SENTENCE rather than an absent field.
+ */
+const TURN_FAILED_WITHOUT_REASON = "The turn failed before it could answer, and the error carried no message.";
+
+/**
+ * A THROWN ANYTHING, AS THE ONE LINE A PERSON READS.
+ *
+ * NEVER EMPTY, which is the whole point — see `TURN_FAILED_WITHOUT_REASON`. The
+ * ladder is "what was said", then "what kind of thing it was", then the
+ * sentence: an `AbortError` with no message is worth more as its own name than
+ * as the generic line, and `String({})` is worth less than either.
+ */
+function failureReason(error: unknown): string {
+  const said = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+  if (error instanceof Error) {
+    const name = said(error.name);
+    return said(error.message) || (name && name !== "Error" ? name : "") || TURN_FAILED_WITHOUT_REASON;
+  }
+  if (typeof error === "object" && error !== null) {
+    const carried = said((error as { message?: unknown }).message);
+    if (carried) return carried;
+  }
+  return said(error) || TURN_FAILED_WITHOUT_REASON;
 }
 
 /** The ledger's key for one effect. A hash rather than the arguments because a
@@ -472,6 +507,10 @@ export class AgentRuntime {
   /** The wake inbox, on the same handle as the transcript — see `open`. Named
    *  `inboxTable` because `inbox()` is the read method beside it. */
   private inboxTable?: AgentInbox;
+  /** Where the settled half of the fold is kept, on the same handle again — see
+   *  `./eras.ts`. Named for the table rather than `eras` because `eras()` is
+   *  not a read method anybody outside this object wants. */
+  private eraTable?: AgentEraLog;
   private queue: QueuedTurn[] = [];
   private live?: { turn: QueuedTurn; controller: AbortController };
   private pending?: AgentPendingRequest;
@@ -514,17 +553,18 @@ export class AgentRuntime {
    * first turn, the first thread read or the first stream opens it; a machine
    * that never switches the Agent on never has one.
    */
-  private open(): { opened: OpenedCheckpointer; log: AgentThreadLog; inbox: AgentInbox } {
-    if (!this.opened || !this.log || !this.inboxTable) {
+  private open(): { opened: OpenedCheckpointer; log: AgentThreadLog; inbox: AgentInbox; eras: AgentEraLog } {
+    if (!this.opened || !this.log || !this.inboxTable || !this.eraTable) {
       const opened = openAgentCheckpointer(this.paths.threads);
       this.opened = opened;
       this.log = new AgentThreadLog(opened.db);
-      // THE SAME HANDLE, a third table on it. Two connections to one WAL
-      // database would be two things to close before a reset could move it —
-      // see `thread-log.ts`.
+      // THE SAME HANDLE, a third table on it — and now a fourth. Two
+      // connections to one WAL database would be two things to close before a
+      // reset could move it — see `thread-log.ts`.
       this.inboxTable = new AgentInbox(opened.db);
+      this.eraTable = new AgentEraLog(opened.db);
     }
-    return { opened: this.opened, log: this.log, inbox: this.inboxTable };
+    return { opened: this.opened, log: this.log, inbox: this.inboxTable, eras: this.eraTable };
   }
 
   /**
@@ -642,6 +682,7 @@ export class AgentRuntime {
     this.opened = undefined;
     this.log = undefined;
     this.inboxTable = undefined;
+    this.eraTable = undefined;
   }
 
   /**
@@ -1054,9 +1095,12 @@ export class AgentRuntime {
       try {
         await this.runTurn(next, controller.signal);
       } catch (error) {
+        // A STOP IS NOT A FAULT and carries no reason — the person who pressed
+        // it knows why the turn ended. Everything else owes them the sentence,
+        // and `failureReason` guarantees there is one.
         this.endedRow(next.runId, {
           status: controller.signal.aborted ? "stopped" : "failed",
-          ...(controller.signal.aborted ? {} : { message: error instanceof Error ? error.message : String(error) }),
+          ...(controller.signal.aborted ? {} : { message: failureReason(error) }),
         });
       } finally {
         this.live = undefined;
@@ -1130,6 +1174,8 @@ export class AgentRuntime {
         ...(settings.effort ? { effort: settings.effort } : {}),
       }),
       runId: turn.runId,
+      // ONE PORT PER TURN, because one graph is one turn — see `AgentEraLog.port`.
+      eras: this.open().eras.port(threadId),
       ...(settings.access ? { access: settings.access } : {}),
       // THE ANSWER'S SHAPE, FOR THIS TURN ONLY (#567). It rides the graph
       // because the graph owns the system block, and it is read off the queued
@@ -1228,6 +1274,7 @@ export class AgentRuntime {
     const laps = spend?.laps ?? 0;
     const row = this.row("turn_done", runId, {
       ...detail,
+      ...this.failureWords(detail),
       ...(usage ? { usage } : {}),
       contextChars,
       budgetChars,
@@ -1265,6 +1312,38 @@ export class AgentRuntime {
   }
 
   /**
+   * A FAILED TURN SAYS SO, TO BOTH READERS OF A `turn_done` ROW (#602).
+   *
+   * ── WHY THIS IS A RULE OF THE ROW AND NOT OF ITS ONE CALLER ─────────────────
+   * The drain's catch is where a failure comes from today, and it already writes
+   * `message`. Putting the guarantee HERE instead makes it a property of the row
+   * rather than of the code path that happened to write it: any future ending
+   * that says `failed` says why, without a second author having to remember.
+   *
+   * ── AND `text`, WHICH IS THE HALF THAT WAS ACTUALLY SILENT ──────────────────
+   * `turn_done` has two readers. One folds the whole log and draws a failure
+   * from `status` + `message` — that is the cockpit's transcript, and it has
+   * always worked. The OTHER wants ONE ANSWER PER TURN and reads
+   * `turn_done.detail.text`; `apps/web/lib/agent/thread.ts` documents that
+   * contract, and the voice client is the reader that lives by it. A failed turn
+   * carried no `text` at all, so to that reader a turn that fell over and a turn
+   * that has not happened are the same thing: nothing. Three of the failures
+   * #602 measured were spoken questions, which is exactly where silence costs
+   * the most.
+   *
+   * SO THE REASON BECOMES THE TURN'S ANSWER when it has no other. Never over the
+   * top of real words — a turn that said something and then fell over keeps what
+   * it said — and the transcript is unaffected, because it never draws
+   * `turn_done.text`.
+   */
+  private failureWords(detail: Record<string, unknown>): Record<string, unknown> {
+    if (detail.status !== "failed") return {};
+    const said = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+    const reason = said(detail.message) || TURN_FAILED_WITHOUT_REASON;
+    return { message: reason, ...(said(detail.text) ? {} : { text: reason }) };
+  }
+
+  /**
    * PARK, AND WAIT FOR A PERSON.
    *
    * The promise is what holds the turn: the graph has already written its
@@ -1293,7 +1372,19 @@ export class AgentRuntime {
    * The graph.
    * -------------------------------------------------------------- */
 
-  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string; access?: AgentSettings["access"]; digest?: string; brief?: boolean }) {
+  private buildGraph(context: {
+    tools: SocketTool[];
+    model: BaseChatModel | undefined;
+    runId: string;
+    access?: AgentSettings["access"];
+    digest?: string;
+    brief?: boolean;
+    /** WHERE THE SETTLED HALF OF THE FOLD IS KEPT (#599) — see `./eras.ts`.
+     *  Scoped to ONE thread and to ONE graph, which is one turn: the port
+     *  memoises its read, so the laps after the first read nothing. Absent on
+     *  `restore`'s graph, which only ever reads state and never folds. */
+    eras?: EraStore;
+  }) {
     const byName = new Map(context.tools.map((tool) => [tool.name, tool]));
     /**
      * THE READS THIS TURN HAS ALREADY PAID FOR — see `memoKey` (#592).
@@ -1422,7 +1513,11 @@ export class AgentRuntime {
       const reservedChars = String(prompt.content).length;
       // 0. ANSWER ANY CALL NOTHING EVER ANSWERED — see `answerOrphanedCalls`.
       //    First, because every step after it groups results under their call.
-      const folded = foldOldTurns(compactToolResults(answerOrphanedCalls(state.messages)), { budgetChars, reservedChars });
+      const folded = foldOldTurns(compactToolResults(answerOrphanedCalls(state.messages)), {
+        budgetChars,
+        reservedChars,
+        ...(context.eras ? { eras: context.eras } : {}),
+      });
       const history = trimAgentHistory(folded.messages, { budgetChars, reservedChars });
       /**
        * THE PROMPT'S SIZE, TAKEN WHERE IT IS DECIDED — the context meter's
@@ -1478,10 +1573,12 @@ export class AgentRuntime {
        * same rule `main-session/driver.ts` had for its text item: an empty
        * speech bubble in the transcript is worse than none.
        *
-       * `turn_done.detail.text` IS UNCHANGED, deliberately. It is the turn's
-       * ANSWER — what a list view renders without replaying the thread — and
-       * the final assistant row is the same words in the conversation. Two
-       * readers, two shapes, one of them keyed by run.
+       * `turn_done.detail.text` IS UNCHANGED BY THIS ROW, deliberately. It is
+       * the turn's ANSWER — what a list view renders without replaying the
+       * thread — and the final assistant row is the same words in the
+       * conversation. Two readers, two shapes, one of them keyed by run. (The
+       * one turn whose `text` is not an assistant's words is a FAILED one, which
+       * has none and says why instead — see `failureWords`.)
        */
       const said = assistantText(answer.content);
       if (said.trim()) this.row("assistant_message", context.runId, { text: said, itemId: answer.id ?? context.runId });

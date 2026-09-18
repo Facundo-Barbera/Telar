@@ -360,9 +360,38 @@ const FLEET_ANSWER_CHARS = PREVIEW_CHARS;
  */
 const SESSION_ID = /\bsession_[A-Za-z0-9_-]+\b/g;
 
+/**
+ * IT OPENED BY ANSWERING THE QUESTION IT SHOULD NOW DECLINE (#601).
+ *
+ * "How are things across every session you are on" is the phrase a check-in uses,
+ * and a description that opens with it is an invitation: the model matching
+ * "¿cómo vamos?" against twenty-five tools found its own question quoted back.
+ * Measured over 119 turns, this became a per-turn ritual — fired identically for
+ * a real status question and for "¿Estás ahí?", at ~6,600 characters a call.
+ *
+ * SO IT LEADS WITH WHAT IT IS INSTEAD OF WHAT IT ANSWERS. "Live state" is the
+ * thing this tool uniquely has: `renderDigest` reports TRANSITIONS, so a session
+ * WORKING right now has no row in the digest and only this call knows about it.
+ * That is the gap, and naming the gap is what routes a question here correctly
+ * rather than reflexively.
+ *
+ * AND ONE CLAUSE FORBIDS THE MEASURED WASTE. "NOT to confirm the digest" is the
+ * whole of #601 as it applies at the moment of choosing this call — the briefing
+ * carries the general rule ("read only for what they cannot carry") and this
+ * carries the specific one, where a model reads it while deciding.
+ *
+ * #570'S FINDING IS UNTOUCHED, in its own words: the day a status question DOES
+ * need a look, ONE call is still the difference between this and sixteen
+ * `sessions_*` reads assembled by hand.
+ *
+ * PAID FOR WITHIN `agent-tools.test.ts`'S 14,000-CHARACTER CEILING, which the
+ * bound array was within 27 characters of — every lap of every turn resends it,
+ * so the opening phrase shortening from "How are things across" to "Live state
+ * for" is what bought the new clause. The ceiling was not raised.
+ */
 const FLEET_STATUS =
-  "How are things across every session you are on — subscriptions, the ones your notes name, and the person's open rail — one bounded row each. " +
-  "ONE call answers 'how is it going'; sessions_answer is for one turn's words.";
+  "Live state for every session you are on — subscriptions, the ones your notes name, and the person's open rail — one bounded row each. " +
+  "NOT to confirm the digest. ONE call answers 'how is it going'; sessions_answer is for one turn's words.";
 
 type FleetRow = {
   id: string;

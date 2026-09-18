@@ -91,6 +91,12 @@ export function mergeAgentRows(existing: readonly AgentRow[], incoming: readonly
  * WHAT `turn_done` IS STILL READ FOR is the two ways a turn can end without
  * one: failed, and stopped.
  *
+ * A FAILED TURN NOW CARRIES ITS REASON IN BOTH FIELDS (#602) — `message` for
+ * this screen and `text` for the one-answer-per-turn reader that has no log to
+ * fold, the voice client among them. This screen still draws only `message`, so
+ * the duplication costs nothing here and buys the other reader a sentence where
+ * it used to get silence.
+ *
  * `turn_started` IS NOT DRAWN. It carries nothing a reader needs that the user
  * message above it does not already say, and a marker per turn would be noise
  * in a conversation that is mostly one exchange.

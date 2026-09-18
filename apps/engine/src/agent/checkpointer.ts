@@ -38,10 +38,20 @@
  *    binds `parent_checkpoint_id` as `undefined` for a thread's first
  *    checkpoint. `bind` maps it to NULL, which is what the column means and
  *    what the row reads back as.
+ *
+ * ── THE ONE SQL OF OUR OWN, AND WHERE IT LIVES ──────────────────────────────
+ * The split above held exactly until #599, which is the one thing the saver
+ * does not do: it never deletes a checkpoint, so 993 full snapshots of one
+ * conversation had accumulated into 1.53 GB. Retention is therefore ours, and
+ * it is kept in `./retention.ts` — whose header traces which reads actually
+ * touch an older row — rather than in here, so this file stays about the driver
+ * and the DELETE stays in one reviewable place. `RetainingSqliteSaver` below is
+ * the whole of the wiring: one override, calling one function.
  */
 import { createRequire } from "node:module";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
+import { CHECKPOINTS_KEPT, pruneCheckpoints, reclaimFreeSpace } from "./retention";
 
 type Bindable = string | number | bigint | null | Uint8Array;
 
@@ -122,6 +132,48 @@ class SqliteDriverAdapter {
   }
 }
 
+/**
+ * THE SAVER, PLUS THE ONE THING IT DOES NOT DO — see `./retention.ts`.
+ *
+ * ── WHY ON EVERY `put` AND NOT ONLY ON OPEN ─────────────────────────────────
+ * On open was the obvious cheap answer and it is not enough on its own. A
+ * superstep is a checkpoint, a turn is a dozen supersteps and one turn on the
+ * owner's thread ran 312 of them: a daemon that pruned only at startup would
+ * still write 450 MB of snapshots between two restarts, and the file would
+ * still only ever grow. Pruning where the row is written is what makes the
+ * store's size a function of the CONVERSATION rather than of the laps.
+ *
+ * ── AND WHY THAT IS SAFE HERE ───────────────────────────────────────────────
+ * The row `put` has just written is by definition the newest, so it is the one
+ * the prune keeps, and the `putWrites` that follows targets the same id. There
+ * is no window in which the loop holds a checkpoint this could delete
+ * underneath it.
+ *
+ * A FAILED PRUNE IS NOT A FAILED TURN. The checkpoint is already committed by
+ * the time this runs; a delete that could not complete leaves a larger file and
+ * nothing else, and turning that into a throw would let a disk-space problem
+ * end a conversation.
+ */
+class RetainingSqliteSaver extends SqliteSaver {
+  constructor(
+    adapter: SqliteDriverAdapter,
+    private readonly native: NativeDatabase,
+    private readonly keep: number,
+  ) {
+    super(adapter as never);
+  }
+
+  override async put(...args: Parameters<SqliteSaver["put"]>): Promise<ReturnType<SqliteSaver["put"]> extends Promise<infer T> ? T : never> {
+    const written = await super.put(...args);
+    try {
+      pruneCheckpoints(this.native, { keep: this.keep });
+    } catch {
+      // See the header: the conversation is already durable at this point.
+    }
+    return written;
+  }
+}
+
 /** Open the file with whichever sqlite this runtime has. */
 function openNative(file: string): NativeDatabase {
   const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite") as {
@@ -153,11 +205,37 @@ export type OpenedCheckpointer = {
  * about a restart passes. It is not a fallback: a caller that asked for a file
  * and got memory would report a thread as durable when it is not, which is the
  * one failure this module cannot afford.
+ *
+ * OPENING PRUNES — see `./retention.ts` and the comment in the body. `keep` is
+ * there so a test can widen the window without reaching past this function; the
+ * default is the one the engine ships.
  */
-export function openAgentCheckpointer(file: string): OpenedCheckpointer {
+export function openAgentCheckpointer(file: string, options: { keep?: number } = {}): OpenedCheckpointer {
   const db = openNative(file);
   const adapter = new SqliteDriverAdapter(db);
-  const saver = new SqliteSaver(adapter as never);
+  /**
+   * PRUNED ON OPEN, BEFORE ANYTHING READS IT — #599, and the reason this is not
+   * left to the first `put`.
+   *
+   * A machine upgrading into this build already has the 1.53 GB. Nothing would
+   * touch it until its owner spoke to the Agent, and the free pages would only
+   * be reclaimed if a turn happened to run; doing it here means the file shrinks
+   * on the next daemon start whether or not anybody says anything.
+   *
+   * THE ORDER MATTERS: the delete must land before the free list is measured,
+   * or the rewrite would be skipped on exactly the store that needs it. A fresh
+   * machine has no `checkpoints` table yet — the saver's `setup()` is lazy — so
+   * both calls see nothing to do and cost one `sqlite_master` read.
+   */
+  const keep = options.keep ?? CHECKPOINTS_KEPT;
+  try {
+    pruneCheckpoints(db, { keep });
+    reclaimFreeSpace(db);
+  } catch {
+    // A store that will not prune is still a store the Agent can converse on,
+    // and refusing to open it would cost the conversation to save the disk.
+  }
+  const saver = new RetainingSqliteSaver(adapter, db, keep);
   let closed = false;
   return {
     saver,
