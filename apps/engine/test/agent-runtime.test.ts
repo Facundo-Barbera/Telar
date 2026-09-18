@@ -43,6 +43,10 @@ type Step = {
   /** What this lap reports back as `usage_metadata`. Omitted on purpose by the
    *  steps that test a provider which reports nothing. */
   usage?: { input: number; output: number };
+  /** What this lap throws INSTEAD of answering — the shape #602 measured, where
+   *  a provider refuses the prompt and the turn never produces a word. A
+   *  property rather than a value so a step can throw something falsy. */
+  throws?: { error: unknown };
 };
 
 class ScriptedChatModel extends BaseChatModel {
@@ -74,6 +78,9 @@ class ScriptedChatModel extends BaseChatModel {
     this.boundLaps.push(bound);
     const step = this.script[this.index] ?? { text: "nothing left to say" };
     this.index += 1;
+    // AFTER the counter, so a throwing lap still counts as a lap — which is what
+    // `turn_done.laps` reported for the failures #602 measured.
+    if (step.throws) throw step.throws.error;
     const message = new AIMessage({
       content: step.text ?? "",
       // A MODEL WITH NO TOOLS BOUND CANNOT CALL ONE. The scripted model honours
@@ -760,6 +767,94 @@ test("the turns a fold cost ride the same reading the meter does", async () => {
   // pages and on the state it polls — one reading, two readers.
   expect(done.detail.folded).toBe(1);
   expect(agent.state().lastUsage).toMatchObject({ runId: done.runId, folded: 1 });
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * A turn that fails says so — #602.
+ *
+ * Seven of 119 turns on the dogfood Mac ended `failed`, five of them without
+ * reaching the model. What must not drift is that a failure is EVIDENCE: the
+ * provider's own sentence on the row a person pages, never an empty status
+ * somebody has to go and diagnose from a daemon log that has since rotated.
+ * ------------------------------------------------------------------ */
+
+/** The 400 that killed three consecutive turns on 2026-09-17, verbatim. */
+const PROVIDER_400 =
+  "400 Error from provider (Console Go): Upstream request failed: [invalid_request_error] An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'.";
+
+test("a turn whose model call throws records the reason, and says it as the turn's answer", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ throws: { error: new Error(PROVIDER_400) } }], wall(landed));
+  const events: AgentStreamEvent[] = [];
+  const stop = agent.watch((event) => events.push(event));
+
+  const { runId } = agent.submit({ text: "Hola, ¿cómo estás?" });
+  await until(() => agent.state().runId === undefined, "the failed turn");
+  stop();
+
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.kind).toBe("turn_done");
+  expect(done.detail.status).toBe("failed");
+  // PERSISTED, NOT ONLY LOGGED. This row is the whole diagnosis a week later.
+  expect(done.detail.message).toBe(PROVIDER_400);
+  // AND READABLE BY THE OTHER READER — the one that takes one answer per turn
+  // off `text` and never folds the log. Silence there is what the person heard.
+  expect(done.detail.text).toBe(PROVIDER_400);
+  // It died on its first call: a lap was spent, nothing was bought, nothing said.
+  expect(done.detail.laps).toBe(1);
+  expect(done.detail.usage).toBeUndefined();
+  expect(kinds(agent)).toEqual(["user_message", "turn_started", "turn_done"]);
+
+  // AND IT RIDES THE STREAM, so a cockpit watching the turn is told rather than
+  // left drawing a spinner until it next polls.
+  const pushed = events.find((event) => event.type === "row" && event.row.kind === "turn_done");
+  expect(pushed).toBeDefined();
+  expect((pushed as { row: { runId: string; detail: Record<string, unknown> } }).row.runId).toBe(runId);
+  agent.close();
+});
+
+test("a turn cannot end failed with nothing to show for it, whatever was thrown", async () => {
+  // THE INVARIANT, on the three shapes that used to produce an empty sentence:
+  // an Error nobody gave a message, a bare string, and a thrown non-Error.
+  const thrown: unknown[] = [new Error(""), "", { code: 500 }];
+  for (const error of thrown) {
+    const landed: Landed[] = [];
+    const { agent } = runtime([{ throws: { error } }], wall(landed));
+    agent.submit({ text: "¿Estás ahí?" });
+    await until(() => agent.state().runId === undefined, "the failed turn");
+
+    const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+    expect(done.detail.status).toBe("failed");
+    // Neither usage nor an answer — so the reason is the ONLY thing this turn
+    // can give the person, and it is never blank.
+    expect(done.detail.usage).toBeUndefined();
+    expect(String(done.detail.message ?? "").trim().length).toBeGreaterThan(0);
+    expect(String(done.detail.text ?? "").trim().length).toBeGreaterThan(0);
+    agent.close();
+  }
+});
+
+test("a turn that spoke before it fell over keeps its own words and still reports the fault", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { text: "let me look.", toolCalls: [{ id: "call_1", name: "sessions_list", args: {}, type: "tool_call" }], usage: { input: 900, output: 20 } },
+      { throws: { error: new Error("Streaming response failed: [500] EngineCore encountered an issue.") } },
+    ],
+    wall(landed),
+  );
+  agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the failed turn");
+
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.detail.status).toBe("failed");
+  expect(done.detail.message).toContain("EngineCore");
+  // THE SENTENCE IT DID SAY IS STILL ITS OWN ROW, so the transcript reads as the
+  // conversation that happened: it narrated, it acted, and then it fell over.
+  expect(kinds(agent)).toEqual(["user_message", "turn_started", "assistant_message", "tool_call", "turn_done"]);
+  // And the first lap's tokens were bought, so the meter reports them.
+  expect(done.detail.usage).toEqual({ input: 900, output: 20, total: 920 });
   agent.close();
 });
 

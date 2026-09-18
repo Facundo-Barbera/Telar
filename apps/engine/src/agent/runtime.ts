@@ -140,6 +140,40 @@ const MAX_LAPS = 12;
 const OUT_OF_LAPS =
   "You are out of tool calls for this turn. Answer with what you have and say what you did not get to.";
 
+/**
+ * WHAT A FAILED TURN SAYS WHEN THE ERROR SAID NOTHING (#602).
+ *
+ * Measured over 119 turns on the dogfood Mac: seven ended `failed`, five of them
+ * without reaching the model at all. Every one of those did carry a reason — but
+ * `error.message` is free to be the empty string (`new Error()`, a thrown
+ * `undefined`, a rejection carrying a bare object), and an empty reason is the
+ * one outcome this issue exists to forbid. A person who is told nothing re-asks
+ * and pays for the same turn again, so "failed, and I cannot say why" has to be
+ * a SENTENCE rather than an absent field.
+ */
+const TURN_FAILED_WITHOUT_REASON = "The turn failed before it could answer, and the error carried no message.";
+
+/**
+ * A THROWN ANYTHING, AS THE ONE LINE A PERSON READS.
+ *
+ * NEVER EMPTY, which is the whole point — see `TURN_FAILED_WITHOUT_REASON`. The
+ * ladder is "what was said", then "what kind of thing it was", then the
+ * sentence: an `AbortError` with no message is worth more as its own name than
+ * as the generic line, and `String({})` is worth less than either.
+ */
+function failureReason(error: unknown): string {
+  const said = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+  if (error instanceof Error) {
+    const name = said(error.name);
+    return said(error.message) || (name && name !== "Error" ? name : "") || TURN_FAILED_WITHOUT_REASON;
+  }
+  if (typeof error === "object" && error !== null) {
+    const carried = said((error as { message?: unknown }).message);
+    if (carried) return carried;
+  }
+  return said(error) || TURN_FAILED_WITHOUT_REASON;
+}
+
 /** The ledger's key for one effect. A hash rather than the arguments because a
  *  key is compared and never read, and a `sessions_send` argument is a whole
  *  message. */
@@ -1014,9 +1048,12 @@ export class AgentRuntime {
       try {
         await this.runTurn(next, controller.signal);
       } catch (error) {
+        // A STOP IS NOT A FAULT and carries no reason — the person who pressed
+        // it knows why the turn ended. Everything else owes them the sentence,
+        // and `failureReason` guarantees there is one.
         this.endedRow(next.runId, {
           status: controller.signal.aborted ? "stopped" : "failed",
-          ...(controller.signal.aborted ? {} : { message: error instanceof Error ? error.message : String(error) }),
+          ...(controller.signal.aborted ? {} : { message: failureReason(error) }),
         });
       } finally {
         this.live = undefined;
@@ -1184,6 +1221,7 @@ export class AgentRuntime {
     const laps = spend?.laps ?? 0;
     const row = this.row("turn_done", runId, {
       ...detail,
+      ...this.failureWords(detail),
       ...(usage ? { usage } : {}),
       contextChars,
       budgetChars,
@@ -1218,6 +1256,38 @@ export class AgentRuntime {
     }
     this.pendingDigest = undefined;
     this.digestDelivered = false;
+  }
+
+  /**
+   * A FAILED TURN SAYS SO, TO BOTH READERS OF A `turn_done` ROW (#602).
+   *
+   * ── WHY THIS IS A RULE OF THE ROW AND NOT OF ITS ONE CALLER ─────────────────
+   * The drain's catch is where a failure comes from today, and it already writes
+   * `message`. Putting the guarantee HERE instead makes it a property of the row
+   * rather than of the code path that happened to write it: any future ending
+   * that says `failed` says why, without a second author having to remember.
+   *
+   * ── AND `text`, WHICH IS THE HALF THAT WAS ACTUALLY SILENT ──────────────────
+   * `turn_done` has two readers. One folds the whole log and draws a failure
+   * from `status` + `message` — that is the cockpit's transcript, and it has
+   * always worked. The OTHER wants ONE ANSWER PER TURN and reads
+   * `turn_done.detail.text`; `apps/web/lib/agent/thread.ts` documents that
+   * contract, and the voice client is the reader that lives by it. A failed turn
+   * carried no `text` at all, so to that reader a turn that fell over and a turn
+   * that has not happened are the same thing: nothing. Three of the failures
+   * #602 measured were spoken questions, which is exactly where silence costs
+   * the most.
+   *
+   * SO THE REASON BECOMES THE TURN'S ANSWER when it has no other. Never over the
+   * top of real words — a turn that said something and then fell over keeps what
+   * it said — and the transcript is unaffected, because it never draws
+   * `turn_done.text`.
+   */
+  private failureWords(detail: Record<string, unknown>): Record<string, unknown> {
+    if (detail.status !== "failed") return {};
+    const said = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+    const reason = said(detail.message) || TURN_FAILED_WITHOUT_REASON;
+    return { message: reason, ...(said(detail.text) ? {} : { text: reason }) };
   }
 
   /**
@@ -1423,10 +1493,12 @@ export class AgentRuntime {
        * same rule `main-session/driver.ts` had for its text item: an empty
        * speech bubble in the transcript is worse than none.
        *
-       * `turn_done.detail.text` IS UNCHANGED, deliberately. It is the turn's
-       * ANSWER — what a list view renders without replaying the thread — and
-       * the final assistant row is the same words in the conversation. Two
-       * readers, two shapes, one of them keyed by run.
+       * `turn_done.detail.text` IS UNCHANGED BY THIS ROW, deliberately. It is
+       * the turn's ANSWER — what a list view renders without replaying the
+       * thread — and the final assistant row is the same words in the
+       * conversation. Two readers, two shapes, one of them keyed by run. (The
+       * one turn whose `text` is not an assistant's words is a FAILED one, which
+       * has none and says why instead — see `failureWords`.)
        */
       const said = assistantText(answer.content);
       if (said.trim()) this.row("assistant_message", context.runId, { text: said, itemId: answer.id ?? context.runId });
