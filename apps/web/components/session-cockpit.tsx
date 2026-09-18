@@ -268,6 +268,14 @@ function usePanelPresence(open: boolean, durationMs = 200): { mounted: boolean; 
  * NO BOTTOM BORDER, and a translucent blurred ground instead. The transcript
  * scrolls UNDER this bar; a hard rule would cut the column, where
  * `bg-background/65 backdrop-blur` lets the text approach and dissolve.
+ *
+ * NOT ON THE SOLO ROUTE, WHICH IS WHY THIS TAKES NO `solo` PROP (#576). The
+ * headset's plate carries a transcript, a composer and nothing that spans the
+ * top of the window — so the bar is not rendered there at all, rather than
+ * rendered thinner or emptier. `SoloTools` below carries the two controls that
+ * survived it; everything else here — the breadcrumb out to the canvas, the
+ * title, the rename and the action menu — is gone from that route by decision,
+ * not by oversight. A conversation a headset cannot leave is the point of it.
  */
 function SessionMasthead({
   projectId,
@@ -279,7 +287,6 @@ function SessionMasthead({
   panel,
   onWatchRun,
   menu,
-  solo = false,
 }: {
   /** Absent for a conversation that belongs to no project (#526) — the
    *  breadcrumb then names Telar rather than linking into a project that is
@@ -318,10 +325,6 @@ function SessionMasthead({
    * menu, no chevron and no right-click.
    */
   menu?: Omit<SessionActionMenuState, "actions"> & { actions: Omit<SessionActionHandlers, "rename"> };
-  /** On the solo route there is no rail to restore, so the restore trigger is
-   *  not offered: a button that reopens a sidebar this route never renders is
-   *  the kind of control that looks broken rather than absent (#576). */
-  solo?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -336,11 +339,7 @@ function SessionMasthead({
    */
   const title = session?.title ?? "New conversation";
   // Whether this header is the window's left edge — see main-sidebar-trigger.
-  // ON THE SOLO ROUTE IT ALWAYS IS. No rail is rendered there, whatever the
-  // shared provider still remembers about one being open — and asking the
-  // provider would leave the breadcrumb under the traffic lights.
-  const railHidden = useMainIsLeftmost();
-  const mainIsLeftmost = solo || railHidden;
+  const mainIsLeftmost = useMainIsLeftmost();
 
   const commit = () => {
     setEditing(false);
@@ -418,10 +417,8 @@ function SessionMasthead({
         <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 text-sm">
           {/* Only mounts while the rail is hidden, leaving the workspace at true
               full width when it is not. The folder glyph stands in for it so the
-              breadcrumb does not shift sideways when the rail opens.
-              NEITHER ON THE SOLO ROUTE: there is no rail to restore, and the
-              glyph only exists to hold the place one would take. */}
-          {!solo && <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />}
+              breadcrumb does not shift sideways when the rail opens. */}
+          <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />
           {/* The breadcrumb names the PROJECT, so pressing it lands in that
               project — on its canvas, which is what "this project, right now"
               looks like. It pointed at the retired `/projects` table, which named
@@ -566,6 +563,64 @@ function SessionMasthead({
         {panel}
       </div>
     </header>
+  );
+}
+
+/**
+ * THE TWO CONTROLS THAT OUTLIVED THE MASTHEAD, on the solo route only (#576).
+ *
+ * The bar is gone from the headset's plate; these are not, and the reason is
+ * the same for both: each is THE LAST DOOR to something the route still needs.
+ *
+ *  - NOTES. `WorkspaceInspector` is the only place in the whole app a note can
+ *    be WRITTEN — `ProjectNoteEditor` has no other mount site. The composer's
+ *    `@` menu reads the same notebook, so dropping this would have left the
+ *    headset able to quote notes and unable to write one, which is a worse
+ *    screen than either having it or not.
+ *  - RUN. `RunHeaderControl` likewise has no second mount site: setup, start
+ *    and stop live here or nowhere. Only "Watch output" went, because watching
+ *    happens in a right panel this route does not have.
+ *
+ * IT COSTS THE TRANSCRIPT NO HEIGHT, which is the whole reason the route
+ * exists. A zero-height flex child (`h-0`) holds an absolutely-positioned
+ * cluster, so the column lays out exactly as if nothing were here and the
+ * conversation still starts at the top of the plate.
+ *
+ * IT DOES NOT SIT OVER THE WORDS EITHER. The transcript is centred at
+ * `max-w-[50rem]`, so on the 1100px plate this route is built for there is
+ * ~150px of gutter each side; two `size-7` buttons and their inset come to
+ * ~76px, and the cluster lives in that gutter rather than on the text.
+ */
+function SoloTools({
+  projectId,
+  hostId,
+  session,
+}: {
+  /** The route's project. `session.projectId` wins once the record lands — same
+   *  precedence the masthead's own inspector used. */
+  projectId?: string;
+  hostId: string;
+  session?: Session;
+}) {
+  const notesProjectId = session?.projectId ?? projectId;
+  /** A run is a process in a directory, so a conversation with neither offers
+   *  none — the same rule the masthead stated, kept rather than restated. */
+  const runnable = session !== undefined && workspacePath(session.workspace) !== undefined;
+  // Nothing to carry: no empty box, no stray inset over the first turn.
+  if (notesProjectId === undefined && !runnable) return null;
+  return (
+    <div className="relative z-20 h-0 shrink-0">
+      {/* `app-no-drag` for the same reason the masthead's cluster had it: these
+          are controls, and on the desktop shell the region they sit in is the
+          window's own titlebar band. */}
+      <div className="app-no-drag absolute right-3 top-3 flex items-center gap-2">
+        {/* KEYED BY HOST AND SESSION, as in the masthead: a different machine is
+            a different mount, so no answer or poll from the previous one can
+            reach this one. No `onWatchOutput` — there is nowhere to watch. */}
+        {runnable && <RunHeaderControl key={`${hostId}:${session.id}`} sessionId={session.id} hostId={hostId} />}
+        {notesProjectId !== undefined && <WorkspaceInspector projectId={notesProjectId} />}
+      </div>
+    </div>
   );
 }
 
@@ -1232,6 +1287,15 @@ export function SessionCockpit({
    * shell's to skip (`isSoloRoute` in app-shell.tsx); the panel is this
    * component's own, and this prop is the only thing that differs from the
    * ordinary session page.
+   *
+   * AND NEITHER IS THE MASTHEAD. It survived the first pass on judgement and
+   * the owner has since ruled the other way: a transcript and a composer, plus
+   * the tools they need. The bar is not rendered, and the two controls that had
+   * no second door anywhere in the app — writing a note, starting and stopping
+   * a run — are rehomed into the conversation column as `SoloTools`. The
+   * breadcrumb, the title, the rename and the session action menu are gone
+   * from this route outright: a headset does not rename a conversation, and
+   * having no way out of it is wanted rather than tolerated.
    *
    * SO EVERY GESTURE THAT WOULD OPEN THE PANEL IS WITHDRAWN RATHER THAN
    * NEUTERED. A file chip, a diff, a sub-agent chip and the panel's own toggle
@@ -3513,29 +3577,34 @@ export function SessionCockpit({
           of the row, right at the panel's edge. Unpaint it there; the geometry
           stays, so the panel's `-ml-2` still lands on the row's edge. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-1 md:ring-1 md:ring-sidebar-border md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0">
-        <SessionMasthead
-          projectId={projectId}
-          hostId={hostId}
-          projectName={projectName}
-          projectResolved={projectResolved}
-          session={session}
-          {...(headerMenu ? { menu: headerMenu } : {})}
-          onRename={(next) => void rename(next)}
-          solo={solo}
-          // The masthead's Run control hands monitoring back to the panel
-          // through the same opener every other surface uses — so on the solo
-          // route it offers no "Watch output", because there is nowhere to
-          // watch it. Starting and stopping the run are unaffected.
-          {...(solo ? {} : { onWatchRun: () => showPanelTab("run") })}
-          panel={
-            <>
-              {/* THE CHECKOUT INSPECTOR NEEDS A CHECKOUT. Absent rather than
-                  empty: a panel reporting "no changes" about a repository this
-                  conversation does not have would be answering a question
-                  nobody asked. It stays on the solo route — it is a popover of
-                  its own, not a door into the right panel. */}
-              {(session?.projectId ?? projectId) !== undefined && <WorkspaceInspector projectId={(session?.projectId ?? projectId)!} />}
-              {!solo && (
+        {/* THE MASTHEAD IS NOT RENDERED ON THE SOLO ROUTE — not emptied, not
+            hidden, not collapsed to nothing (#576). The bar and everything it
+            carried that belongs to a cockpit rather than to a conversation —
+            the breadcrumb out to the project canvas, the title, the rename,
+            the action menu, the rail's restore trigger, Open-in-Finder — is
+            absent from the tree there. `SoloTools` carries the two that had no
+            second door, and nothing else crosses over. */}
+        {solo ? (
+          <SoloTools projectId={projectId} hostId={hostId} session={session} />
+        ) : (
+          <SessionMasthead
+            projectId={projectId}
+            hostId={hostId}
+            projectName={projectName}
+            projectResolved={projectResolved}
+            session={session}
+            {...(headerMenu ? { menu: headerMenu } : {})}
+            onRename={(next) => void rename(next)}
+            // The masthead's Run control hands monitoring back to the panel
+            // through the same opener every other surface uses.
+            onWatchRun={() => showPanelTab("run")}
+            panel={
+              <>
+                {/* THE CHECKOUT INSPECTOR NEEDS A CHECKOUT. Absent rather than
+                    empty: a panel reporting "no changes" about a repository this
+                    conversation does not have would be answering a question
+                    nobody asked. */}
+                {(session?.projectId ?? projectId) !== undefined && <WorkspaceInspector projectId={(session?.projectId ?? projectId)!} />}
                 <RailToggle
                   open={panel.open}
                   onToggle={() => {
@@ -3543,10 +3612,10 @@ export function SessionCockpit({
                     updatePanel((current) => ({ ...current, open: true }));
                   }}
                 />
-              )}
-            </>
-          }
-        />
+              </>
+            }
+          />
+        )}
         {/* `display: contents` — a click boundary, never a layout box. */}
         <div className="contents" onClickCapture={onConversationClick}>
         <ConversationViewport className="min-w-0 flex-1" conversation={syncKey} landed={transcriptLanded} followRef={follow}>

@@ -204,6 +204,20 @@ const panelToggle = () => host!.querySelector<HTMLButtonElement>('[aria-label="O
 const composer = () => host!.querySelector<HTMLElement>('[data-slot="composer-editor"]');
 const button = (label: string) => [...host!.querySelectorAll("button")].find((element) => element.textContent?.trim() === label);
 
+/** THE BAR ITSELF. The cockpit's column contains exactly one `<header>` and it
+ *  is the masthead, so this is the whole bar rather than a piece of it. */
+const masthead = () => host!.querySelector("header");
+/** The title's menu chevron — the door to rename, settle and delete. */
+const sessionActions = () => host!.querySelector('[aria-label="Session actions"]');
+/** The breadcrumb's link out to the project canvas (`canvasHref`). */
+const canvasLink = () => host!.querySelector('a[href="/projects/project_1/sessions/new"]');
+/** The Notes popover's trigger — `WorkspaceInspector`, which is the only place
+ *  in the app a note can be written. */
+const notes = () => host!.querySelector('[aria-label="Notes"]');
+/** The run control. Its label names the state it is in — "Run this project",
+ *  "Run — set up a configuration", "Run: …" — so it is matched by the stem. */
+const runControl = () => host!.querySelector('[aria-label^="Run"]');
+
 async function press(element: HTMLElement) {
   act(() => {
     element.click();
@@ -292,6 +306,61 @@ describe("the solo route", () => {
   });
 });
 
+/**
+ * THE MASTHEAD, AND THE TWO CONTROLS THAT OUTLIVED IT.
+ *
+ * #576 shipped the solo route with the bar still on it and said so — the one
+ * place its author used judgement instead of instruction. The owner has ruled
+ * the other way: transcript and composer, plus the tools they need.
+ *
+ * SO THE BAR IS ABSENT FROM THE TREE, asserted as absence rather than as
+ * invisibility, for the same reason the rail is: a collapsed rail was refused
+ * at #576 precisely because it stayed mounted and in the layout, and a masthead
+ * that renders empty would be the same refusal a second time.
+ *
+ * AND THE TWO SURVIVORS ARE REALLY THERE. Notes and Run each had exactly one
+ * mount site in the app and it was inside this bar, so deleting it without
+ * rehoming them would have made the headset unable to write a note or start a
+ * run at all. Absence is asserted on the things that went; PRESENCE is asserted
+ * on these, because "not rendered" would be the bug here.
+ */
+describe("the solo route carries no masthead", () => {
+  test("the bar and everything cockpit-shaped in it is absent from the tree", async () => {
+    wire("session_solo_7");
+    await show("session_solo_7", { solo: true });
+    // The conversation is still the thing on screen — this is a removal, not a
+    // blank page.
+    expect(host!.textContent).toContain(ANSWER);
+
+    expect(masthead()).toBeNull();
+    // The title, its menu and the rename that hangs off it.
+    expect(sessionActions()).toBeNull();
+    expect(host!.textContent).not.toContain("a conversation on its own");
+    // The one link out of the route. Having none is the point of the route.
+    expect(canvasLink()).toBeNull();
+  });
+
+  test("but Notes and Run are rehomed, not dropped — each is the last door to itself", async () => {
+    wire("session_solo_8");
+    await show("session_solo_8", { solo: true });
+    expect(masthead()).toBeNull();
+    // `WorkspaceInspector`: the only place a note can be written anywhere in
+    // the app. The composer's `@` reads the same notebook and cannot write one.
+    expect(notes()).not.toBeNull();
+    // `RunHeaderControl`: setup, start and stop live here or nowhere.
+    expect(runControl()).not.toBeNull();
+  });
+
+  test("the host-scoped address drops it too", async () => {
+    wire("session_solo_9");
+    await show("session_solo_9", { solo: true, hostId: "mac-2" });
+    expect(host!.textContent).toContain(ANSWER);
+    expect(masthead()).toBeNull();
+    expect(sessionActions()).toBeNull();
+    expect(notes()).not.toBeNull();
+  });
+});
+
 describe("the ordinary session route — this must not leak", () => {
   test("still offers the panel, and still mounts it when asked", async () => {
     wire("session_solo_6");
@@ -303,5 +372,18 @@ describe("the ordinary session route — this must not leak", () => {
 
     await press(toggle!);
     expect(panel()).not.toBeNull();
+  });
+
+  test("still wears its masthead, with the title, the menu and the way back", async () => {
+    wire("session_solo_10");
+    await show("session_solo_10", { solo: false });
+    expect(masthead()).not.toBeNull();
+    expect(host!.textContent).toContain("a conversation on its own");
+    expect(sessionActions()).not.toBeNull();
+    expect(canvasLink()).not.toBeNull();
+    // And the two that moved are still in the bar here, not duplicated out of it.
+    expect(notes()).not.toBeNull();
+    expect(masthead()!.contains(notes()!)).toBe(true);
+    expect(masthead()!.contains(runControl()!)).toBe(true);
   });
 });
