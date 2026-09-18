@@ -46,8 +46,13 @@ test("a routine report never steers an already running coordinator", () => {
  * coordinator's one-shot subscription AND suppress the run's `turn_completed`,
  * so the errand never closed: the coordinator sat holding an interim answer,
  * waiting for an end that had been thrown away twice over.
+ *
+ * #590 FOLDED THE ROW, NOT THE FACT. The completion now rides the result still
+ * waiting in the queue instead of queueing a second turn beside it — one row,
+ * both facts, and the assertions below are about the second of them surviving,
+ * which is the whole of what #240 protects.
  */
-test("an interim result does not spend the one-shot, and the completion that follows still wakes", () => {
+test("an interim result does not spend the one-shot, and the completion that follows still lands", () => {
   const { store, proof } = setup();
   store.subscribe("session_host", { targetSessionId: "session_worker", once: true });
   const input = { runId: "run_result", input: "finished", intent: "result" as const };
@@ -57,11 +62,17 @@ test("an interim result does not spend the one-shot, and the completion that fol
   expect(store.subscriptionsFor("session_host")).toHaveLength(1);
   expect(store.submitAgentTurn("session_host", input, proof).replayed).toBe(true);
   store.completeTurn("session_worker", "run_source", proof.claimToken, { text: "finished" });
-  // BOTH facts land, in order: what the worker produced, then that its run ended.
+  // BOTH facts land, in order: what the worker produced, then that its run
+  // ended — as one notification the coordinator is handed once.
   const received = store.turns("session_host");
-  expect(received).toHaveLength(2);
+  expect(received).toHaveLength(1);
   expect(received[0]).toMatchObject({ runId: "run_result", agentIntent: "result" });
-  expect(received[1]?.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_worker", runId: "run_source" });
+  const entries = received[0]!.notification!.entries!;
+  expect(entries.map((entry) => entry.kind)).toEqual(["peer_message", "wake"]);
+  expect(entries.at(-1)).toMatchObject({ wakeKind: "turn_completed", sessionId: "session_worker", runId: "run_source" });
+  // And it is SAID, not merely filed: the notice the model reads carries the
+  // ending, or the errand closes in the store and not in the coordinator.
+  expect(received[0]!.notification!.body).toContain("turn run_source completed");
   // The terminal event is what spent it.
   expect(store.subscriptionsFor("session_host")).toHaveLength(0);
 });
@@ -154,5 +165,9 @@ test("persistent monitoring hears the completion too, and keeps its subscription
   store.completeTurn("session_worker", "run_source", proof.claimToken, { text: "finished" });
   // `once: false` is ongoing monitoring by definition — it survives either way.
   expect(store.subscriptionsFor("session_host")).toHaveLength(1);
-  expect(store.turns("session_host")).toHaveLength(2);
+  // ONE row since #590, and it is still told the run ended: the ending merged
+  // into the result the host had not read yet.
+  const received = store.turns("session_host");
+  expect(received).toHaveLength(1);
+  expect(received[0]!.notification!.entries?.at(-1)).toMatchObject({ wakeKind: "turn_completed", runId: "run_source" });
 });

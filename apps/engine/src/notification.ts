@@ -161,6 +161,45 @@ export function mergeNotifications(cohort: NotificationDetail[]): NotificationDe
 }
 
 /**
+ * A RESULT AND THE COMPLETION THAT FOLLOWED IT, AS ONE NOTIFICATION — #590.
+ *
+ * THEY STAY TWO FACTS. A worker sends a result for the part it finished and
+ * keeps working; the engine cannot tell the difference, and a coordinator told
+ * "here is the analysis" still needs "and the run has ended" before it acts.
+ * Suppressing the second is what #240 reverted, and nothing here suppresses it:
+ * it is in `entries`, in the body, and in the row. What two facts about one run
+ * arriving seconds apart do NOT need is two rows and two interruptions.
+ *
+ * THE RESULT LEADS, which is `mergeNotifications`' own rule — "the one a reader
+ * acts on" — rather than an exception to it. The completion says a turn is
+ * over; the result names the call that fetches what was produced. So the
+ * result's body goes over WHOLE rather than being reduced to a summary line: a
+ * merged notice announcing an ending with no way to read what ended would have
+ * cost the reader the very thing it was about.
+ *
+ * MERGED AT MOST ONCE. The caller spends a delivery per merge and the cap
+ * (`MAX_DELIVERIES`) refuses the next, so `lead` here is a notification nobody
+ * has read yet rather than a row growing without bound.
+ */
+export function mergeRunOutcome(lead: NotificationDetail, ended: NotificationDetail): NotificationDetail {
+  const entries = [...(lead.entries ?? [asEntry(lead)]), asEntry(ended)].slice(-MAX_COHORT_ENTRIES);
+  return {
+    ...lead,
+    summary: `${lead.summary} (and ${entries.length - 1} more)`,
+    body: [
+      lead.body,
+      "—",
+      `[and since] ${ended.summary}`,
+      // Said in words because the entry above is a summary line and a model
+      // acting on "the analysis is in" needs to know the run it came from is
+      // finished — that is the fact #240 exists to protect.
+      "That is TWO things about one run, in one notice: the message above, and the fact that the run it came from has since ended. Nothing was withheld and nothing else arrived.",
+    ].join("\n"),
+    entries,
+  };
+}
+
+/**
  * THE TURN'S `input` WHEN THE ENGINE WROTE THE WORDS — #550 clause 4.
  *
  * A wake's and a request's prose is the ENGINE's, so it moves to
