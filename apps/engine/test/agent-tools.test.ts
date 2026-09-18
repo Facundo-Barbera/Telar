@@ -19,6 +19,7 @@ import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/to
 import { agentFleetTools, agentQueryTools, agentToolSpecs, collectAgentTools, type AgentFleetCapability, type AgentQueryCapability, type FleetSessionRow } from "../src/agent/tools";
 import { AGENT_SELF_ID } from "../src/agent/identity";
 import { approvalRequest, classifiedTools, needsApproval, readsOnly } from "../src/agent/approval";
+import { EngineStateError, TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "../src/state";
 import type { NotesCapability } from "../src/notes-tools/tools";
 import type { Session, Turn } from "@telar/engine-client";
 
@@ -284,6 +285,57 @@ test("a refusal from the store comes back as a sentence the model can read", asy
   const answer = await tools.find((tool) => tool.name === "sessions_outline")!.run({ sessionId: "session_gone" });
   expect(answer.isError).toBe(true);
   expect(String((answer.content[0] as { text: string }).text)).toContain("session does not exist");
+});
+
+/**
+ * A REFUSAL THAT READS AS A HINT ABOUT ARGUMENTS COSTS TWO MORE CALLS (#592).
+ *
+ * The measured turn failed `sessions_answer` twice and retried with different
+ * arguments both times, because "turn does not exist" and "this session has no
+ * answered turn" describe the miss and neither closes the door. The second is
+ * the worse of the two: it reads as "pick a different turn" when it means
+ * "there is nothing here at all".
+ */
+test("both sessions_answer misses tell the model to stop rather than to retry", async () => {
+  const miss = async (message: string) => {
+    const tools = collectTools(agentQueryTools as never, {
+      ...noQueries(),
+      answer: async () => {
+        throw new EngineStateError("not_found", message);
+      },
+    } as never);
+    const answered = await tools.find((tool) => tool.name === "sessions_answer")!.run({ sessionId: "session_a" });
+    expect(answered.isError).toBe(true);
+    return String((answered.content[0] as { text: string }).text);
+  };
+
+  // NOTHING HERE AT ALL — and it must not read as an invitation to name a turn.
+  const none = await miss(TURN_ANSWER_NONE);
+  expect(none).toContain("There is nothing here to read");
+  expect(none).toContain("no runId will produce one");
+  expect(none).toContain("do not ask it again");
+  expect(none).not.toContain("has no answered turn");
+
+  // A runId THAT IS NOT THERE — the retry to shut down is the guess, so the one
+  // move that is not a guess is named.
+  const wrong = await miss(TURN_ANSWER_NO_SUCH_RUN);
+  expect(wrong).toContain("Do not guess another");
+  expect(wrong).toContain("omit runId");
+  expect(wrong).toContain("sessions_outline");
+
+  // Both still say WHICH session missed: a batch of reads needs pairing.
+  for (const sentence of [none, wrong]) expect(sentence).toContain("session_a");
+});
+
+test("a store failure that is not one of the two misses is passed through unchanged", async () => {
+  const tools = collectTools(agentQueryTools as never, {
+    ...noQueries(),
+    answer: async () => {
+      throw new Error("the database is locked");
+    },
+  } as never);
+  const answered = await tools.find((tool) => tool.name === "sessions_answer")!.run({ sessionId: "session_a" });
+  expect(String((answered.content[0] as { text: string }).text)).toContain("the database is locked");
 });
 
 /* ------------------------------------------------------------------ *

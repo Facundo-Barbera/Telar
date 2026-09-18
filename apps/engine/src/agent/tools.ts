@@ -48,6 +48,7 @@ import { collectTools, toolInputSchema, type SocketTool } from "../mcp-socket";
 import { notesTools, PREVIEW_CHARS, type NotesCapability } from "../notes-tools/tools";
 import { sessionsTools, type SessionsCapability } from "../sessions-tools/tools";
 import { err, failure, json, type ToolFactory } from "../tool-kit";
+import { TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "../state";
 import { SECTION_CHARS, STANDING_SECTION_KEYS, type StandingSection } from "./memory";
 import type { AgentRecallHit } from "./thread-log";
 import { head } from "../turn-summary";
@@ -106,6 +107,35 @@ const OUTLINE =
 
 const ANSWER =
   "What one turn concluded — the answer alone, without its events. Defaults to the latest turn that said something.";
+
+/**
+ * WHEN THERE IS NOTHING TO READ, SAY SO IN A SENTENCE THAT CLOSES (#592).
+ *
+ * ── WHAT THE OLD ONES DID ───────────────────────────────────────────────────
+ * The measured turn's two failures read `…: turn does not exist` and `…: this
+ * session has no answered turn`. Both DESCRIBE the miss and neither CLOSES the
+ * door, so the model tried again with different arguments — and the second is
+ * the worse of the two, because "has no answered turn" reads as "pick a
+ * different turn" when the true meaning is "there is nothing here, stop
+ * asking". A refusal a model reads as a hint about arguments is a refusal that
+ * costs two more calls.
+ *
+ * ── THE SHAPE, WHICH IS `DECLINED_ANSWER`'S ─────────────────────────────────
+ * Name the fact, shut the retry down in as many words, and point at the one
+ * move that is not a retry. `approval.ts` argues that shape for a declined
+ * call; this is the same problem with the person taken out of it.
+ *
+ * ── AND WHY THE CLOSING HALF IS HERE RATHER THAN AT THE THROW ───────────────
+ * The store's sentences are served to an HTTP client too, and "do not guess
+ * another runId" is advice to a language model. So the store states the fact
+ * and the TOOL — whose only reader is a model — says what to do about it.
+ */
+const ANSWER_MISSES: Readonly<Record<string, string>> = {
+  [TURN_ANSWER_NONE]:
+    "this session has never left an answer. There is nothing here to read and no runId will produce one, so do not ask it again — sessions_status says what it is doing, sessions_outline what its turns were.",
+  [TURN_ANSWER_NO_SUCH_RUN]:
+    "no turn with that runId is in this session. Do not guess another — omit runId for the latest turn that said something, or sessions_outline to see which turns there are.",
+};
 
 export function agentQueryTools(tool: ToolFactory, capability: AgentQueryCapability): unknown[] {
   return [
@@ -182,7 +212,8 @@ export function agentQueryTools(tool: ToolFactory, capability: AgentQueryCapabil
             }),
           );
         } catch (error) {
-          return err(`Could not read the answer from "${sessionId}": ${failure(error)}`);
+          const said = failure(error);
+          return err(`Could not read the answer from "${sessionId}": ${ANSWER_MISSES[said] ?? said}`);
         }
       },
     ),
