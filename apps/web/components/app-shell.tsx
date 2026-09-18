@@ -40,6 +40,26 @@ function isSettingsRoute(pathname: string): boolean {
 }
 
 /**
+ * A CONVERSATION ON ITS OWN CARRIES NO APP RAIL EITHER (#576).
+ *
+ * The headset opens this address in a second WebView to render one transcript,
+ * and a rail there is not merely unwanted chrome: it is the largest chunk in
+ * the app, fetched into a device that is already simulating a room and running
+ * other browsers. COLLAPSING IT IS NOT ENOUGH, which is why this is a path and
+ * not a `?solo=1` — a collapsed rail is still mounted, still in the layout and
+ * still downloaded. Skipped through the same `dynamic()` import the settings
+ * routes skip it through, so a solo route never asks for the chunk at all.
+ *
+ * Both families, because a session on a paired Mac is the same screen at an
+ * address that names the Mac:
+ *   /projects/:projectId/sessions/:sessionId/solo
+ *   /hosts/:hostId/projects/:projectId/sessions/:sessionId/solo
+ */
+function isSoloRoute(pathname: string): boolean {
+  return /^(?:\/hosts\/[^/]+)?\/projects\/[^/]+\/sessions\/[^/]+\/solo\/?$/.test(pathname);
+}
+
+/**
  * The product shell: a resizable rail and the inset it frames, BOTH AS
  * ISLANDS. The wrapper is the ground (`bg-sidebar`); the rail is the
  * primitive's `floating` variant (an 8px-padded, ring-bordered card), and the
@@ -59,6 +79,10 @@ function isSettingsRoute(pathname: string): boolean {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const settings = isSettingsRoute(pathname);
+  /** The routes that draw no app rail. ONE FLAG FOR BOTH, so "this route has no
+   *  rail" stays a single mechanism — the rail is skipped and the inset takes
+   *  its own left margin back, and neither can be arranged without the other. */
+  const railless = settings || isSoloRoute(pathname);
   /**
    * THE CLOCK, FITTED WHERE EVERY ROUTE PASSES (#492).
    *
@@ -99,7 +123,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     // opaque window, transparent under the translucent shell so the body's
     // single wash shows through (globals.css). The islands paint on top of it.
     <SidebarProvider storageKey={APP_SIDEBAR_STORAGE_KEY} className="app-ground bg-sidebar">
-      {!settings && <AppSidebar />}
+      {!railless && <AppSidebar />}
       <SidebarInset
         className={cn(
           "flex h-dvh min-w-0 flex-col",
@@ -120,7 +144,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           // The inset itself must not clip either, or the cards' rings lose
           // their outer edge against the gutter.
           "md:has-[[data-surfaces]]:overflow-visible",
-          settings
+          // WITH NO RAIL THERE IS NO PEER to be collapsed, so the variant below
+          // can never match and the inset would sit flush against the window.
+          railless
             ? "md:ml-[var(--app-island-inset)]"
             : "md:ml-0 md:peer-data-[state=collapsed]:ml-[var(--app-island-inset)]",
         )}
