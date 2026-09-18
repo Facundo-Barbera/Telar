@@ -15,7 +15,7 @@
  * checking rather than trusting, and it HELD — but the thing that makes it
  * matter is one the note does not mention, and only a measurement from the
  * socket could have found it: the bound tool array is serialised BEFORE the
- * messages, so the single largest fixed block in the request (13,993 characters,
+ * messages, so the single largest fixed block in the request (13,953 characters,
  * resent every lap) sits in the stable region by construction.
  *
  * ── IT ASSERTS FROM THE SOCKET, LIKE `agent-model.test.ts` ──────────────────
@@ -295,7 +295,7 @@ test("a `remember` between turns moves the system block and nothing before it", 
    */
   expect(shared).toBeGreaterThan(after.indexOf('"messages"'));
   expect(shared).toBeGreaterThan(after.indexOf(AGENT_BRIEFING.slice(0, 40).replace(/"/g, '\\"')));
-  // Measured at 96.4% of the later prompt. A floor, for the reason above.
+  // Measured at 95.4% of the later prompt. A floor, for the reason above.
   expect(shared / after.length).toBeGreaterThan(0.9);
 });
 
@@ -318,9 +318,15 @@ test("a `remember` between turns moves the system block and nothing before it", 
  * A prefix cache matches from the front and stops at the first byte that
  * differs. Re-expanding a stub does not cost the expanded bytes; it costs EVERY
  * BYTE AFTER THEM. The rewrite lands at the first tool result of the previous
- * turn — measured at byte 17,135 of a 24,082-byte prompt on turn 2, and 24,251
- * of 31,202 on turn 3 — so roughly a quarter of each prompt is downstream of it
+ * turn — measured at byte 17,125 of a 24,072-byte prompt on turn 2, and 24,241
+ * of 31,192 on turn 3 — so roughly a quarter of each prompt is downstream of it
  * and cannot be served from cache no matter how stable everything ahead of it is.
+ *
+ * THE MISSED TAIL IS ROUGHLY CONSTANT while the prompt grows: 6,947 bytes on
+ * turn 2 and 6,951 on turn 3, because what is re-expanded is one turn's worth of
+ * results. So the PROPORTION lost improves as a conversation lengthens (28.9%
+ * then 22.3%) and the absolute waste does not — which is the shape that decides
+ * whether a fix is urgent or tidy.
  *
  * ── WHY IT IS ONLY MEASURED HERE ────────────────────────────────────────────
  * Fixing it changes WHAT THE MODEL CAN READ about earlier turns, which is a
@@ -349,7 +355,7 @@ test("a previous turn's compacted results expand again, rewriting the prompt bac
   const shared = commonPrefix(lastOfFirst, firstOfSecond);
   const missed = firstOfSecond.length - shared;
   // THE DAMAGE IS THE TAIL, not the expansion: everything after the rewrite
-  // point is a cache miss. Measured at 6,947 bytes of a 24,082-byte prompt.
+  // point is a cache miss. Measured at 6,947 bytes of a 24,072-byte prompt.
   expect(missed).toBeGreaterThan(wide.length);
   // And the rewrite lands well INSIDE the prompt rather than at its end, which
   // is what makes it expensive — pinned as a fraction so the assertion survives

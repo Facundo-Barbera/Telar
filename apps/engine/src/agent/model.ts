@@ -195,7 +195,7 @@ function withoutMessageNames(body: BodyInit | null | undefined): BodyInit | null
  * Anthropic caches the prefix UP TO each breakpoint and allows four. The prompt
  * order is tools → system → messages, so:
  *
- *   1. THE LAST TOOL. The bound tool array is 13,993 characters and is resent on
+ *   1. THE LAST TOOL. The bound tool array is 13,953 characters and is resent on
  *      every lap of every turn — by far the largest fixed block. A breakpoint
  *      here is what keeps it cached when the SYSTEM block changes, and the
  *      system block changes on every turn: the standing state is rewritten by
