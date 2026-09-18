@@ -37,7 +37,18 @@
 
 import { useState } from "react";
 import { ArrowUpCircleIcon, ChevronDownIcon, DownloadIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import type { ProviderInstance, ProviderInstanceEnvVar, ProviderProbe } from "@telar/engine-client";
+import {
+  applyClaudeCompaction,
+  claudeCompactionOf,
+  claudeCompactionWindowFor,
+  CLAUDE_COMPACTION_MAX_TOKENS,
+  CLAUDE_COMPACTION_PERCENT_ENV,
+  CLAUDE_COMPACTION_WINDOW_ENV,
+  type ClaudeCompaction,
+  type ProviderInstance,
+  type ProviderInstanceEnvVar,
+  type ProviderProbe,
+} from "@telar/engine-client";
 import { cn } from "@/lib/utils";
 import { displayNameOf, DRIVER_LABEL, isDefaultInstance, providerSummary, STATUS_DOT, STATUS_LABEL, updateAdvisory, versionLabel } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";
@@ -257,6 +268,159 @@ function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange:
         inheriting the variables its provider owns — an ambient <code className="font-mono">ANTHROPIC_API_KEY</code> would
         otherwise move a subscription account onto metered billing without saying so.
       </p>
+    </div>
+  );
+}
+
+/** The three answers, in the order a reader considers them: leave it alone,
+ *  move it, turn it off. */
+const COMPACTION_MODES: { value: ClaudeCompaction["mode"]; label: string }[] = [
+  { value: "default", label: "Default" },
+  { value: "after", label: "Compact after…" },
+  { value: "never", label: "Never compact" },
+];
+
+/**
+ * Where the field starts when somebody picks "Compact after…" on a login that
+ * has never had one.
+ *
+ * NOT AN ARBITRARY ROUND NUMBER: it is the largest round number that still
+ * lands exactly on a 200,000-token model (whose ceiling is 167,000 — see the
+ * clamp note below), so the first thing the field offers is a number that means
+ * the same on every model this login can run.
+ */
+const COMPACTION_SEED = 150_000;
+
+/**
+ * WHAT A TYPED THRESHOLD DOES TO THIS LOGIN'S VARIABLES — the whole of the
+ * field's decision, and the reason it is out here rather than inline.
+ *
+ * THE SPLIT `publishableEnv` ALREADY USES on this same card, and here it is not
+ * merely tidy: reaching this through the input would mean driving React's
+ * controlled-value plumbing, which this app's DOM harness does not manage —
+ * happy-dom's `input` event reaches `onInput` and never `onChange`. Exported,
+ * the rule is pinned by a test and the only thing left uncovered is React's own
+ * event delegation, which is the right place for that line to fall.
+ */
+export function compactionEdit(
+  env: readonly ProviderInstanceEnvVar[],
+  typed: string,
+): { env: ProviderInstanceEnvVar[] } | { refused: string } {
+  // Separators go in on the way out, so they have to come back off on the way
+  // in — a reader who edits "150,000" to "120,000" typed a number, not prose.
+  const wanted = Number(typed.replace(/[^\d]/g, ""));
+  const next = Number.isSafeInteger(wanted) ? applyClaudeCompaction(env, { mode: "after", tokens: wanted }) : null;
+  if (!next) {
+    return {
+      refused: `Between 1 and ${CLAUDE_COMPACTION_MAX_TOKENS.toLocaleString("en-US")} tokens. Past that Claude Code caps its own window and would compact earlier than the number here — which is Never compact with extra steps.`,
+    };
+  }
+  return { env: next };
+}
+
+/**
+ * WHEN THIS LOGIN'S SESSIONS COMPACT THEMSELVES.
+ *
+ * NOT A SETTING OF ITS OWN — a VIEW of three environment variables the list
+ * below already shows. Claude Code's dials ARE those variables, a person could
+ * always have typed them by hand, and a second store beside them would be a
+ * second answer to the same question. So this reads `instance.env` and writes
+ * `instance.env`, and a login somebody configured by hand arrives here already
+ * set.
+ *
+ * WHAT IS TYPED IS A TOKEN COUNT. The CLI's own dial is a percentage of a
+ * window, and the conversion lives in the contract package
+ * (`applyClaudeCompaction`) where the arithmetic is pinned against the CLI's
+ * formula rather than guessed at in a component.
+ *
+ * CLAUDE ONLY — see the call site. Codex compacts on its own terms and reads
+ * none of these.
+ */
+function CompactionField({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange: (next: ProviderInstanceEnvVar[]) => void }) {
+  const stored = claudeCompactionOf(env);
+  const [refused, setRefused] = useState<string | null>(null);
+  const tokens = stored?.mode === "after" ? stored.tokens : undefined;
+
+  const select = (mode: ClaudeCompaction["mode"]): void => {
+    const next =
+      mode === "after" ? applyClaudeCompaction(env, { mode, tokens: tokens ?? COMPACTION_SEED }) : applyClaudeCompaction(env, { mode });
+    if (next) {
+      setRefused(null);
+      onChange(next);
+    }
+  };
+
+  const commit = (typed: string): void => {
+    const edit = compactionEdit(env, typed);
+    if ("refused" in edit) {
+      setRefused(edit.refused);
+      return;
+    }
+    setRefused(null);
+    onChange(edit.env);
+  };
+
+  return (
+    <div>
+      <span className="text-xs font-medium text-foreground">Auto-compaction</span>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Auto-compaction">
+        {COMPACTION_MODES.map((option) => {
+          const on = stored?.mode === option.value;
+          return (
+            <Button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              variant={on ? "secondary" : "ghost"}
+              size="sm"
+              className={cn("h-7 px-2 text-xs", on ? "text-foreground" : "text-muted-foreground")}
+              onClick={() => select(option.value)}
+            >
+              {option.label}
+            </Button>
+          );
+        })}
+        {stored?.mode === "after" && (
+          <span className="flex items-center gap-1.5">
+            <BlurInput
+              // Re-keyed on the STORED number, so an accepted edit reseeds the
+              // draft from what was really kept. A refused one leaves the typed
+              // text alone with the reason under it — Escape is the way back.
+              key={tokens}
+              value={(tokens ?? 0).toLocaleString("en-US")}
+              onCommit={commit}
+              aria-label="Compact after how many tokens"
+              inputMode="numeric"
+              className="h-7 w-28 text-right font-mono text-xs"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <span className="text-2xs text-muted-foreground">tokens</span>
+          </span>
+        )}
+      </div>
+      {refused && <p className="mt-1 text-2xs leading-snug text-destructive">{refused}</p>}
+      {/* THE CLAMP IS THE ONE THING THAT CAN SURPRISE A READER, so it is what
+          the small print says. There is deliberately no "≈ N% of this model's
+          window" line: the conversion pins its own denominator and consults no
+          model, and a provider login has no single model to quote one for —
+          a percentage here would be about a session, not about this page. */}
+      {stored === undefined ? (
+        <p className="mt-1 text-2xs leading-snug text-muted-foreground">
+          Set by hand below. <code className="font-mono">{CLAUDE_COMPACTION_PERCENT_ENV}</code> without{" "}
+          <code className="font-mono">{CLAUDE_COMPACTION_WINDOW_ENV}</code> is a percentage of whichever model a session runs, so there is
+          no token count to show. Picking a state above replaces it.
+        </p>
+      ) : (
+        <p className="mt-1 text-2xs leading-snug text-muted-foreground">
+          {stored.mode === "default"
+            ? "Claude Code decides, which is what every session does today."
+            : stored.mode === "never"
+              ? `Sets DISABLE_AUTO_COMPACT. A session then grows until the model refuses the prompt; /compact by hand still works.`
+              : `Lands on exactly this number for any model with at least ${claudeCompactionWindowFor(stored.tokens).toLocaleString("en-US")} tokens of context. On a smaller one Claude Code clamps to that model's own window and compacts earlier — never later. Written as ${CLAUDE_COMPACTION_WINDOW_ENV} and ${CLAUDE_COMPACTION_PERCENT_ENV} below.`}
+        </p>
+      )}
     </div>
   );
 }
@@ -546,6 +710,15 @@ export function ProviderInstanceCard({
                 set.
               </span>
             </label>
+
+            {/* CLAUDE ONLY, because only Claude Code reads these. Codex has its
+                own compaction and would be given a control that does nothing. */}
+            {instance.driver === "claude" && (
+              // Keyed like the env editor below, and for the same reason: both
+              // are views of `instance.env`, and a save has to reseed them from
+              // what the engine actually kept.
+              <CompactionField key={instance.updatedAt} env={instance.env} onChange={(env) => onPatch({ env })} />
+            )}
 
             <div>
               <span className="text-xs font-medium text-foreground">Environment variables</span>
