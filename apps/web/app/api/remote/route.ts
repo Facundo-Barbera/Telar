@@ -6,6 +6,7 @@ import { addDevice, mintDeviceToken, readRemote, setRequireAuth, setExposure, se
 import { describeDevice, type DeviceIdentity } from "@/lib/remote/identity";
 import { machineName, observeIdentity } from "@/lib/remote/observe";
 import { HOST_TOKEN_ENV, readHostHeader } from "@/lib/remote/host-token";
+import { readServeError } from "@/lib/remote/tailscale-serve";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -61,6 +62,9 @@ export function GET(request: Request) {
       requireAuth: file.requireAuth,
       exposure: file.exposure ?? "local-only",
       tailscaleServe: file.tailscaleServe === true,
+      // Why the ts.net URL is missing, when the launcher tried and failed. A
+      // label the shell classified; the pane owns the wording (#627).
+      tailscaleServeError: readServeError(),
       devices: file.devices.map(({ id, name, createdAt, lastSeenAt, role, platform, identity }) => ({
         id,
         name,

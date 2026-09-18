@@ -573,15 +573,37 @@ function serverBindHost(home) {
  * the reason is logged as a label only (stderr may hold auth keys).
  */
 let tailscaleServeUrl = null;
+/**
+ * AND WHY IT DID NOT PUBLISH, WHERE SOMEBODY WILL SEE IT (#627).
+ *
+ * Both failures below used to end at `console.error` — which is nowhere, for a
+ * person who turned on a setting, restarted as instructed, and got no ts.net
+ * URL. They experience the most common cause (HTTPS certificates off for the
+ * tailnet, a checkbox in someone else's admin console) as "remote access is
+ * broken", with nothing to act on.
+ *
+ * The classification already exists: `tailscale.js` returns a LABEL and never
+ * raw stderr, because stderr can carry `tskey-…` auth keys. So the label rides
+ * to the web child in its environment, beside `TELAR_TAILSCALE_URL` and for the
+ * same reason — the Remote access pane is what has to say it.
+ */
+const TAILSCALE_SERVE_ERROR_ENV = "TELAR_TAILSCALE_SERVE_ERROR";
+let tailscaleServeError = null;
 async function publishTailscaleServe(home, port) {
+  tailscaleServeError = null;
   if (!remoteFile.tailscaleServeRequested(home)) return null;
   const domain = await tailscale.certDomain();
   if (!domain) {
+    // `certDomain` cannot say WHICH of the three it was — it asks `status
+    // --json` and finds no CertDomains — so the label is the honest union of
+    // them, and the pane names all three.
+    tailscaleServeError = "no-cert-domain";
     console.error("[telar-desktop] tailscale serve requested but tailscale is missing, not running, or has HTTPS certificates disabled; skipped.");
     return null;
   }
   const outcome = await tailscale.startServe(port);
   if (outcome !== "none") {
+    tailscaleServeError = outcome;
     console.error(`[telar-desktop] tailscale serve failed (${outcome}); the ts.net endpoint is down.`);
     return null;
   }
@@ -759,6 +781,9 @@ function startServer(port, home) {
       // The ts.net endpoint the Remote access panel lists — present only when
       // `publishTailscaleServe` ran first and succeeded.
       ...(tailscaleServeUrl ? { TELAR_TAILSCALE_URL: tailscaleServeUrl } : {}),
+      // And why it did NOT, when serve was asked for and did not stand. A
+      // classification label only — never stderr, which can carry auth keys.
+      ...(tailscaleServeError ? { [TAILSCALE_SERVE_ERROR_ENV]: tailscaleServeError } : {}),
       // What the gate compares this shell's cookie against (lib/remote/host-token.ts).
       TELAR_HOST_TOKEN: HOST_TOKEN,
       // And what the Remote access panel calls the host row. The shell holds a
