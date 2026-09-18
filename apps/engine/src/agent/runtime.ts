@@ -86,6 +86,7 @@ import { answerOrphanedCalls, compactToolResults, foldOldTurns, minifyToolResult
 import { assistantText } from "./content";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
+import { AgentEraLog, type EraStore } from "./eras";
 import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
 import { clearStanding, preferencesOf, readStanding, rememberSection, renderStanding } from "./memory";
 import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRecallHit, type AgentRow } from "./thread-log";
@@ -432,6 +433,10 @@ export class AgentRuntime {
   /** The wake inbox, on the same handle as the transcript — see `open`. Named
    *  `inboxTable` because `inbox()` is the read method beside it. */
   private inboxTable?: AgentInbox;
+  /** Where the settled half of the fold is kept, on the same handle again — see
+   *  `./eras.ts`. Named for the table rather than `eras` because `eras()` is
+   *  not a read method anybody outside this object wants. */
+  private eraTable?: AgentEraLog;
   private queue: QueuedTurn[] = [];
   private live?: { turn: QueuedTurn; controller: AbortController };
   private pending?: AgentPendingRequest;
@@ -474,17 +479,18 @@ export class AgentRuntime {
    * first turn, the first thread read or the first stream opens it; a machine
    * that never switches the Agent on never has one.
    */
-  private open(): { opened: OpenedCheckpointer; log: AgentThreadLog; inbox: AgentInbox } {
-    if (!this.opened || !this.log || !this.inboxTable) {
+  private open(): { opened: OpenedCheckpointer; log: AgentThreadLog; inbox: AgentInbox; eras: AgentEraLog } {
+    if (!this.opened || !this.log || !this.inboxTable || !this.eraTable) {
       const opened = openAgentCheckpointer(this.paths.threads);
       this.opened = opened;
       this.log = new AgentThreadLog(opened.db);
-      // THE SAME HANDLE, a third table on it. Two connections to one WAL
-      // database would be two things to close before a reset could move it —
-      // see `thread-log.ts`.
+      // THE SAME HANDLE, a third table on it — and now a fourth. Two
+      // connections to one WAL database would be two things to close before a
+      // reset could move it — see `thread-log.ts`.
       this.inboxTable = new AgentInbox(opened.db);
+      this.eraTable = new AgentEraLog(opened.db);
     }
-    return { opened: this.opened, log: this.log, inbox: this.inboxTable };
+    return { opened: this.opened, log: this.log, inbox: this.inboxTable, eras: this.eraTable };
   }
 
   /**
@@ -602,6 +608,7 @@ export class AgentRuntime {
     this.opened = undefined;
     this.log = undefined;
     this.inboxTable = undefined;
+    this.eraTable = undefined;
   }
 
   /**
@@ -1090,6 +1097,8 @@ export class AgentRuntime {
         ...(settings.effort ? { effort: settings.effort } : {}),
       }),
       runId: turn.runId,
+      // ONE PORT PER TURN, because one graph is one turn — see `AgentEraLog.port`.
+      eras: this.open().eras.port(threadId),
       ...(settings.access ? { access: settings.access } : {}),
       // THE ANSWER'S SHAPE, FOR THIS TURN ONLY (#567). It rides the graph
       // because the graph owns the system block, and it is read off the queued
@@ -1249,7 +1258,19 @@ export class AgentRuntime {
    * The graph.
    * -------------------------------------------------------------- */
 
-  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string; access?: AgentSettings["access"]; digest?: string; brief?: boolean }) {
+  private buildGraph(context: {
+    tools: SocketTool[];
+    model: BaseChatModel | undefined;
+    runId: string;
+    access?: AgentSettings["access"];
+    digest?: string;
+    brief?: boolean;
+    /** WHERE THE SETTLED HALF OF THE FOLD IS KEPT (#599) — see `./eras.ts`.
+     *  Scoped to ONE thread and to ONE graph, which is one turn: the port
+     *  memoises its read, so the laps after the first read nothing. Absent on
+     *  `restore`'s graph, which only ever reads state and never folds. */
+    eras?: EraStore;
+  }) {
     const byName = new Map(context.tools.map((tool) => [tool.name, tool]));
     /**
      * THE READS THIS TURN HAS ALREADY PAID FOR — see `memoKey` (#592).
@@ -1367,7 +1388,11 @@ export class AgentRuntime {
       const reservedChars = String(prompt.content).length;
       // 0. ANSWER ANY CALL NOTHING EVER ANSWERED — see `answerOrphanedCalls`.
       //    First, because every step after it groups results under their call.
-      const folded = foldOldTurns(compactToolResults(answerOrphanedCalls(state.messages)), { budgetChars, reservedChars });
+      const folded = foldOldTurns(compactToolResults(answerOrphanedCalls(state.messages)), {
+        budgetChars,
+        reservedChars,
+        ...(context.eras ? { eras: context.eras } : {}),
+      });
       const history = trimAgentHistory(folded.messages, { budgetChars, reservedChars });
       /**
        * THE PROMPT'S SIZE, TAKEN WHERE IT IS DECIDED — the context meter's
