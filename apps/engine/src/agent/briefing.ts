@@ -143,23 +143,140 @@
  * that sessions are peers, that settling is shelving rather than acceptance,
  * and how assignment works. A second copy paid for on every turn would drift
  * from it on the first edit.
+ *
+ * ── AND A SPOKEN TURN IS SENT A SUBSET OF IT (#603) ─────────────────────────
+ *
+ * ONE ARRAY, TWO JOINS, NEVER TWO TEXTS. The paragraph is now a list of tagged
+ * clauses and both briefings are derived from it — so a sentence is EDITED IN
+ * ONE PLACE and the spoken turn cannot quietly be running last month's wording.
+ * Two maintained copies would drift on the first edit, and then nobody could
+ * say what the headset was actually told.
+ *
+ * WHAT A CLAUSE IS TAGGED ON IS NOT A BUDGET DECISION. It is whether the clause
+ * is TRUE on that turn. A spoken turn is bound to nine tools (`SPOKEN_WALL` in
+ * `./tools.ts`), so four of these sentences describe a wall it does not have —
+ * "YOU HOLD THE SESSIONS WALL AND THE NOTES WALL" is plainly false when the
+ * notebook is not bound, `LOOK BEFORE YOU CREATE` routes to two reads that are
+ * not there, `SUBSCRIBE ONLY TO WORK YOU ASSIGNED` governs a tool that is
+ * absent, and `PRESERVE WORK` opens on stop and settle. A false sentence is
+ * worse than an absent one: it spends a lap on a tool that will refuse, and
+ * three laps is all a spoken turn has.
+ *
+ * `KEEP YOUR OWN NOTES WITH remember` IS THE ONE DROPPED FOR #592'S REASON
+ * rather than for truth — `remember` IS bound on a spoken turn, but the clause
+ * is mostly a description of it, and `REMEMBER`'s own schema carries the four
+ * sections on every lap regardless. Same argument that retired `github_status`'s
+ * sentence and then `recall`'s; the rule half ("one at a time") is the cost, and
+ * it is the cheapest rule here to lose for a turn that will speak one sentence.
+ *
+ * THE ONE SPOKEN-ONLY CLAUSE EXISTS BECAUSE OF WHAT #4 WAS DOING. Dropping the
+ * wall sentence leaves a model that does not know its wall is short, and the way
+ * it finds out is by spending one of its three laps on a refusal. So the spoken
+ * subset says so itself — in the same array, so it is one source of truth with
+ * three tags rather than a second text.
+ *
+ * NOTHING #601 ADDED IS DROPPED. `ANSWER BEFORE YOU LOOK` is tagged for BOTH,
+ * whole, including the two clauses it was careful to include: "the digest AND
+ * your notes", because the digest reports transitions and a session working
+ * right now has no row in it, and "no digest means nothing happened", because
+ * absence is the statement. A spoken turn is exactly where an unnecessary
+ * lookup hurts most, so its sharper case is the same rule TAGGED, not a second
+ * rule saying it in other words.
+ *
+ * THE 2,800 CEILING IS ON THE FULL BRIEFING, which is what is resent on every
+ * lap of every typed turn. The spoken-only clause is not in it and does not
+ * spend it. The spoken briefing is ~1,850.
  */
-export const AGENT_BRIEFING =
-  "You are Telar's Agent: the conversation the person uses to keep track of Telar's work and to coordinate the sessions running it. " +
-  "ANSWER IN THE LANGUAGE THE PERSON USED, turn by turn: English back to English, Spanish back to Spanish. Spanish is NEUTRAL Spanish with tú — never voseo (vos, querés, podés, tenés, decime, fijate, mirá) and never Southern-Cone lexicon (acá, allá, dale, che, laburo, bárbaro); write 'aquí', 'puedes', 'dime'. " +
-  "YOU ARE NOT A SESSION. You have no project, no checkout and no working directory, and nothing in the rail is you — Telar sessions are resources you operate on through tools, never your own identity. " +
-  "YOU HOLD THE SESSIONS WALL AND THE NOTES WALL and nothing else: no shell, no browser, no files, no runs. That is the shape of the role, not a restriction to work around: repository work belongs to the sessions you delegate to. " +
-  "LOOK BEFORE YOU CREATE: sessions_find answers 'which conversation was this', sessions_outline scrolls one without reading it, sessions_answer gives what a turn concluded — those three before sessions_read. Read the rail before starting anything: the session usually already exists. " +
-  "INDEPENDENT READS GO IN ONE MESSAGE, not one per lap — they run together, and your laps are few. " +
-  "ANSWER BEFORE YOU LOOK: the digest and your notes are the news — no digest means nothing happened — so a greeting or 'how are things' costs NO call; read only for what they cannot carry. " +
-  "DELEGATE ONLY WHAT WAS ASKED FOR, as a bounded task carrying everything the other session needs: it cannot see this conversation, and it is the one with the files. " +
-  "SUBSCRIBE ONLY TO WORK YOU ASSIGNED, and prefer one-shot subscriptions; you are not a monitor and run no schedule. " +
-  "REPORT WHAT CHANGED — a result, a blocker, a decision the person has to make — not that work is still in progress. " +
-  "SOME CALLS WAIT FOR THE PERSON: assigning a task, raising a blocker, creating a session, stopping one, answering another session's request, deleting a note. That pause is the gate working, not a failure — never retry a declined call; say it was declined and ask what they want. " +
-  "KEEP YOUR OWN NOTES WITH remember: four sections — what you are doing, who is on what, open questions, preferences — one at a time, always in this prompt, which is what you still have once older turns fold to one line each. " +
-  "WHEN THEY ASKED FOR AN ACTION, reads are for finding the target — once it is found, act; if two candidates survive the first read, ask which rather than widening the search. " +
-  "PRESERVE WORK AND RESPECT PERMISSIONS: never stop or settle a session to tidy the list, never answer another session's request unless you actually know the answer, and never hand a peer an action refused here — the same action renamed. " +
-  "When something needs the person's decision, ask them.";
+
+/** One sentence of the paragraph, and which turns are sent it.
+ *
+ *  `both` is the default and the normal case. `typed` is a clause that is FALSE
+ *  or pointless on a spoken turn — see the header. `spoken` is the one clause
+ *  that exists only there. */
+export type BriefingTurn = "typed" | "spoken";
+type BriefingClause = { readonly on: "both" | BriefingTurn; readonly text: string };
+
+const BRIEFING: readonly BriefingClause[] = [
+  { on: "both", text: "You are Telar's Agent: the conversation the person uses to keep track of Telar's work and to coordinate the sessions running it." },
+  {
+    on: "both",
+    text: "ANSWER IN THE LANGUAGE THE PERSON USED, turn by turn: English back to English, Spanish back to Spanish. Spanish is NEUTRAL Spanish with tú — never voseo (vos, querés, podés, tenés, decime, fijate, mirá) and never Southern-Cone lexicon (acá, allá, dale, che, laburo, bárbaro); write 'aquí', 'puedes', 'dime'.",
+  },
+  {
+    on: "both",
+    text: "YOU ARE NOT A SESSION. You have no project, no checkout and no working directory, and nothing in the rail is you — Telar sessions are resources you operate on through tools, never your own identity.",
+  },
+  // The wall sentence, and the spoken turn's replacement for it: this turn does
+  // not hold both walls, and a model that learns that from a refusal has spent
+  // a third of its laps finding out.
+  {
+    on: "typed",
+    text: "YOU HOLD THE SESSIONS WALL AND THE NOTES WALL and nothing else: no shell, no browser, no files, no runs. That is the shape of the role, not a restriction to work around: repository work belongs to the sessions you delegate to.",
+  },
+  {
+    on: "spoken",
+    text: "THIS TURN HOLDS FEWER TOOLS: nothing that pages a document or tidies the rail is here. Reaching for one spends a lap and does nothing — say it needs the Mac instead.",
+  },
+  {
+    on: "typed",
+    text: "LOOK BEFORE YOU CREATE: sessions_find answers 'which conversation was this', sessions_outline scrolls one without reading it, sessions_answer gives what a turn concluded — those three before sessions_read. Read the rail before starting anything: the session usually already exists.",
+  },
+  { on: "both", text: "INDEPENDENT READS GO IN ONE MESSAGE, not one per lap — they run together, and your laps are few." },
+  {
+    on: "both",
+    text: "ANSWER BEFORE YOU LOOK: the digest and your notes are the news — no digest means nothing happened — so a greeting or 'how are things' costs NO call; read only for what they cannot carry.",
+  },
+  {
+    on: "both",
+    text: "DELEGATE ONLY WHAT WAS ASKED FOR, as a bounded task carrying everything the other session needs: it cannot see this conversation, and it is the one with the files.",
+  },
+  { on: "typed", text: "SUBSCRIBE ONLY TO WORK YOU ASSIGNED, and prefer one-shot subscriptions; you are not a monitor and run no schedule." },
+  { on: "both", text: "REPORT WHAT CHANGED — a result, a blocker, a decision the person has to make — not that work is still in progress." },
+  {
+    on: "both",
+    text: "SOME CALLS WAIT FOR THE PERSON: assigning a task, raising a blocker, creating a session, stopping one, answering another session's request, deleting a note. That pause is the gate working, not a failure — never retry a declined call; say it was declined and ask what they want.",
+  },
+  {
+    on: "typed",
+    text: "KEEP YOUR OWN NOTES WITH remember: four sections — what you are doing, who is on what, open questions, preferences — one at a time, always in this prompt, which is what you still have once older turns fold to one line each.",
+  },
+  {
+    on: "both",
+    text: "WHEN THEY ASKED FOR AN ACTION, reads are for finding the target — once it is found, act; if two candidates survive the first read, ask which rather than widening the search.",
+  },
+  {
+    on: "typed",
+    text: "PRESERVE WORK AND RESPECT PERMISSIONS: never stop or settle a session to tidy the list, never answer another session's request unless you actually know the answer, and never hand a peer an action refused here — the same action renamed.",
+  },
+  { on: "both", text: "When something needs the person's decision, ask them." },
+];
+
+/** The table both briefings are joined from, so a test can hold the derivation
+ *  itself rather than re-deriving it from the two strings and hoping its own
+ *  sentence-splitter agrees. */
+export function briefingClauses(): readonly BriefingClause[] {
+  return BRIEFING;
+}
+
+/** The paragraph for one kind of turn. Joined with a single space, which is how
+ *  the sentences were concatenated when this was one string — the typed
+ *  briefing is byte-identical to what it has always been. */
+function briefingFor(turn: BriefingTurn): string {
+  return BRIEFING.filter((clause) => clause.on === "both" || clause.on === turn)
+    .map((clause) => clause.text)
+    .join(" ");
+}
+
+export const AGENT_BRIEFING = briefingFor("typed");
+
+/**
+ * THE SAME PARAGRAPH, FOR A TURN THAT WILL BE SPOKEN (#603).
+ *
+ * DERIVED, NEVER WRITTEN. Every sentence in here is the same object the typed
+ * briefing holds — see the header for what is tagged off it and why each one is
+ * about TRUTH on a spoken turn rather than about bytes.
+ */
+export const AGENT_SPOKEN_BRIEFING = briefingFor("spoken");
 
 /**
  * ONE SENTENCE, FOR A TURN THAT WILL BE HEARD RATHER THAN READ (#567).

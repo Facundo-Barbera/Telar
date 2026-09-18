@@ -254,10 +254,16 @@ test("the spoken wall is the saving, and it is paid on every lap", () => {
   const wide = JSON.stringify(agentToolSpecs(whole)).length;
   const spoken = JSON.stringify(agentToolSpecs(whole, { spoken: true })).length;
   /**
-   * 13,973 against 5,494 when #603 measured it — 60.7% off the one part of the
+   * 13,993 against 5,514 when #603 measured it — 60.6% off the one part of the
    * prompt that is resent WHOLE on every lap. CEILINGS rather than equalities,
    * for the reason the test above this one gives: prose may move, the tax may
    * not come back.
+   *
+   * THE WIDE ONE HAS SEVEN CHARACTERS OF HEADROOM and that is not a typo. #601
+   * spent nearly all of it on `FLEET_STATUS`; the next sentence added to any
+   * tool description on this wall will fail this line, which is the ceiling
+   * doing its job. Retire something or argue the number up deliberately — do
+   * not nudge it to fit one more clause.
    */
   expect(wide).toBeLessThan(14_000);
   expect(spoken).toBeLessThan(6_000);

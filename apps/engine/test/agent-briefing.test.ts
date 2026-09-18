@@ -7,8 +7,8 @@
  * names the forms it excludes — "be neutral" alone is what fails.
  */
 import { expect, test } from "bun:test";
-import { AGENT_BRIEFING } from "../src/agent/briefing";
-import { collectAgentTools } from "../src/agent/tools";
+import { AGENT_BRIEFING, AGENT_SPOKEN_BRIEFING, briefingClauses, type BriefingTurn } from "../src/agent/briefing";
+import { collectAgentTools, onSpokenWall } from "../src/agent/tools";
 import { AGENT_SELF_ID } from "../src/agent/identity";
 import type { SessionsCapability } from "../src/sessions-tools/tools";
 import type { NotesCapability } from "../src/notes-tools/tools";
@@ -230,4 +230,107 @@ test("the replaced fleet_status sentence's routing lives in the tool's descripti
   // a description that led with it invited the ritual this issue measured.
   expect(fleet.description.startsWith("Live state")).toBe(true);
   expect(fleet.description).not.toContain("How are things across");
+});
+
+/* ------------------------------------------------------------------ *
+ * THE SPOKEN SUBSET — #603.
+ *
+ * The constraint the issue is strictest about: ONE source of truth, with the
+ * spoken version DERIVED. Two maintained texts drift on the first edit and
+ * then nobody can say what the headset was actually told. So these hold that
+ * the subset is a subset — every sentence in it is in the full paragraph,
+ * character for character — and that what is missing is missing for a reason
+ * that is about TRUTH on a nine-tool turn rather than about bytes.
+ * ------------------------------------------------------------------ */
+
+test("the spoken briefing is derived from the full one, never a second copy of it", () => {
+  const table = briefingClauses();
+  /**
+   * BOTH TEXTS ARE EXACTLY THE JOIN OF THE ONE TABLE, and that equality IS the
+   * constraint: there is no sentence anywhere that is not a row here, so a
+   * sentence cannot be edited on one side. Held as an equality rather than as
+   * a containment, because containment would still pass the day somebody
+   * appended a second paragraph to one of them.
+   */
+  const join = (on: BriefingTurn) =>
+    table
+      .filter((clause) => clause.on === "both" || clause.on === on)
+      .map((clause) => clause.text)
+      .join(" ");
+  expect(join("typed")).toBe(AGENT_BRIEFING);
+  expect(join("spoken")).toBe(AGENT_SPOKEN_BRIEFING);
+
+  // And every shared clause is in both, character for character.
+  for (const clause of table) {
+    if (clause.on !== "spoken") expect(AGENT_BRIEFING).toContain(clause.text);
+    if (clause.on !== "typed") expect(AGENT_SPOKEN_BRIEFING).toContain(clause.text);
+    if (clause.on === "typed") expect(AGENT_SPOKEN_BRIEFING).not.toContain(clause.text);
+    if (clause.on === "spoken") expect(AGENT_BRIEFING).not.toContain(clause.text);
+  }
+
+  // And it is genuinely shorter — the third the issue estimated.
+  expect(AGENT_SPOKEN_BRIEFING.length).toBeLessThan(AGENT_BRIEFING.length * 0.75);
+  // The full paragraph is untouched: the refactor moved no character of it.
+  expect(AGENT_BRIEFING.length).toBeLessThan(2_800);
+});
+
+test("what the spoken subset drops is what a nine-tool turn makes false", () => {
+  /**
+   * EACH OF THESE FOUR NAMES A TOOL THE SPOKEN TURN DOES NOT HOLD. A sentence
+   * about a wall that is not there does not merely cost bytes — it routes the
+   * model at a tool that will refuse, and three laps is the whole budget.
+   */
+  for (const [dropped, absent] of [
+    ["YOU HOLD THE SESSIONS WALL AND THE NOTES WALL", "notes_write"],
+    ["LOOK BEFORE YOU CREATE", "sessions_read"],
+    ["SUBSCRIBE ONLY TO WORK YOU ASSIGNED", "sessions_subscribe"],
+    ["PRESERVE WORK AND RESPECT PERMISSIONS", "sessions_settle"],
+  ] as const) {
+    expect(AGENT_BRIEFING).toContain(dropped);
+    expect(AGENT_SPOKEN_BRIEFING).not.toContain(dropped);
+    expect(onSpokenWall(absent)).toBe(false);
+  }
+  // `remember` IS bound on a spoken turn, so its clause is the one dropped for
+  // #592's reason instead: the sentence mostly describes a tool whose own
+  // schema is sent beside the paragraph on every lap.
+  expect(onSpokenWall("remember")).toBe(true);
+  expect(AGENT_SPOKEN_BRIEFING).not.toContain("KEEP YOUR OWN NOTES WITH remember");
+});
+
+test("the spoken subset says its wall is short, so a lap is not spent finding out", () => {
+  expect(AGENT_SPOKEN_BRIEFING).toContain("THIS TURN HOLDS FEWER TOOLS");
+  expect(AGENT_SPOKEN_BRIEFING).toContain("say it needs the Mac instead");
+  // ONLY THERE. The typed turn holds the whole wall, and a sentence telling it
+  // otherwise would be the same false-sentence bug pointing the other way.
+  expect(AGENT_BRIEFING).not.toContain("THIS TURN HOLDS FEWER TOOLS");
+});
+
+test("the spoken subset keeps every rule a spoken turn can still break", () => {
+  for (const kept of [
+    // Who it is, and the register the owner speaks to it in — the headset is
+    // where the language rule matters most, not least.
+    "You are Telar's Agent",
+    "ANSWER IN THE LANGUAGE THE PERSON USED",
+    "never voseo",
+    "YOU ARE NOT A SESSION",
+    // #601'S RULE, WHOLE, including both halves it was careful about: the
+    // notes as well as the digest, and absence as news. A spoken turn is
+    // exactly where an unnecessary lookup hurts most.
+    "ANSWER BEFORE YOU LOOK",
+    "the digest and your notes are the news",
+    "no digest means nothing happened",
+    "read only for what they cannot carry",
+    // Three laps is why batching matters more here, not less.
+    "INDEPENDENT READS GO IN ONE MESSAGE",
+    // The three calls a spoken turn CAN still make, and their limits.
+    "DELEGATE ONLY WHAT WAS ASKED FOR",
+    "SOME CALLS WAIT FOR THE PERSON",
+    "never retry a declined call",
+    "WHEN THEY ASKED FOR AN ACTION",
+    "ask which rather than widening the search",
+    "REPORT WHAT CHANGED",
+    "ask them",
+  ]) {
+    expect(AGENT_SPOKEN_BRIEFING).toContain(kept);
+  }
 });

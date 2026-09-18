@@ -81,7 +81,7 @@ import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
 import { agentToolSpecs, onSpokenWall, withheldFromSpokenTurn, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, readsOnly, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
-import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING } from "./briefing";
+import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING, AGENT_SPOKEN_BRIEFING } from "./briefing";
 import { answerOrphanedCalls, compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
 import { assistantText } from "./content";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
@@ -1452,7 +1452,16 @@ export class AgentRuntime {
      */
     const standing = renderStanding(readStanding(this.paths));
     const system = new SystemMessage(
-      [AGENT_BRIEFING, this.options.orientation?.(), standing, context.digest, context.brief ? AGENT_BRIEF_ANSWER : undefined]
+      [
+        // THE SPOKEN BRIEFING IS THE SAME CLAUSES, TAGGED (#603) — not a second
+        // text. What is dropped is what a spoken turn's nine-tool wall makes
+        // FALSE, plus one clause whose content its tool's own schema carries.
+        context.brief ? AGENT_SPOKEN_BRIEFING : AGENT_BRIEFING,
+        this.options.orientation?.(),
+        standing,
+        context.digest,
+        context.brief ? AGENT_BRIEF_ANSWER : undefined,
+      ]
         .filter(Boolean)
         .join("\n\n"),
     );

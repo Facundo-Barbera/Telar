@@ -31,7 +31,7 @@ import type { ChatResult } from "@langchain/core/outputs";
 import type { NotificationDetail, WakeKind } from "@telar/engine-client";
 import type { SocketTool } from "../src/mcp-socket";
 import { wakeNotification } from "../src/notification";
-import { AGENT_BRIEF_ANSWER } from "../src/agent/briefing";
+import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING, AGENT_SPOKEN_BRIEFING } from "../src/agent/briefing";
 import { AgentRuntime, type AgentStreamEvent } from "../src/agent/runtime";
 import { patchAgentSettings } from "../src/agent/store";
 
@@ -1232,6 +1232,26 @@ test("a spoken turn is bound to the short wall, and the next typed one to all of
   await until(() => agent.state().runId === undefined && model.seen.length === 2, "the typed turn");
   // AND IT IS PER TURN, exactly as the sentence is: the written UI is untouched.
   expect(model.boundNames[1]).toEqual(["sessions_list", "sessions_send", "sessions_create", "sessions_read"]);
+  agent.close();
+});
+
+test("a spoken turn is sent the spoken briefing, and the next typed one the whole paragraph", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime([{ text: "two are idle." }, { text: "two are idle." }], wall(landed));
+
+  agent.submit({ text: "how are things?", brief: true });
+  await until(() => agent.state().runId === undefined, "the spoken turn");
+  const spoken = String(model.seen[0]![0]!.content);
+  expect(spoken).toContain(AGENT_SPOKEN_BRIEFING);
+  expect(spoken).not.toContain(AGENT_BRIEFING);
+  // The subset's own clause is here; the four a nine-tool turn makes false are not.
+  expect(spoken).toContain("THIS TURN HOLDS FEWER TOOLS");
+  expect(spoken).not.toContain("YOU HOLD THE SESSIONS WALL AND THE NOTES WALL");
+
+  agent.submit({ text: "and now?" });
+  await until(() => agent.state().runId === undefined && model.seen.length === 2, "the typed turn");
+  // PER TURN, like everything else `brief` touches: the written UI is untouched.
+  expect(String(model.seen[1]![0]!.content)).toContain(AGENT_BRIEFING);
   agent.close();
 });
 

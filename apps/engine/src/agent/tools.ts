@@ -829,9 +829,9 @@ export function collectAgentTools(walls: AgentWalls): SocketTool[] {
  * ── THE ARITHMETIC THAT MAKES THIS THE FIRST LEVER ──────────────────────────
  * Tool definitions are the one part of the prompt that is resent WHOLE on every
  * lap — the history compacts, the system block is one copy, and this array is
- * not either of those. Measured on the 25 tools the Agent binds: 13,973 bytes,
+ * not either of those. Measured on the 25 tools the Agent binds: 13,993 bytes,
  * ×2.55 laps on the median brief turn, on every spoken turn of every day. The
- * nine below are 5,484. Nothing else on a brief turn is worth 8,489 bytes a lap.
+ * nine below are 5,514. Nothing else on a brief turn is worth 8,479 bytes a lap.
  *
  * ── THE RULE, AND IT IS ONE SENTENCE ────────────────────────────────────────
  * A SPOKEN TURN ANSWERS. It does not page a document and it does not tidy the
