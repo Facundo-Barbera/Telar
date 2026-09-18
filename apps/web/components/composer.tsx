@@ -84,6 +84,7 @@ import {
 } from "@/lib/composer-completions";
 import { rankNotes, useProjectNotes } from "@/lib/project-notes";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
+import { useComposerDictation } from "@/lib/dictation/use-composer-dictation";
 import { appendPrompt, mergeAttachments, splitImages, type StashEntry, type StashedImage } from "@/lib/prompt-stash";
 import { encodeImagesForStash, filesFromStash } from "@/lib/stash-images";
 import { usePromptStash } from "@/lib/use-prompt-stash";
@@ -738,6 +739,15 @@ export function Composer({
       }),
     [token, editorId, kind],
   );
+
+  /**
+   * THE DICTATION THIS BOX HAS, held HERE rather than inside the mic button
+   * (#588) — because ⌘D is a second way to press the same toggle, and a command
+   * handler holding its own `useDictation` would be a second microphone over
+   * one composer. The button below draws this; the chord reaches it through the
+   * registry, keyed by the same `token` the composer registry uses.
+   */
+  const dictation = useComposerDictation(token);
 
   useEffect(() => {
     if (!escArmed) return;
@@ -1662,8 +1672,11 @@ export function Composer({
                * that go into this message". The right one is send and turn
                * status, where a recording indicator would compete with the
                * send affordance at exactly the moment both matter.
+               *
+               * THE MACHINE IS NOT IN HERE ANY MORE (#588) — it is `dictation`
+               * above, so ⌘D presses the same toggle this button does.
                */}
-              <DictationButton />
+              <DictationButton dictation={dictation} />
               {/**
                * THE STASH COUNT, and it is not rendered at all while the stash
                * is empty. A "0" is chrome advertising a feature you have not

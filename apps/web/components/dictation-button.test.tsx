@@ -20,6 +20,8 @@ import { useState } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Composer } from "@/components/composer";
+import { resolveWebCommandKeyAction } from "@/lib/command-keys";
+import { keymapSnapshot, runCommand } from "@/lib/commands";
 import { installPageApi } from "@/lib/page-api";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
@@ -272,6 +274,29 @@ async function press(button: HTMLButtonElement): Promise<void> {
   });
 }
 
+/**
+ * ⌘D, THE WAY THE COCKPIT ACTUALLY DISPATCHES IT — issue #588.
+ *
+ * These two lines are `useCommandKeys`' own keydown handler: resolve the press
+ * against the LIVE keymap (so a rebind is honoured, and the focus rule gets a
+ * say), then run whatever component has claimed the command. Spelled out rather
+ * than mounting the hook, which wants a Next router and a rail full of rows this
+ * file has no business standing up; what is under test is the last hop, from the
+ * command to the one dictation, and that hop is real here.
+ *
+ * Answers whether anything was bound, which is how "the chord does nothing" is
+ * checked without asserting on the absence of side effects alone.
+ */
+async function chord(target?: unknown): Promise<boolean> {
+  let ran = false;
+  await act(async () => {
+    const id = resolveWebCommandKeyAction(keymapSnapshot(), { metaKey: true, key: "d", code: "KeyD", target });
+    ran = id ? runCommand(id) : false;
+    await new Promise((settle) => setTimeout(settle, 0));
+  });
+  return ran;
+}
+
 describe("whether there is a mic button at all", () => {
   test("no button on a Mac where dictation is off — which is every Mac by default", async () => {
     provider = "off";
@@ -486,6 +511,114 @@ describe("the mic button on a composer", () => {
     await press(micIn(host));
     expect(live).toBeUndefined();
     expect(host.textContent).toContain("openai");
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * ⌘D — issue #588.
+ *
+ * The claim is ONE MICROPHONE, not two paths that each work. So the
+ * tests below deliberately cross the two callers: start with the
+ * chord and stop with the button, and the other way round. Two
+ * instances of `useDictation` would pass a test that only ever used
+ * one of them, and would leave a live socket under a button saying
+ * idle the first time somebody used both.
+ * ------------------------------------------------------------------ */
+
+describe("the chord and the button are one toggle", () => {
+  test("⌘D starts the dictation the button is drawing, and the button says so", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+
+    expect(await chord()).toBe(true);
+    live!.open();
+    // THE BUTTON'S OWN STATE MOVED. Nothing here touched it — it is reading the
+    // dictation the chord just started, because there is only the one.
+    expect(button.getAttribute("aria-label")).toBe("Stop dictating");
+
+    live!.say(results("spoken from the keyboard", true));
+    expect(draftOf(host)).toBe("spoken from the keyboard ");
+  });
+
+  test("started with the chord, stopped with the button", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await chord();
+    live!.open();
+    const socket = live!;
+
+    await press(button);
+    expect(button.getAttribute("aria-label")).toBe("Dictate");
+    // The real proof the second press reached the FIRST press's machinery: its
+    // socket was flushed and closed, and its track put down.
+    expect(socket.frames).toContain(JSON.stringify({ type: "CloseStream" }));
+    expect(socket.readyState).toBe(3);
+    expect(tracks.every((track) => track.stopped)).toBe(true);
+  });
+
+  test("started with the button, stopped with the chord", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+    const socket = live!;
+
+    expect(await chord()).toBe(true);
+    expect(button.getAttribute("aria-label")).toBe("Dictate");
+    expect(socket.readyState).toBe(3);
+    expect(tracks.every((track) => track.stopped)).toBe(true);
+  });
+
+  test("it fires with the caret in the message box, which is where it is pressed from", async () => {
+    // The composer holds focus essentially all the time in this cockpit. A
+    // dictation chord the focus rule suppressed would be a chord that never
+    // fired at all.
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    const editable = host.querySelector('[data-slot="composer-editor"]');
+    expect(await chord(editable)).toBe(true);
+    live!.open();
+    expect(micIn(host).getAttribute("aria-label")).toBe("Stop dictating");
+  });
+
+  test("a second press while it is still starting stops it, exactly as the button does", async () => {
+    // Starting is asynchronous and stopping is not, so this lands mid-`await`.
+    // Both callers go through the one generation fence.
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(await chord()).toBe(true);
+    expect(micIn(host).getAttribute("aria-label")).toBe("Dictate");
+    expect(tracks.every((track) => track.stopped)).toBe(true);
+  });
+});
+
+describe("the chord refuses wherever the button does", () => {
+  test("nothing on a Mac where dictation is off — no command, no microphone", async () => {
+    provider = "off";
+    const host = await mounted(<Box kind="session" />);
+    // NOT BOUND AT ALL, which is a stronger claim than "does nothing": the
+    // command palette asks exactly this question before it draws a row, so an
+    // always-bound handler would put a dead "Dictate" row in the list.
+    expect(await chord()).toBe(false);
+    expect(tokenCalls).toBe(0);
+    expect(live).toBeUndefined();
+    expect(host.querySelector('button[aria-label="Dictate"]')).toBeNull();
+  });
+
+  test("nothing where the browser cannot record", async () => {
+    // An insecure origin, or an embed with no microphone permission. There is
+    // no button either, and for the same reason.
+    delete (globalThis as unknown as Record<string, unknown>).MediaRecorder;
+    const host = await mounted(<Box kind="session" />);
+    expect(await chord()).toBe(false);
+    expect(tokenCalls).toBe(0);
+    expect(host.querySelector('button[aria-label="Dictate"]')).toBeNull();
+  });
+
+  test("nothing on a screen with no message box on it", async () => {
+    // Settings, the projects list. Nobody has claimed the command, so the key
+    // is silent rather than beeping about a surface that is not there.
+    expect(await chord()).toBe(false);
   });
 });
 
