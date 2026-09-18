@@ -34,8 +34,13 @@ import { cn } from "@/lib/utils";
 export type ContextMeterInput = {
   /** The provider's own token count for the last turn. ABSENT is a real case —
    *  an OpenAI-compatible server need not report usage — and it must not be
-   *  drawn as zero, which would assert the turn was free. */
-  usage?: { input: number; output: number; total: number };
+   *  drawn as zero, which would assert the turn was free.
+   *
+   *  `cacheRead` is a PART OF `input`, not a number beside it, on every route
+   *  the engine runs (#563 item 3) — so the honest way to draw it is as a
+   *  proportion of the input, and absent means the provider said nothing about
+   *  caching rather than that the cache was cold. */
+  usage?: { input: number; output: number; total: number; cacheRead?: number; cacheCreate?: number };
   /** What the prompt cost in characters, as the trim step measured it. */
   contextChars: number;
   /** The trim ceiling those characters are a proportion of. */
@@ -52,6 +57,9 @@ export type ContextMeterReading = {
   percent: number;
   /** "2,690 tokens" — absent when the provider reported none. */
   tokens?: string;
+  /** "68% cached" — absent when the provider said nothing about caching, which
+   *  is not the same as a cold cache. See `cached` below. */
+  cached?: string;
   /** "folded 9 turns" — absent unless the last turn actually folded some. */
   folded?: string;
   /** The whole line, as a reader sees it. */
@@ -78,13 +86,30 @@ export function contextMeterReading(input: ContextMeterInput | undefined): Conte
    */
   const count = input.folded ?? 0;
   const folded = count > 0 ? `folded ${count.toLocaleString("en-US")} turn${count === 1 ? "" : "s"}` : undefined;
+  /**
+   * HOW MUCH OF THE INPUT THE PROVIDER DID NOT HAVE TO RE-READ (#563 item 3).
+   *
+   * DRAWN ONLY WHEN THE PROVIDER SAID SOMETHING. `cacheRead` absent is "nobody
+   * forwarded cache statistics", and a `0% cached` invented for that case would
+   * be a measurement nobody took — the one mistake this whole item exists to
+   * avoid. Zero WITH a reading is drawn, because a cold cache is a real and
+   * actionable answer.
+   *
+   * A PROPORTION OF THE INPUT, never of the total: the output was generated and
+   * could not have come from a cache, so dividing by `total` would understate
+   * every hit by however much the model happened to say.
+   */
+  const read = input.usage?.cacheRead;
+  const cached = read !== undefined && input.usage && input.usage.input > 0 ? `${Math.round((read / input.usage.input) * 100)}% cached` : undefined;
   return {
     percent,
     ...(tokens ? { tokens } : {}),
+    ...(cached ? { cached } : {}),
     ...(folded ? { folded } : {}),
-    label: [tokens, `${percent}% context`, folded].filter(Boolean).join(" · "),
+    label: [tokens, cached, `${percent}% context`, folded].filter(Boolean).join(" · "),
     title: [
       tokens ? `${tokens} on the last turn, as the model reported them.` : "The model reported no token count for the last turn.",
+      ...(cached ? [`${cached}: that share of the input was served from the provider's prompt cache rather than re-read.`] : []),
       `The prompt was ${input.contextChars.toLocaleString("en-US")} of ${input.budgetChars.toLocaleString("en-US")} characters — Telar trims the oldest exchanges past that.`,
       ...(folded ? [`It ${folded} to one line each to make room; the thread keeps them whole.`] : []),
     ].join(" "),
