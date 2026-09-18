@@ -11,12 +11,27 @@
  *   - reads are never gated, because a gate on a read teaches people to click
  *     through gates;
  *   - one tool call id produces one run id, so a retried `sessions_send`
- *     replays at the store rather than queueing a second turn.
+ *     replays at the store rather than queueing a second turn;
+ *   - a SPOKEN turn is bound to nine of the twenty-five (#603), the rule behind
+ *     that list is held as three exclusion sets rather than as prose, every
+ *     tool is classified one way or the other, and what a withheld tool answers
+ *     with cannot be mistaken for success.
  */
 import { expect, test } from "bun:test";
 import { collectTools, toolInputSchema } from "../src/mcp-socket";
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
-import { agentFleetTools, agentQueryTools, agentToolSpecs, collectAgentTools, type AgentFleetCapability, type AgentQueryCapability, type FleetSessionRow } from "../src/agent/tools";
+import {
+  agentFleetTools,
+  agentQueryTools,
+  agentToolSpecs,
+  collectAgentTools,
+  onSpokenWall,
+  spokenWallTable,
+  withheldFromSpokenTurn,
+  type AgentFleetCapability,
+  type AgentQueryCapability,
+  type FleetSessionRow,
+} from "../src/agent/tools";
 import { AGENT_SELF_ID } from "../src/agent/identity";
 import { approvalRequest, classifiedTools, needsApproval, readsOnly } from "../src/agent/approval";
 import { EngineStateError, TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "../src/state";
@@ -198,6 +213,80 @@ test("the bound tool array stays well under what it was, with every tool still o
   });
   expect(whole).toHaveLength(25);
   expect(JSON.stringify(agentToolSpecs(whole)).length).toBeLessThan(14_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * What the wall costs A SPOKEN TURN — #603 lever 2.
+ * ------------------------------------------------------------------ */
+
+const wholeWall = () =>
+  collectAgentTools({
+    sessions: noSessions(),
+    notes: noNotes(),
+    query: noQueries(),
+    fleet: emptyFleet(),
+    github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
+    memory: { remember: () => ({ sections: {} }), recall: () => [] },
+  });
+
+test("a spoken turn is bound to nine tools, and the exclusions are the named ones", () => {
+  const spoken = agentToolSpecs(wholeWall(), { spoken: true }).map((spec) => spec.function.name);
+  expect(spoken).toEqual([
+    "sessions_create", "sessions_send", "sessions_status", "sessions_requests",
+    "sessions_find", "sessions_answer", "fleet_status", "github_status", "remember",
+  ]);
+  /**
+   * THE RULE, HELD AS THREE LISTS RATHER THAN AS PROSE: a spoken turn answers,
+   * it does not page a document and it does not tidy the rail.
+   */
+  for (const pages of ["sessions_read", "sessions_outline", "sessions_diff", "notes_read", "notes_write", "notes_list", "notes_projects"]) {
+    expect(spoken).not.toContain(pages);
+  }
+  for (const tidies of ["sessions_stop", "sessions_settle", "sessions_subscribe", "sessions_unsubscribe", "sessions_subscriptions", "sessions_resolve_request", "notes_delete"]) {
+    expect(spoken).not.toContain(tidies);
+  }
+  // A second way to do something already on the spoken wall.
+  for (const duplicate of ["sessions_list", "recall"]) expect(spoken).not.toContain(duplicate);
+});
+
+test("the spoken wall is the saving, and it is paid on every lap", () => {
+  const whole = wholeWall();
+  const wide = JSON.stringify(agentToolSpecs(whole)).length;
+  const spoken = JSON.stringify(agentToolSpecs(whole, { spoken: true })).length;
+  /**
+   * 13,973 against 5,494 when #603 measured it — 60.7% off the one part of the
+   * prompt that is resent WHOLE on every lap. CEILINGS rather than equalities,
+   * for the reason the test above this one gives: prose may move, the tax may
+   * not come back.
+   */
+  expect(wide).toBeLessThan(14_000);
+  expect(spoken).toBeLessThan(6_000);
+  expect(spoken).toBeLessThan(wide / 2);
+});
+
+test("every tool the Agent is given is on the spoken wall or explicitly withheld", () => {
+  const table = spokenWallTable();
+  const whole = wholeWall().map((tool) => tool.name);
+  // The omission is visible HERE, before it is a spoken turn that quietly
+  // refuses a tool nobody meant to withhold.
+  for (const name of whole) expect(Object.hasOwn(table, name)).toBe(true);
+  for (const name of Object.keys(table)) expect(whole).toContain(name);
+  // AND IT FAILS TOWARDS WITHHELD: a name nobody classified costs one honest
+  // refusal rather than putting bytes silently back on every lap.
+  expect(onSpokenWall("some_tool_added_next_year")).toBe(false);
+});
+
+test("a withheld tool refuses in a sentence that cannot be read as success", () => {
+  const refusal = withheldFromSpokenTurn("sessions_stop");
+  // WHAT THE SENTENCE HAS TO CARRY, and each clause is load-bearing: that
+  // nothing ran, WHICH tool, and where the person can actually go instead.
+  expect(refusal).toContain("NOTHING HAPPENED");
+  expect(refusal).toContain("sessions_stop");
+  expect(refusal).toContain("no part of it ran");
+  expect(refusal).toContain("the Mac");
+  // It tells the model to SAY it, because a refusal the person never hears is
+  // the silent absence in a slower form.
+  expect(refusal).toContain("Tell the person");
 });
 
 test("the model's copy drops the validator's bookkeeping and keeps every choice", () => {
