@@ -743,6 +743,215 @@ export const ProviderInstanceEnvVar = z.object({
 export type ProviderInstanceEnvVar = z.infer<typeof ProviderInstanceEnvVar>;
 
 /**
+ * WHEN A CLAUDE CODE SESSION COMPACTS ITSELF — three states over the
+ * environment a login already carries.
+ *
+ * THERE IS ONE MECHANISM, WHICH IS THE ENVIRONMENT. Claude Code's own dials are
+ * these three variables, the SDK forwards them to the child, and a person could
+ * always have typed them into the Environment variables list by hand. So the
+ * control does not store a setting of its own beside them: it WRITES those rows
+ * and READS them back. A hand-typed pair and the control are the same fact, and
+ * cannot drift apart because there is nothing for them to drift between.
+ *
+ * WHAT THE CLI ACTUALLY DOES WITH THEM, read out of the installed binary
+ * (2.1.273 — the bundle is plain JS inside the executable) rather than inferred
+ * from the names. All three sit on the SDK's forwarding allowlist, which proves
+ * they REACH the child and nothing about what they mean:
+ *
+ *   · `DISABLE_AUTO_COMPACT` is a boolean over `1`/`true`/`yes`/`on`, trimmed
+ *     and case-insensitive. Anything else — including `0` and `false` — is not
+ *     "off", it is INERT, and the CLI carries on as if the variable were absent.
+ *   · `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is a TOKEN COUNT, not a percentage. It
+ *     is raised to 100,000, capped at 1,000,000, and then clamped down to the
+ *     model's own window. So it pins the denominator, DOWNWARD ONLY — which is
+ *     the fact this whole conversion rests on, and the reason no model window
+ *     has to be guessed to honour "compact after N tokens".
+ *   · `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is a percentage on 0–100 (exclusive of
+ *     0, inclusive of 100), read with `parseFloat`, so fractions are allowed and
+ *     an out-of-range value is ignored. It can only LOWER the threshold:
+ *     `min(floor(effective × pct / 100), effective − 13,000)`.
+ *
+ * where `effective = window − min(the model's max output tokens, 20,000)`. Both
+ * halves move the REAL trigger and not merely the meter — and a window from the
+ * environment additionally makes the CLI compact deterministically at that
+ * threshold instead of possibly deferring to the API's prompt-too-long.
+ *
+ * AND ALL THREE WERE WATCHED DOING IT, because reading a bundle is still reading
+ * rather than measuring. Against 2.1.273: `/context` reports the declared window
+ * verbatim (120k, 183k, 400k on a 1M model) with a fixed 33k of reserve beside
+ * it — which is 20,000 + 13,000, the two constants below, arriving from the
+ * other direction. A two-turn session holding 41,843 tokens compacted on the
+ * second turn under a percentage that put the threshold at 10,000, did NOT
+ * compact with the same window and no percentage, and did NOT compact again once
+ * `DISABLE_AUTO_COMPACT=1` was added. Three states, three observations.
+ *
+ * THE TWO CONSTANTS BELOW ARE THE CLI'S, and they are the one thing here that
+ * can rot. If a future CLI moves its 20,000 output reservation or its 13,000
+ * summary buffer, a threshold lands off by the DIFFERENCE — tens of tokens to a
+ * few thousand — rather than off by a factor, because the window carries the
+ * token count and the percentage only agrees with it.
+ */
+export const CLAUDE_COMPACTION_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+export const CLAUDE_COMPACTION_PERCENT_ENV = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
+export const CLAUDE_COMPACTION_DISABLE_ENV = "DISABLE_AUTO_COMPACT";
+
+/** Every variable the control owns. A row named here is the control's to write;
+ *  every other row in the list is untouched by it. */
+export const CLAUDE_COMPACTION_ENV_NAMES: readonly string[] = [
+  CLAUDE_COMPACTION_WINDOW_ENV,
+  CLAUDE_COMPACTION_PERCENT_ENV,
+  CLAUDE_COMPACTION_DISABLE_ENV,
+];
+
+/**
+ * What the CLI holds back from the window for the model's own reply — capped at
+ * this, so it is this for every model Claude Code runs (the smallest reports
+ * 32,000 output tokens). A model reporting FEWER than 20,000 would reserve less
+ * and compact that much later than asked; none exists today, and the drift would
+ * be at most 20,000 tokens rather than a factor.
+ */
+const OUTPUT_RESERVE = 20_000;
+/** What it holds back again for the summary compaction is about to write. */
+const SUMMARY_BUFFER = 13_000;
+/** The CLI raises a smaller declared window to this, and caps a larger one at
+ *  the ceiling. Both are its own bounds, not Telar's. */
+const WINDOW_FLOOR = 100_000;
+const WINDOW_CEILING = 1_000_000;
+
+/**
+ * THE LARGEST THRESHOLD THAT CAN BE STATED HONESTLY.
+ *
+ * Above this the declared window would exceed the CLI's own 1,000,000 ceiling,
+ * the CLI would cap it, and the session would compact EARLIER than the number on
+ * screen. A control that accepted such a number would be lying about the only
+ * thing it says, so the number is refused instead — and "compact very late" was
+ * never what anyone meant by it anyway; that is what Never compact is for.
+ */
+export const CLAUDE_COMPACTION_MAX_TOKENS = WINDOW_CEILING - OUTPUT_RESERVE - SUMMARY_BUFFER;
+
+export type ClaudeCompaction =
+  /** Send nothing. Claude Code's own behaviour, and what every login has today. */
+  | { mode: "default" }
+  /** Compact once the conversation passes this many tokens. */
+  | { mode: "after"; tokens: number }
+  /** `DISABLE_AUTO_COMPACT`. Manual `/compact` still works — that is
+   *  `DISABLE_COMPACT`, a different variable this never writes. */
+  | { mode: "never" };
+
+/** The CLI's own truthiness, so a value it ignores is one this reads as absent
+ *  rather than as "off". */
+const TRUTHY = new Set(["1", "true", "yes", "on"]);
+
+/** Declared, then bounded the way the CLI bounds it. */
+function resolvedWindow(declared: number): number {
+  return Math.max(WINDOW_FLOOR, Math.min(declared, WINDOW_CEILING));
+}
+
+/**
+ * The window to declare so that `tokens` is reachable inside it — and, because
+ * the CLI clamps a declared window down to the model's own, ALSO the smallest
+ * model context this threshold lands exactly on. Exported for the sentence that
+ * says so: computing it twice is how the number on screen drifts from the number
+ * in the variable.
+ */
+export function claudeCompactionWindowFor(tokens: number): number {
+  return resolvedWindow(tokens + OUTPUT_RESERVE + SUMMARY_BUFFER);
+}
+
+/**
+ * The percentage that lands the threshold on `tokens` inside that window.
+ *
+ * BOTH ARMS OF THE CLI'S `min` ARE MADE TO NAME THE SAME NUMBER, which is what
+ * makes the pair robust rather than clever: above ~67,000 the window's own
+ * `effective − 13,000` already IS the answer and the percentage merely agrees,
+ * and below it — where the CLI's 100,000 window floor means the window alone
+ * cannot express the number — the percentage is what carries it.
+ *
+ * ROUNDED UP, at six decimals. Rounding down would put the percentage arm a
+ * token or two BELOW the window arm on some inputs, and `min` would then pick
+ * the rounding error instead of the number that was typed.
+ */
+function percentFor(tokens: number): string {
+  const effective = claudeCompactionWindowFor(tokens) - OUTPUT_RESERVE;
+  return String(Math.ceil(((tokens / effective) * 100) * 1e6) / 1e6);
+}
+
+/** Only a plain run of digits. A hand-typed value spelled any other way is one
+ *  this cannot be SURE the CLI reads the same, so it reports that it cannot
+ *  summarise the login rather than printing a number it guessed. */
+function digits(value: string | undefined): number | undefined {
+  const trimmed = value?.trim() ?? "";
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * WHAT THIS LOGIN'S ENVIRONMENT ALREADY SAYS, which is also how a variable
+ * somebody typed by hand reaches the control.
+ *
+ * The arithmetic below is the CLI's, re-run: given a window and a percentage,
+ * this is the token count that login will actually compact at. So the control
+ * reflects a hand-typed pair as the number it really produces, rather than only
+ * recognising pairs it wrote itself.
+ *
+ * `undefined` MEANS "I CANNOT STATE THIS AS A TOKEN COUNT" and is a real answer,
+ * not an error: a percentage on its own is a percentage of a window nobody
+ * pinned, so the threshold depends on which model the session runs. Naming a
+ * number there would be exactly the fabrication this feature exists to avoid.
+ */
+export function claudeCompactionOf(env: readonly ProviderInstanceEnvVar[]): ClaudeCompaction | undefined {
+  const byName = new Map(env.map((variable) => [variable.name, variable.value]));
+  if (TRUTHY.has((byName.get(CLAUDE_COMPACTION_DISABLE_ENV) ?? "").trim().toLowerCase())) return { mode: "never" };
+
+  const rawWindow = byName.get(CLAUDE_COMPACTION_WINDOW_ENV);
+  const rawPercent = byName.get(CLAUDE_COMPACTION_PERCENT_ENV);
+  const percent = rawPercent === undefined ? undefined : Number.parseFloat(rawPercent.trim());
+  const usablePercent = percent !== undefined && Number.isFinite(percent) && percent > 0 && percent <= 100 ? percent : undefined;
+
+  const declared = digits(rawWindow);
+  if (declared === undefined) {
+    // A window the CLI would ignore is a window it does not have. With a live
+    // percentage still in the list there is no denominator to divide by.
+    if (rawWindow !== undefined || usablePercent !== undefined) return undefined;
+    return { mode: "default" };
+  }
+
+  const effective = resolvedWindow(declared) - OUTPUT_RESERVE;
+  const byWindow = effective - SUMMARY_BUFFER;
+  const tokens = usablePercent === undefined ? byWindow : Math.min(Math.floor((effective * usablePercent) / 100), byWindow);
+  return { mode: "after", tokens };
+}
+
+/**
+ * The same list with this login's compaction rows replaced.
+ *
+ * `null` REFUSES rather than clamping: a threshold this cannot express is one
+ * the person has to see refused, because silently moving their number is the
+ * failure mode the whole design is arranged against.
+ *
+ * Every other variable keeps its place and its order. Default removes the rows
+ * entirely — an empty string is a value the CLI reads, and `DISABLE_AUTO_COMPACT=""`
+ * would leave a variable on the process that says nothing.
+ */
+export function applyClaudeCompaction(
+  env: readonly ProviderInstanceEnvVar[],
+  next: ClaudeCompaction,
+): ProviderInstanceEnvVar[] | null {
+  if (next.mode === "after" && !(Number.isSafeInteger(next.tokens) && next.tokens > 0 && next.tokens <= CLAUDE_COMPACTION_MAX_TOKENS)) {
+    return null;
+  }
+  const kept = env.filter((variable) => !CLAUDE_COMPACTION_ENV_NAMES.includes(variable.name));
+  if (next.mode === "default") return kept;
+  if (next.mode === "never") return [...kept, { name: CLAUDE_COMPACTION_DISABLE_ENV, value: "1", sensitive: false }];
+  return [
+    ...kept,
+    { name: CLAUDE_COMPACTION_WINDOW_ENV, value: String(claudeCompactionWindowFor(next.tokens)), sensitive: false },
+    { name: CLAUDE_COMPACTION_PERCENT_ENV, value: percentFor(next.tokens), sensitive: false },
+  ];
+}
+
+/**
  * A CONFIGURED PROVIDER — which is to say, an account.
  *
  * THE SPLIT THIS COMPLETES. `ProviderDriverKind` says which implementation runs
