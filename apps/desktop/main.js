@@ -23,6 +23,7 @@ const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, extern
 const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
+const remoteFile = require("./remote-file");
 const { keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
@@ -550,20 +551,17 @@ function watchForUnpairing(webContents) {
   });
 }
 
-function readRemoteFile(home) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(home, "remote", "remote.json"), "utf8"));
-  } catch {
-    // No file, unreadable, or not JSON — every reader below takes the safe
-    // answer, which is what every install had before the setting existed.
-    return null;
-  }
-}
-
+/**
+ * WHERE THE SOCKET LISTENS — and the version discipline is the point (#627).
+ *
+ * This used to be a bare `JSON.parse` here, which meant a file whose version
+ * this build does not know bound every interface while the cockpit's own gate
+ * reset the same file to `requireAuth: false` and admitted everyone. The rule
+ * and its test now live in `remote-file.js`; the shell never widens on a file
+ * it cannot read.
+ */
 function serverBindHost(home) {
-  const remote = readRemoteFile(home);
-  if (remote?.exposure === "network-accessible" && remote?.requireAuth === true) return "0.0.0.0";
-  return "127.0.0.1";
+  return remoteFile.serverBindHost(home);
 }
 
 /**
@@ -576,8 +574,7 @@ function serverBindHost(home) {
  */
 let tailscaleServeUrl = null;
 async function publishTailscaleServe(home, port) {
-  const remote = readRemoteFile(home);
-  if (remote?.tailscaleServe !== true || remote?.requireAuth !== true) return null;
+  if (!remoteFile.tailscaleServeRequested(home)) return null;
   const domain = await tailscale.certDomain();
   if (!domain) {
     console.error("[telar-desktop] tailscale serve requested but tailscale is missing, not running, or has HTTPS certificates disabled; skipped.");
