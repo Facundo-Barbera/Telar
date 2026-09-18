@@ -79,8 +79,14 @@ const shape = (note: ProjectNote) => ({
  * were looking for; it is deliberately not enough to work from, because a
  * notebook of thirty runbooks handed over whole is thirty runbooks spent out of
  * the caller's context to answer "which notes are there".
+ *
+ * EXPORTED BECAUSE `fleet_status` MAKES THE IDENTICAL JUDGMENT (#592). What a
+ * status row quotes of a session's last answer is the same question asked of
+ * different prose — enough to recognise which turn it was, not enough to work
+ * from — and it had drifted to 200 on its own. One number, so the two cannot
+ * drift apart again.
  */
-const PREVIEW_CHARS = 120;
+export const PREVIEW_CHARS = 120;
 
 /**
  * AND THE LISTING ITSELF IS BOUNDED, because a preview per note is still a

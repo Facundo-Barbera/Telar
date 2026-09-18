@@ -788,9 +788,17 @@ export class AgentRuntime {
    * seam `memory()` uses, for its reason: a test drives the tool with functions
    * and no daemon, and the daemon composes one capability out of two owners.
    */
-  fleet(): Pick<AgentFleetCapability, "who" | "unread"> {
+  fleet(): Pick<AgentFleetCapability, "who" | "unread" | "since"> {
     return {
       who: () => readStanding(this.paths).sections.who,
+      // THE BOUNDARY "RECENTLY" MEANS, and it is this object's to answer for the
+      // same reason the other two are: the thread is the Agent's own, and when
+      // it last looked at the fleet is a fact about this conversation rather
+      // than about any session in it.
+      since: (): number | undefined => {
+        const threadId = readAgentSettings(this.paths).threadId;
+        return threadId ? this.open().log.previousTurnStart(threadId) : undefined;
+      },
       unread: (): Record<string, number> => {
         const threadId = readAgentSettings(this.paths).threadId;
         if (!threadId) return {};

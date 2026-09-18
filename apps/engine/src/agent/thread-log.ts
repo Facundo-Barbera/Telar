@@ -335,6 +335,28 @@ export class AgentThreadLog {
     return { rows, cursor: this.cursor(threadId), ...(rows[0] ? { oldest: rows[0].id } : {}), more };
   }
 
+  /**
+   * WHEN THE TURN BEFORE THE LIVE ONE BEGAN — `fleet_status`'s "since I last
+   * looked" (#592).
+   *
+   * THE SECOND-NEWEST `turn_started`, not the newest: the newest is the turn
+   * asking the question. A RESUMED turn writes no `turn_started` of its own, so
+   * after an approval this answers the same boundary the parked turn had, which
+   * is the right one — it is still that turn asking.
+   *
+   * ITS OWN QUERY RATHER THAN A `window()` SCAN, because that page is byte-
+   * budgeted and clamped: one long turn could push the row being looked for out
+   * of it, and a boundary that silently became "the beginning of time" would
+   * quietly put the prose back. `ORDER BY id DESC LIMIT 2` walks the thread
+   * backwards and stops at the second hit.
+   */
+  previousTurnStart(threadId: string): number | undefined {
+    const rows = this.db
+      .prepare("SELECT at FROM agent_rows WHERE thread_id = ? AND kind = 'turn_started' ORDER BY id DESC LIMIT 2")
+      .all(threadId) as Array<{ at: number }>;
+    return rows[1]?.at;
+  }
+
   /** The last row's id, so a client opening on the tail can subscribe from the
    *  end without paging a whole conversation to reach it. */
   cursor(threadId: string): number {

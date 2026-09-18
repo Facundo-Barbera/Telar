@@ -871,6 +871,42 @@ test("the runtime's half of the fleet read is its own notes and its own unread n
   agent.close();
 });
 
+/**
+ * AND THE THIRD HALF OF IT — WHEN THE AGENT LAST LOOKED (#592).
+ *
+ * `fleet_status` keeps a session's prose only where it is news, and "news" is
+ * the Agent's own previous turn rather than a wall-clock window: a condition
+ * with meaning tracks a conversation that ran all morning as honestly as one
+ * resumed after lunch.
+ */
+test("the fleet's recency boundary is the Agent's PREVIOUS turn, not its current one", async () => {
+  const landed: Landed[] = [];
+  let clock = 1_000;
+  const { agent } = runtime([{ text: "one" }, { text: "two" }, { text: "three" }], wall(landed), { now: () => clock });
+
+  // NO PREVIOUS TURN on the thread's first: everything is news, because the
+  // Agent has reported on nothing.
+  expect(agent.fleet().since()).toBeUndefined();
+
+  agent.submit({ text: "first" });
+  await until(() => agent.state().runId === undefined, "the first turn");
+  // Still nothing BEFORE the first turn — one turn does not have a predecessor.
+  expect(agent.fleet().since()).toBeUndefined();
+
+  clock = 2_000;
+  agent.submit({ text: "second" });
+  await until(() => agent.state().runId === undefined, "the second turn");
+  // The FIRST turn's start, not the second's: a session that moved while the
+  // Agent was answering the first question is news it has not passed on.
+  expect(agent.fleet().since()).toBe(1_000);
+
+  clock = 3_000;
+  agent.submit({ text: "third" });
+  await until(() => agent.state().runId === undefined, "the third turn");
+  expect(agent.fleet().since()).toBe(2_000);
+  agent.close();
+});
+
 /* ------------------------------------------------------------------ *
  * One message's calls run together (#570).
  * ------------------------------------------------------------------ */

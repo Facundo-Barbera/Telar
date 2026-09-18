@@ -45,7 +45,7 @@
  */
 import { z } from "zod";
 import { collectTools, toolInputSchema, type SocketTool } from "../mcp-socket";
-import { notesTools, type NotesCapability } from "../notes-tools/tools";
+import { notesTools, PREVIEW_CHARS, type NotesCapability } from "../notes-tools/tools";
 import { sessionsTools, type SessionsCapability } from "../sessions-tools/tools";
 import { err, failure, json, type ToolFactory } from "../tool-kit";
 import { SECTION_CHARS, STANDING_SECTION_KEYS, type StandingSection } from "./memory";
@@ -259,6 +259,20 @@ export type AgentFleetCapability = {
   /** Unread inbox rows per session id. The Agent's OWN news — what it has not
    *  been shown yet — rather than anything the store knows about. */
   unread(): Record<string, number>;
+  /**
+   * WHEN THE AGENT'S PREVIOUS TURN BEGAN — the boundary "recently" means (#592).
+   *
+   * A CONDITION WITH MEANING RATHER THAN A CLOCK. "Moved in the last hour" is a
+   * number somebody picked; "moved since I last looked at this" is the actual
+   * question a status row's prose answers, and it tracks a conversation that ran
+   * all morning as honestly as one that resumed after lunch. A session untouched
+   * since this conversation's previous turn is staleness and nothing else.
+   *
+   * `undefined` ON THE FIRST TURN OF A THREAD, where there is no previous turn
+   * and therefore nothing the Agent has already reported on — see the caller for
+   * what that falls back to.
+   */
+  since(): number | undefined;
 };
 
 export type FleetSessionRow = { id: string; title?: string; projectId?: string; activity: string; updatedAt?: number };
@@ -276,9 +290,31 @@ const FLEET_LIMIT_MAX = 20;
  */
 const FLEET_MAX_CHARS = 6_000;
 
-/** What one row quotes of the last answer. The outline's own number: an
- *  answer's opening is what identifies it. */
-const FLEET_ANSWER_CHARS = 200;
+/**
+ * WHAT ONE ROW QUOTES OF THE LAST ANSWER, AND WHICH ROWS GET TO (#592).
+ *
+ * ── IT WAS MOST OF THE ANSWER'S BYTES AND NEARLY ALL OF ITS STALENESS ───────
+ * Measured: 6,628 characters for thirteen sessions, and a 200-character prose
+ * excerpt per row was the bulk of it — carried for long-idle sessions in other
+ * projects as readily as for the one that had just finished. "How are things"
+ * needs title, activity, open requests and whether a turn is running; the prose
+ * is what made the answer expensive, and an excerpt of a turn that ended two
+ * days ago is not news.
+ *
+ * ── BUT NOT DROPPED, BECAUSE ONE ROW EARNS IT ───────────────────────────────
+ * The session that JUST finished is exactly the one the Agent is about to report
+ * on. Remove its line and the Agent buys the bytes straight back with a
+ * `sessions_answer` call, which moves the waste rather than removing it. So:
+ * clamped hard, and only where it is still news.
+ *
+ *   · CLAMPED to the notebook's own preview length, which is the identical
+ *     judgment about different prose — enough to recognise which turn it was,
+ *     not enough to work from. Deliberately not a second number for one idea.
+ *   · KEPT only for a session that is WORKING (its answer is the last thing it
+ *     said before the turn now running) or whose last turn ended AFTER the
+ *     Agent's previous turn began — news since the Agent last looked.
+ */
+const FLEET_ANSWER_CHARS = PREVIEW_CHARS;
 
 /**
  * A SESSION ID AS THE AGENT WRITES ONE INTO ITS NOTES.
@@ -356,6 +392,14 @@ export function agentFleetTools(tool: ToolFactory, capability: AgentFleetCapabil
           const known = new Map(rail.sessions.map((session) => [session.id, session]));
           const projects = new Map(rail.projects.map((project) => [project.id, project.name]));
           const unread = capability.unread();
+          /**
+           * NO PREVIOUS TURN MEANS EVERYTHING IS NEWS, and that is the honest
+           * reading rather than a convenient one: on the first turn of a
+           * conversation the Agent has reported on nothing, so nothing it can
+           * see is something the person has already been told. It is one turn
+           * per thread, and the hard clamp applies to those rows all the same.
+           */
+          const since = capability.since() ?? 0;
 
           /**
            * ONE ROW EACH, ALL AT ONCE. A session named only in the notes costs
@@ -372,13 +416,17 @@ export function agentFleetTools(tool: ToolFactory, capability: AgentFleetCapabil
                 // how many were.
                 if (!session) return undefined;
                 const [lastTurn, openRequests] = await Promise.all([capability.lastTurn(id), capability.openRequests(id)]);
+                // NEWS, OR NOTHING. A turn still running has no `endedAt`, and
+                // its last answer is the last thing that session said before the
+                // work now in flight — which is news by definition.
+                const news = session.activity === "working" || (lastTurn !== undefined && (lastTurn.endedAt ?? Number.MAX_SAFE_INTEGER) >= since);
                 return {
                   id,
                   ...(session.title ? { title: session.title } : {}),
                   ...(session.projectId && projects.get(session.projectId) ? { projectName: projects.get(session.projectId)! } : {}),
                   activity: session.activity,
                   ...(lastTurn ? { lastTurn: { state: lastTurn.state, ...(lastTurn.endedAt === undefined ? {} : { endedAt: lastTurn.endedAt }) } } : {}),
-                  ...(lastTurn?.answer ? { lastAnswer: head(lastTurn.answer, FLEET_ANSWER_CHARS) } : {}),
+                  ...(news && lastTurn?.answer ? { lastAnswer: head(lastTurn.answer, FLEET_ANSWER_CHARS) } : {}),
                   openRequests,
                   unreadInbox: unread[id] ?? 0,
                   sources: [...(sources.get(id) ?? [])].sort(),
