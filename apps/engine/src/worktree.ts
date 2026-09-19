@@ -67,6 +67,7 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { ProjectAvailability } from "./volumes";
+import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, type WorktreesRootState } from "./worktrees-location";
 
 export type GitResult = {
   status: number;
@@ -320,9 +321,16 @@ export function sanitizeBranchName(name: string): string {
   return trimmed;
 }
 
-export function worktreesRoot(engineRoot: string): string {
-  return path.join(engineRoot, "worktrees");
-}
+/**
+ * WHERE CHECKOUTS GO WITH NOTHING CONFIGURED — #642 part 2 made this the
+ * DEFAULT rather than the answer.
+ *
+ * It lives in `worktrees-location.ts` now, beside the record that can override
+ * it, and is re-exported here because this module is where a reader looks for
+ * it. There is one definition; a second spelling of "engine root plus
+ * worktrees" is a thing to forget when the default moves.
+ */
+export { defaultWorktreesRoot } from "./worktrees-location";
 
 /**
  * ══ AND NOW THE ENGINE ROOT ITSELF CAN BE ON A DRIVE — issue #630 ══
@@ -506,6 +514,11 @@ export function planSessionWorktree(input: {
   /** A human's own name for the new branch — wins over `branchSlug`, lives
    *  OUTSIDE the engine namespaces, and is never reset (see below). */
   branchName?: string;
+  /** Where checkouts go on THIS install (#642 part 2). Absent means the
+   *  default beside the store, which is what every caller meant before the
+   *  root could be chosen. Resolved by `prepareSessionWorktree`, which is also
+   *  where an unusable one is refused. */
+  worktreesRoot?: string;
 }): WorktreePlan {
   const named = input.branchName !== undefined ? sanitizeBranchName(input.branchName) : undefined;
   const branch = named ?? (input.branchSlug !== undefined ? sanitizeBranchSlug(input.branchSlug) : `telar/${sanitize(input.sessionId)}`);
@@ -515,7 +528,7 @@ export function planSessionWorktree(input: {
   const dirname = (named ? branch.split("/") : branch.split("/").slice(1)).join("--");
   // The suffix keeps a retry after a partial failure from colliding with the
   // corpse of the previous attempt, which `git worktree add` refuses to reuse.
-  const target = path.join(worktreesRoot(input.engineRoot), `${dirname}-${crypto.randomUUID().slice(0, 8)}`);
+  const target = path.join(input.worktreesRoot ?? defaultWorktreesRoot(input.engineRoot), `${dirname}-${crypto.randomUUID().slice(0, 8)}`);
   return { path: target, branch, named: named !== undefined };
 }
 
@@ -561,8 +574,27 @@ export function prepareSessionWorktree(
     /** The project's name, for the sentence a person reads when the drive is
      *  away. The path is not what they call it. */
     projectName?: string;
+    /** Where this install puts checkouts (#642 part 2). Read from engine state
+     *  when absent; injected by tests and by a caller that already asked. */
+    worktreesRoot?: WorktreesRootState;
   },
 ): { plan: WorktreePlan; baseSha: string } {
+  /**
+   * SIX REFUSALS NOW, AND THE NEW ONE IS THE CHECKOUTS' OWN DISK — #642 part 2.
+   *
+   * The five below are about the PROJECT. Once the checkouts can live on a
+   * drive of their own, "can this session be cut" stops being answerable from
+   * the project alone: the repository can be on the internal disk and perfectly
+   * readable while the volume the checkout would land on is in somebody's bag.
+   *
+   * IT IS REFUSED FIRST, because it costs no git at all and because it is the
+   * one refusal that is about this install rather than about this project —
+   * every worktree session is blocked by it, so naming it before probing a
+   * repository keeps the cheap answer cheap.
+   */
+  const location = input.worktreesRoot ?? readWorktreesRoot(input.engineRoot);
+  const blocked = worktreesRootBlocker(location);
+  if (blocked) throw new WorktreeError(blocked);
   if (input.availability === "unmounted") {
     throw new WorktreeError(
       `The drive holding ${input.projectName ?? input.projectRoot} is not connected. Plug it back in and this will work again.`,
@@ -578,7 +610,9 @@ export function prepareSessionWorktree(
   }
   // The name before the base: a branch the engine will not create is a refusal
   // that costs no git at all, and ordering it first keeps a bad request cheap.
-  const plan = planSessionWorktree(input);
+  const { worktreesRoot: _asked, ...rest } = input;
+  const root = rootOf(location);
+  const plan = planSessionWorktree({ ...rest, ...(root ? { worktreesRoot: root } : {}) });
   return { plan, baseSha: resolveWorktreeBase(git, input.projectRoot, input.baseRef) };
 }
 
@@ -607,7 +641,11 @@ export async function createSessionWorktreeAsync(
   },
 ): Promise<{ path: string; branch: string; baseRef: string }> {
   const { plan, baseSha } = input;
-  await fs.promises.mkdir(worktreesRoot(input.engineRoot), { recursive: true, mode: 0o700 });
+  // THE PLAN'S OWN PARENT, not the configured root read a second time (#642
+  // part 2). The plan was made against the root as it was when the request was
+  // refused-or-accepted; re-reading here would let a root changed in between
+  // create a directory the checkout is not going into.
+  await fs.promises.mkdir(path.dirname(plan.path), { recursive: true, mode: 0o700 });
 
   // `-B` rather than `-b` FOR ENGINE-OWNED NAMES ONLY: a session recreated
   // after its worktree was reaped would otherwise fail forever on a branch
