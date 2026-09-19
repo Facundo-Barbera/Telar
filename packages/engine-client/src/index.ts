@@ -113,6 +113,8 @@ import {
   type AgentTurnInput,
   type WorkerStatus,
   type ProviderSkills,
+  type ClaudeConversation,
+  type ConversationImportDetail,
   type WorkspaceFile,
   type WorkspaceListing,
   type WorkerTurnFailure,
@@ -1834,6 +1836,41 @@ export class EngineClient {
    */
   sessionSkills(sessionId: string): Promise<ProviderSkills> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/skills`);
+  }
+
+  /**
+   * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, newest first — `/resume`'s
+   * picker (#616).
+   *
+   * PER LOGIN, NOT PER SESSION, like `projectSkills` and for the same reason:
+   * the picker runs on a canvas, before the session it would adopt into exists.
+   * `instanceId` is which login's history to read — absent is the built-in
+   * slot, which is where a terminal `claude` writes.
+   *
+   * Forks Telar has already adopted are not in the answer: adopting an adoption
+   * is something a person could do without ever being told that is what it was.
+   */
+  claudeConversations(options: { instanceId?: string; cwd?: string } = {}): Promise<{ conversations: ClaudeConversation[] }> {
+    const query = new URLSearchParams();
+    if (options.instanceId) query.set("instanceId", options.instanceId);
+    if (options.cwd) query.set("cwd", options.cwd);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request("GET", `/v2/claude/conversations${suffix}`);
+  }
+
+  /**
+   * Adopt one into this session: fork it, import its history as journal rows,
+   * and point the session's next turn at the fork.
+   *
+   * THE PERSON'S OWN HISTORY IS NOT WRITTEN TO — asserted by the engine after
+   * the fork rather than assumed, and the adoption is refused if the original
+   * moved by so much as a byte.
+   */
+  adoptClaudeConversation(
+    sessionId: string,
+    input: { sourceSessionId: string; cut?: "whole" | "since_compact_boundary"; sourceCwd?: string },
+  ): Promise<{ session: Session; turn: Turn; provenance: ConversationImportDetail }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/adopt`, input);
   }
 
   /**

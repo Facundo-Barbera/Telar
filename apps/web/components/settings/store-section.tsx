@@ -29,9 +29,9 @@
 import { useEffect, useState } from "react";
 import { HardDriveIcon, TrashIcon } from "lucide-react";
 import { chooseDirectory } from "@/lib/choose-directory";
+import { formatBytes } from "@/lib/format";
 import {
   desktopStore,
-  formatBytes,
   progressLabel,
   REMOVABLE_DRIVE_WARNING,
   useStoreStatus,

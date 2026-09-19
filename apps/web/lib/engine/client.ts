@@ -3,6 +3,8 @@
 import type { Channel } from "@/lib/build-identity";
 import type {
   BrowserSnapshot,
+  ClaudeConversation,
+  ConversationImportDetail,
   GitCommitEntry,
   GitHubCheckLog,
   GitHubFacets,
@@ -1112,6 +1114,34 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      */
     sessionSkills: (sessionId: string) =>
       request<ProviderSkills>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/skills`),
+    /**
+     * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, for `/resume` (#616).
+     *
+     * ASKED PER LOGIN, NOT PER SESSION, because the picker runs on a canvas —
+     * before the session it would adopt into exists. `instanceId` is whose
+     * history to read (a configured login keeps its own config directory);
+     * absent is the built-in slot, where a terminal `claude` writes.
+     *
+     * NOT SCOPED TO A PROJECT either. Resume finds a conversation by id from
+     * any directory, so filtering to the current checkout would hide
+     * conversations that would adopt perfectly well — the project path is shown
+     * on each row instead, and the person decides.
+     */
+    claudeConversations: (instanceId?: string) =>
+      request<{ conversations: ClaudeConversation[] }>(
+        fetcher,
+        "GET",
+        `/api/claude-conversations${instanceId ? `?${new URLSearchParams({ instanceId }).toString()}` : ""}`,
+      ),
+    /** Adopt one: fork it, import its history, and point this session's next
+     *  turn at the fork. The person's own conversation is not written to. */
+    adoptClaudeConversation: (sessionId: string, sourceSessionId: string) =>
+      request<{ session: Session; turn: Turn; provenance: ConversationImportDetail }>(
+        fetcher,
+        "POST",
+        `/api/sessions/${encodeURIComponent(sessionId)}/adopt`,
+        { sourceSessionId },
+      ),
     /**
      * The same, one scope wider — what a CANVAS asks, because the session that
      * would answer for itself does not exist yet (#500). `driver` is the

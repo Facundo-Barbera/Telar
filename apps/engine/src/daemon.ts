@@ -1631,6 +1631,37 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
+      /**
+       * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS — `/resume`'s picker (#616).
+       *
+       * NOT UNDER A SESSION, and that is the whole reason it is here rather
+       * than beside `/skills`: the picker runs on a CANVAS, before the session
+       * it would adopt into exists. `projectSkills` learned the same thing in
+       * #500 — a question a canvas has to ask cannot be scoped to a session.
+       *
+       * IT IS STILL A LOGIN'S QUESTION. A configured instance keeps its own
+       * config directory with its own history in it, so `?instanceId=` selects
+       * whose conversations these are; absent is the built-in slot, which is
+       * where a terminal `claude` writes.
+       *
+       * `?cwd=` narrows to one project directory. Absent lists every project,
+       * which is the right default: resume finds a conversation BY ID from any
+       * directory, so filtering to cwd-matched projects would hide
+       * conversations that would adopt perfectly well. The project path is on
+       * each row instead, and the person decides.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/claude/conversations") {
+        const instanceId = url.searchParams.get("instanceId")?.trim();
+        const cwd = url.searchParams.get("cwd")?.trim();
+        writeJson(response, 200, {
+          conversations: await store.listAdoptableClaudeConversations({
+            ...(instanceId ? { instanceId } : {}),
+            ...(cwd ? { cwd } : {}),
+            limit: positiveParam(url.searchParams.get("limit"), 100, 500, "limit"),
+          }),
+        });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/projects") {
         // `?includeRemoved=1` OPTS IN to the put-away ones. Absent by default,
         // so every picker and the sidebar drop a removed project without
@@ -4082,6 +4113,29 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               ...(options.providerSkills?.loadProviderCommands
                 ? { loadProviderCommands: options.providerSkills.loadProviderCommands }
                 : {}),
+            }),
+          );
+          return;
+        }
+        /**
+         * ADOPT ONE — fork it, import its history, and point this session's
+         * next turn at the fork.
+         *
+         * A POST ON THE SESSION, because that is what changes: nothing about
+         * the person's own conversation is touched (asserted, not assumed), and
+         * what comes back is this session's new turn plus the stamp saying
+         * where it came from.
+         */
+        if (request.method === "POST" && session.tail === "/adopt") {
+          const input = await body(request);
+          const cut = input.cut === "since_compact_boundary" || input.cut === "whole" ? input.cut : undefined;
+          writeJson(
+            response,
+            201,
+            await store.adoptClaudeConversation(session.sessionId, {
+              sourceSessionId: stringValue(input.sourceSessionId, "source session id")!,
+              ...(cut ? { cut } : {}),
+              ...((value) => (value ? { sourceCwd: value } : {}))(stringValue(input.sourceCwd, "source cwd", true)),
             }),
           );
           return;

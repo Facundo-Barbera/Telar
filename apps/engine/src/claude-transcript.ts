@@ -127,6 +127,14 @@ const DEFAULT_MAX_OUTPUT_CHARS = 2_000;
 const DEFAULT_MAX_TAIL_BYTES = 16 * 1024 * 1024;
 const NEWLINE = 0x0a;
 
+/**
+ * The record types the conversation itself is made of — the three that are 96%
+ * of a transcript's bytes, plus `system` for the compaction boundary. Used to
+ * choose where the backward walk STARTS; once on the chain, a record is on the
+ * live path by its uuid and the mapper below decides what it becomes.
+ */
+const CONVERSATION_TYPES = new Set(["user", "assistant", "system"]);
+
 /** A transcript record. Everything is optional because this is a FOREIGN file
  *  written by a CLI that versions independently of Telar. */
 type Record_ = {
@@ -283,6 +291,22 @@ export function readClaudeTranscript(lines: readonly string[], options: ReadOpti
       // sub-agent's own conversation and is not where the person left off.
       if (record.isSidechain) {
         drop("sidechain");
+        continue;
+      }
+      /**
+       * AND IT IS A CONVERSATION RECORD, NOT MERELY ONE WITH A UUID.
+       *
+       * Bookkeeping that carries no uuid is already skipped above, but some of
+       * it does carry one — and the CLI writes exactly such a record LAST. A
+       * fork stamps `custom-title` after the copied messages; `/rename` writes
+       * the same record; `ai-title` arrives the same way. Each has a uuid and
+       * no parent, so starting the walk there ended it immediately: the whole
+       * conversation read as ZERO rows, with nothing to say it had gone wrong.
+       * Found by adopting a real fork, which is the first caller that reads a
+       * transcript the CLI has just written a title into.
+       */
+      if (!CONVERSATION_TYPES.has(record.type ?? "")) {
+        drop(record.type ?? "<untyped>");
         continue;
       }
       want = uuid;

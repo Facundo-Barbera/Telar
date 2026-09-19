@@ -734,6 +734,46 @@ export const SessionSettledBy = z.object({
 });
 export type SessionSettledBy = z.infer<typeof SessionSettledBy>;
 
+/**
+ * ONE OF THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, as `/resume`'s picker has
+ * to show it (#616).
+ *
+ * EVERY FIELD HERE EXISTS TO TELL TWO CONVERSATIONS APART, and the shape is
+ * what it is because the obvious design was measured and fails. The CLI's own
+ * titles do NOT distinguish conversations: six identically-titled sessions were
+ * produced deliberately in one directory and the CLI itself refused to resolve
+ * between them — `--resume "PINEAPPLE-7742" matches 6 sessions`. A picker
+ * listing titles would reproduce that failure in Telar, where the person has
+ * even less context to guess with.
+ *
+ * So `title` is never the only thing a row can show. `firstPrompt` says what
+ * the conversation was ABOUT in the person's own opening words,
+ * `lastActivityAt` when they were last in it, `cwd` which project it belongs
+ * to, and `bytes` how much of it there is — four independent handles, of which
+ * at least one differs between any two real conversations.
+ */
+export const ClaudeConversation = z.object({
+  sessionId: z.string().min(1),
+  /** Custom title, else the CLI's auto-title, else the first prompt. Not, on
+   *  its own, an identifier — see above. */
+  title: z.string(),
+  /** The first real user prompt, when the CLI extracted one. */
+  firstPrompt: z.string().optional(),
+  /** Set only when the person renamed it themselves, via `/rename`. Worth
+   *  distinguishing: a name somebody CHOSE is trustworthy in a way a generated
+   *  one is not. */
+  customTitle: z.string().optional(),
+  lastActivityAt: Timestamp,
+  createdAt: Timestamp.optional(),
+  /** The working directory the conversation happened in. */
+  cwd: z.string().optional(),
+  gitBranch: z.string().optional(),
+  /** Transcript size on disk. The rough measure of how much conversation there
+   *  is, and the one that tells a long thread from a one-line question. */
+  bytes: z.number().int().nonnegative().optional(),
+});
+export type ClaudeConversation = z.infer<typeof ClaudeConversation>;
+
 export const Session = z.object({
   id: Id,
   /**
@@ -1785,8 +1825,16 @@ export const Turn = z.object({
    * before, so the history read as the human typing a slash command — three
    * times in a row, on one measured session, because nothing refused a
    * second one while the first was in flight.
+   *
+   * `import` IS THE SAME LESSON AGAIN, for `/resume` (#616). Adopting a Claude
+   * Code conversation writes one turn that nobody typed and no worker ran: it
+   * holds the imported history as its items, and `input` is the engine's own
+   * one-line description of the adoption. A renderer must not draw that as the
+   * person's words — which is exactly what happened to `/compact` before this
+   * enum had a second member — so the kind is what says so, structurally,
+   * rather than a prefix on the text that somebody has to remember to strip.
    */
-  kind: z.enum(["message", "compact"]).optional(),
+  kind: z.enum(["message", "compact", "import"]).optional(),
   /**
    * WHO STARTED THIS TURN. Absent means a human (or another session, through
    * `sessions_send`) sent a message. `provider` is a turn the CLI started ON

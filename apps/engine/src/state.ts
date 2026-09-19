@@ -106,6 +106,7 @@ import {
   type GitFilePatch,
   type SessionDiff,
   type EngineEvent,
+  type ConversationImportDetail,
   type Item,
   type McpServer,
   type NotificationDetail,
@@ -190,6 +191,9 @@ import {
 } from "./github";
 import { readModelCatalogue } from "./models";
 import { providerProcessEnv } from "./provider-instances";
+import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
+import type { ClaudeConversation, ForkCut } from "./claude-fork";
+import { describeImport } from "./claude-transcript";
 import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
@@ -8661,6 +8665,199 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "turn.claimed", workerId: input.workerId }, turn.runId);
     this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
     return structuredClone(turn);
+  }
+
+  /**
+   * THE CLAUDE CONFIG DIRECTORY A SESSION'S TURNS ACTUALLY RUN WITH.
+   *
+   * Resolved the way the CHILD resolves it, not the way the engine does: the
+   * instance's patch is applied over this process's environment, and a patch
+   * that DELETES `CLAUDE_CONFIG_DIR` (every configured login scrubs it before
+   * setting its own) means the default location even when the engine itself
+   * inherited one. Anything less is the near-miss #616 records — an adoption
+   * cut from the wrong person's history, or from a store the resumed turn will
+   * never look in.
+   */
+  private claudeConfigDirFor(session: Session): string | undefined {
+    return this.claudeConfigDirForInstance(this.resolveProviderInstance(session.providerInstanceId, session.driver));
+  }
+
+  private claudeConfigDirForInstance(instance: ProviderInstance): string | undefined {
+    const patch = providerProcessEnv(instance);
+    if (Object.hasOwn(patch, "CLAUDE_CONFIG_DIR")) return patch.CLAUDE_CONFIG_DIR?.trim() || undefined;
+    return process.env.CLAUDE_CONFIG_DIR?.trim() || undefined;
+  }
+
+  /**
+   * WHERE ADOPTED FORKS LIVE — under the engine root, because the engine owns
+   * that directory and knows where it is. Derived HERE and passed to both the
+   * fork and the listing, so "we relocated it there" and "a fork there is ours
+   * already" can never be two different answers.
+   */
+  private adoptedForkHome(): string {
+    return path.join(this.paths.root, "adopted");
+  }
+
+  /**
+   * The conversations a LOGIN could adopt.
+   *
+   * SCOPED TO AN INSTANCE RATHER THAN A SESSION, which is the same shape
+   * `projectSkills` takes and for the same reason: the picker runs on a canvas,
+   * before the session it would adopt into exists (#500's lesson, #616's
+   * picker). Scoping it to a session would have made "show me my
+   * conversations" require first creating a session to throw away if the person
+   * picked none.
+   *
+   * IT IS STILL A LOGIN'S QUESTION, not the machine's. A configured instance
+   * keeps its own config directory with its own history in it, so the answer
+   * differs per login, and an absent id means the built-in slot — Claude's own
+   * default location, which is where a terminal `claude` writes.
+   */
+  async listAdoptableClaudeConversations(
+    options: { instanceId?: string; cwd?: string; limit?: number } = {},
+  ): Promise<ClaudeConversation[]> {
+    const instance = this.resolveProviderInstance(options.instanceId ?? defaultInstanceIdForDriver("claude"), "claude");
+    if (instance.driver !== "claude") {
+      throw new EngineStateError("invalid_request", "only a Claude login has Claude Code conversations");
+    }
+    const configDir = this.claudeConfigDirForInstance(instance);
+    return listAdoptableConversations({
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+      ...(options.limit !== undefined ? { limit: options.limit } : {}),
+      ...(configDir ? { configDir } : {}),
+      forkHome: this.adoptedForkHome(),
+    });
+  }
+
+  /**
+   * ADOPT A CLAUDE CODE CONVERSATION INTO THIS SESSION — `/resume`, #616.
+   *
+   * Three writes, in one breath, and each is load-bearing:
+   *
+   *   1. `resumeCursor` becomes the FORK's id, so the session's next turn
+   *      continues that conversation. This is the half that makes the feature a
+   *      continuation rather than a rendering of somebody's old text.
+   *   2. One turn of `kind: "import"`, holding the imported history as its
+   *      items. A turn, because the cockpit's fold drops any item whose runId
+   *      names no turn — silently — and `import`, because nobody typed it.
+   *   3. The provenance row FIRST among those items, because the CLI records
+   *      nothing about a fork's origin and this is the only chance to write it.
+   *
+   * REFUSED ON A SESSION THAT HAS ALREADY SPOKEN. Adopting into a conversation
+   * that is already under way would splice two histories that never met: the
+   * cursor would jump to the fork mid-thread, so the model would stop
+   * remembering everything this session had actually done, while the transcript
+   * went on showing it. `/resume` is for a NEW session, and this is where that
+   * is enforced rather than hoped for.
+   */
+  async adoptClaudeConversation(
+    sessionId: string,
+    input: { sourceSessionId: string; cut?: ForkCut; sourceCwd?: string; maxRows?: number },
+  ): Promise<{ session: Session; turn: Turn; provenance: ConversationImportDetail }> {
+    const session = this.getSession(sessionId);
+    if (session.driver !== "claude") {
+      throw new EngineStateError("invalid_request", "only a Claude session can adopt a Claude Code conversation");
+    }
+    const queue = this.readQueue(sessionId);
+    if (queue.turns.length > 0 || session.resumeCursor) {
+      throw new EngineStateError(
+        "conflict",
+        "this session has already started a conversation — adopt into a new session instead",
+      );
+    }
+    let adoption: Adoption;
+    try {
+      adoption = await adoptClaudeConversation({
+        sourceSessionId: input.sourceSessionId,
+        // The fork's title, and the one thing that keeps it apart from its
+        // parent in any list that shows both.
+        title: session.title,
+        ...(input.cut ? { cut: input.cut } : {}),
+        ...(input.sourceCwd ? { sourceCwd: input.sourceCwd } : {}),
+        ...(input.maxRows !== undefined ? { maxRows: input.maxRows } : {}),
+        ...((dir) => (dir ? { configDir: dir } : {}))(this.claudeConfigDirFor(session)),
+        forkHome: this.adoptedForkHome(),
+      });
+    } catch (error) {
+      // The module's own sentences — "No conversation found with session ID",
+      // and the untouched-original refusal — are what #616 asks be forwarded
+      // rather than turned into a stack trace.
+      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
+    }
+
+    const at = this.now();
+    const runId = `run_${crypto.randomUUID().replaceAll("-", "")}`;
+    const turn: Turn = {
+      runId,
+      sessionId,
+      sequence: queue.nextSequence++,
+      // NOT the person's words, and `kind` is what says so structurally. This
+      // is the line `sessions_read`'s fold and every list view show.
+      input: describeAdoption(adoption.provenance).slice(0, MAX_TEXT_LENGTH),
+      kind: "import",
+      state: "completed",
+      acceptedAt: at,
+      startedAt: at,
+      updatedAt: at,
+      completedAt: at,
+      // The continuity this adoption produced, on the turn that produced it —
+      // the same field a real turn writes, so recovery heals from either.
+      providerSessionId: adoption.fork.sessionId,
+      resultText: describeImport(adoption.read),
+    };
+    queue.turns.push(turn);
+    this.writeQueue(sessionId, queue);
+
+    const items = this.readItems(sessionId);
+    const stamp: Item = {
+      id: `import_${runId}`,
+      runId,
+      sessionId,
+      status: "completed",
+      title: describeAdoption(adoption.provenance),
+      detail: { type: "conversation_import", import: adoption.provenance },
+      startedAt: at,
+      completedAt: at,
+    };
+    items.set(stamp.id, stamp);
+    const written: Item[] = [stamp];
+    /**
+     * THE HISTORY, IN ORDER, ON ONE TURN. Ids are derived from the run and the
+     * row's index rather than minted at random, so an adoption retried after a
+     * crash between the queue write and the item write replaces its own rows
+     * instead of doubling them.
+     */
+    adoption.rows.forEach((row, index) => {
+      const item: Item = {
+        id: `imported_${runId}_${index}`,
+        runId,
+        sessionId,
+        status: row.status,
+        ...(row.title ? { title: row.title } : {}),
+        detail: row.detail,
+        startedAt: row.startedAt,
+        ...(row.completedAt !== undefined ? { completedAt: row.completedAt } : {}),
+        providerRefs: row.providerRefs,
+        imported: true,
+      };
+      items.set(item.id, item);
+      written.push(item);
+    });
+    this.writeItems(sessionId, items);
+
+    this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, runId);
+    for (const item of written) {
+      this.appendEvent(sessionId, { type: "item.started", item }, runId);
+      this.appendEvent(sessionId, { type: "item.completed", item }, runId);
+    }
+    this.appendEvent(sessionId, { type: "turn.completed", resultText: turn.resultText ?? "" }, runId);
+
+    // LAST, and through the same door a completed turn uses: the cursor is what
+    // makes the next turn a continuation, and writing it before the rows would
+    // leave a crash in between with a session that resumes a history it does
+    // not show.
+    this.touchSession(sessionId, at, adoption.fork.sessionId);
+    return { session: this.getSession(sessionId), turn: structuredClone(turn), provenance: adoption.provenance };
   }
 
   /**
