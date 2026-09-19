@@ -84,6 +84,15 @@ struct NewSessionView: View {
                 if matches.isEmpty {
                     VStack(spacing: 12) {
                         if loading { ProgressView() }
+                        // THE ONE INEXACT RUNG IN THE WHOLE RAMP. Every other
+                        // size lands on a style that matches it at the default
+                        // text size — 16 is `.callout`, 17 is `.body`, 20 is
+                        // `.title3`. An 18 has none: `.headline` is 17 and
+                        // `.title3` is 20, so it had to move. It moves DOWN,
+                        // because one point is a smaller change than two and
+                        // `.headline` is what this is — a heading over the
+                        // sentence beneath it. The `.bold` is the call site's
+                        // own and is kept.
                         Text(loading ? "Loading projects" : targets.isEmpty ? "No projects found" : "No project matches that")
                             .font(.system(.headline, weight: .bold))
                             .foregroundStyle(Theme.text)
