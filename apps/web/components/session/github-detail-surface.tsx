@@ -318,6 +318,15 @@ const REVIEW_TONE: Record<string, string> = {
  * A COMMENT GITHUB HID STAYS HIDDEN, behind its reason and a click. Rendering a
  * spam-hidden comment in full beside the real ones shows a reader something the
  * repository decided to hide — and GitHub itself collapses these.
+ *
+ * AND THE CARD PAINTS — `bg-card`, issue #691. It wore a border, an author bar on
+ * the replies, and no fill of its own, which only ever worked because the panel
+ * behind it was opaque: turn translucency on, the panel thins to --sidebar-wash,
+ * and this becomes a 1px hairline drawn over the desktop with a paragraph inside
+ * it. A comment body is read word by word, which makes it a READING SURFACE, and
+ * a reading surface never thins at any slider setting. The fill also repairs the
+ * author bar in light mode, where `bg-muted/40` over --sidebar was 0.952 over
+ * 0.955 — a boundary marker nobody could see. On --card it finally is one.
  */
 export function EntryCard({ entry }: { entry: ForgeEntry }) {
   const [revealed, setRevealed] = useState(false);
@@ -325,7 +334,7 @@ export function EntryCard({ entry }: { entry: ForgeEntry }) {
   const verdict = entry.state ? (REVIEW_TONE[entry.state.toUpperCase()] ?? "text-muted-foreground") : undefined;
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-md border border-border">
+    <div className="min-w-0 overflow-hidden rounded-md border border-border bg-card">
       {entry.kind !== "body" && (
         <div className="flex min-w-0 items-baseline gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-3xs text-muted-foreground">
           <span className="min-w-0 truncate font-medium text-foreground">{entry.author ?? "someone"}</span>
@@ -527,8 +536,11 @@ function CheckRow({
             <>
               {/* MONOSPACE, SCROLLED, AND CAPPED IN HEIGHT. A log is the one thing on
                   this surface that can be thousands of lines, and it must not push the
-                  conversation off the screen. */}
-              <pre className="max-h-64 overflow-auto rounded border border-border bg-muted/40 p-1.5 font-mono text-3xs leading-snug whitespace-pre-wrap">
+                  conversation off the screen.
+                  `bg-card` RATHER THAN `bg-muted/40` (#691): a failing step's log is
+                  read line by line, so it paints. At 40% it was borrowing the panel's
+                  fill, and under translucency there is no panel fill to borrow. */}
+              <pre className="max-h-64 overflow-auto rounded border border-border bg-card p-1.5 font-mono text-3xs leading-snug whitespace-pre-wrap">
                 {log.lines.join("\n")}
               </pre>
               {log.truncated && (
