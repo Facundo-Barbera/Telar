@@ -815,6 +815,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const decommissioned = sweepReport(sweepSpoolAndLooms(store.paths.root));
   if (decommissioned) process.stdout.write(`${decommissioned}\n`);
   /**
+   * AND EVERY LIVE WORKTREE IS LOCKED — issue #641.
+   *
+   * Not a sweep: nothing is deleted and nothing is once-per-home. It is the
+   * backfill for a guard that is otherwise only applied at the cut, so the
+   * worktrees that exist right now — including whichever session is mid-feature
+   * when this daemon starts — are covered before the next `gh pr merge
+   * --delete-branch` goes looking for one. Cheap, idempotent, and best-effort;
+   * see `EngineStore.lockLiveWorktrees`.
+   *
+   * SILENT, unlike the sweeps above, and deliberately: this runs on every start
+   * rather than once, and it changes nothing a person owns. A line per boot
+   * saying "locked 7 worktrees" is how a log teaches its reader to skip it.
+   */
+  store.lockLiveWorktrees();
+  /**
    * AND WHAT THE MAIN SESSION LEFT — issue #531.
    *
    * THE KEY IS CARRIED FIRST, then the document goes. The order is the rule: the
