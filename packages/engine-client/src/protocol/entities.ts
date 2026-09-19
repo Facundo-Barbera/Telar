@@ -2106,21 +2106,48 @@ export const GitRefEntry = z.object({
 });
 export type GitRefEntry = z.infer<typeof GitRefEntry>;
 
+/**
+ * WHY A GIT READ IS NOT AN ANSWER — issue #650.
+ *
+ * `timeout` is a child the engine killed at its bound, and it is the case this
+ * exists for: on a loaded machine git exits non-zero without having looked, and
+ * every field it feeds used to become a FACT — no branches, a clean tree, no
+ * worktrees. Retrying is the honest offer. `failed` is everything else, where it
+ * usually is not.
+ */
+export const GitReadFailure = z.enum(["timeout", "failed"]);
+export type GitReadFailure = z.infer<typeof GitReadFailure>;
+
 export const GitOverview = z.object({
   repository: z.boolean(),
   branch: z.string().optional(),
-  dirtyFiles: z.number().int().nonnegative(),
+  /** ABSENT when git did not answer — never 0, which a reader takes for a clean
+   *  working tree somebody actually looked at. */
+  dirtyFiles: z.number().int().nonnegative().optional(),
   /** Both absent when the branch has no upstream — which is NOT zero/zero. */
   ahead: z.number().int().nonnegative().optional(),
   behind: z.number().int().nonnegative().optional(),
-  worktrees: z.array(GitWorktreeEntry),
+  /** Absent when `git worktree list` did not answer; `[]` only when there
+   *  genuinely are none. */
+  worktrees: z.array(GitWorktreeEntry).optional(),
   /**
    * Local and remote-tracking branches, newest commit first, capped — the
    * base-ref picker's menu. Remote entries are whatever the last fetch saw:
    * the engine's git surface stays read-only, so it never fetches to freshen
    * them. Absent (never empty) on a non-repository.
+   *
+   * MAY BE PARTIAL. Read `refsIncomplete` before treating a name's absence from
+   * this list as "that branch does not exist".
    */
   refs: z.array(GitRefEntry).optional(),
+  /**
+   * WHY THE LISTING IS NOT THE WHOLE LISTING — issue #650. The refs are read one
+   * namespace at a time, and a half that was killed used to arrive as a SHORT
+   * list rather than an error: the picker drew it as the repository, and the
+   * person picked a base that was not the one they meant. Set means the picker
+   * must say git did not answer and offer to ask again.
+   */
+  refsIncomplete: GitReadFailure.optional(),
   /**
    * The remote's default branch (`origin/main`), when remote-tracking state
    * exists — what a fresh worktree is cut from unless the person picks
