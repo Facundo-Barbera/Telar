@@ -122,6 +122,38 @@ describe("what Telar is keeping", () => {
     }
   });
 
+  test("during a move, BOTH roots count as checkouts — the row is about disk, not bookkeeping", async () => {
+    /**
+     * #642 part 2: changing the root affects the next cut, so for a while
+     * there are checkouts under two roots. A row that counted only the
+     * configured one would under-report by exactly the gigabytes somebody
+     * changed the setting to get rid of.
+     */
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "telar-newroot-"));
+    try {
+      fs.mkdirSync(path.join(elsewhere, "new"), { recursive: true });
+      fs.writeFileSync(path.join(elsewhere, "new", "file.ts"), Buffer.alloc(32 * 1024, 7));
+      write("worktrees/old/file.ts", 64 * 1024);
+
+      const report = await measureStorage({ root, worktreesRoot: elsewhere, alsoWorktrees: [path.join(root, "worktrees")] });
+
+      // One row, both roots, and the leftovers are NOT filed under
+      // "Everything else" — they are checkouts, whatever the setting says.
+      expect(report.entries.map((entry) => entry.category)).toEqual(["worktrees"]);
+      expect(bytesOf(report, "worktrees")).toBeGreaterThanOrEqual(96 * 1024);
+      expect(report.total).toBe(bytesOf(report, "worktrees"));
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  test("a second root that is the same root is not counted twice", async () => {
+    write("worktrees/one/file.ts", 64 * 1024);
+    const both = await measureStorage({ root, worktreesRoot: path.join(root, "worktrees"), alsoWorktrees: [path.join(root, "worktrees")] });
+    const once = await measureStorage({ root, worktreesRoot: path.join(root, "worktrees") });
+    expect(both.total).toBe(once.total);
+  });
+
   test("checkouts are counted once, not twice, when their root is inside the store", async () => {
     write("worktrees/one/file.ts", 128 * 1024);
     const report = await measureStorage({ root, worktreesRoot: path.join(root, "worktrees") });

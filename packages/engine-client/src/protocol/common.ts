@@ -510,6 +510,43 @@ export const StorageReport = z.object({
 export type StorageReport = z.infer<typeof StorageReport>;
 
 /**
+ * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
+ *
+ * FOUR KINDS AND NOT A PATH, because three of them are things a person has to
+ * be told rather than a location to quietly use: nothing chosen, chosen and
+ * present, chosen and on a drive that is not connected, and a record this
+ * build cannot read.
+ *
+ * THERE IS NO `restartRequired` HERE, and its absence is a finding rather than
+ * an omission. The root is consulted at exactly one moment — planning where a
+ * new checkout lands — and everything afterwards addresses a worktree by the
+ * absolute path recorded on its session, including the prune guard that
+ * derives its root per-worktree from that path. So a new root takes effect on
+ * the next cut. #630's store move genuinely cannot apply until the next
+ * launch; this one can, and inheriting the restart out of symmetry would cost
+ * somebody a restart they do not need.
+ *
+ * `blocker` IS THE WHOLE SENTENCE, not a code to switch on. It names the drive
+ * by the label recorded when it was chosen, because the moment it is needed is
+ * the moment the drive is not there to be asked.
+ */
+export const WorktreesRoot = z.object({
+  kind: z.enum(["default", "configured", "absent", "unreadable"]),
+  /** Where checkouts go, or would go. Absent only when the record is
+   *  unreadable — the one state with no location to name. */
+  root: z.string().min(1).optional(),
+  /** Where they would go with nothing configured. What "put it back" means. */
+  default: z.string().min(1),
+  volume: z.object({ mount: z.string(), uuid: z.string() }).partial({ uuid: true }).optional(),
+  /** The drive's name the day it was chosen. */
+  label: z.string().optional(),
+  /** Why no worktree session can be cut right now, in words a person can act
+   *  on. Absent when one can. */
+  blocker: z.string().optional(),
+});
+export type WorktreesRoot = z.infer<typeof WorktreesRoot>;
+
+/**
  * The untranslated provider payload behind a normalized event.
  *
  * KEEP IT, KEEP IT OPTIONAL, AND NEVER DEPEND ON IT. It is how a normalization

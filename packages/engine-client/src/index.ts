@@ -36,6 +36,7 @@ import {
   type SidebarLayout,
   type StorageReport,
   type TextGenPolicy,
+  type WorktreesRoot,
   type UsageReport,
   type UsageResolution,
   type UsageLimits,
@@ -1458,6 +1459,22 @@ export class EngineClient {
    */
   storage(options: { refresh?: boolean } = {}): Promise<{ storage: StorageReport }> {
     return this.request("GET", `/v2/storage${options.refresh ? "?refresh=1" : ""}`);
+  }
+
+  /** Where session checkouts go on this install — see `WorktreesRoot`. */
+  worktreesRoot(): Promise<{ worktreesRoot: WorktreesRoot }> {
+    return this.request("GET", "/v2/worktrees-root");
+  }
+
+  /**
+   * Put them somewhere else from the next cut onward. `null` restores the
+   * default beside the store.
+   *
+   * NOTHING IS MOVED BY THIS and no restart is needed: checkouts already cut
+   * keep working where they are, addressed by the path on their session.
+   */
+  setWorktreesRoot(root: string | null): Promise<{ worktreesRoot: WorktreesRoot }> {
+    return this.request("PUT", "/v2/worktrees-root", { root });
   }
 
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */
