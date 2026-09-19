@@ -45,12 +45,12 @@ struct InboxView: View {
             ForEach(inbox.failures) { failure in
                 HStack(spacing: 6) {
                     Image(systemName: failure.needsPairing ? "lock.circle" : "wifi.exclamationmark")
-                        .font(.system(size: 11))
+                        .font(.system(Theme.caption))
                     // With a copy on the phone the rows stay and this line
                     // says how old they are; without one it says what went
                     // wrong, because the failure is all there is to show.
                     Text(failureLine(failure))
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                 }
                 .foregroundStyle(failure.needsPairing ? Theme.statusRed : Theme.statusAmber)
                 .listRowBackground(Color.clear)
@@ -174,7 +174,7 @@ struct InboxView: View {
                         HStack(spacing: 4) {
                             Image(systemName: "desktopcomputer")
                             if let filter = inbox.filter {
-                                Text(hostName(filter)).font(.system(size: 13, weight: .medium))
+                                Text(hostName(filter)).font(.system(Theme.footnote, weight: .medium))
                             }
                         }
                     }
@@ -198,7 +198,7 @@ struct InboxView: View {
     /// joined it (#457) so the two cannot drift apart visually.
     @ViewBuilder private func shelfButtonLabel(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 13, weight: .medium))
+            .font(.system(Theme.footnote, weight: .medium))
             .foregroundStyle(Theme.textMuted)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
@@ -230,7 +230,7 @@ struct SettledDivider: View {
     var body: some View {
         HStack(spacing: 10) {
             Text("Settled")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
             Rectangle().fill(Theme.border).frame(height: 1)
         }
@@ -266,15 +266,15 @@ struct ThreadCardRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: "folder")
-                    .font(.system(size: 11))
+                    .font(.system(Theme.caption))
                     .foregroundStyle(Theme.textMuted)
                 Text(projectName ?? "No project")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(Theme.subhead, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
                     .lineLimit(1)
                 if let hostLabel {
                     Text(hostLabel)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(Theme.caption, weight: .medium))
                         .foregroundStyle(Theme.textMuted)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
@@ -288,28 +288,28 @@ struct ThreadCardRow: View {
                             SteppedPulseDot(color: status.color)
                         }
                         Text(status.label)
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(Theme.footnote, weight: .medium))
                             .foregroundStyle(status.color)
                     }
                 } else {
                     Text(relativeTime(session.activityAt ?? session.updatedAt))
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .tabularNumbers()
                 }
             }
             Text(session.title)
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(.callout, weight: .medium))
                 .foregroundStyle(Theme.text)
                 .lineLimit(2)
             HStack(spacing: 8) {
                 Text(session.workspace.branch ?? session.workspace.mode)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.system(Theme.footnote, design: .monospaced))
                     .foregroundStyle(Theme.textMuted)
                     .lineLimit(1)
                 Text("·").foregroundStyle(Theme.textMuted)
                 Text(session.driver)
-                    .font(.system(size: 13))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
                 Spacer(minLength: 0)
             }
@@ -329,16 +329,16 @@ struct SlimThreadRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: snoozed ? "clock" : "folder")
-                .font(.system(size: 12))
+                .font(.system(Theme.footnote))
                 .foregroundStyle(Theme.textMuted)
                 .opacity(0.4)
             Text(session.title)
-                .font(.system(size: 16))
+                .font(.system(.callout))
                 .foregroundStyle(Theme.textMuted)
                 .lineLimit(1)
             Spacer(minLength: 8)
             Text(relativeTime(session.updatedAt))
-                .font(.system(size: 14, design: .monospaced))
+                .font(.system(Theme.subhead, design: .monospaced))
                 .foregroundStyle(Theme.textMuted)
                 .tabularNumbers()
         }
