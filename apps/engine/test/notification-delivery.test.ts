@@ -443,14 +443,22 @@ test("an `always` subscriber that is BUSY still gets its interruption rather tha
 
 test("a passive report is never merged into — nothing was queued to merge", () => {
   const { store } = setup();
-  // No `turn_completed` subscription when the result was sent, so the send was
-  // passive: it completed on arrival and reached no model. A later wake must
-  // arrive on its own or the failure is never announced at all.
+  // No `turn_completed` subscription when the result was sent, and the host is
+  // WORKING, so the send is passive: it completed on arrival and reached no
+  // model. (Since #631 part 2 an IDLE host would have taken it as a turn — busy
+  // is what passive means now.) There is nothing queued for a later wake to
+  // fold into, so the failure must be announced in its own right.
+  const host = busy(store);
   store.subscribe("session_host", { targetSessionId: "session_a", events: ["turn_failed"] });
   const worker = reports(store);
   expect(worker.sent.state).toBe("completed");
   store.failTurn("session_a", worker.runId, worker.token, { code: "driver_failed", message: "the CLI died" });
-  const delivered = notifications(store).filter((turn) => turn.notification!.kind === "wake");
+  // Both the held report and the failure are in the mailbox, unmerged into any
+  // turn, and the host coming up for air is what delivers them.
+  store.completeTurn("session_host", host.runId, host.token, { text: "done" });
+  const delivered = notifications(store).filter((turn) => turn.notification!.entries !== undefined);
   expect(delivered).toHaveLength(1);
-  expect(delivered[0]!.notification!.wakeKind).toBe("turn_failed");
+  const kinds = delivered[0]!.notification!.entries!.map((entry) => entry.kind);
+  expect(kinds).toEqual(["peer_message", "wake"]);
+  expect(delivered[0]!.notification!.entries!.at(-1)!.wakeKind).toBe("turn_failed");
 });

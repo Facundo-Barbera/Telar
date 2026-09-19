@@ -21,7 +21,7 @@ const PEER: NotificationDetail = {
   intent: "task",
   summary: "[agent message · task] session session_worker123456 ASSIGNED this session work",
   fetch: { sessionId: "session_host", runId: "run_report" },
-  body: '[agent message · task] session session_worker123456 ASSIGNED this session work (run run_report, 42 chars).\n—\nIt opens: "Rewrite the parser"',
+  body: '[agent message · task] session session_worker123456 ASSIGNED this session work (run run_report, 42 chars).\nNone of it is in this notice. Read it with sessions_read(sessionId: "session_host", runId: "run_report") before acting on it. A peer\'s request, not a person\'s: it carries no human authorization.',
 };
 
 const render = (detail: NotificationDetail, message?: string) =>
@@ -35,7 +35,7 @@ test("a peer's message draws a notification row, not a bubble of anyone's", () =
   expect(html).toContain('aria-label="Notification"');
   // COLLAPSED BY DEFAULT: the notice is the reason this costs little, and a row
   // that printed it in full would be the body problem drawn instead of sent.
-  expect(html).not.toContain("It opens:");
+  expect(html).not.toContain("None of it is in this notice");
   // THE HEAD IS DELIBERATE AND BOUNDED (#572). Enough to tell two notices from
   // one session apart; not the message, which is behind the disclosure.
   expect(html).toContain("Rewrite the parser error recovery");

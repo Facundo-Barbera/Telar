@@ -349,9 +349,13 @@ export function KeybindingsPage() {
       {/* THE ONE INSTRUCTION THIS PANE NEEDS, and it needs one now: a row that
           became pressable this release looks exactly like the row that was not.
           Two sentences over four cards, rather than a hint repeated on
-          twenty-odd rows. */}
+          twenty-odd rows.
+
+          Hand-rolled rather than a `SettingsGroup`, because it captions the PANE
+          and not a card — but it sits in the same column as the group captions
+          below it, so it tracks their type (see `SettingsGroup`, #644). */}
       <div className="mb-6 px-4">
-        <h4 className="font-heading text-xs-plus font-normal tracking-tight text-foreground/70">Keyboard shortcuts</h4>
+        <h4 className="font-heading text-xs-plus font-semibold tracking-tight text-foreground">Keyboard shortcuts</h4>
         <p className="mt-1 text-xs text-muted-foreground">
           Click a chord and press the new one. Backspace clears it, Escape leaves it alone, and Restore defaults puts every one of them
           back.

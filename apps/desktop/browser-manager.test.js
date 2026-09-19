@@ -102,9 +102,32 @@ class FakeWebContents extends EventEmitter {
     this.windowOpenHandler = handler;
   }
 
-  openWindow(url) {
+  /**
+   * `window.open`, as much of Chromium's half of it as the manager's handler
+   * meets (#615). The guest WebContents is built FIRST and handed to
+   * `createWindow` — that ordering is the whole fix, because the guest is what
+   * carries the opener edge — and Chromium, not the handler, navigates it once
+   * the handler has answered. `opener` here stands in for that edge: a real
+   * `window.opener` cannot exist without a renderer, so the relationship is
+   * asserted against real Electron in browser-popup.electron-test.js and only
+   * PLUMBED here.
+   */
+  openWindow(url, details = {}) {
     if (!this.windowOpenHandler) return { action: "allow" };
-    return this.windowOpenHandler({ url });
+    const response = this.windowOpenHandler({
+      url,
+      frameName: "",
+      features: "",
+      disposition: "new-window",
+      ...details,
+    });
+    if (response?.action !== "allow" || typeof response.createWindow !== "function") return response;
+    const guest = new FakeWebContents();
+    guest.opener = this;
+    guest.session = this.session;
+    response.adopted = response.createWindow({ webContents: guest, webPreferences: {} });
+    guest.loadURL(new URL(url).href);
+    return response;
   }
 
   /**
@@ -204,8 +227,10 @@ class FakeWebContents extends EventEmitter {
 }
 
 class FakeView {
-  constructor() {
-    this.webContents = new FakeWebContents();
+  /** `webContents` present means ADOPTION — Electron's
+   *  `new WebContentsView({ webContents })`, the popup path (#615). */
+  constructor(options = {}) {
+    this.webContents = options.webContents || new FakeWebContents();
     // The capture records whether its own view was still shown (#475).
     this.webContents.view = this;
     this.visible = false;
@@ -347,8 +372,8 @@ function makeHarness(options = {}) {
   const manager = new DesktopBrowserManager(window, {
     electron,
     createId: () => `tab-${nextId++}`,
-    createView: () => {
-      const view = new FakeView();
+    createView: (viewOptions = {}) => {
+      const view = new FakeView(viewOptions);
       views.push(view);
       return view;
     },
@@ -486,11 +511,21 @@ describe("DesktopBrowserManager", () => {
     ]);
   });
 
-  test("opens target-blank web links as managed browser tabs", async () => {
+  test("opens target-blank web links as managed browser tabs, adopting Chromium's own popup", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("session-a", "https://one.example/", "human");
 
-    expect(views[0].webContents.openWindow("https://popup.example/path")).toEqual({ action: "deny" });
+    // ALLOW, not deny (#615). Denying and re-opening the URL ourselves is what
+    // severed `window.opener`; the tab must be Chromium's popup, adopted.
+    const response = views[0].webContents.openWindow("https://popup.example/path");
+    expect(response.action).toBe("allow");
+    // The guest is what the manager hosted — not a second WebContents of its
+    // own, which is the only way the opener edge survives.
+    expect(response.adopted).toBe(views[1].webContents);
+    expect(views[1].webContents.opener).toBe(views[0].webContents);
+    // And it must outlive its opener: hibernating a tab closes its
+    // WebContents, and Electron's default would take the popup with it.
+    expect(response.outlivesOpener).toBe(true);
     await manager.settlePopupTabs();
 
     const state = manager.state("session-a");
@@ -500,6 +535,36 @@ describe("DesktopBrowserManager", () => {
     ]);
   });
 
+  test("a popup keeps the OPENER's profile, not whichever one the session switched to", async () => {
+    const { manager, views } = makeHarness();
+    manager.declareProfile("session-a", `project_${"a".repeat(32)}`);
+    await manager.createTab("session-a", "https://one.example/", "human");
+    const opener = manager.scopeTabs("session-a")[0];
+    // The person switches this session's profile while the sign-in is open.
+    // Already-open tabs keep their identity (setScopeProfile aims the NEXT
+    // one) — and a popup belongs to the page that asked for it, not to "next".
+    const other = manager.profiles.create({ label: "Personal" });
+    manager.setScopeProfile("session-a", other.id);
+
+    views[0].webContents.openWindow("https://popup.example/oauth");
+    await manager.settlePopupTabs();
+
+    const popup = manager.scopeTabs("session-a")[1];
+    expect(popup.partition).toBe(opener.partition);
+    expect(popup.profileId).toBe(opener.profileId);
+    expect(popup.partition).not.toBe(manager.partitionOf("session-a"));
+  });
+
+  test("a popup past the per-session tab limit is refused, and opens nothing", async () => {
+    const { manager, views } = makeHarness();
+    for (let i = 0; i < 12; i += 1) await manager.createTab("session-a", `https://tab${i}.example/`, "human");
+
+    expect(views[0].webContents.openWindow("https://popup.example/oauth")).toEqual({ action: "deny" });
+    await manager.settlePopupTabs();
+
+    expect(manager.state("session-a").tabs).toHaveLength(12);
+  });
+
   test("keeps agent-triggered popups off the human's current browser tab", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("session-a", "https://human.example/", "human");
@@ -507,7 +572,7 @@ describe("DesktopBrowserManager", () => {
     const agentTab = manager.scopeTabs("session-a")[1];
     agentTab.agentBusy = 1;
 
-    expect(views[1].webContents.openWindow("https://popup.example/oauth")).toEqual({ action: "deny" });
+    expect(views[1].webContents.openWindow("https://popup.example/oauth").action).toBe("allow");
     await manager.settlePopupTabs();
     agentTab.agentBusy = 0;
 

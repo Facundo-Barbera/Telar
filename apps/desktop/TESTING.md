@@ -35,6 +35,7 @@ server. Automated desktop tests remain isolated in temporary state directories.
 | `bun run test:desktop:e2e` | Shared-tab, CDP, cursor, and browser-control integration | Yes | Yes |
 | `bun run test:desktop:profile-cookies` | Named browser profiles against REAL cookies: sharing, isolation, a live tab keeping its identity across a profile switch, migration of a pre-profile jar, and restart | Yes | Its own loopback fixture |
 | `bun run test:desktop:webauthn` | Whether 1Password's WebAuthn interception installs, per profile. Needs `TELAR_1P_CRX` (a packaged extension) or `TELAR_1P_UNPACKED` (a verified unpacked one — the app's own install works, read-only). Reports; asserts only that two profiles do not share storage | Yes | Its own loopback fixture |
+| `bun run test:desktop:clipboard` | A site's Copy button against a REAL clipboard: a real click writes to this Mac's pasteboard, the permission string is Chromium's own, a control arm with that one permission denied still fails, an unfocused document is refused by Chromium before Telar is asked, and `clipboard-read` still prompts. Takes no focus; saves and restores the clipboard's text | Yes | Its own loopback fixture |
 
 Use the smallest layer that proves the change. The E2E command is an explicit final integration
 pass, not part of the edit-refresh loop.

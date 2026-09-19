@@ -18,8 +18,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { GitOverview, Session } from "@telar/engine-client";
-import { EnvironmentStrip } from "./workspace-environment";
+import type { GitOverview, GitRefEntry, Session } from "@telar/engine-client";
+import { BaseRefPicker, EnvironmentStrip } from "./workspace-environment";
 
 const session = { id: "session_1", projectId: "p1", workspace: { mode: "worktree", branch: "telar/x" } } as unknown as Session;
 
@@ -71,5 +71,63 @@ describe("the composer's foot", () => {
     expect(markup).toContain("-mt-px");
     expect(markup).toContain("border-t-0");
     expect(markup).toContain("rounded-b-xl");
+  });
+});
+
+/**
+ * THE BASE PICKER, ON A LISTING THAT IS NOT THE REPOSITORY — issue #650.
+ *
+ * The engine change alone does not fix this bug. `refsIncomplete` reaching the
+ * client is worth nothing if the picker draws a timed-out listing exactly as it
+ * draws a repository with no branches: the person still reads a short list as
+ * complete and cuts their session from a base they did not mean. What is pinned
+ * here is that the two are DIFFERENT SENTENCES, and that the timeout carries
+ * something a person can do about it.
+ */
+describe("the base-ref picker when git did not answer", () => {
+  const refs: GitRefEntry[] = [{ name: "origin/main", kind: "remote" }];
+  const picker = (props: Partial<Parameters<typeof BaseRefPicker>[0]> = {}) =>
+    renderToStaticMarkup(<BaseRefPicker refs={refs} pending={{}} onBase={() => {}} {...props} />);
+
+  test("a whole listing says nothing — no notice on the ordinary path", () => {
+    const markup = picker();
+    expect(markup).not.toContain("did not answer");
+    expect(markup).not.toContain("Ask git again");
+  });
+
+  test("a timed-out listing says git did not answer, and offers to ask again", () => {
+    const markup = picker({ incomplete: "timeout", onRetry: () => {} });
+    expect(markup).toContain("did not answer in time");
+    expect(markup).toContain("missing branches");
+    // Retry is the honest offer: the machine was busy, the answer may differ.
+    expect(markup).toContain("Ask git again");
+  });
+
+  test("a listing that failed for another reason is a different sentence", () => {
+    // Retrying a repository git cannot read is not the same promise as retrying
+    // a machine under load, so the prose must not claim it is.
+    const markup = picker({ incomplete: "failed", onRetry: () => {} });
+    expect(markup).toContain("could not list");
+    expect(markup).not.toContain("did not answer in time");
+  });
+
+  test("no retry button when the caller has no way to ask again", () => {
+    // A button that does nothing is worse than no button.
+    expect(picker({ incomplete: "timeout" })).not.toContain("Ask git again");
+  });
+
+  test("an empty list is a CLAIM about the repository, and only safe when whole", () => {
+    // The defect in one assertion: these two states used to render the same.
+    expect(picker({ refs: [] })).toContain("This repository has no branches yet");
+    const stalled = picker({ refs: [], incomplete: "timeout" });
+    expect(stalled).not.toContain("This repository has no branches yet");
+    expect(stalled).toContain("did not answer in time");
+  });
+
+  test("the refs that did arrive stay pickable under the notice", () => {
+    // A misleading list traded for a useless one would be no improvement: what
+    // git did answer is still a perfectly good base.
+    const markup = picker({ incomplete: "timeout", onRetry: () => {} });
+    expect(markup).toContain("origin/main");
   });
 });
