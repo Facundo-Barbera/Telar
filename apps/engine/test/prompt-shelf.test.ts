@@ -128,6 +128,54 @@ describe("the store", () => {
     expect(sortPrompts([prompt("old", 1), prompt("new", 3), prompt("mid", 2)]).map((row) => row.id)).toEqual(["new", "mid", "old"]);
   });
 
+  /**
+   * THE SAME-MILLISECOND INVARIANT.
+   *
+   * `Date.now()` ties routinely — over loopback a create-then-create lands
+   * inside one millisecond about a quarter of the time — and a tie used to be
+   * settled by `sortPrompts`' id comparison, which is random hex. So two
+   * prompts written in the same millisecond came back in an arbitrary order,
+   * and "newest first" was a coin flip rather than a promise.
+   *
+   * PINNED BY PASSING ONE `Date` TWICE rather than by racing the clock: the tie
+   * is the condition under test, so it is made certain instead of hoped for. A
+   * test that raced would reproduce the bug about one run in eight, which is how
+   * it went unnoticed into main in the first place.
+   */
+  test("two prompts created in the same millisecond still come back newest-first", () => {
+    const paths = statePaths(tmp("telar-shelf-store-"));
+    const frozen = new Date(1_000_000);
+    const first = createPrompt(paths, "p1", { title: "First", text: "a", author: "you" }, frozen);
+    const second = createPrompt(paths, "p1", { title: "Second", text: "b", author: "you" }, frozen);
+
+    expect(readPrompts(paths, "p1").map((row) => row.title)).toEqual(["Second", "First"]);
+    // The mechanism, not just the symptom: the stamps must actually differ, or
+    // the order above is back to being decided by whichever id sorts first.
+    expect(second.created.at).toBeGreaterThan(first.created.at);
+  });
+
+  test("a whole burst stays in the order it was written", () => {
+    const paths = statePaths(tmp("telar-shelf-store-"));
+    const frozen = new Date(1_000_000);
+    for (const title of ["a", "b", "c", "d", "e"]) createPrompt(paths, "p1", { title, text: "x", author: "you" }, frozen);
+
+    expect(readPrompts(paths, "p1").map((row) => row.title)).toEqual(["e", "d", "c", "b", "a"]);
+  });
+
+  test("a clock that steps backwards cannot reorder the shelf", () => {
+    const paths = statePaths(tmp("telar-shelf-store-"));
+    const first = createPrompt(paths, "p1", { title: "First", text: "a", author: "you" }, new Date(9_000_000));
+    // An NTP correction mid-burst. Without the strictly-increasing stamp this
+    // prompt would sort BELOW the one written before it.
+    const second = createPrompt(paths, "p1", { title: "Second", text: "b", author: "you" }, new Date(1_000_000));
+
+    expect(readPrompts(paths, "p1").map((row) => row.title)).toEqual(["Second", "First"]);
+    expect(second.created.at).toBeGreaterThan(first.created.at);
+    // And the words agree with the number — the label is rendered from the
+    // instant the prompt is stamped with, not from the clock that was refused.
+    expect(second.created.label).toBe(first.created.label);
+  });
+
   test("a composer is offered the project's own plus its own session's, and nobody else's", () => {
     const paths = statePaths(tmp("telar-shelf-store-"));
     createPrompt(paths, "p1", { title: "Anyone's", text: "x", author: "you" });

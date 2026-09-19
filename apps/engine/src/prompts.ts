@@ -83,6 +83,13 @@ export function promptLabel(at: Date): string {
  * off, and the one you prepared a minute ago is the one you are about to use.
  * The cockpit bands agent drafts apart from your own when it draws them, which
  * is a rendering decision and not this sort's business.
+ *
+ * THE ID TIEBREAK IS A BACKSTOP AND MUST NEVER DECIDE ANYTHING REAL. An id is
+ * random hex, so an order it settles is a coin flip — which is exactly what
+ * happened while `created.at` could tie (see `createPrompt`). It is kept only so
+ * that a HAND-EDITED file with two identical stamps still reads the same way
+ * twice; every stamp this module writes is unique within its shelf, so for
+ * stored data this branch is unreachable.
  */
 export function sortPrompts(prompts: readonly PreparedPrompt[]): PreparedPrompt[] {
   return [...prompts].sort((left, right) => right.created.at - left.created.at || left.id.localeCompare(right.id));
@@ -208,8 +215,35 @@ function assertReason(reason: unknown): string {
 }
 
 export function createPrompt(paths: EngineStatePaths, projectId: string, input: NewPreparedPrompt, at: Date = new Date()): PreparedPrompt {
-  const stamp = { label: promptLabel(at), at: at.getTime() };
   const existing = readPrompts(paths, projectId);
+  /**
+   * STRICTLY INCREASING WITHIN ONE SHELF — the clock proposes, the shelf decides.
+   *
+   * `Date.now()` has millisecond resolution and two prompts are routinely
+   * written inside one of them: over loopback, a create-then-create is under a
+   * millisecond about a quarter of the time (measured). Equal stamps left the
+   * sort to its id tiebreak, and an id is RANDOM HEX — so the two came back in
+   * an arbitrary order, roughly half the time the wrong one. "Newest first" is
+   * the only ordering this shelf promises, and it was a coin flip.
+   *
+   * Found as a flaky test; it was never only a test. Two follow-ups an agent
+   * drafts in the same millisecond would appear in the composer in either order,
+   * and the reason nobody had seen it is that nobody can tell two drafts apart
+   * fast enough to notice — which is precisely the kind of wrongness that never
+   * gets reported.
+   *
+   * Borrowing a millisecond from the future is the cost, and it is the right one
+   * to pay: at the minute resolution `promptLabel` renders, the stamp is
+   * unchanged, and the ordering it buys is exact rather than probable. It also
+   * makes a clock that steps BACKWARDS harmless — without this, an NTP
+   * correction mid-burst would silently reorder the shelf.
+   *
+   * `existing` is sorted newest-first, so its head is the only stamp to beat.
+   */
+  const moment = Math.max(at.getTime(), (existing[0]?.created.at ?? 0) + 1);
+  // LABELLED FROM THE INSTANT IT IS STAMPED WITH, not from the raw clock, so the
+  // words and the number can never disagree about which prompt came first.
+  const stamp = { label: promptLabel(new Date(moment)), at: moment };
   // Validated before the spread decides anything: a blank reason is DROPPED
   // rather than stored, so a row never shows an empty second line.
   const reason = input.reason === undefined ? "" : assertReason(input.reason);
