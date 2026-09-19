@@ -284,7 +284,16 @@ const STOP = `Stop a session's work now: the running turn ends where it stands a
 
 const SETTLE = `Shelve a session out of the active list, or settled: false to bring it back. Nothing is deleted and a new message lifts it back. Housekeeping, not acceptance.`;
 
-const DIFF = `What a session changed in its checkout since it started. A "local" session shares the project's checkout, so the diff may carry work that is not its own. READ-ONLY, NOT AN ACCEPTANCE: nothing here merges or approves.`;
+/**
+ * THE `filesIncomplete` CLAUSE COSTS 45 OF THE 47 CHARACTERS the wide tool wall
+ * had left (#654; see agent-tools.test.ts's ceiling). It is worth the whole of
+ * that headroom: this is the one tool of the three diff surfaces read by an
+ * AGENT, and an empty answer taken for "changed nothing" gets reported to a
+ * person as fact. Everything else the reader needs — which read failed, whether
+ * a retry helps, and the refusal of that sentence in the words it would have
+ * used — is on the answer's own `note`, where it costs nothing per lap.
+ */
+const DIFF = `What a session changed in its checkout since it started. A "local" session shares the project's checkout, so the diff may carry work that is not its own. An empty answer may be unread, not unchanged. READ-ONLY, NOT AN ACCEPTANCE: nothing here merges or approves.`;
 
 /**
  * ── THE BOUND ON `sessions_read`, AND WHY IT IS TWO NUMBERS ─────────────────
@@ -1426,6 +1435,42 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             note: "That session's checkout is not a git repository, so there is no diff to read. That is a supported configuration, not a fault.",
           });
         }
+        /**
+         * WHAT GIT DID NOT ANSWER, NAMED AND PUT FIRST — issue #654.
+         *
+         * OF THE THREE SURFACES THAT READ A DIFF, THIS IS THE DANGEROUS ONE.
+         * A person looking at an empty panel at least has a chance of doubting
+         * it. An agent that concludes "this session changed nothing" from a
+         * timed-out `git diff` reports that to a person in its own words, as
+         * fact, with confidence — and the person archives the session.
+         *
+         * So the unknowns are fields a structured reader can branch on AND they
+         * own the `note`, which is the one line a reader skims. Every sentence
+         * below is written for an agent about to summarise this answer.
+         */
+        const unknown: string[] = [];
+        if (diff.filesIncomplete) {
+          unknown.push(
+            diff.filesIncomplete === "timeout"
+              ? "git DID NOT ANSWER IN TIME for the file list, so the files below may be missing rows and the line counts may under-count"
+              : "git COULD NOT READ the file list, so the files below may be missing rows and the line counts may under-count",
+          );
+        }
+        if (diff.commitsIncomplete) {
+          unknown.push(
+            diff.commitsIncomplete === "timeout"
+              ? "git DID NOT ANSWER IN TIME for the commit list, so this session may have committed work that is not listed"
+              : "git COULD NOT READ the commit list, so this session may have committed work that is not listed",
+          );
+        }
+        // Not a claim about the file list — only about what it is measured from.
+        if (diff.baseUnverified) {
+          unknown.push(
+            "git did not confirm the base below; it is the one the session recorded when its checkout was cut, but nothing corroborated it",
+          );
+        }
+        const askAgain = diff.filesIncomplete === "timeout" || diff.commitsIncomplete === "timeout" || diff.baseUnverified === "timeout";
+        const nothingListed = diff.files.length === 0 && diff.commits.length === 0;
         return json({
           sessionId,
           ...(diff.branch ? { branch: diff.branch } : {}),
@@ -1433,6 +1478,10 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           // work — said out loud, because a file list that quietly omitted
           // every commit would read as "this session did nothing".
           ...(diff.base ? { base: diff.base } : { baseUnknown: true }),
+          ...(diff.baseUnverified ? { baseUnverified: diff.baseUnverified } : {}),
+          ...(diff.filesIncomplete ? { filesIncomplete: diff.filesIncomplete } : {}),
+          ...(diff.commitsIncomplete ? { commitsIncomplete: diff.commitsIncomplete } : {}),
+          ...(askAgain ? { askAgain: true } : {}),
           linesAdded: diff.linesAdded,
           linesRemoved: diff.linesRemoved,
           ...(() => {
@@ -1471,11 +1520,27 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             };
           })(),
           ...(diff.truncated ? { truncated: true } : {}),
-          note: !diff.base
-            ? "This session has no recorded base, so the diff is against HEAD and any work it has already COMMITTED is not in this list."
-            : diff.files.length === 0 && diff.commits.length === 0
-              ? "This session has changed nothing in its checkout."
-              : "A read of what changed, and nothing more. Nothing here merges, lands or approves any of it — that is the user's decision, and it is made elsewhere.",
+          /**
+           * THE UNKNOWNS LEAD, and the rest is appended rather than replaced —
+           * "no recorded base" is a separate fact and a reader needs both. The
+           * one sentence this tool may no longer reach for is the last: it is a
+           * claim about the checkout, sayable only when every read that would
+           * have contradicted it actually answered.
+           */
+          note: [
+            ...(unknown.length > 0 ? [`${unknown.join(". ")}.`] : []),
+            ...(!diff.base ? ["This session has no recorded base, so the diff is against HEAD and any work it has already COMMITTED is not in this list."] : []),
+            unknown.length > 0
+              ? // The wrong conclusion, refused in the words an agent would
+                // otherwise have used to draw it.
+                nothingListed
+                  ? "NOTHING IS LISTED, AND THAT IS NOT THE SAME AS NOTHING CHANGED — do not report this session as having changed nothing."
+                  : "What is listed is real; what is missing is unknown, so do not report this as the whole of what changed."
+              : nothingListed && diff.base
+                ? "This session has changed nothing in its checkout."
+                : "A read of what changed, and nothing more. Nothing here merges, lands or approves any of it — that is the user's decision, and it is made elsewhere.",
+            ...(askAgain ? ["A timeout usually clears: read it again before drawing a conclusion."] : []),
+          ].join(" "),
         });
       },
     ),

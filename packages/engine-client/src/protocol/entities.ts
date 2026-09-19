@@ -2023,6 +2023,23 @@ export type GitWorktreeEntry = z.infer<typeof GitWorktreeEntry>;
 export const GitChangeStatus = z.enum(["added", "modified", "deleted", "renamed", "untracked"]);
 export type GitChangeStatus = z.infer<typeof GitChangeStatus>;
 
+/**
+ * WHY A GIT READ IS NOT AN ANSWER — issue #650, and the vocabulary #654 reuses.
+ *
+ * `timeout` is a child the engine killed at its bound, and it is the case this
+ * exists for: on a loaded machine git exits non-zero without having looked, and
+ * every field it feeds used to become a FACT — no branches, a clean tree, no
+ * worktrees, no changes. Retrying is the honest offer. `failed` is everything
+ * else, where it usually is not.
+ *
+ * DECLARED HERE, ABOVE BOTH READERS THAT NEED IT. It arrived beside the ref
+ * listing because that is where the bug was found, but the distinction is not
+ * the picker's — `SessionDiff` below says the same thing about its own
+ * sub-reads.
+ */
+export const GitReadFailure = z.enum(["timeout", "failed"]);
+export type GitReadFailure = z.infer<typeof GitReadFailure>;
+
 export const GitFileChange = z.object({
   path: z.string().min(1),
   status: GitChangeStatus,
@@ -2073,10 +2090,51 @@ export const SessionDiff = z.object({
    * so. Present is the full answer.
    */
   base: z.string().min(1).optional(),
+  /**
+   * SET WHEN NOTHING CONFIRMED THE BASE ABOVE — issue #654.
+   *
+   * The base is still what this diff is measured from: the session RECORDED it
+   * when its worktree was cut, and a `rev-parse --verify` the engine killed is
+   * corroboration that did not arrive, not a ref that does not exist. Dropping
+   * it there used to reframe the review as `HEAD…worktree` and report `base`
+   * absent — so a session that had committed all of its work read as having
+   * done none of it, above the sentence "no starting commit was recorded".
+   *
+   * A base that genuinely does not resolve is still ABSENT rather than marked;
+   * only a read that did not answer lands here.
+   */
+  baseUnverified: GitReadFailure.optional(),
   ahead: z.number().int().nonnegative().optional(),
   behind: z.number().int().nonnegative().optional(),
   files: z.array(GitFileChange),
+  /**
+   * WHY `files` IS NOT THE WHOLE CHANGE — issue #654, and the field that matters
+   * most on this contract.
+   *
+   * The list is three reads — `diff --numstat`, `diff --name-status` and
+   * `status -uall` — and a non-zero exit from any of them used to produce FEWER
+   * ROWS rather than an error. One of the ways they exit non-zero is the
+   * engine's own 30-second bound, so a diff that timed out said "this session
+   * changed nothing": an empty review is a claim a person acts on directly, and
+   * unlike a short branch list there is no search box to blame and nothing to
+   * make them suspicious. An agent reading this answer will report it to a
+   * person as fact.
+   *
+   * WHAT DID ARRIVE IS KEPT, per #650 — including `linesAdded`/`linesRemoved`,
+   * which stay honest sums over the rows that made it. Set means they
+   * under-count and the rows may be short or mislabelled; ABSENT is the only
+   * state in which an empty `files` means "nothing differs".
+   */
+  filesIncomplete: GitReadFailure.optional(),
   commits: z.array(GitCommitEntry),
+  /**
+   * WHY `commits` IS NOT THE WHOLE SET — issue #654. `git log base..HEAD` is its
+   * own read and fails on its own, and "0 commits" for a session that committed
+   * its work is the same wrong claim as an empty file list. Never set when
+   * `base` is absent: there is no range to ask about then, which the surface
+   * already explains.
+   */
+  commitsIncomplete: GitReadFailure.optional(),
   linesAdded: z.number().int().nonnegative(),
   linesRemoved: z.number().int().nonnegative(),
   /** The file list is capped. Reported so a truncated review cannot read as a
@@ -2102,6 +2160,25 @@ export const SessionDiff = z.object({
 export type SessionDiff = z.infer<typeof SessionDiff>;
 
 /**
+ * ONE FILE'S PATCH, fetched when a row is opened rather than carried on the
+ * review — a two-hundred-file diff with every patch is a megabyte on a poll.
+ *
+ * `incomplete` EXISTS BECAUSE `patch: ""` MEANT TWO THINGS — issue #654. A
+ * `git diff` that exited past 1 returned the empty string, and every surface
+ * reads an empty non-binary patch as "this file is binary, there is no textual
+ * diff". So a subprocess the engine killed said something specific, confident
+ * and wrong about the file's contents.
+ */
+export const GitFilePatch = z.object({
+  patch: z.string(),
+  binary: z.boolean(),
+  /** Set when git did not produce the patch. An empty `patch` means "no textual
+   *  diff" ONLY when this is absent. */
+  incomplete: GitReadFailure.optional(),
+});
+export type GitFilePatch = z.infer<typeof GitFilePatch>;
+
+/**
  * One ref a worktree session could be cut from. `remote` names come qualified
  * (`origin/main`) because that is both what a human recognises and what
  * `git rev-parse` resolves — the picker forwards the name verbatim as
@@ -2114,18 +2191,6 @@ export const GitRefEntry = z.object({
   head: z.boolean().optional(),
 });
 export type GitRefEntry = z.infer<typeof GitRefEntry>;
-
-/**
- * WHY A GIT READ IS NOT AN ANSWER — issue #650.
- *
- * `timeout` is a child the engine killed at its bound, and it is the case this
- * exists for: on a loaded machine git exits non-zero without having looked, and
- * every field it feeds used to become a FACT — no branches, a clean tree, no
- * worktrees. Retrying is the honest offer. `failed` is everything else, where it
- * usually is not.
- */
-export const GitReadFailure = z.enum(["timeout", "failed"]);
-export type GitReadFailure = z.infer<typeof GitReadFailure>;
 
 export const GitOverview = z.object({
   repository: z.boolean(),

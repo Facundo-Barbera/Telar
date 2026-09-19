@@ -100,6 +100,7 @@ import type {
   ProjectPlugins,
   Subscription,
   WakeKind,
+  GitFilePatch,
 } from "@telar/engine-client";
 import { forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pathnameFetcher, pinnedHost } from "@/lib/hosts/client";
@@ -1065,7 +1066,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     projectFilePatch: (projectId: string, path: string, options: { untracked?: boolean } = {}) => {
       const query = new URLSearchParams({ path });
       if (options.untracked) query.set("untracked", "1");
-      return request<{ file: { patch: string; binary: boolean } }>(
+      return request<{ file: GitFilePatch }>(
         fetcher,
         "GET",
         `/api/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`,
@@ -1079,7 +1080,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     sessionFilePatch: (sessionId: string, path: string, options: { untracked?: boolean } = {}) => {
       const query = new URLSearchParams({ path });
       if (options.untracked) query.set("untracked", "1");
-      return request<{ file: { patch: string; binary: boolean } }>(
+      return request<{ file: GitFilePatch }>(
         fetcher,
         "GET",
         `/api/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`,

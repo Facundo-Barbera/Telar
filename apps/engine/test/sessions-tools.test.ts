@@ -30,6 +30,8 @@ import os from "node:os";
 import path from "node:path";
 import { assertTelarToolNames, parseToolName, qualifyTelarTool, TELAR_CAPABILITIES } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
+import { sessionDiff } from "../src/git";
+import { GIT_TIMEOUT_STATUS, type GitRunner } from "../src/worktree";
 import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessions-tools/tools";
 import { TELAR_SKILL } from "../src/orientation";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
@@ -122,14 +124,21 @@ const WALL_NAMES = [
   "sessions_resolve_request",
 ];
 
-function wall(store: EngineStore, self?: { sessionId: string }): Map<string, Registered> {
+function wall(store: EngineStore, self?: { sessionId: string }, diff?: SessionsCapability["diff"]): Map<string, Registered> {
   const registered = new Map<string, Registered>();
   sessionsTools(
     (name, description, shape, run) => {
       registered.set(name, { name, description, shape, run });
       return { name };
     },
-    capabilityOver(store, self),
+    /**
+     * `diff` IS THE ONE MEMBER ANY TEST HERE MAY REPLACE, and only with the
+     * engine's OWN reader over a git runner that reports a killed child — see
+     * the timeout test below. There is no way to make a real subprocess exceed
+     * a 30-second bound on demand, and a hand-written `SessionDiff` would assert
+     * that this wall composes sentences and nothing about the reader beneath it.
+     */
+    { ...capabilityOver(store, self), ...(diff ? { diff } : {}) },
   );
   return registered;
 }
@@ -435,6 +444,49 @@ describe("driving a session", () => {
     const diff = await call(tools, "sessions_diff", { sessionId: id });
     expect((diff.json!.files as Array<{ path: string }>).map((file) => file.path)).toContain("new-file.txt");
     expect(String(diff.json!.note)).toContain("Nothing here merges, lands or approves");
+    // Everything answered, so the answer says nothing about unknowns.
+    expect(diff.json!.filesIncomplete).toBeUndefined();
+    expect(diff.json!.askAgain).toBeUndefined();
+  });
+
+  test("a diff that timed out is never reported as a session that changed nothing", async () => {
+    /**
+     * WHY THIS TEST IS HERE AND NOT ONLY IN `git.test.ts` — issue #654.
+     *
+     * Of the three surfaces that read a diff, this is the one where a wrong
+     * answer travels furthest: an agent reads it, concludes "no changes", and
+     * reports that to a person in its own words, as fact. So the engine carrying
+     * `filesIncomplete` is worth nothing unless this tool's own `note` — the one
+     * line a reader skims — stops being able to say it.
+     *
+     * IT DRIVES A KILLED CHILD, never a plain non-zero: they are the same exit
+     * status, so a test of the second would have called this covered.
+     */
+    const { store, projectId } = engine();
+    const id = (await call(wall(store), "sessions_create", { projectId, envMode: "worktree" })).json!.id as string;
+    await worktreeReady(store, id);
+    const killed: GitRunner = (_cwd, args) =>
+      // Only the probe answers: the review has to get past "is this a
+      // repository" to reach the reads this issue is about.
+      args[0] === "rev-parse" && args[1] === "--is-inside-work-tree"
+        ? { status: 0, stdout: "true\n", stderr: "" }
+        : { status: GIT_TIMEOUT_STATUS, stdout: "", stderr: "git did not finish within 30000ms and was killed", timedOut: true };
+    const tools = wall(store, undefined, async (sessionId) =>
+      sessionDiff(killed, { cwd: store.getSession(sessionId).workspace.path, baseRef: "base000" }),
+    );
+
+    const diff = await call(tools, "sessions_diff", { sessionId: id });
+    expect(diff.isError).toBe(false);
+    // The unknowns are fields a structured reader can branch on…
+    expect(diff.json!).toMatchObject({ filesIncomplete: "timeout", commitsIncomplete: "timeout", baseUnverified: "timeout", askAgain: true });
+    expect(diff.json!.fileCount).toBe(0);
+    // …and they own the note, in the words an agent would otherwise have used.
+    const note = String(diff.json!.note);
+    expect(note).not.toContain("changed nothing in its checkout");
+    expect(note).toContain("do not report this session as having changed nothing");
+    expect(note).toContain("read it again");
+    // The tool's own description warns before the call, not only after it.
+    expect(tools.get("sessions_diff")!.description).toContain("An empty answer may be unread, not unchanged");
   });
 
   test("a session that does not exist refuses identically on every verb", async () => {
