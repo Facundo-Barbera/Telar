@@ -33,40 +33,19 @@ import Testing
         #expect(Set(steps).count == steps.count)
     }
 
-    /// A SWEPT FILE STAYS SWEPT. The sweep is per-file and lands over many
-    /// PRs, so the failure it invites is silent: a file converted in March
-    /// grows a fresh `.system(size:)` in April and nobody notices, because
-    /// nothing about an absolute size looks wrong until you turn your text up.
+    /// THE PER-FILE SWEEP PIN IS NOT HERE, AND MUST NOT COME BACK HERE.
+    /// Counting the `.system(size:)` literals left in each swept file is a
+    /// SOURCE-TEXT invariant, and it lives in `scripts/source-invariants.mjs`
+    /// with the others of its kind.
     ///
-    /// This counts the literals left in each file the sweep has been through
-    /// and pins the number. Zero where the file is finished; a stated count
-    /// where sites are deliberately held back, each documented in the file
-    /// itself — a glyph inside a fixed, clipped hit target, or a grid whose
-    /// cells are pinned to a fixed width AND height. Those want a
-    /// `@ScaledMetric` frame, which is a layout change rather than a token
-    /// swap, so they land in their own pass and this number drops when it does.
+    /// It was briefly a test in this file, resolving the source root from
+    /// `#filePath` and reading the files off disk. That cannot work: `#filePath`
+    /// is baked in at compile time as the path on the machine that COMPILED
+    /// the test, while a unit test runs in the app's process on the
+    /// destination. On a simulator sharing the Mac's filesystem it passed; on
+    /// a device that path does not exist and it threw.
     ///
-    /// Read off source rather than the test bundle: `#filePath` is absolute at
-    /// compile time, and the sources are what the count is about.
-    @Test func sweptFilesKeepOnlyTheirDocumentedAbsoluteSizes() throws {
-        // <repo>/apps/ios/TelarMobileTests/TypeScaleTests.swift → <repo>/apps/ios
-        let iosRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let expected: KeyValuePairs<String, Int> = [
-            "TelarMobile/Views/TranscriptViews.swift": 0,
-            // The composer's send/attach/stop circles, the model pill and the
-            // jump-to-bottom button — 44pt and 36pt fixed squares (#449).
-            "TelarMobile/Views/SessionView.swift": 9,
-            // The run button's 44pt square and the markdown marker beside it.
-            "TelarMobile/Views/Panel/NotebookSurface.swift": 2,
-            // DataframeGrid's 96×30 header and 96×22 cells.
-            "TelarMobile/Views/Panel/CellOutputView.swift": 3,
-        ]
-        for (path, allowed) in expected {
-            let source = try String(contentsOf: iosRoot.appending(path: path), encoding: .utf8)
-            let found = source.components(separatedBy: ".system(size:").count - 1
-            #expect(found == allowed, "\(path) has \(found) absolute sizes, expected \(allowed)")
-        }
-    }
+    /// The script runs in `verify.yml`, which gates every PR and needs no Mac,
+    /// so the check now covers more than it did from in here. What belongs in
+    /// this file is what needs the app: the tokens themselves, above.
 }
