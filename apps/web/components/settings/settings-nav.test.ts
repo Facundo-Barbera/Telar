@@ -83,15 +83,20 @@ test("the OAuth callback's section id is still routable", () => {
   expect(source).toContain('mcp: "tools"');
 });
 
-test("Storage is a pane under Runtime, and the numbers come before the move (#642)", () => {
+test("Storage is a pane under Runtime, and it reads numbers → checkouts → store (#642)", () => {
   expect(source).toContain('{ id: "storage", label: "Storage"');
-  const storage = source.slice(source.indexOf('active === "storage"'));
-  const pane = storage.slice(0, 400);
-  expect(pane).toContain("<StorageSection />");
-  expect(pane).toContain("<StoreSection />");
-  // "Move the store" is a decision, and it is easier to make after reading what
-  // it would move than before.
-  expect(pane.indexOf("<StorageSection />")).toBeLessThan(pane.indexOf("<StoreSection />"));
+  const pane = source.slice(source.indexOf('active === "storage"'), source.indexOf('active === "plugins"'));
+  for (const section of ["<StorageSection />", "<WorktreesRootSection />", "<StoreSection />"]) {
+    expect(pane).toContain(section);
+  }
+  /**
+   * THE ORDER IS THE ARGUMENT. Read what is on disk, then the cheap safe move
+   * (checkouts are re-cut from a recorded commit, so Telar still starts
+   * without the drive), then the whole-store move that cannot start without
+   * it. Putting the expensive option first would make it the default reading.
+   */
+  expect(pane.indexOf("<StorageSection />")).toBeLessThan(pane.indexOf("<WorktreesRootSection />"));
+  expect(pane.indexOf("<WorktreesRootSection />")).toBeLessThan(pane.indexOf("<StoreSection />"));
 });
 
 test("the store's location left General with the pane that reports what is in it", () => {
