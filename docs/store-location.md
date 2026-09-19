@@ -1,217 +1,281 @@
 # Where Telar's store lives — design for #630
 
-Design only. Nothing here is built yet. The migration is the part that wants
-sign-off before code, because it is the one step that can lose something a
-person cannot get back.
+Design only; nothing here is built. The store may be moved to any location the
+person chooses, including a removable volume, and changed again later without
+reinstalling.
 
-## What the disk actually says
+The hard part is not the setting. It is that **a store that is absent and a
+store that never existed look identical from the filesystem**, and getting that
+distinction wrong initialises a fresh empty store over the top of somebody's
+history. Everything below is arranged around that one problem.
 
-Measured on the machine that runs Telar, read-only:
+## 1. The marker — the whole mechanism
 
-| | |
-|---|---|
-| `<userData>/engine` | 14 GB |
-| `<userData>/engine/worktrees` | 12 GB (86% of it) |
-| `<userData>/engine/sessions` | 368 MB |
-| free on `/` | 12 GiB |
-| mounted volumes | `/Volumes/Focaltec HD` |
+A missing directory cannot tell first run from absent volume, so the answer
+cannot be a directory check. It is a pair of records that have to agree.
 
-That table decides most of this document. **Worktrees are the problem — the rest
-of the store is a rounding error.** And worktrees are the one part of the store
-that is *reproducible*: they are git checkouts cut from a project at a recorded
-base sha, and the engine already re-cuts them
-(`state.ts`'s `restoreWorktreesForProject`, around `state.ts:4738`). Journals,
-`threads.sqlite`, `projects.json` and attachments are not reproducible by
-anything.
+### The marker, on the internal disk
 
-So the risk the issue is most afraid of — a half-migration that destroys
-irreplaceable history — attaches to 2 GB of the 14, and the 12 GB that would
-actually fix the disk carries almost none of it.
-
-## Decision 1 — which meaning of "dynamically": **restart required**
-
-Not hot-swap, and the argument is not effort, it is that there is nothing to
-swap *to* without a restart:
-
-- `telarHome()` (`apps/desktop/main.js:386`) is read once and handed to both
-  children in `childEnv` (`main.js:596`). Changing it later changes nothing
-  that is already running.
-- `engineRootFromEnv` (`apps/engine/src/state.ts:749`) resolves the root once at
-  construction; `this.paths` is captured for the daemon's life.
-- The daemon holds `engine.lock` (`state.ts:843`) and open sqlite handles for
-  its whole life. A live switch means closing both under in-flight turns and
-  daemon leases, and there is no honest way to do that without failing the turns
-  — which is the thing a restart does anyway, only loudly and at a moment the
-  person chose.
-
-So: persist the choice, apply it at next launch, and **say so** — match
-`PATCH /api/remote`'s `restartRequired: true`
-(`apps/web/app/api/remote/route.ts:102,126`) rather than implying the change
-took. Migration is offered as a separate, explicit action, not a side effect of
-saving a setting.
-
-## Decision 2 — two settings, and the recommended one is the worktrees root
-
-`worktreesRoot()` is a single function taking the engine root
-(`apps/engine/src/worktree.ts:313`), with three call sites, all in that file.
-Pointing it at a volume is a small, contained change that frees 12 of the 14 GB.
-
-Build both settings. Recommend moving the worktrees root and leaving the store
-root alone, because the two choices have very different failure costs:
-
-| drive absent | worktrees root on it | whole store on it |
-|---|---|---|
-| Telar starts | yes | no |
-| session list, history, search | intact | gone |
-| pairing (`<TELAR_HOME>/remote/remote.json`) | intact | gone |
-| sqlite on removable media | no | yes |
-| what breaks | worktree sessions' checkouts — files absent, `git` fails, nothing corrupt | everything |
-| recoverable by | plugging in, or re-cutting the worktree | plugging in, only |
-
-And the absent-drive behaviour of the worktrees half is *already reasoned*:
-`worktree.ts`'s header works through a worktree whose `.git` is on an absent
-disk and concludes "nothing was broken, something was absent". This is the same
-shape with the two sides swapped, which is the direction the codebase already
-thinks in. Putting the store itself on the drive is the inversion nothing in the
-codebase has considered, and it buys 2 GB.
-
-## Decision 3 — where the choice is persisted
-
-`<userData>/storage.json` — Electron's own userData, which is on the internal
-disk and is never the thing being chosen. It joins the files already kept there
-for exactly this reason: `server-port.json`, `update-prefs.json`,
-`ui-prefs.json`, `keybindings.json`. Deliberately **not** under `TELAR_HOME`,
-because `TELAR_HOME` is what it decides.
+`<userData>/store-location.json` — Electron's own userData, the one place that
+is present whatever is mounted. It joins the files already kept there for this
+exact reason (`server-port.json`, `update-prefs.json`, `keybindings.json`).
+Deliberately **not** under `TELAR_HOME`, because `TELAR_HOME` is what it
+decides.
 
 ```jsonc
 {
   "version": 1,
-  // absent means "the default" — <userData>/engine, today's behaviour
-  "storeRoot":     { "path": "/Volumes/…/Telar", "volume": { "mount": "/Volumes/…", "uuid": "…" } },
-  "worktreesRoot": { "path": "/Volumes/…/Telar-worktrees", "volume": { "mount": "…", "uuid": "…" } }
+  // The store Telar opens. Written only once a store there has been PROVEN —
+  // successfully stamped on a first run, or successfully migrated and reopened.
+  "active": {
+    "path": "<absolute>",
+    "storeId": "<uuid>",
+    // Absent when the store is on non-removable storage.
+    "volume": { "mount": "<absolute>", "uuid": "<volume uuid>", "label": "<name at adoption>" },
+    "adoptedAt": 0,
+    "lastOpenedAt": 0
+  },
+  // A move the person asked for that has not completed. Cleared on success or
+  // on abandonment. Never consulted when deciding where to open.
+  "pending": { "path": "<absolute>", "requestedAt": 0 }
 }
 ```
 
-`volume` is recorded the same way and for the same reason `Project.volume` is
-(`volumes.ts:38`): the mount path is a hint that goes stale, the uuid is
-identity, and `findVolumeMount` is what turns a remount at `<name> 1` into a
-rename instead of a loss.
+**`active` is a fact, `pending` is an intent, and they are separate fields
+because conflating them is a trap**: if saving the setting wrote `active`, a
+mistyped path or a failed migration would leave Telar permanently refusing to
+start against a store that was never there.
 
-### The #628 rule applies here, and it points the other way
+**The presence of `active` is what means "a store exists".** Its absence, and
+only its absence, means first run.
 
-`remote.json` falls **open** on an unrecognised version (`RESET`,
-`apps/web/lib/remote/store.ts:199`) because the worse failure there was locking
-a working install out of itself.
+### The stamp, inside the store
 
-Here the worse failure is the opposite one. Falling back to the default path on
-an unrecognised `storage.json` is precisely "Telar starts, finds nothing, and
-cheerfully initialises a fresh empty store over the top of someone's absent
-history". So:
+`<storeRoot>/store.json`:
 
-> **An unrecognised `storage.json` refuses to start and says why. It never
-> guesses a store path.**
+```jsonc
+{ "version": 1, "storeId": "<uuid>", "createdAt": 0 }
+```
 
-Precedent in the same file: the profile registry is read from userData and
-"a bad file is a startup error, not a silent fallback" (`main.js:931`).
+Minted once, when a store is first initialised, and carried by a migration
+rather than regenerated. Nothing like it exists today — `engine.json` is
+per-boot discovery, not identity.
 
-## Decision 4 — what happens when the volume is absent
+The stamp is what makes "the volume is mounted and the path exists" insufficient
+grounds to write anything. A drive can be reformatted, a different drive can
+mount at the same name, and macOS leaves an empty folder behind at an old mount
+point. In all three the path resolves and the directory is absent or foreign;
+only a matching `storeId` says *this is your store*.
 
-`engineRootFromEnv` already throws on unset and on relative. "Set, absolute, and
-not mounted" is the fourth throw, and it is decided in the shell *before* the
-children spawn, because the shell is the only process that can show a window
-about it.
+**The stamp is primary identity; the volume uuid is an accelerator.** The uuid
+is what lets a remount under a different name be recognised as a rename rather
+than a loss, and it is what names the missing drive in the waiting window — but
+it is macOS-only and absent for network shares (`volumes.ts:138`), so nothing
+load-bearing may depend on having one. The stamp works everywhere.
 
-1. **Configured, uuid recorded, nothing mounted** → do not spawn the engine.
-   Show a blocking window naming the drive, with **Retry**, **Wait** (the
-   `/Volumes` watcher in `apps/desktop/volume-watch.js` already turns a plug-in
-   into an event within one burst — no new machinery), and **Use the default
-   store**, which is an explicit, typed confirmation and never a default button.
-   Never initialise at the configured path.
-2. **Mounted somewhere else** (`/Volumes/Focaltec HD 1`) → resolve by uuid with
-   `findVolumeMount` before deciding anything, then rewrite the recorded
-   `mount`. This is `recoverRemountedProject`'s move (`state.ts:4630`) applied
-   to the store itself.
-3. **A leftover empty `/Volumes/<name>` folder** → `isMountPoint` must pass
-   before the path is believed (`volumes.ts:118`). This is the catastrophic
-   case: an empty directory where the drive used to be is exactly where a fresh
-   store would get written, and it disappears on the next remount.
+## 2. Start-up: every state, and what each does
 
-**Mid-session unplug is not made safe, and I am saying so rather than implying
-otherwise.** If the store is on the drive and the drive is pulled, sqlite
-returns I/O errors, journal appends fail, and in-flight turns fail. Refusing to
-*start* is the cheap 90%; surviving a yank is not tractable without a write-ahead
-design the engine does not have. This is the sharpest argument for keeping the
-store on the internal disk and moving only the worktrees: then an unplug costs
-running sessions their checkouts — recoverable — and costs history nothing.
+Decided in the shell, before either child spawns — the shell is the only process
+that outlives the engine and can put a window on screen. `engineRootFromEnv`
+already throws on unset and on relative (`state.ts:749`); this is the same
+discipline extended to the states a path can be in.
 
-## Decision 5 — the migration, in order
+| marker | on disk | what happens |
+|---|---|---|
+| absent | — | **First run.** Initialise at the default, mint the stamp, write `active`. |
+| `active`, no volume | stamp matches | Normal start. |
+| `active`, no volume | directory or stamp missing | **Refuse.** Named error. Never initialise. |
+| `active` + volume | not mounted | **Wait** — see below. |
+| `active` + volume | mounted elsewhere | Resolve by uuid (`findVolumeMount`), verify the stamp, rewrite `mount`, start. |
+| `active` + volume | mounted, no stamp | **Refuse.** Empty mount point, or a reformatted or foreign drive. |
+| `active` + volume | mounted, `storeId` differs | **Refuse**, naming both ids. |
+| unrecognised `version`, or unparseable | — | **Refuse**, and say why. Never guess a path. |
 
-The rule is one sentence: **the source is never touched by the same operation
-that creates the copy.**
+Two of those deserve their reasons written down.
 
-Engine stopped first — this runs in the shell before children spawn, or as a
-one-shot with the daemon down.
+**Unrecognised shape refuses.** `remote.json` falls *open* on an unknown version
+(`RESET`, `apps/web/lib/remote/store.ts:199`) because there the worse failure
+was locking a working install out of itself. Here the worse failure is the
+opposite one: falling back to the default path is exactly the fresh-store-over-
+absent-history bug. So the same lesson points the other way. Precedent in the
+shell already: a bad profile registry is "a startup error, not a silent
+fallback" (`main.js:931`).
 
-1. **Preflight.** Target is a real mount (`isMountPoint`), writable, not inside
-   the source, not the source; free space ≥ source size × 1.05; read and record
-   the uuid.
-2. **Copy to `<target>/engine.incoming-<stamp>`.** Never straight onto the final
-   name, so an interrupted copy can never be mistaken for a store by the next
-   launch.
-3. **Verify, before anything is switched.** Manifest of relative paths identical;
-   total bytes identical; every `*.sqlite` opens and passes
-   `PRAGMA integrity_check`; `projects.json` and every `sessions/*/…` metadata
-   document parses. Any failure: leave `engine.incoming-*` for inspection,
-   change no setting, report what failed.
-4. **Rename** `engine.incoming-<stamp>` → `engine`. Same filesystem, atomic.
-5. **Write `storage.json`.** Only now does anything point at the new root.
-6. **Rename the source to `engine.migrated-<stamp>` and stop.** Deleting it is a
-   *separate action the person takes afterwards*, with the size shown. That
-   second click is where the disk is actually reclaimed, and making it separate
-   is the entire safety property: at no point does one operation both create the
-   copy and destroy the original.
+**A mounted path is never trusted without the stamp.** `isMountPoint`
+(`volumes.ts:118`) is the guard against a leftover empty directory at a mount
+point, and the stamp is the guard against everything else. Both, because
+initialising at either is unrecoverable.
 
-### The worktrees-only variant is smaller and safer
+### Waiting, when the volume is absent
 
-Steps 2–4 become, per worktree, `git worktree move` — git rewrites both sides
-(the `.git` file in the worktree and `.git/worktrees/<name>/gitdir` in the
-repository), which is the part a hand-rolled copy gets wrong. Then:
+This is a designed-for state, not an error path. The volume is *intended* to be
+present, so its absence is a condition to sit in and recover from — not an
+exception to throw.
 
-- **Skip any project whose availability is not `available`** — the same rule,
-  for the same reason, as the prune refusal in `worktree.ts`'s header. A skipped
-  worktree stays where it is and is reported; nothing is guessed.
-- Rewrite each session's `workspace.path` with the loop shape already at
-  `state.ts:4680–4696`.
-- No `PRAGMA integrity_check`, no `engine.migrated-*` to delete afterwards:
-  `git worktree move` leaves nothing behind, and a worktree that fails to move
-  is re-cuttable from its project.
+- The engine is not spawned. Nothing opens, nothing initialises, nothing is
+  written at the configured path.
+- A window says which volume is missing — by the **label recorded in the marker
+  at adoption time**, since the disk is not here to ask — that Telar is waiting,
+  and that no data has been touched.
+- Recovery is automatic. `apps/desktop/volume-watch.js` already turns a mount
+  into a coalesced event within one burst, it is a pure module taking an
+  `onChanged` callback, and it needs no engine — so it is reusable verbatim here
+  rather than polling. Its `powerMonitor` half covers the drive that was
+  unplugged while the machine slept.
+- Manual **Retry** as well, because a watcher is a hint and the person may know
+  something it does not.
+- **Open a different store** and **Start a new store here** are available but are
+  explicit, typed confirmations, never default buttons — and "start a new store"
+  *archives* the existing `active` under a timestamped key rather than
+  overwriting it, so choosing it by accident is still reversible.
 
-## The picker half is already unblocked — measured, not assumed
+### Falling back to a second store on the internal disk: considered, rejected
 
-- Electron's `showOpenDialog` (`main.js:1681`) has no filter and reaches
-  `/Volumes` today.
-- `browseRoots()` returns `["/Users/facundo", "/Volumes"]` on this machine, and
-  `listDirectories({ path: "/Volumes" })` lists `Focaltec HD`. Both run, now,
-  against `apps/web/lib/fs-dirs.ts`.
-- `registerProject` already records the volume identity for a root on a drive
+The peer asked for this to be settled out loud, so: **no, and not as an option.**
+
+Two stores that both accumulate history and later diverge cannot be reconciled.
+There is no merge for journals, for sqlite rows, and for a project registry that
+has minted different ids for the same checkout, and the person would have no
+reliable way to tell which store a given window was showing. Refusing to run is
+reversible by plugging in a cable; a silent fork is reversible by nothing.
+
+"Start a new store here" survives as a *deliberate act with a different name* —
+for the drive that is genuinely gone for good. It is never automatic, never a
+default, and it never happens because something was missing.
+
+## 3. Mid-session removal: what is guaranteed, and what merely usually works
+
+The brief asked for durability claims that have been established rather than
+assumed. Here is what the code actually does.
+
+**Established, by reading the code:**
+
+- `atomicWriteText` (`apps/engine/src/atomic.ts:32`) writes a temporary file and
+  renames over the target. **There is no `fsync` anywhere in the engine or the
+  shell** — `fsyncSync`/`fdatasync` do not appear in either tree.
+- So every JSON document write is atomic against a *process* crash — rename
+  either happens or does not, and a reader never sees a torn document — and is
+  **not durable** against the device going away. A write acknowledged to the
+  engine may still be only in the page cache.
+- `acquireDaemonLock` (`state.ts:12719`) reclaims a lock whose recorded pid is
+  not alive. It records `hostname` and **never compares it**. That is harmless
+  while the store is on the machine's own disk and becomes a real hazard the
+  moment the store is portable: a drive carried to a second Mac can have a live
+  daemon's lock broken by an unrelated pid. **This is a new bug that this feature
+  creates, and it must be fixed as part of it** — compare `hostname`, and treat a
+  lock from another host as held, not stale.
+
+**What can honestly be claimed about a yank:**
+
+- *Usually works*: sqlite's journal/WAL recovery restores the last committed
+  transaction. This is the same guarantee as pulling the power, and it rests on
+  the enclosure honouring flushes — which external enclosures are widely known
+  to lie about. It is not a guarantee this project can make on the device's
+  behalf.
+- *Not claimed*: that the most recent writes survive. Without `fsync` they may
+  be in a cache the device never wrote back. Losing the newest appended events
+  is possible.
+- *Structurally safe*: a reader never sees a half-written document, because
+  rename is atomic within the filesystem and APFS journals metadata. The failure
+  mode is a *missing* recent write, not a corrupt one.
+- *Will fail, loudly*: any turn in flight at the moment of removal. Its writes
+  return I/O errors and it is reported as failed.
+
+**What the engine does about it.** `volume-watch.js` fires on entries
+disappearing as well as appearing, so the store's volume going away is a signal
+the engine already has a delivery path for. On it:
+
+- Enter a `store-unavailable` state; refuse to start new turns, and say which
+  volume is missing rather than failing each turn with an I/O error.
+- Quiesce: close sqlite, stop journal appends, so the window in which a write
+  can be in flight is as short as it can be made.
+- **This is best-effort and is stated as such**: the unmount is learned about
+  *after* it happened, so anything in flight at that instant is already past
+  saving. Narrowing the window is not closing it.
+- On remount, re-verify the stamp before resuming. A different `storeId` is a
+  different store and must not be resumed into.
+
+## 4. Moving the store: order of operations
+
+One rule: **the source is never touched by the operation that creates the copy.**
+
+The engine must be stopped. The move runs in the shell as a one-shot before
+children spawn — the shell is what outlives the engine and can show progress.
+
+1. **Preflight.** Target absolute; not equal to and not inside the source; its
+   volume is a real mount (`isMountPoint`) when it has one; writable, proven by
+   writing and re-reading a probe file rather than by a permission bit; free
+   space at the target at least the source's size plus a margin. Read the
+   source's stamp. Record the target volume's uuid and label if it has them.
+2. **Copy to `<target>/<name>.incoming-<timestamp>`** — never onto the final
+   name, so an interrupted copy is inert to the next launch instead of being
+   mistaken for a store. Preserve modes and mtimes. Progress reported by bytes.
+3. **Hash while copying, not afterwards.** Each file's digest is computed from
+   the bytes read and from the bytes written, in the same pass, and compared.
+   Content verification for the cost of the copy that was happening anyway —
+   and strictly stronger than comparing lengths, which is what a cheaper check
+   would have settled for.
+4. **Verify before switching anything.** Relative-path manifest identical in
+   both directions — nothing missing, nothing extra; every per-file digest
+   matched; every `*.sqlite` opens read-only and returns `ok` from
+   `PRAGMA integrity_check`; every document the engine reads at boot parses. Any
+   failure leaves `.incoming-*` in place for inspection, changes no marker, and
+   names the file and the reason.
+5. **Fsync the copied tree, directories included.** Without it, "verified" means
+   "verified in page cache" — and this is the one moment the whole store's
+   durability is worth paying for explicitly, whatever the engine does at
+   steady state.
+6. **Rename** `.incoming-<timestamp>` to the final name. Same filesystem, atomic.
+7. **Write the marker.** `active` updated, `pending` cleared. This single write
+   *is* the switch: before it Telar opens the old store, after it the new one,
+   and there is no state in between.
+8. **Rename the source aside** to `<name>.migrated-<timestamp>`. Do not delete.
+9. **Deleting the source is a separate, later action**, with its size shown, and
+   **gated on `active.lastOpenedAt` post-dating the migration** — the old store
+   cannot be removed until Telar has actually opened the new one and run from
+   it. "Verified copy" is thereby made to mean "a store that has been opened",
+   not "bytes that matched".
+
+Rollback at every point: before step 7, abandoning costs only the `.incoming-*`
+directory. Between 7 and 8, the source is untouched at its original path and
+recovery is rewriting the marker. After 8, recovery is renaming it back.
+
+## 5. Registering a project from a volume — already unblocked
+
+Verified by running the code, not by reading it:
+
+- Electron's `showOpenDialog` (`main.js:1681`) has no filter and reaches mount
+  points today.
+- `browseRoots()` already returns the home directory *and* this platform's mount
+  roots, and `listDirectories` lists a mounted volume's contents
+  (`apps/web/lib/fs-dirs.ts:151`).
+- `registerProject` already records volume identity for a root on a drive
   (`state.ts:4785`).
 
-The one real gap is an **affordance, not a validation**: the browser opens at
-home, and home's `parent` is `null` (`fs-dirs.ts:257`), so `/Volumes` is
-reachable only by typing it into the path field. The fix is to show the mounted
-volumes as roots in the browser's chrome — `browseRoots()` already sanctions
-exactly those paths, so nothing new is being permitted.
+The only gap is an **affordance, not a validation**: the browser opens at home,
+home's `parent` is `null` (`fs-dirs.ts:257`), and so a mount root is reachable
+only by typing its path. The fix is to offer the mounted volumes as roots in the
+browser's chrome. `browseRoots()` already sanctions exactly those paths, so
+nothing new is being permitted — it is being made visible.
 
-## Not being built
+## 6. Not being built
 
-- Hot-swapping the store with sessions running.
-- Surviving a mid-turn unplug.
+- Hot-swapping the store while sessions run. The root is read once and handed to
+  both children (`main.js:596`); `engineRootFromEnv` resolves once at
+  construction; the daemon holds `engine.lock` and open sqlite handles for its
+  whole life. A live switch fails the in-flight turns that a restart fails
+  anyway, at a moment nobody chose. The setting applies at next launch and the
+  UI says so, matching `PATCH /api/remote`'s `restartRequired`
+  (`apps/web/app/api/remote/route.ts:102`).
+- Surviving a mid-turn removal. See §3 for what is claimed instead.
 - Any automatic deletion of a migration source.
+- Reconciling two divergent stores. See §2.
 
 ## Correction to the brief
 
 `apps/engine/src/run/mount.ts` and `run/store-capability.ts` are the **Run
-surface's** mount point — where run routes are attached to the daemon — and have
+surface's** mount point — where run routes attach to the daemon — and have
 nothing to do with disk volumes. The prior art that matters is
-`apps/engine/src/volumes.ts`, `state.ts` (`4416`, `4602`, `4748`),
-`worktree.ts`'s header, and `apps/desktop/volume-watch.js`.
+`apps/engine/src/volumes.ts`, `state.ts` (`4416`, `4602`, `4748`, `12719`),
+`worktree.ts`'s header, `apps/engine/src/atomic.ts`, and
+`apps/desktop/volume-watch.js`.
