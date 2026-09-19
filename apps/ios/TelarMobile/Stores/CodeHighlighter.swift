@@ -205,7 +205,7 @@ actor CodeHighlighter {
 struct HighlightedCode: View {
     let text: String
     let language: String?
-    var font: Font = .system(size: 12, design: .monospaced)
+    var font: Font = .system(Theme.footnote, design: .monospaced)
 
     @Environment(\.colorScheme) private var scheme
     @State private var highlighted: AttributedString?

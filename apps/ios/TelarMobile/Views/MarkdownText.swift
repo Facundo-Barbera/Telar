@@ -237,7 +237,7 @@ extension MarkdownUI.Theme {
                 // renders worse than it did before.
                 if let language = CodeLanguage.fenced(configuration.language) {
                     HighlightedCode(text: configuration.content, language: language,
-                                    font: .system(size: 13, design: .monospaced))
+                                    font: .system(Theme.footnote, design: .monospaced))
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(10)
                 } else {

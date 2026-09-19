@@ -52,14 +52,14 @@ struct HtmlOutputView: View {
                     withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
                 } label: {
                     Text(expanded ? "Show less" : "Taller output — expand")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(Theme.caption, weight: .medium))
                         .foregroundStyle(Theme.accent)
                         .frame(minHeight: 28)
                 }
                 .buttonStyle(.plain)
             }
             if truncated {
-                Text("truncated").font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                Text("truncated").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

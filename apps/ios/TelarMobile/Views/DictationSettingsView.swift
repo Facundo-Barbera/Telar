@@ -93,7 +93,7 @@ struct DictationSettingsView: View {
                                 Button("Deepgram") { save(provider: DictationProvider.deepgram) }
                             } label: {
                                 Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 13, weight: .medium))
+                                    .font(.system(Theme.footnote, weight: .medium))
                                     .foregroundStyle(Theme.chevron)
                             }
                             .disabled(loading || saving)
@@ -123,7 +123,7 @@ struct DictationSettingsView: View {
                                     }
                                 } label: {
                                     Image(systemName: "chevron.up.chevron.down")
-                                        .font(.system(size: 13, weight: .medium))
+                                        .font(.system(Theme.footnote, weight: .medium))
                                         .foregroundStyle(Theme.chevron)
                                 }
                                 // NO OPTIONS MEANS THAT MAC HAS NOT ANSWERED,

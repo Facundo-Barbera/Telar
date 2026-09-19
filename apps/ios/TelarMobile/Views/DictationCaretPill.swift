@@ -31,9 +31,9 @@ struct DictationCaretPill: View {
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: "mic.fill")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(Theme.captionTiny, weight: .semibold))
             Text(DictationLanguages.badge(language))
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(Theme.caption, weight: .semibold))
                 .monospacedDigit()
         }
         .foregroundStyle(Theme.primaryGlyph)

@@ -165,6 +165,15 @@ const SWEPT_FILES = [
     1,
     "the provider badge's `size * 0.65`, proportional to its own square like ProjectAvatar's — correct as it stands, NOT waiting on #674",
   ],
+  ["apps/ios/TelarMobile/Views/Panel/HtmlOutputView.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/DictationSettingsView.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/DictationCaretPill.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/AgentSettingsView.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/MarkdownText.swift", 0, ""],
+  // Not a view: a `Font` stored on the highlighter's theme, which is why it
+  // is the one swept file outside `Views/`. A count scoped to `Views/` misses
+  // it — the sweep's last site was very nearly its least visible.
+  ["apps/ios/TelarMobile/Stores/CodeHighlighter.swift", 0, ""],
 ];
 
 const LITERAL = ".system(size:";

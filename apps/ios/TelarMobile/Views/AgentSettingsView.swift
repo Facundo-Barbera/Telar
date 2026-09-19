@@ -254,8 +254,8 @@ struct AgentSettingsView: View {
     /// chip uses, so a tappable value reads the same on both screens.
     private func valueChip(_ text: String) -> some View {
         HStack(spacing: 5) {
-            Text(text).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-            Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium))
+            Text(text).font(.system(Theme.footnote, weight: .semibold)).lineLimit(1)
+            Image(systemName: "chevron.down").font(.system(Theme.captionTiny, weight: .medium))
         }
         .foregroundStyle(Theme.text)
         .padding(.horizontal, 12)
