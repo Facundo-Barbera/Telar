@@ -284,3 +284,32 @@ test("rows come out in the order they happened", () => {
   expect(times).toEqual([...times].sort((a, b) => a - b));
   expect(result.lastActivityAt).toBe(times.at(-1));
 });
+
+test("a title record written after the conversation does not end the walk before it starts", () => {
+  /**
+   * THE BUG THIS EXISTS FOR, found by adopting a real fork. The CLI stamps a
+   * `custom-title` record LAST — on a fork, on `/rename`, and `ai-title`
+   * arrives the same way. It carries a uuid and no parent, so a walk that
+   * started at the last uuid-bearing line started AND ended there: the whole
+   * conversation read as zero rows, silently, with `cut: "whole"` claiming it
+   * had read everything.
+   */
+  const lines = load("terminal-session");
+  const titled = [
+    ...lines.filter((line) => line.trim()),
+    JSON.stringify({
+      type: "custom-title",
+      sessionId: "11111111-2222-4333-8444-555555555555",
+      customTitle: "Adopted into Telar",
+      uuid: "99999999-8888-4777-8666-555555555555",
+      timestamp: "2026-09-02T10:00:00.000Z",
+    }),
+  ];
+
+  const result = readClaudeTranscript(titled);
+  expect(kinds(result.rows)).toEqual(kinds(readClaudeTranscript(lines).rows));
+  // Counted rather than silently skipped: a type that starts mattering shows
+  // up as a rising count instead of as rows going missing.
+  expect(result.dropped["custom-title"]).toBe(1);
+  expect(result.chainBrokeEarly).toBe(false);
+});
