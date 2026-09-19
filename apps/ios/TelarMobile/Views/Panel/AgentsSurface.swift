@@ -418,16 +418,16 @@ struct AgentsSurface: View {
                     .accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13)).foregroundStyle(Theme.text)
+                Text(title).font(.system(Theme.footnote)).foregroundStyle(Theme.text)
                     .lineLimit(1).truncationMode(.tail)
                 if let detail {
-                    Text(detail).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Text(detail).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                         .lineLimit(1).truncationMode(.tail)
                 }
             }
             Spacer(minLength: 4)
             Text(state.label)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .font(.system(Theme.caption, design: .monospaced, weight: .medium))
                 .foregroundStyle(color(state.tone))
                 .layoutPriority(-1)
             if open != nil {

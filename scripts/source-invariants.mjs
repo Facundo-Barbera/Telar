@@ -154,6 +154,17 @@ const SWEPT_FILES = [
     1,
     "the tray's 44pt circle; its count badge has no frame and does scale",
   ],
+  ["apps/ios/TelarMobile/Views/Panel/AgentsSurface.swift", 0, ""],
+  [
+    "apps/ios/TelarMobile/Views/AttachmentChip.swift",
+    3,
+    "the whole chip — a fixed 72pt tile and its fixed 22pt remove badge",
+  ],
+  [
+    "apps/ios/TelarMobile/Views/ModelPill.swift",
+    1,
+    "the provider badge's `size * 0.65`, proportional to its own square like ProjectAvatar's — correct as it stands, NOT waiting on #674",
+  ],
 ];
 
 const LITERAL = ".system(size:";
