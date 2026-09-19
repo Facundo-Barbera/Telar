@@ -62,6 +62,9 @@ import Testing
             "TelarMobile/Views/Panel/NotebookSurface.swift": 2,
             // DataframeGrid's 96×30 header and 96×22 cells.
             "TelarMobile/Views/Panel/CellOutputView.swift": 3,
+            "TelarMobile/Views/DiffView.swift": 0,
+            // The file strip's 28×28 tree toggle.
+            "TelarMobile/Views/Panel/FilesSurface.swift": 1,
         ]
         for (path, allowed) in expected {
             let source = try String(contentsOf: iosRoot.appending(path: path), encoding: .utf8)

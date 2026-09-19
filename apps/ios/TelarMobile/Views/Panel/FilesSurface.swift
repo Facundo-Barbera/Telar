@@ -67,6 +67,11 @@ struct FilesSurface: View {
             Button {
                 panel.setTreeShown(!panel.editor.treeShown)
             } label: {
+                // THE ONE ABSOLUTE SIZE LEFT IN THIS FILE. The square is fixed
+                // in both dimensions and it clips, so a glyph that grew with
+                // the reader's text would only outgrow its own target. It
+                // wants a @ScaledMetric frame — a layout change rather than a
+                // token swap — so it waits for that pass.
                 Image(systemName: panel.editor.treeShown ? "sidebar.left" : "sidebar.leading")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textMuted)
@@ -80,7 +85,7 @@ struct FilesSurface: View {
                         let isActive = file.path == panel.editor.activePath
                         HStack(spacing: 4) {
                             Text((file.path as NSString).lastPathComponent)
-                                .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                                .font(.system(Theme.footnote, weight: isActive ? .medium : .regular))
                                 .italic(!file.pinned)
                                 .foregroundStyle(isActive ? Theme.text : Theme.textMuted)
                                 .lineLimit(1)
@@ -90,7 +95,7 @@ struct FilesSurface: View {
                                 Button {
                                     panel.closeFile(file.path)
                                 } label: {
-                                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.textMuted)
+                                    Image(systemName: "xmark").font(.system(Theme.captionTiny, weight: .semibold)).foregroundStyle(Theme.textMuted)
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("Close \((file.path as NSString).lastPathComponent)")
@@ -150,9 +155,9 @@ struct FilesSurface: View {
     private var treeColumn: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Image(systemName: "magnifyingglass").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 TextField("Search files", text: $query)
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .onChange(of: query) { _, next in
@@ -160,7 +165,7 @@ struct FilesSurface: View {
                         if next.isEmpty { searched = false }
                     }
                 Button { Task { await load() } } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Image(systemName: "arrow.clockwise").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Refresh files")
@@ -229,24 +234,24 @@ struct FilesSurface: View {
             HStack(spacing: 5) {
                 if node.isDirectory {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(Theme.captionTiny, weight: .semibold))
                         .rotationEffect(.degrees(isOpen ? 90 : 0))
                         .foregroundStyle(Theme.textMuted.opacity(0.7))
                         .frame(width: 10)
-                    Image(systemName: isOpen ? "folder.fill" : "folder").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Image(systemName: isOpen ? "folder.fill" : "folder").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 } else {
                     Spacer().frame(width: 10)
-                    Image(systemName: fileGlyph(node.path)).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Image(systemName: fileGlyph(node.path)).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 }
                 Text(node.name)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(Theme.footnote, design: .monospaced))
                     .foregroundStyle(panel.editor.activePath == node.path ? Theme.text : Theme.textMuted)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
                 if let status {
                     Text(statusLetter(status))
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .font(.system(Theme.caption, design: .monospaced, weight: .bold))
                         .foregroundStyle(statusColor(status))
                 } else if dirty && !isOpen {
                     Circle().fill(Theme.statusAmber).frame(width: 5, height: 5)
@@ -309,7 +314,7 @@ struct FilesSurface: View {
             Text(dropped > 0
                  ? "First \(maxSearchMatches) matches; \(dropped) more not shown."
                  : "\(listing.files.count) files\(listing.truncated ? " (capped)" : "") · \(listing.source == .git ? "tracked and unignored, from git" : "walked — not a repository")")
-                .font(.system(size: 10))
+                .font(.system(Theme.caption))
                 .foregroundStyle(Theme.textMuted)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
