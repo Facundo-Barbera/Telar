@@ -13,6 +13,20 @@ struct WelcomeView: View {
     @State private var manual = false
     @State private var busy = false
     @State private var error: String?
+    /// THE WORDMARK KEEPS ITS 40, AND SCALES ANYWAY. Every other size in this
+    /// app maps onto a Dynamic Type style, because a 13 or a 16 is an
+    /// approximation of a rung somebody reached for. 40 is not: Apple's ramp
+    /// stops at `.largeTitle` (34), so there is no rung to land on, and
+    /// mapping it down would shrink the first thing a new reader sees by six
+    /// points — a brand change smuggled in under an accessibility sweep.
+    ///
+    /// `@ScaledMetric(relativeTo:)` is the exception the rest of the sweep
+    /// deliberately avoids: it keeps the literal and still grows with the
+    /// reader's setting, which is the whole point of #248. It is right HERE
+    /// and wrong almost everywhere else — if you are reading this because you
+    /// are "finishing the sweep", this site is finished. Do not turn it into
+    /// `.largeTitle`.
+    @ScaledMetric(relativeTo: .largeTitle) private var wordmark: CGFloat = 40
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,18 +38,18 @@ struct WelcomeView: View {
                 .padding(.bottom, 28)
 
             Text("Telar")
-                .font(.system(size: 40, weight: .bold))
+                .font(.system(size: wordmark, weight: .bold))
                 .foregroundStyle(Theme.text)
                 .padding(.bottom, 10)
 
             Text("Your work, within reach.")
-                .font(.system(size: 17))
+                .font(.system(.body))
                 .foregroundStyle(Theme.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.bottom, 6)
 
             Text("Follow your agents. Review their work.\nPick up the conversation anywhere.")
-                .font(.system(size: 13))
+                .font(.system(Theme.footnote))
                 .foregroundStyle(Theme.textMuted)
                 .multilineTextAlignment(.center)
 
@@ -69,7 +83,7 @@ struct WelcomeView: View {
                     manual = true
                 } label: {
                     Text("Connect manually")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(Theme.subhead, weight: .medium))
                         .foregroundStyle(Theme.textMuted)
                         .frame(maxWidth: .infinity)
                         .frame(height: 44)
@@ -77,7 +91,7 @@ struct WelcomeView: View {
             }
 
             Text("The code lives on the Mac: Settings → Remote access.")
-                .font(.system(size: 12))
+                .font(.system(Theme.footnote))
                 .foregroundStyle(Theme.textMuted)
                 .padding(.top, 8)
         }

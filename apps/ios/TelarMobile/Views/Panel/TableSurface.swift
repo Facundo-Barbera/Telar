@@ -104,6 +104,18 @@ struct TableSurface: View {
         if on { Label(label, systemImage: "checkmark") } else { Text(label) }
     }
 
+    /// THIS GRID KEEPS ITS ABSOLUTE SIZES, as a unit — the Dynamic Type sweep
+    /// (#248) holds all five back, not four. The header cells and the body
+    /// cells are pinned to a fixed width AND height so the columns line up
+    /// across a two-axis scroll, and text that grew inside them would be cut
+    /// off. The fifth is the `…` placeholder below, whose frame is height-only
+    /// and so could convert — but converting it alone would make a row that
+    /// has not loaded scale while the loaded rows beside it do not, which is
+    /// a worse answer than either state on its own.
+    ///
+    /// Making the grid scale is `@ScaledMetric` on the widths and both row
+    /// heights, with the column alignment surviving it: a layout change, and
+    /// the same one `DataframeGrid` needs. Tracked in #674.
     private func row(_ index: Int, widths: [CGFloat]) -> some View {
         HStack(spacing: 0) {
             if let cells = rows[index] {

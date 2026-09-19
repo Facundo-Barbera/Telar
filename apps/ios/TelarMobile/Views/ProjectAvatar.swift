@@ -53,6 +53,16 @@ struct ProjectAvatar: View {
 
     private var icons: ProjectIconCache { .shared }
 
+    /// EVERY SIZE BELOW IS ALREADY RIGHT, and the Dynamic Type sweep (#248)
+    /// deliberately leaves them. They are not absolute literals standing in
+    /// for a rung — each is a fraction of `size`, the box the caller asked
+    /// for, so the glyph is proportional to its own square by construction.
+    /// A caller that wants a bigger avatar passes a bigger `size` and
+    /// everything follows; a text style would break that relationship
+    /// outright and overflow a frame fixed in both dimensions.
+    ///
+    /// They are also `accessibilityHidden` marks rather than text anybody
+    /// reads — the name they stand for is announced by the row around them.
     var body: some View {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if let symbol = telarIconSymbol(iconName) {
