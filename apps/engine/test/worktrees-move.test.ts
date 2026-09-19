@@ -213,6 +213,68 @@ test("a failed re-add puts the checkout back where it was", async () => {
   expect(sha(checkout.path)).toBe(before);
 });
 
+/** What #641 does to every session worktree at the cut, and therefore what
+ *  this operation actually meets in production. */
+function lock(projectRoot: string, worktreePath: string) {
+  execFileSync("git", ["worktree", "lock", "--reason", "A Telar session is working in this worktree.", worktreePath], {
+    cwd: projectRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+/** `git worktree list` prints REALPATHS, and `mkdtemp` hands back the `/var`
+ *  symlink to `/private/var` on macOS — so the comparison is made on resolved
+ *  paths or it silently never matches. */
+const isLocked = (projectRoot: string, worktreePath: string): boolean => {
+  const resolved = fs.realpathSync(worktreePath);
+  return execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: projectRoot, encoding: "utf8" })
+    .split("\n\n")
+    .some((block) => block.includes(`worktree ${resolved}\n`) && /^locked/m.test(block));
+};
+
+test("a LOCKED checkout still moves, and arrives locked — #641's guard is not lost by moving", async () => {
+  /**
+   * #641 locks every session worktree at the cut, so that nothing outside
+   * Telar — `gh pr merge --delete-branch` in particular — can decide a live
+   * checkout is finished. A locked worktree refuses `git worktree remove`, so
+   * without an unlock this operation would report every checkout as "failed"
+   * on a real machine while passing every test that forgot to lock one.
+   *
+   * AND IT HAS TO ARRIVE LOCKED. The lock belongs to the session still working
+   * in it, not to where it sits; a moved checkout that landed unlocked would
+   * re-open #641 for exactly the sessions somebody had just relocated.
+   */
+  const projectRoot = repo();
+  const from = tmp("telar-move-from-");
+  const to = tmp("telar-move-to-");
+  const checkout = cut(projectRoot, from, "telar/locked");
+  lock(projectRoot, checkout.path);
+  expect(isLocked(projectRoot, checkout.path)).toBe(true);
+
+  const outcome = await moveCheckouts(defaultAsyncGitRunner, { checkouts: [checkout], destination: to, onMoved: () => undefined });
+
+  expect(outcome.skipped).toEqual([]);
+  expect(outcome.moved).toHaveLength(1);
+  expect(isLocked(projectRoot, outcome.moved[0]!.to)).toBe(true);
+});
+
+test("a locked checkout that is too dirty to move is left locked, not left open", async () => {
+  // The unlock is this operation's, so putting it back is this operation's
+  // too: an unlocked checkout left behind by a move that did not happen is
+  // #641 re-opened quietly.
+  const projectRoot = repo();
+  const from = tmp("telar-move-from-");
+  const to = tmp("telar-move-to-");
+  const checkout = cut(projectRoot, from, "telar/locked-dirty");
+  fs.writeFileSync(path.join(checkout.path, "uncommitted.txt"), "work\n");
+  lock(projectRoot, checkout.path);
+
+  const outcome = await moveCheckouts(defaultAsyncGitRunner, { checkouts: [checkout], destination: to, onMoved: () => undefined });
+
+  expect(outcome.skipped[0]).toMatchObject({ reason: "dirty" });
+  expect(isLocked(projectRoot, checkout.path)).toBe(true);
+});
+
 test("what a person is told separates the reasons, because they lead different places", () => {
   const outcome = {
     moved: [{ sessionId: "a", from: "/old/a", to: "/new/a" }],

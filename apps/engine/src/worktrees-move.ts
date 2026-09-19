@@ -39,7 +39,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { AsyncGitRunner } from "./worktree";
+import { lockSessionWorktree, unlockWorktree, type AsyncGitRunner } from "./worktree";
 
 /** One checkout this engine knows about, as the caller sees it. */
 export type Checkout = {
@@ -168,11 +168,30 @@ export async function moveCheckouts(
       continue;
     }
 
+    /**
+     * UNLOCK FIRST — issue #641 made every session worktree locked, not just
+     * the ones on a removable volume, precisely so that nothing outside Telar
+     * (`gh pr merge --delete-branch`) can decide a live checkout is finished.
+     * A locked worktree refuses `git worktree remove`, so this operation has
+     * to take its own lock off before it can move anything.
+     *
+     * UNCONDITIONAL AND BEST-EFFORT, the way `removeSessionWorktreeAsync` does
+     * it: a worktree that was never locked answers non-zero and that is not a
+     * failure.
+     *
+     * AND EVERY PATH BELOW PUTS THE LOCK BACK. An unlocked checkout left
+     * behind by a move that did not happen is #641 re-opened, quietly, for
+     * exactly the sessions somebody just tried to tidy up.
+     */
+    await unlockWorktree(git, checkout.projectRoot, checkout.path);
+
     // NEVER `--force`. A refusal here is git protecting somebody's uncommitted
     // work, and overriding it is the one thing this operation must not do.
     const removed = await git(checkout.projectRoot, ["worktree", "remove", checkout.path]);
     if (removed.status !== 0) {
       const message = (removed.stderr || removed.stdout).trim();
+      // It stays where it is, so it goes back under #641's protection.
+      await lockSessionWorktree(git, checkout.projectRoot, checkout.path);
       outcome.skipped.push({
         sessionId: checkout.sessionId,
         path: checkout.path,
@@ -192,6 +211,8 @@ export async function moveCheckouts(
        * and a lost checkout.
        */
       const restored = await git(checkout.projectRoot, ["worktree", "add", checkout.path, checkout.branch]);
+      // Back where it started means back under its lock (#641).
+      if (restored.status === 0) await lockSessionWorktree(git, checkout.projectRoot, checkout.path);
       outcome.skipped.push({
         sessionId: checkout.sessionId,
         path: checkout.path,
@@ -204,6 +225,14 @@ export async function moveCheckouts(
       continue;
     }
 
+    /**
+     * THE LOCK FOLLOWS THE CHECKOUT (#641). It is a property of the session
+     * still working in it, not of where it happens to sit, so a moved checkout
+     * that arrived unlocked would be one `gh pr merge` away from the bug #641
+     * closed — and it would be unlocked precisely for the sessions somebody
+     * had just taken the trouble to relocate.
+     */
+    await lockSessionWorktree(git, checkout.projectRoot, target);
     input.onMoved(checkout.sessionId, target);
     outcome.moved.push({ sessionId: checkout.sessionId, from: checkout.path, to: target });
   }
