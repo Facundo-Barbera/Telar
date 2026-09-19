@@ -89,6 +89,16 @@ const SWEPT_FILES = [
   ],
   ["apps/ios/TelarMobile/Views/AddProjectView.swift", 0, ""],
   ["apps/ios/TelarMobile/Views/BranchPickerSheet.swift", 0, ""],
+  [
+    "apps/ios/TelarMobile/Views/SettingsKit.swift",
+    2,
+    "the settings row and notice glyphs, both 27pt squares",
+  ],
+  [
+    "apps/ios/TelarMobile/Views/DevicesView.swift",
+    1,
+    "the device row's 27pt platform glyph",
+  ],
 ];
 
 const LITERAL = ".system(size:";
