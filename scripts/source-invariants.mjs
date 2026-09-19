@@ -101,6 +101,21 @@ const SWEPT_FILES = [
   ],
   ["apps/ios/TelarMobile/Views/UsageView.swift", 0, ""],
   ["apps/ios/TelarMobile/Views/Panel/TextFileView.swift", 0, ""],
+  [
+    "apps/ios/TelarMobile/Views/WelcomeView.swift",
+    1,
+    "the wordmark — NOT an unconverted literal: it is `.system(size: wordmark)` off a @ScaledMetric(relativeTo: .largeTitle), which scales. 40 has no rung (the ramp stops at 34) and mapping it down would shrink the brand. See the comment at the property",
+  ],
+  [
+    "apps/ios/TelarMobile/Views/Panel/TableSurface.swift",
+    5,
+    "the whole grid — header and body cells fixed in width AND height so columns align across a two-axis scroll, plus the `…` placeholder held with them so a loading row does not scale while loaded rows do not",
+  ],
+  [
+    "apps/ios/TelarMobile/Views/ProjectAvatar.swift",
+    4,
+    "not literals at all — each is a fraction of the caller's `size`, so the glyph is proportional to its own square by construction. These are correct as they stand and are NOT waiting on #674",
+  ],
 ];
 
 const LITERAL = ".system(size:";
