@@ -142,8 +142,11 @@ private struct OutputImage: View {
 /// line up across a horizontal scroll — text that grew with the reader's
 /// setting inside a frame that did not would simply be cut off. Making this
 /// grid scale means `@ScaledMetric` on the width and both heights, which is a
-/// layout change rather than a token swap, so it gets its own pass. The dtype
-/// label is an 8 besides, below the 9–15 the four tokens cover.
+/// layout change rather than a token swap, so it gets its own pass.
+///
+/// The dtype label's 8 is the smallest size in the app and DOES have a rung —
+/// `captionTiny`, since `.caption2` is the floor of Apple's ramp and an 8 can
+/// go nowhere else. It waits here for the frame, not for a token.
 private struct DataframeGrid: View {
     let columns: [String]
     let dtypes: [String]
