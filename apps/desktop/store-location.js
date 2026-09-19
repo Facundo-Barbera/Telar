@@ -159,7 +159,30 @@ function readMarker(userData, deps = {}) {
   if (parsed.active !== undefined && active === undefined) {
     return { unreadable: "unparseable", detail: "the recorded store location is malformed" };
   }
-  return { marker: { version: MARKER_VERSION, active, pending: readPending(parsed.pending), archived: readArchived(parsed.archived) } };
+  return {
+    marker: {
+      version: MARKER_VERSION,
+      active,
+      pending: readPending(parsed.pending),
+      archived: readArchived(parsed.archived),
+      retired: readRetired(parsed.retired),
+    },
+  };
+}
+
+/**
+ * The store a completed move left behind, still on disk under a renamed path.
+ *
+ * KEPT IN THE MARKER RATHER THAN INFERRED FROM THE DISK, because the offer to
+ * remove it has to survive the restart that the move requires — and because
+ * `stamp` is what `deleteRetiredSubtrees` compares against `lastOpenedAt` to
+ * decide whether the new store has actually been run from yet.
+ */
+function readRetired(raw) {
+  if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
+  if (typeof raw.source !== "string" || !path.isAbsolute(raw.source)) return undefined;
+  if (typeof raw.stamp !== "string" || raw.stamp === "") return undefined;
+  return { source: raw.source, stamp: raw.stamp };
 }
 
 function readActive(raw) {
@@ -429,9 +452,20 @@ function adoptStore(userData, next, deps = {}) {
     {
       active: { ...next, adoptedAt: next.adoptedAt ?? at, lastOpenedAt: next.lastOpenedAt ?? at },
       ...(marker && marker.archived && marker.archived.length ? { archived: marker.archived } : {}),
+      ...(next.retired ?? (marker && marker.retired) ? { retired: next.retired ?? marker.retired } : {}),
     },
     deps,
   );
+}
+
+/** Forget a retired store — after it has been removed, or after the person
+ *  said to keep it and stop being asked. Removes the record, never files. */
+function clearRetired(userData, deps = {}) {
+  const { marker } = readMarker(userData, deps);
+  if (!marker || !marker.retired) return;
+  const next = { ...marker };
+  delete next.retired;
+  writeMarker(userData, next, deps);
 }
 
 /** Stamp a successful open. `deleteSource` is gated on this post-dating the
@@ -493,6 +527,7 @@ module.exports = {
   noteOpened,
   setPending,
   clearPending,
+  clearRetired,
   archiveActive,
   describeVolume,
 };

@@ -245,6 +245,9 @@ children spawn — the shell is what outlives the engine and can show progress.
    rename is atomic within the filesystem. The stamp goes last on purpose: until
    it exists the target is not a store, so a crash between the renames leaves
    something that nothing will open, with the marker still naming the source.
+6a. **Repair every worktree's registration** — see §4a. Before the source is
+   retired, so both paths still exist and `git worktree repair` cannot be
+   confused about which is which.
 7. **Write the marker.** `active` updated, `pending` cleared. This single write
    *is* the switch: before it Telar opens the old store, after it the new one,
    and there is no state in between.
@@ -265,6 +268,75 @@ recovery is rewriting the marker. After 8, recovery is renaming it back.
 or the leftovers of a previous attempt, is a refusal with a sentence — not a
 resume. Nothing has been lost at that point, which means a resume that guessed
 wrong would be the only remaining way to lose something.
+
+## 4a. Git worktrees do not move by being copied
+
+`engine/worktrees/` is inside the store, so the migration carries it — and
+carrying it is not the same as moving it. The two pointers are asymmetric:
+
+```
+<worktree>/.git                      ->  <repo>/.git/worktrees/<name>
+<repo>/.git/worktrees/<name>/gitdir  ->  <worktree>/.git
+```
+
+A copy rewrites neither. The first still resolves, because the repository did
+not move. The second names the path the migration is about to rename aside — so
+git concludes the worktree was **deleted**, and the next `git worktree prune`
+anywhere removes the registration. The work is still on disk; git's record of
+whose it is, is not. `git worktree repair`, run from the repository with the new
+path, rewrites it. No project registry is needed: each worktree's own `.git`
+names its repository, which is what keeps this in the shell where the migration
+happens.
+
+### And a worktree on a removable volume must be locked
+
+This is a live defect independent of the migration, and it is the sharper half.
+`removeSessionWorktreeAsync` guards on the **project's** availability and then
+runs `git worktree prune`. Once the store is on a drive, those two facts come
+apart:
+
+- the project is on the internal disk and perfectly available,
+- the worktrees are on a volume that is out,
+- the guard passes, `prune` runs,
+- and **every** worktree registration on the absent drive is deleted — not just
+  the one being removed.
+
+Removing a single session while the drive is unplugged would take out all of
+them. Git's own documentation asks for `git worktree lock` on exactly this —
+a worktree on a portable device or a network share — and a locked worktree is
+ignored by `prune` however long its directory has been missing, whatever
+`expire` says. So:
+
+1. **Lock on creation** when the worktree lands on a removable volume.
+2. **Unlock in teardown**, unconditionally and before `worktree remove`. A lock
+   outlives its reason: a worktree locked onto a drive that was later
+   reformatted refuses to be removed. Locking without an unlock path trades a
+   data-loss bug for a leak-forever bug.
+3. **Guard `prune` on the worktrees root being present**, not only on the
+   project being available. The lock protects worktrees that already exist; the
+   guard stops us asking git the question at all.
+
+### The hardlink question, measured rather than assumed
+
+A related finding held that moving worktrees off the volume holding the package
+manager's cache breaks its hardlink deduplication. Measured on this layout:
+
+```
+bun cache dev   = 16777229
+worktree dev    = 16777229      (already the same volume)
+node_modules/.bun/**/*.js  ->  links 1
+```
+
+Same volume already, and the dedup is **not happening** — link count 1, not 2.
+So moving the store does not break a working dedup; it is already broken for
+other reasons. What moving *would* do is make it unfixable in place: repairing
+the deduplication later would not bring the hardlinks back unless the cache sits
+on the same volume as the worktrees. Recorded as a constraint on any future
+cache-location work, not a blocker here.
+
+Telar uses no git alternates and no `--local` clones, so git objects are not
+implicated at all — they live once, in the project repository, which does not
+move.
 
 ## 5. Registering a project from a volume — already unblocked
 

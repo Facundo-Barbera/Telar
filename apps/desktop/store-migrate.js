@@ -377,6 +377,15 @@ async function migrateStore(input, deps = {}) {
     writeStamp(target, { storeId: checked.storeId, createdAt: now() }, deps);
     await fs.promises.rm(staging, { recursive: true, force: true });
 
+    /**
+     * 5a. AND TELL EVERY REPOSITORY WHERE ITS WORKTREES WENT. A copied worktree
+     * is not a moved one: the repository still points at the old path, which
+     * step 6 is about to rename away, and git would then read that as a
+     * deletion. Done BEFORE the source is retired, so both paths still exist
+     * and `repair` cannot be confused about which is which.
+     */
+    const worktrees = repairMovedWorktrees(target, deps);
+
     // 6. RETIRE THE SOURCE — renamed, not removed. The caller writes the marker
     //    once this returns; deleting what is retired is a separate act the
     //    person takes later, gated on having opened the new store.
@@ -384,7 +393,7 @@ async function migrateStore(input, deps = {}) {
       await fs.promises.rename(path.join(source, subtree), retiredPath(source, subtree, stamp));
     }
 
-    return { ok: true, stamp, storeId: checked.storeId, bytes: checked.bytes, retired: checked.present };
+    return { ok: true, stamp, storeId: checked.storeId, bytes: checked.bytes, retired: checked.present, worktrees };
   } catch (error) {
     return {
       ok: false,
@@ -485,6 +494,125 @@ async function fsyncPath(target, flags, fs) {
   }
 }
 
+// --- Git worktrees, which do not move by being copied ------------------------
+
+/**
+ * RE-POINT EVERY REPOSITORY AT THE WORKTREES THAT JUST MOVED — issue #630.
+ *
+ * THE TWO POINTERS ARE NOT SYMMETRIC, and that asymmetry is why copying a store
+ * is not enough:
+ *
+ *   <worktree>/.git                      -> <repo>/.git/worktrees/<name>
+ *   <repo>/.git/worktrees/<name>/gitdir  -> <worktree>/.git
+ *
+ * Copying the store rewrites neither. The first still resolves, because the
+ * REPOSITORY did not move. The second names a path that the migration is about
+ * to rename away — so git concludes the worktree was deleted, and the next
+ * `git worktree prune` anywhere deletes the registration. The work is still on
+ * disk; git's record of whose it is, is not.
+ *
+ * NO PROJECT REGISTRY IS NEEDED TO FIX IT. The worktree's own `.git` file names
+ * its repository, so each moved directory carries everything required to repair
+ * itself. That is what keeps this in the shell, where the migration happens,
+ * rather than requiring the engine — which does not exist yet at this point.
+ *
+ * AND A WORKTREE THAT LANDED ON A REMOVABLE VOLUME IS LOCKED. Git's own
+ * documentation asks for this on a portable device: a locked worktree is
+ * ignored by `prune` however long its directory has been missing, so unmounting
+ * the drive stops being indistinguishable from deleting the work.
+ *
+ * BEST-EFFORT, AND REPORTED RATHER THAN FATAL. A repository that is itself on
+ * an absent disk cannot be repaired now and must not fail a verified migration;
+ * it is named in the answer so the failure is visible instead of silent.
+ */
+function repairMovedWorktrees(storeRoot, deps = {}) {
+  const { fs, git } = { ...resolveDeps(deps), git: deps.git ?? defaultGit };
+  const root = path.join(storeRoot, "engine", "worktrees");
+  const repaired = [];
+  const failed = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    // A store with no worktrees yet. Nothing to repair is the common case on a
+    // fresh install and is not worth reporting as anything.
+    return { repaired, failed };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const worktree = path.join(root, entry.name);
+    const repository = repositoryOf(worktree, fs);
+    if (!repository) {
+      failed.push({ worktree, reason: "this worktree does not say which repository it belongs to" });
+      continue;
+    }
+    const result = git(repository, ["worktree", "repair", worktree]);
+    if (result.status !== 0) {
+      failed.push({ worktree, reason: result.stderr.trim() || "git could not repair it" });
+      continue;
+    }
+    repaired.push(worktree);
+    if (onRemovableVolume(worktree, fs)) {
+      // Never fatal: the lock protects a LATER prune, and a migration that
+      // copied and verified everything must not be failed by it.
+      git(repository, ["worktree", "lock", "--reason", "Telar keeps this worktree on a removable volume; unmounting it is not a deletion.", worktree]);
+    }
+  }
+  return { repaired, failed };
+}
+
+/** The repository a worktree belongs to, out of its own `.git` file. */
+function repositoryOf(worktree, fs) {
+  let pointer;
+  try {
+    pointer = fs.readFileSync(path.join(worktree, ".git"), "utf8").trim();
+  } catch {
+    return undefined;
+  }
+  const match = /^gitdir:\s*(.+)$/.exec(pointer);
+  if (!match) return undefined;
+  // `<repo>/.git/worktrees/<name>` — the repository is three levels up, and
+  // anything else is a shape this does not understand rather than one to guess.
+  const admin = match[1].trim();
+  const worktreesDir = path.dirname(admin);
+  const gitDir = path.dirname(worktreesDir);
+  if (path.basename(worktreesDir) !== "worktrees" || path.basename(gitDir) !== ".git") return undefined;
+  const repository = path.dirname(gitDir);
+  return fs.existsSync(repository) ? repository : undefined;
+}
+
+function onRemovableVolume(target, fs) {
+  const roots = process.platform === "darwin" ? ["/Volumes"] : process.platform === "linux" ? ["/media", "/mnt"] : [];
+  for (const root of roots) {
+    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    if (!target.startsWith(prefix)) continue;
+    const [name] = target.slice(prefix.length).split(path.sep);
+    if (!name) continue;
+    try {
+      return fs.statSync(path.join(root, name)).dev !== fs.statSync(root).dev;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function defaultGit(cwd, args) {
+  try {
+    const stdout = require("node:child_process").execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      // Bounded: a repository on a disk that is itself away must not hold the
+      // launch this runs inside.
+      timeout: 30_000,
+    });
+    return { status: 0, stdout, stderr: "" };
+  } catch (error) {
+    return { status: error?.status ?? 1, stdout: "", stderr: error?.stderr ? String(error.stderr) : String(error?.message ?? error) };
+  }
+}
+
 // --- Afterwards -------------------------------------------------------------
 
 /** What a retired source still occupies, so the person deciding can see it. */
@@ -534,6 +662,7 @@ module.exports = {
   preflight,
   measure,
   migrateStore,
+  repairMovedWorktrees,
   retiredSubtrees,
   deleteRetiredSubtrees,
   walkTree,

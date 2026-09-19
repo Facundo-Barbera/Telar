@@ -17,6 +17,7 @@
 
 const { afterEach, beforeEach, expect, test } = require("bun:test");
 const crypto = require("node:crypto");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -221,6 +222,75 @@ test("no sqlite binding is not silently a pass, and does not block a verified co
   const outcome = await migrate.migrateStore({ source, target }, { freeSpace: roomy, checkSqlite: () => ({ unavailable: true }) });
   // The hashes proved the copy; the health check simply had nothing to say.
   expect(outcome.ok).toBe(true);
+});
+
+// --- Worktrees, which do not move by being copied ----------------------------
+
+/**
+ * ISSUE #630, and the defect this file shipped before the fix. A worktree
+ * directory is bytes, so a copy carries it perfectly — and git still believes
+ * it lives where it used to, because the pointer BACK at the worktree lives in
+ * the repository and nothing touched it. The next `prune` anywhere then deletes
+ * the registration of work that is sitting right there.
+ *
+ * Real `git` against a real repository: the whole finding is about what git
+ * does with two files on disk, and a stub would only agree with whatever this
+ * module already believes.
+ */
+function seedWorktree(root) {
+  const repository = path.join(scratch, "repo");
+  fs.mkdirSync(repository, { recursive: true });
+  const git = (args, cwd = repository) => execFileSync("git", args, { cwd, encoding: "utf8" });
+  git(["init", "-q", "-b", "main"]);
+  git(["config", "user.email", "test@example.com"]);
+  git(["config", "user.name", "Test"]);
+  fs.writeFileSync(path.join(repository, "file.txt"), "hello");
+  git(["add", "-A"]);
+  git(["commit", "-qm", "first"]);
+  const worktree = path.join(root, "engine", "worktrees", "session-one");
+  git(["worktree", "add", "-q", "-b", "telar/one", worktree]);
+  return { repository, worktree, git };
+}
+
+test("a migrated worktree is still registered, and git can still find it", async () => {
+  const { repository, worktree, git } = seedWorktree(source);
+  expect(git(["worktree", "list"])).toContain(worktree);
+
+  const outcome = await migrate.migrateStore({ source, target }, { freeSpace: roomy, checkSqlite: () => ({ ok: true }) });
+  expect(outcome.ok).toBe(true);
+
+  const moved = path.join(target, "engine", "worktrees", "session-one");
+  expect(outcome.worktrees.repaired).toEqual([moved]);
+  expect(outcome.worktrees.failed).toEqual([]);
+
+  // The registration now names the NEW path, and not the retired one.
+  const listed = git(["worktree", "list"]);
+  expect(listed).toContain(moved);
+  expect(listed).not.toContain(worktree);
+
+  // And the thing that actually matters: a prune — which runs on every session
+  // teardown — does not delete it.
+  git(["worktree", "prune"]);
+  expect(git(["worktree", "list"])).toContain(moved);
+  expect(fs.readFileSync(path.join(moved, "file.txt"), "utf8")).toBe("hello");
+  void repository;
+});
+
+test("a repository that cannot be reached is reported, not silently skipped", async () => {
+  const { worktree } = seedWorktree(source);
+  // The repository's own disk is away. The worktree copied fine; the repair
+  // cannot happen now and must be visible rather than swallowed.
+  fs.writeFileSync(path.join(worktree, ".git"), "gitdir: /nowhere/that/exists/.git/worktrees/session-one");
+
+  const outcome = await migrate.migrateStore({ source, target }, { freeSpace: roomy, checkSqlite: () => ({ ok: true }) });
+  expect(outcome.ok).toBe(true);
+  expect(outcome.worktrees.repaired).toEqual([]);
+  expect(outcome.worktrees.failed).toHaveLength(1);
+  expect(outcome.worktrees.failed[0].worktree).toBe(path.join(target, "engine", "worktrees", "session-one"));
+});
+
+test("a store with no worktrees at all repairs nothing and complains about nothing", () => {
+  expect(migrate.repairMovedWorktrees(source)).toEqual({ repaired: [], failed: [] });
 });
 
 // --- Removing the old store -------------------------------------------------

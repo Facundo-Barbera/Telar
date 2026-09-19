@@ -31,6 +31,8 @@ const { provisionPushRelay } = require("./push-relay");
 const { watchVolumes } = require("./volume-watch");
 const { awaitStore } = require("./store-gate");
 const { createStoreGateWindow } = require("./store-gate-window");
+const { adoptStore, clearPending, clearRetired, readMarker, setPending } = require("./store-location");
+const { deleteRetiredSubtrees, migrateStore, preflight: preflightMove, retiredSubtrees } = require("./store-migrate");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
 const { readProfileRegistry } = require("./browser-profiles");
@@ -1784,6 +1786,135 @@ ipcMain.handle("telar:dialog:choose-directory", async (event, input) => {
   const [directory] = result.filePaths || [];
   return result.canceled || !directory ? { cancelled: true } : { path: directory };
 });
+
+// --- Where the store lives (#630) --------------------------------------------
+/**
+ * THE SETTINGS SURFACE FOR MOVING THE STORE.
+ *
+ * IT IS THE SHELL'S AND NOT THE ENGINE'S, for the same reason update
+ * preferences are: this is a property of THIS INSTALLATION on THIS MACHINE,
+ * decided before the engine exists and read at launch. An engine route would be
+ * asking the thing being moved where it should be.
+ *
+ * AND IT REPORTS `restartRequired` RATHER THAN PRETENDING. The root is read
+ * once and handed to both children (`childEnv`), and the daemon holds
+ * `engine.lock` and its sqlite handles for its whole life — so a move takes
+ * effect at the next launch, and saying otherwise would be the "setting that
+ * looks like it applied" failure `PATCH /api/remote` already avoids.
+ */
+function storeStatus() {
+  const userData = app.getPath("userData");
+  const { marker } = readMarker(userData);
+  const active = marker?.active;
+  const retired = marker?.retired;
+  return {
+    path: telarHome(),
+    defaultPath: app.getPath("userData"),
+    storeId: active?.storeId,
+    volume: active?.volume,
+    // An explicit TELAR_HOME is a developer pointing this run somewhere; the
+    // controls say so rather than offering to move a store they do not own.
+    pinnedByEnvironment: Boolean(!DEV_BUILD && process.env.TELAR_HOME?.trim()),
+    retired: retired
+      ? {
+          ...retired,
+          bytes: retiredSubtrees(retired.source, retired.stamp).reduce((total, entry) => total + entry.bytes, 0),
+          removable: (active?.lastOpenedAt ?? 0) > Number(retired.stamp),
+        }
+      : undefined,
+  };
+}
+
+ipcMain.handle("telar:store:status", () => storeStatus());
+
+ipcMain.handle("telar:store:preflight", (_event, input) => {
+  const target = typeof input?.path === "string" ? input.path.trim() : "";
+  if (!target) return { ok: false, message: "Choose a folder." };
+  return preflightMove({ source: telarHome(), target });
+});
+
+ipcMain.handle("telar:store:move", async (event, input) => {
+  const target = typeof input?.path === "string" ? input.path.trim() : "";
+  if (!target) return { ok: false, message: "Choose a folder." };
+  const source = telarHome();
+  const userData = app.getPath("userData");
+  const { marker } = readMarker(userData);
+  if (!marker?.active) return { ok: false, message: "Telar has not settled on a store yet." };
+
+  // Recorded BEFORE the copy, cleared after: an intent, never consulted when
+  // deciding where to open, so a move that dies halfway cannot strand anyone.
+  setPending(userData, { path: target });
+  const outcome = await migrateStore({
+    source,
+    target,
+    onProgress: (progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send("telar:store:progress", progress);
+    },
+  });
+  if (!outcome.ok) {
+    clearPending(userData);
+    return outcome;
+  }
+
+  /**
+   * AND ONLY NOW DOES ANYTHING POINT AT THE NEW STORE. This single write is the
+   * switch — before it Telar opens the old store, after it the new one, and
+   * there is no state in between. The old store is retired, not deleted;
+   * removing it is a separate act, gated on the new one having been opened.
+   */
+  adoptStore(userData, {
+    path: target,
+    storeId: outcome.storeId,
+    volume: volumeIdentityFor(target),
+    retired: { source, stamp: outcome.stamp },
+  });
+  clearPending(userData);
+  return { ok: true, restartRequired: true, bytes: outcome.bytes, path: target };
+});
+
+ipcMain.handle("telar:store:remove-old", () => {
+  const userData = app.getPath("userData");
+  const { marker } = readMarker(userData);
+  if (!marker?.retired) return { ok: false, message: "There is no previous store to remove." };
+  const outcome = deleteRetiredSubtrees({
+    source: marker.retired.source,
+    stamp: marker.retired.stamp,
+    openedAt: marker.active?.lastOpenedAt ?? 0,
+  });
+  if (outcome.ok) clearRetired(userData);
+  return outcome;
+});
+
+ipcMain.handle("telar:store:keep-old", () => {
+  clearRetired(app.getPath("userData"));
+  return { ok: true };
+});
+
+/**
+ * The drive a chosen path is on, recorded at adoption so a remount under a
+ * different name is recognisable later. Absent for a path on this machine's own
+ * disk, and absent rather than invented where `diskutil` has nothing to say.
+ */
+function volumeIdentityFor(target) {
+  if (process.platform !== "darwin") return undefined;
+  const prefix = "/Volumes/";
+  if (!target.startsWith(prefix)) return undefined;
+  const [name] = target.slice(prefix.length).split(path.sep);
+  if (!name) return undefined;
+  const mount = path.join("/Volumes", name);
+  try {
+    if (fs.statSync(mount).dev === fs.statSync("/Volumes").dev) return undefined;
+    const plist = execFileSync("diskutil", ["info", "-plist", mount], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000,
+    });
+    const uuid = /<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]?.trim();
+    return { mount, label: name, ...(uuid ? { uuid } : {}) };
+  } catch {
+    return { mount, label: name };
+  }
+}
 
 // --- Auto-update (electron-updater) ------------------------------------------
 // electron-updater has no way to bake a custom request header into the

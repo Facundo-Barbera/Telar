@@ -74,6 +74,7 @@ const OtherMacsSection = dynamic(() => import("./other-macs-section").then((mod)
 const TextGenSection = dynamic(() => import("./textgen-section").then((mod) => mod.TextGenSection));
 const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.PluginsPage));
 const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
+const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
 const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
 const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
 
@@ -362,6 +363,10 @@ export function SettingsPage() {
           <TextGenSection />
           {/* Merged in from the retired Application pane. */}
           <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
+          {/* Beside Updates because it is the same KIND of fact: a property of
+              this installation on this machine, owned by the shell, applied at
+              the next launch rather than now. */}
+          <StoreSection />
           <UpdatesSection />
         </>
       )}

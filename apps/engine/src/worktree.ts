@@ -51,6 +51,16 @@
  * `removeSessionWorktreeAsync` takes the project's availability and refuses on
  * anything but `available`. The caller passes what the store's one probe said —
  * see `EngineStore.projectAvailability`.
+ *
+ * ══ AND SINCE #630 THE ARRANGEMENT CAN ALSO BE THE OTHER WAY AROUND ══
+ *
+ * Everything above was reasoned for ONE direction: engine root on the internal
+ * disk, project possibly on a drive. The store may now itself live on a volume,
+ * which makes "the project is readable" and "the worktree is readable" two
+ * different questions — and the guard above only asks the first. See the block
+ * above `lockWorktreeIfRemovable` for the case that opens up, why `git worktree
+ * lock` is the answer git already provides, and why locking without an unlock
+ * path would trade a data-loss bug for a leak-forever one.
  */
 import crypto from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
@@ -315,6 +325,127 @@ export function worktreesRoot(engineRoot: string): string {
 }
 
 /**
+ * ══ AND NOW THE ENGINE ROOT ITSELF CAN BE ON A DRIVE — issue #630 ══
+ *
+ * Everything above reasons about a worktree on the internal disk whose PROJECT
+ * may be away. That was the only arrangement possible while the engine root was
+ * fixed. It is not any more, and the two facts come apart in a way that makes
+ * the existing guard insufficient rather than wrong:
+ *
+ *   the project is on the internal disk and perfectly available,
+ *   the WORKTREE's own volume is out,
+ *   so `removeSessionWorktreeAsync`'s availability check passes,
+ *   and the `prune` it runs deletes the registration of every worktree on the
+ *   absent drive — not just the one being removed.
+ *
+ * Removing a single session while the drive is unplugged would take out all of
+ * them. A pruned registration is the unrecoverable half of this module's
+ * original argument; the work is sitting on the drive in somebody's bag.
+ *
+ * GIT HAS A FIRST-CLASS ANSWER AND WE WERE NOT USING IT. `git worktree lock` is
+ * documented for exactly this — a worktree on a portable device or a network
+ * share — and a locked worktree is ignored by `prune` however long its
+ * directory has been missing, regardless of `expire`.
+ *
+ * THE LOCK NEEDS AN UNLOCK, and this is the part that is easy to leave out. A
+ * lock outlives its reason: a worktree locked onto a drive that was later
+ * reformatted refuses to be removed, and `git worktree remove` fails on it
+ * silently from the caller's point of view. Locking without a teardown path
+ * trades a data-loss bug for a leak-forever bug, so `removeSessionWorktreeAsync`
+ * unlocks first, unconditionally and best-effort.
+ */
+
+/** Mount roots — where a removable volume appears. The fourth copy of this
+ *  list, for the reason `volumes.ts`'s header gives: no app here imports
+ *  another, and each says so. */
+function isOnRemovableVolume(target: string, platform: NodeJS.Platform = process.platform): boolean {
+  const roots = platform === "darwin" ? ["/Volumes"] : platform === "linux" ? ["/media", "/mnt"] : [];
+  for (const root of roots) {
+    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    if (!target.startsWith(prefix)) continue;
+    const [name] = target.slice(prefix.length).split(path.sep);
+    if (!name) continue;
+    const mount = path.join(root, name);
+    try {
+      // A mount point's `st_dev` differs from its parent's. An empty folder
+      // left where a drive used to be shares its parent's and is not a mount —
+      // `volumes.ts`'s `isMountPoint`, and the same reason for it.
+      return fs.statSync(mount).dev !== fs.statSync(root).dev;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Lock a worktree that lives on a removable volume, so an unmount can never
+ * read as a deletion. A no-op anywhere else: a lock on the internal disk would
+ * be a lock with no reason, and those are the ones that outlive their purpose.
+ *
+ * BEST-EFFORT AND NEVER FATAL. A cut that succeeded must not be failed because
+ * the lock did not take; what the lock protects against is a later `prune`, and
+ * `removeSessionWorktreeAsync`'s own guard covers the same ground from the
+ * other side.
+ */
+export async function lockWorktreeIfRemovable(
+  git: AsyncGitRunner,
+  projectRoot: string,
+  worktreePath: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  if (!isOnRemovableVolume(worktreePath, platform)) return false;
+  try {
+    const locked = await git(projectRoot, [
+      "worktree",
+      "lock",
+      "--reason",
+      "Telar keeps this worktree on a removable volume; unmounting it is not a deletion.",
+      worktreePath,
+    ]);
+    return locked.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Release a lock before teardown. Unconditional and best-effort: a worktree
+ *  that was never locked answers non-zero and that is not a failure. */
+async function unlockWorktree(git: AsyncGitRunner, projectRoot: string, worktreePath: string): Promise<void> {
+  try {
+    await git(projectRoot, ["worktree", "unlock", worktreePath]);
+  } catch {
+    // Never locked, already unlocked, or a project that cannot answer.
+  }
+}
+
+/**
+ * RE-POINT GIT AT A WORKTREE THAT MOVED — the other half of #630's migration.
+ *
+ * The two pointers are not symmetric, which is what makes moving a worktree by
+ * copying it quietly wrong:
+ *
+ *   <worktree>/.git                      -> <repo>/.git/worktrees/<name>
+ *   <repo>/.git/worktrees/<name>/gitdir  -> <worktree>/.git
+ *
+ * Moving the store rewrites neither. The first still resolves, because the
+ * repository did not move; the second names a path that no longer exists, so
+ * git believes the worktree was deleted. `git worktree repair`, given the new
+ * path, rewrites it.
+ *
+ * IT IS RUN FROM THE REPOSITORY AND IS IDEMPOTENT, so a worktree that never
+ * moved costs one `git` that changes nothing.
+ */
+export async function repairWorktree(git: AsyncGitRunner, projectRoot: string, worktreePath: string): Promise<boolean> {
+  try {
+    const repaired = await git(projectRoot, ["worktree", "repair", worktreePath]);
+    return repaired.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Can this directory host a worktree at all?
  *
  * The create path asks this twice over: to decide whether to REFUSE a stated
@@ -487,6 +618,9 @@ export async function createSessionWorktreeAsync(
   if (added.status !== 0) {
     throw new WorktreeError(`git worktree add failed: ${added.stderr.trim() || added.stdout.trim()}`);
   }
+  // #630: a worktree on a removable volume is locked the moment it exists, so
+  // there is no window in which an unmount could read as a deletion.
+  await lockWorktreeIfRemovable(git, input.projectRoot, plan.path);
   return { path: plan.path, branch: plan.branch, baseRef: baseSha };
 }
 
@@ -523,6 +657,26 @@ export async function removeSessionWorktreeAsync(
     // is not recoverable at all.
     return !fs.existsSync(worktreePath);
   }
+  /**
+   * AND THE SAME REFUSAL FROM THE OTHER SIDE — issue #630.
+   *
+   * The check above asks whether the PROJECT is readable. Once the engine root
+   * can be on a drive, that is no longer the same question as whether the
+   * WORKTREE is: the project can be on the internal disk and perfectly
+   * available while the worktrees are on a volume that is out. The guard would
+   * pass, and `prune` would then delete the registration of every worktree on
+   * the absent drive — not merely the one being removed.
+   *
+   * So the worktree's own root has to be there before anything prunes. The
+   * lock (`lockWorktreeIfRemovable`) is what protects worktrees that already
+   * exist; this is what stops us asking git the question at all.
+   */
+  const root = path.dirname(worktreePath);
+  if (!fs.existsSync(root)) return false;
+  // Locked worktrees refuse to be removed, and a worktree on a removable volume
+  // is deliberately locked. Unlock first, always: a lock that outlives its
+  // reason is how "never lose one" becomes "never remove one".
+  await unlockWorktree(git, projectRoot, worktreePath);
   try {
     await git(projectRoot, ["worktree", "remove", "--force", worktreePath]);
   } catch {
