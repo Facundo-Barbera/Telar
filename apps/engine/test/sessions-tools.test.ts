@@ -309,15 +309,31 @@ describe("there is no cap on creation", () => {
 // ── driving ─────────────────────────────────────────────────────────────────
 
 describe("driving a session", () => {
-  test("send defaults to passive activity and does not promise an answer", async () => {
+  test("send stays passive while the recipient is WORKING, and does not promise an answer", async () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    // BUSY IS WHAT PASSIVE MEANS NOW (#631 part 2): the cost it exists to refuse
+    // is interrupting a session mid-turn. Sending to an IDLE one used to be
+    // passive too, and that was a message nobody would ever read.
+    store.submitTurn(id, { runId: "run_busy", input: "a long think" });
+    const token = store.claimTurn(id, "worker_busy")!.claim!.token;
+    store.markRunning(id, "run_busy", token);
     const sent = await call(tools, "sessions_send", { sessionId: id, input: "routine checkpoint" });
     expect(sent.isError).toBe(false);
     expect(sent.json!.delivery).toBe("passive");
     expect(String(sent.json!.note)).toContain("No model was started or steered");
     expect(store.claimTurn(id, "worker_test")).toBeUndefined();
+  });
+
+  test("send to an IDLE session is delivered rather than left for a turn nobody gives it", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    const sent = await call(tools, "sessions_send", { sessionId: id, input: "routine checkpoint" });
+    expect(sent.isError).toBe(false);
+    expect(sent.json!.delivery).toBe("wake");
+    expect(store.claimTurn(id, "worker_test")).toBeDefined();
   });
 
   test("send queues one turn and says plainly that it is not the answer", async () => {

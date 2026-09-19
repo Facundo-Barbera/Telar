@@ -2,8 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   commitSessionWork,
   countDirty,
+  defaultRemoteBase,
   gitOverview,
+  gitOverviewAsync,
   GIT_LOG_FORMAT,
+  listGitRefs,
+  listGitRefsAsync,
   parseAheadBehind,
   parseGitLog,
   parseNameStatus,
@@ -14,17 +18,54 @@ import {
   projectRemoteAsync,
   samePath,
   sessionDiff,
+  sessionDiffAsync,
 } from "../src/git";
+import { GIT_TIMEOUT_STATUS } from "../src/worktree";
 import type { AsyncGitRunner, GitResult, GitRunner } from "../src/worktree";
 
 const ok = (stdout: string): GitResult => ({ status: 0, stdout, stderr: "" });
 const fail = (): GitResult => ({ status: 1, stdout: "", stderr: "fatal" });
+
+/**
+ * A CHILD THE ENGINE KILLED, shaped exactly as `createGitRunner` reports one.
+ *
+ * THE POINT OF THE WHOLE SUITE BELOW. A timeout arrives as an ordinary non-zero
+ * exit, so a test that only ever exercises `fail()` proves nothing about it —
+ * which is how a timed-out ref listing came to be reported as a repository with
+ * no branches (#650) under a green suite.
+ */
+const timedOut = (what = "for-each-ref"): GitResult => ({
+  status: GIT_TIMEOUT_STATUS,
+  stdout: "",
+  stderr: `git ${what} in /repo did not finish within 30000ms and was killed`,
+  timedOut: true,
+});
 
 /** A runner keyed by the first two argv words, so a test states only the
  *  commands it cares about and every other call fails like a real git would. */
 function runner(replies: Record<string, GitResult>): GitRunner {
   return (_cwd, args) => replies[args.slice(0, 2).join(" ")] ?? fail();
 }
+
+/**
+ * The ref listing's runner keys on the NAMESPACE, because both halves are
+ * `for-each-ref --sort=-committerdate` and the two-word key above answers them
+ * identically — which would hide the exact case this module got wrong: one half
+ * dying while the other answers.
+ */
+function refsRunner(replies: Record<string, GitResult>): GitRunner {
+  return (_cwd, args) => {
+    if (args[0] === "for-each-ref") return replies[args[args.length - 1] ?? ""] ?? fail();
+    return replies[args.slice(0, 2).join(" ")] ?? fail();
+  };
+}
+
+const HEADS = "refs/heads";
+const REMOTES = "refs/remotes";
+const BOTH_HALVES: Record<string, GitResult> = {
+  [HEADS]: ok("main\t*\nfeature-x\t\n"),
+  [REMOTES]: ok("origin/main\t\norigin/HEAD\t\n"),
+};
 
 /**
  * The review's runner keys on THREE words, because `diff -z --numstat` and
@@ -132,6 +173,105 @@ describe("gitOverview", () => {
     const overview = gitOverview(runner({ ...REPO, "status --porcelain": fail() }), "/repo");
     expect(overview.branch).toBe("main");
     expect(overview.dirtyFiles).toBe(0);
+  });
+});
+
+/**
+ * A TIMED-OUT READ IS NOT A FACT ABOUT THE REPOSITORY — issue #650.
+ *
+ * Every test here drives `timedOut()` rather than `fail()`, and that is the
+ * whole discipline: the two are the same exit status, so a suite that only
+ * exercises the second calls this covered while the bug ships. The claims a
+ * killed child must never produce are "no branches", "a clean tree", "no
+ * worktrees" and "not a git repository".
+ */
+describe("git did not answer", () => {
+  test("a timed-out half leaves the listing INCOMPLETE rather than short", () => {
+    // The observed defect, exactly: locals die under load, remotes answer, and
+    // the result was a shorter list that read as the whole repository.
+    const listing = listGitRefs(refsRunner({ ...BOTH_HALVES, [HEADS]: timedOut() }), "/repo");
+    expect(listing.incomplete).toBe("timeout");
+    // What DID arrive is kept — those are still perfectly good bases.
+    expect(listing.refs.map((ref) => ref.name)).toEqual(["origin/main"]);
+  });
+
+  test("an empty listing means 'no branches' ONLY when nothing failed", () => {
+    // The three cases the old `return []` collapsed into one.
+    expect(listGitRefs(refsRunner({ [HEADS]: ok(""), [REMOTES]: ok("") }), "/repo")).toEqual({ refs: [] });
+    expect(listGitRefs(refsRunner({ [HEADS]: timedOut(), [REMOTES]: ok("") }), "/repo").incomplete).toBe("timeout");
+    expect(listGitRefs(refsRunner({ [HEADS]: fail(), [REMOTES]: ok("") }), "/repo").incomplete).toBe("failed");
+  });
+
+  test("a timeout outranks a plain failure, because it is the one a retry fixes", () => {
+    const listing = listGitRefs(refsRunner({ [HEADS]: fail(), [REMOTES]: timedOut() }), "/repo");
+    expect(listing.incomplete).toBe("timeout");
+  });
+
+  test("the overview carries the incompleteness to the picker", () => {
+    const overview = gitOverview(refsRunner({ ...REPO, ...BOTH_HALVES, [REMOTES]: timedOut() }), "/repo");
+    expect(overview.refsIncomplete).toBe("timeout");
+    expect((overview.refs ?? []).map((ref) => ref.name)).toEqual(["main", "feature-x"]);
+    // And a whole listing says nothing, so the picker's ordinary state is quiet.
+    expect(gitOverview(refsRunner({ ...REPO, ...BOTH_HALVES }), "/repo").refsIncomplete).toBeUndefined();
+  });
+
+  test("an incomplete listing cannot veto origin/HEAD, so the default base survives", () => {
+    // The quieter half of the same bug: `defaultBase` corroborates the pointer
+    // against the refs, so a dead remote half silently dropped the default and
+    // the composer fell back to HEAD without anyone being told.
+    const git = refsRunner({ "symbolic-ref -q": ok("refs/remotes/origin/main\n") });
+    expect(defaultRemoteBase(git, "/repo", { refs: [], incomplete: "timeout" })).toBe("origin/main");
+    // With a WHOLE listing the corroboration still holds — a stale pointer to a
+    // deleted branch must not seed every worktree with a failing ref.
+    expect(defaultRemoteBase(git, "/repo", { refs: [] })).toBeUndefined();
+  });
+
+  test("a killed `git status` leaves the dirty count ABSENT, never a reassuring 0", () => {
+    const overview = gitOverview(runner({ ...REPO, "status --porcelain": timedOut("status") }), "/repo");
+    expect(overview.dirtyFiles).toBeUndefined();
+    // A plain failure keeps the pinned decision above: a locked index is usually
+    // a clean tree, and that case is not this one.
+    expect(gitOverview(runner({ ...REPO, "status --porcelain": fail() }), "/repo").dirtyFiles).toBe(0);
+  });
+
+  test("a killed `worktree list` leaves the worktrees ABSENT, never '0 worktrees'", () => {
+    expect(gitOverview(runner({ ...REPO, "worktree list": timedOut("worktree list") }), "/repo").worktrees).toBeUndefined();
+    expect(gitOverview(runner({ ...REPO, "worktree list": fail() }), "/repo").worktrees).toEqual([]);
+  });
+
+  test("a killed probe is refused, not reported as an unversioned directory", () => {
+    // `envMode: "local"` makes "not a repository" a SUPPORTED state, which is
+    // why reporting it wrongly is so quiet — the foot just says so and stops.
+    // Same refusal `files.ts` makes for the file listing.
+    const stalled = runner({ "rev-parse --is-inside-work-tree": timedOut("rev-parse") });
+    expect(() => gitOverview(stalled, "/repo")).toThrow("did not finish within");
+    expect(() => sessionDiff(stalled, { cwd: "/repo" })).toThrow("did not finish within");
+    // A genuine `false` is still answered rather than thrown.
+    expect(gitOverview(runner({ "rev-parse --is-inside-work-tree": ok("false\n") }), "/plain").repository).toBe(false);
+  });
+
+  test("a killed probe does not tell someone their checkout is unversioned before a commit", () => {
+    const reason = commitSessionWork(runner({ "rev-parse --is-inside-work-tree": timedOut("rev-parse") }), {
+      cwd: "/repo",
+      message: "x",
+    }).reason;
+    expect(reason).not.toContain("not a git repository");
+    expect(reason).toContain("git did not answer");
+  });
+
+  test("the async twins answer identically on the timeout path", async () => {
+    const sync = refsRunner({ ...BOTH_HALVES, [HEADS]: timedOut() });
+    const async: AsyncGitRunner = async (cwd, args) => sync(cwd, args);
+    expect(await listGitRefsAsync(async, "/repo")).toEqual(listGitRefs(sync, "/repo"));
+
+    const stalledSync = runner({ "rev-parse --is-inside-work-tree": timedOut("rev-parse") });
+    const stalledAsync: AsyncGitRunner = async (cwd, args) => stalledSync(cwd, args);
+    await expect(gitOverviewAsync(stalledAsync, "/repo")).rejects.toThrow("did not finish within");
+    await expect(sessionDiffAsync(stalledAsync, { cwd: "/repo" })).rejects.toThrow("did not finish within");
+
+    const overviewSync = refsRunner({ ...REPO, ...BOTH_HALVES, [REMOTES]: timedOut() });
+    const overviewAsync: AsyncGitRunner = async (cwd, args) => overviewSync(cwd, args);
+    expect(await gitOverviewAsync(overviewAsync, "/repo")).toEqual(gitOverview(overviewSync, "/repo"));
   });
 });
 

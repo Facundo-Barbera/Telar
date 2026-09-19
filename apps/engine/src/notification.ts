@@ -200,6 +200,32 @@ export function mergeRunOutcome(lead: NotificationDetail, ended: NotificationDet
 }
 
 /**
+ * HELD MAIL, DELIVERED — issue #631 part 2.
+ *
+ * A peer message that arrived while this session was working has ALREADY been
+ * announced: `submitAgentTurn` wrote its row at accept, because a person
+ * reading the transcript is entitled to see a thing arrive when it arrived.
+ * What the model gets is this, later, at the idle transition — and the two must
+ * not read as the same event said twice.
+ *
+ * SO IT SAYS WHEN. One clause, and it is the fact that distinguishes the rows:
+ * the row above is "this landed", this one is "and here it is, now that you are
+ * free". A cohort of several already reads as a delivery (`mergeNotifications`
+ * writes its own list header), so only the singleton needs saying.
+ *
+ * WAKES ARE UNTOUCHED. A held wake was never announced at accept — nothing
+ * wrote a row for it — so for that path the delivery IS the arrival and there
+ * is no second reading to distinguish it from.
+ */
+export function heldDelivery(detail: NotificationDetail): NotificationDetail {
+  if (detail.kind !== "peer_message" || detail.entries) return detail;
+  return {
+    ...detail,
+    body: `${detail.body}\nIt arrived while this session was working and was held until now; nothing else is waiting.`,
+  };
+}
+
+/**
  * THE TURN'S `input` WHEN THE ENGINE WROTE THE WORDS — #550 clause 4.
  *
  * A wake's and a request's prose is the ENGINE's, so it moves to
@@ -212,7 +238,11 @@ export function mergeRunOutcome(lead: NotificationDetail, ended: NotificationDet
  * transcript is a row a person has to guess at. It says exactly what the turn is.
  */
 export function notificationLabel(detail: NotificationDetail): string {
-  const what = detail.kind === "request" ? "request" : "wake";
+  // A HELD PEER MESSAGE REACHES THIS TOO (#631 part 2), and it is not a wake:
+  // nothing this session subscribed to did anything. The label used to read
+  // `[notification: wake · session X]` for whatever was not a request, which
+  // for a peer's report would have named a wake that never happened.
+  const what = detail.kind === "request" ? "request" : detail.kind === "peer_message" ? "peer message" : "wake";
   const where = detail.sessionId ? ` · session ${detail.sessionId}` : "";
   const which = detail.wakeKind ? ` · ${detail.wakeKind}` : "";
   return `[notification: ${what}${which}${where}]`;

@@ -33,6 +33,7 @@ import {
   type McpServer,
   type ModelSelection,
   type RuntimeMode,
+  type StorageReport,
   type TurnSubmissionResult,
   type UsageLimits,
   type WorkerClaim,
@@ -106,6 +107,9 @@ import type { GhRunner } from "./github";
 import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
 import type { AsyncGitRunner, GitRunner } from "./worktree";
+import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
+import { measureStorage } from "./storage";
+import { describeOutcome } from "./worktrees-move";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 
@@ -820,6 +824,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const decommissioned = sweepReport(sweepSpoolAndLooms(store.paths.root));
   if (decommissioned) process.stdout.write(`${decommissioned}\n`);
   /**
+   * AND EVERY LIVE WORKTREE IS LOCKED — issue #641.
+   *
+   * Not a sweep: nothing is deleted and nothing is once-per-home. It is the
+   * backfill for a guard that is otherwise only applied at the cut, so the
+   * worktrees that exist right now — including whichever session is mid-feature
+   * when this daemon starts — are covered before the next `gh pr merge
+   * --delete-branch` goes looking for one. Cheap, idempotent, and best-effort;
+   * see `EngineStore.lockLiveWorktrees`.
+   *
+   * SILENT, unlike the sweeps above, and deliberately: this runs on every start
+   * rather than once, and it changes nothing a person owns. A line per boot
+   * saying "locked 7 worktrees" is how a log teaches its reader to skip it.
+   */
+  store.lockLiveWorktrees();
+  /**
    * AND WHAT THE MAIN SESSION LEFT — issue #531.
    *
    * THE KEY IS CARRIED FIRST, then the document goes. The order is the rule: the
@@ -907,6 +926,52 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       usageLimitsCache.inFlight = undefined;
     });
     return usageLimitsCache.inFlight;
+  };
+  /**
+   * HOW BIG THE STORE IS, as of the last time anybody asked — issue #642.
+   *
+   * IN MEMORY AND MEASURED LAZILY. A snapshot on disk would add a file to the
+   * very thing being measured, and there is no figure worth restoring across a
+   * restart: the walk is what makes it true, and the walk is cheap enough to
+   * repeat once per engine life.
+   *
+   * NOTHING SCHEDULES THIS. It runs when a reader first opens the pane and
+   * again when one presses refresh — #629 is open because four timers in the
+   * rail cost ~97,000 requests a day, and a directory's size does not change by
+   * the second. The stale-while-revalidate the limits cache above uses would be
+   * the wrong shape here for the same reason: there is nothing to revalidate
+   * against but another full walk.
+   *
+   * ONE WALK AT A TIME. Two settings windows opening together must not put two
+   * traversals of a 13 GB tree on the same disk; the second joins the first.
+   */
+  const storageCache: { report?: StorageReport; inFlight?: Promise<StorageReport> } = {};
+  const readStorage = (refresh: boolean): Promise<StorageReport> => {
+    if (!refresh && storageCache.report) return Promise.resolve(storageCache.report);
+    /**
+     * BOTH ROOTS WHILE A SPLIT LASTS — #642 part 2.
+     *
+     * Changing where checkouts go affects the NEXT cut; the ones already cut
+     * stay where they are until they are moved or their sessions end. So for a
+     * while there are checkouts under two roots, and a "Session checkouts" row
+     * that counted only the configured one would under-report by exactly the
+     * gigabytes somebody changed the setting to get rid of.
+     */
+    const configured = rootOf(readWorktreesRoot(store.paths.root)) ?? defaultWorktreesRoot(store.paths.root);
+    const fallback = defaultWorktreesRoot(store.paths.root);
+    storageCache.inFlight ??= measureStorage({
+      root: store.paths.root,
+      worktreesRoot: configured,
+      ...(configured === fallback ? {} : { alsoWorktrees: [fallback] }),
+    })
+      .then((report) => {
+        storageCache.report = report;
+        return report;
+      })
+      .finally(() => {
+        storageCache.inFlight = undefined;
+      });
+    return storageCache.inFlight;
   };
   const daemonId = crypto.randomUUID();
   /**
@@ -2084,6 +2149,91 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const id = decodeURIComponent(url.pathname.slice("/v2/browser/logins/".length));
         if (!createLoginGrantStore(store.paths.root).revoke(id)) throw new HttpError(404, "not_found", "no such remembered login");
         writeJson(response, 200, { ok: true });
+        return;
+      }
+      /**
+       * WHAT TELAR IS KEEPING AND WHERE — issue #642. Read-only: there is no
+       * route here that removes a byte, because the pane this feeds has no
+       * delete and no "clean up" in this pass.
+       *
+       * `?refresh=1` RE-WALKS; without it the cached measurement comes back
+       * with the timestamp it was taken at, and the pane shows the figure as of
+       * that moment. The first read of an engine's life waits for the walk —
+       * seconds on a large store — which is why the cockpit fetches this off
+       * the render path and never on a timer.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/storage") {
+        writeJson(response, 200, { storage: await readStorage(url.searchParams.get("refresh") === "1") });
+        return;
+      }
+      /**
+       * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
+       *
+       * NO `restartRequired`, and that is a finding rather than an omission.
+       * The root is consulted at exactly one moment — planning where a new
+       * checkout lands — and everything afterwards addresses a worktree by the
+       * absolute path recorded on its session. So a new root takes effect on
+       * the next cut, and printing a restart out of symmetry with #630 would
+       * cost somebody a restart they do not need.
+       *
+       * AND NOTHING IS MOVED BY THIS. Checkouts already cut keep working where
+       * they are; moving them is a separate, explicit operation with its own
+       * refusals. A PUT here cannot lose anybody's work.
+       */
+      if (url.pathname === "/v2/worktrees-root" && (request.method === "GET" || request.method === "PUT")) {
+        if (request.method === "PUT") {
+          const input = (await body(request)) as { root?: unknown };
+          // PRESENT-BUT-NULL IS "put it back beside the store", the same shape
+          // every other nullable setting here uses to mean the default.
+          if (input.root === null) clearWorktreesRoot(store.paths.root);
+          else if (typeof input.root === "string" && input.root.trim()) {
+            if (!path.isAbsolute(input.root.trim())) throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path");
+            try {
+              writeWorktreesRoot(store.paths.root, input.root.trim());
+            } catch (cause) {
+              throw new HttpError(400, "invalid_request", cause instanceof Error ? cause.message : "that folder could not be used for session checkouts");
+            }
+          } else throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path, or null for the default");
+          // The figures are about to be wrong in the one way that matters, so
+          // the next read measures rather than serving the old split.
+          storageCache.report = undefined;
+        }
+        const state = readWorktreesRoot(store.paths.root);
+        writeJson(response, 200, {
+          worktreesRoot: {
+            ...state,
+            default: defaultWorktreesRoot(store.paths.root),
+            ...(worktreesRootBlocker(state) ? { blocker: worktreesRootBlocker(state) } : {}),
+          },
+        });
+        return;
+      }
+      /**
+       * MOVE THE CHECKOUTS ALREADY CUT — issue #642 part 2, and the one
+       * destructive thing on this pane.
+       *
+       * IT RE-CUTS RATHER THAN COPIES, so `git worktree remove` — never with
+       * `--force` — is what refuses a checkout holding uncommitted work, and
+       * the branch is verified to still exist before anything is removed. See
+       * `worktrees-move.ts` for why copy-and-repair is unsafe rather than
+       * merely slower.
+       *
+       * REFUSED WHOLESALE WHILE ANYTHING IS WORKING, before a single checkout
+       * is touched: a turn in flight is holding that directory right now.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/worktrees-root/move") {
+        const state = readWorktreesRoot(store.paths.root);
+        const destination = rootOf(state);
+        if (!destination) throw new HttpError(409, "conflict", worktreesRootBlocker(state) ?? "Telar does not know where session checkouts belong.");
+        let outcome;
+        try {
+          outcome = await store.moveWorktrees(destination);
+        } catch (cause) {
+          throw new HttpError(409, "conflict", cause instanceof Error ? cause.message : "the checkouts could not be moved");
+        }
+        // The figures moved by exactly this much, so the next read measures.
+        storageCache.report = undefined;
+        writeJson(response, 200, { move: { ...outcome, summary: describeOutcome(outcome) } });
         return;
       }
       /**

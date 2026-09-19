@@ -34,7 +34,10 @@ import {
   type RememberedLogin,
   type SessionDefaults,
   type SidebarLayout,
+  type StorageReport,
   type TextGenPolicy,
+  type WorktreeMoveResult,
+  type WorktreesRoot,
   type UsageReport,
   type UsageResolution,
   type UsageLimits,
@@ -1445,6 +1448,47 @@ export class EngineClient {
    */
   usageLimits(options: { refresh?: boolean } = {}): Promise<{ limits: UsageLimits }> {
     return this.request("GET", `/v2/usage/limits${options.refresh ? "?refresh=1" : ""}`);
+  }
+
+  /**
+   * What this engine is keeping on disk, by category — issue #642.
+   *
+   * SLOW ON A COLD ENGINE, and worth knowing at the call site: the first read
+   * walks the whole store, which is seconds on a large one. Afterwards the
+   * measurement comes back with the `measuredAt` it was taken at until somebody
+   * asks for a fresh one. Nothing here polls, and there is no write.
+   */
+  storage(options: { refresh?: boolean } = {}): Promise<{ storage: StorageReport }> {
+    return this.request("GET", `/v2/storage${options.refresh ? "?refresh=1" : ""}`);
+  }
+
+  /** Where session checkouts go on this install — see `WorktreesRoot`. */
+  worktreesRoot(): Promise<{ worktreesRoot: WorktreesRoot }> {
+    return this.request("GET", "/v2/worktrees-root");
+  }
+
+  /**
+   * Put them somewhere else from the next cut onward. `null` restores the
+   * default beside the store.
+   *
+   * NOTHING IS MOVED BY THIS and no restart is needed: checkouts already cut
+   * keep working where they are, addressed by the path on their session.
+   */
+  setWorktreesRoot(root: string | null): Promise<{ worktreesRoot: WorktreesRoot }> {
+    return this.request("PUT", "/v2/worktrees-root", { root });
+  }
+
+  /**
+   * Move the checkouts already cut to the configured root, by re-cutting each
+   * from its own branch.
+   *
+   * SLOW, AND PARTIAL BY DESIGN. One `git worktree remove` and one `add` per
+   * checkout. A checkout with uncommitted changes is refused by git and
+   * reported rather than forced; so is one whose branch no longer exists. The
+   * whole call is refused while any session is working in its checkout.
+   */
+  moveWorktrees(): Promise<{ move: WorktreeMoveResult }> {
+    return this.request("POST", "/v2/worktrees-root/move", {});
   }
 
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */

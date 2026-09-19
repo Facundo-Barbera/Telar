@@ -51,12 +51,23 @@
  * `removeSessionWorktreeAsync` takes the project's availability and refuses on
  * anything but `available`. The caller passes what the store's one probe said —
  * see `EngineStore.projectAvailability`.
+ *
+ * ══ AND SINCE #630 THE ARRANGEMENT CAN ALSO BE THE OTHER WAY AROUND ══
+ *
+ * Everything above was reasoned for ONE direction: engine root on the internal
+ * disk, project possibly on a drive. The store may now itself live on a volume,
+ * which makes "the project is readable" and "the worktree is readable" two
+ * different questions — and the guard above only asks the first. See the block
+ * above `lockSessionWorktree` for the case that opens up, why `git worktree
+ * lock` is the answer git already provides, and why locking without an unlock
+ * path would trade a data-loss bug for a leak-forever one.
  */
 import crypto from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { ProjectAvailability } from "./volumes";
+import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, type WorktreesRootState } from "./worktrees-location";
 
 export type GitResult = {
   status: number;
@@ -310,8 +321,200 @@ export function sanitizeBranchName(name: string): string {
   return trimmed;
 }
 
-export function worktreesRoot(engineRoot: string): string {
-  return path.join(engineRoot, "worktrees");
+/**
+ * WHERE CHECKOUTS GO WITH NOTHING CONFIGURED — #642 part 2 made this the
+ * DEFAULT rather than the answer.
+ *
+ * It lives in `worktrees-location.ts` now, beside the record that can override
+ * it, and is re-exported here because this module is where a reader looks for
+ * it. There is one definition; a second spelling of "engine root plus
+ * worktrees" is a thing to forget when the default moves.
+ */
+export { defaultWorktreesRoot } from "./worktrees-location";
+
+/**
+ * ══ AND NOW THE ENGINE ROOT ITSELF CAN BE ON A DRIVE — issue #630 ══
+ *
+ * Everything above reasons about a worktree on the internal disk whose PROJECT
+ * may be away. That was the only arrangement possible while the engine root was
+ * fixed. It is not any more, and the two facts come apart in a way that makes
+ * the existing guard insufficient rather than wrong:
+ *
+ *   the project is on the internal disk and perfectly available,
+ *   the WORKTREE's own volume is out,
+ *   so `removeSessionWorktreeAsync`'s availability check passes,
+ *   and the `prune` it runs deletes the registration of every worktree on the
+ *   absent drive — not just the one being removed.
+ *
+ * Removing a single session while the drive is unplugged would take out all of
+ * them. A pruned registration is the unrecoverable half of this module's
+ * original argument; the work is sitting on the drive in somebody's bag.
+ *
+ * GIT HAS A FIRST-CLASS ANSWER AND WE WERE NOT USING IT. `git worktree lock` is
+ * documented for exactly this — a worktree on a portable device or a network
+ * share — and a locked worktree is ignored by `prune` however long its
+ * directory has been missing, regardless of `expire`.
+ *
+ * THE LOCK NEEDS AN UNLOCK, and this is the part that is easy to leave out. A
+ * lock outlives its reason: a worktree locked onto a drive that was later
+ * reformatted refuses to be removed, and `git worktree remove` fails on it
+ * silently from the caller's point of view. Locking without a teardown path
+ * trades a data-loss bug for a leak-forever bug, so `removeSessionWorktreeAsync`
+ * unlocks first, unconditionally and best-effort.
+ */
+
+/**
+ * ══ AND THE LOCK IS NOT ABOUT DRIVES AT ALL — issue #641 ══
+ *
+ * #630 locked worktrees on removable volumes and left the internal disk
+ * unlocked, on the reasoning that a lock with no reason is the kind that
+ * outlives its purpose. That reasoning was right about the risk and wrong about
+ * the reason, because it only counted the risks that come from THIS engine.
+ *
+ * WHAT ACTUALLY DESTROYS THEM IS `gh`. Measured against gh 2.100.0's
+ * `deleteLocalBranch` (`pkg/cmd/pr/merge/merge.go`): with `--delete-branch`, gh
+ * reads `git worktree list --porcelain`, finds the worktree holding the PR's
+ * head branch, and — when that worktree is a linked one other than the current
+ * directory — runs `git worktree remove -- <path>` on it, then `git branch -D`.
+ * The directory, the local branch and the registration all go in one command
+ * nobody aimed at them.
+ *
+ * THAT IS NOT AN EDGE CASE HERE, IT IS THE HOUSE STYLE. A session is assigned a
+ * feature, opens a PR for the first part, and the orchestrator merges it as soon
+ * as CI passes — from somewhere else, which is precisely gh's "another linked
+ * worktree" arm. The more promptly the PR is merged, the more reliably the
+ * session's checkout is deleted out from under it.
+ *
+ * SO THE POLICY IS ABOUT THE SESSION, NOT THE DISK: a worktree belonging to a
+ * session that is still live must not be removed, whatever happened to its
+ * branch. A merged PR is not evidence the work is finished — only the person or
+ * the session saying so is, and they say it by archiving or deleting the
+ * session, which is the one path that unlocks.
+ *
+ * `git worktree lock` ENFORCES EXACTLY THAT, and it is the right instrument
+ * rather than a convenient one: `worktree remove` refuses on a locked tree and
+ * `--force` ONCE is not enough (git demands `-f -f`), which gh never passes;
+ * `prune` ignores a locked tree however long its directory has been missing.
+ * gh degrades to a warning and skips its local cleanup — the merge itself still
+ * succeeds. Nothing a session does inside the tree is affected: commit, status,
+ * push, fetch and `worktree repair` all behave identically under a lock.
+ *
+ * THE ONE THING A LOCK DOES BLOCK is `git worktree move`, which needs an unlock
+ * first (or `-f -f`). Nothing in Telar moves a worktree that way today — the
+ * store migration copies and then repairs, which is lock-transparent — but a
+ * future relocate UI has to unlock, move and re-lock rather than discover this.
+ *
+ * The unlock in `removeSessionWorktreeAsync` was already unconditional, which is
+ * what makes broadening the lock safe rather than a leak: see it below.
+ */
+
+/** Mount roots — where a removable volume appears. The fourth copy of this
+ *  list, for the reason `volumes.ts`'s header gives: no app here imports
+ *  another, and each says so. */
+function isOnRemovableVolume(target: string, platform: NodeJS.Platform = process.platform): boolean {
+  const roots = platform === "darwin" ? ["/Volumes"] : platform === "linux" ? ["/media", "/mnt"] : [];
+  for (const root of roots) {
+    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    if (!target.startsWith(prefix)) continue;
+    const [name] = target.slice(prefix.length).split(path.sep);
+    if (!name) continue;
+    const mount = path.join(root, name);
+    try {
+      // A mount point's `st_dev` differs from its parent's. An empty folder
+      // left where a drive used to be shares its parent's and is not a mount —
+      // `volumes.ts`'s `isMountPoint`, and the same reason for it.
+      return fs.statSync(mount).dev !== fs.statSync(root).dev;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * WHAT A HUMAN READS IN `git worktree list` AND IN GH'S REFUSAL, so the lock
+ * explains itself at the moment it gets in somebody's way.
+ *
+ * TWO SENTENCES BECAUSE THERE ARE TWO REASONS and a worktree can have both. The
+ * session sentence is the one that always applies; the volume sentence is
+ * #630's and is added only where it is true, rather than folded into a single
+ * vague reason that is half wrong in either case.
+ */
+export function worktreeLockReason(worktreePath: string, platform: NodeJS.Platform = process.platform): string {
+  const session =
+    "A Telar session is working in this worktree. Telar removes it when that session is archived or deleted — until then, removing it destroys work that is not finished.";
+  return isOnRemovableVolume(worktreePath, platform)
+    ? `${session} It also sits on a removable volume; unmounting that is not a deletion.`
+    : session;
+}
+
+/**
+ * Lock a session's worktree, so nothing outside Telar can decide it is finished.
+ *
+ * ALWAYS, NOT ONLY ON A REMOVABLE VOLUME — issue #641, and see this module's
+ * header for what changed the reasoning. The short version: the thing that
+ * actually deletes these is `gh pr merge --delete-branch`, which runs
+ * `git worktree remove` on whichever linked worktree holds the merged branch,
+ * and that has nothing to do with which disk it is on.
+ *
+ * BEST-EFFORT AND NEVER FATAL. A cut that succeeded must not be failed because
+ * the lock did not take; the lock is a guard against a later removal, not a
+ * precondition for the checkout being usable.
+ */
+export async function lockSessionWorktree(
+  git: AsyncGitRunner,
+  projectRoot: string,
+  worktreePath: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  try {
+    const locked = await git(projectRoot, ["worktree", "lock", "--reason", worktreeLockReason(worktreePath, platform), worktreePath]);
+    return locked.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Release a lock before teardown. Unconditional and best-effort: a worktree
+ *  that was never locked answers non-zero and that is not a failure.
+ *
+ *  EXPORTED FOR THE MOVE (#642 part 2), which is the second caller and the
+ *  reason this is no longer module-private: #641 locks every session worktree,
+ *  and a locked worktree refuses `git worktree remove` — so relocating one has
+ *  to take the lock off first, exactly as teardown does, and put it back on
+ *  whichever path the checkout ends up at. */
+export async function unlockWorktree(git: AsyncGitRunner, projectRoot: string, worktreePath: string): Promise<void> {
+  try {
+    await git(projectRoot, ["worktree", "unlock", worktreePath]);
+  } catch {
+    // Never locked, already unlocked, or a project that cannot answer.
+  }
+}
+
+/**
+ * RE-POINT GIT AT A WORKTREE THAT MOVED — the other half of #630's migration.
+ *
+ * The two pointers are not symmetric, which is what makes moving a worktree by
+ * copying it quietly wrong:
+ *
+ *   <worktree>/.git                      -> <repo>/.git/worktrees/<name>
+ *   <repo>/.git/worktrees/<name>/gitdir  -> <worktree>/.git
+ *
+ * Moving the store rewrites neither. The first still resolves, because the
+ * repository did not move; the second names a path that no longer exists, so
+ * git believes the worktree was deleted. `git worktree repair`, given the new
+ * path, rewrites it.
+ *
+ * IT IS RUN FROM THE REPOSITORY AND IS IDEMPOTENT, so a worktree that never
+ * moved costs one `git` that changes nothing.
+ */
+export async function repairWorktree(git: AsyncGitRunner, projectRoot: string, worktreePath: string): Promise<boolean> {
+  try {
+    const repaired = await git(projectRoot, ["worktree", "repair", worktreePath]);
+    return repaired.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -375,6 +578,11 @@ export function planSessionWorktree(input: {
   /** A human's own name for the new branch — wins over `branchSlug`, lives
    *  OUTSIDE the engine namespaces, and is never reset (see below). */
   branchName?: string;
+  /** Where checkouts go on THIS install (#642 part 2). Absent means the
+   *  default beside the store, which is what every caller meant before the
+   *  root could be chosen. Resolved by `prepareSessionWorktree`, which is also
+   *  where an unusable one is refused. */
+  worktreesRoot?: string;
 }): WorktreePlan {
   const named = input.branchName !== undefined ? sanitizeBranchName(input.branchName) : undefined;
   const branch = named ?? (input.branchSlug !== undefined ? sanitizeBranchSlug(input.branchSlug) : `telar/${sanitize(input.sessionId)}`);
@@ -384,7 +592,7 @@ export function planSessionWorktree(input: {
   const dirname = (named ? branch.split("/") : branch.split("/").slice(1)).join("--");
   // The suffix keeps a retry after a partial failure from colliding with the
   // corpse of the previous attempt, which `git worktree add` refuses to reuse.
-  const target = path.join(worktreesRoot(input.engineRoot), `${dirname}-${crypto.randomUUID().slice(0, 8)}`);
+  const target = path.join(input.worktreesRoot ?? defaultWorktreesRoot(input.engineRoot), `${dirname}-${crypto.randomUUID().slice(0, 8)}`);
   return { path: target, branch, named: named !== undefined };
 }
 
@@ -430,8 +638,27 @@ export function prepareSessionWorktree(
     /** The project's name, for the sentence a person reads when the drive is
      *  away. The path is not what they call it. */
     projectName?: string;
+    /** Where this install puts checkouts (#642 part 2). Read from engine state
+     *  when absent; injected by tests and by a caller that already asked. */
+    worktreesRoot?: WorktreesRootState;
   },
 ): { plan: WorktreePlan; baseSha: string } {
+  /**
+   * SIX REFUSALS NOW, AND THE NEW ONE IS THE CHECKOUTS' OWN DISK — #642 part 2.
+   *
+   * The five below are about the PROJECT. Once the checkouts can live on a
+   * drive of their own, "can this session be cut" stops being answerable from
+   * the project alone: the repository can be on the internal disk and perfectly
+   * readable while the volume the checkout would land on is in somebody's bag.
+   *
+   * IT IS REFUSED FIRST, because it costs no git at all and because it is the
+   * one refusal that is about this install rather than about this project —
+   * every worktree session is blocked by it, so naming it before probing a
+   * repository keeps the cheap answer cheap.
+   */
+  const location = input.worktreesRoot ?? readWorktreesRoot(input.engineRoot);
+  const blocked = worktreesRootBlocker(location);
+  if (blocked) throw new WorktreeError(blocked);
   if (input.availability === "unmounted") {
     throw new WorktreeError(
       `The drive holding ${input.projectName ?? input.projectRoot} is not connected. Plug it back in and this will work again.`,
@@ -447,7 +674,9 @@ export function prepareSessionWorktree(
   }
   // The name before the base: a branch the engine will not create is a refusal
   // that costs no git at all, and ordering it first keeps a bad request cheap.
-  const plan = planSessionWorktree(input);
+  const { worktreesRoot: _asked, ...rest } = input;
+  const root = rootOf(location);
+  const plan = planSessionWorktree({ ...rest, ...(root ? { worktreesRoot: root } : {}) });
   return { plan, baseSha: resolveWorktreeBase(git, input.projectRoot, input.baseRef) };
 }
 
@@ -476,7 +705,11 @@ export async function createSessionWorktreeAsync(
   },
 ): Promise<{ path: string; branch: string; baseRef: string }> {
   const { plan, baseSha } = input;
-  await fs.promises.mkdir(worktreesRoot(input.engineRoot), { recursive: true, mode: 0o700 });
+  // THE PLAN'S OWN PARENT, not the configured root read a second time (#642
+  // part 2). The plan was made against the root as it was when the request was
+  // refused-or-accepted; re-reading here would let a root changed in between
+  // create a directory the checkout is not going into.
+  await fs.promises.mkdir(path.dirname(plan.path), { recursive: true, mode: 0o700 });
 
   // `-B` rather than `-b` FOR ENGINE-OWNED NAMES ONLY: a session recreated
   // after its worktree was reaped would otherwise fail forever on a branch
@@ -487,6 +720,10 @@ export async function createSessionWorktreeAsync(
   if (added.status !== 0) {
     throw new WorktreeError(`git worktree add failed: ${added.stderr.trim() || added.stdout.trim()}`);
   }
+  // LOCKED THE MOMENT IT EXISTS — #630 for the unmount, #641 for `gh pr merge
+  // --delete-branch`. Before the cut returns, so there is no window in which
+  // either could read as permission to delete it.
+  await lockSessionWorktree(git, input.projectRoot, plan.path);
   return { path: plan.path, branch: plan.branch, baseRef: baseSha };
 }
 
@@ -523,6 +760,29 @@ export async function removeSessionWorktreeAsync(
     // is not recoverable at all.
     return !fs.existsSync(worktreePath);
   }
+  /**
+   * AND THE SAME REFUSAL FROM THE OTHER SIDE — issue #630.
+   *
+   * The check above asks whether the PROJECT is readable. Once the engine root
+   * can be on a drive, that is no longer the same question as whether the
+   * WORKTREE is: the project can be on the internal disk and perfectly
+   * available while the worktrees are on a volume that is out. The guard would
+   * pass, and `prune` would then delete the registration of every worktree on
+   * the absent drive — not merely the one being removed.
+   *
+   * So the worktree's own root has to be there before anything prunes. The
+   * lock (`lockSessionWorktree`) is what protects worktrees that already
+   * exist; this is what stops us asking git the question at all.
+   */
+  const root = path.dirname(worktreePath);
+  if (!fs.existsSync(root)) return false;
+  // THIS UNLOCK IS THE WHOLE TEARDOWN PATH NOW — #641. Every session worktree is
+  // locked at the cut, not just the ones on a drive, so this is the only door
+  // out and it has to stay unconditional. Reaching here means a person or the
+  // session asked for the session to go, which is the one authority the lock
+  // defers to; a lock that outlives its reason is how "never lose one" becomes
+  // "never remove one".
+  await unlockWorktree(git, projectRoot, worktreePath);
   try {
     await git(projectRoot, ["worktree", "remove", "--force", worktreePath]);
   } catch {

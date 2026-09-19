@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
-import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, prepareSessionWorktree, removeSessionWorktreeAsync, WorktreeError, type AsyncGitRunner, type GitRunner } from "../src/worktree";
+import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WorktreeError, worktreeLockReason, defaultWorktreesRoot, type AsyncGitRunner, type GitRunner } from "../src/worktree";
 import { gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync } from "../src/git";
 
 const roots: string[] = [];
@@ -161,6 +161,165 @@ test("removal reports whether the directory is ACTUALLY gone", async () => {
   const deaf: AsyncGitRunner = async () => ({ status: 1, stdout: "", stderr: "nope" });
   const stubborn = await cutWorktree({ engineRoot, projectRoot, sessionId: "two" });
   expect(await removeSessionWorktreeAsync(deaf, projectRoot, stubborn.path)).toBe(false);
+});
+
+/**
+ * ══ THE STORE CAN BE ON A DRIVE NOW — issue #630 ══
+ *
+ * These four pin the case the original guard does not cover. It asks whether
+ * the PROJECT is readable; once the engine root can be on a volume, a project
+ * on the internal disk can be perfectly available while the worktrees are on a
+ * drive that is out — and `prune` would then delete the registration of every
+ * worktree on it, not just the one being removed.
+ */
+test("prune never runs when the worktrees root is gone, however available the project is", async () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+
+  // The drive goes: the worktrees root and everything under it is absent. The
+  // PROJECT is untouched and reads as available, which is the whole trap.
+  fs.rmSync(defaultWorktreesRoot(engineRoot), { recursive: true, force: true });
+
+  let ran: string[][] = [];
+  const watched: AsyncGitRunner = async (cwd, args) => {
+    ran.push(args);
+    return poolGit(cwd, args);
+  };
+  expect(await removeSessionWorktreeAsync(watched, projectRoot, cut.path, "available")).toBe(false);
+  // Not "it pruned and the registration happened to survive" — it never asked.
+  expect(ran.some((args) => args.includes("prune"))).toBe(false);
+
+  // And git still knows about it, which is the thing worth protecting: the work
+  // is on the drive in somebody's bag and the registration is how it comes back.
+  const listed = execFileSync("git", ["worktree", "list"], { cwd: projectRoot, encoding: "utf8" });
+  expect(listed).toContain(path.basename(cut.path));
+});
+
+/**
+ * ══ AND THE LOCK IS ABOUT THE SESSION, NOT THE DISK — issue #641 ══
+ *
+ * #630 locked only worktrees on a removable volume. What actually destroyed
+ * them was `gh pr merge --delete-branch`, which removes whichever linked
+ * worktree holds the merged branch — a command aimed at a pull request, landing
+ * on a checkout a session is still working in.
+ */
+test("every session worktree is locked the moment it exists, on any disk", async () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+
+  // Not "the lock command was issued" — what git itself says about the tree.
+  const listed = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: projectRoot, encoding: "utf8" });
+  const record = listed.split("\n\n").find((block) => block.includes(cut.path));
+  expect(record).toBeDefined();
+  expect(record).toContain("locked");
+  // The reason is what a person meets in `git worktree list` and in gh's
+  // refusal, so it has to name the session rather than the volume.
+  expect(record).toContain("archived or deleted");
+});
+
+test("the lock reason names the volume only when there is one", () => {
+  expect(worktreeLockReason("/Users/someone/Telar/engine/worktrees/x", "darwin")).not.toContain("removable volume");
+  // A real mount point cannot be faked here, so this pins the other half: an
+  // ordinary path never picks up #630's sentence.
+  expect(worktreeLockReason("/Users/someone/Telar/engine/worktrees/x", "darwin")).toContain("A Telar session is working in this worktree");
+});
+
+/**
+ * THE REGRESSION TEST FOR #641, written as the command that did it.
+ *
+ * `git worktree remove -- <path>` with no force is gh 2.100.0's exact call
+ * (`git/client.go`'s `WorktreeRemove`, reached from `deleteLocalBranch`'s
+ * "another linked worktree" arm). A single `--force` is here too because that is
+ * the obvious next thing anyone reaches for, and git still refuses it — only
+ * `-f -f` overrides a lock, which gh never passes.
+ */
+test("gh's own worktree removal cannot take a live session's checkout", async () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+  fs.writeFileSync(path.join(cut.path, "half-finished.txt"), "the work that is not committed yet\n");
+
+  const attempt = (...args: string[]): number => {
+    try {
+      execFileSync("git", args, { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"] });
+      return 0;
+    } catch (error) {
+      return (error as { status?: number }).status ?? 1;
+    }
+  };
+  expect(attempt("worktree", "remove", "--", cut.path)).not.toBe(0);
+  expect(attempt("worktree", "remove", "--force", "--", cut.path)).not.toBe(0);
+  expect(fs.existsSync(path.join(cut.path, "half-finished.txt"))).toBe(true);
+
+  // And the registration survives a prune, which is the half that cannot be
+  // recovered once it is gone.
+  execFileSync("git", ["worktree", "prune"], { cwd: projectRoot });
+  expect(execFileSync("git", ["worktree", "list"], { cwd: projectRoot, encoding: "utf8" })).toContain(path.basename(cut.path));
+});
+
+test("a lock does not get in the way of the session's own work", async () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+
+  // The point of the worktree is that a session can commit in it. A guard that
+  // bought safety by breaking that would not be worth having.
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: cut.path, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  fs.writeFileSync(path.join(cut.path, "work.txt"), "done\n");
+  git("add", "-A");
+  git("-c", "user.email=test@telar.local", "-c", "user.name=Telar Test", "commit", "-qm", "work");
+  expect(git("log", "--oneline", "-1")).toContain("work");
+  // `repair` is lock-transparent too, which is what keeps #630's store move
+  // working now that every worktree is locked rather than only some.
+  expect(await repairWorktree(poolGit, projectRoot, cut.path)).toBe(true);
+});
+
+test("an already-locked worktree is not a failure to lock again", async () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+  // The cut already locked it; the startup backfill locks every live worktree
+  // on every boot, so the second call is the ordinary case rather than an edge.
+  await lockSessionWorktree(poolGit, projectRoot, cut.path);
+  expect(execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: projectRoot, encoding: "utf8" })).toContain("locked");
+  // And it still comes apart on the one path that is allowed to take it.
+  expect(await removeSessionWorktreeAsync(poolGit, projectRoot, cut.path, "available")).toBe(true);
+});
+
+test("a locked worktree is still removable, because teardown unlocks first", async () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+  // The cut locks it — every worktree since #641, not only the ones on a drive —
+  // and git refuses `worktree remove` on a locked tree. So this is the state
+  // teardown always meets, rather than the unusual one it used to be.
+  expect(execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: projectRoot, encoding: "utf8" })).toContain("locked");
+
+  expect(await removeSessionWorktreeAsync(poolGit, projectRoot, cut.path, "available")).toBe(true);
+  expect(fs.existsSync(cut.path)).toBe(false);
+});
+
+test("repair re-points git at a worktree that moved, which a byte copy never does", async () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const moved = tmp("telar-wt-moved-");
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+
+  // What the migration does: the directory is copied somewhere else and the
+  // original goes away. The worktree's own .git still resolves — it names the
+  // REPOSITORY, which did not move — but the repository's pointer back at the
+  // worktree names a path that is now gone.
+  const destination = path.join(moved, path.basename(cut.path));
+  fs.cpSync(cut.path, destination, { recursive: true });
+  fs.rmSync(cut.path, { recursive: true, force: true });
+  expect(execFileSync("git", ["worktree", "list"], { cwd: projectRoot, encoding: "utf8" })).toContain(cut.path);
+
+  expect(await repairWorktree(poolGit, projectRoot, destination)).toBe(true);
+  const listed = execFileSync("git", ["worktree", "list"], { cwd: projectRoot, encoding: "utf8" });
+  expect(listed).toContain(destination);
+  expect(listed).not.toContain(`${cut.path} `);
 });
 
 test("a branch slug names the branch and the directory after the work", async () => {
@@ -410,6 +569,17 @@ test("the overview lists cuttable refs: locals and remote-tracking, current mark
   git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
 
   const overview = gitOverview(defaultGitRunner, projectRoot);
+  /**
+   * ASSERTED FIRST, so a loaded machine says what happened — issue #650.
+   *
+   * This ran real `for-each-ref` children and failed roughly one run in four
+   * with `Expected to contain: "local:main" / Received: [ "remote:origin/main" ]`
+   * — a message that reads like the listing is wrong when what happened is that
+   * git was killed at its bound. The engine can now tell those apart, so the
+   * test does too: an incomplete listing is a stalled machine, not a regression
+   * in what this test is about.
+   */
+  expect(overview.refsIncomplete).toBeUndefined();
   const names = (overview.refs ?? []).map((ref) => `${ref.kind}:${ref.name}`);
   expect(names).toContain("local:main");
   expect(names).toContain("local:feature-x");

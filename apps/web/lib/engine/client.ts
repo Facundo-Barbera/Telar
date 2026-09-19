@@ -52,7 +52,10 @@ import type {
   DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
+  StorageReport,
   TextGenPolicy,
+  WorktreeMoveResult,
+  WorktreesRoot,
   UsageReport,
   UsageResolution,
   UsageLimits,
@@ -617,6 +620,22 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `refresh`, which waits for a fresh read of every configured hub. */
     usageLimits: (options: { refresh?: boolean } = {}) =>
       request<{ limits: UsageLimits }>(fetcher, "GET", `/api/usage/limits${options.refresh ? "?refresh=1" : ""}`),
+    /** What Telar keeps on disk, by category — see `StorageReport`. The first
+     *  call of an engine's life walks the store and is SLOW; every call after
+     *  it returns that walk's answer with the moment it was taken, until
+     *  `refresh` asks for another. Never put this on a timer (#629). */
+    storage: (options: { refresh?: boolean } = {}) =>
+      request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`),
+    /** Where session checkouts go on this install — see `WorktreesRoot`. */
+    worktreesRoot: () => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "GET", "/api/worktrees-root"),
+    /** Put them somewhere else from the next cut on; `null` restores the
+     *  default. Nothing is moved and no restart is needed — a checkout already
+     *  cut is addressed by the path recorded on its session. */
+    setWorktreesRoot: (root: string | null) => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "PUT", "/api/worktrees-root", { root }),
+    /** Move the checkouts already cut, by re-cutting each from its own branch.
+     *  SLOW (two git commands per checkout) and partial by design: one holding
+     *  uncommitted changes is refused by git, reported, and left alone. */
+    moveWorktrees: () => request<{ move: WorktreeMoveResult }>(fetcher, "POST", "/api/worktrees-root/move", {}),
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>

@@ -130,6 +130,23 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     chooseDirectory: (options) => ipcRenderer.invoke("telar:dialog:choose-directory", options ?? {}),
   },
   /**
+   * WHERE THIS INSTALL KEEPS ITS STORE, and moving it (#630).
+   *
+   * The shell's, not the engine's — the root is decided before the engine
+   * exists and read once at launch, so a move reports `restartRequired` rather
+   * than pretending it already took. `preflight` exists so a folder can be
+   * refused with a reason while somebody is still choosing it, instead of after
+   * they have committed to a copy.
+   */
+  store: {
+    status: () => ipcRenderer.invoke("telar:store:status"),
+    preflight: (path) => ipcRenderer.invoke("telar:store:preflight", { path }),
+    move: (path) => ipcRenderer.invoke("telar:store:move", { path }),
+    removeOld: () => ipcRenderer.invoke("telar:store:remove-old"),
+    keepOld: () => ipcRenderer.invoke("telar:store:keep-old"),
+    onProgress: (listener) => on("telar:store:progress", listener),
+  },
+  /**
    * Open a workspace folder in the system's own handler, or reveal it in the
    * file manager. The path is passed as an ARGUMENT the whole way down — see
    * the main-process handler; nothing is ever interpolated into a command.
