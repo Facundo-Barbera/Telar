@@ -431,6 +431,49 @@ function resolveCommandForEvent(keymap, event) {
   return null;
 }
 
+/**
+ * WHICH COMMANDS A SURFACE ON SCREEN HAS TAKEN OFF THE TABLE — issue #656.
+ *
+ * THE MISSING CONCEPT WAS SCOPE. `jump-1`..`jump-9` are right as globals while
+ * the rail is what you are looking at, and wrong the moment a palette, modal or
+ * picker is up with its own meaning for a number: the New Conversation palette
+ * advertises ⌘1 to pick the first project and the rail took the key first, so
+ * pressing it threw away what you were composing. The answer is not a special
+ * case for that palette — it is a surface being able to say "while I am up,
+ * these chords are mine", and both halves of the app honouring it from one rule.
+ *
+ * A CLAIM IS OVER CHORDS, NOT OVER COMMANDS, and that is the whole of what makes
+ * it survive a rebind. The palette owns "⌘ and a digit" — the chord its own
+ * handler tests for — and never names `jump-N`. So suppression is COMPUTED here
+ * against the LIVE keymap: move the nine jumps to ⌥1..⌥9 in Settings and ⌘1 is
+ * claimed by nobody, the jumps are not suppressed, and the palette gets its key
+ * back rather than staying suppressed against a chord nobody uses. A claim
+ * naming commands would have frozen today's keymap into every surface.
+ *
+ * IT IS DELIBERATELY SYMMETRICAL. The renderer's dispatcher passes over these
+ * ids so the surface's own keydown handler may answer, and `buildApplicationMenu`
+ * strips exactly these accelerators so macOS stops matching the key equivalent
+ * before the page ever sees it — which on this platform is the ONLY reason the
+ * bug exists at all. Two enforcement points, one rule, no chance of drift.
+ *
+ * A COMMAND WITH NO CHORD IS NEVER CLAIMED. "" is how a keymap says "unbound",
+ * and a claim over "" would suppress every unbound command at once.
+ */
+function claimedCommandIds(keymap, chords) {
+  const claimed = new Set();
+  for (const chord of chords ?? []) {
+    const normalized = normalizeChord(chord);
+    if (normalized !== "") claimed.add(normalized);
+  }
+  if (claimed.size === 0) return [];
+  const ids = [];
+  for (const command of COMMANDS) {
+    const chord = normalizeChord(keymap?.[command.id]);
+    if (chord !== "" && claimed.has(chord)) ids.push(command.id);
+  }
+  return ids;
+}
+
 /** The commands one application menu carries, in registry order, each already
  *  wearing its live chord. A command whose chord is "" keeps its menu row and
  *  loses its accelerator — the row is still how you reach it with the mouse. */
@@ -449,6 +492,7 @@ module.exports = {
   COMMANDS,
   chordForEvent,
   chordsForEvent,
+  claimedCommandIds,
   commandById,
   defaultKeymap,
   keymapConflicts,
