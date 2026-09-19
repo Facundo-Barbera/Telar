@@ -1,0 +1,18 @@
+<!--
+  OpenCode's OWN mark — the application, not the OpenCode Zen account.
+
+  Geometry verbatim from opencode's published brand asset
+  (github.com/anomalyco/opencode, MIT): packages/console/app/src/asset/lander/
+  logo-dark.svg. The only edits are the ones every mark in this directory gets:
+  the two brand fills (#4B4646 inner, #F1ECEC ring) become `currentColor` so one
+  file reads in both themes, with the inner block kept dimmer by `opacity` to
+  preserve the two tones it is drawn in. The clipPath upstream is a no-op — it
+  clips to the mark's own bounds — and is dropped rather than carried.
+
+  NOT models.dev's `opencode.svg`: that is the blocky Z of OpenCode ZEN, one
+  account type under this provider. See ATTRIBUTION.md and issue #655.
+-->
+<svg width="22" height="26" viewBox="0 0 22 26" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M15 19H7V11H15V19Z" fill="currentColor" opacity="0.45"/>
+<path d="M15 7H7V19H15V7ZM19 23H3V3H19V23Z" fill="currentColor"/>
+</svg>
