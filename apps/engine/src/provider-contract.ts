@@ -3,13 +3,14 @@ import type { TelarToolSocket } from "./telar-socket";
 import type { Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./notes-tools/tools";
+import type { PromptsCapability } from "./prompts-tools/tools";
 import type { DsCapability } from "./ds/capability";
 import type { DisplayCapability } from "./display/tools";
 import type { RunCapability } from "./run/capability";
 import type { LatexCapability } from "./latex/capability";
 import type { SteerMailbox } from "./steering";
 
-export type { SessionsCapability, NotesCapability, DsCapability, DisplayCapability, LatexCapability };
+export type { SessionsCapability, NotesCapability, PromptsCapability, DsCapability, DisplayCapability, LatexCapability };
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -134,6 +135,18 @@ export type DriverRun = {
    * report that as the truth.
    */
   notes?: NotesCapability;
+  /**
+   * The session's door to THE PROJECT'S PROMPT SHELF — where a turn leaves a
+   * prepared message for the human instead of acting on it.
+   *
+   * PER-RUN and SCOPED like `notes`, and it carries one thing the notebook's
+   * does not: `self.sessionId`, because a drafted follow-up belongs in THIS
+   * conversation's composer and a shelf-wide default would scatter it.
+   *
+   * ABSENT MEANS NO PROMPT TOOLS — a project-less session, an older worker, a
+   * test. Never an empty shelf.
+   */
+  prompts?: PromptsCapability;
   /**
    * The session's kernel, notebooks and analysis tools — present only when
    * the project opted in (the claim carried `dataScience`). Per-run like

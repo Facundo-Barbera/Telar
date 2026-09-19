@@ -8,6 +8,8 @@ import { pluginToolModules } from "./plugins/bundled";
 import { pluginCall } from "./plugins/tool-module";
 import { sessionsTools } from "./sessions-tools/tools";
 import { notesTools, type NotesCapability } from "./notes-tools/tools";
+import { promptsTools, type PromptsCapability } from "./prompts-tools/tools";
+import { promptsForComposer } from "./prompts";
 import { dsTools } from "./ds/ds-tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { latexTools } from "./latex/latex-tools";
@@ -54,6 +56,15 @@ type WorkerClient = Pick<
   | "createProjectNote"
   | "updateProjectNote"
   | "deleteProjectNote"
+  // The prompt shelf's verbs, on the same terms and for the same reason. NO
+  // `updateProjectPrompt`: an agent may offer a prompt and withdraw one it
+  // wrote, but editing a row the person is about to send — under a title they
+  // already read — is the kind of quiet substitution a shelf must not allow.
+  // Its absence here is what makes that true of the worker's reach and not only
+  // of the tool names.
+  | "projectPrompts"
+  | "createProjectPrompt"
+  | "deleteProjectPrompt"
   // The `sessions` verbs. Same rule as the notebook's above: no store handle,
   // everything back over the loopback socket, so the toolkit is identical in
   // the embedded worker and the out-of-process one. See `SessionsCapability`.
@@ -1431,6 +1442,52 @@ export class EngineWorker {
         : undefined;
 
       /**
+       * THE PROMPT SHELF — `prompt_draft` and its three siblings.
+       *
+       * EVERY VERB GOES BACK THROUGH THE CLIENT, the same rule the notebook's
+       * capability states: the toolkit exercises the routes the composer's own
+       * stash uses, so there is exactly one implementation of every rule about a
+       * prepared prompt — including the `getProject` check that stops an unknown
+       * id minting a shelf.
+       *
+       * ABSENT WITHOUT A PROJECT, like the notebook's: a prompt hangs off a
+       * project, and a project-less chat has no shelf to put one on.
+       *
+       * THE DRAFT REPORTS ITSELF. Writing through the client reaches the store
+       * but not the JOURNAL, and a handoff nobody is told about waits for the
+       * next focus event — which for "here is the follow-up I'd send next" is
+       * the wrong moment by a minute. So a successful create rides the same
+       * observation channel every other worker-seen thing does; a failure to
+       * report is swallowed, because the prompt IS on the shelf and a thrown
+       * nudge would turn a landed draft into an error the agent retries.
+       */
+      const promptsCapability: PromptsCapability | undefined = claim.projectId
+        ? {
+            self: { projectId: claim.projectId, sessionId },
+            list: async () =>
+              promptsForComposer((await this.options.client.projectPrompts(claim.projectId as string)).prompts, sessionId),
+            create: async (input) => {
+              // The toolkit's own handler declares the hand; the capability only
+              // forwards it — the same seam the notebook's `create` keeps.
+              const prompt = (await this.options.client.createProjectPrompt(claim.projectId as string, { ...input, author: "session" }))
+                .prompt;
+              await this.options.client
+                .reportObservations(sessionId, runId, claimToken, [
+                  {
+                    kind: "prompt.drafted",
+                    promptId: prompt.id,
+                    title: prompt.title,
+                    ...(prompt.sessionId ? { forSessionId: prompt.sessionId } : {}),
+                  },
+                ])
+                .catch(() => undefined);
+              return prompt;
+            },
+            remove: async (promptId) => (await this.options.client.deleteProjectPrompt(claim.projectId as string, promptId)).deleted,
+          }
+        : undefined;
+
+      /**
        * THE SESSIONS WALL FOR CODEX, leased on the worker-hosted socket —
        * see `sessions-tools/run-socket.ts`. Bound only for a Codex claim:
        * Claude gets the same capability in-process, so a lease for it would
@@ -1469,6 +1526,7 @@ export class EngineWorker {
       const telarCapabilities: Record<string, unknown> = {
         sessions: sessionsCapability,
         ...(notesCapability ? { notes: notesCapability } : {}),
+        ...(promptsCapability ? { prompts: promptsCapability } : {}),
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
         ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
         ...pluginCapabilities,
@@ -1484,6 +1542,7 @@ export class EngineWorker {
             collectTelarWall([
               { name: "sessions", build: sessionsTools as never, capability: () => box.current.sessions },
               { name: "notes", build: notesTools as never, capability: () => box.current.notes },
+              { name: "prompts", build: promptsTools as never, capability: () => box.current.prompts },
               { name: "ds", build: dsTools as never, capability: () => box.current.ds },
               { name: "notebook", build: notebookTools as never, capability: () => box.current.ds },
               { name: "latex", build: latexTools as never, capability: () => box.current.latex },

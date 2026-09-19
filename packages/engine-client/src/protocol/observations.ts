@@ -118,6 +118,25 @@ export const TurnObservation = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("display.opened"), path: z.string().min(1), title: z.string().optional() }),
 
   /**
+   * The agent put a PREPARED PROMPT on the project's shelf — the `prompt_draft`
+   * tool. The prompt itself was already written through the engine's own routes
+   * by the time this is reported, so this carries only enough to name what
+   * appeared: the composer re-reads the shelf rather than trusting a payload,
+   * for the reason `announceProjectNotesChanged` gives.
+   *
+   * IT IS A NUDGE, NOT THE DATA. Without it a draft an agent wrote mid-turn
+   * would sit unseen until the next focus event, which for the handoff case is
+   * precisely the wrong moment — the human is watching that turn end.
+   */
+  z.object({
+    kind: z.literal("prompt.drafted"),
+    promptId: Id,
+    title: z.string().min(1),
+    /** Present when it was prepared for one conversation — the handoff case. */
+    forSessionId: Id.optional(),
+  }),
+
+  /**
    * The provider's own session id, THE MOMENT THE DRIVER LEARNS IT.
    *
    * It used to travel only in the driver's RESULT, which `completeTurn` alone

@@ -195,6 +195,25 @@ const DisplayOpened = event("display.opened", {
   title: z.string().optional(),
 });
 
+/**
+ * The agent prepared a prompt for the human and left it on the shelf — the
+ * `prompt_draft` tool. Carries the title and never the text: the prompt is
+ * already in the engine's own store, and the composer reads it from there
+ * through the same routes the stash list uses.
+ *
+ * QUIETER THAN `display.opened`, deliberately. Showing you a file is the point
+ * of the tool that does it, so arriving quietly would be failure; a drafted
+ * follow-up is an OFFER, and one that seized the foreground would be the agent
+ * deciding what you look at next — the exact authority the tool is built to
+ * leave with you. It marks the stash and stops there.
+ */
+const PromptDrafted = event("prompt.drafted", {
+  promptId: Id,
+  title: z.string().min(1),
+  /** Present when it belongs to one conversation — the handoff case. */
+  forSessionId: Id.optional(),
+});
+
 // ── diagnostics ────────────────────────────────────────────────────────────
 const UsageUpdated = event("usage.updated", { usage: UsageSnapshot });
 const McpStatusUpdated = event("mcp.status.updated", {
@@ -291,6 +310,7 @@ export const EngineEvent = z.discriminatedUnion("type", [
   BrowserStateChanged,
   BrowserControlChanged,
   DisplayOpened,
+  PromptDrafted,
   UsageUpdated,
   McpStatusUpdated,
   KernelStateChanged,
