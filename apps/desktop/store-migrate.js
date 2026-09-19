@@ -552,13 +552,35 @@ function repairMovedWorktrees(storeRoot, deps = {}) {
       continue;
     }
     repaired.push(worktree);
-    if (onRemovableVolume(worktree, fs)) {
-      // Never fatal: the lock protects a LATER prune, and a migration that
-      // copied and verified everything must not be failed by it.
-      git(repository, ["worktree", "lock", "--reason", "Telar keeps this worktree on a removable volume; unmounting it is not a deletion.", worktree]);
-    }
+    // RE-LOCKED UNCONDITIONALLY — issue #641. `worktree repair` leaves the lock
+    // alone, but a worktree that arrived here from an older store never had one:
+    // #630 locked only the removable-volume case, and the risk the lock actually
+    // answers is `gh pr merge --delete-branch` running `git worktree remove` on
+    // whichever worktree holds the merged branch — which has nothing to do with
+    // which disk it is on. A migration that left them unlocked would be the one
+    // way a store move quietly reopens the hole. Never fatal, for the reason
+    // below.
+    //
+    // Never fatal: the lock protects a LATER removal, and a migration that
+    // copied and verified everything must not be failed by it.
+    git(repository, ["worktree", "lock", "--reason", lockReason(worktree, fs), worktree]);
   }
   return { repaired, failed };
+}
+
+/**
+ * The lock's reason, in the words a person meets it in — `git worktree list`,
+ * or gh's refusal to remove it. The engine spells the same two sentences in
+ * `worktree.ts`'s `worktreeLockReason`; this file imports nothing from it for
+ * the reason the header gives, so the wording is duplicated on purpose and the
+ * two are meant to be changed together.
+ */
+function lockReason(worktree, fs) {
+  const session =
+    "A Telar session is working in this worktree. Telar removes it when that session is archived or deleted — until then, removing it destroys work that is not finished.";
+  return onRemovableVolume(worktree, fs)
+    ? `${session} It also sits on a removable volume; unmounting that is not a deletion.`
+    : session;
 }
 
 /** The repository a worktree belongs to, out of its own `.git` file. */
