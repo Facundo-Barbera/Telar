@@ -81,6 +81,7 @@ import {
   type EngineHealth,
   type EventPage,
   type Item,
+  type GitFilePatch,
   type GitOverview,
   type ModelSelection,
   type Project,
@@ -1784,7 +1785,7 @@ export class EngineClient {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff`);
   }
 
-  projectFilePatch(projectId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: { patch: string; binary: boolean } }> {
+  projectFilePatch(projectId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: GitFilePatch }> {
     const query = new URLSearchParams({ path });
     if (options.untracked) query.set("untracked", "1");
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`);
@@ -2407,7 +2408,7 @@ export class EngineClient {
 
   /** One file's patch. Separate from the review for the same reason a screenshot
    *  is separate from the browser's tab list: size, and nobody reads all of it. */
-  sessionFilePatch(sessionId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: { patch: string; binary: boolean } }> {
+  sessionFilePatch(sessionId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: GitFilePatch }> {
     const query = new URLSearchParams({ path });
     if (options.untracked) query.set("untracked", "1");
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`);

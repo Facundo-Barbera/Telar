@@ -27,8 +27,8 @@
  * reports `repository: false` and stops. Throwing here would make the composer's
  * foot a failure state for a configuration the engine supports on purpose.
  */
-import type { GitChangeStatus, GitCommitEntry, GitFileChange, ProjectAvailability, SessionDiff } from "@telar/engine-client";
-import type { AsyncGitRunner, GitRunner } from "./worktree.js";
+import type { GitChangeStatus, GitCommitEntry, GitFileChange, GitFilePatch, ProjectAvailability, SessionDiff } from "@telar/engine-client";
+import type { AsyncGitRunner, GitResult, GitRunner } from "./worktree.js";
 
 export type GitWorktreeEntry = {
   path: string;
@@ -71,12 +71,12 @@ function failureOf(result: { status: number; timedOut?: true }): GitReadFailure 
   return result.status === 0 ? undefined : "failed";
 }
 
-/** The worse of two failures, so a listing built from several reads reports the
- *  one a person can act on. A timeout outranks a plain failure: it is the case
- *  that says "ask again". */
-function worseFailure(left: GitReadFailure | undefined, right: GitReadFailure | undefined): GitReadFailure | undefined {
-  if (left === "timeout" || right === "timeout") return "timeout";
-  return left ?? right;
+/** The worst of several failures, so an answer built from several reads reports
+ *  the one a person can act on. A timeout outranks a plain failure: it is the
+ *  case that says "ask again". */
+function worseFailure(...failures: (GitReadFailure | undefined)[]): GitReadFailure | undefined {
+  if (failures.includes("timeout")) return "timeout";
+  return failures.find((failure) => failure !== undefined);
 }
 
 /**
@@ -362,6 +362,10 @@ export function parseGitLog(stdout: string): GitCommitEntry[] {
  * commits; without one it is `HEAD…worktree` and cannot. The caller reports
  * which, so a session created before bases were recorded does not silently
  * claim its committed work never happened.
+ *
+ * AND EVERY SUB-READ BELOW CAN FAIL ON ITS OWN — issue #654. Each one used to
+ * turn a non-zero exit into a fact about the session: no files, no commits, a
+ * base that does not resolve. See `assembleDiff` for what says otherwise.
  */
 export function sessionDiff(git: GitRunner, input: { cwd: string; baseRef?: string }): SessionDiff {
   const { cwd, baseRef } = input;
@@ -372,24 +376,128 @@ export function sessionDiff(git: GitRunner, input: { cwd: string; baseRef?: stri
   }
 
   const head = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const raw = head.status === 0 ? head.stdout.trim() : "";
+  const { base, baseUnverified } = resolveDiffBase(baseRef, baseRef ? git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
+  const against = base ?? "HEAD";
+
+  return assembleDiff(cwd, {
+    head,
+    ...(base ? { base } : {}),
+    ...(baseUnverified ? { baseUnverified } : {}),
+    numstat: git(cwd, ["diff", "-z", "--numstat", "--find-renames", against, "--"]),
+    nameStatus: git(cwd, ["diff", "-z", "--name-status", "--find-renames", against, "--"]),
+    // Untracked files are NOT in `git diff` at all, so a review built from the
+    // diff alone would miss every file the agent created and never staged —
+    // which for a scaffolding run is all of them.
+    /**
+     * `-uall` IS LOAD-BEARING. By default `git status` collapses a wholly
+     * untracked directory into ONE entry with a trailing slash — `dist/` —
+     * which is a row a reviewer cannot open, cannot count, and cannot judge.
+     * Found by running this against a real repository: five new files under two
+     * new directories arrived as two directory rows. Listing files individually
+     * is what makes the review a review; the file cap and `truncated` handle
+     * the pathological case of an unignored `node_modules`.
+     */
+    status: git(cwd, ["status", "--porcelain", "-z", "-uall"]),
+    ...(base ? { log: git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${base}..HEAD`]) } : {}),
+    tracking: git(cwd, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]),
+  });
+}
+
+/**
+ * WHETHER THE SESSION'S RECORDED BASE IS THE THING TO MEASURE FROM.
+ *
+ * A BASE THAT NO LONGER RESOLVES IS DROPPED, not reported. A worktree's base
+ * commit can genuinely disappear — a rebase upstream, a `gc` after a branch was
+ * deleted — and every read below would then fail with the same opaque "bad
+ * revision". Falling back to HEAD gives a smaller true answer instead of an
+ * error a reader cannot act on.
+ *
+ * A VERIFY THAT WAS KILLED IS NOT THAT — issue #654, and the quiet half of it.
+ * The session RECORDED this ref when its worktree was cut, so `rev-parse
+ * --verify` is CORROBORATION and not the source; the same relationship
+ * `defaultRemoteBase` has with `symbolic-ref`, where #650 found that an
+ * incomplete listing must not veto a pointer git answered on its own. Dropping
+ * the base on a timeout silently reframes the whole review from `base…worktree`
+ * to `HEAD…worktree` — which excludes every commit the session made, so a
+ * session that COMMITTED all of its work reads as having done none of it, under
+ * a sentence ("no starting commit was recorded") that is itself false.
+ *
+ * So the recorded base is kept and marked. If it really has gone, the reads
+ * against it fail and report themselves through `filesIncomplete` and
+ * `commitsIncomplete` — a marked failure, not a confident smaller answer.
+ */
+function resolveDiffBase(
+  baseRef: string | undefined,
+  verify: GitResult | undefined,
+): { base?: string; baseUnverified?: GitReadFailure } {
+  if (!baseRef || !verify) return {};
+  if (verify.status === 0) return { base: baseRef };
+  /**
+   * ONLY A TIMEOUT KEEPS THE BASE. A plain non-zero from `--verify --quiet` IS
+   * the answer "that ref does not resolve" — the pinned case above, and the one
+   * the fallback to HEAD was written for. `failed` is therefore not produced
+   * here today; the field carries the shared enum so the three incompleteness
+   * channels read as one family and a distinguishable hard failure (a corrupt
+   * object store, say) has somewhere to go later.
+   */
+  return verify.timedOut ? { base: baseRef, baseUnverified: "timeout" } : {};
+}
+
+/**
+ * THE REVIEW, ASSEMBLED FROM READS THAT EACH MAY HAVE FAILED — issue #654.
+ *
+ * SHARED BY BOTH RUNNERS so the synchronous and nonblocking reviews can never
+ * drift in what they consider a change or in what they admit not knowing — the
+ * same reason `parseRefLines` and `joinRefHalves` exist.
+ *
+ * WHY THREE CHANNELS RATHER THAN ONE `incomplete`. A single flag would be
+ * smaller and it would be honest, but it would make a person distrust the wrong
+ * half of the screen: these three are read by different eyes and cost different
+ * things to be wrong about.
+ *
+ *   - `filesIncomplete` — the list is short or its letters are guesses, so the
+ *     totals under-count. This is the one a reviewer must see BEFORE pressing
+ *     commit.
+ *   - `commitsIncomplete` — `git log` did not answer, so committed work may be
+ *     missing from a review that claims to include it. Nothing in the file list
+ *     is wrong.
+ *   - `baseUnverified` — nothing has confirmed the frame of reference; see
+ *     `resolveDiffBase`.
+ *
+ * And the empty case is the one that matters, because it is the claim a person
+ * acts on: 0 files and 0 commits. Which flag is set is exactly what tells a
+ * reader whether to distrust the file half, the commit half or neither — with
+ * one flag, a `git log` that timed out would forbid the perfectly true sentence
+ * "nothing in the working tree differs".
+ *
+ * THE PARTIAL ANSWER IS KEPT, per #650: `linesAdded` and `linesRemoved` stay
+ * required and stay honest sums over the rows that DID arrive. They are not
+ * made optional, because a review of an install with no tracked half is still
+ * worth reading; `filesIncomplete` is the channel that says they are not the
+ * whole change.
+ */
+function assembleDiff(
+  cwd: string,
+  reads: {
+    head: GitResult;
+    base?: string;
+    baseUnverified?: GitReadFailure;
+    numstat: GitResult;
+    nameStatus: GitResult;
+    status: GitResult;
+    /** Absent when there is no base to log a range against — which is not a
+     *  failure to log, and must not be marked as one. */
+    log?: GitResult;
+    tracking: GitResult;
+  },
+): SessionDiff {
+  // `--abbrev-ref HEAD` gives "HEAD" on a detached checkout; that is a real
+  // state and reporting it as a branch name would be a lie, so it is dropped.
+  const raw = reads.head.status === 0 ? reads.head.stdout.trim() : "";
   const branch = raw && raw !== "HEAD" ? raw : undefined;
 
-  /**
-   * A BASE THAT NO LONGER RESOLVES IS DROPPED, not reported.
-   *
-   * A worktree's base commit can genuinely disappear — a rebase upstream, a
-   * `gc` after a branch was deleted — and every command below would then fail
-   * with the same opaque "bad revision". Falling back to HEAD gives a smaller
-   * true answer instead of an error a reader cannot act on.
-   */
-  const resolved = baseRef && git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]).status === 0 ? baseRef : undefined;
-  const against = resolved ?? "HEAD";
-
-  const numstat = git(cwd, ["diff", "-z", "--numstat", "--find-renames", against, "--"]);
-  const nameStatus = git(cwd, ["diff", "-z", "--name-status", "--find-renames", against, "--"]);
-  const statuses = nameStatus.status === 0 ? parseNameStatus(nameStatus.stdout) : new Map<string, GitChangeStatus>();
-  const tracked: GitFileChange[] = (numstat.status === 0 ? parseNumstat(numstat.stdout) : []).map((entry) => ({
+  const statuses = reads.nameStatus.status === 0 ? parseNameStatus(reads.nameStatus.stdout) : new Map<string, GitChangeStatus>();
+  const tracked: GitFileChange[] = (reads.numstat.status === 0 ? parseNumstat(reads.numstat.stdout) : []).map((entry) => ({
     path: entry.path,
     status: statuses.get(entry.path) ?? "modified",
     ...(entry.renamedFrom ? { renamedFrom: entry.renamedFrom } : {}),
@@ -397,40 +505,48 @@ export function sessionDiff(git: GitRunner, input: { cwd: string; baseRef?: stri
     ...(entry.removed === undefined ? {} : { linesRemoved: entry.removed }),
     ...(entry.binary ? { binary: true } : {}),
   }));
-
-  // Untracked files are NOT in `git diff` at all, so a review built from the
-  // diff alone would miss every file the agent created and never staged —
-  // which for a scaffolding run is all of them.
-  /**
-   * `-uall` IS LOAD-BEARING. By default `git status` collapses a wholly
-   * untracked directory into ONE entry with a trailing slash — `dist/` — which
-   * is a row a reviewer cannot open, cannot count, and cannot judge. Found by
-   * running this against a real repository: five new files under two new
-   * directories arrived as two directory rows. Listing files individually is
-   * what makes the review a review; the file cap and `truncated` handle the
-   * pathological case of an unignored `node_modules`.
-   */
-  const status = git(cwd, ["status", "--porcelain", "-z", "-uall"]);
-  const untracked: GitFileChange[] = (status.status === 0 ? parseUntracked(status.stdout) : []).map((path) => ({
+  const untracked: GitFileChange[] = (reads.status.status === 0 ? parseUntracked(reads.status.stdout) : []).map((path) => ({
     path,
     status: "untracked" as const,
   }));
 
-  const log = resolved ? git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${resolved}..HEAD`]) : undefined;
-  const commits = log?.status === 0 ? parseGitLog(log.stdout) : [];
+  /**
+   * ALL THREE FILE READS FEED ONE FLAG, including the one that only decorates.
+   *
+   * `numstat` and `status` losing rows and `name-status` losing LETTERS are
+   * different sizes of wrong, and separating them would be a fourth channel
+   * whose only effect is a slightly narrower sentence. A row that says
+   * "modified" about a file git deleted is a wrong claim about that file, so it
+   * belongs on the same flag — which is why the surfaces say "not everything
+   * git knows" rather than the more specific "files are missing".
+   *
+   * A PLAIN FAILURE COUNTS HERE, unlike `gitOverview`'s dirty count, which
+   * keeps its pinned `0` on one. That decision was about a COUNT on the
+   * composer's foot, where a locked index really is usually a clean tree. This
+   * is the list somebody is about to commit, and "no files" is the claim #654
+   * is about — there is no reading of a failed `git diff` under which an empty
+   * review is the safer answer.
+   */
+  const filesIncomplete = worseFailure(failureOf(reads.numstat), failureOf(reads.nameStatus), failureOf(reads.status));
+  const commits = reads.log?.status === 0 ? parseGitLog(reads.log.stdout) : [];
+  const commitsIncomplete = reads.log ? failureOf(reads.log) : undefined;
 
-  const tracking = git(cwd, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
-  const divergence = tracking.status === 0 ? parseAheadBehind(tracking.stdout) : undefined;
+  // No upstream is the common case for a fresh branch and is NOT an error — git
+  // exits non-zero and both figures stay absent rather than becoming 0.
+  const divergence = reads.tracking.status === 0 ? parseAheadBehind(reads.tracking.stdout) : undefined;
 
   const all = [...tracked, ...untracked].sort((left, right) => left.path.localeCompare(right.path));
   return {
     repository: true,
     workspacePath: cwd,
     ...(branch ? { branch } : {}),
-    ...(resolved ? { base: resolved } : {}),
+    ...(reads.base ? { base: reads.base } : {}),
+    ...(reads.baseUnverified ? { baseUnverified: reads.baseUnverified } : {}),
     ...(divergence ?? {}),
     files: all.slice(0, MAX_REVIEW_FILES),
+    ...(filesIncomplete ? { filesIncomplete } : {}),
     commits,
+    ...(commitsIncomplete ? { commitsIncomplete } : {}),
     // Totalled over EVERY file, not just the ones that survived the cap: the
     // headline figure must describe the change, and the list is what is capped.
     linesAdded: all.reduce((sum, file) => sum + (file.linesAdded ?? 0), 0),
@@ -450,16 +566,37 @@ export function sessionDiff(git: GitRunner, input: { cwd: string; baseRef?: stri
  * diffed against `/dev/null` explicitly. `--no-index` exits 1 when the files
  * differ, which is the successful case here and the reason this accepts 1.
  */
-export function sessionFilePatch(
-  git: GitRunner,
-  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean },
-): { patch: string; binary: boolean } {
+export function sessionFilePatch(git: GitRunner, input: { cwd: string; baseRef?: string; path: string; untracked?: boolean }): GitFilePatch {
   const { cwd, baseRef, path: target } = input;
-  const against = baseRef && git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]).status === 0 ? baseRef : "HEAD";
-  const result = input.untracked
-    ? git(cwd, ["diff", "--no-index", "--unified=3", "--", "/dev/null", target])
-    : git(cwd, ["diff", "--unified=3", against, "--", target]);
-  if (result.status !== 0 && result.status !== 1) return { patch: "", binary: false };
+  // Same corroboration as the review's — see `resolveDiffBase`. A killed verify
+  // must not quietly re-point this patch at HEAD, which would draw real hunks
+  // against the wrong starting point and look entirely plausible doing it.
+  const { base } = resolveDiffBase(baseRef, baseRef ? git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
+  const against = base ?? "HEAD";
+  return assemblePatch(
+    input.untracked
+      ? git(cwd, ["diff", "--no-index", "--unified=3", "--", "/dev/null", target])
+      : git(cwd, ["diff", "--unified=3", against, "--", target]),
+  );
+}
+
+/**
+ * WHETHER WHAT CAME BACK IS A PATCH AT ALL — issue #654.
+ *
+ * `patch: ""` USED TO MEAN TWO THINGS, and the second rendered as a lie: a
+ * `git diff` that exited past 1 returned the empty string, and every surface
+ * reads an empty non-binary patch as "this file is binary, there is no textual
+ * diff". A subprocess the engine killed at its bound therefore told the reader
+ * something specific and wrong about the file's CONTENTS.
+ *
+ * Shared by both runners, for the reason `assembleDiff` is.
+ */
+function assemblePatch(result: GitResult): GitFilePatch {
+  // 1 is `--no-index` reporting that the two files differ, which is this
+  // command's success. Anything past it is git not answering.
+  if (result.status !== 0 && result.status !== 1) {
+    return { patch: "", binary: false, incomplete: result.timedOut ? "timeout" : "failed" };
+  }
   const patch = result.stdout;
   return { patch, binary: /^Binary files .* differ$/m.test(patch) };
 }
@@ -727,64 +864,33 @@ export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string
   }
 
   const head = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const raw = head.status === 0 ? head.stdout.trim() : "";
-  const branch = raw && raw !== "HEAD" ? raw : undefined;
+  const { base, baseUnverified } = resolveDiffBase(baseRef, baseRef ? await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
+  const against = base ?? "HEAD";
 
-
-  const resolved = baseRef && (await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef])).status === 0 ? baseRef : undefined;
-  const against = resolved ?? "HEAD";
-
-  const numstat = await git(cwd, ["diff", "-z", "--numstat", "--find-renames", against, "--"]);
-  const nameStatus = await git(cwd, ["diff", "-z", "--name-status", "--find-renames", against, "--"]);
-  const statuses = nameStatus.status === 0 ? parseNameStatus(nameStatus.stdout) : new Map<string, GitChangeStatus>();
-  const tracked: GitFileChange[] = (numstat.status === 0 ? parseNumstat(numstat.stdout) : []).map((entry) => ({
-    path: entry.path,
-    status: statuses.get(entry.path) ?? "modified",
-    ...(entry.renamedFrom ? { renamedFrom: entry.renamedFrom } : {}),
-    ...(entry.added === undefined ? {} : { linesAdded: entry.added }),
-    ...(entry.removed === undefined ? {} : { linesRemoved: entry.removed }),
-    ...(entry.binary ? { binary: true } : {}),
-  }));
-
-  const status = await git(cwd, ["status", "--porcelain", "-z", "-uall"]);
-  const untracked: GitFileChange[] = (status.status === 0 ? parseUntracked(status.stdout) : []).map((path) => ({
-    path,
-    status: "untracked" as const,
-  }));
-
-  const log = resolved ? (await git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${resolved}..HEAD`])) : undefined;
-  const commits = log?.status === 0 ? parseGitLog(log.stdout) : [];
-
-  const tracking = await git(cwd, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
-  const divergence = tracking.status === 0 ? parseAheadBehind(tracking.stdout) : undefined;
-
-  const all = [...tracked, ...untracked].sort((left, right) => left.path.localeCompare(right.path));
-  return {
-    repository: true,
-    workspacePath: cwd,
-    ...(branch ? { branch } : {}),
-    ...(resolved ? { base: resolved } : {}),
-    ...(divergence ?? {}),
-    files: all.slice(0, MAX_REVIEW_FILES),
-    commits,
-    linesAdded: all.reduce((sum, file) => sum + (file.linesAdded ?? 0), 0),
-    linesRemoved: all.reduce((sum, file) => sum + (file.linesRemoved ?? 0), 0),
-    truncated: all.length > MAX_REVIEW_FILES,
-  };
+  return assembleDiff(cwd, {
+    head,
+    ...(base ? { base } : {}),
+    ...(baseUnverified ? { baseUnverified } : {}),
+    numstat: await git(cwd, ["diff", "-z", "--numstat", "--find-renames", against, "--"]),
+    nameStatus: await git(cwd, ["diff", "-z", "--name-status", "--find-renames", against, "--"]),
+    status: await git(cwd, ["status", "--porcelain", "-z", "-uall"]),
+    ...(base ? { log: await git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${base}..HEAD`]) } : {}),
+    tracking: await git(cwd, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]),
+  });
 }
 
 export async function sessionFilePatchAsync(
   git: AsyncGitRunner,
   input: { cwd: string; baseRef?: string; path: string; untracked?: boolean },
-): Promise<{ patch: string; binary: boolean }> {
+): Promise<GitFilePatch> {
   const { cwd, baseRef, path: target } = input;
-  const against = baseRef && (await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef])).status === 0 ? baseRef : "HEAD";
-  const result = input.untracked
-    ? (await git(cwd, ["diff", "--no-index", "--unified=3", "--", "/dev/null", target]))
-    : (await git(cwd, ["diff", "--unified=3", against, "--", target]));
-  if (result.status !== 0 && result.status !== 1) return { patch: "", binary: false };
-  const patch = result.stdout;
-  return { patch, binary: /^Binary files .* differ$/m.test(patch) };
+  const { base } = resolveDiffBase(baseRef, baseRef ? await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
+  const against = base ?? "HEAD";
+  return assemblePatch(
+    input.untracked
+      ? await git(cwd, ["diff", "--no-index", "--unified=3", "--", "/dev/null", target])
+      : await git(cwd, ["diff", "--unified=3", against, "--", target]),
+  );
 }
 
 export async function listGitRefsAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitRefListing> {

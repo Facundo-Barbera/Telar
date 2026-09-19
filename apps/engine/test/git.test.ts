@@ -19,6 +19,8 @@ import {
   samePath,
   sessionDiff,
   sessionDiffAsync,
+  sessionFilePatch,
+  sessionFilePatchAsync,
 } from "../src/git";
 import { GIT_TIMEOUT_STATUS } from "../src/worktree";
 import type { AsyncGitRunner, GitResult, GitRunner } from "../src/worktree";
@@ -416,6 +418,152 @@ describe("sessionDiff", () => {
       { cwd: "/repo", baseRef: "base000" },
     );
     expect(diff.files.find((file) => file.path === "src/a.ts")?.status).toBe("deleted");
+  });
+});
+
+/**
+ * A TIMED-OUT DIFF IS NOT "THIS SESSION CHANGED NOTHING" — issue #654.
+ *
+ * Every test here drives `timedOut()` and never `fail()` alone, for the reason
+ * #650's suite gives: the two are the SAME EXIT STATUS, so a test exercising a
+ * generic non-zero exit would call this covered while the bug shipped. What no
+ * killed read may produce is an empty review, an empty commit list, a base
+ * reported as unrecorded, or a patch that reads as a binary file.
+ *
+ * WORSE HERE THAN IN THE REF LISTING, which is why it got its own issue: an
+ * empty diff is a claim a person acts on directly — it is how you decide a
+ * session did nothing and archive it — and `sessions_diff` is read by AGENTS,
+ * which will report it onward as fact.
+ */
+describe("git did not answer about the diff", () => {
+  const base = { cwd: "/repo", baseRef: "base000" };
+
+  test("a killed numstat leaves the review INCOMPLETE rather than empty, and keeps the untracked half", () => {
+    // The shape that matters: one read dies, the others answer, and the result
+    // was a SHORTER review that read as the whole change.
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "diff -z --numstat": timedOut("diff --numstat") }), base);
+    expect(diff.filesIncomplete).toBe("timeout");
+    // What DID arrive is kept — those are real changes, about to be committed.
+    expect(diff.files.map((file) => file.path)).toEqual(["dist/app.js"]);
+  });
+
+  test("a killed `git status` loses every untracked file, which for a scaffolding run is all of them", () => {
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "status --porcelain": timedOut("status") }), base);
+    expect(diff.filesIncomplete).toBe("timeout");
+    expect(diff.files.map((file) => file.path)).toEqual(["src/a.ts"]);
+  });
+
+  test("a killed name-status marks the review too, because every letter becomes a guess", () => {
+    // The rows are all there; their statuses are not. A row claiming "modified"
+    // about a file git deleted is a wrong claim about that file.
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "diff -z --name-status": timedOut("diff --name-status") }), base);
+    expect(diff.filesIncomplete).toBe("timeout");
+    expect(diff.files).toHaveLength(2);
+  });
+
+  test("an empty review means 'nothing changed' ONLY when nothing failed", () => {
+    // The three cases the old `status !== 0 ? []` collapsed into one.
+    const quiet = { ...REVIEW, "diff -z --numstat": ok(""), "diff -z --name-status": ok(""), "status --porcelain": ok("") };
+    const nothing = sessionDiff(reviewRunner(quiet), base);
+    expect(nothing.files).toEqual([]);
+    expect(nothing.filesIncomplete).toBeUndefined();
+    expect(sessionDiff(reviewRunner({ ...quiet, "diff -z --numstat": timedOut() }), base).filesIncomplete).toBe("timeout");
+    // A plain failure is marked too, unlike `gitOverview`'s pinned dirty count:
+    // that decision was about a COUNT on the composer's foot, and this is the
+    // list somebody is about to commit.
+    expect(sessionDiff(reviewRunner({ ...quiet, "diff -z --numstat": fail() }), base).filesIncomplete).toBe("failed");
+  });
+
+  test("a killed `rev-parse --verify` cannot veto the base the session recorded", () => {
+    /**
+     * THE QUIET HALF OF #654, and the analogue of #650's `defaultRemoteBase`
+     * fix. The base comes from the session record; the verify is corroboration.
+     * Dropping it on a timeout silently reframes the review as `HEAD…worktree`
+     * — which excludes every commit the session made, so a session that
+     * COMMITTED all of its work reads as having done none of it, under a
+     * sentence ("no starting commit was recorded") that is itself false.
+     */
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "rev-parse --verify": timedOut("rev-parse --verify") }), base);
+    expect(diff.base).toBe("base000");
+    expect(diff.baseUnverified).toBe("timeout");
+    // And the range is still asked about, so committed work is still counted.
+    expect(diff.commits).toHaveLength(1);
+  });
+
+  test("a base that genuinely does not resolve is still dropped, unmarked", () => {
+    // The pinned decision this must not have broken: `--verify --quiet` exiting
+    // non-zero IS the answer "that ref is gone", and falling back to HEAD gives
+    // a smaller TRUE answer rather than an error nobody can act on.
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "rev-parse --verify": fail() }), { cwd: "/repo", baseRef: "gone" });
+    expect(diff.base).toBeUndefined();
+    expect(diff.baseUnverified).toBeUndefined();
+  });
+
+  test("a killed `git log` marks the COMMITS and says nothing about the files", () => {
+    // The whole reason there are three channels and not one: a reader should
+    // distrust the half of the screen that is actually unknown.
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, [LOG_KEY]: timedOut("log") }), base);
+    expect(diff.commitsIncomplete).toBe("timeout");
+    expect(diff.commits).toEqual([]);
+    expect(diff.filesIncomplete).toBeUndefined();
+    expect(diff.files).toHaveLength(2);
+  });
+
+  test("no base is not a failed log, so nothing is marked", () => {
+    // There is no range to ask about, which the surface already explains with
+    // `base` absent — marking it as well would invent a git failure.
+    const diff = sessionDiff(reviewRunner(REVIEW), { cwd: "/repo" });
+    expect(diff.commits).toEqual([]);
+    expect(diff.commitsIncomplete).toBeUndefined();
+  });
+
+  test("a whole review says nothing at all, so the ordinary surface stays quiet", () => {
+    const diff = sessionDiff(reviewRunner(REVIEW), base);
+    expect(diff.filesIncomplete).toBeUndefined();
+    expect(diff.commitsIncomplete).toBeUndefined();
+    expect(diff.baseUnverified).toBeUndefined();
+  });
+
+  test("a killed patch is marked, not returned as an empty one that reads as 'binary file'", () => {
+    // `patch: ""` meant two things, and the surfaces drew the second as the
+    // first: an empty non-binary patch renders as "Binary file — no textual
+    // diff", so a killed subprocess told the reader something specific and
+    // wrong about the file's CONTENTS.
+    const killed = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --unified=3": timedOut("diff") }), { ...base, path: "src/a.ts" });
+    expect(killed).toEqual({ patch: "", binary: false, incomplete: "timeout" });
+    const broken = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --unified=3": { status: 128, stdout: "", stderr: "fatal" } }), {
+      ...base,
+      path: "src/a.ts",
+    });
+    expect(broken.incomplete).toBe("failed");
+    // Exit 1 is `--no-index` reporting a difference, which is this command's
+    // SUCCESS — it must not land in the new channel.
+    const differs = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --no-index": { status: 1, stdout: "@@ -0,0 +1 @@\n+new\n", stderr: "" } }), {
+      ...base,
+      path: "dist/app.js",
+      untracked: true,
+    });
+    expect(differs.incomplete).toBeUndefined();
+    expect(differs.patch).toContain("+new");
+  });
+
+  test("the async twins answer identically on every one of these paths", async () => {
+    for (const replies of [
+      { ...REVIEW, "diff -z --numstat": timedOut("diff --numstat") },
+      { ...REVIEW, "rev-parse --verify": timedOut("rev-parse --verify") },
+      { ...REVIEW, [LOG_KEY]: timedOut("log") },
+      { ...REVIEW, "status --porcelain": timedOut("status") },
+    ]) {
+      const sync = reviewRunner(replies);
+      const async: AsyncGitRunner = async (cwd, args) => sync(cwd, args);
+      expect(await sessionDiffAsync(async, base)).toEqual(sessionDiff(sync, base));
+    }
+
+    const patchSync = reviewRunner({ ...REVIEW, "diff --unified=3": timedOut("diff") });
+    const patchAsync: AsyncGitRunner = async (cwd, args) => patchSync(cwd, args);
+    expect(await sessionFilePatchAsync(patchAsync, { ...base, path: "src/a.ts" })).toEqual(
+      sessionFilePatch(patchSync, { ...base, path: "src/a.ts" }),
+    );
   });
 });
 

@@ -103,6 +103,7 @@ import {
   CustomProviderModel,
   DEFAULT_MODEL_OVERLAY,
   ModelOverlay as ModelOverlaySchema,
+  type GitFilePatch,
   type SessionDiff,
   type EngineEvent,
   type Item,
@@ -5711,17 +5712,17 @@ export class EngineStore {
     );
   }
 
-  projectFilePatchAsync(projectId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
+  projectFilePatchAsync(projectId: string, target: string, options: { untracked?: boolean } = {}): Promise<GitFilePatch> {
     const project = this.getProject(projectId);
     return this.readFilePatchAsync(project.root, target, options);
   }
 
-  sessionFilePatchAsync(sessionId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
+  sessionFilePatchAsync(sessionId: string, target: string, options: { untracked?: boolean } = {}): Promise<GitFilePatch> {
     const session = this.getSession(sessionId);
     return this.readFilePatchAsync(workspaceRootOf(session), target, options, workspaceBaseRef(session.workspace));
   }
 
-  private readFilePatchAsync(cwd: string, target: string, options: { untracked?: boolean }, baseRef?: string): Promise<{ patch: string; binary: boolean }> {
+  private readFilePatchAsync(cwd: string, target: string, options: { untracked?: boolean }, baseRef?: string): Promise<GitFilePatch> {
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     const resolved = path.resolve(cwd, target);
     const prefix = cwd.endsWith(path.sep) ? cwd : `${cwd}${path.sep}`;
@@ -6103,7 +6104,7 @@ export class EngineStore {
   }
 
   /** One file's patch in a project's own checkout, for the same surface. */
-  projectFilePatch(projectId: string, target: string, options: { untracked?: boolean } = {}): { patch: string; binary: boolean } {
+  projectFilePatch(projectId: string, target: string, options: { untracked?: boolean } = {}): GitFilePatch {
     const project = this.getProject(projectId);
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     // Fenced exactly as the session read is: a pathspec is a file read, and a
@@ -6136,7 +6137,7 @@ export class EngineStore {
 
   /** One file's patch, on demand — see `sessionFilePatch` for why it is not
    *  carried on the review itself. */
-  sessionFilePatch(sessionId: string, target: string, options: { untracked?: boolean } = {}): { patch: string; binary: boolean } {
+  sessionFilePatch(sessionId: string, target: string, options: { untracked?: boolean } = {}): GitFilePatch {
     const session = this.getSession(sessionId);
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     /**
