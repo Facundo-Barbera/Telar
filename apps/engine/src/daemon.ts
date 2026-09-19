@@ -1614,6 +1614,37 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
+      /**
+       * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS — `/resume`'s picker (#616).
+       *
+       * NOT UNDER A SESSION, and that is the whole reason it is here rather
+       * than beside `/skills`: the picker runs on a CANVAS, before the session
+       * it would adopt into exists. `projectSkills` learned the same thing in
+       * #500 — a question a canvas has to ask cannot be scoped to a session.
+       *
+       * IT IS STILL A LOGIN'S QUESTION. A configured instance keeps its own
+       * config directory with its own history in it, so `?instanceId=` selects
+       * whose conversations these are; absent is the built-in slot, which is
+       * where a terminal `claude` writes.
+       *
+       * `?cwd=` narrows to one project directory. Absent lists every project,
+       * which is the right default: resume finds a conversation BY ID from any
+       * directory, so filtering to cwd-matched projects would hide
+       * conversations that would adopt perfectly well. The project path is on
+       * each row instead, and the person decides.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/claude/conversations") {
+        const instanceId = url.searchParams.get("instanceId")?.trim();
+        const cwd = url.searchParams.get("cwd")?.trim();
+        writeJson(response, 200, {
+          conversations: await store.listAdoptableClaudeConversations({
+            ...(instanceId ? { instanceId } : {}),
+            ...(cwd ? { cwd } : {}),
+            limit: positiveParam(url.searchParams.get("limit"), 100, 500, "limit"),
+          }),
+        });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/projects") {
         // `?includeRemoved=1` OPTS IN to the put-away ones. Absent by default,
         // so every picker and the sidebar drop a removed project without
@@ -4037,31 +4068,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
                 : {}),
             }),
           );
-          return;
-        }
-        /**
-         * THE CONVERSATIONS THIS SESSION COULD ADOPT — `/resume`'s picker,
-         * #616.
-         *
-         * SCOPED TO THE SESSION rather than to the machine, and not for
-         * politeness: which conversations exist depends on which LOGIN is
-         * asking, because a configured instance keeps its own
-         * `CLAUDE_CONFIG_DIR` with its own history in it. A machine-wide route
-         * would list one store and adopt into another.
-         *
-         * `?cwd=` narrows to one project directory; absent lists every project,
-         * which is the right default here — resume finds a conversation BY ID
-         * from any directory, so restricting the list to cwd-matched projects
-         * would hide conversations that would adopt perfectly well.
-         */
-        if (request.method === "GET" && session.tail === "/claude-conversations") {
-          const cwd = url.searchParams.get("cwd")?.trim();
-          writeJson(response, 200, {
-            conversations: await store.listAdoptableClaudeConversations(session.sessionId, {
-              ...(cwd ? { cwd } : {}),
-              limit: positiveParam(url.searchParams.get("limit"), 100, 500, "limit"),
-            }),
-          });
           return;
         }
         /**

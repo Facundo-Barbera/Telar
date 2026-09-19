@@ -1824,16 +1824,20 @@ export class EngineClient {
    * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, newest first — `/resume`'s
    * picker (#616).
    *
-   * PER SESSION, like the skills above and for a sharper version of the same
-   * reason: which conversations exist depends on which LOGIN is asking, because
-   * a configured instance keeps its own config directory with its own history.
-   * A machine-wide list would offer conversations this session could not adopt.
+   * PER LOGIN, NOT PER SESSION, like `projectSkills` and for the same reason:
+   * the picker runs on a canvas, before the session it would adopt into exists.
+   * `instanceId` is which login's history to read — absent is the built-in
+   * slot, which is where a terminal `claude` writes.
    *
    * Forks Telar has already adopted are not in the answer: adopting an adoption
    * is something a person could do without ever being told that is what it was.
    */
-  claudeConversations(sessionId: string): Promise<{ conversations: ClaudeConversation[] }> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/claude-conversations`);
+  claudeConversations(options: { instanceId?: string; cwd?: string } = {}): Promise<{ conversations: ClaudeConversation[] }> {
+    const query = new URLSearchParams();
+    if (options.instanceId) query.set("instanceId", options.instanceId);
+    if (options.cwd) query.set("cwd", options.cwd);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request("GET", `/v2/claude/conversations${suffix}`);
   }
 
   /**

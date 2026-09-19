@@ -48,10 +48,9 @@ import {
   SlidersHorizontalIcon,
 } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
-// The store pane's own formatter (#630), not a second one: two byte formatters
-// on one screen would disagree about 1 GB the first time somebody rounded
-// differently.
-import { formatBytes } from "@/lib/desktop-store";
+// The cockpit's one byte formatter (#630), not a second one: two of them on one
+// screen would disagree about 1 GB the first time somebody rounded differently.
+import { formatBytes } from "@/lib/format";
 import { workspaceOpener, workspaceOpenBlocker } from "@/lib/workspace-open";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";

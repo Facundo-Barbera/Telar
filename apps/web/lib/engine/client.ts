@@ -1110,21 +1110,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /**
      * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, for `/resume` (#616).
      *
-     * ASKED THROUGH THE SESSION rather than the machine, because which
-     * conversations there are depends on which LOGIN is asking: a configured
-     * instance keeps its own config directory with its own history in it, and a
-     * machine-wide list would offer conversations this session could not adopt.
+     * ASKED PER LOGIN, NOT PER SESSION, because the picker runs on a canvas —
+     * before the session it would adopt into exists. `instanceId` is whose
+     * history to read (a configured login keeps its own config directory);
+     * absent is the built-in slot, where a terminal `claude` writes.
      *
-     * NOT SCOPED TO THE SESSION'S PROJECT by default. Resume finds a
-     * conversation by id from any directory, so filtering to the current
-     * checkout would hide conversations that would adopt perfectly well — the
-     * project path is shown on each row instead, and the person decides.
+     * NOT SCOPED TO A PROJECT either. Resume finds a conversation by id from
+     * any directory, so filtering to the current checkout would hide
+     * conversations that would adopt perfectly well — the project path is shown
+     * on each row instead, and the person decides.
      */
-    claudeConversations: (sessionId: string) =>
+    claudeConversations: (instanceId?: string) =>
       request<{ conversations: ClaudeConversation[] }>(
         fetcher,
         "GET",
-        `/api/sessions/${encodeURIComponent(sessionId)}/claude-conversations`,
+        `/api/claude-conversations${instanceId ? `?${new URLSearchParams({ instanceId }).toString()}` : ""}`,
       ),
     /** Adopt one: fork it, import its history, and point this session's next
      *  turn at the fork. The person's own conversation is not written to. */

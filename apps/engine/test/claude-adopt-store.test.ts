@@ -176,7 +176,7 @@ test("the fork lands under the engine root, and is not offered back as adoptable
 
   // The picker must not offer a fork: adopting an adoption is a thing a person
   // could do without ever being told that is what they did.
-  const offered = await store.listAdoptableClaudeConversations("session_one");
+  const offered = await store.listAdoptableClaudeConversations();
   expect(offered.map((row) => row.sessionId)).toEqual([sourceSessionId]);
 });
 

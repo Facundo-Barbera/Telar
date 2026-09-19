@@ -35,6 +35,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CircleIcon,
+  DownloadIcon,
   FileTextIcon,
   GlobeIcon,
   ListTodoIcon,
@@ -582,6 +583,46 @@ function CompactionRow({ item }: { item: JournalItem }) {
 }
 
 /**
+ * WHERE AN ADOPTED CONVERSATION CAME FROM — `/resume` (#616), at the head of
+ * the history it explains.
+ *
+ * THE ROW IS THE PROVENANCE. The CLI records nothing about a fork's origin —
+ * measured, the forked transcript mentions the source id zero times — so
+ * without this a session that quietly knows a conversation it never had is
+ * indistinguishable from one that invented it. Someone opening this in six
+ * weeks reads: what it was, where it came from, and how much of it is here.
+ *
+ * BOTH CUTS ARE SHOWN WHEN THEY DISAGREE, because they answer different
+ * questions: `records` is what the MODEL still remembers, `rows` is what the
+ * PERSON can still scroll. Equal is the ordinary case and says nothing extra;
+ * unequal is exactly when somebody needs to be told.
+ */
+function ConversationImportRow({ item }: { item: JournalItem }) {
+  const detail = item.detail.type === "conversation_import" ? item.detail.import : undefined;
+  if (!detail) return null;
+  const kept =
+    detail.cut === "since_compact_boundary"
+      ? `${detail.records} records since its last compaction`
+      : `${detail.records} records`;
+  return (
+    <div className="flex flex-col gap-0.5 rounded-md border border-dashed border-border/70 bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground">
+      <p className="flex items-center gap-1.5">
+        <DownloadIcon className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1">
+          Imported from Claude Code — {kept}. Your own Claude Code history is untouched.
+        </span>
+      </p>
+      {detail.firstPrompt && <p className="min-w-0 truncate pl-5 italic opacity-80">“{detail.firstPrompt}”</p>}
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-5 font-mono text-3xs opacity-70">
+        {detail.sourceCwd && <span className="min-w-0 truncate">{detail.sourceCwd}</span>}
+        <span>{detail.sourceSessionId}</span>
+        {detail.rows !== detail.records && <span>{detail.rows} rows shown</span>}
+      </p>
+    </div>
+  );
+}
+
+/**
  * THE PROVIDER MADE THE TURN WAIT — a retry after a failed request, or a rate
  * limit. Rendered as a seam like a compaction rather than as a tool call,
  * because that is what it is: the reason the session went quiet, and the one
@@ -843,6 +884,7 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, 
   if (item.detail.type === "plan") return <PlanRow item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
+  if (item.detail.type === "conversation_import") return <ConversationImportRow item={item} />;
   if (item.detail.type === "provider_wait") return <ProviderWaitRow item={item} />;
   // A NOTIFICATION IS NOT A MESSAGE ROW OF ANY KIND — #550. Its own arm, above
   // `user_message`, because the whole point of the type is that narrowing on it
@@ -993,7 +1035,9 @@ export type ActivitySegment = { kind: "run"; items: JournalItem[] } | { kind: "r
 // `notification` joins the seam for `user_message`'s reason: something
 // ARRIVED, and what follows is the turn's answer to it rather than more of
 // what came before (#550).
-const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "notification", "plan", "context_compaction", "provider_wait"]);
+// `conversation_import` joins it as the head of an adopted history: what
+// follows is somebody's old conversation rather than more of this one (#616).
+const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "notification", "plan", "context_compaction", "provider_wait", "conversation_import"]);
 
 /**
  * A TURN, CUT INTO RESPONSES AT ITS MESSAGE BOUNDARIES. A message sent into a

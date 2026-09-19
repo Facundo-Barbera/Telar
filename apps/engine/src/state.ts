@@ -8648,7 +8648,10 @@ export class EngineStore {
    * never look in.
    */
   private claudeConfigDirFor(session: Session): string | undefined {
-    const instance = this.resolveProviderInstance(session.providerInstanceId, session.driver);
+    return this.claudeConfigDirForInstance(this.resolveProviderInstance(session.providerInstanceId, session.driver));
+  }
+
+  private claudeConfigDirForInstance(instance: ProviderInstance): string | undefined {
     const patch = providerProcessEnv(instance);
     if (Object.hasOwn(patch, "CLAUDE_CONFIG_DIR")) return patch.CLAUDE_CONFIG_DIR?.trim() || undefined;
     return process.env.CLAUDE_CONFIG_DIR?.trim() || undefined;
@@ -8664,17 +8667,29 @@ export class EngineStore {
     return path.join(this.paths.root, "adopted");
   }
 
-  /** The conversations this session's login could adopt. Scoped to that login's
-   *  store for the reason `claudeConfigDirFor` gives at length. */
+  /**
+   * The conversations a LOGIN could adopt.
+   *
+   * SCOPED TO AN INSTANCE RATHER THAN A SESSION, which is the same shape
+   * `projectSkills` takes and for the same reason: the picker runs on a canvas,
+   * before the session it would adopt into exists (#500's lesson, #616's
+   * picker). Scoping it to a session would have made "show me my
+   * conversations" require first creating a session to throw away if the person
+   * picked none.
+   *
+   * IT IS STILL A LOGIN'S QUESTION, not the machine's. A configured instance
+   * keeps its own config directory with its own history in it, so the answer
+   * differs per login, and an absent id means the built-in slot — Claude's own
+   * default location, which is where a terminal `claude` writes.
+   */
   async listAdoptableClaudeConversations(
-    sessionId: string,
-    options: { cwd?: string; limit?: number } = {},
+    options: { instanceId?: string; cwd?: string; limit?: number } = {},
   ): Promise<ClaudeConversation[]> {
-    const session = this.getSession(sessionId);
-    if (session.driver !== "claude") {
-      throw new EngineStateError("invalid_request", "only a Claude session can adopt a Claude Code conversation");
+    const instance = this.resolveProviderInstance(options.instanceId ?? defaultInstanceIdForDriver("claude"), "claude");
+    if (instance.driver !== "claude") {
+      throw new EngineStateError("invalid_request", "only a Claude login has Claude Code conversations");
     }
-    const configDir = this.claudeConfigDirFor(session);
+    const configDir = this.claudeConfigDirForInstance(instance);
     return listAdoptableConversations({
       ...(options.cwd ? { cwd: options.cwd } : {}),
       ...(options.limit !== undefined ? { limit: options.limit } : {}),

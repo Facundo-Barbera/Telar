@@ -39,7 +39,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import type { EngineRequest, ProjectAvailability, ProviderDriverKind, ProviderSkills, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import type { ClaudeConversation, EngineRequest, ProjectAvailability, ProviderDriverKind, ProviderSkills, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import {
   advance as advanceQuestion,
   buildAnswers,
@@ -93,6 +93,7 @@ import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { fmtTokens } from "@/lib/format";
 import { createEngineApi } from "@/lib/engine/client";
 import { FreshGreeting } from "./session/fresh-greeting";
+import { ResumePicker, ResumePickerTrigger } from "./session/resume-picker";
 import { WorkspaceEnvironment } from "./workspace-environment";
 import { cn } from "@/lib/utils";
 
@@ -416,6 +417,7 @@ export function Composer({
   onEnvMode,
   pendingBase,
   onBase,
+  onAdopt,
   pendingModel,
   busy,
   sending,
@@ -471,6 +473,16 @@ export function Composer({
   /** The base-ref picker's create-time choice — worktree only. */
   pendingBase?: { baseRef?: string; branchName?: string };
   onBase?: (next: { baseRef?: string; branchName?: string }) => void;
+  /**
+   * BRING AN EXISTING CLAUDE CODE CONVERSATION IN INSTEAD OF STARTING ONE
+   * (#616). Given, the empty composer offers it under the greeting; absent,
+   * nothing is drawn — which is every case but a fresh Claude canvas.
+   *
+   * THE CALLER ADOPTS. It creates the session and hands the conversation to the
+   * engine; this component only chooses which one, because the session that
+   * receives it is the caller's to mint.
+   */
+  onAdopt?: (conversation: ClaudeConversation) => Promise<void>;
   /** The provider knobs the first message will create the session with, while
    *  fresh. Same shape as `session.model` minus the instance, which the engine
    *  stamps. */
@@ -793,6 +805,8 @@ export function Composer({
   /** The one thing that went wrong, said in place. There is no toast in this
    *  app and that is deliberate — see file-view-surface.tsx. */
   const [note, setNote] = useState<string>();
+  /** The Claude Code conversation picker is open (#616). */
+  const [resuming, setResuming] = useState(false);
   /**
    * WHAT THE BOX HOLDS RIGHT NOW, readable from inside an await.
    *
@@ -1396,6 +1410,23 @@ export function Composer({
           has nothing for it to offer. Omitted rather than blanked. */}
       {fresh && projectId && (
         <FreshGreeting projectId={projectId} {...(projectName ? { projectName } : {})} />
+      )}
+
+      {/* THE OTHER WAY TO START: bring in a conversation that already exists
+          (#616). Under the greeting rather than beside the Send button, because
+          it is an alternative to typing the first message rather than an action
+          on one — and it disappears the moment there is a session, like the
+          greeting it sits under. */}
+      {fresh && onAdopt && (
+        <>
+          <ResumePickerTrigger onOpen={() => setResuming(true)} />
+          <ResumePicker
+            open={resuming}
+            onOpenChange={setResuming}
+            onPick={onAdopt}
+            {...(session?.providerInstanceId ? { instanceId: session.providerInstanceId } : {})}
+          />
+        </>
       )}
 
       <BackgroundPresence count={backgroundTasks} onStop={onStopBackground} />

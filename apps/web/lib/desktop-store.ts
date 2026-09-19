@@ -82,17 +82,6 @@ export function progressLabel(progress: StoreProgress | null): string | undefine
   return progress.phase === "copying" ? `Copying… ${percent}%` : `Checking the copy… ${percent}%`;
 }
 
-export function formatBytes(bytes: number): string {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
-}
-
 /** The shell's answer, re-read after anything that could change it. */
 export function useStoreStatus(): { status: StoreStatus | null; supported: boolean; refresh: () => void } {
   const [status, setStatus] = useState<StoreStatus | null>(null);
