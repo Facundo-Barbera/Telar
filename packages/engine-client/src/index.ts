@@ -38,6 +38,9 @@ import {
   type JournalReclaim,
   type TextGenPolicy,
   type WorktreeMoveResult,
+  type WorktreeInventory,
+  type WorktreeReclaimItem,
+  type WorktreeReclaimOutcome,
   type WorktreesRoot,
   type UsageReport,
   type UsageResolution,
@@ -1511,6 +1514,41 @@ export class EngineClient {
    */
   moveWorktrees(): Promise<{ move: WorktreeMoveResult }> {
     return this.request("POST", "/v2/worktrees-root/move", {});
+  }
+
+  /**
+   * EVERY CHECKOUT THIS INSTALL IS KEEPING, CLASSIFIED — issue #671.
+   *
+   * NOT A LIST WITH COLUMNS: each row carries a VERDICT, because the proof
+   * (merged, clean, nothing needs it) is the thing worth having and a reader
+   * who has to re-derive it per row will not. Read `WorktreeVerdict` before
+   * drawing anything.
+   *
+   * COSTS A WALK PER CHECKOUT, so it is a read a person asks for — never a
+   * poll. Nothing on this call is cached: every rung of the classification is
+   * live, and a cached verdict is one that was true earlier.
+   */
+  worktrees(): Promise<{ inventory: WorktreeInventory }> {
+    return this.request("GET", "/v2/worktrees");
+  }
+
+  /**
+   * Give checkouts back.
+   *
+   * THIS ARCHIVES SESSIONS. A checkout held by a settled session is released by
+   * putting that session down — the only supported way, since settling
+   * deliberately does not release one and nothing re-cuts a missing worktree.
+   * A caller's confirm must say "archive the session"; one that names the disk
+   * space and hides the session is the kind people click and regret.
+   *
+   * `confirm` IS THE BASENAME, TYPED, and is required for every row whose
+   * verdict is `needs-force` — the rows where Telar could not prove the work is
+   * safe. Refusals come back per item rather than as an error status: a press
+   * over six checkouts where one has since been claimed is five successes and
+   * one honest refusal.
+   */
+  reclaimWorktrees(items: readonly WorktreeReclaimItem[]): Promise<{ reclaim: WorktreeReclaimOutcome }> {
+    return this.request("POST", "/v2/worktrees/reclaim", { items });
   }
 
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */
