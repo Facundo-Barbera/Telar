@@ -15,6 +15,9 @@ struct ProviderIconView: View {
                 .frame(width: size, height: size)
                 .foregroundStyle(Theme.text)
         } else if driver == "opencode" {
+            // Proportional to its own square, like ProjectAvatar's glyphs:
+            // `size` is the caller's, so a bigger badge is asked for rather
+            // than derived. Correct as it stands, not waiting on #674.
             Text("OC").font(.system(size: size * 0.65, weight: .semibold)).frame(width: size, height: size)
         } else {
             Image("ProviderClaude")
@@ -130,10 +133,19 @@ struct ModelPillView: View {
         } label: {
             HStack(spacing: 8) {
                 ProviderIconView(driver: choice.driver, size: 16)
+                // THIS PILL SCALES AND SESSIONVIEW'S TWIN DOES NOT — yet.
+                // Both are icon + label + chevron in `.frame(height: 44)` with
+                // a `maxWidth` cap, so neither is fixed in both dimensions and
+                // both convert under the sweep's rule. #449 grouped
+                // SessionView's with the fixed 44pt hit targets, which is the
+                // one place that grouping does not hold: a capped width is not
+                // a fixed one. Until #674 settles it, the two behave
+                // differently at large text sizes. The answer there is to
+                // convert SessionView's to match this, not to revert this.
                 Text(label)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(Theme.subhead, weight: .semibold))
                     .lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
+                Image(systemName: "chevron.down").font(.system(Theme.caption, weight: .medium))
             }
             .foregroundStyle(Theme.text)
             .padding(.horizontal, 14)

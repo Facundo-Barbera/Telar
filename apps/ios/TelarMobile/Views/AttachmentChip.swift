@@ -33,6 +33,11 @@ struct AttachmentChip: View {
                 } else {
                     VStack(spacing: 6) {
                         Image(systemName: glyph)
+                            // THE WHOLE CHIP KEEPS ABSOLUTE SIZES. The tile is
+                            // a fixed 72pt square and the remove badge a fixed
+                            // 22pt one, both clipping, so a glyph that grew
+                            // with the reader's text would outgrow its own
+                            // box. They want @ScaledMetric frames (#674).
                             .font(.system(size: 20))
                             .foregroundStyle(Theme.textMuted)
                         Text(name)
