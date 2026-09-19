@@ -72,8 +72,21 @@ describe("mergeReadiness", () => {
     ...over,
   });
 
-  test("clean and open merges, with nothing to add", () => {
-    expect(mergeReadiness(pull())).toEqual({ canMerge: true });
+  test("clean and open merges, and still says so", () => {
+    // The bug this prevents: a merge button with nothing beside it. A control
+    // that only speaks when refusing leaves its best case — the one where you are
+    // about to press it — as the only state with no sentence in front of it.
+    const readiness = mergeReadiness(pull());
+    expect(readiness.canMerge).toBe(true);
+    expect(readiness.note).toContain("main");
+  });
+
+  test("a mergeStateStatus this cockpit has never met still says something", () => {
+    // It already enables the button — GitHub named nothing in the way — so it
+    // takes the same sentence rather than falling back to silence.
+    const readiness = mergeReadiness(pull({ mergeStateStatus: "SOMETHING_NEW" }));
+    expect(readiness.canMerge).toBe(true);
+    expect(readiness.note).toBeTruthy();
   });
 
   test("mergeability GitHub has not computed is ALLOWED, not refused", () => {
