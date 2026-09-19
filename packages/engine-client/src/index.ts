@@ -35,6 +35,7 @@ import {
   type SessionDefaults,
   type SidebarLayout,
   type StorageReport,
+  type JournalReclaim,
   type TextGenPolicy,
   type WorktreeMoveResult,
   type WorktreesRoot,
@@ -1461,6 +1462,22 @@ export class EngineClient {
    */
   storage(options: { refresh?: boolean } = {}): Promise<{ storage: StorageReport }> {
     return this.request("GET", `/v2/storage${options.refresh ? "?refresh=1" : ""}`);
+  }
+
+  /**
+   * Compact the turn journal and return the freed pages to the filesystem —
+   * issue #646.
+   *
+   * SLOW AND EXCLUSIVE, and the only write on the storage surface. The VACUUM
+   * behind it rewrites the whole database under a lock — seconds on a large
+   * one — so this belongs behind an explicit press and never on a render path.
+   *
+   * What it drops is journal rows a settled turn has superseded, never a turn,
+   * an item or an answer; `deltas` and `starts` are how many, and `before` and
+   * `after` are the file either side of the work.
+   */
+  reclaimJournal(): Promise<{ reclaimed: JournalReclaim }> {
+    return this.request("POST", "/v2/storage/journal/reclaim");
   }
 
   /** Where session checkouts go on this install — see `WorktreesRoot`. */

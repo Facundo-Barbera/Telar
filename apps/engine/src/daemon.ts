@@ -732,6 +732,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   store = new EngineStore(root, options.now, {
     onQueueChanged: () => wakeEmbeddedWorker?.(),
     onTurnsStopped: (cancellations) => cancelEmbeddedClaims?.(cancellations),
+    /**
+     * THE JOURNAL SWEEP'S LINE, PRINTED LATE — issue #646.
+     *
+     * The sweep below reports at open because it finishes there. This one runs
+     * on a timer seconds afterwards, because its first pass on a large store is
+     * a minute of work and the open path is the wrong place for it — so the
+     * line arrives when the rows actually go. Same rule as the rest: only when
+     * something went, and "superseded" rather than "removed", because these
+     * rows say nothing their turn's `item.completed` does not already say.
+     */
+    onExecutionHousekeeping: ({ journal }) => {
+      const rows = journal.deltas + journal.starts;
+      if (rows === 0) return;
+      process.stdout.write(
+        `Telar engine: compacted ${rows.toLocaleString("en-US")} superseded journal rows across ${journal.sessions.toLocaleString("en-US")} sessions\n`,
+      );
+    },
     executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
@@ -2155,6 +2172,36 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       if (request.method === "GET" && url.pathname === "/v2/storage") {
         writeJson(response, 200, { storage: await readStorage(url.searchParams.get("refresh") === "1") });
+        return;
+      }
+      /**
+       * GIVE THE JOURNAL'S FREED PAGES BACK — issue #646.
+       *
+       * THE ONLY WRITE THE STORAGE PANE HAS, and it is a POST because it is one:
+       * #642 was deliberately read-and-reveal, on the argument that a pane
+       * should not invite somebody to delete history they have just met. This
+       * does not delete history. It drops journal rows whose own
+       * `item.completed` already carries what they say, and then vacuums — so
+       * what it removes is a second copy and a high-water mark, and the pane
+       * can say so in those words.
+       *
+       * IT BLOCKS FOR SECONDS, DELIBERATELY. The VACUUM holds an exclusive lock
+       * for the rewrite (7 s on the owner's gigabyte) and there is no honest way
+       * to report a before-and-after without waiting for it. That is the whole
+       * reason it is a button rather than something the engine does at startup.
+       *
+       * AND THE CACHED MEASUREMENT GOES WITH IT: the figures the pane is showing
+       * describe a file this just changed the size of, and serving them
+       * afterwards would tell somebody the press did nothing.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/storage/journal/reclaim") {
+        const reclaimed = store.reclaimExecutionStore();
+        if (!reclaimed) {
+          writeJson(response, 409, { error: "this engine is not running on SQLite, so there is nothing to vacuum" });
+          return;
+        }
+        storageCache.report = undefined;
+        writeJson(response, 200, { reclaimed });
         return;
       }
       /**

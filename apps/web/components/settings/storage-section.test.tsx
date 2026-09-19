@@ -140,9 +140,14 @@ describe("Settings ▸ Storage", () => {
 
   test("nothing on this pane deletes anything", async () => {
     /**
-     * READ AND REACH ONLY, in this pass. A "clean up" button on a pane whose
-     * numbers a reader has just met for the first time is an invitation to
-     * remove something they have not yet understood.
+     * STILL TRUE WITH RECLAIM ON THE PANE (#646), and the reason it is worth
+     * keeping as a test rather than retiring as a stale rule.
+     *
+     * #642's objection was to a "clean up" on a pane whose numbers a reader has
+     * just met — an invitation to remove something they have not yet
+     * understood. Reclaim removes no history: the rows it drops are superseded
+     * by the `item.completed` of their own turn. So the pane gained an action
+     * and none of these verbs, which is exactly the line this holds.
      */
     const view = await mount();
     const labels = [...view.host.querySelectorAll("button")].map((button) => button.textContent?.trim().toLowerCase() ?? "");
@@ -204,6 +209,87 @@ describe("Settings ▸ Storage", () => {
     const view = await mount();
     expect(view.host.textContent).toContain("could not measure");
     expect(view.host.textContent).not.toContain("0 B");
+    view.unmount();
+  });
+});
+
+/**
+ * RECLAIM (#646) — the pane's one write, and the three things it must not get
+ * wrong: it only appears on the journal row, it re-measures rather than doing
+ * arithmetic on a stale figure, and it reports a press that moved nothing.
+ */
+describe("Settings ▸ Storage ▸ Reclaim", () => {
+  const reclaimResponse = (reclaimed: { before: number; after: number; deltas: number; starts: number; sessions: number }) => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(url);
+      const body = url.includes("/journal/reclaim")
+        ? { reclaimed }
+        : // After the press the row must show the file as it is NOW, so the
+          // second walk answers with the smaller figure the vacuum produced.
+          { storage: calls.some((seen) => seen.includes("/journal/reclaim")) ? { ...REPORT, total: 12_700_000_000, entries: REPORT.entries.map((entry) => (entry.category === "journal" ? { ...entry, bytes: 695_000_000 } : entry)) } : REPORT };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+  };
+
+  test("it is offered on the journal row and on no other", async () => {
+    reclaimResponse({ before: 993_000_000, after: 695_000_000, deltas: 443_738, starts: 127_213, sessions: 446 });
+    const view = await mount();
+    // One button, not one per row: nothing else here is a SQLite file.
+    expect(view.buttons("Reclaim").length).toBe(1);
+    view.unmount();
+  });
+
+  test("a press compacts, then re-measures — the row cannot keep showing the old size", async () => {
+    reclaimResponse({ before: 993_000_000, after: 695_000_000, deltas: 443_738, starts: 127_213, sessions: 446 });
+    const view = await mount();
+    expect(view.host.textContent).toContain("947 MB");
+
+    await press(view.button("Reclaim"));
+    expect(calls).toEqual(["/api/storage", "/api/storage/journal/reclaim", "/api/storage?refresh=1"]);
+
+    const text = view.host.textContent ?? "";
+    // What went, in rows and in bytes, and both ends of the change.
+    expect(text).toContain("570,951 superseded rows");
+    expect(text).toContain("947 MB → 663 MB");
+    // And the row itself now reads the compacted file.
+    expect(text).toContain("663 MB");
+    expect(text).not.toContain("947 MB —");
+    view.unmount();
+  });
+
+  test("pressing it again says the store is already compact rather than nothing at all", async () => {
+    // The case worth designing for: somebody who reclaimed yesterday. A silent
+    // no-op reads as a broken button, and "freed 0 B" reads as a bug.
+    reclaimResponse({ before: 695_000_000, after: 695_000_000, deltas: 0, starts: 0, sessions: 0 });
+    const view = await mount();
+    await press(view.button("Reclaim"));
+    expect(view.host.textContent).toContain("Already compact");
+    view.unmount();
+  });
+
+  test("it says no turn, item or answer is removed — before anyone presses it", async () => {
+    // A button on a row called "Turn journal" reads as "delete my
+    // conversations" unless the row says otherwise, so the sentence is there
+    // on arrival rather than in a confirmation nobody reads.
+    reclaimResponse({ before: 1, after: 1, deltas: 0, starts: 0, sessions: 0 });
+    const view = await mount();
+    expect(view.host.textContent).toContain("no turn, item or answer is removed");
+    view.unmount();
+  });
+
+  test("an engine that refuses the compaction says so and leaves the figures alone", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(url);
+      if (url.includes("/journal/reclaim")) return new Response("{}", { status: 409, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ storage: REPORT }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const view = await mount();
+    await press(view.button("Reclaim"));
+    expect(view.host.textContent).toContain("could not compact");
+    // The pane still reports what it last measured, rather than blanking.
+    expect(view.host.textContent).toContain("947 MB");
     view.unmount();
   });
 });

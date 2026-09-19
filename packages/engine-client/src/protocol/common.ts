@@ -510,6 +510,29 @@ export const StorageReport = z.object({
 export type StorageReport = z.infer<typeof StorageReport>;
 
 /**
+ * WHAT ONE PRESS OF RECLAIM RETURNED — issue #646.
+ *
+ * BEFORE AND AFTER, NOT A SAVING, because the difference is not the only thing
+ * a person is owed: a press that moved nothing should read as "already
+ * compact", and only both numbers say that. The file is the database plus its
+ * `-wal` and `-shm`, so a WAL truncated by the same work is counted where
+ * somebody would look for it.
+ *
+ * `deltas` AND `starts` ARE ROWS, NOT BYTES, and they are here so the sentence
+ * can name what went. Both kinds are superseded by the `item.completed` of
+ * their own turn — no turn, item or answer is ever dropped — and saying
+ * "570,951 rows" without saying which would read like history going away.
+ */
+export const JournalReclaim = z.object({
+  before: z.number().min(0),
+  after: z.number().min(0),
+  deltas: z.number().min(0),
+  starts: z.number().min(0),
+  sessions: z.number().min(0),
+});
+export type JournalReclaim = z.infer<typeof JournalReclaim>;
+
+/**
  * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
  *
  * FOUR KINDS AND NOT A PATH, because three of them are things a person has to

@@ -2082,6 +2082,20 @@ export class EngineStore {
   }
 
   /**
+   * COMPACT THE JOURNAL AND GIVE THE PAGES BACK — issue #646, and only on ask.
+   *
+   * The sweep runs itself; the VACUUM behind this does not, because it rewrites
+   * the database under an exclusive lock (7 s on the owner's gigabyte) to
+   * return space that accrues over a month. See `ExecutionStore.reclaim`.
+   *
+   * Absent on a store still running on JSON: there is no database to vacuum,
+   * and saying so is better than reporting a reclamation that did not happen.
+   */
+  reclaimExecutionStore(): { before: number; after: number; deltas: number; starts: number; sessions: number } | undefined {
+    return this.executionStore?.reclaim();
+  }
+
+  /**
    * WHAT A READ ACTUALLY TOUCHED, so a test can hold the engine to it (#419).
    *
    * `documentBytes` is the span of `queue.json` / `items.json` that reached
@@ -4033,6 +4047,16 @@ export class EngineStore {
     private readonly now: () => number = Date.now,
     options: {
       executionStorage?: "json" | "sqlite";
+      /**
+       * WHAT THE JOURNAL SWEEP REMOVED, once it has — issue #646.
+       *
+       * The receipts and backup sweeps report through `executionHousekeeping`
+       * because they finish inside the constructor. The journal sweep does not:
+       * its first pass is a minute's work on a large store, so it runs on a
+       * timer after the open and tells whoever is listening when it is done.
+       * Absent by default — a store on its own announces nothing.
+       */
+      onExecutionHousekeeping?: (swept: { journal: { deltas: number; starts: number; sessions: number } }) => void;
       notifier?: EngineNotifier;
       /**
        * SOMETHING IN SOME SESSION'S QUEUE CHANGED — a message accepted, a turn
@@ -4110,7 +4134,13 @@ export class EngineStore {
     const migrated = fs.existsSync(path.join(root, "execution-store.json")) || fs.existsSync(path.join(root, "execution.sqlite"));
     if (migrated && options.executionStorage === "json") throw new Error("this engine home has migrated to SQLite; restore a backup to downgrade");
     if (migrated || options.executionStorage === "sqlite") {
-      this.executionStore = new ExecutionStore(root);
+      // The journal sweep says what it removed when it removes it, which is
+      // seconds AFTER the open rather than during it — the first pass on a
+      // large store is a minute's work and belongs nowhere near the startup
+      // path (#646). `onExecutionHousekeeping` is the daemon's line.
+      this.executionStore = new ExecutionStore(root, {
+        onJournalCompacted: (swept) => options.onExecutionHousekeeping?.({ journal: swept }),
+      });
       // `ingestObservations` is NOT here: it wraps itself, because a batch of
       // nothing but deltas writes no document at all and must not open a
       // transaction. See the method.

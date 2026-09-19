@@ -30,7 +30,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { StorageCategory, StorageEntry, StorageReport } from "@telar/engine-client";
+import type { JournalReclaim, StorageCategory, StorageEntry, StorageReport } from "@telar/engine-client";
 import {
   ActivityIcon,
   BotIcon,
@@ -80,12 +80,21 @@ const CATEGORIES: Record<StorageCategory, { label: string; hint: string; icon: L
     icon: FolderGitIcon,
   },
   /**
-   * THE ROW THE PANE WAS WRITTEN FOR, and the one it must not grow an opinion
-   * about. A gigabyte here may be legitimate or it may be a file that never
-   * gives freed pages back; that question is #646's, and it is being measured
-   * there. What belongs here is the size and the way to it — a pane that
-   * offered to "clean up" a store somebody has just met for the first time
-   * would be inviting them to delete history they have not yet understood.
+   * THE ROW THE PANE WAS WRITTEN FOR — and the one that now has an action,
+   * which #642 deliberately left it without.
+   *
+   * The reason that has changed is that #646 measured it. The gigabyte is 98%
+   * live rows, not freed pages waiting on a VACUUM — that returns 2.2% — and
+   * 57% of the journal is rows a settled turn has already superseded: the
+   * streaming deltas and the `item.started` whose own `item.completed` carries
+   * everything they said. Reclaim drops those and vacuums.
+   *
+   * SO THE STANDING RULE HOLDS RATHER THAN BENDS. #642's objection was to
+   * inviting somebody to delete history they have just met, and this offers to
+   * delete no history at all: no turn, no item, no answer, nothing a session
+   * can still be read back from. The hint says that in those words, because a
+   * button on this row will be read as "clean up my conversations" unless it
+   * says otherwise.
    */
   journal: {
     label: "Turn journal",
@@ -155,10 +164,32 @@ export function measuredLabel(measuredAt: number, now = Date.now()): string {
     : `as of ${taken.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
 }
 
+/**
+ * WHAT ONE PRESS RETURNED, IN A SENTENCE — issue #646.
+ *
+ * BOTH NUMBERS, ALWAYS, because the case worth designing for is the press that
+ * moves nothing: a person who reclaimed yesterday presses again today and is
+ * owed "already compact", not a silent no-op or a cheerful "freed 0 B". That is
+ * also how they learn the button is not something to keep pressing.
+ *
+ * AND IT NAMES WHAT WENT. "Rows" alone on a row labelled "Turn journal" reads
+ * like conversations being deleted; "superseded" is the word that is both true
+ * and reassuring, and it is true because of the guard in `compactJournal`.
+ */
+export function reclaimLabel(reclaimed: JournalReclaim): string {
+  const rows = reclaimed.deltas + reclaimed.starts;
+  const freed = reclaimed.before - reclaimed.after;
+  if (freed <= 0 && rows === 0) return "Already compact — nothing left to reclaim.";
+  const went = rows > 0 ? `${rows.toLocaleString()} superseded rows, ` : "";
+  return `Freed ${formatBytes(freed)} — ${went}${formatBytes(reclaimed.before)} → ${formatBytes(reclaimed.after)}.`;
+}
+
 export function StorageSection() {
   const [report, setReport] = useState<StorageReport>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | undefined>(undefined);
+  const [reclaiming, setReclaiming] = useState(false);
+  const [reclaimed, setReclaimed] = useState<string | undefined>(undefined);
 
   const load = useCallback(async (refresh: boolean) => {
     setBusy(true);
@@ -204,6 +235,29 @@ export function StorageSection() {
     else void bridge?.reveal(entry.kind === "file" ? entry.path.replace(/\/[^/]+$/, "") : entry.path);
   };
 
+  /**
+   * THE ONE WRITE ON THIS PANE, and it re-measures rather than doing arithmetic
+   * on the figures already on screen: the press changed the file, and a row
+   * that kept showing the old number would say the press did nothing.
+   *
+   * `load(true)` and not `load(false)` — the engine dropped its cached
+   * measurement when it vacuumed, but asking for a fresh one is what makes this
+   * correct regardless of which side remembers.
+   */
+  const reclaim = async () => {
+    setReclaiming(true);
+    setFailure(undefined);
+    setReclaimed(undefined);
+    try {
+      setReclaimed(reclaimLabel((await api.reclaimJournal()).reclaimed));
+      await load(true);
+    } catch {
+      setFailure("Telar could not compact the journal — the engine did not answer.");
+    } finally {
+      setReclaiming(false);
+    }
+  };
+
   const revealControl = (entry: { path: string; kind: "directory" | "file" }) =>
     cannotReveal ? null : (
       <Button size="sm" variant="ghost" onClick={() => reveal(entry)}>
@@ -246,15 +300,28 @@ export function StorageSection() {
       {report
         ? orderEntries(report.entries).map((entry) => {
             const { label, hint, icon } = describe(entry.category);
+            const isJournal = entry.category === "journal";
             return (
               <Row
                 key={entry.category}
                 icon={icon}
                 label={label}
-                hint={hint}
+                hint={
+                  isJournal
+                    ? `${hint} Reclaim drops the streaming rows a finished turn has already superseded and compacts the file — no turn, item or answer is removed.${reclaimed ? ` ${reclaimed}` : ""}`
+                    : hint
+                }
                 control={
                   <span className="flex items-center gap-2">
                     <span className="font-mono text-xs tabular-nums">{formatBytes(entry.bytes)}</span>
+                    {isJournal ? (
+                      // Disabled while the pane is measuring too: the vacuum
+                      // takes an exclusive lock and a walk that started before
+                      // it would report the file from either side of the work.
+                      <Button size="sm" variant="outline" disabled={busy || reclaiming} onClick={() => void reclaim()}>
+                        {reclaiming ? "Reclaiming…" : "Reclaim"}
+                      </Button>
+                    ) : null}
                     {revealControl(entry)}
                   </span>
                 }
