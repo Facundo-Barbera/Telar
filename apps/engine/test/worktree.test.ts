@@ -447,6 +447,38 @@ test("the standing default decides an omitted envMode, and an explicit one still
   expect(asked.envMode).toBe("local");
 });
 
+test("a local session's diff says the checkout is shared, and a worktree session's does not (#690)", async () => {
+  /**
+   * `base…worktree` is "what this session did" only in a checkout nobody else
+   * writes to. A local session shares the project's, so a conversation that
+   * wrote no code was shown ninety-two files as its own work. The flag is what
+   * lets the surface say which question it answered; the figures are the same
+   * either way.
+   */
+  const projectRoot = repo();
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+
+  // Somebody else's uncommitted work, already in the tree before either session.
+  fs.writeFileSync(path.join(projectRoot, "README.md"), "hello\nsomebody else\n");
+
+  store.createSession({ id: "session_local", projectId: "project_one", envMode: "local" });
+  store.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
+  await settled(store, "session_cut");
+
+  const local = store.sessionDiff("session_local");
+  expect(local.shared).toBe(true);
+  // The flag withdraws a CLAIM, not the reading: the row is still there.
+  expect(local.files.map((entry) => entry.path)).toEqual(["README.md"]);
+  expect(store.sessionDiff("session_cut").shared).toBeUndefined();
+
+  // The async reader, which is what every client actually calls, agrees.
+  expect((await store.sessionDiffAsync("session_local")).shared).toBe(true);
+  expect((await store.sessionDiffAsync("session_cut")).shared).toBeUndefined();
+  // And a project diff has no session to misattribute anything to.
+  expect(store.projectDiff("project_one").shared).toBeUndefined();
+});
+
 test("the worktree default yields on an unversioned project, but a stated worktree still throws", () => {
   // `prepareSessionWorktree` refuses a directory that is not a repo — right for
   // a caller who asked for a worktree, and wrong for one who asked for nothing
