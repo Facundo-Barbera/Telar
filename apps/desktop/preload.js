@@ -217,5 +217,11 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // a key equivalent before the page ever sees the keydown, so without this
     // the pane could not record any chord the menu already carries.
     capture: (capturing) => ipcRenderer.invoke("telar:keybindings:capture", capturing),
+    // A surface on screen has claimed these chords (#656) — the menu drops the
+    // accelerators that collide with them, for exactly as long as the claim
+    // lasts. Same reason as `capture` above: macOS matches a key equivalent
+    // before the page sees the keydown, so a palette that numbers its rows ⌘1..⌘9
+    // could not answer any of them while the File menu carried those chords.
+    scope: (chords) => ipcRenderer.invoke("telar:keybindings:scope", chords),
   },
 });

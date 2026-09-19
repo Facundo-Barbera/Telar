@@ -23,7 +23,7 @@ const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, extern
 const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
-const { keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
+const { claimedCommandIds, keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
@@ -972,6 +972,24 @@ function createWindow(url) {
   // remounted Browser surface will publish fresh bounds and make it visible.
   win.webContents.on("did-start-loading", () => {
     manager.hideVisibleScope();
+    /**
+     * THE RENDERER THAT HELD THEM IS GOING AWAY, SO ITS CLAIMS DIE WITH IT
+     * (#656). Both of these are a mirror of renderer state, and a renderer
+     * cannot release what it is no longer running: reload the cockpit while a
+     * palette is up, or while a keybindings row is armed, and without this the
+     * menu keeps its accelerators stripped forever — the rail's ⌘1..⌘9 dead
+     * with no way back but a restart. A suppression that leaks is worse than
+     * the bug it fixed, which is the whole reason this line is here and not a
+     * comment about how it cannot happen.
+     *
+     * SAFE TO DO UNCONDITIONALLY: the reloaded cockpit re-claims on mount for
+     * anything that is still up, and claims nothing when nothing is.
+     */
+    if (chordScope.length > 0 || chordCapture) {
+      chordScope = [];
+      chordCapture = false;
+      buildApplicationMenu();
+    }
   });
   win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
@@ -1145,6 +1163,24 @@ function requireLoginOffer() {
  *  builder below, and `setChordCapture` in apps/web/lib/commands.ts. */
 let chordCapture = false;
 
+/**
+ * THE CHORDS A SURFACE ON SCREEN HAS CLAIMED (#656) — pushed by the cockpit
+ * whenever a palette, modal or picker goes up or comes down, and empty the rest
+ * of the time.
+ *
+ * WHY THE MENU IS WHERE THIS HAS TO BE FIXED. macOS matches a menu's key
+ * equivalent before the keydown reaches the page, so the New Conversation
+ * palette's ⌘1..⌘9 — which it draws on its own rows — were consumed by File →
+ * Jump to and never delivered. The palette's handler was not losing a race; it
+ * was never running. Stripping the accelerator for the interval of the claim is
+ * the only thing that hands the key to the renderer at all.
+ *
+ * NOT `enabled: false`, unlike `chordCapture` above. A modal being up is no
+ * reason the menu should stop being clickable with the mouse — it is the KEY
+ * that is spoken for, not the command. Only the accelerator goes.
+ */
+let chordScope = [];
+
 function sendCommandKey(browserWindow, id) {
   const win = browserWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
   win?.webContents.send("telar:command-keys:invoke", id);
@@ -1166,6 +1202,12 @@ function sendCommandKey(browserWindow, id) {
  * accelerator. Electron rejects `accelerator: ""`, hence the conditional spread.
  */
 function buildApplicationMenu(keymap = readKeymap()) {
+  // Which commands a surface on screen has taken the key for (#656). Computed
+  // from the LIVE keymap by the shared table, so this and the renderer's own
+  // dispatcher stand down for exactly the same set — and so moving the nine
+  // jumps to ⌥1..⌥9 hands ⌘1 back to the palette instead of leaving it
+  // suppressed against a chord nobody uses.
+  const claimed = new Set(claimedCommandIds(keymap, chordScope));
   const toMenuItem = (command) => ({
     label: command.label,
     // STRIPPED WHILE A SETTINGS ROW IS RECORDING. macOS matches a menu's key
@@ -1173,7 +1215,10 @@ function buildApplicationMenu(keymap = readKeymap()) {
     // would open the Diff and never be recorded — which would fail the pane on
     // exactly the chords a person most wants to change. Disabled too, belt and
     // braces; both are put back the moment recording ends.
-    ...(command.accelerator && !chordCapture ? { accelerator: command.accelerator } : {}),
+    //
+    // AND STRIPPED WHILE A SURFACE CLAIMS THE CHORD, for the same mechanical
+    // reason and with the opposite answer about `enabled`: see `chordScope`.
+    ...(command.accelerator && !chordCapture && !claimed.has(command.id) ? { accelerator: command.accelerator } : {}),
     enabled: !chordCapture,
     click: (_menuItem, browserWindow) => sendCommandKey(browserWindow, command.id),
   });
@@ -2541,6 +2586,21 @@ ipcMain.handle("telar:keybindings:capture", (_event, capturing) => {
   chordCapture = Boolean(capturing);
   buildApplicationMenu();
   return chordCapture;
+});
+
+/**
+ * A surface on screen claims these chords (#656) — the menu gives up the
+ * accelerators that collide with them until the claim is released.
+ *
+ * TOTAL ABOUT ITS INPUT on purpose. This is called on every palette open and
+ * close; a malformed payload must cost the claim, never the menu. Anything that
+ * is not an array of strings reads as "nothing is claimed", which is the state
+ * that leaves every accelerator live.
+ */
+ipcMain.handle("telar:keybindings:scope", (_event, chords) => {
+  chordScope = Array.isArray(chords) ? chords.filter((chord) => typeof chord === "string") : [];
+  buildApplicationMenu();
+  return chordScope;
 });
 
 ipcMain.handle("telar:keybindings:set", (_event, overrides) => {
