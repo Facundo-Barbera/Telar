@@ -54,8 +54,22 @@ the test target. The unit suite runs on a connected device —
 xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
   -destination "platform=iOS,id=$TELAR_IPHONE_UDID" \
   -derivedDataPath apps/ios/DerivedData \
-  -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM test
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM \
+  TELAR_APP_BUNDLE_ID=com.telar.mobile.dev test
 ```
+
+**`TELAR_APP_BUNDLE_ID` is not optional here, whatever it looks like.**
+`xcodebuild test` installs its test host on the phone, and the project
+default is `com.telar.mobile` — the TestFlight app's identifier. Without the
+override the run replaces the nightly on the phone with a dev-signed build of
+whatever is checked out. The `.dev` id is the one `phone.sh` uses, which iOS
+treats as an unrelated app, so the TestFlight build is left alone.
+
+Since 2026-09-19 this also runs in CI, nightly rather than per-PR:
+`.github/workflows/nightly-ios-tests.yml` on the Mac mini's runner (#675). It
+refuses to run when the phone is not reachable and refuses to report success
+on a run that executed no tests — a green that means "no device" is the one
+outcome worth engineering against.
 
 If a simulator is ever wanted again, `xcodebuild -downloadPlatform iOS`
 fetches the runtime; delete it with `xcrun simctl runtime delete all`.
@@ -308,8 +322,15 @@ server over the network (the tailnet address, not loopback):
 xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobileUI \
   -destination "platform=iOS,id=$TELAR_IPHONE_UDID" \
   -derivedDataPath /tmp/telar-mobile-tests \
-  -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM test
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM \
+  TELAR_APP_BUNDLE_ID=com.telar.mobile.dev test
 ```
+
+Same reason as the unit suite: this drives the real app on the phone, so
+without the `.dev` override it installs over the TestFlight build. The UI
+scheme is deliberately NOT in the nightly CI job — it needs `preview-server.py`
+running and reachable from the phone, and a CI step that waits on a server
+nobody started is a hang, not a test.
 
 Automatic background starts are verified through host/relay payload tests; a
 signed phone is needed to verify Apple creating and updating the card.
