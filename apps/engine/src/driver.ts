@@ -78,6 +78,7 @@ import type { SteerMailbox, SteerMessage } from "./steering";
 import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notesTools, type NotesCapability } from "./notes-tools/tools";
+import { promptsTools, type PromptsCapability } from "./prompts-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
 import { latexTools } from "./latex/latex-tools";
@@ -270,6 +271,8 @@ type ClaudeTurnBindings = {
   sessions: SessionsCapability | undefined;
   /** The project's notebook, scoped to this turn's project. */
   notes: NotesCapability | undefined;
+  /** The project's prompt shelf, scoped to this turn's project AND session. */
+  prompts: PromptsCapability | undefined;
   ds: DsCapability | undefined;
   display: DisplayCapability | undefined;
   latex: LatexCapability | undefined;
@@ -1340,6 +1343,7 @@ export function createClaudeDriver(
       plugins,
       sessions,
       notes,
+      prompts,
       ds,
       display,
       latex,
@@ -2314,6 +2318,7 @@ export function createClaudeDriver(
         canUseTool,
         sessions,
         notes,
+        prompts,
         ds,
         display,
         latex,
@@ -2385,6 +2390,7 @@ export function createClaudeDriver(
       const telarParts: TelarWallPart[] = [
         { name: "sessions", build: sessionsTools as never, capability: () => telarRef.current?.current.sessions },
         { name: "notes", build: notesTools as never, capability: () => telarRef.current?.current.notes },
+        { name: "prompts", build: promptsTools as never, capability: () => telarRef.current?.current.prompts },
         { name: "ds", build: dsTools as never, capability: () => telarRef.current?.current.ds },
         { name: "notebook", build: notebookTools as never, capability: () => telarRef.current?.current.ds },
         { name: "latex", build: latexTools as never, capability: () => telarRef.current?.current.latex },
@@ -2433,6 +2439,8 @@ export function createClaudeDriver(
         // project-less session gaining a project must cold-start rather than
         // keep advertising a wall it no longer lacks.
         notes: Boolean(notes),
+        // Same rule again: the prompt wall is baked into the query at creation.
+        prompts: Boolean(prompts),
         // Toggling the project's data-science switch must cold-start: the
         // toolkits are baked into the query at creation.
         ds: Boolean(ds),
@@ -2532,6 +2540,21 @@ export function createClaudeDriver(
          * notes an agent wrote, and refuses the user's in a sentence.
          */
         if (notes && sdk.tool) telarTools.push(...notesTools(sdk.tool, delegatingCapability(() => bindings.current.notes)));
+
+        /**
+         * THE PROMPT SHELF, WHEN THE TURN CARRIES A PROJECT — so a turn can end
+         * by drafting the turn that should follow it, and a prompt asked for as
+         * a product lands where it can be sent rather than in a transcript.
+         *
+         * NO APPROVAL GATE, and here the reason is the tool's whole point rather
+         * than a judgement about blast radius: `prompt_draft` LANDS NOTHING BY
+         * CONSTRUCTION. It queues no turn and starts no work — the prompt sits
+         * on the shelf until a person presses it, which is the human decision
+         * the tool exists to preserve. Gating it would ask for consent to ask
+         * for consent. The wall's own fence is the one that matters:
+         * `prompt_drop` removes only what an agent wrote.
+         */
+        if (prompts && sdk.tool) telarTools.push(...promptsTools(sdk.tool, delegatingCapability(() => bindings.current.prompts)));
 
         /**
          * THE DATA-SCIENCE TOOLKITS, WHEN THE PROJECT OPTED IN. No approval

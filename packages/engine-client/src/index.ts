@@ -47,6 +47,8 @@ import {
   type ProjectNote,
   type ProjectNoteAuthor,
   type NotesMcpInfo,
+  type PreparedPrompt,
+  type PreparedPromptAuthor,
   type AgentModelCatalogue,
   type ModelCatalogue,
   type ModelOverlay,
@@ -1697,6 +1699,56 @@ export class EngineClient {
    *  configured with. Its own secret, not the engine token. */
   notesMcpInfo(): Promise<{ mcp: NotesMcpInfo }> {
     return this.request("GET", "/v2/notes/mcp-info");
+  }
+
+  /**
+   * THE PROMPT SHELF — unsent messages kept by name, either hand's.
+   *
+   * Hangs off the PROJECT for the notebook's reason, with one addition: a
+   * prompt may also name the SESSION it was prepared for, and a composer offers
+   * the project's own plus its own session's. `promptsForComposer` in the
+   * engine is the filter; this route answers the whole shelf and the caller
+   * narrows, because the rail wants the count either way.
+   *
+   * Already ordered newest-first, so no caller re-sorts.
+   */
+  projectPrompts(projectId: string): Promise<{ prompts: PreparedPrompt[] }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/prompts`);
+  }
+
+  /** `text` is required and may not be blank: a prepared prompt with no message
+   *  is a row that does nothing when you press it. */
+  createProjectPrompt(
+    projectId: string,
+    input: {
+      title: string;
+      text: string;
+      reason?: string;
+      /** The session it is FOR. Absent puts it on every composer in the
+       *  project — the generation case. */
+      sessionId?: string;
+      /** Whose hand. ABSENT MEANS THE HUMAN'S ("you") — only the engine's own
+       *  tool wall declares "session". */
+      author?: PreparedPromptAuthor;
+    },
+  ): Promise<{ prompt: PreparedPrompt }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/prompts`, input);
+  }
+
+  /** The author NEVER changes — the engine refuses a patch that names it, so a
+   *  draft an agent wrote stays marked as one however far you edit it. */
+  updateProjectPrompt(
+    projectId: string,
+    promptId: string,
+    patch: { title?: string; text?: string; reason?: string },
+  ): Promise<{ prompt: PreparedPrompt }> {
+    return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`, patch);
+  }
+
+  /** `deleted: false` means it was already gone — never an error, because the
+   *  ordinary way a prompt leaves the shelf is being sent from two windows. */
+  deleteProjectPrompt(projectId: string, promptId: string): Promise<{ deleted: boolean }> {
+    return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`);
   }
 
   /**

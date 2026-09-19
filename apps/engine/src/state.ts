@@ -12940,6 +12940,24 @@ export class EngineStore {
       );
       return;
     }
+    if (observation.kind === "prompt.drafted") {
+      // A gesture, not state — the same judgement `display.opened` gets. The
+      // prompt itself is already on the shelf, written through the engine's own
+      // routes; this is the nudge that tells a composer to re-read it, and a
+      // client replaying last week's journal must not be told to go looking for
+      // a prompt that was sent six days ago.
+      this.appendEvent(
+        sessionId,
+        {
+          type: "prompt.drafted",
+          promptId: observation.promptId,
+          title: observation.title,
+          ...(observation.forSessionId ? { forSessionId: observation.forSessionId } : {}),
+        },
+        turn.runId,
+      );
+      return;
+    }
     if (observation.kind === "task.started" || observation.kind === "task.progress" || observation.kind === "task.completed") {
       const seed = observation.task;
       /**

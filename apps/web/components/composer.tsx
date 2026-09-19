@@ -85,9 +85,10 @@ import {
 import { rankNotes, useProjectNotes } from "@/lib/project-notes";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
 import { useComposerDictation } from "@/lib/dictation/use-composer-dictation";
-import { appendPrompt, mergeAttachments, splitImages, type StashEntry, type StashedImage } from "@/lib/prompt-stash";
+import { appendPrompt, mergeAttachments, splitImages, type StashedImage } from "@/lib/prompt-stash";
+import type { ShelfRow } from "@/lib/prompt-shelf";
 import { encodeImagesForStash, filesFromStash } from "@/lib/stash-images";
-import { usePromptStash } from "@/lib/use-prompt-stash";
+import { usePromptShelf } from "@/lib/use-prompt-shelf";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { fmtTokens } from "@/lib/format";
@@ -798,7 +799,13 @@ export function Composer({
    * THE STASH — ⌘S sets this box aside; any composer can pull it back.
    * ---------------------------------------------------------------- */
 
-  const stash = usePromptStash();
+  /**
+   * TWO STORES, ONE HANDLE. The ⌘S queue lives in `localStorage` because it
+   * carries images; an agent's drafts live in the engine because a worker wrote
+   * them. `use-prompt-shelf.ts` is the only place that knows there are two —
+   * everything below this line sees one list of rows.
+   */
+  const shelf = usePromptShelf(projectId, session?.id);
   const [stashOpen, setStashOpen] = useState(false);
   const [stashActive, setStashActive] = useState(0);
   const [stashing, setStashing] = useState(false);
@@ -856,7 +863,7 @@ export function Composer({
       }
     }
 
-    const ok = stash.stash({ id: crypto.randomUUID(), at: Date.now(), prompt: text, images: encoded.images });
+    const ok = shelf.stash({ id: crypto.randomUUID(), at: Date.now(), prompt: text, images: encoded.images });
     if (!ok) {
       setNote("There was no room to stash this. Nothing was taken from the box.");
       return;
@@ -869,12 +876,12 @@ export function Composer({
     // its own explanation, which is why there is no message for it.
     onAttach([...rest, ...encoded.kept]);
     setStashOpen(false);
-  }, [draft, attachments, stash, onDraftChange, onAttach]);
+  }, [draft, attachments, shelf, onDraftChange, onAttach]);
 
   const doRestore = useCallback(
-    (entry: StashEntry) => {
+    (row: ShelfRow) => {
       const room = Math.max(0, MAX_ATTACHMENTS - attachments.length);
-      const taken = stash.take(entry.id, room);
+      const taken = shelf.take(row, room);
       // Gone — the other window took it between the paint and the click. Also
       // the guard that stops a click and an Enter landing on the same row.
       if (!taken) return;
@@ -902,7 +909,7 @@ export function Composer({
         const images = taken.images;
         window.setTimeout(() => {
           if (held.current.length > before) return;
-          stash.put(images, crypto.randomUUID(), Date.now());
+          shelf.put(images, crypto.randomUUID(), Date.now());
           setNote("This chat cannot hold images — they are back in the stash.");
         }, 0);
       }
@@ -915,7 +922,7 @@ export function Composer({
       // repaint (which is what usually restores the caret) never runs.
       editor.current?.focus();
     },
-    [attachments, stash, draft, onDraftChange, onAttach],
+    [attachments, shelf, draft, onDraftChange, onAttach],
   );
 
   const sessionId = session?.id;
@@ -1162,20 +1169,20 @@ export function Composer({
           // Returned so Escape never also abandons a recall or arms the stop.
           return;
         }
-        if (stash.entries.length > 0) {
+        if (shelf.rows.length > 0) {
           if (event.key === "ArrowDown") {
             event.preventDefault();
-            setStashActive((index) => (index + 1) % stash.entries.length);
+            setStashActive((index) => (index + 1) % shelf.rows.length);
             return;
           }
           if (event.key === "ArrowUp") {
             event.preventDefault();
-            setStashActive((index) => (index - 1 + stash.entries.length) % stash.entries.length);
+            setStashActive((index) => (index - 1 + shelf.rows.length) % shelf.rows.length);
             return;
           }
           if (event.key === "Enter") {
             event.preventDefault();
-            const picked = stash.entries[Math.min(stashActive, stash.entries.length - 1)];
+            const picked = shelf.rows[Math.min(stashActive, shelf.rows.length - 1)];
             if (picked) doRestore(picked);
             return;
           }
@@ -1184,9 +1191,9 @@ export function Composer({
           // deliberately saved, that is one twitch away from unrecoverable.
           if (event.key === "Backspace" && (event.metaKey || event.ctrlKey)) {
             event.preventDefault();
-            const picked = stash.entries[Math.min(stashActive, stash.entries.length - 1)];
-            if (picked) stash.drop(picked.id);
-            setStashActive((index) => Math.max(0, Math.min(index, stash.entries.length - 2)));
+            const picked = shelf.rows[Math.min(stashActive, shelf.rows.length - 1)];
+            if (picked) shelf.drop(picked);
+            setStashActive((index) => Math.max(0, Math.min(index, shelf.rows.length - 2)));
             return;
           }
         }
@@ -1265,7 +1272,7 @@ export function Composer({
       apply,
       questionActive,
       attachments,
-      stash,
+      shelf,
       stashOpen,
       stashActive,
       stashing,
@@ -1507,11 +1514,12 @@ export function Composer({
             would stack them the day the invariant above ever slipped. */}
         {stashOpen ? (
           <ComposerStashMenu
-            entries={stash.entries}
-            active={Math.min(stashActive, Math.max(0, stash.entries.length - 1))}
+            agents={shelf.agents}
+            yours={shelf.yours}
+            active={Math.min(stashActive, Math.max(0, shelf.rows.length - 1))}
             onActive={setStashActive}
             onPick={doRestore}
-            onDrop={(entry) => stash.drop(entry.id)}
+            onDrop={(row) => shelf.drop(row)}
           />
         ) : menuOpen && trigger ? (
           <ComposerMenu
@@ -1720,13 +1728,16 @@ export function Composer({
                * "things that go into this message"; the right one is send and
                * turn status, where a count competes with the send affordance.
                */}
-              {(stash.entries.length > 0 || stashing) && (
+              {(shelf.rows.length > 0 || stashing) && (
                 <button
                   type="button"
-                  aria-label="Stashed prompts"
+                  // NAMED BY WHAT IS IN IT. A drafted follow-up you never
+                  // stashed sitting under a control labelled "Stashed prompts"
+                  // is the badge telling you it is yours before you open it.
+                  aria-label={shelf.agents.length > 0 ? "Prompts waiting to be sent, including drafts an agent wrote" : "Stashed prompts"}
                   aria-haspopup="listbox"
                   aria-expanded={stashOpen}
-                  title="Stashed prompts (⌘S)"
+                  title={shelf.agents.length > 0 ? "Prompts waiting — an agent drafted one (⌘S)" : "Stashed prompts (⌘S)"}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => {
                     setStashOpen((open) => !open);
@@ -1735,10 +1746,15 @@ export function Composer({
                   className={cn(
                     "flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
                     stashOpen && "bg-accent text-foreground",
+                    // AN UNREAD DRAFT MARKS THE BADGE. The menu is closed when
+                    // an agent writes one, so without this the only thing that
+                    // changed is a number — and a follow-up nobody notices is
+                    // the tool having done nothing at all.
+                    !stashOpen && shelf.agents.length > 0 && "text-primary",
                   )}
                 >
                   <LayersIcon className="size-4" />
-                  {stashing ? <Spinner /> : <span className="text-xs tabular-nums">{stash.entries.length}</span>}
+                  {stashing ? <Spinner /> : <span className="text-xs tabular-nums">{shelf.rows.length}</span>}
                 </button>
               )}
               {/**

@@ -14,6 +14,7 @@
  *   tasks     sub-agents, background work, Warp linkage
  *   tools     Telar's own MCP namespace: one server, capability-prefixed names
  *   notes     the project notebook — quick notes per project, and its socket
+ *   prompts   prepared prompts: unsent messages kept by name, either hand's
  *   github    issues and pull requests, as the `gh` CLI reports them
  *   events    the journal: one discriminated union, plus transport shapes
  */
@@ -28,6 +29,7 @@ export * from "./assignments";
 export * from "./plugins";
 export * from "./run";
 export * from "./notes";
+export * from "./prompts";
 export * from "./github";
 export * from "./events";
 export * from "./observations";

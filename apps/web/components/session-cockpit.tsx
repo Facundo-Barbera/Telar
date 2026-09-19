@@ -46,6 +46,7 @@ import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { isCompactDraft } from "@/lib/composer-completions";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
+import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
 import { insertReference } from "@/lib/drag-reference";
 import { sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/lib/engine/session-connection";
@@ -2392,6 +2393,31 @@ export function SessionCockpit({
     if (last.type !== "display.opened") return;
     showPanelTab(panelTabForPath(last.path, dataScience));
   }, [events, dataScience, showPanelTab]);
+
+  /**
+   * A PROMPT THE AGENT DRAFTED MARKS THE STASH — and deliberately does not open
+   * it.
+   *
+   * The opposite end of the same judgement as the block above. `display_open`
+   * exists to put something in front of you, so it takes the panel; a drafted
+   * follow-up is an OFFER, and a menu that opened itself over the conversation
+   * would be the agent deciding what you look at next — the exact authority
+   * `prompt_draft` is built to leave with you. So this only says "go and re-read
+   * the shelf", and the badge's own tint is what tells you something is there.
+   *
+   * SAME TWO GUARDS as the displays above, for the same reasons: the journal
+   * replays from zero on every load, and an event must not act twice.
+   */
+  const seenDrafts = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (mountedAt.current === 0) mountedAt.current = Date.now();
+    const fresh = events.filter(
+      (event) => event.type === "prompt.drafted" && event.at >= mountedAt.current && !seenDrafts.current.has(event.id),
+    );
+    if (fresh.length === 0) return;
+    for (const event of fresh) seenDrafts.current.add(event.id);
+    announcePromptShelfChanged();
+  }, [events]);
 
   /**
    * Restore an unsent draft, and keep it saved as it is typed.
