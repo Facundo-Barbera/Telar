@@ -207,38 +207,64 @@ children spawn — the shell is what outlives the engine and can show progress.
    writing and re-reading a probe file rather than by a permission bit; free
    space at the target at least the source's size plus a margin. Read the
    source's stamp. Record the target volume's uuid and label if it has them.
-2. **Copy to `<target>/<name>.incoming-<timestamp>`** — never onto the final
-   name, so an interrupted copy is inert to the next launch instead of being
-   mistaken for a store. Preserve modes and mtimes. Progress reported by bytes.
-3. **Hash while copying, not afterwards.** Each file's digest is computed from
-   the bytes read and from the bytes written, in the same pass, and compared.
-   Content verification for the cost of the copy that was happening anyway —
-   and strictly stronger than comparing lengths, which is what a cheaper check
-   would have settled for.
+2. **Copy into `<target>/.telar-incoming-<timestamp>/`** — never onto a name the
+   next launch would read, so an interrupted copy is inert rather than mistaken
+   for a store. Staging goes *inside* the target and not beside it: the final
+   step is a rename, a rename is atomic only within a filesystem, and a sibling
+   of a target at a volume root would land on `/Volumes` — a different
+   filesystem, an unwritable one, and a cross-device rename that fails at the
+   very end after the whole copy has been paid for. Modes are preserved, so a
+   moved store does not arrive world-readable. Progress reported by bytes.
+
+   What is copied is the subtrees the store owns — `engine/` and `remote/` — not
+   the directory. At the default location the store root *is* Electron's
+   userData, shared with `Cache/`, `Local Storage/` and this install's
+   preferences, so "move the store" can never mean "move the directory". It is
+   also why a migration onto a drive does not drag a Chromium cache with it.
+3. **Hash the copy by reading it back**, not by digesting the bytes on their way
+   out. Hashing what the writer held proves the writer held it and says nothing
+   about what reached the disk, so each file is re-read from the target and
+   compared against a digest taken from the source. That is two reads and a
+   write rather than one read and a write — the price of the check actually
+   being a check, paid once.
 4. **Verify before switching anything.** Relative-path manifest identical in
-   both directions — nothing missing, nothing extra; every per-file digest
-   matched; every `*.sqlite` opens read-only and returns `ok` from
-   `PRAGMA integrity_check`; every document the engine reads at boot parses. Any
-   failure leaves `.incoming-*` in place for inspection, changes no marker, and
-   names the file and the reason.
+   both directions — nothing missing, nothing extra — and every per-file digest
+   matched. Any failure leaves the staging directory in place for inspection,
+   changes no marker, and names the file and the reason.
+
+   `PRAGMA integrity_check` runs too, and it is worth being exact about what it
+   establishes: once the copy is byte-identical to the source, a check on the
+   copy is a check on the **source**. It is kept because learning that the store
+   was already damaged is worth having *before* the original is retired — but
+   it is not what verifies the copy. The hashes are.
 5. **Fsync the copied tree, directories included.** Without it, "verified" means
    "verified in page cache" — and this is the one moment the whole store's
    durability is worth paying for explicitly, whatever the engine does at
    steady state.
-6. **Rename** `.incoming-<timestamp>` to the final name. Same filesystem, atomic.
+6. **Rename each subtree out of staging into place**, then write the stamp. Each
+   rename is atomic within the filesystem. The stamp goes last on purpose: until
+   it exists the target is not a store, so a crash between the renames leaves
+   something that nothing will open, with the marker still naming the source.
 7. **Write the marker.** `active` updated, `pending` cleared. This single write
    *is* the switch: before it Telar opens the old store, after it the new one,
    and there is no state in between.
-8. **Rename the source aside** to `<name>.migrated-<timestamp>`. Do not delete.
+8. **Rename the source's subtrees aside** to `engine.migrated-<timestamp>` and
+   `remote.migrated-<timestamp>`. Subtree-wise for the same reason the copy was:
+   renaming userData itself would take the whole app with it. Do not delete.
 9. **Deleting the source is a separate, later action**, with its size shown, and
    **gated on `active.lastOpenedAt` post-dating the migration** — the old store
    cannot be removed until Telar has actually opened the new one and run from
    it. "Verified copy" is thereby made to mean "a store that has been opened",
    not "bytes that matched".
 
-Rollback at every point: before step 7, abandoning costs only the `.incoming-*`
+Rollback at every point: before step 7, abandoning costs only the staging
 directory. Between 7 and 8, the source is untouched at its original path and
 recovery is rewriting the marker. After 8, recovery is renaming it back.
+
+**An interrupted move refuses to resume.** A target that already holds a store,
+or the leftovers of a previous attempt, is a refusal with a sentence — not a
+resume. Nothing has been lost at that point, which means a resume that guessed
+wrong would be the only remaining way to lose something.
 
 ## 5. Registering a project from a volume — already unblocked
 
