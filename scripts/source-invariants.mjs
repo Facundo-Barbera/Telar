@@ -103,6 +103,93 @@ const CHECKS = [
       return failures;
     },
   },
+  /**
+   * A BOUNDARY INTRODUCES THE WORK UNDER IT — the transcript's render order
+   * (#675).
+   *
+   * `turnRenderOrder` describes the sequence; this pins that the VIEW follows
+   * it. The two can drift — the helper goes on describing an order the view
+   * has stopped emitting — and that drift is the exact failure the web's own
+   * review caught once already. Nothing here needs the app process: it is a
+   * statement about the order of a few anchors in one file.
+   *
+   * It was a Swift test until #675, and it read the view's source through
+   * `#filePath`. That is the compiling machine's path, so it passed on a
+   * simulator and threw on a device — and since the nightly device job landed,
+   * the device is where this repo's iOS suite actually runs. It was failing
+   * every run while asserting nothing.
+   */
+  {
+    name: "ios-transcript-order",
+    protects:
+      "the transcript's render order (#675): TranscriptViews draws a boundary before the work under it",
+    async run() {
+      const path = "apps/ios/TelarMobile/Views/TranscriptViews.swift";
+      let source;
+      try {
+        source = await read(path);
+      } catch {
+        return [`${path} is missing — if the view moved, point this check at its new path.`];
+      }
+
+      // Every anchor is load-bearing. A check cannot conclude anything about
+      // an order it could not locate, so a vanished anchor is a failure and
+      // never a silent pass — what the `#require`s did in the Swift original.
+      const find = (needle, haystack) => {
+        const at = haystack.indexOf(needle);
+        return at === -1 ? null : at;
+      };
+
+      const loop = find("ForEach(Array(earlier.enumerated())", source);
+      const answering = find("if let boundary = answering.boundary", source);
+      const absent = [];
+      if (loop === null) absent.push("the ForEach over `earlier`");
+      if (answering === null) absent.push("the answering response's `if let boundary`");
+      if (absent.length > 0) {
+        return [
+          `${path}: cannot find ${absent.join(" or ")}, so the render order cannot be checked at all. If the view was restructured, re-anchor this check in scripts/source-invariants.mjs rather than dropping it — it is the only thing pinning the view to turnRenderOrder.`,
+        ];
+      }
+      if (answering < loop) {
+        return [
+          `${path}: the answering response's boundary is drawn before the loop over earlier responses. Finished work comes first, then the response being answered — see turnRenderOrder.`,
+        ];
+      }
+
+      const failures = [];
+
+      // Scoped to the loop body, so the `response.boundary` further down the
+      // file — a different scope, in turnRenderOrder itself — cannot stand in
+      // for the one that is supposed to be inside it.
+      const body = source.slice(loop, answering);
+      const eachBoundary = find("if let boundary = response.boundary", body);
+      const eachWork = find("LiveActivityView(items: response.items", body);
+      if (eachBoundary === null || eachWork === null) {
+        failures.push(
+          `${path}: the loop over earlier responses no longer draws ${
+            eachBoundary === null ? "its boundary" : "its work"
+          }. Each finished response is a boundary followed by the work under it; if that changed, re-anchor this check.`,
+        );
+      } else if (eachBoundary > eachWork) {
+        failures.push(
+          `${path}: inside the loop over earlier responses, LiveActivityView is drawn before the boundary it belongs to. A boundary introduces the work under it — move ItemRowView(item: boundary) above LiveActivityView.`,
+        );
+      }
+
+      const live = find("LiveActivityView(items: answering.items", source);
+      if (live === null) {
+        failures.push(
+          `${path}: the answering response's LiveActivityView is gone, so nothing pins that its boundary is drawn before the work answering it. Re-anchor this check if the live tail was restructured.`,
+        );
+      } else if (answering > live) {
+        failures.push(
+          `${path}: the answering response's work is drawn before its own boundary. The message that opened the response comes first — move the \`if let boundary = answering.boundary\` block above LiveActivityView(items: answering.items.`,
+        );
+      }
+
+      return failures;
+    },
+  },
 ];
 
 let failed = 0;

@@ -152,22 +152,13 @@ import Testing
         #expect((asBoundaries + asItems).sorted() == ["m1", "m2", "w1"])
     }
 
-    /// `turnRenderOrder` describes the sequence; this pins that the VIEW
-    /// follows it. Without it the helper and the view could drift, which is
-    /// the exact failure the web's own review caught.
-    @Test func theViewEmitsTheBoundaryBeforeItsWork() throws {
-        let source = try String(contentsOf: transcriptViewsSource, encoding: .utf8)
-        let map = try #require(source.range(of: "ForEach(Array(earlier.enumerated())"))
-        let answering = try #require(source.range(of: "if let boundary = answering.boundary"))
-        let tail = String(source[map.lowerBound..<answering.lowerBound])
-        let boundary = try #require(tail.range(of: "if let boundary = response.boundary"))
-        let work = try #require(tail.range(of: "LiveActivityView(items: response.items"))
-        #expect(boundary.lowerBound < work.lowerBound)
-        // And the answering response's own boundary is drawn before the work
-        // that answers it.
-        let live = try #require(source.range(of: "LiveActivityView(items: answering.items"))
-        #expect(answering.lowerBound < live.lowerBound)
-    }
+    // `turnRenderOrder` describes the sequence, and that the VIEW follows it
+    // is still pinned — by `ios-transcript-order` in
+    // scripts/source-invariants.mjs (#675). It was a test here, reading this
+    // view's source through `#filePath`: the COMPILING machine's path, so it
+    // passed on a simulator and threw on a device, and the device is where
+    // the nightly job runs this suite. A claim about source text needs no app
+    // process, and in verify.yml it now gates every pull request instead.
 }
 
 /// A SPAWN IS A ROW WHERE IT HAPPENED — the web's `renderable` and
@@ -252,10 +243,3 @@ import Testing
         #expect(kept.map(\.id) == ["a", "c"])
     }
 }
-
-/// The view's own source, found from this file rather than the test bundle:
-/// a unit test bundle carries no sources.
-private let transcriptViewsSource = URL(filePath: #filePath)
-    .deletingLastPathComponent()
-    .deletingLastPathComponent()
-    .appending(path: "TelarMobile/Views/TranscriptViews.swift")
