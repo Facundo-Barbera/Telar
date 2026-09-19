@@ -116,3 +116,10 @@ worth more for a signed public release than for a nightly.
 - **iOS unit tests in CI.** Without a simulator they need a phone on USB.
   The nightly does not run them; Verify never did. They are a local matter,
   run against the connected phone, by decision.
+
+  **Reversed 2026-09-19** (#675). `.github/workflows/nightly-ios-tests.yml`
+  runs `TelarMobileTests` on that phone, on a daily schedule rather than as a
+  PR gate — a required check cannot depend on a cable. The phone-on-USB
+  premise is unchanged and so is the no-simulator decision; what changed is
+  that "a local matter" meant the suite was verified only as often as someone
+  remembered, which is not a property a test suite can be said to have.
