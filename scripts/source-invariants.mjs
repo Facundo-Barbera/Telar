@@ -62,6 +62,12 @@ const SWEPT_FILES = [
     3,
     "DataframeGrid's 96×30 header and 96×22 cells",
   ],
+  ["apps/ios/TelarMobile/Views/DiffView.swift", 0, ""],
+  [
+    "apps/ios/TelarMobile/Views/Panel/FilesSurface.swift",
+    1,
+    "the file strip's 28×28 tree toggle",
+  ],
 ];
 
 const LITERAL = ".system(size:";
