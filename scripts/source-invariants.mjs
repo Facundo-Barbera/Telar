@@ -82,6 +82,13 @@ const SWEPT_FILES = [
   ],
   ["apps/ios/TelarMobile/Views/Panel/LatexSurface.swift", 0, ""],
   ["apps/ios/TelarMobile/Views/Panel/DataSurface.swift", 0, ""],
+  [
+    "apps/ios/TelarMobile/Views/NewSessionView.swift",
+    3,
+    "the add-project glyph's 27pt square and the composer's two 44pt circles",
+  ],
+  ["apps/ios/TelarMobile/Views/AddProjectView.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/BranchPickerSheet.swift", 0, ""],
 ];
 
 const LITERAL = ".system(size:";

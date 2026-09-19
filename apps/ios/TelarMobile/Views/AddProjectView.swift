@@ -37,16 +37,16 @@ struct DirectoryBrowserView: View {
                                     NavigationLink(value: dir) {
                                         HStack(spacing: 12) {
                                             Image(systemName: dir.git ? "arrow.triangle.branch" : "folder")
-                                                .font(.system(size: 15))
+                                                .font(.system(Theme.subhead))
                                                 .foregroundStyle(dir.git ? Theme.accent : Theme.textMuted)
                                                 .frame(width: 27)
                                             Text(dir.name)
-                                                .font(.system(size: 16, weight: dir.git ? .bold : .regular))
+                                                .font(.system(.callout, weight: dir.git ? .bold : .regular))
                                                 .foregroundStyle(Theme.text)
                                                 .lineLimit(1)
                                             Spacer(minLength: 8)
                                             Image(systemName: "chevron.right")
-                                                .font(.system(size: 13, weight: .medium))
+                                                .font(.system(Theme.footnote, weight: .medium))
                                                 .foregroundStyle(Theme.chevron)
                                         }
                                         .padding(.horizontal, 16)
@@ -103,13 +103,13 @@ struct DirectoryBrowserView: View {
                 if registering {
                     ProgressView()
                 } else {
-                    Image(systemName: "plus.circle.fill").font(.system(size: 17))
+                    Image(systemName: "plus.circle.fill").font(.system(.body))
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Use this folder")
-                        .font(.system(size: 15, weight: .bold))
+                        .font(.system(Theme.subhead, weight: .bold))
                     Text(listing.path)
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.system(Theme.footnote, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.head)
                         .opacity(0.7)
