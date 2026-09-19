@@ -58,7 +58,7 @@
  * disk, project possibly on a drive. The store may now itself live on a volume,
  * which makes "the project is readable" and "the worktree is readable" two
  * different questions — and the guard above only asks the first. See the block
- * above `lockWorktreeIfRemovable` for the case that opens up, why `git worktree
+ * above `lockSessionWorktree` for the case that opens up, why `git worktree
  * lock` is the answer git already provides, and why locking without an unlock
  * path would trade a data-loss bug for a leak-forever one.
  */
@@ -363,6 +363,51 @@ export { defaultWorktreesRoot } from "./worktrees-location";
  * unlocks first, unconditionally and best-effort.
  */
 
+/**
+ * ══ AND THE LOCK IS NOT ABOUT DRIVES AT ALL — issue #641 ══
+ *
+ * #630 locked worktrees on removable volumes and left the internal disk
+ * unlocked, on the reasoning that a lock with no reason is the kind that
+ * outlives its purpose. That reasoning was right about the risk and wrong about
+ * the reason, because it only counted the risks that come from THIS engine.
+ *
+ * WHAT ACTUALLY DESTROYS THEM IS `gh`. Measured against gh 2.100.0's
+ * `deleteLocalBranch` (`pkg/cmd/pr/merge/merge.go`): with `--delete-branch`, gh
+ * reads `git worktree list --porcelain`, finds the worktree holding the PR's
+ * head branch, and — when that worktree is a linked one other than the current
+ * directory — runs `git worktree remove -- <path>` on it, then `git branch -D`.
+ * The directory, the local branch and the registration all go in one command
+ * nobody aimed at them.
+ *
+ * THAT IS NOT AN EDGE CASE HERE, IT IS THE HOUSE STYLE. A session is assigned a
+ * feature, opens a PR for the first part, and the orchestrator merges it as soon
+ * as CI passes — from somewhere else, which is precisely gh's "another linked
+ * worktree" arm. The more promptly the PR is merged, the more reliably the
+ * session's checkout is deleted out from under it.
+ *
+ * SO THE POLICY IS ABOUT THE SESSION, NOT THE DISK: a worktree belonging to a
+ * session that is still live must not be removed, whatever happened to its
+ * branch. A merged PR is not evidence the work is finished — only the person or
+ * the session saying so is, and they say it by archiving or deleting the
+ * session, which is the one path that unlocks.
+ *
+ * `git worktree lock` ENFORCES EXACTLY THAT, and it is the right instrument
+ * rather than a convenient one: `worktree remove` refuses on a locked tree and
+ * `--force` ONCE is not enough (git demands `-f -f`), which gh never passes;
+ * `prune` ignores a locked tree however long its directory has been missing.
+ * gh degrades to a warning and skips its local cleanup — the merge itself still
+ * succeeds. Nothing a session does inside the tree is affected: commit, status,
+ * push, fetch and `worktree repair` all behave identically under a lock.
+ *
+ * THE ONE THING A LOCK DOES BLOCK is `git worktree move`, which needs an unlock
+ * first (or `-f -f`). Nothing in Telar moves a worktree that way today — the
+ * store migration copies and then repairs, which is lock-transparent — but a
+ * future relocate UI has to unlock, move and re-lock rather than discover this.
+ *
+ * The unlock in `removeSessionWorktreeAsync` was already unconditional, which is
+ * what makes broadening the lock safe rather than a leak: see it below.
+ */
+
 /** Mount roots — where a removable volume appears. The fourth copy of this
  *  list, for the reason `volumes.ts`'s header gives: no app here imports
  *  another, and each says so. */
@@ -387,30 +432,43 @@ function isOnRemovableVolume(target: string, platform: NodeJS.Platform = process
 }
 
 /**
- * Lock a worktree that lives on a removable volume, so an unmount can never
- * read as a deletion. A no-op anywhere else: a lock on the internal disk would
- * be a lock with no reason, and those are the ones that outlive their purpose.
+ * WHAT A HUMAN READS IN `git worktree list` AND IN GH'S REFUSAL, so the lock
+ * explains itself at the moment it gets in somebody's way.
+ *
+ * TWO SENTENCES BECAUSE THERE ARE TWO REASONS and a worktree can have both. The
+ * session sentence is the one that always applies; the volume sentence is
+ * #630's and is added only where it is true, rather than folded into a single
+ * vague reason that is half wrong in either case.
+ */
+export function worktreeLockReason(worktreePath: string, platform: NodeJS.Platform = process.platform): string {
+  const session =
+    "A Telar session is working in this worktree. Telar removes it when that session is archived or deleted — until then, removing it destroys work that is not finished.";
+  return isOnRemovableVolume(worktreePath, platform)
+    ? `${session} It also sits on a removable volume; unmounting that is not a deletion.`
+    : session;
+}
+
+/**
+ * Lock a session's worktree, so nothing outside Telar can decide it is finished.
+ *
+ * ALWAYS, NOT ONLY ON A REMOVABLE VOLUME — issue #641, and see this module's
+ * header for what changed the reasoning. The short version: the thing that
+ * actually deletes these is `gh pr merge --delete-branch`, which runs
+ * `git worktree remove` on whichever linked worktree holds the merged branch,
+ * and that has nothing to do with which disk it is on.
  *
  * BEST-EFFORT AND NEVER FATAL. A cut that succeeded must not be failed because
- * the lock did not take; what the lock protects against is a later `prune`, and
- * `removeSessionWorktreeAsync`'s own guard covers the same ground from the
- * other side.
+ * the lock did not take; the lock is a guard against a later removal, not a
+ * precondition for the checkout being usable.
  */
-export async function lockWorktreeIfRemovable(
+export async function lockSessionWorktree(
   git: AsyncGitRunner,
   projectRoot: string,
   worktreePath: string,
   platform: NodeJS.Platform = process.platform,
 ): Promise<boolean> {
-  if (!isOnRemovableVolume(worktreePath, platform)) return false;
   try {
-    const locked = await git(projectRoot, [
-      "worktree",
-      "lock",
-      "--reason",
-      "Telar keeps this worktree on a removable volume; unmounting it is not a deletion.",
-      worktreePath,
-    ]);
+    const locked = await git(projectRoot, ["worktree", "lock", "--reason", worktreeLockReason(worktreePath, platform), worktreePath]);
     return locked.status === 0;
   } catch {
     return false;
@@ -656,9 +714,10 @@ export async function createSessionWorktreeAsync(
   if (added.status !== 0) {
     throw new WorktreeError(`git worktree add failed: ${added.stderr.trim() || added.stdout.trim()}`);
   }
-  // #630: a worktree on a removable volume is locked the moment it exists, so
-  // there is no window in which an unmount could read as a deletion.
-  await lockWorktreeIfRemovable(git, input.projectRoot, plan.path);
+  // LOCKED THE MOMENT IT EXISTS — #630 for the unmount, #641 for `gh pr merge
+  // --delete-branch`. Before the cut returns, so there is no window in which
+  // either could read as permission to delete it.
+  await lockSessionWorktree(git, input.projectRoot, plan.path);
   return { path: plan.path, branch: plan.branch, baseRef: baseSha };
 }
 
@@ -706,14 +765,17 @@ export async function removeSessionWorktreeAsync(
    * the absent drive — not merely the one being removed.
    *
    * So the worktree's own root has to be there before anything prunes. The
-   * lock (`lockWorktreeIfRemovable`) is what protects worktrees that already
+   * lock (`lockSessionWorktree`) is what protects worktrees that already
    * exist; this is what stops us asking git the question at all.
    */
   const root = path.dirname(worktreePath);
   if (!fs.existsSync(root)) return false;
-  // Locked worktrees refuse to be removed, and a worktree on a removable volume
-  // is deliberately locked. Unlock first, always: a lock that outlives its
-  // reason is how "never lose one" becomes "never remove one".
+  // THIS UNLOCK IS THE WHOLE TEARDOWN PATH NOW — #641. Every session worktree is
+  // locked at the cut, not just the ones on a drive, so this is the only door
+  // out and it has to stay unconditional. Reaching here means a person or the
+  // session asked for the session to go, which is the one authority the lock
+  // defers to; a lock that outlives its reason is how "never lose one" becomes
+  // "never remove one".
   await unlockWorktree(git, projectRoot, worktreePath);
   try {
     await git(projectRoot, ["worktree", "remove", "--force", worktreePath]);
