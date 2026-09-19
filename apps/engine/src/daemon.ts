@@ -33,6 +33,7 @@ import {
   type McpServer,
   type ModelSelection,
   type RuntimeMode,
+  type StorageReport,
   type TurnSubmissionResult,
   type UsageLimits,
   type WorkerClaim,
@@ -105,7 +106,8 @@ import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
 import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
-import type { AsyncGitRunner, GitRunner } from "./worktree";
+import { worktreesRoot, type AsyncGitRunner, type GitRunner } from "./worktree";
+import { measureStorage } from "./storage";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 
@@ -913,6 +915,37 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       usageLimitsCache.inFlight = undefined;
     });
     return usageLimitsCache.inFlight;
+  };
+  /**
+   * HOW BIG THE STORE IS, as of the last time anybody asked — issue #642.
+   *
+   * IN MEMORY AND MEASURED LAZILY. A snapshot on disk would add a file to the
+   * very thing being measured, and there is no figure worth restoring across a
+   * restart: the walk is what makes it true, and the walk is cheap enough to
+   * repeat once per engine life.
+   *
+   * NOTHING SCHEDULES THIS. It runs when a reader first opens the pane and
+   * again when one presses refresh — #629 is open because four timers in the
+   * rail cost ~97,000 requests a day, and a directory's size does not change by
+   * the second. The stale-while-revalidate the limits cache above uses would be
+   * the wrong shape here for the same reason: there is nothing to revalidate
+   * against but another full walk.
+   *
+   * ONE WALK AT A TIME. Two settings windows opening together must not put two
+   * traversals of a 13 GB tree on the same disk; the second joins the first.
+   */
+  const storageCache: { report?: StorageReport; inFlight?: Promise<StorageReport> } = {};
+  const readStorage = (refresh: boolean): Promise<StorageReport> => {
+    if (!refresh && storageCache.report) return Promise.resolve(storageCache.report);
+    storageCache.inFlight ??= measureStorage({ root: store.paths.root, worktreesRoot: worktreesRoot(store.paths.root) })
+      .then((report) => {
+        storageCache.report = report;
+        return report;
+      })
+      .finally(() => {
+        storageCache.inFlight = undefined;
+      });
+    return storageCache.inFlight;
   };
   const daemonId = crypto.randomUUID();
   /**
@@ -2090,6 +2123,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const id = decodeURIComponent(url.pathname.slice("/v2/browser/logins/".length));
         if (!createLoginGrantStore(store.paths.root).revoke(id)) throw new HttpError(404, "not_found", "no such remembered login");
         writeJson(response, 200, { ok: true });
+        return;
+      }
+      /**
+       * WHAT TELAR IS KEEPING AND WHERE — issue #642. Read-only: there is no
+       * route here that removes a byte, because the pane this feeds has no
+       * delete and no "clean up" in this pass.
+       *
+       * `?refresh=1` RE-WALKS; without it the cached measurement comes back
+       * with the timestamp it was taken at, and the pane shows the figure as of
+       * that moment. The first read of an engine's life waits for the walk —
+       * seconds on a large store — which is why the cockpit fetches this off
+       * the render path and never on a timer.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/storage") {
+        writeJson(response, 200, { storage: await readStorage(url.searchParams.get("refresh") === "1") });
         return;
       }
       /**

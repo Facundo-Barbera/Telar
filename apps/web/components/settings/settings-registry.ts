@@ -55,6 +55,7 @@ import {
   GaugeIcon,
   GitPullRequestIcon,
   GlobeIcon,
+  HardDriveIcon,
   ImageIcon,
   InfoIcon,
   KeyboardIcon,
@@ -877,6 +878,47 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
               "default python",
             ],
             icon: BlocksIcon,
+          },
+        ],
+      },
+    ],
+  },
+  /**
+   * STORAGE (#642) — and the reason its rows are indexed at all is the reason
+   * the pane exists: nobody knew `execution.sqlite` was a gigabyte, so nobody
+   * would think to look for a pane about it. What a person types here is a
+   * symptom ("disk full", "space"), not a destination.
+   *
+   * THE PER-CATEGORY ROWS ARE NOT INDEXED. Their titles are copy, but which of
+   * them EXIST depends on what this install happens to have on disk — a machine
+   * that never ran the data-science plugin has no Python row — and an index
+   * that found a row which is not there is worse than one that finds the pane.
+   * The two standing rows are: the total, and the location.
+   */
+  {
+    id: "storage",
+    label: "Storage",
+    icon: HardDriveIcon,
+    groups: [
+      {
+        title: "What Telar is keeping",
+        rows: [
+          {
+            title: "Total",
+            hint: "How much disk Telar itself is using, by category, with a way to open each one in Finder.",
+            keywords: ["disk", "space", "size", "storage", "gigabytes", "full", "how big", "reveal", "finder", "sqlite", "database", "cache"],
+            icon: HardDriveIcon,
+          },
+        ],
+      },
+      {
+        title: "Store",
+        rows: [
+          {
+            title: "Location",
+            hint: "Where Telar keeps everything, and how to move it to another drive.",
+            keywords: ["move", "external", "volume", "drive", "relocate", "where", "path", "ssd"],
+            icon: HardDriveIcon,
           },
         ],
       },
