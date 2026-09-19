@@ -141,7 +141,18 @@ const SWEPT_FILES = [
   [
     "apps/ios/TelarMobile/Views/ProjectAvatar.swift",
     4,
-    "not literals at all — each is a fraction of the caller's `size`, so the glyph is proportional to its own square by construction. These are correct as they stand and are NOT waiting on #674",
+    "not literals at all — each is a fraction of the caller's `size`, so the glyph is proportional to its own square by construction. These are correct as they stand and are NOT waiting on #674. They are also invisible to a `\\d+` regex, so a future sweep will not re-find them: this entry is the only record",
+  ],
+  [
+    "apps/ios/TelarMobile/Views/Panel/PanelView.swift",
+    2,
+    "the full-screen and close glyphs, both 30pt squares",
+  ],
+  ["apps/ios/TelarMobile/Views/Panel/FileBody.swift", 0, ""],
+  [
+    "apps/ios/TelarMobile/Views/StashMenu.swift",
+    1,
+    "the tray's 44pt circle; its count badge has no frame and does scale",
   ],
 ];
 

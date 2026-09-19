@@ -43,15 +43,15 @@ struct FileAddressRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: fileGlyph(path)).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Image(systemName: fileGlyph(path)).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
             Text(path)
-                .font(.system(size: 11, design: .monospaced))
+                .font(.system(Theme.caption, design: .monospaced))
                 .foregroundStyle(Theme.textMuted)
                 .lineLimit(1)
                 .truncationMode(.head)
             Spacer(minLength: 4)
             if let detail {
-                Text(detail).font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                Text(detail).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
             }
             if let trailing { trailing }
         }
@@ -191,7 +191,7 @@ struct PDFFileView: View {
         VStack(spacing: 0) {
             FileAddressRow(path: path, detail: meta.map { humanBytes($0.bytes) }, trailing: AnyView(
                 Button { Task { await load(force: true) } } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Image(systemName: "arrow.clockwise").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Reload PDF")
