@@ -24,7 +24,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
@@ -75,6 +75,7 @@ const TextGenSection = dynamic(() => import("./textgen-section").then((mod) => m
 const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.PluginsPage));
 const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
 const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
+const StorageSection = dynamic(() => import("./storage-section").then((mod) => mod.StorageSection));
 const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
 const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
 
@@ -197,6 +198,23 @@ const SECTIONS: SettingsSection[] = [
    * the things a person opens settings for.
    */
   { id: "plugins", label: "Plugins", icon: BlocksIcon, group: "Runtime" },
+  /**
+   * WHAT THIS MACHINE IS KEEPING, AND WHERE — issue #642.
+   *
+   * UNDER "RUNTIME" AND LAST. Everything on it is a fact about the machine that
+   * runs turns rather than about this window: the checkouts sessions are built
+   * in, the journal turns are recorded to, the Python the plugin installed. A
+   * paired phone reading this pane is reading THIS Mac's disk.
+   *
+   * THE STORE'S LOCATION CAME WITH IT, off General. #630 put it beside Updates
+   * on the reasoning that both are properties of this install applied at the
+   * next launch, which was right while it was one row — but a pane that reports
+   * what is in the store and a row on another pane that moves the store are the
+   * same question answered in two places, and the one that can MOVE it was the
+   * one further from the numbers. Nothing is stranded: the row never had a
+   * section id of its own.
+   */
+  { id: "storage", label: "Storage", icon: HardDriveIcon, group: "Runtime" },
 ];
 
 /**
@@ -363,11 +381,18 @@ export function SettingsPage() {
           <TextGenSection />
           {/* Merged in from the retired Application pane. */}
           <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
-          {/* Beside Updates because it is the same KIND of fact: a property of
-              this installation on this machine, owned by the shell, applied at
-              the next launch rather than now. */}
-          <StoreSection />
           <UpdatesSection />
+        </>
+      )}
+
+      {/* WHAT IS ON THIS MACHINE'S DISK, then where it lives (#642). The
+          figures come first deliberately: "move the store" is a decision, and
+          a decision is easier to make after reading what it would move than
+          before. */}
+      {active === "storage" && (
+        <>
+          <StorageSection />
+          <StoreSection />
         </>
       )}
 

@@ -52,6 +52,7 @@ import type {
   DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
+  StorageReport,
   TextGenPolicy,
   UsageReport,
   UsageResolution,
@@ -617,6 +618,12 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `refresh`, which waits for a fresh read of every configured hub. */
     usageLimits: (options: { refresh?: boolean } = {}) =>
       request<{ limits: UsageLimits }>(fetcher, "GET", `/api/usage/limits${options.refresh ? "?refresh=1" : ""}`),
+    /** What Telar keeps on disk, by category — see `StorageReport`. The first
+     *  call of an engine's life walks the store and is SLOW; every call after
+     *  it returns that walk's answer with the moment it was taken, until
+     *  `refresh` asks for another. Never put this on a timer (#629). */
+    storage: (options: { refresh?: boolean } = {}) =>
+      request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`),
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>
