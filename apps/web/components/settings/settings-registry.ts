@@ -43,6 +43,7 @@
  */
 
 import {
+  AudioLinesIcon,
   BellIcon,
   BlocksIcon,
   BookMarkedIcon,
@@ -74,6 +75,7 @@ import {
   SmartphoneIcon,
   SparklesIcon,
   TimerIcon,
+  TypeIcon,
   WrenchIcon,
 } from "lucide-react";
 import { indexSettings, type SettingsPageSpec } from "@/lib/settings-search";
@@ -730,13 +732,50 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             ],
             icon: BookMarkedIcon,
           },
+          /**
+           * "HOW IT WORKS" IS GONE (#643), and the live demo below is what
+           * replaced it. It was a ~300-character paragraph on a row with no
+           * control, explaining in prose that words appear as they are heard and
+           * are rewritten in place until they settle — which the Live transcript
+           * row now SHOWS. The index entry goes with the row: a result that
+           * scrolled to a row nobody renders is the decay this file's test
+           * exists to catch.
+           */
+        ],
+      },
+      /**
+       * PICK, TEST, WATCH (#643) — a second group on the same pane, indexed
+       * because each of the three is a question somebody arrives with rather
+       * than a control they go looking for. "Wrong microphone", "is it even
+       * hearing me", "I want to see it working" are three different searches and
+       * three different rows.
+       *
+       * THE KEYWORDS DELIBERATELY DO NOT FIGHT THE PROVIDER ROW for the bare
+       * word "microphone". That row is the one somebody with no mic button at
+       * all has to land on — it is the switch that turns the feature on — and it
+       * is declared above these, so a tie on rank keeps it first (see
+       * `searchSettings`: ties hold registry order).
+       */
+      {
+        title: "Microphone",
+        rows: [
           {
-            /** Indexed because "why is nothing being typed" is the question
-             *  this row answers, and it has no other home. */
-            title: "How it works",
-            hint: "Press the mic on the composer to start and press again to stop. Words appear in the box as they are heard and are rewritten until they settle; nothing sends on its own.",
-            keywords: ["dictation", "microphone", "mic", "push to talk", "toggle", "voice", "speech"],
+            title: "Input",
+            hint: "Which microphone dictation records from. Kept in this browser alone, so a phone or another Mac keeps its own.",
+            keywords: ["input", "device", "which microphone", "choose microphone", "headset", "airpods", "usb", "interface", "built-in", "default input", "wrong microphone"],
             icon: MicIcon,
+          },
+          {
+            title: "Level",
+            hint: "Whether the microphone is being heard at all, read straight off the input without transcribing — so it works with no key and no connection.",
+            keywords: ["level", "meter", "volume", "test microphone", "not hearing", "no audio", "silent", "muted", "dead", "check"],
+            icon: AudioLinesIcon,
+          },
+          {
+            title: "Live transcript",
+            hint: "A real transcription in the pane, discarded rather than sent — to see the words arrive and be rewritten in place before they settle.",
+            keywords: ["demo", "preview", "try", "live", "test transcription", "interim", "rewritten", "see it working"],
+            icon: TypeIcon,
           },
         ],
       },
