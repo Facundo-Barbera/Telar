@@ -74,6 +74,12 @@ const SWEPT_FILES = [
     "the footer's settings and usage glyphs, both 44pt squares",
   ],
   ["apps/ios/TelarMobile/Views/AgentModelPickerSheet.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/InboxView.swift", 0, ""],
+  [
+    "apps/ios/TelarMobile/Views/RequestViews.swift",
+    1,
+    "the request row's 28pt ellipsis square",
+  ],
 ];
 
 const LITERAL = ".system(size:";
