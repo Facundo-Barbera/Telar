@@ -36,6 +36,7 @@ import {
   type SidebarLayout,
   type StorageReport,
   type TextGenPolicy,
+  type WorktreeMoveResult,
   type WorktreesRoot,
   type UsageReport,
   type UsageResolution,
@@ -1475,6 +1476,19 @@ export class EngineClient {
    */
   setWorktreesRoot(root: string | null): Promise<{ worktreesRoot: WorktreesRoot }> {
     return this.request("PUT", "/v2/worktrees-root", { root });
+  }
+
+  /**
+   * Move the checkouts already cut to the configured root, by re-cutting each
+   * from its own branch.
+   *
+   * SLOW, AND PARTIAL BY DESIGN. One `git worktree remove` and one `add` per
+   * checkout. A checkout with uncommitted changes is refused by git and
+   * reported rather than forced; so is one whose branch no longer exists. The
+   * whole call is refused while any session is working in its checkout.
+   */
+  moveWorktrees(): Promise<{ move: WorktreeMoveResult }> {
+    return this.request("POST", "/v2/worktrees-root/move", {});
   }
 
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */

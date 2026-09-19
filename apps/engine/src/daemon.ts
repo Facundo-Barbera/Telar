@@ -109,6 +109,7 @@ import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
 import type { AsyncGitRunner, GitRunner } from "./worktree";
 import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
 import { measureStorage } from "./storage";
+import { describeOutcome } from "./worktrees-move";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 
@@ -2196,6 +2197,34 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...(worktreesRootBlocker(state) ? { blocker: worktreesRootBlocker(state) } : {}),
           },
         });
+        return;
+      }
+      /**
+       * MOVE THE CHECKOUTS ALREADY CUT — issue #642 part 2, and the one
+       * destructive thing on this pane.
+       *
+       * IT RE-CUTS RATHER THAN COPIES, so `git worktree remove` — never with
+       * `--force` — is what refuses a checkout holding uncommitted work, and
+       * the branch is verified to still exist before anything is removed. See
+       * `worktrees-move.ts` for why copy-and-repair is unsafe rather than
+       * merely slower.
+       *
+       * REFUSED WHOLESALE WHILE ANYTHING IS WORKING, before a single checkout
+       * is touched: a turn in flight is holding that directory right now.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/worktrees-root/move") {
+        const state = readWorktreesRoot(store.paths.root);
+        const destination = rootOf(state);
+        if (!destination) throw new HttpError(409, "conflict", worktreesRootBlocker(state) ?? "Telar does not know where session checkouts belong.");
+        let outcome;
+        try {
+          outcome = await store.moveWorktrees(destination);
+        } catch (cause) {
+          throw new HttpError(409, "conflict", cause instanceof Error ? cause.message : "the checkouts could not be moved");
+        }
+        // The figures moved by exactly this much, so the next read measures.
+        storageCache.report = undefined;
+        writeJson(response, 200, { move: { ...outcome, summary: describeOutcome(outcome) } });
         return;
       }
       /**

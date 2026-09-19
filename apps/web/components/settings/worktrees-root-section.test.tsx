@@ -157,6 +157,82 @@ describe("Settings ▸ Storage ▸ Session checkouts", () => {
   });
 });
 
+describe("moving the checkouts already cut", () => {
+  test("the button is absent until there is somewhere to move them to", async () => {
+    const onDefault = await mount();
+    expect(onDefault.button("Move")).toBeUndefined();
+    onDefault.unmount();
+
+    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
+    const moved = await mount();
+    expect(moved.button("Move")).toBeDefined();
+    moved.unmount();
+  });
+
+  test("it says what it will not do BEFORE the press, not after", async () => {
+    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
+    const view = await mount();
+    const text = view.host.textContent ?? "";
+    // Under-promising is the point: git refuses a checkout holding
+    // uncommitted work and this never forces it, so a person is told that
+    // while they are still deciding.
+    expect(text).toContain("uncommitted changes is left where it is");
+    expect(text).toContain("commit it first");
+    view.unmount();
+  });
+
+  test("afterwards it reports per reason, because they lead different places", async () => {
+    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
+    const view = await mount();
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          move: {
+            moved: [{ sessionId: "a", from: "/old/a", to: "/new/a" }],
+            skipped: [{ sessionId: "b", path: "/old/b", reason: "dirty" }],
+            summary: "Moved 1 checkout. 1 has uncommitted changes and stayed put — commit them and run this again.",
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+
+    await act(async () => {
+      view.button("Move")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await settle();
+    });
+
+    expect(view.host.textContent).toContain("Moved 1 checkout.");
+    expect(view.host.textContent).toContain("commit them and run this again");
+    view.unmount();
+  });
+
+  test("a refusal is the engine's own sentence, not one invented here", async () => {
+    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
+    const view = await mount();
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { code: "conflict", message: "One session is still working in its checkout." } }), {
+        status: 409,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+
+    await act(async () => {
+      view.button("Move")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await settle();
+    });
+
+    expect(view.host.textContent).toContain("still working");
+    view.unmount();
+  });
+
+  test("nothing on this section deletes, forces or cleans up", async () => {
+    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
+    const view = await mount();
+    const labels = [...view.host.querySelectorAll("button")].map((button) => button.textContent?.trim().toLowerCase() ?? "");
+    for (const forbidden of ["delete", "remove", "force", "clean up"]) expect(labels).not.toContain(forbidden);
+    view.unmount();
+  });
+});
+
 describe("the row's sentence, per state", () => {
   test("the default says these are the one thing that comes back", () => {
     expect(worktreesRootHint({ kind: "default", root: DEFAULT_ROOT, default: DEFAULT_ROOT })).toContain("comes back");

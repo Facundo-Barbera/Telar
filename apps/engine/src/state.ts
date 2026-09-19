@@ -194,6 +194,7 @@ import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { moveCheckouts, type Checkout, type MoveOutcome } from "./worktrees-move";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
@@ -10045,6 +10046,71 @@ export class EngineStore {
       void this.worktreeQueue(project.root, () => lockSessionWorktree(this.worktreeGit, project.root, worktreePath));
     }
     return { locked };
+  }
+
+  /**
+   * MOVE EVERY CHECKOUT THIS ENGINE HOLDS TO A NEW ROOT — issue #642 part 2.
+   *
+   * RE-CUT, NOT COPIED. See `worktrees-move.ts` for why copy-and-repair is the
+   * wrong design; the short version is that a worktree has one admin entry and
+   * `repair` moves it, leaving two directories sharing an index.
+   *
+   * ONLY WHAT IS ACTUALLY ON DISK. A session whose checkout was already
+   * released has a recorded path that names nothing, and asking git to remove
+   * it would report a failure about a checkout nobody has.
+   *
+   * BUSY MEANS ANYTHING BUT `idle`, AND ONE OF THEM REFUSES THE WHOLE RUN. An
+   * archived session's checkout has already been released, so "refuse while
+   * anything is unsettled" would refuse every time and the operation could
+   * never run at all; what actually matters is whether a turn is in flight in
+   * that directory, which is what `activity` answers.
+   *
+   * THE GIT WORK GOES THROUGH THE PER-PROJECT QUEUE, so a move and a cut on
+   * the same project never race on the index lock — the same discipline
+   * `releaseWorktree` and `lockLiveWorktrees` follow.
+   */
+  async moveWorktrees(destination: string): Promise<MoveOutcome> {
+    const checkouts: Checkout[] = [];
+    for (const session of this.readSessions()) {
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      if (!fs.existsSync(session.workspace.path)) continue;
+      let project: Project;
+      try {
+        project = this.getProject(session.projectId);
+      } catch {
+        continue; // A removed project is not one to re-cut against.
+      }
+      checkouts.push({
+        sessionId: session.id,
+        path: session.workspace.path,
+        branch: session.workspace.branch ?? "",
+        projectRoot: project.root,
+        busy: session.activity !== "idle",
+      });
+    }
+    const roots = [...new Set(checkouts.map((checkout) => checkout.projectRoot))];
+    const run = () =>
+      moveCheckouts(this.worktreeGit, {
+        checkouts,
+        destination,
+        onMoved: (sessionId, to) => this.recordWorktreeMove(sessionId, to),
+      });
+    // One queue is enough to serialise against cuts; with several projects the
+    // queues nest, which is the same ordering guarantee one at a time.
+    return roots.reduce<() => Promise<MoveOutcome>>((next, root) => () => this.worktreeQueue(root, next), run)();
+  }
+
+  /** The commit point for one moved checkout: the recorded path, and the event
+   *  that tells every open cockpit its session moved. */
+  private recordWorktreeMove(sessionId: string, to: string): void {
+    const session = this.getSession(sessionId);
+    const updated: Session = {
+      ...session,
+      workspace: { ...session.workspace, path: to } as Session["workspace"],
+      updatedAt: this.now(),
+    };
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.appendEvent(sessionId, { type: "session.updated", session: updated });
   }
 
   private releaseDataScience(session: Session, reason: string): void {

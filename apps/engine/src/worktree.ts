@@ -476,8 +476,14 @@ export async function lockSessionWorktree(
 }
 
 /** Release a lock before teardown. Unconditional and best-effort: a worktree
- *  that was never locked answers non-zero and that is not a failure. */
-async function unlockWorktree(git: AsyncGitRunner, projectRoot: string, worktreePath: string): Promise<void> {
+ *  that was never locked answers non-zero and that is not a failure.
+ *
+ *  EXPORTED FOR THE MOVE (#642 part 2), which is the second caller and the
+ *  reason this is no longer module-private: #641 locks every session worktree,
+ *  and a locked worktree refuses `git worktree remove` — so relocating one has
+ *  to take the lock off first, exactly as teardown does, and put it back on
+ *  whichever path the checkout ends up at. */
+export async function unlockWorktree(git: AsyncGitRunner, projectRoot: string, worktreePath: string): Promise<void> {
   try {
     await git(projectRoot, ["worktree", "unlock", worktreePath]);
   } catch {

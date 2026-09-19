@@ -54,6 +54,7 @@ import type {
   SidebarLayout,
   StorageReport,
   TextGenPolicy,
+  WorktreeMoveResult,
   WorktreesRoot,
   UsageReport,
   UsageResolution,
@@ -631,6 +632,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  default. Nothing is moved and no restart is needed — a checkout already
      *  cut is addressed by the path recorded on its session. */
     setWorktreesRoot: (root: string | null) => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "PUT", "/api/worktrees-root", { root }),
+    /** Move the checkouts already cut, by re-cutting each from its own branch.
+     *  SLOW (two git commands per checkout) and partial by design: one holding
+     *  uncommitted changes is refused by git, reported, and left alone. */
+    moveWorktrees: () => request<{ move: WorktreeMoveResult }>(fetcher, "POST", "/api/worktrees-root/move", {}),
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>
