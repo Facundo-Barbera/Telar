@@ -22,7 +22,7 @@ struct SettingsSectionLabel: View {
 
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(Theme.footnote, weight: .semibold))
             .kerning(0.6)
             .foregroundStyle(Theme.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -38,7 +38,7 @@ struct SettingsFootnote: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 13))
+            .font(.system(Theme.footnote))
             .foregroundStyle(Theme.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
@@ -63,18 +63,22 @@ struct CardRow<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            // ABSOLUTE ON PURPOSE: a 27pt square, fixed in both dimensions and
+            // clipping, so a glyph that grew with the reader's text would only
+            // outgrow its own box. Wants a @ScaledMetric frame — a layout
+            // change rather than a token swap (#674).
             Image(systemName: icon)
                 .font(.system(size: 17))
                 .foregroundStyle(iconColor)
                 .frame(width: 27, height: 27)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(.callout, weight: .semibold))
                     .foregroundStyle(titleColor)
                     .lineLimit(1)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .lineLimit(1)
                 }
@@ -99,7 +103,7 @@ struct CardNavRow: View {
         Button(action: action) {
             CardRow(icon: icon, title: title, subtitle: subtitle) {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(Theme.footnote, weight: .medium))
                     .foregroundStyle(Theme.chevron)
             }
         }
@@ -129,7 +133,7 @@ struct CardField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
             Group {
                 if secure {
@@ -140,7 +144,7 @@ struct CardField: View {
                     TextField(placeholder, text: $text)
                 }
             }
-            .font(mono ? .system(size: 15, design: .monospaced) : .system(size: 16))
+            .font(mono ? .system(Theme.subhead, design: .monospaced) : .system(.callout))
             .foregroundStyle(Theme.text)
             .keyboardType(keyboard)
             .autocorrectionDisabled()
@@ -166,7 +170,7 @@ struct PrimaryActionButton: View {
                     ProgressView().tint(Theme.primaryGlyph)
                 } else {
                     Text(title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(enabled ? Theme.primaryGlyph : Theme.textMuted)
                 }
             }
@@ -189,18 +193,20 @@ struct StatusBanner: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
+            // The same fixed 27pt square as the row above, held back for the
+            // same reason (#674).
             Image(systemName: icon)
                 .font(.system(size: 17))
                 .foregroundStyle(color)
                 .frame(width: 27, height: 27)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(Theme.subhead, weight: .medium))
                     .foregroundStyle(Theme.text)
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail {
                     Text(detail)
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
