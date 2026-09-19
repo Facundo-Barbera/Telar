@@ -232,7 +232,7 @@ test("a group draws one card, with its rows hairlined inside it", () => {
   expect(html).toContain("Auto-settle merged threads");
 });
 
-test("the group's title is a caption ABOVE the card, and quieter than the rows it governs", () => {
+test("the group's title is a caption ABOVE the card, and leads the rows without outgrowing them", () => {
   const html = renderToStaticMarkup(
     <SettingsGroup title="Organization">
       <Row label="Project grouping" />
@@ -240,8 +240,14 @@ test("the group's title is a caption ABOVE the card, and quieter than the rows i
   );
   // Outside the card: the caption's markup closes before the card opens.
   expect(html.indexOf("Organization")).toBeLessThan(html.indexOf("rounded-xl border border-border bg-card"));
-  // And recessive — a section header must not outweigh the row titles under it.
-  expect(html).toContain("text-foreground/70");
+  // #644: WEIGHT AND CONTRAST ARE WHAT MAKE IT A HEADING. Dimmed to
+  // `text-foreground/70` it composited to the same grey as the description
+  // under it and read lighter than the `text-sm font-medium` row labels it
+  // governs — a caption losing on all three axes to its own content.
+  expect(html).toContain('<h4 class="font-heading text-xs-plus font-semibold tracking-tight text-foreground">');
+  expect(html).not.toContain("text-foreground/70");
+  // And NOT size. It stays a step under the rows: growing it is the only one of
+  // the three that moves the caption's box, and so every card below it.
   expect(html).not.toContain("text-base font-semibold");
 });
 

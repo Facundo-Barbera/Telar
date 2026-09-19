@@ -481,11 +481,29 @@ export function SettingsShell({
  * cards is the group break. That is the whole reason the reference reads as
  * grouped and the hairline version read as a list.
  *
- * THE CAPTION RECEDES AND THE ROWS LEAD. It was `text-base font-semibold`, one
- * step LARGER than the row titles beneath it, which made the section name the
- * loudest thing on a page whose content is the rows. Small, normal weight and
- * `text-foreground/70` is the reference's own grammar, and it inverts the
- * emphasis the right way round.
+ * THE CAPTION IS SMALLER THAN ITS ROWS AND STILL LEADS THEM, which takes weight
+ * and contrast rather than size. It was `text-base font-semibold`, one step
+ * LARGER than the row titles beneath it, which made the section name the
+ * loudest thing on a page whose content is the rows. Correcting that overshot:
+ * `text-xs-plus font-normal text-foreground/70` gave up the size, the weight
+ * AND the contrast at once, and 70% of `--foreground` composites to within
+ * ~0.04 L of `--muted-foreground` over this pane in both Looks — so the title
+ * came out the same colour as the description under it and lighter than the
+ * `text-sm font-medium` labels it governs. A caption that loses on all three
+ * axes to its own content is not a heading, which is #644.
+ *
+ * SO THE SIZE IS THE ONE THAT STAYS. It was never the fault: at `text-sm`,
+ * still dimmed and still normal-weight, the heading reads no better — only
+ * bigger, and now the same size as the row labels while remaining lighter than
+ * them, which is worse. It is also the only one of the three that costs
+ * anything structurally — 13px→14px takes the caption's box from 19.5px to
+ * 20px, moving every card below it and the `action` aligned beside it. Weight
+ * and colour change the glyphs and nothing else, so this is a fix that lands in
+ * every pane without moving a single row.
+ *
+ * `description` is left at `text-xs text-muted-foreground` for the same reason:
+ * it was never too quiet, it only looked level with a title that had sunk to
+ * meet it.
  *
  * `action` is the control that belongs to the whole group rather than to any
  * one field — an "Advanced" switch, a reset. It sits on the caption line,
@@ -509,7 +527,7 @@ export function SettingsGroup({
         // the row titles rather than over the card's edge.
         <div className="mb-2 flex items-start gap-3 px-4">
           <div className="min-w-0 flex-1">
-            {title && <h4 className="font-heading text-xs-plus font-normal tracking-tight text-foreground/70">{title}</h4>}
+            {title && <h4 className="font-heading text-xs-plus font-semibold tracking-tight text-foreground">{title}</h4>}
             {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
           </div>
           {action && <div className="shrink-0">{action}</div>}
