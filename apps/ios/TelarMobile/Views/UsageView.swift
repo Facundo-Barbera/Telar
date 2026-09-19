@@ -75,7 +75,7 @@ struct UsageView: View {
                                 Button { selected = mac.id } label: {
                                     CardRow(icon: "desktopcomputer", title: mac.name) {
                                         if host == mac.id {
-                                            Image(systemName: "checkmark").font(.system(size: 13, weight: .semibold))
+                                            Image(systemName: "checkmark").font(.system(Theme.footnote, weight: .semibold))
                                                 .foregroundStyle(Theme.accent)
                                         }
                                     }
@@ -124,18 +124,18 @@ struct UsageView: View {
         SettingsCard {
             VStack(alignment: .leading, spacing: 4) {
                 Text(formatUsd(fold.total.costUsd))
-                    .font(.system(size: 34, weight: .semibold))
+                    .font(.system(.largeTitle, weight: .semibold))
                     .monospacedDigit()
                     .foregroundStyle(Theme.text)
                 Text("\(formatTokens(fold.total.processed)) tokens · \(fold.sessions) session\(fold.sessions == 1 ? "" : "s") · API estimate")
-                    .font(.system(size: 13))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
                 // A FLOOR IS STILL WORTH SHOWING, and saying it is a floor is
                 // the desktop's own sentence: a model with no known rate counts
                 // its tokens and not its money.
                 if !fold.total.priced {
                     Text("Some models have no known rate; their cost is not counted.")
-                        .font(.system(size: 12))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -154,17 +154,17 @@ struct UsageView: View {
                     if index > 0 { CardDivider() }
                     HStack(spacing: 12) {
                         Text(usageDriverLabel(provider.driver))
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(.callout, weight: .semibold))
                             .foregroundStyle(Theme.text)
                             .lineLimit(1)
                         Spacer(minLength: 8)
                         Text(formatShare(provider.share))
-                            .font(.system(size: 13)).monospacedDigit()
+                            .font(.system(Theme.footnote)).monospacedDigit()
                             .foregroundStyle(Theme.textMuted)
                         // THE DASH IS "NO COST KNOWN AT ALL", never "$0.00" —
                         // Codex reports none, and a zero would read as free.
                         Text(provider.totals.costUsd > 0 ? formatUsd(provider.totals.costUsd) : "—")
-                            .font(.system(size: 15, weight: .medium)).monospacedDigit()
+                            .font(.system(Theme.subhead, weight: .medium)).monospacedDigit()
                             .foregroundStyle(Theme.text)
                             .frame(width: 72, alignment: .trailing)
                     }
@@ -198,9 +198,9 @@ struct UsageView: View {
 
     private func totalRow(_ label: String, _ value: String) -> some View {
         HStack {
-            Text(label).font(.system(size: 15)).foregroundStyle(Theme.textMuted)
+            Text(label).font(.system(Theme.subhead)).foregroundStyle(Theme.textMuted)
             Spacer(minLength: 8)
-            Text(value).font(.system(size: 15, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text)
+            Text(value).font(.system(Theme.subhead, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

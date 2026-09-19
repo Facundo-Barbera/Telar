@@ -99,6 +99,8 @@ const SWEPT_FILES = [
     1,
     "the device row's 27pt platform glyph",
   ],
+  ["apps/ios/TelarMobile/Views/UsageView.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/Panel/TextFileView.swift", 0, ""],
 ];
 
 const LITERAL = ".system(size:";
