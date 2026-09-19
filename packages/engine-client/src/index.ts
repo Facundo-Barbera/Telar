@@ -34,6 +34,7 @@ import {
   type RememberedLogin,
   type SessionDefaults,
   type SidebarLayout,
+  type StorageReport,
   type TextGenPolicy,
   type UsageReport,
   type UsageResolution,
@@ -1445,6 +1446,18 @@ export class EngineClient {
    */
   usageLimits(options: { refresh?: boolean } = {}): Promise<{ limits: UsageLimits }> {
     return this.request("GET", `/v2/usage/limits${options.refresh ? "?refresh=1" : ""}`);
+  }
+
+  /**
+   * What this engine is keeping on disk, by category — issue #642.
+   *
+   * SLOW ON A COLD ENGINE, and worth knowing at the call site: the first read
+   * walks the whole store, which is seconds on a large one. Afterwards the
+   * measurement comes back with the `measuredAt` it was taken at until somebody
+   * asks for a fresh one. Nothing here polls, and there is no write.
+   */
+  storage(options: { refresh?: boolean } = {}): Promise<{ storage: StorageReport }> {
+    return this.request("GET", `/v2/storage${options.refresh ? "?refresh=1" : ""}`);
   }
 
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */
