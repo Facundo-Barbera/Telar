@@ -59,6 +59,37 @@
  * SAVE-PER-INTERACTION, AND THE ENGINE'S ANSWER IS THE STATE — the two rules
  * every settings pane here follows. A refused write leaves the controls showing
  * what is stored and says why underneath.
+ *
+ * ── AND THE COPY CUT, WHICH IS THE SAME CHANGE AS THE DEMO (#643) ───────────
+ * This pane carried five hints, a standing caption, and a row called "How it
+ * works" whose entire content was ~300 characters of manual — on a row with no
+ * control, in a pane of settings. The rule it broke is already written down in
+ * `updates-section.tsx`: a hint may never restate its own control, and a standing
+ * caption over rows that each carry a live sentence is the doubling #357 was
+ * about.
+ *
+ * WHAT WENT, AND WHY EACH ONE:
+ *   - THE GROUP'S CAPTION. "Speak into any message box … off by default: this
+ *     Mac's own dictation keeps working either way" is what the Provider row's
+ *     own hint says, live, on whichever value is chosen. The caption said it
+ *     standing, above it, in both states at once.
+ *   - "HOW IT WORKS", ENTIRELY. Behaviour belongs where the mic button is, or in
+ *     docs. And the live demo in `dictation-microphone-section.tsx` now SHOWS the
+ *     half worth knowing — words appearing as they are heard and being rewritten
+ *     until they settle — which is what earned the deletion rather than a
+ *     shortening. Build the demo and the cut separately and you keep the
+ *     paragraph.
+ *   - "Narrow it below only if you speak one language…" off the Automatic hint:
+ *     an instruction to use the control the hint is sitting under. The cost of
+ *     narrowing is still stated, on the hint for a narrowed language, where it is
+ *     a live fact rather than a warning about a thing nobody has done.
+ *   - "…and the words appear in the box as they are heard" off the Deepgram
+ *     hint: the third copy of one sentence, and the demo shows it.
+ *
+ * WHAT STAYED IS WHAT A CONTROL CANNOT SAY ITSELF: what each provider actually
+ * means for this Mac and for a paired phone, where the audio goes and what the
+ * key is spent on, what Automatic buys and what narrowing costs, what the
+ * vocabulary box affects and when it saves.
  */
 
 import { useState } from "react";
@@ -70,6 +101,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { DictationMicrophoneSection } from "./dictation-microphone-section";
 import { Dropdown, Row, SettingsGroup } from "./settings-shell";
 
 /** The names a person picks between. `off` is a member rather than an absent
@@ -82,8 +114,10 @@ const PROVIDERS: { id: DictationProviderId; label: string }[] = [
 
 const PROVIDER_HINT: Record<DictationProviderId, string> = {
   off: "No mic button anywhere — on this Mac’s composers or on a paired phone. macOS dictation and anything like Wispr Flow keep working in the message box exactly as they do now; Telar simply does not add one of its own.",
-  deepgram:
-    "A mic button on every message box here and on the phone. Audio goes from the device straight to Deepgram — it does not pass through this Mac — and the words appear in the box as they are heard.",
+  // THE PRIVACY FACT AND NOTHING ELSE (#643). "…and the words appear in the box
+  // as they are heard" was the third copy of one sentence — the caption said it,
+  // "How it works" said it, and the live demo below now shows it.
+  deepgram: "A mic button on every message box here and on the phone. Audio goes from the device straight to Deepgram — it does not pass through this Mac.",
 };
 
 export function DictationSection() {
@@ -121,146 +155,158 @@ export function DictationSection() {
   }
 
   return (
-    <SettingsGroup
-      title="Dictation"
-      description="Speak into any message box — the mic button on the composer, here and on the phone. Off by default: this Mac’s own dictation and anything you already use keep working either way."
-    >
-      <Row
-        label="Provider"
-        icon={provider === "off" ? MicOffIcon : MicIcon}
-        hint={PROVIDER_HINT[provider] ?? "Chosen on this Mac, and not one this cockpit knows how to drive. Update Telar, or pick another."}
-        {...(error ? { error } : {})}
-        control={
-          <Select
-            value={provider}
-            // base-ui hands back `null` for a cleared selection; this Select is
-            // never clearable, so that case is ignored rather than written
-            // through as a provider of "null".
-            onValueChange={(next) => {
-              if (typeof next === "string") void save({ provider: next as DictationProviderId });
-            }}
-            disabled={loading}
-          >
-            <SelectTrigger size="sm" className="w-36">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PROVIDERS.map(({ id, label }) => (
-                <SelectItem key={id} value={id}>
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        }
-      />
-      {/* THE PROVIDER'S OWN ROWS, and only when there is a provider. A key
-          field under "Off" would be asking for a credential nothing will
-          spend. The key itself is kept when the provider goes off — it is the
-          row that goes away, not the secret. */}
-      {provider === "deepgram" && (
-        <>
-          {/* AUTOMATIC IS FIRST AND IS THE DEFAULT. It is the engine that puts
-              it there — the row renders the order it was given rather than
-              hoisting a code it would have to recognise by name. */}
-          <Row
-            label="Language"
-            icon={LanguagesIcon}
-            hint={
-              language === DICTATION_AUTOMATIC
-                ? "Words are transcribed in whichever supported language they are spoken in, including switching between two of them inside one sentence — which is what a name dropped into another language actually is. Narrow it below only if you speak one language and want the accuracy of saying so."
-                : "Only this language is transcribed. More accurate than Automatic within it, and wrong for anything else — a sentence in another language comes back as whatever this one sounded closest to."
-            }
-            control={
-              // `Dropdown` RATHER THAN A SELECT WRITTEN OUT HERE, for the one
-              // thing it fixes in a single place: a bare `<SelectValue />`
-              // renders the VALUE, so this trigger would read "es" where a
-              // person chose Spanish (#318).
-              <Dropdown<string>
-                value={language}
-                onChange={(next) => void save({ language: next })}
-                options={languages.map(({ code, label }) => ({ value: code, label }))}
-                className="w-64"
-                label="Dictation language"
-                // NO LANGUAGES MEANS THE ENGINE HAS NOT ANSWERED YET. A picker
-                // with nothing in it is a control that does nothing when it is
-                // opened.
-                disabled={loading || languages.length === 0}
-              />
-            }
-          />
-          <Row
-            label="Deepgram key"
-            icon={KeyRoundIcon}
-            // THE ROW'S OWN STATE, beside the label rather than in the field:
-            // the field says whether a key is there by its placeholder, and
-            // this is the word a reader scanning the pane sees without reading
-            // the hint.
-            {...(configured ? { status: "set" } : {})}
-            hint={
-              configured
-                ? "Stored with this Mac’s engine state and never shown again. It stays here: each dictation spends it once for a token that expires in five minutes, and that token is what the browser or the phone gets."
-                : "Without one, the mic button says so and nothing is recorded. Create a key at console.deepgram.com — it needs no more than the default permissions."
-            }
-            control={
-              <div className="flex items-center gap-2">
-                <Input
-                  type="password"
-                  className="h-8 w-56 font-mono text-xs"
-                  aria-label="Deepgram key"
-                  // NEVER THE STORED KEY — the engine answers whether there is
-                  // one and nothing else, by design.
-                  placeholder={configured ? "A key is saved" : "Paste a Deepgram API key"}
-                  value={key}
-                  disabled={loading}
-                  onChange={(event) => {
-                    setKeySaved(false);
-                    setKey(event.target.value);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && key.trim()) void saveKey(key);
-                  }}
+    <>
+      {/* NO CAPTION (#643). It said what the Provider row's hint says of
+          whichever value is chosen — and said it standing, in both states at
+          once, above a row that answers live. The same rule `updates-section.tsx`
+          states for the same reason. */}
+      <SettingsGroup title="Dictation">
+        <Row
+          label="Provider"
+          icon={provider === "off" ? MicOffIcon : MicIcon}
+          hint={PROVIDER_HINT[provider] ?? "Chosen on this Mac, and not one this cockpit knows how to drive. Update Telar, or pick another."}
+          {...(error ? { error } : {})}
+          control={
+            <Select
+              value={provider}
+              // base-ui hands back `null` for a cleared selection; this Select is
+              // never clearable, so that case is ignored rather than written
+              // through as a provider of "null".
+              onValueChange={(next) => {
+                if (typeof next === "string") void save({ provider: next as DictationProviderId });
+              }}
+              disabled={loading}
+            >
+              <SelectTrigger size="sm" className="w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROVIDERS.map(({ id, label }) => (
+                  <SelectItem key={id} value={id}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+        />
+        {/* THE PROVIDER'S OWN ROWS, and only when there is a provider. A key
+            field under "Off" would be asking for a credential nothing will
+            spend. The key itself is kept when the provider goes off — it is the
+            row that goes away, not the secret. */}
+        {provider === "deepgram" && (
+          <>
+            {/* AUTOMATIC IS FIRST AND IS THE DEFAULT. It is the engine that puts
+                it there — the row renders the order it was given rather than
+                hoisting a code it would have to recognise by name. */}
+            <Row
+              label="Language"
+              icon={LanguagesIcon}
+              // THE LAST SENTENCE WENT (#643): "Narrow it below only if you speak
+              // one language…" was an instruction to use the control the hint sits
+              // under. What narrowing costs is still said — on the hint for a
+              // narrowed language, where it is a live fact about the chosen value
+              // rather than a warning about a thing nobody has done.
+              hint={
+                language === DICTATION_AUTOMATIC
+                  ? "Words are transcribed in whichever supported language they are spoken in, including switching between two of them inside one sentence — which is what a name dropped into another language actually is."
+                  : "Only this language is transcribed. More accurate than Automatic within it, and wrong for anything else — a sentence in another language comes back as whatever this one sounded closest to."
+              }
+              control={
+                // `Dropdown` RATHER THAN A SELECT WRITTEN OUT HERE, for the one
+                // thing it fixes in a single place: a bare `<SelectValue />`
+                // renders the VALUE, so this trigger would read "es" where a
+                // person chose Spanish (#318).
+                <Dropdown<string>
+                  value={language}
+                  onChange={(next) => void save({ language: next })}
+                  options={languages.map(({ code, label }) => ({ value: code, label }))}
+                  className="w-64"
+                  label="Dictation language"
+                  // NO LANGUAGES MEANS THE ENGINE HAS NOT ANSWERED YET. A picker
+                  // with nothing in it is a control that does nothing when it is
+                  // opened.
+                  disabled={loading || languages.length === 0}
                 />
-                {configured && !key.trim() ? (
-                  <Button variant="ghost" size="sm" disabled={loading} onClick={() => void saveKey("")}>
-                    Remove
-                  </Button>
-                ) : (
-                  <Button size="sm" disabled={loading || !key.trim()} onClick={() => void saveKey(key)}>
-                    Save
-                  </Button>
-                )}
-              </div>
-            }
-          >
-            {keySaved && <p className="mt-2 text-xs text-muted-foreground">Saved. The mic button on the composer works now.</p>}
-          </Row>
-          <Row
-            label="Vocabulary"
-            icon={BookMarkedIcon}
-            hint="Words the recogniser has no reason to expect — a product name, a colleague's surname, a piece of jargon — one per line. Your conversations, your projects and their branches are already sent; this is for the rest. Saved when you click away."
-            control={
-              <Textarea
-                className="h-28 w-64 font-mono text-xs"
-                aria-label="Dictation vocabulary"
-                placeholder={"Kubernetes\nZarigüeya\nPostgres"}
-                // THE STORED LIST WHEN NOBODY IS TYPING — see `terms`. Joined
-                // here rather than kept as text anywhere, so what is on screen
-                // is what the engine actually holds.
-                value={terms ?? vocabulary.join("\n")}
-                disabled={loading}
-                onChange={(event) => setTerms(event.target.value)}
-                onBlur={() => void saveTerms()}
-              />
-            }
-          />
-          <Row
-            label="How it works"
-            icon={MicIcon}
-            hint="Press the mic on the composer to start and press it again to stop — it is a toggle, not a hold, so it works the same on a phone with the keyboard up. Words appear in the box as they are heard and are rewritten in place until Deepgram settles them. Nothing sends on its own."
-          />
-        </>
-      )}
-    </SettingsGroup>
+              }
+            />
+            <Row
+              label="Deepgram key"
+              icon={KeyRoundIcon}
+              // THE ROW'S OWN STATE, beside the label rather than in the field:
+              // the field says whether a key is there by its placeholder, and
+              // this is the word a reader scanning the pane sees without reading
+              // the hint.
+              {...(configured ? { status: "set" } : {})}
+              hint={
+                configured
+                  ? "Stored with this Mac’s engine state and never shown again. It stays here: each dictation spends it once for a token that expires in five minutes, and that token is what the browser or the phone gets."
+                  : "Without one, the mic button says so and nothing is recorded. Create a key at console.deepgram.com — it needs no more than the default permissions."
+              }
+              control={
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="password"
+                    className="h-8 w-56 font-mono text-xs"
+                    aria-label="Deepgram key"
+                    // NEVER THE STORED KEY — the engine answers whether there is
+                    // one and nothing else, by design.
+                    placeholder={configured ? "A key is saved" : "Paste a Deepgram API key"}
+                    value={key}
+                    disabled={loading}
+                    onChange={(event) => {
+                      setKeySaved(false);
+                      setKey(event.target.value);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && key.trim()) void saveKey(key);
+                    }}
+                  />
+                  {configured && !key.trim() ? (
+                    <Button variant="ghost" size="sm" disabled={loading} onClick={() => void saveKey("")}>
+                      Remove
+                    </Button>
+                  ) : (
+                    <Button size="sm" disabled={loading || !key.trim()} onClick={() => void saveKey(key)}>
+                      Save
+                    </Button>
+                  )}
+                </div>
+              }
+            >
+              {keySaved && <p className="mt-2 text-xs text-muted-foreground">Saved. The mic button on the composer works now.</p>}
+            </Row>
+            <Row
+              label="Vocabulary"
+              icon={BookMarkedIcon}
+              hint="Words the recogniser has no reason to expect — a product name, a colleague's surname, a piece of jargon — one per line. Your conversations, your projects and their branches are already sent; this is for the rest. Saved when you click away."
+              control={
+                <Textarea
+                  className="h-28 w-64 font-mono text-xs"
+                  aria-label="Dictation vocabulary"
+                  placeholder={"Kubernetes\nZarigüeya\nPostgres"}
+                  // THE STORED LIST WHEN NOBODY IS TYPING — see `terms`. Joined
+                  // here rather than kept as text anywhere, so what is on screen
+                  // is what the engine actually holds.
+                  value={terms ?? vocabulary.join("\n")}
+                  disabled={loading}
+                  onChange={(event) => setTerms(event.target.value)}
+                  onBlur={() => void saveTerms()}
+                />
+              }
+            />
+            {/* "HOW IT WORKS" STOOD HERE (#643) — ~300 characters of manual on a
+                row with nothing to change. The live demo in the group below shows
+                the half of it worth knowing, which is what earned the deletion
+                rather than a rewrite. */}
+          </>
+        )}
+      </SettingsGroup>
+      {/* PICK, TEST, WATCH — its own group, and only under a chosen provider,
+          for the key row's reason: a microphone picker for a dictation that does
+          not exist is a setting with nowhere to land, and the demo needs a
+          provider to demonstrate. */}
+      {provider === "deepgram" && <DictationMicrophoneSection />}
+    </>
   );
 }

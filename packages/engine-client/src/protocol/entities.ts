@@ -734,6 +734,46 @@ export const SessionSettledBy = z.object({
 });
 export type SessionSettledBy = z.infer<typeof SessionSettledBy>;
 
+/**
+ * ONE OF THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, as `/resume`'s picker has
+ * to show it (#616).
+ *
+ * EVERY FIELD HERE EXISTS TO TELL TWO CONVERSATIONS APART, and the shape is
+ * what it is because the obvious design was measured and fails. The CLI's own
+ * titles do NOT distinguish conversations: six identically-titled sessions were
+ * produced deliberately in one directory and the CLI itself refused to resolve
+ * between them — `--resume "PINEAPPLE-7742" matches 6 sessions`. A picker
+ * listing titles would reproduce that failure in Telar, where the person has
+ * even less context to guess with.
+ *
+ * So `title` is never the only thing a row can show. `firstPrompt` says what
+ * the conversation was ABOUT in the person's own opening words,
+ * `lastActivityAt` when they were last in it, `cwd` which project it belongs
+ * to, and `bytes` how much of it there is — four independent handles, of which
+ * at least one differs between any two real conversations.
+ */
+export const ClaudeConversation = z.object({
+  sessionId: z.string().min(1),
+  /** Custom title, else the CLI's auto-title, else the first prompt. Not, on
+   *  its own, an identifier — see above. */
+  title: z.string(),
+  /** The first real user prompt, when the CLI extracted one. */
+  firstPrompt: z.string().optional(),
+  /** Set only when the person renamed it themselves, via `/rename`. Worth
+   *  distinguishing: a name somebody CHOSE is trustworthy in a way a generated
+   *  one is not. */
+  customTitle: z.string().optional(),
+  lastActivityAt: Timestamp,
+  createdAt: Timestamp.optional(),
+  /** The working directory the conversation happened in. */
+  cwd: z.string().optional(),
+  gitBranch: z.string().optional(),
+  /** Transcript size on disk. The rough measure of how much conversation there
+   *  is, and the one that tells a long thread from a one-line question. */
+  bytes: z.number().int().nonnegative().optional(),
+});
+export type ClaudeConversation = z.infer<typeof ClaudeConversation>;
+
 export const Session = z.object({
   id: Id,
   /**
@@ -1676,12 +1716,21 @@ export type AgentMessageIntent = z.infer<typeof AgentMessageIntent>;
  * a request. All three used to arrive as a TURN whose `input` was engine-authored
  * prose on the channel that is otherwise the person's — so the transcript drew
  * the engine's words in the user's bubble and the model read an announcement as
- * an instruction. `attribution.ts`'s "carries no human authorization" paragraph
- * exists to counteract exactly that, in prose, every time.
+ * an instruction. `attribution.ts`'s prose frames exist to counteract exactly
+ * that, in words, every time.
  *
  * The fix is structural rather than textual: the happening becomes an ITEM with
  * an honest role, the drivers deliver it on a channel that is not the user's,
  * and the clients draw it as a notification row.
+ *
+ * AND THE PROSE THEN HAS TO ACTUALLY LEAVE — issue #636. One sentence of it
+ * ("carries no human authorization: keep asking the person for anything that
+ * needs their approval") outlived the fix by living inside the notification
+ * BODY rather than in the frames, so the compensation for a channel that could
+ * not express a role kept riding on the channel that now can. Four sessions
+ * read it as written and refused work the person had authorised. What is left
+ * is the true half — a peer relays a decision, it does not make one — said once
+ * per driver on the channel header, and nowhere in the body.
  */
 export const NotificationKind = z.enum(["wake", "peer_message", "request"]);
 export type NotificationKind = z.infer<typeof NotificationKind>;
@@ -1776,8 +1825,16 @@ export const Turn = z.object({
    * before, so the history read as the human typing a slash command — three
    * times in a row, on one measured session, because nothing refused a
    * second one while the first was in flight.
+   *
+   * `import` IS THE SAME LESSON AGAIN, for `/resume` (#616). Adopting a Claude
+   * Code conversation writes one turn that nobody typed and no worker ran: it
+   * holds the imported history as its items, and `input` is the engine's own
+   * one-line description of the adoption. A renderer must not draw that as the
+   * person's words — which is exactly what happened to `/compact` before this
+   * enum had a second member — so the kind is what says so, structurally,
+   * rather than a prefix on the text that somebody has to remember to strip.
    */
-  kind: z.enum(["message", "compact"]).optional(),
+  kind: z.enum(["message", "compact", "import"]).optional(),
   /**
    * WHO STARTED THIS TURN. Absent means a human (or another session, through
    * `sessions_send`) sent a message. `provider` is a turn the CLI started ON
@@ -2014,6 +2071,23 @@ export type GitWorktreeEntry = z.infer<typeof GitWorktreeEntry>;
 export const GitChangeStatus = z.enum(["added", "modified", "deleted", "renamed", "untracked"]);
 export type GitChangeStatus = z.infer<typeof GitChangeStatus>;
 
+/**
+ * WHY A GIT READ IS NOT AN ANSWER — issue #650, and the vocabulary #654 reuses.
+ *
+ * `timeout` is a child the engine killed at its bound, and it is the case this
+ * exists for: on a loaded machine git exits non-zero without having looked, and
+ * every field it feeds used to become a FACT — no branches, a clean tree, no
+ * worktrees, no changes. Retrying is the honest offer. `failed` is everything
+ * else, where it usually is not.
+ *
+ * DECLARED HERE, ABOVE BOTH READERS THAT NEED IT. It arrived beside the ref
+ * listing because that is where the bug was found, but the distinction is not
+ * the picker's — `SessionDiff` below says the same thing about its own
+ * sub-reads.
+ */
+export const GitReadFailure = z.enum(["timeout", "failed"]);
+export type GitReadFailure = z.infer<typeof GitReadFailure>;
+
 export const GitFileChange = z.object({
   path: z.string().min(1),
   status: GitChangeStatus,
@@ -2064,10 +2138,51 @@ export const SessionDiff = z.object({
    * so. Present is the full answer.
    */
   base: z.string().min(1).optional(),
+  /**
+   * SET WHEN NOTHING CONFIRMED THE BASE ABOVE — issue #654.
+   *
+   * The base is still what this diff is measured from: the session RECORDED it
+   * when its worktree was cut, and a `rev-parse --verify` the engine killed is
+   * corroboration that did not arrive, not a ref that does not exist. Dropping
+   * it there used to reframe the review as `HEAD…worktree` and report `base`
+   * absent — so a session that had committed all of its work read as having
+   * done none of it, above the sentence "no starting commit was recorded".
+   *
+   * A base that genuinely does not resolve is still ABSENT rather than marked;
+   * only a read that did not answer lands here.
+   */
+  baseUnverified: GitReadFailure.optional(),
   ahead: z.number().int().nonnegative().optional(),
   behind: z.number().int().nonnegative().optional(),
   files: z.array(GitFileChange),
+  /**
+   * WHY `files` IS NOT THE WHOLE CHANGE — issue #654, and the field that matters
+   * most on this contract.
+   *
+   * The list is three reads — `diff --numstat`, `diff --name-status` and
+   * `status -uall` — and a non-zero exit from any of them used to produce FEWER
+   * ROWS rather than an error. One of the ways they exit non-zero is the
+   * engine's own 30-second bound, so a diff that timed out said "this session
+   * changed nothing": an empty review is a claim a person acts on directly, and
+   * unlike a short branch list there is no search box to blame and nothing to
+   * make them suspicious. An agent reading this answer will report it to a
+   * person as fact.
+   *
+   * WHAT DID ARRIVE IS KEPT, per #650 — including `linesAdded`/`linesRemoved`,
+   * which stay honest sums over the rows that made it. Set means they
+   * under-count and the rows may be short or mislabelled; ABSENT is the only
+   * state in which an empty `files` means "nothing differs".
+   */
+  filesIncomplete: GitReadFailure.optional(),
   commits: z.array(GitCommitEntry),
+  /**
+   * WHY `commits` IS NOT THE WHOLE SET — issue #654. `git log base..HEAD` is its
+   * own read and fails on its own, and "0 commits" for a session that committed
+   * its work is the same wrong claim as an empty file list. Never set when
+   * `base` is absent: there is no range to ask about then, which the surface
+   * already explains.
+   */
+  commitsIncomplete: GitReadFailure.optional(),
   linesAdded: z.number().int().nonnegative(),
   linesRemoved: z.number().int().nonnegative(),
   /** The file list is capped. Reported so a truncated review cannot read as a
@@ -2093,6 +2208,25 @@ export const SessionDiff = z.object({
 export type SessionDiff = z.infer<typeof SessionDiff>;
 
 /**
+ * ONE FILE'S PATCH, fetched when a row is opened rather than carried on the
+ * review — a two-hundred-file diff with every patch is a megabyte on a poll.
+ *
+ * `incomplete` EXISTS BECAUSE `patch: ""` MEANT TWO THINGS — issue #654. A
+ * `git diff` that exited past 1 returned the empty string, and every surface
+ * reads an empty non-binary patch as "this file is binary, there is no textual
+ * diff". So a subprocess the engine killed said something specific, confident
+ * and wrong about the file's contents.
+ */
+export const GitFilePatch = z.object({
+  patch: z.string(),
+  binary: z.boolean(),
+  /** Set when git did not produce the patch. An empty `patch` means "no textual
+   *  diff" ONLY when this is absent. */
+  incomplete: GitReadFailure.optional(),
+});
+export type GitFilePatch = z.infer<typeof GitFilePatch>;
+
+/**
  * One ref a worktree session could be cut from. `remote` names come qualified
  * (`origin/main`) because that is both what a human recognises and what
  * `git rev-parse` resolves — the picker forwards the name verbatim as
@@ -2109,18 +2243,33 @@ export type GitRefEntry = z.infer<typeof GitRefEntry>;
 export const GitOverview = z.object({
   repository: z.boolean(),
   branch: z.string().optional(),
-  dirtyFiles: z.number().int().nonnegative(),
+  /** ABSENT when git did not answer — never 0, which a reader takes for a clean
+   *  working tree somebody actually looked at. */
+  dirtyFiles: z.number().int().nonnegative().optional(),
   /** Both absent when the branch has no upstream — which is NOT zero/zero. */
   ahead: z.number().int().nonnegative().optional(),
   behind: z.number().int().nonnegative().optional(),
-  worktrees: z.array(GitWorktreeEntry),
+  /** Absent when `git worktree list` did not answer; `[]` only when there
+   *  genuinely are none. */
+  worktrees: z.array(GitWorktreeEntry).optional(),
   /**
    * Local and remote-tracking branches, newest commit first, capped — the
    * base-ref picker's menu. Remote entries are whatever the last fetch saw:
    * the engine's git surface stays read-only, so it never fetches to freshen
    * them. Absent (never empty) on a non-repository.
+   *
+   * MAY BE PARTIAL. Read `refsIncomplete` before treating a name's absence from
+   * this list as "that branch does not exist".
    */
   refs: z.array(GitRefEntry).optional(),
+  /**
+   * WHY THE LISTING IS NOT THE WHOLE LISTING — issue #650. The refs are read one
+   * namespace at a time, and a half that was killed used to arrive as a SHORT
+   * list rather than an error: the picker drew it as the repository, and the
+   * person picked a base that was not the one they meant. Set means the picker
+   * must say git did not answer and offer to ask again.
+   */
+  refsIncomplete: GitReadFailure.optional(),
   /**
    * The remote's default branch (`origin/main`), when remote-tracking state
    * exists — what a fresh worktree is cut from unless the person picks

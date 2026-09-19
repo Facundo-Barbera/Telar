@@ -23,6 +23,7 @@ import {
   expandHome,
   isDirectoryFailure,
   listDirectories,
+  listRoots,
   MAX_ENTRIES,
   within,
   type DirectoryListing,
@@ -194,6 +195,45 @@ describe("listDirectories", () => {
     // Up stops at the mount root, not at `/`.
     expect(result.parent).toBe(volumes);
     expect(listing(listDirectories({ path: volumes }, { home, mounts: [volumes] })).parent).toBeNull();
+  });
+
+  /**
+   * ISSUE #630. Browsing a drive was always ALLOWED and never REACHABLE: the
+   * browser opens at home, home's parent is null by design, and so the only
+   * route to a volume was knowing its path and typing it. These roots are what
+   * makes the allowance visible — a drive being MOUNTED is what puts it in the
+   * list, which is why the `st_dev` test is here and not just in `volumes.ts`.
+   */
+  test("the roots offer home and each mounted drive, by the name a person calls it", () => {
+    const home = scratchHome();
+    const volumes = scratchHome();
+    mkdirSync(path.join(volumes, "Backup"), { recursive: true });
+    // A differing `st_dev` is what makes it a mount. A test cannot create one,
+    // so this is the seam — the same arrangement the containment cases use.
+    const roots = listRoots({
+      home,
+      mounts: [volumes],
+      exists: () => true,
+      stat: (target) => ({ dev: target === path.join(volumes, "Backup") ? 42 : 1 }) as never,
+    });
+    expect(roots[0]).toEqual({ name: "Home", path: home });
+    expect(roots.map((root) => root.name)).toEqual(["Home", "Backup"]);
+  });
+
+  test("a folder left behind where a drive used to be is not offered as a root", () => {
+    const home = scratchHome();
+    const volumes = scratchHome();
+    mkdirSync(path.join(volumes, "Ghost"), { recursive: true });
+    // Same `dev` as its parent: not a mount, however much the path looks like
+    // one. Offering it would send somebody into a directory that vanishes.
+    const roots = listRoots({ home, mounts: [volumes], exists: () => true, stat: () => ({ dev: 1 }) as never });
+    expect(roots.map((root) => root.name)).toEqual(["Home"]);
+  });
+
+  test("a listing carries the roots, so the browser has somewhere to offer", () => {
+    const home = scratchHome();
+    const result = listing(listDirectories({ path: home }, { home, mounts: [] }));
+    expect(result.roots).toEqual([{ name: "Home", path: home }]);
   });
 
   test("a symlink is never a folder here, so a loop cannot be walked into", () => {

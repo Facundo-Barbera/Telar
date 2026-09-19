@@ -1242,7 +1242,12 @@ export class EngineWorker {
       // A CLAIM WITH NO `projectRoot` HAS NOTHING TO CHECK (#526) — that is a
       // session with no working directory, not one whose folder went missing,
       // and the check is skipped rather than passed a substitute.
-      if (cwd !== undefined) assertProjectRoot(cwd);
+      //
+      // `claim.worktree` says whether that directory is a WORKTREE (#641), which
+      // is what decides between two unrelated failures with two unrelated
+      // remedies. Absent from an older engine, and absent is "a project folder",
+      // which is what this always assumed.
+      if (cwd !== undefined) assertProjectRoot(cwd, {}, claim.worktree);
       /**
        * THE SESSION'S BROWSER LEASE, one binding per session rather than one
        * per run. The lease's url+token are baked into the provider's live
@@ -2062,30 +2067,89 @@ export class EngineWorker {
  * IT NEEDS NO STORE AND NO PROJECT RECORD, which is why it can live here: the
  * PATH says whether it is under a mount root, and the filesystem says whether
  * anything is mounted there. See `volumes.ts`.
+ *
+ * ══ A WORKTREE IS NOT A PROJECT, AND SAYING SO IS THE FIX — issue #641 ══
+ *
+ * `cwd` is the session's working directory, which for a worktree session is the
+ * WORKTREE. Everything below called it "the project folder" anyway, and the
+ * ENOENT arm sent the reader to re-register the project — advice that is not
+ * merely useless for this case but actively harmful, because re-registering
+ * mints a new project id and leaves the session's history behind. The project
+ * was never the thing that broke.
+ *
+ * SO THE CALLER SAYS WHICH KIND OF DIRECTORY THIS IS. `worktree` is present
+ * exactly when `cwd` is one (see `WorkerClaim.worktree`), and it carries the two
+ * facts the sentence needs: the branch, and the project's own checkout — so the
+ * message can say "that one is fine" as a claim it has checked rather than an
+ * assumption.
  */
-export function assertProjectRoot(cwd: string, volumes: VolumeDeps = {}): void {
+export type WorktreeFacts = { branch: string; repoRoot: string };
+
+/**
+ * The sentence for a worktree that is gone: what happened, what is NOT wrong,
+ * what almost certainly did it, and what to do instead.
+ *
+ * IT NAMES `gh pr merge --delete-branch` BY NAME because that is the cause in
+ * every occurrence seen so far, and a reader who merged a PR two minutes ago
+ * recognises their own action in it. Telar locks its worktrees against exactly
+ * this now; reaching this message means the lock was missing or released, which
+ * is worth knowing rather than smoothing over.
+ *
+ * IT PROMISES NOTHING ABOUT THE BRANCH. `--delete-branch` deletes the remote
+ * branch too — verified against the branches from this issue's own occurrences,
+ * which are gone from the remote, not merely local. "Cut a fresh worktree from
+ * its branch" would be advice that fails for the commonest case, so the message
+ * says what to CHECK and names the fallback that always exists: the branch it
+ * was merged into.
+ */
+function missingWorktreeMessage(cwd: string, worktree: WorktreeFacts, exists: (path: string) => boolean): string {
+  const project = exists(worktree.repoRoot)
+    ? `The project itself is fine — it is still at ${worktree.repoRoot}, so do NOT re-register it; that would give it a new id and leave this session's history behind.`
+    : `The project's own checkout at ${worktree.repoRoot} is missing too, so this is a larger loss than one worktree — check that path before anything else.`;
+  return [
+    `This session's worktree ${cwd} no longer exists.`,
+    project,
+    "A worktree goes when its session is archived or deleted, or when something outside Telar removes it — `gh pr merge --delete-branch` runs `git worktree remove` on whichever worktree holds the branch it is deleting, which takes the directory, the local branch and git's registration together.",
+    `This session cannot continue in a checkout that is not there. Anything it had committed is on ${worktree.branch} if that branch survives (\`git branch -a --contains\`) and in the branch it was merged into either way; anything uncommitted went with the directory. Start a session on the project from whichever of those still exists.`,
+  ].join(" ");
+}
+
+export function assertProjectRoot(cwd: string, volumes: VolumeDeps = {}, worktree?: WorktreeFacts): void {
   const mount = mountPointForRoot(cwd, volumes);
   if (mount !== undefined && !isMountPoint(mount, volumes)) {
     throw new Error(
       `The drive holding this project is not connected (${mount}). Plug it back in and retry — do not re-register the project from another path, which would give it a new id and leave this session's history behind.`,
     );
   }
+  // The worktree's own words for every arm below, not only the missing one: a
+  // permission problem on a worktree is not a permission problem on a project
+  // either, and "re-register" is wrong advice in all of them.
+  const what = worktree ? "This session's worktree" : "The project folder";
   let stat: fs.Stats;
   try {
     stat = fs.statSync(cwd);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error(
+        worktree
+          ? missingWorktreeMessage(cwd, worktree, (target) => fs.existsSync(target))
+          : `The project folder ${cwd} does not exist. It may have been moved or deleted; re-register the project with its current location (or restore the folder) and retry.`,
+      );
+    }
+    throw new Error(`${what} ${cwd} cannot be accessed (${code ?? "unknown error"}). Check its permissions and retry.`);
+  }
+  if (!stat.isDirectory()) {
     throw new Error(
-      code === "ENOENT"
-        ? `The project folder ${cwd} does not exist. It may have been moved or deleted; re-register the project with its current location (or restore the folder) and retry.`
-        : `The project folder ${cwd} cannot be accessed (${code ?? "unknown error"}). Check its permissions and retry.`,
+      worktree
+        ? `This session's worktree path ${cwd} is not a folder. Something replaced it; the project at ${worktree.repoRoot} is unaffected.`
+        : `The project path ${cwd} is not a folder. Re-register the project with its checkout directory and retry.`,
     );
   }
-  if (!stat.isDirectory()) throw new Error(`The project path ${cwd} is not a folder. Re-register the project with its checkout directory and retry.`);
   try {
     fs.accessSync(cwd, fs.constants.R_OK | fs.constants.X_OK);
   } catch {
-    throw new Error(`The project folder ${cwd} is not readable by this user. Check its permissions and retry.`);
+    throw new Error(`${what} ${cwd} is not readable by this user. Check its permissions and retry.`);
   }
 }
 

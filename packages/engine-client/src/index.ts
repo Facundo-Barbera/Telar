@@ -34,7 +34,11 @@ import {
   type RememberedLogin,
   type SessionDefaults,
   type SidebarLayout,
+  type StorageReport,
+  type JournalReclaim,
   type TextGenPolicy,
+  type WorktreeMoveResult,
+  type WorktreesRoot,
   type UsageReport,
   type UsageResolution,
   type UsageLimits,
@@ -80,6 +84,7 @@ import {
   type EngineHealth,
   type EventPage,
   type Item,
+  type GitFilePatch,
   type GitOverview,
   type ModelSelection,
   type Project,
@@ -110,6 +115,8 @@ import {
   type AgentTurnInput,
   type WorkerStatus,
   type ProviderSkills,
+  type ClaudeConversation,
+  type ConversationImportDetail,
   type WorkspaceFile,
   type WorkspaceListing,
   type WorkerTurnFailure,
@@ -1449,6 +1456,63 @@ export class EngineClient {
     return this.request("GET", `/v2/usage/limits${options.refresh ? "?refresh=1" : ""}`);
   }
 
+  /**
+   * What this engine is keeping on disk, by category — issue #642.
+   *
+   * SLOW ON A COLD ENGINE, and worth knowing at the call site: the first read
+   * walks the whole store, which is seconds on a large one. Afterwards the
+   * measurement comes back with the `measuredAt` it was taken at until somebody
+   * asks for a fresh one. Nothing here polls, and there is no write.
+   */
+  storage(options: { refresh?: boolean } = {}): Promise<{ storage: StorageReport }> {
+    return this.request("GET", `/v2/storage${options.refresh ? "?refresh=1" : ""}`);
+  }
+
+  /**
+   * Compact the turn journal and return the freed pages to the filesystem —
+   * issue #646.
+   *
+   * SLOW AND EXCLUSIVE, and the only write on the storage surface. The VACUUM
+   * behind it rewrites the whole database under a lock — seconds on a large
+   * one — so this belongs behind an explicit press and never on a render path.
+   *
+   * What it drops is journal rows a settled turn has superseded, never a turn,
+   * an item or an answer; `deltas` and `starts` are how many, and `before` and
+   * `after` are the file either side of the work.
+   */
+  reclaimJournal(): Promise<{ reclaimed: JournalReclaim }> {
+    return this.request("POST", "/v2/storage/journal/reclaim");
+  }
+
+  /** Where session checkouts go on this install — see `WorktreesRoot`. */
+  worktreesRoot(): Promise<{ worktreesRoot: WorktreesRoot }> {
+    return this.request("GET", "/v2/worktrees-root");
+  }
+
+  /**
+   * Put them somewhere else from the next cut onward. `null` restores the
+   * default beside the store.
+   *
+   * NOTHING IS MOVED BY THIS and no restart is needed: checkouts already cut
+   * keep working where they are, addressed by the path on their session.
+   */
+  setWorktreesRoot(root: string | null): Promise<{ worktreesRoot: WorktreesRoot }> {
+    return this.request("PUT", "/v2/worktrees-root", { root });
+  }
+
+  /**
+   * Move the checkouts already cut to the configured root, by re-cutting each
+   * from its own branch.
+   *
+   * SLOW, AND PARTIAL BY DESIGN. One `git worktree remove` and one `add` per
+   * checkout. A checkout with uncommitted changes is refused by git and
+   * reported rather than forced; so is one whose branch no longer exists. The
+   * whole call is refused while any session is working in its checkout.
+   */
+  moveWorktrees(): Promise<{ move: WorktreeMoveResult }> {
+    return this.request("POST", "/v2/worktrees-root/move", {});
+  }
+
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */
   textGenPolicy(): Promise<{ textGen: TextGenPolicy }> {
     return this.request("GET", "/v2/textgen");
@@ -1792,7 +1856,7 @@ export class EngineClient {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff`);
   }
 
-  projectFilePatch(projectId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: { patch: string; binary: boolean } }> {
+  projectFilePatch(projectId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: GitFilePatch }> {
     const query = new URLSearchParams({ path });
     if (options.untracked) query.set("untracked", "1");
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`);
@@ -1824,6 +1888,41 @@ export class EngineClient {
    */
   sessionSkills(sessionId: string): Promise<ProviderSkills> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/skills`);
+  }
+
+  /**
+   * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, newest first — `/resume`'s
+   * picker (#616).
+   *
+   * PER LOGIN, NOT PER SESSION, like `projectSkills` and for the same reason:
+   * the picker runs on a canvas, before the session it would adopt into exists.
+   * `instanceId` is which login's history to read — absent is the built-in
+   * slot, which is where a terminal `claude` writes.
+   *
+   * Forks Telar has already adopted are not in the answer: adopting an adoption
+   * is something a person could do without ever being told that is what it was.
+   */
+  claudeConversations(options: { instanceId?: string; cwd?: string } = {}): Promise<{ conversations: ClaudeConversation[] }> {
+    const query = new URLSearchParams();
+    if (options.instanceId) query.set("instanceId", options.instanceId);
+    if (options.cwd) query.set("cwd", options.cwd);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request("GET", `/v2/claude/conversations${suffix}`);
+  }
+
+  /**
+   * Adopt one into this session: fork it, import its history as journal rows,
+   * and point the session's next turn at the fork.
+   *
+   * THE PERSON'S OWN HISTORY IS NOT WRITTEN TO — asserted by the engine after
+   * the fork rather than assumed, and the adoption is refused if the original
+   * moved by so much as a byte.
+   */
+  adoptClaudeConversation(
+    sessionId: string,
+    input: { sourceSessionId: string; cut?: "whole" | "since_compact_boundary"; sourceCwd?: string },
+  ): Promise<{ session: Session; turn: Turn; provenance: ConversationImportDetail }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/adopt`, input);
   }
 
   /**
@@ -2415,7 +2514,7 @@ export class EngineClient {
 
   /** One file's patch. Separate from the review for the same reason a screenshot
    *  is separate from the browser's tab list: size, and nobody reads all of it. */
-  sessionFilePatch(sessionId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: { patch: string; binary: boolean } }> {
+  sessionFilePatch(sessionId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: GitFilePatch }> {
     const query = new URLSearchParams({ path });
     if (options.untracked) query.set("untracked", "1");
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`);

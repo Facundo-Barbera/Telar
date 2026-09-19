@@ -82,3 +82,33 @@ test("the OAuth callback's section id is still routable", () => {
   // `section=mcp` is baked into app/api/mcp/oauth/callback/route.ts.
   expect(source).toContain('mcp: "tools"');
 });
+
+test("Storage is a pane under Runtime, and it reads numbers → checkouts → store (#642)", () => {
+  expect(source).toContain('{ id: "storage", label: "Storage"');
+  const pane = source.slice(source.indexOf('active === "storage"'), source.indexOf('active === "plugins"'));
+  for (const section of ["<StorageSection />", "<WorktreesRootSection />", "<StoreSection />"]) {
+    expect(pane).toContain(section);
+  }
+  /**
+   * THE ORDER IS THE ARGUMENT. Read what is on disk, then the cheap safe move
+   * (checkouts are re-cut from a recorded commit, so Telar still starts
+   * without the drive), then the whole-store move that cannot start without
+   * it. Putting the expensive option first would make it the default reading.
+   */
+  expect(pane.indexOf("<StorageSection />")).toBeLessThan(pane.indexOf("<WorktreesRootSection />"));
+  expect(pane.indexOf("<WorktreesRootSection />")).toBeLessThan(pane.indexOf("<StoreSection />"));
+});
+
+test("the store's location left General with the pane that reports what is in it", () => {
+  /**
+   * #630 put it beside Updates — both facts about this install, applied at the
+   * next launch — which was right while it was one row. A pane that reports
+   * what the store holds and a row on ANOTHER pane that moves the store are one
+   * question answered in two places, and the half that can move it was the half
+   * further from the numbers.
+   */
+  const general = source.slice(source.indexOf('active === "general"'), source.indexOf('active === "storage"'));
+  expect(general).not.toContain("<StoreSection");
+  // Nothing is stranded: the row never had a section id of its own to bookmark.
+  expect(source).not.toContain('store: "');
+});

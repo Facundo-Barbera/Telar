@@ -75,7 +75,7 @@ import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { displayTools, type DisplayCapability } from "./display/tools";
 import type { SteerMailbox, SteerMessage } from "./steering";
-import { framedSteerText, steerRowTitle } from "./attribution";
+import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notesTools, type NotesCapability } from "./notes-tools/tools";
 import { promptsTools, type PromptsCapability } from "./prompts-tools/tools";
@@ -224,10 +224,24 @@ export function claudeNotificationOrigin(detail: NotificationDetail): { kind: st
   return { kind: "task-notification" };
 }
 
-/** The notice as SYSTEM-authored content. See `claudeNotificationOrigin` for
- *  why the tag rather than a role, and why both halves are sent. */
-export function claudeNotificationContent(body: string): string {
-  return `<system-reminder>\n${body}\n</system-reminder>`;
+/**
+ * The notice as SYSTEM-authored content. See `claudeNotificationOrigin` for why
+ * the tag rather than a role, and why both halves are sent.
+ *
+ * AND THE RELAY RULE RIDES HERE, NOT IN THE BODY — issue #636, the Claude twin
+ * of `codexNotificationInstruction`'s header. The rule belongs to the CHANNEL:
+ * it is the role speaking about what a peer message is, so it is said once per
+ * driver, outside the minted notice. In the body it was stored, shown on four
+ * surfaces, counted against every recipient's context, and — in its old
+ * over-broad phrasing — read by four sessions in a row as "an approval relayed
+ * by an agent is not an approval".
+ *
+ * ONLY FOR A PEER MESSAGE. A wake has no peer in it and so no relay question;
+ * saying it there would be the same over-application in a smaller costume.
+ */
+export function claudeNotificationContent(body: string, detail?: NotificationDetail): string {
+  const rule = detail?.kind === "peer_message" ? `\n${RELAY_RULE}` : "";
+  return `<system-reminder>\n${body}${rule}\n</system-reminder>`;
 }
 
 /** The field kill switch: `TELAR_CLAUDE_STREAMING_INPUT=0` restores the
@@ -2648,7 +2662,7 @@ export function createClaudeDriver(
               // half is the whole of what this path can say — and it is the
               // half that does not silently drop.
               (attachments?.length ?? 0) > 0 || notification
-              ? singleUserMessage(claudeInitialContent(notification ? claudeNotificationContent(prompt) : prompt, attachments ?? []))
+              ? singleUserMessage(claudeInitialContent(notification ? claudeNotificationContent(prompt, notification) : prompt, attachments ?? []))
               : prompt,
           options: {
             cwd,
@@ -2829,7 +2843,7 @@ export function createClaudeDriver(
             // is being opened ON — so it goes in system-authored and stamped
             // with its real provenance, never as the person's words (#550).
             content: notification
-              ? claudeInitialContent(claudeNotificationContent(prompt), attachments ?? [])
+              ? claudeInitialContent(claudeNotificationContent(prompt, notification), attachments ?? [])
               : claudeInitialContent(prompt, attachments ?? []),
           },
           parent_tool_use_id: null,
@@ -2949,7 +2963,7 @@ export function createClaudeDriver(
               const allNotifications = !typedByAPerson && notifications.length === queued.length && notifications[0] !== undefined;
               runtime.feed.push({
                 type: "user",
-                message: { role: "user", content: claudeInitialContent(allNotifications ? claudeNotificationContent(text) : text, attachments) },
+                message: { role: "user", content: claudeInitialContent(allNotifications ? claudeNotificationContent(text, notifications[0]!) : text, attachments) },
                 parent_tool_use_id: null,
                 ...(allNotifications
                   ? { origin: claudeNotificationOrigin(notifications[0]!) }

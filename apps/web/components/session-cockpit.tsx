@@ -7,6 +7,7 @@ import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, 
 import {
   isBackgroundWork,
   type EngineEvent,
+  type ClaudeConversation,
   type EngineRequest,
   type RequestDecision,
   type Item,
@@ -1063,7 +1064,12 @@ function SessionTurnBody({
       {/* THE ORDINARY MESSAGE, from the one component that defines what that
           looks like — the same one a message steered into a running turn now
           uses, so the two cannot drift apart. See `conversation-message.tsx`. */}
-      {turn.origin !== "provider" && turn.origin !== "session" && (
+      {/* AN IMPORT TURN HAS NO MESSAGE. `prompt` is the engine's own line about
+          an adopted conversation (#616) — nobody typed it, and drawing it in a
+          bubble would be the `/compact` mistake again, with a whole
+          conversation's history underneath it rather than one row. Its own
+          first item says what happened. */}
+      {turn.kind !== "import" && turn.origin !== "provider" && turn.origin !== "session" && (
         // `markdown={false}`: this is the draft the person typed, chips and
         // all — "Copy as Markdown" would offer the same string again under a
         // name that claims something about it which is not true.
@@ -2505,6 +2511,75 @@ export function SessionCockpit({
     try { return await flight; } finally { browserDraftFlight.current = null; }
   }
 
+  /**
+   * BRING IN A CLAUDE CODE CONVERSATION — `/resume` (#616).
+   *
+   * CREATES THE SESSION, THEN ADOPTS INTO IT, because adopting is something
+   * that happens TO a session: the fork's id becomes that session's resume
+   * cursor and the imported history becomes its journal. So this walks the same
+   * hand-off the first message does — mint the id, move the address, create,
+   * carry the panel arrangement over — and then makes one more call.
+   *
+   * THE TITLE COMES FROM THE CONVERSATION, not from the person: they picked a
+   * row rather than typing a sentence, and the row's own opening words are what
+   * they recognised it by. It is also what keeps the fork distinguishable from
+   * its parent in any list that shows both.
+   *
+   * THE ADDRESS GOES BACK IF EITHER HALF FAILS. A URL naming a session that was
+   * never created, or one holding a session with no conversation in it, both
+   * outlive the error message that explained them.
+   */
+  async function adoptConversation(conversation: ClaudeConversation): Promise<void> {
+    if (projectId === undefined) {
+      throw new EngineApiError("invalid_request", "This conversation has no project to create a session in.");
+    }
+    if (sessionId) {
+      // The engine refuses this too; saying it here means the person is told
+      // before a session is created rather than after.
+      throw new EngineApiError("conflict", "This conversation has already started. Open a new one to bring in another.");
+    }
+    const id = newSessionId();
+    const canvas = window.location.pathname;
+    const title = (conversation.customTitle || conversation.firstPrompt || conversation.title || "Claude Code conversation")
+      .replace(/\s+/g, " ")
+      .slice(0, 80);
+    const adoptApi = createEngineApi(hostFetcher(hostId));
+    window.history.replaceState(null, "", sessionHref({ id, projectId, hostId }));
+    let target: string;
+    try {
+      const created = await adoptApi.createSession(projectId, {
+        id,
+        title,
+        // ADOPTING A CLAUDE CONVERSATION MAKES THIS A CLAUDE SESSION, whatever
+        // the canvas's pill said. A Codex session holding a Claude fork's
+        // resume cursor would fail on its first turn, with nothing on screen
+        // explaining why.
+        driver: "claude",
+        envMode: draftEnvMode,
+        ...(draftEnvMode === "worktree" && draftBase.baseRef ? { baseRef: draftBase.baseRef } : {}),
+        ...(draftEnvMode === "worktree" && draftBase.branchName ? { branchName: draftBase.branchName } : {}),
+      });
+      target = created.session.id;
+      if (target !== id) window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
+      const adopted = await adoptApi.adoptClaudeConversation(target, conversation.sessionId);
+      setSession(adopted.session);
+    } catch (cause: unknown) {
+      window.history.replaceState(null, "", canvas);
+      throw cause;
+    }
+    // THE HAND-OFF, exactly as the first message performs it: the surfaces open
+    // while choosing are the surfaces wanted while reading.
+    writePanelTabs(target, panel, Date.now());
+    for (const [instance, state] of Object.entries(editors)) writeEditor(editorInstanceKey(target, instance), state, Date.now());
+    setTurns([]);
+    setItems([]);
+    setTasks([]);
+    setRequests([]);
+    setEvents([]);
+    owner.current = { sessionId: target, projectId };
+    setCreatedSessionId(target);
+  }
+
   async function openBrowser() {
     if (browserOpening.current) return;
     browserOpening.current = true;
@@ -3752,6 +3827,13 @@ export function SessionCockpit({
                   setDraftBase(next);
                   if (next.baseRef || next.branchName) chooseEnvMode("worktree");
                 },
+                // OFFERED ONLY ON A FRESH CANVAS, because that is the only
+                // place it can be taken: a conversation already under way has
+                // its own history, and splicing somebody else's into it would
+                // move the model's memory out from under the transcript (#616).
+                // Claude only in this pass — Codex and OpenCode have their own
+                // stores and their own shapes.
+                ...(draftDriver === "claude" ? { onAdopt: adoptConversation } : {}),
               }
             : {})}
           busy={Boolean(active)}

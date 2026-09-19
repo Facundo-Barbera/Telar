@@ -13,8 +13,24 @@
  *   requestId, costUSD, message:{id, model, usage:{input_tokens,
  *   cache_read_input_tokens, cache_creation_input_tokens, output_tokens}}}`.
  *   `input_tokens` already EXCLUDES cache reads. `costUSD` is null on
- *   subscription plans. Dedupe by `messageId:requestId` (a resumed session
- *   copies its parent's history into a new file).
+ *   subscription plans. Dedupe by `messageId:requestId`.
+ *
+ *   THAT DEDUPE IS LOAD-BEARING, AND NOT FOR THE REASON THIS COMMENT USED TO
+ *   GIVE. It said a resumed session copies its parent's history into a new
+ *   file. Re-measured at CLI 2.1.275 (#616): resume appends to the SAME file
+ *   and keeps the same session id, and across the 2,533 transcripts on a
+ *   working machine there is not one `messageId:requestId` that appears in two
+ *   files — the copying the dedupe was written for no longer happens.
+ *
+ *   What it actually suppresses is INSIDE a single file. The CLI writes one
+ *   record PER CONTENT BLOCK of an assistant response — `apiBlockIndex` 0, 1,
+ *   2 for a reply that thought, spoke and called a tool — and stamps every one
+ *   of them with the SAME `usage` object. Measured: 52,526 of 113,359 usage
+ *   records are such re-emissions, 46%. Counting them would bill a three-block
+ *   answer three times.
+ *
+ *   So this key must not be removed on the grounds that resume no longer
+ *   forks. Left as it was, the stale rationale invited exactly that.
  *
  *   Codex — `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`:
  *   `{type:"event_msg", payload:{type:"token_count", info:{last_token_usage:

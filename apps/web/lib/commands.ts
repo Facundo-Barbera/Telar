@@ -31,6 +31,7 @@
 import {
   COMMANDS as RAW_COMMANDS,
   chordForEvent as rawChordForEvent,
+  claimedCommandIds as rawClaimedCommandIds,
   defaultKeymap as rawDefaultKeymap,
   keymapConflicts as rawKeymapConflicts,
   keymapOverrides as rawKeymapOverrides,
@@ -147,6 +148,10 @@ type KeybindingsBridge = {
   get?: () => Promise<Partial<Keymap>>;
   set?: (overrides: Partial<Keymap>) => Promise<Partial<Keymap>>;
   capture?: (capturing: boolean) => Promise<unknown>;
+  /** The chords a surface on screen has claimed (#656). Optional like the rest:
+   *  an older shell simply keeps its accelerators and the renderer's own half of
+   *  the suppression still holds. */
+  scope?: (chords: readonly string[]) => Promise<unknown>;
 };
 
 function shell(): KeybindingsBridge | undefined {
@@ -301,6 +306,82 @@ export function setChordCapture(next: boolean) {
   if (capturing === next) return;
   capturing = next;
   void shell()?.capture?.(next);
+}
+
+// --- Chord scopes (issue #656) -----------------------------------------------
+
+/**
+ * A SURFACE OWNS THESE CHORDS WHILE IT IS UP.
+ *
+ * THE BUG THIS EXISTS FOR: the New Conversation palette numbers its rows ⌘1..⌘9
+ * and never got to answer any of them. `jump-1`..`jump-9` carry `menu: "file"`,
+ * so macOS matched the File menu's key equivalent and the keydown never reached
+ * the page — the palette's handler was dead code on the desktop, and pressing ⌘1
+ * switched conversations and threw away what you were composing.
+ *
+ * A CLAIM IS A REGISTRATION WITH A LIFETIME, exactly like `bindCommands` beside
+ * it, and that is the whole reliability argument. Nothing in a dismissal path
+ * has to remember to give the chords back: Escape, a click on the backdrop and
+ * an unmount mid-animation all end the same React effect, and the effect's
+ * cleanup is the release. A suppression released by a HANDLER would leak the
+ * first time somebody found a fourth way to close the thing — and a leak here
+ * leaves the rail's shortcut dead, which is worse than the bug it fixed.
+ *
+ * A STACK, newest-wins-by-union, for the same reason `bound` is one: the command
+ * palette embeds the project palette's pages inside its own dialog, so two
+ * claims can be live at once and releasing the inner one must not take the
+ * outer one's chords with it.
+ *
+ * WHICH COMMANDS THAT SUPPRESSES IS NOT DECIDED HERE — `claimedCommandIds` in
+ * the shared table computes it against the live keymap, so the shell's menu and
+ * this renderer's dispatcher suppress exactly the same set. See its comment for
+ * why a claim names CHORDS and never command ids.
+ */
+const chordClaims: Array<readonly string[]> = [];
+
+export function claimChords(chords: readonly string[]): () => void {
+  // A fresh array per claim, so identity is what releases — two surfaces
+  // claiming the same nine chords are two claims, not one shared by accident.
+  const claim: readonly string[] = [...chords];
+  chordClaims.push(claim);
+  announceClaims();
+  return () => {
+    const at = chordClaims.lastIndexOf(claim);
+    // Already released: a double cleanup is not an error, it is StrictMode.
+    if (at < 0) return;
+    chordClaims.splice(at, 1);
+    announceClaims();
+  };
+}
+
+/** Every chord currently spoken for, canonical and de-duplicated. */
+export function claimedChords(): string[] {
+  const chords = new Set<string>();
+  for (const claim of chordClaims) {
+    for (const chord of claim) {
+      const normalized = normalizeChord(chord);
+      if (normalized !== "") chords.add(normalized);
+    }
+  }
+  return [...chords];
+}
+
+/** The commands a live claim suppresses under this keymap. Empty — the common
+ *  case, with nothing on screen claiming anything — without touching the map. */
+export function claimedCommandIds(keymap: Keymap): CommandId[] {
+  if (chordClaims.length === 0) return [];
+  return rawClaimedCommandIds(keymap, claimedChords()) as CommandId[];
+}
+
+/**
+ * Tell the shell, which is where the fix actually lands on macOS: the menu is
+ * rebuilt with these accelerators stripped, so the key equivalent stops being
+ * matched ahead of the page. The same mirror `setChordCapture` uses, and it
+ * degrades the same way — in a browser tab there is no shell, and the renderer's
+ * own dispatcher is the only half that needs to stand down.
+ */
+function announceClaims() {
+  void shell()?.scope?.(claimedChords());
 }
 
 // --- The handler binding point -----------------------------------------------

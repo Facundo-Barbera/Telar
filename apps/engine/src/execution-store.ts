@@ -57,6 +57,30 @@ const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const RECEIPT_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * THE TURN STATES AFTER WHICH A TURN'S ITEMS ARE FINAL — see `compactJournal`.
+ *
+ * `turn.steered`, `turn.requeued` and `turn.released` are deliberately absent:
+ * they move a turn without ending it, and the items under them are still open.
+ */
+const TERMINAL_TURN_TYPES = ["turn.completed", "turn.failed", "turn.stopped", "turn.ambiguous", "turn.discarded"] as const;
+
+/**
+ * WHERE THE COMPACTION OF ONE SESSION GOT TO — `metadata`, one row per session.
+ *
+ * The sweep is incremental because the alternative is re-examining a million
+ * settled rows every day to find the few hundred that are new. The row holds
+ * the id of the last terminal turn event compacted; the next sweep considers
+ * `(watermark, newBoundary]` and nothing below it, so every event in the
+ * journal is examined exactly once in its life.
+ */
+const COMPACT_WATERMARK_PREFIX = "journal-compacted/";
+
+/** How long after opening the first compaction starts. Long enough that the
+ *  daemon is answering before housekeeping touches the database, short enough
+ *  that a person who launches Telar to reclaim space does not wait on it. */
+const COMPACT_AFTER_OPEN_MS = 5_000;
+
+/**
  * HOW LONG THE JSON THE IMPORT REPLACED IS KEPT — issue #457.
  *
  * `importLegacy` copies every document it reads into `execution-json-backup`
@@ -206,6 +230,9 @@ export type ExecutionHousekeeping = {
   /** The migration backup, when there was one to consider. `removed: false`
    *  means it is still inside its week. */
   backup?: { removed: boolean; bytes: number; files: number; ageMs: number };
+  /** Superseded journal rows dropped by `compactJournal` — issue #646. Zero on
+   *  every open after the first unless turns have ended since. */
+  journal?: { deltas: number; starts: number; sessions: number };
 };
 
 /** What a directory holds, in bytes and files — so a deletion can say what it
@@ -271,6 +298,9 @@ export type ExecutionStoreOptions = {
   now?: () => number;
   receiptRetentionMs?: number;
   legacyBackupRetentionMs?: number;
+  /** Told what the background journal sweep removed, once it has. The daemon
+   *  prints it; a test asserts on it without waiting on a timer. */
+  onJournalCompacted?: (swept: { deltas: number; starts: number; sessions: number }) => void;
 };
 
 /** One authoritative execution database; legacy files become a migration backup.
@@ -335,6 +365,11 @@ export class ExecutionStore {
   private readonly receiptRetentionMs: number;
   private readonly legacyBackupRetentionMs: number;
   private pruneTimer?: ReturnType<typeof setInterval>;
+  private compactTimer?: ReturnType<typeof setTimeout>;
+  /** Said out loud by the daemon when the background sweep finds something.
+   *  A callback rather than a return because the sweep no longer happens while
+   *  anybody is waiting on the open — see the constructor. */
+  private readonly onJournalCompacted?: (swept: { deltas: number; starts: number; sessions: number }) => void;
   /**
    * WHAT THE HOUSEKEEPING ON OPEN REMOVED — issue #457, step 4.
    *
@@ -361,6 +396,7 @@ export class ExecutionStore {
     this.now = options.now ?? Date.now;
     this.receiptRetentionMs = Math.max(0, options.receiptRetentionMs ?? RECEIPT_RETENTION_MS);
     this.legacyBackupRetentionMs = Math.max(0, options.legacyBackupRetentionMs ?? LEGACY_BACKUP_RETENTION_MS);
+    if (options.onJournalCompacted) this.onJournalCompacted = options.onJournalCompacted;
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
     this.db = process.versions.bun ? new native.Database(file) : new native.DatabaseSync(file);
@@ -509,8 +545,40 @@ export class ExecutionStore {
       // A timer has no caller to throw at, and housekeeping is not worth taking
       // the daemon down for; the next sweep covers whatever this one missed.
       try { this.pruneReceipts(); } catch {}
+      this.sweepJournal();
     }, RECEIPT_PRUNE_EVERY_MS);
     this.pruneTimer.unref?.();
+    /**
+     * THE FIRST COMPACTION IS OFF THE OPEN PATH, and that is a measurement
+     * rather than a preference.
+     *
+     * Running it in the constructor took FIFTY-FOUR SECONDS on the owner's
+     * gigabyte — a one-time cost, since the watermark means later sweeps see
+     * only new turns, but one-time on the launch right after an update, which
+     * is the worst possible moment to hold the daemon shut. It would also have
+     * been a longer stall than the VACUUM this deliberately keeps off the same
+     * path, which would have made the argument for the button incoherent.
+     *
+     * So the daemon opens, and the sweep starts a few seconds later against the
+     * same single-writer database. It is transactional per session, so a turn
+     * that arrives mid-sweep waits for one session's DELETE and not for the
+     * backlog. `unref` for the same reason as the timers above: housekeeping is
+     * never the reason a process stays up.
+     */
+    this.compactTimer = setTimeout(() => { this.sweepJournal(); }, COMPACT_AFTER_OPEN_MS);
+    this.compactTimer.unref?.();
+  }
+
+  /** The sweep as housekeeping runs it: never throwing, and saying what went
+   *  once it has actually gone rather than promising it at open. */
+  private sweepJournal(): void {
+    if (this.closed) return;
+    try {
+      const swept = this.compactJournal();
+      if (swept.deltas === 0 && swept.starts === 0) return;
+      this.housekeeping.journal = swept;
+      this.onJournalCompacted?.(swept);
+    } catch { /* the next sweep covers whatever this one missed */ }
   }
 
   /**
@@ -528,6 +596,197 @@ export class ExecutionStore {
       removed = Number(this.statement("SELECT changes() AS count").get()?.count ?? 0);
     });
     return removed;
+  }
+
+  /**
+   * DROP THE JOURNAL ROWS A SETTLED TURN HAS SUPERSEDED — issue #646.
+   *
+   * `events` is 68% of a gigabyte database on the dogfood home and grows
+   * ~35 MB a day with nothing bounding it. Most of that is not history: a
+   * streamed item is journalled three ways over its life, and once the turn
+   * that made it has ended, two of the three add nothing a reader can use.
+   *
+   *   - `content.delta` is the streaming increments. `journal.ts` folds them
+   *     into `item.streamedText` for an item it has already seen, and the
+   *     closing `item.completed` carries that same text in the item itself.
+   *   - `item.started` is the same item with `status: "inProgress"`. The
+   *     completed event carries the same id, the same `startedAt`, and the
+   *     final detail; both go through one `upsert` in the fold.
+   *
+   * Measured on the owner's store: 443,738 deltas and 127,213 `item.started`
+   * rows qualified — 57% of a million-row journal — and the file went from
+   * 1005.6 MiB to 695.1 MiB once a VACUUM returned the pages.
+   *
+   * ══ THE GUARD IS THE WHOLE DESIGN, AND IT IS NOT AN OPTIMISATION ══
+   *
+   * A delta is dropped ONLY where its item's own `item.completed` text is at
+   * least as long as the deltas summed. That comparison is what makes the
+   * deletion LOSSLESS BY CONSTRUCTION rather than by belief: where the claim
+   * "the completed item already holds this text" is true the sum proves it,
+   * and where it is false the rows stay and nothing is lost.
+   *
+   * It is not a formality. Sampling 4,000 items on the owner's store, 3,991
+   * passed and NINE DID NOT — items whose completed text was shorter than what
+   * was streamed into them. Those nine are the reason this is written as a
+   * comparison and not as `WHERE type='content.delta'`. Do not simplify it
+   * into the unconditional delete it looks like it wants to be: the 99.8% is
+   * the argument FOR the guard, not against it.
+   *
+   * ══ WHY IT ONLY LOOKS BELOW A TERMINAL TURN EVENT ══
+   *
+   * An item belongs to a turn, so a turn that has ended is a range in which
+   * every item is final. Bounding the sweep at the last terminal turn event
+   * keeps it off anything in flight without needing to know what is running:
+   * a delta still streaming has no `item.completed` to be measured against,
+   * and a turn that died mid-item keeps its deltas, which are then the only
+   * record of that text. The lower bound is the previous sweep's watermark,
+   * so each event is examined once in its life rather than daily forever.
+   *
+   * ONE TRANSACTION PER SESSION, not one for the store. The first sweep on a
+   * year-old store is most of the work this will ever do — around a minute
+   * over the owner's 446 sessions, against 0.13 s for every sweep after it —
+   * and holding a write lock across a million rows for that long would stall
+   * the streaming path behind housekeeping. Per session
+   * it is a fraction of a second, so a turn arriving mid-sweep waits for one
+   * session's DELETE rather than for the backlog. That length is also why the
+   * constructor no longer calls this; see the timer it arms instead.
+   *
+   * Returns what went, so the daemon can say it and a test can hold it to it.
+   */
+  compactJournal(): { deltas: number; starts: number; sessions: number } {
+    const total = { deltas: 0, starts: 0, sessions: 0 };
+    for (const sessionId of this.sessionIds()) {
+      const swept = this.compactSession(sessionId);
+      if (swept.deltas === 0 && swept.starts === 0) continue;
+      total.deltas += swept.deltas;
+      total.starts += swept.starts;
+      total.sessions += 1;
+    }
+    return total;
+  }
+
+  /** One session's share of `compactJournal`, in a transaction of its own. */
+  private compactSession(sessionId: string): { deltas: number; starts: number } {
+    const swept = { deltas: 0, starts: 0 };
+    this.alone(() => {
+      // Held deltas belong in the database before anything sums them: a delta
+      // still in the buffer makes its item's total look shorter than it is,
+      // and the guard would pass on a comparison that is not yet true.
+      this.drain(this.depth > 0);
+      const key = `${COMPACT_WATERMARK_PREFIX}${sessionId}`;
+      const stored = this.statement("SELECT value FROM metadata WHERE key=?").get(key);
+      const low = Number(stored?.value ?? 0);
+      const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
+      const high = Number(
+        this.statement(
+          `SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=? AND json_extract(value,'$.type') IN (${placeholders})`,
+        ).get(sessionId, ...TERMINAL_TURN_TYPES)?.id ?? 0,
+      );
+      // No turn has ended here since the last sweep. Nothing below `low` can
+      // have become compactable, so there is nothing to look at.
+      if (high <= low) return;
+      /**
+       * THE SUM AGAINST THE COMPLETED TEXT, both bounded to the settled range.
+       *
+       * The bounds are on the completed side too, not only the deltas: an item
+       * whose turn has not ended yet must not authorise dropping anything, and
+       * leaving that subquery unbounded would let a later turn's completion
+       * speak for an item that is still open.
+       */
+      this.statement(
+        `DELETE FROM events WHERE session_id=? AND id>? AND id<=?
+           AND json_extract(value,'$.type')='content.delta'
+           AND json_extract(value,'$.itemId') IN (
+             SELECT streamed.item FROM
+               (SELECT json_extract(value,'$.itemId') AS item,
+                       SUM(LENGTH(COALESCE(json_extract(value,'$.text'),''))) AS chars
+                  FROM events WHERE session_id=? AND id>? AND id<=?
+                   AND json_extract(value,'$.type')='content.delta' GROUP BY 1) AS streamed
+               JOIN
+               (SELECT json_extract(value,'$.item.id') AS item,
+                       LENGTH(COALESCE(json_extract(value,'$.item.detail.text'),'')) AS chars
+                  FROM events WHERE session_id=? AND id>? AND id<=?
+                   AND json_extract(value,'$.type')='item.completed') AS settled
+               ON settled.item = streamed.item
+             WHERE settled.chars >= streamed.chars)`,
+      ).run(sessionId, low, high, sessionId, low, high, sessionId, low, high);
+      swept.deltas = Number(this.statement("SELECT changes() AS count").get()?.count ?? 0);
+      // An `item.started` whose item never completed is kept for the same
+      // reason its deltas are: it is the only row that item has.
+      this.statement(
+        `DELETE FROM events WHERE session_id=? AND id>? AND id<=?
+           AND json_extract(value,'$.type')='item.started'
+           AND json_extract(value,'$.item.id') IN (
+             SELECT json_extract(value,'$.item.id') FROM events
+              WHERE session_id=? AND id>? AND id<=? AND json_extract(value,'$.type')='item.completed')`,
+      ).run(sessionId, low, high, sessionId, low, high);
+      swept.starts = Number(this.statement("SELECT changes() AS count").get()?.count ?? 0);
+      this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .run(key, String(high));
+    });
+    return swept;
+  }
+
+  /** The database and the files sqlite keeps beside it, as they are right now. */
+  private journalBytes(): number {
+    const file = path.join(this.root, "execution.sqlite");
+    let bytes = 0;
+    for (const name of [file, `${file}-wal`, `${file}-shm`]) {
+      try { bytes += fs.statSync(name).size; } catch { /* -wal and -shm need not exist */ }
+    }
+    return bytes;
+  }
+
+  /**
+   * GIVE THE FREED PAGES BACK TO THE FILESYSTEM — issue #646, and ONLY on ask.
+   *
+   * A `DELETE` moves pages to sqlite's freelist, where later inserts reuse
+   * them; the file itself never shrinks. So `compactJournal` above makes the
+   * database hold less without making it WEIGH less, and this is the half that
+   * finishes the job. Measured on the owner's store: the compaction dropped
+   * 570,951 rows and left the file at 1005.6 MiB to the byte, and the VACUUM
+   * after it brought it to 695.1 MiB.
+   *
+   * ══ WHY THIS IS A BUTTON AND NOT PART OF THE OPEN ══
+   *
+   * `VACUUM` rewrites the entire database under an exclusive lock and needs
+   * free space about equal to its own size. On the owner's gigabyte, in place
+   * and through the WAL, that measured at 20–35 SECONDS across runs.
+   * (`VACUUM INTO` a fresh file on the same machine is 7 s — worth knowing,
+   * because that is the figure a quick experiment produces and it is not the
+   * one this path pays. Anyone re-measuring this should measure the real
+   * thing.) Half a minute of a Telar that looks hung, on every launch, to
+   * return space that accrues over a month, is not a trade worth making for
+   * somebody. A person who wants the bytes back asks for them.
+   *
+   * ON ITS OWN IT IS ALMOST NOTHING. Vacuuming this database WITHOUT compacting
+   * it first returned 22.5 MiB of 1005.6 — 2.2%, because the freelist was only
+   * 1.7% of the file. That is why this compacts first and reports one number:
+   * the VACUUM is not the fix, it is what makes the fix visible.
+   *
+   * Returns the size either side of the work, because the difference is the
+   * whole point of the button — and because it is also how a person learns that
+   * pressing it again tomorrow will do nothing.
+   */
+  reclaim(): { before: number; after: number; deltas: number; starts: number; sessions: number } {
+    const before = this.journalBytes();
+    const journal = this.compactJournal();
+    // Everything held must be on disk before the rewrite: VACUUM cannot run
+    // inside a transaction, so there is no scope here to carry them into.
+    this.flush();
+    /**
+     * `wal_checkpoint(TRUNCATE)` FIRST, for a reason that is not the bytes.
+     *
+     * The WAL is a high-water mark — 24.3 MiB on the owner's machine holding
+     * 2.67 MiB of live frames — and that is only 2% of the problem, which is
+     * why nothing else here touches it. But a VACUUM's rewrite lands in the WAL
+     * before it lands in the database, and starting it against a WAL already
+     * carrying a burst is how a 7-second rewrite becomes a longer one.
+     */
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    this.db.exec("VACUUM");
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    return { before, after: this.journalBytes(), ...journal };
   }
 
   /**
@@ -971,6 +1230,10 @@ export class ExecutionStore {
       // `writeSessionRow` gives: a row outliving its conversation is a row on
       // somebody's rail that cannot be opened.
       this.deleteSessionRow(sessionId);
+      // The compaction watermark goes with the events it describes; a row left
+      // behind would outlive its session forever and, on a session id that
+      // somehow came back, would skip the whole journal below it.
+      this.statement("DELETE FROM metadata WHERE key=?").run(`${COMPACT_WATERMARK_PREFIX}${sessionId}`);
       this.cursors.delete(sessionId);
     });
   }
@@ -1112,6 +1375,7 @@ export class ExecutionStore {
     if (this.closed) return;
     this.disarm();
     if (this.pruneTimer) { clearInterval(this.pruneTimer); this.pruneTimer = undefined; }
+    if (this.compactTimer) { clearTimeout(this.compactTimer); this.compactTimer = undefined; }
     // An orderly shutdown stores the tail. Only a crash may lose it.
     try { this.flush(); } finally { this.statements.clear(); this.cursors.clear(); this.db.close(); this.closed = true; }
   }

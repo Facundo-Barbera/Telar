@@ -80,6 +80,22 @@ function deliver(fixture: Scene, runId: string, resultRunId = "run_result") {
     { sessionId: "session_worker", runId, claimToken: token },
   );
   fixture.store.completeTurn("session_worker", runId, token, { text: "done" });
+  /**
+   * AND THE COORDINATOR READS IT — #631 part 2.
+   *
+   * A result to an IDLE coordinator used to complete on arrival and reach no
+   * model, so these scenes could go straight on to archiving or to the
+   * coordinator's next turn. It is a real turn now, and in production a worker
+   * picks it up within the poll. Running it here is the fixture catching up
+   * with reality rather than working around it: a coordinator with an unread
+   * message really does have an active turn, and archiving really does have to
+   * wait for it.
+   */
+  const coordinatorToken = fixture.store.claimTurn("session_coord", "worker_coord")?.claim?.token;
+  if (coordinatorToken) {
+    fixture.store.markRunning("session_coord", resultRunId, coordinatorToken);
+    fixture.store.completeTurn("session_coord", resultRunId, coordinatorToken, { text: "read" });
+  }
 }
 
 /** Run a turn on a session start to finish. */

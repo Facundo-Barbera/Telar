@@ -32,8 +32,11 @@ export type JournalTurn = {
   runId: string;
   prompt: string;
   /** `compact` when the turn is the compaction gesture, not a message — the
-   *  transcript draws a system row instead of a bubble. */
-  kind?: "message" | "compact";
+   *  transcript draws a system row instead of a bubble. `import` is the same
+   *  rule for an adopted Claude Code conversation (#616): the engine wrote the
+   *  turn, nobody typed `prompt`, and its items are history rather than work
+   *  this session did. */
+  kind?: "message" | "compact" | "import";
   /** `provider` when the CLI started this turn on its own — a background
    *  task's ending woke the model. `session` when the ENGINE queued it because
    *  a session this one subscribed to did something. Both are drawn as a

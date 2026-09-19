@@ -1,11 +1,18 @@
 /**
  * The fixture's stand-in for lib/model-catalogue-cache: same exports, no
- * engine. Catalogues are REAL captures from this machine (2026-09-10) — the
- * installed Codex's `model/list` answer with GPT-6-Astra as default, the full
- * 201-row `opencode models` output including the duplicate
+ * engine. Catalogues are REAL captures from this machine — the installed
+ * Codex's `model/list` answer with GPT-6-Astra as default (2026-09-10), the
+ * full `opencode models` output including the duplicate
  * gpt-5.6-luna-on-two-connections case — plus a Claude list shaped like the
  * installed harness's (aliases + resolves). Overlays (stars) live in memory
  * with a subscription so the real picker's optimistic re-read works.
+ *
+ * THE OPENCODE CAPTURE WAS RETAKEN FOR ISSUE #655 (2026-09-19), ON AN ACCOUNT
+ * WITH ZEN AND COPILOT SIGNED IN. The 201-row original predated both, so it
+ * carried seven `opencode/` rows — the free tier an unauthenticated OpenCode
+ * lists — and no `github-copilot` at all. The 305-row replacement is what a
+ * Zen account actually offers, Jev included, which is the list the reported
+ * defect is about.
  */
 import { useSyncExternalStore } from "react";
 import type { ModelCatalogue, ModelOverlay, ProviderDriverKind, ProviderModel } from "@telar/engine-client";

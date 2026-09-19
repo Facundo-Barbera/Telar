@@ -14,6 +14,7 @@ const { describe, expect, test } = require("bun:test");
 const {
   COMMANDS,
   chordForEvent,
+  claimedCommandIds,
   defaultKeymap,
   keymapConflicts,
   keymapOverrides,
@@ -159,5 +160,60 @@ describe("matching a keydown", () => {
 
   test("no modifier, no match — every chord this registry ships is chorded", () => {
     expect(resolveCommandForEvent(defaultKeymap(), { key: "n", code: "KeyN" })).toBeNull();
+  });
+});
+
+describe("a surface claiming chords (#656)", () => {
+  // THE RESOLVER BOTH HALVES SHARE. `buildApplicationMenu` strips exactly these
+  // accelerators and the cockpit's dispatcher passes over exactly these ids, so
+  // this is the one place the rule can be wrong — and the one place a test can
+  // pin it without a window.
+
+  test("claiming ⌘1..⌘9 takes the nine jumps, and nothing else, off the table", () => {
+    // The bug: the New Conversation palette numbers its rows ⌘1..⌘9, and the
+    // File menu's Jump to rows carried those chords natively — so macOS matched
+    // the key equivalent and the palette's handler never ran.
+    const claimed = claimedCommandIds(defaultKeymap(), ["CommandOrControl+1", "CommandOrControl+2", "CommandOrControl+3"]);
+    expect(claimed).toEqual(["jump-1", "jump-2", "jump-3"]);
+    // Nothing a claim did not name: ⌘N still opens a conversation over an open
+    // palette, which is the difference between scoping a chord and going modal.
+    expect(claimed).not.toContain("new-conversation");
+  });
+
+  test("a rebind hands the chord back rather than leaving the palette suppressed", () => {
+    // THE REQUIREMENT THAT SHAPES THE WHOLE DESIGN. A claim names CHORDS, and
+    // which commands that suppresses is computed against the live keymap — so
+    // move the nine jumps to ⌥1..⌥9 and ⌘1 is claimed by nobody: the jumps keep
+    // working, and the palette still gets its key. A claim that named `jump-N`
+    // would have gone on suppressing a chord nobody uses.
+    const moved = mergeKeymap(Object.fromEntries(Array.from({ length: 9 }, (_, index) => [`jump-${index + 1}`, `Alt+${index + 1}`])));
+    expect(claimedCommandIds(moved, ["CommandOrControl+1"])).toEqual([]);
+    expect(claimedCommandIds(moved, ["Alt+1"])).toEqual(["jump-1"]);
+  });
+
+  test("it follows the chord onto whatever command moved there", () => {
+    // Scope is about the KEY, not about the rail: bind Toggle Rail to ⌘1 and the
+    // palette's claim must stand that down too, or the numbered rows are still
+    // lying on a cockpit somebody has rearranged.
+    const moved = mergeKeymap({ "jump-1": "Alt+1", "toggle-rail": "CommandOrControl+1" });
+    expect(claimedCommandIds(moved, ["CommandOrControl+1"])).toEqual(["toggle-rail"]);
+  });
+
+  test("an unbound command is never claimed, whatever the claim says", () => {
+    // "" is how a keymap spells "deliberately unbound"; a claim over it would
+    // suppress every unbound command in the registry at once.
+    expect(claimedCommandIds(mergeKeymap({ "jump-1": "" }), ["", "CommandOrControl+1"])).toEqual([]);
+  });
+
+  test("no claim suppresses nothing, which is the state the app spends its life in", () => {
+    expect(claimedCommandIds(defaultKeymap(), [])).toEqual([]);
+    expect(claimedCommandIds(defaultKeymap(), undefined)).toEqual([]);
+  });
+
+  test("a chord is matched however it was spelled", () => {
+    // The claim crosses IPC from the renderer, and a surface writing "Cmd+1"
+    // means the chord the menu spells "CommandOrControl+1".
+    expect(claimedCommandIds(defaultKeymap(), ["cmd+1"])).toEqual(["jump-1"]);
+    expect(claimedCommandIds(defaultKeymap(), ["Ctrl+Digit1"])).toEqual(["jump-1"]);
   });
 });

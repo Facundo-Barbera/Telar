@@ -103,8 +103,10 @@ import {
   CustomProviderModel,
   DEFAULT_MODEL_OVERLAY,
   ModelOverlay as ModelOverlaySchema,
+  type GitFilePatch,
   type SessionDiff,
   type EngineEvent,
+  type ConversationImportDetail,
   type Item,
   type McpServer,
   type NotificationDetail,
@@ -174,7 +176,7 @@ import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRec
 import { commitSessionWork, gitOverview, gitOverviewAsync, projectRemoteAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
+import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
 import {
   DEFAULT_ISSUE_FILTER,
   DEFAULT_PULL_FILTER,
@@ -189,11 +191,15 @@ import {
 } from "./github";
 import { readModelCatalogue } from "./models";
 import { providerProcessEnv } from "./provider-instances";
+import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
+import type { ClaudeConversation, ForkCut } from "./claude-fork";
+import { describeImport } from "./claude-transcript";
 import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
-import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { moveCheckouts, type Checkout, type MoveOutcome } from "./worktrees-move";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
@@ -2077,6 +2083,20 @@ export class EngineStore {
    */
   executionHousekeeping(): ExecutionHousekeeping | undefined {
     return this.executionStore?.housekeeping;
+  }
+
+  /**
+   * COMPACT THE JOURNAL AND GIVE THE PAGES BACK — issue #646, and only on ask.
+   *
+   * The sweep runs itself; the VACUUM behind this does not, because it rewrites
+   * the database under an exclusive lock (7 s on the owner's gigabyte) to
+   * return space that accrues over a month. See `ExecutionStore.reclaim`.
+   *
+   * Absent on a store still running on JSON: there is no database to vacuum,
+   * and saying so is better than reporting a reclamation that did not happen.
+   */
+  reclaimExecutionStore(): { before: number; after: number; deltas: number; starts: number; sessions: number } | undefined {
+    return this.executionStore?.reclaim();
   }
 
   /**
@@ -4031,6 +4051,16 @@ export class EngineStore {
     private readonly now: () => number = Date.now,
     options: {
       executionStorage?: "json" | "sqlite";
+      /**
+       * WHAT THE JOURNAL SWEEP REMOVED, once it has — issue #646.
+       *
+       * The receipts and backup sweeps report through `executionHousekeeping`
+       * because they finish inside the constructor. The journal sweep does not:
+       * its first pass is a minute's work on a large store, so it runs on a
+       * timer after the open and tells whoever is listening when it is done.
+       * Absent by default — a store on its own announces nothing.
+       */
+      onExecutionHousekeeping?: (swept: { journal: { deltas: number; starts: number; sessions: number } }) => void;
       notifier?: EngineNotifier;
       /**
        * SOMETHING IN SOME SESSION'S QUEUE CHANGED — a message accepted, a turn
@@ -4108,7 +4138,13 @@ export class EngineStore {
     const migrated = fs.existsSync(path.join(root, "execution-store.json")) || fs.existsSync(path.join(root, "execution.sqlite"));
     if (migrated && options.executionStorage === "json") throw new Error("this engine home has migrated to SQLite; restore a backup to downgrade");
     if (migrated || options.executionStorage === "sqlite") {
-      this.executionStore = new ExecutionStore(root);
+      // The journal sweep says what it removed when it removes it, which is
+      // seconds AFTER the open rather than during it — the first pass on a
+      // large store is a minute's work and belongs nowhere near the startup
+      // path (#646). `onExecutionHousekeeping` is the daemon's line.
+      this.executionStore = new ExecutionStore(root, {
+        onJournalCompacted: (swept) => options.onExecutionHousekeeping?.({ journal: swept }),
+      });
       // `ingestObservations` is NOT here: it wraps itself, because a batch of
       // nothing but deltas writes no document at all and must not open a
       // transaction. See the method.
@@ -5710,17 +5746,17 @@ export class EngineStore {
     );
   }
 
-  projectFilePatchAsync(projectId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
+  projectFilePatchAsync(projectId: string, target: string, options: { untracked?: boolean } = {}): Promise<GitFilePatch> {
     const project = this.getProject(projectId);
     return this.readFilePatchAsync(project.root, target, options);
   }
 
-  sessionFilePatchAsync(sessionId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
+  sessionFilePatchAsync(sessionId: string, target: string, options: { untracked?: boolean } = {}): Promise<GitFilePatch> {
     const session = this.getSession(sessionId);
     return this.readFilePatchAsync(workspaceRootOf(session), target, options, workspaceBaseRef(session.workspace));
   }
 
-  private readFilePatchAsync(cwd: string, target: string, options: { untracked?: boolean }, baseRef?: string): Promise<{ patch: string; binary: boolean }> {
+  private readFilePatchAsync(cwd: string, target: string, options: { untracked?: boolean }, baseRef?: string): Promise<GitFilePatch> {
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     const resolved = path.resolve(cwd, target);
     const prefix = cwd.endsWith(path.sep) ? cwd : `${cwd}${path.sep}`;
@@ -6102,7 +6138,7 @@ export class EngineStore {
   }
 
   /** One file's patch in a project's own checkout, for the same surface. */
-  projectFilePatch(projectId: string, target: string, options: { untracked?: boolean } = {}): { patch: string; binary: boolean } {
+  projectFilePatch(projectId: string, target: string, options: { untracked?: boolean } = {}): GitFilePatch {
     const project = this.getProject(projectId);
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     // Fenced exactly as the session read is: a pathspec is a file read, and a
@@ -6135,7 +6171,7 @@ export class EngineStore {
 
   /** One file's patch, on demand — see `sessionFilePatch` for why it is not
    *  carried on the review itself. */
-  sessionFilePatch(sessionId: string, target: string, options: { untracked?: boolean } = {}): { patch: string; binary: boolean } {
+  sessionFilePatch(sessionId: string, target: string, options: { untracked?: boolean } = {}): GitFilePatch {
     const session = this.getSession(sessionId);
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     /**
@@ -8177,6 +8213,23 @@ export class EngineStore {
       // The ROW is still written — a passive report reaches no model but it
       // does reach the transcript, and it is a notification there too.
       if (turn.notification) this.writeNotificationItem(sessionId, turn);
+      /**
+       * AND IT GOES IN THE MAILBOX, SO IT IS NOT LOST — issue #631 part 2.
+       *
+       * Passive is now only chosen when the recipient is BUSY or put away (see
+       * `submitAgentTurn`), and a busy session's next idle moment is exactly
+       * when held mail is meant to arrive. Holding it here puts a peer message
+       * on the same path a `settled_only` wake has taken since #550: merged
+       * with whatever else piled up, delivered as ONE turn by
+       * `flushPendingNotifications` on the next `completeTurn`, `failTurn`,
+       * `stopTurn` or `stopSession`.
+       *
+       * A SHELVED SESSION HOLDS IT INDEFINITELY, on purpose. The flush is
+       * guarded on a live turn, not on a shelf, so the mail simply waits — and
+       * `pendingNotifications` reports it to `sessions_status` meanwhile, which
+       * is the poll a coordinator that cares already has.
+       */
+      if (turn.notification) this.holdNotification(sessionId, turn.notification);
       this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
       return { turn: structuredClone(turn), replayed: false };
     }
@@ -8378,7 +8431,47 @@ export class EngineStore {
     const waiting = intent === "result" && sender.sessionId
       ? this.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
       : undefined;
-    const delivery = intent === "task" || intent === "blocker" || waiting ? "wake" : "passive";
+    /**
+     * A PASSIVE MESSAGE TO AN IDLE SESSION IS A LOST MESSAGE — issue #631 part 2.
+     *
+     * `report` and an unawaited `result` wait for the recipient's next turn.
+     * That is right while it is WORKING: a report is a peer talking, and
+     * interrupting a coordinator mid-reasoning is the cost `passive` exists to
+     * refuse. But a session that is idle and that nobody gives a turn to waits
+     * FOREVER, and the wait is silent. It cost a real finding: a session had
+     * measured that `git worktree lock` is mandatory for worktrees on removable
+     * media — without it, unmounting makes git prune the registration and
+     * destroy sessions — reported it, and the orchestrator never saw it while
+     * another session built the feature without it. The sender could see the
+     * message was going nowhere and sent it anyway, because passive was the
+     * documented default.
+     *
+     * SO THE WAKE IS PAID ONLY WHERE THE MESSAGE WOULD OTHERWISE BE LOST. A
+     * BUSY recipient is not woken and not steered — unchanged, and that is the
+     * expensive case this whole mechanism exists for. An IDLE one takes the
+     * message as a turn, which is the cheapest moment a turn can be paid: there
+     * is no context in flight to interrupt, and since #631 the notice it opens
+     * on is ~345 characters.
+     *
+     * AND NOT ON ARRIVAL ALONE, which is the version of this that fixes the
+     * incident and not the class. Report #1 wakes an idle coordinator; report #2
+     * lands while that turn runs, stays passive, and is dropped exactly as
+     * before. So the held ones are delivered at the IDLE TRANSITION too — see
+     * the passive branch of `submitTurn`, which hands them to the mailbox
+     * `flushPendingNotifications` already drains on every `completeTurn`,
+     * `failTurn`, `stopTurn` and `stopSession`. N messages arriving during one
+     * long turn cost ONE wake carrying one merged notice, not N.
+     *
+     * A SHELVED OR SNOOZED SESSION IS NOT WOKEN, and that exclusion is
+     * deliberate rather than an oversight. `wakeSessionForNewWork` treats new
+     * work as the shelf lifting itself; a peer's routine report is not a person
+     * changing their mind about a row they put away. Those sessions keep
+     * today's behaviour — the message is recorded, the row is written, and the
+     * session's own row carries it whenever the person comes back.
+     */
+    const shelved = this.getSession(sessionId);
+    const wouldBeLost = !this.hasLiveTurn(sessionId) && shelved.settledOverride !== "settled" && shelved.snoozedUntil === undefined;
+    const delivery = intent === "task" || intent === "blocker" || waiting || wouldBeLost ? "wake" : "passive";
     /**
      * THE NOTICE IS MINTED HERE, ONCE, AND STORED — see `agent-notice.ts`.
      *
@@ -8572,6 +8665,199 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "turn.claimed", workerId: input.workerId }, turn.runId);
     this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
     return structuredClone(turn);
+  }
+
+  /**
+   * THE CLAUDE CONFIG DIRECTORY A SESSION'S TURNS ACTUALLY RUN WITH.
+   *
+   * Resolved the way the CHILD resolves it, not the way the engine does: the
+   * instance's patch is applied over this process's environment, and a patch
+   * that DELETES `CLAUDE_CONFIG_DIR` (every configured login scrubs it before
+   * setting its own) means the default location even when the engine itself
+   * inherited one. Anything less is the near-miss #616 records — an adoption
+   * cut from the wrong person's history, or from a store the resumed turn will
+   * never look in.
+   */
+  private claudeConfigDirFor(session: Session): string | undefined {
+    return this.claudeConfigDirForInstance(this.resolveProviderInstance(session.providerInstanceId, session.driver));
+  }
+
+  private claudeConfigDirForInstance(instance: ProviderInstance): string | undefined {
+    const patch = providerProcessEnv(instance);
+    if (Object.hasOwn(patch, "CLAUDE_CONFIG_DIR")) return patch.CLAUDE_CONFIG_DIR?.trim() || undefined;
+    return process.env.CLAUDE_CONFIG_DIR?.trim() || undefined;
+  }
+
+  /**
+   * WHERE ADOPTED FORKS LIVE — under the engine root, because the engine owns
+   * that directory and knows where it is. Derived HERE and passed to both the
+   * fork and the listing, so "we relocated it there" and "a fork there is ours
+   * already" can never be two different answers.
+   */
+  private adoptedForkHome(): string {
+    return path.join(this.paths.root, "adopted");
+  }
+
+  /**
+   * The conversations a LOGIN could adopt.
+   *
+   * SCOPED TO AN INSTANCE RATHER THAN A SESSION, which is the same shape
+   * `projectSkills` takes and for the same reason: the picker runs on a canvas,
+   * before the session it would adopt into exists (#500's lesson, #616's
+   * picker). Scoping it to a session would have made "show me my
+   * conversations" require first creating a session to throw away if the person
+   * picked none.
+   *
+   * IT IS STILL A LOGIN'S QUESTION, not the machine's. A configured instance
+   * keeps its own config directory with its own history in it, so the answer
+   * differs per login, and an absent id means the built-in slot — Claude's own
+   * default location, which is where a terminal `claude` writes.
+   */
+  async listAdoptableClaudeConversations(
+    options: { instanceId?: string; cwd?: string; limit?: number } = {},
+  ): Promise<ClaudeConversation[]> {
+    const instance = this.resolveProviderInstance(options.instanceId ?? defaultInstanceIdForDriver("claude"), "claude");
+    if (instance.driver !== "claude") {
+      throw new EngineStateError("invalid_request", "only a Claude login has Claude Code conversations");
+    }
+    const configDir = this.claudeConfigDirForInstance(instance);
+    return listAdoptableConversations({
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+      ...(options.limit !== undefined ? { limit: options.limit } : {}),
+      ...(configDir ? { configDir } : {}),
+      forkHome: this.adoptedForkHome(),
+    });
+  }
+
+  /**
+   * ADOPT A CLAUDE CODE CONVERSATION INTO THIS SESSION — `/resume`, #616.
+   *
+   * Three writes, in one breath, and each is load-bearing:
+   *
+   *   1. `resumeCursor` becomes the FORK's id, so the session's next turn
+   *      continues that conversation. This is the half that makes the feature a
+   *      continuation rather than a rendering of somebody's old text.
+   *   2. One turn of `kind: "import"`, holding the imported history as its
+   *      items. A turn, because the cockpit's fold drops any item whose runId
+   *      names no turn — silently — and `import`, because nobody typed it.
+   *   3. The provenance row FIRST among those items, because the CLI records
+   *      nothing about a fork's origin and this is the only chance to write it.
+   *
+   * REFUSED ON A SESSION THAT HAS ALREADY SPOKEN. Adopting into a conversation
+   * that is already under way would splice two histories that never met: the
+   * cursor would jump to the fork mid-thread, so the model would stop
+   * remembering everything this session had actually done, while the transcript
+   * went on showing it. `/resume` is for a NEW session, and this is where that
+   * is enforced rather than hoped for.
+   */
+  async adoptClaudeConversation(
+    sessionId: string,
+    input: { sourceSessionId: string; cut?: ForkCut; sourceCwd?: string; maxRows?: number },
+  ): Promise<{ session: Session; turn: Turn; provenance: ConversationImportDetail }> {
+    const session = this.getSession(sessionId);
+    if (session.driver !== "claude") {
+      throw new EngineStateError("invalid_request", "only a Claude session can adopt a Claude Code conversation");
+    }
+    const queue = this.readQueue(sessionId);
+    if (queue.turns.length > 0 || session.resumeCursor) {
+      throw new EngineStateError(
+        "conflict",
+        "this session has already started a conversation — adopt into a new session instead",
+      );
+    }
+    let adoption: Adoption;
+    try {
+      adoption = await adoptClaudeConversation({
+        sourceSessionId: input.sourceSessionId,
+        // The fork's title, and the one thing that keeps it apart from its
+        // parent in any list that shows both.
+        title: session.title,
+        ...(input.cut ? { cut: input.cut } : {}),
+        ...(input.sourceCwd ? { sourceCwd: input.sourceCwd } : {}),
+        ...(input.maxRows !== undefined ? { maxRows: input.maxRows } : {}),
+        ...((dir) => (dir ? { configDir: dir } : {}))(this.claudeConfigDirFor(session)),
+        forkHome: this.adoptedForkHome(),
+      });
+    } catch (error) {
+      // The module's own sentences — "No conversation found with session ID",
+      // and the untouched-original refusal — are what #616 asks be forwarded
+      // rather than turned into a stack trace.
+      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
+    }
+
+    const at = this.now();
+    const runId = `run_${crypto.randomUUID().replaceAll("-", "")}`;
+    const turn: Turn = {
+      runId,
+      sessionId,
+      sequence: queue.nextSequence++,
+      // NOT the person's words, and `kind` is what says so structurally. This
+      // is the line `sessions_read`'s fold and every list view show.
+      input: describeAdoption(adoption.provenance).slice(0, MAX_TEXT_LENGTH),
+      kind: "import",
+      state: "completed",
+      acceptedAt: at,
+      startedAt: at,
+      updatedAt: at,
+      completedAt: at,
+      // The continuity this adoption produced, on the turn that produced it —
+      // the same field a real turn writes, so recovery heals from either.
+      providerSessionId: adoption.fork.sessionId,
+      resultText: describeImport(adoption.read),
+    };
+    queue.turns.push(turn);
+    this.writeQueue(sessionId, queue);
+
+    const items = this.readItems(sessionId);
+    const stamp: Item = {
+      id: `import_${runId}`,
+      runId,
+      sessionId,
+      status: "completed",
+      title: describeAdoption(adoption.provenance),
+      detail: { type: "conversation_import", import: adoption.provenance },
+      startedAt: at,
+      completedAt: at,
+    };
+    items.set(stamp.id, stamp);
+    const written: Item[] = [stamp];
+    /**
+     * THE HISTORY, IN ORDER, ON ONE TURN. Ids are derived from the run and the
+     * row's index rather than minted at random, so an adoption retried after a
+     * crash between the queue write and the item write replaces its own rows
+     * instead of doubling them.
+     */
+    adoption.rows.forEach((row, index) => {
+      const item: Item = {
+        id: `imported_${runId}_${index}`,
+        runId,
+        sessionId,
+        status: row.status,
+        ...(row.title ? { title: row.title } : {}),
+        detail: row.detail,
+        startedAt: row.startedAt,
+        ...(row.completedAt !== undefined ? { completedAt: row.completedAt } : {}),
+        providerRefs: row.providerRefs,
+        imported: true,
+      };
+      items.set(item.id, item);
+      written.push(item);
+    });
+    this.writeItems(sessionId, items);
+
+    this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, runId);
+    for (const item of written) {
+      this.appendEvent(sessionId, { type: "item.started", item }, runId);
+      this.appendEvent(sessionId, { type: "item.completed", item }, runId);
+    }
+    this.appendEvent(sessionId, { type: "turn.completed", resultText: turn.resultText ?? "" }, runId);
+
+    // LAST, and through the same door a completed turn uses: the cursor is what
+    // makes the next turn a continuation, and writing it before the rows would
+    // leave a crash in between with a session that resumes a history it does
+    // not show.
+    this.touchSession(sessionId, at, adoption.fork.sessionId);
+    return { session: this.getSession(sessionId), turn: structuredClone(turn), provenance: adoption.provenance };
   }
 
   /**
@@ -8977,6 +9263,25 @@ export class EngineStore {
         // A `none` workspace sends nothing rather than a path nobody chose.
         ...(workspacePath(session.workspace) ? { projectRoot: workspacePath(session.workspace)! } : {}),
         ...(session.projectId ? { projectId: session.projectId } : {}),
+        /**
+         * WHAT MAKES `projectRoot` ABOVE A WORKTREE — issue #641, and resolved
+         * here for the reason everything else on this claim is: the worker holds
+         * no store handle, and "is that path a worktree, and whose" is a store
+         * question. Both facts or neither: a branch with no repository root
+         * still cannot tell the worker that the PROJECT is fine.
+         */
+        ...(() => {
+          if (session.workspace.mode !== "worktree" || !session.projectId) return {};
+          try {
+            const project = this.getProject(session.projectId);
+            return { worktree: { branch: session.workspace.branch, repoRoot: project.root } };
+          } catch {
+            // A session whose project record went. Nothing to say about it that
+            // would be true, so it says nothing and the worker keeps the
+            // path-only wording.
+            return {};
+          }
+        })(),
         driver: session.driver,
         providerInstanceId: session.providerInstanceId,
         providerInstance,
@@ -9920,6 +10225,122 @@ export class EngineStore {
     );
   }
 
+  /**
+   * LOCK THE WORKTREES THAT ALREADY EXIST — issue #641.
+   *
+   * `createSessionWorktreeAsync` locks at the cut, which covers everything made
+   * from now on and nothing made before. That is the entire installed base on
+   * the day this ships, including the sessions the bug was reported against, so
+   * without this the fix arrives for the worktrees nobody has yet.
+   *
+   * ON THE WAY UP, LIKE THE OTHER SWEEPS, and for the sharper version of their
+   * reason: the window this closes is between a daemon starting and a PR being
+   * merged, and the orchestrator merges as soon as CI passes. A lock that waited
+   * for the session's next turn would routinely lose that race.
+   *
+   * NOT ARCHIVED, which is the whole policy in one predicate. An archived
+   * session has already been put down and its worktree released; locking that
+   * one would be locking a corpse, and `removeSessionWorktreeAsync`'s unlock is
+   * what any survivor needs rather than a fresh lock. Everything else is live by
+   * definition — settled is a shelf, not an ending, and a settled session's
+   * checkout is still the thing it would resume into.
+   *
+   * IDEMPOTENT AND BEST-EFFORT. `git worktree lock` on an already-locked tree
+   * answers non-zero and that is not a failure; a project on an absent drive
+   * cannot be asked at all and is skipped rather than waited for. Nothing here
+   * may fail a boot — an unlocked worktree is the status quo, not a regression.
+   */
+  lockLiveWorktrees(): { locked: number } {
+    let locked = 0;
+    for (const session of this.allSessions()) {
+      if (session.state === "archived") continue;
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      let project: Project;
+      try {
+        project = this.getProject(session.projectId);
+      } catch {
+        continue;
+      }
+      // The same question `releaseWorktree` asks, and for the same reason: git
+      // run against a repository nobody can read answers about a repository
+      // nobody can read. See `worktree.ts`'s header.
+      if (this.projectAvailability(project) !== "available") continue;
+      if (!fs.existsSync(session.workspace.path)) continue;
+      locked++;
+      const worktreePath = session.workspace.path;
+      // ON THE QUEUE so a lock cannot race a cut or a removal on the same
+      // repository, and NOT AWAITED so a machine with forty worktrees does not
+      // hold the boot open while git walks every one of them.
+      void this.worktreeQueue(project.root, () => lockSessionWorktree(this.worktreeGit, project.root, worktreePath));
+    }
+    return { locked };
+  }
+
+  /**
+   * MOVE EVERY CHECKOUT THIS ENGINE HOLDS TO A NEW ROOT — issue #642 part 2.
+   *
+   * RE-CUT, NOT COPIED. See `worktrees-move.ts` for why copy-and-repair is the
+   * wrong design; the short version is that a worktree has one admin entry and
+   * `repair` moves it, leaving two directories sharing an index.
+   *
+   * ONLY WHAT IS ACTUALLY ON DISK. A session whose checkout was already
+   * released has a recorded path that names nothing, and asking git to remove
+   * it would report a failure about a checkout nobody has.
+   *
+   * BUSY MEANS ANYTHING BUT `idle`, AND ONE OF THEM REFUSES THE WHOLE RUN. An
+   * archived session's checkout has already been released, so "refuse while
+   * anything is unsettled" would refuse every time and the operation could
+   * never run at all; what actually matters is whether a turn is in flight in
+   * that directory, which is what `activity` answers.
+   *
+   * THE GIT WORK GOES THROUGH THE PER-PROJECT QUEUE, so a move and a cut on
+   * the same project never race on the index lock — the same discipline
+   * `releaseWorktree` and `lockLiveWorktrees` follow.
+   */
+  async moveWorktrees(destination: string): Promise<MoveOutcome> {
+    const checkouts: Checkout[] = [];
+    for (const session of this.readSessions()) {
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      if (!fs.existsSync(session.workspace.path)) continue;
+      let project: Project;
+      try {
+        project = this.getProject(session.projectId);
+      } catch {
+        continue; // A removed project is not one to re-cut against.
+      }
+      checkouts.push({
+        sessionId: session.id,
+        path: session.workspace.path,
+        branch: session.workspace.branch ?? "",
+        projectRoot: project.root,
+        busy: session.activity !== "idle",
+      });
+    }
+    const roots = [...new Set(checkouts.map((checkout) => checkout.projectRoot))];
+    const run = () =>
+      moveCheckouts(this.worktreeGit, {
+        checkouts,
+        destination,
+        onMoved: (sessionId, to) => this.recordWorktreeMove(sessionId, to),
+      });
+    // One queue is enough to serialise against cuts; with several projects the
+    // queues nest, which is the same ordering guarantee one at a time.
+    return roots.reduce<() => Promise<MoveOutcome>>((next, root) => () => this.worktreeQueue(root, next), run)();
+  }
+
+  /** The commit point for one moved checkout: the recorded path, and the event
+   *  that tells every open cockpit its session moved. */
+  private recordWorktreeMove(sessionId: string, to: string): void {
+    const session = this.getSession(sessionId);
+    const updated: Session = {
+      ...session,
+      workspace: { ...session.workspace, path: to } as Session["workspace"],
+      updatedAt: this.now(),
+    };
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.appendEvent(sessionId, { type: "session.updated", session: updated });
+  }
+
   private releaseDataScience(session: Session, reason: string): void {
     this.pluginRelease?.(session.id, reason);
     void this.kernels?.dispose(session.id, reason);
@@ -10672,7 +11093,7 @@ export class EngineStore {
     const pending = this.readPendingNotifications(sessionId);
     if (pending.length === 0) return;
     if (this.hasLiveTurn(sessionId)) return;
-    const merged = mergeNotifications(pending);
+    const merged = heldDelivery(mergeNotifications(pending));
     // CLEARED BEFORE THE SUBMIT, so a submit that throws cannot be retried into
     // a duplicate — and after it, the facts live on the turn, which is durable.
     this.writePendingNotifications(sessionId, []);
@@ -10682,15 +11103,29 @@ export class EngineStore {
         runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
         input: notificationLabel(delivered),
         origin: "session",
-        // The COHORT'S newest happening is what stamps the turn — the same one
-        // whose fields lead the merged detail. A turn needs exactly one wake
-        // reason and this is the honest choice of one.
-        wakeReason: {
-          kind: merged.wakeKind ?? "turn_completed",
-          sessionId: merged.sessionId ?? sessionId,
-          ...(merged.runId ? { runId: merged.runId } : {}),
-          ...(merged.requestId ? { requestId: merged.requestId } : {}),
-        },
+        /**
+         * The COHORT'S newest happening is what stamps the turn — the same one
+         * whose fields lead the merged detail. A turn needs exactly one wake
+         * reason and this is the honest choice of one.
+         *
+         * AND A PEER-LED COHORT CARRIES A SENDER INSTEAD (#631 part 2). A held
+         * peer message is not a wake: nothing this session subscribed to did
+         * anything, and the old `?? "turn_completed"` fallback would have told
+         * the transcript, the phone and the inbox that some run finished. What
+         * it IS is a message from the session that sent it, so that is what
+         * stamps the turn — which is also the shape `submitTurn` insists on,
+         * exactly one of a wake reason or a sender on a session-origin turn.
+         */
+        ...(merged.wakeKind
+          ? {
+              wakeReason: {
+                kind: merged.wakeKind,
+                sessionId: merged.sessionId ?? sessionId,
+                ...(merged.runId ? { runId: merged.runId } : {}),
+                ...(merged.requestId ? { requestId: merged.requestId } : {}),
+              },
+            }
+          : { sender: merged.sessionId ? { sessionId: merged.sessionId } : {} }),
         notification: delivered,
       });
     } catch (error) {
@@ -12734,6 +13169,29 @@ function processExists(pid: number): boolean {
   }
 }
 
+/**
+ * A LOCK WRITTEN BY ANOTHER MACHINE IS NEVER STALE — issue #630.
+ *
+ * `processExists` asks THIS kernel about a pid. That is a sound test for a
+ * stale lock exactly as long as the state root can only ever have been locked
+ * from here, which was true while it lived on the machine's own disk.
+ *
+ * A store on a removable volume can be carried to a second Mac, and pids are
+ * small integers that every machine hands out from the same low range. So the
+ * recorded pid being "alive" over there says nothing about here, and — the
+ * dangerous direction — the recorded pid being dead HERE says nothing about a
+ * daemon that is very much alive THERE. Without this check, plugging a drive
+ * into a second machine while the first is still running breaks a live lock and
+ * puts two daemons on one store, which is data loss with no warning.
+ *
+ * The hostname was already being written and never read. Reading it is the fix.
+ * An unrecorded hostname (a lock from before this) is treated as ours, because
+ * that is what it was.
+ */
+function lockHeldElsewhere(owner: { hostname?: string }): boolean {
+  return typeof owner.hostname === "string" && owner.hostname !== "" && owner.hostname !== os.hostname();
+}
+
 /** Exclusive state-root ownership. A dead owner's lock is reclaimed, never a live one. */
 export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
   fs.mkdirSync(paths.root, { recursive: true, mode: 0o700 });
@@ -12757,15 +13215,18 @@ export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let owner: { pid?: number } = {};
+      let owner: { pid?: number; hostname?: string } = {};
       let fingerprint: string | undefined;
       try {
         const stat = fs.statSync(paths.lock);
         fingerprint = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-        owner = JSON.parse(fs.readFileSync(paths.lock, "utf8")) as { pid?: number };
+        owner = JSON.parse(fs.readFileSync(paths.lock, "utf8")) as { pid?: number; hostname?: string };
       } catch {
         // A torn stale lock cannot establish a live owner. The retry below is
         // still guarded by unlink + O_EXCL and never replaces an active lock.
+      }
+      if (lockHeldElsewhere(owner)) {
+        throw new EngineStateError("conflict", `engine state root is locked by ${owner.hostname}`);
       }
       if (processExists(owner.pid ?? -1)) throw new EngineStateError("conflict", "engine state root is already locked");
       const breakerToken = crypto.randomUUID();
@@ -12785,8 +13246,10 @@ export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
         try {
           const stat = fs.statSync(paths.lock);
           const current = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-          const currentOwner = JSON.parse(fs.readFileSync(paths.lock, "utf8")) as { pid?: number };
-          if (current !== fingerprint || processExists(currentOwner.pid ?? -1)) continue;
+          const currentOwner = JSON.parse(fs.readFileSync(paths.lock, "utf8")) as { pid?: number; hostname?: string };
+          // Re-checked inside the breaker window for the same reason the pid is:
+          // the lock may have been replaced between the read above and here.
+          if (current !== fingerprint || lockHeldElsewhere(currentOwner) || processExists(currentOwner.pid ?? -1)) continue;
           fs.unlinkSync(paths.lock);
         } catch (unlinkError) {
           if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") throw unlinkError;

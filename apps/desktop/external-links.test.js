@@ -141,7 +141,11 @@ describe("desktop external-link wiring", () => {
     expect(mainCode).not.toContain("web-contents-created");
     expect(managerCode).not.toContain("openExternal(");
     expect(managerCode).toContain("setWindowOpenHandler");
-    expect(managerCode).toContain("openPopupTab(tab, url)");
+    // #615: the popup is now Chromium's own, adopted into a managed tab —
+    // still in-app, and now with `window.opener` intact.
+    expect(managerCode).toContain("this.decidePopup(tab, details");
+    expect(managerCode).toContain("createWindow: (options) => this.adoptPopupTab(");
+    // And the refusal is still a refusal: a non-web scheme opens nothing.
     expect(managerCode).toContain('return { action: "deny" }');
   });
 });

@@ -12,7 +12,8 @@ import { isReplacement, useStreamingReveal } from "./use-streaming-reveal";
  * updated. So these cover exactly the paths that must return the whole text
  * with no effect and no frame — a first paint — and NOTHING dynamic. Pacing
  * across arrivals is covered against `stepReveal` in streaming-reveal.test.ts;
- * the effect-driven paths are listed as gaps in the report, not asserted here.
+ * everything that needs a commit, a frame or a preference change lives in
+ * use-streaming-reveal.dom.test.tsx, which mounts this hook for real.
  */
 function shown(target: string, streaming: boolean): string {
   const Probe = ({ text, live }: { text: string; live: boolean }) => createElement("i", null, useStreamingReveal(text, live));

@@ -17,6 +17,9 @@ import {
   COMMAND_GROUPS,
   bindCommands,
   chordForEvent,
+  claimChords,
+  claimedChords,
+  claimedCommandIds,
   commandHandler,
   defaultKeymap,
   isCapturingChord,
@@ -364,6 +367,64 @@ describe("recording suppresses everything else", () => {
     expect(isCapturingChord()).toBe(true);
     setChordCapture(false);
     expect(isCapturingChord()).toBe(false);
+  });
+});
+
+describe("a surface claiming chords (#656)", () => {
+  // The registry is module state, like the handler bus below — a leaked claim
+  // would leave the next test's ⌘1 suppressed.
+  test("nothing is claimed until something claims it", () => {
+    expect(claimedChords()).toEqual([]);
+    expect(claimedCommandIds(defaultKeymap())).toEqual([]);
+  });
+
+  test("a claim stands the colliding commands down, and releasing puts them back", () => {
+    const release = claimChords(["CommandOrControl+1", "CommandOrControl+2"]);
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1", "jump-2"]);
+    release();
+    expect(claimedCommandIds(defaultKeymap())).toEqual([]);
+  });
+
+  test("nested claims are a union, and the inner one releases without taking the outer's chords", () => {
+    // The command palette embeds the project palette's pages in its own dialog,
+    // so two claims are live at once and walking back out of the sub-page must
+    // not hand ⌘1 back while the rows that draw it are still on screen.
+    const outer = claimChords(["CommandOrControl+1"]);
+    const inner = claimChords(["CommandOrControl+1", "CommandOrControl+2"]);
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1", "jump-2"]);
+    inner();
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1"]);
+    outer();
+    expect(claimedCommandIds(defaultKeymap())).toEqual([]);
+  });
+
+  test("releasing twice is not an error", () => {
+    // StrictMode runs an effect's cleanup twice, and a double release that
+    // popped somebody else's claim would suppress a chord nobody holds.
+    const other = claimChords(["CommandOrControl+1"]);
+    const release = claimChords(["CommandOrControl+2"]);
+    release();
+    release();
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1"]);
+    other();
+    expect(claimedChords()).toEqual([]);
+  });
+
+  test("two surfaces claiming the same chord are two claims", () => {
+    // Identity is what releases, so the first one closing must not unsuppress a
+    // chord the second is still drawing on its rows.
+    const first = claimChords(["CommandOrControl+1"]);
+    const second = claimChords(["CommandOrControl+1"]);
+    first();
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1"]);
+    second();
+    expect(claimedCommandIds(defaultKeymap())).toEqual([]);
+  });
+
+  test("the claim is canonical, so a surface may spell its chords loosely", () => {
+    const release = claimChords(["cmd+1"]);
+    expect(claimedChords()).toEqual(["CommandOrControl+1"]);
+    release();
   });
 });
 

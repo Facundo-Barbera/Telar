@@ -290,6 +290,33 @@ export const WorkerClaim = z.object({
    * engine still sends it; drop it in a deliberate protocol change, not here.
    */
   project: z.string().min(1).optional(),
+  /**
+   * PRESENT WHEN `projectRoot` ABOVE IS A PER-SESSION WORKTREE rather than the
+   * project's own checkout — issue #641.
+   *
+   * IT EXISTS FOR ONE SENTENCE, and that sentence was wrong for a year. When the
+   * directory a turn would spawn in is missing, the worker has only a path, and
+   * a path cannot tell you which of two unrelated things broke: a project that
+   * moved (re-register it) or a worktree that was removed (the project is fine;
+   * do NOT re-register it, which would mint a new id and orphan this session's
+   * history). It told everybody the first one. These two facts are what let it
+   * tell them apart and name the remedy — see `assertProjectRoot`.
+   *
+   * CARRIED ON THE CLAIM for this file's standing reason: the worker holds no
+   * store handle, so anything it needs to execute arrives with the work. An
+   * older engine sends nothing and the worker falls back to the path-only
+   * wording, which is what it always said.
+   */
+  worktree: z
+    .object({
+      /** The branch it was cut on — the handle on whatever it committed, and
+       *  the thing a person would cut a replacement from. */
+      branch: z.string().min(1),
+      /** The PROJECT's own checkout. A different directory, and the one that is
+       *  fine when the worktree is not. */
+      repoRoot: z.string().min(1),
+    })
+    .optional(),
   /** Provider continuity from the last completed turn, if any. */
   resumeCursor: z.string().min(1).optional(),
   /**

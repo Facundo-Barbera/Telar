@@ -439,8 +439,8 @@ test("sessions_send from a turn is stamped with the sender over the wire, and th
    * AND THE PROVIDER IS HANDED THE NOTICE, NOT THE BODY — end to end, over the
    * real HTTP surface and a real worker, which is the only place the whole
    * chain (tool → `/turns/agent` → store → claim → `framedTurnInput`) is
-   * exercised at once. A task's notice carries its opening paragraph and names
-   * the read; the RECORD still holds the message exactly as sent.
+   * exercised at once. A task's notice says it IS a task and names the read;
+   * the RECORD still holds the message exactly as sent.
    */
   expect(prompts[0]).toContain(`[agent message · task] session ${hostId} ASSIGNED this session work (run run_peer, 22 chars).`);
   expect(prompts[0]).toContain(`sessions_read(sessionId: "${made!.id}", runId: "run_peer")`);
@@ -449,12 +449,12 @@ test("sessions_send from a turn is stamped with the sender over the wire, and th
 
 test("a LONG task is handed to the provider as the assignment notice, with the body withheld", async () => {
   /**
-   * The test above sends 22 characters, for which "the opening paragraph" and
-   * "the whole body" are the same string — so it can pin the ASSIGNMENT WORDING
-   * but not the withholding, which is the half the branch exists for. This one
-   * sends a task nobody would want quoted in full and pins both: the provider
-   * hears that it was assigned work and where to read it, the bulk never
-   * reaches the prompt, and the record still holds every byte.
+   * The test above sends 22 characters, so a notice that leaked the whole body
+   * would still look small — it can pin the ASSIGNMENT WORDING but not the
+   * withholding, which is the half the branch exists for. This one sends a task
+   * nobody would want quoted and pins both: the provider hears that it was
+   * assigned work and where to read it, not one word of the message reaches the
+   * prompt, and the record still holds every byte.
    */
   const brief = `Rewrite the parser's error recovery.\nIt currently swallows the column.\n\n${"Background nobody needs up front. ".repeat(100)}`;
   let made: Session | undefined;
@@ -483,11 +483,12 @@ test("a LONG task is handed to the provider as the assignment notice, with the b
   // investigation found missing: without it a peer's `intent: "task"` reads as
   // a suggestion the model is free to park on the human.
   expect(prompts[0]).toContain(`[agent message · task] session ${hostId} ASSIGNED this session work (run run_brief,`);
-  expect(prompts[0]).toContain("It opens: \"Rewrite the parser's error recovery.");
-  expect(prompts[0]).toContain(`Read the whole thing with sessions_read(sessionId: "${made!.id}", runId: "run_brief") before acting on it.`);
-  // AND THE BODY IS NOT THERE — the measurement, not the adjective.
+  expect(prompts[0]).toContain(`Read it with sessions_read(sessionId: "${made!.id}", runId: "run_brief") before acting on it.`);
+  // AND NO PART OF THE BODY IS THERE — not the bulk, and since #631 not the
+  // opening either. The measurement, not the adjective.
   expect(prompts[0]).not.toContain("Background nobody needs up front.");
-  expect(prompts[0]!.length).toBeLessThan(brief.length / 3);
+  expect(prompts[0]).not.toContain("Rewrite the parser's error recovery.");
+  expect(prompts[0]!.length).toBeLessThan(brief.length / 8);
   // The record keeps what the notice stands in for, unabridged.
   expect((await client.session(made!.id)).turns[0]?.input).toBe(brief);
 });

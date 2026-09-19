@@ -5,6 +5,13 @@
  * `requestAnimationFrame` and `matchMedia` are replaced with deterministic
  * versions BEFORE React mounts, so a frame only happens when this page says so
  * and every run is reproducible.
+ *
+ * THE MERGE GATE IS `lib/use-streaming-reveal.dom.test.tsx`, which runs these
+ * same paths headless. What this page still has that CI cannot is the TRACE:
+ * the slow-input scenario prints chars-per-bucket as a sparkline, and reading
+ * it is how "way too fast for the input rate" was diagnosed in the first place.
+ * Keep the two in step — a scenario added here that a person must click is a
+ * scenario nothing enforces.
  */
 import { createElement as h, StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -186,6 +193,22 @@ const SCENARIOS: Scenario[] = [
       set(long(400), false);
       await settle();
       check("everything, immediately, with no frame", shown() === 400, `shown ${shown()} of 400`);
+    },
+  },
+  {
+    name: "reduced motion set BEFORE the first chunk",
+    run: async ({ set, shown, check }) => {
+      // Honouring the preference after the paint is one frame too late: the
+      // commit before it holds the paced prefix, which for a first chunk is
+      // nothing at all. Checked with no tick, so only what render itself
+      // produced can pass.
+      setReduced(true);
+      set(long(400));
+      await settle();
+      check("whole chunk on its own commit, unpaced", shown() === 400, `shown ${shown()} of 400`);
+      set(long(900));
+      await settle();
+      check("and the next one too", shown() === 900, `shown ${shown()} of 900`);
     },
   },
   {

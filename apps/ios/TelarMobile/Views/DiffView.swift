@@ -62,9 +62,14 @@ struct DiffView: View {
                         }
                     }
                     if diff.files.isEmpty && diff.commits.isEmpty {
-                        Text("No changes yet.")
+                        // "NO CHANGES YET" IS A CLAIM ABOUT THE CHECKOUT (#654),
+                        // and it is only safe when the reads that would have
+                        // contradicted it answered. A diff the engine killed
+                        // under load arrived here empty and this row read as a
+                        // session that had done no work.
+                        Text(diff.filesIncomplete == nil ? "No changes yet." : "Nothing was listed — which is not the same as nothing having changed.")
                             .font(.system(size: 14))
-                            .foregroundStyle(Theme.textMuted)
+                            .foregroundStyle(diff.filesIncomplete == nil ? Theme.textMuted : Theme.statusAmber)
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
                     }
@@ -120,12 +125,48 @@ struct DiffView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.statusAmber)
             }
+            /// WHAT GIT DID NOT ANSWER (#654), above the rows rather than in
+            /// place of them: the files that arrived are real changes worth
+            /// reading, and the counts beside them are honest sums over those.
+            /// Three sentences because they are three different doubts — a
+            /// `git log` that was killed says nothing about the file list.
+            ///
+            /// PULL TO REFRESH IS THIS SCREEN'S "ask git again", and a timeout
+            /// is the failure that clears on its own, so it is named.
+            ForEach(unknowns(diff), id: \.self) { sentence in
+                Text(sentence)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.statusAmber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if diff.truncated {
                 Text("File list truncated.")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textMuted)
             }
         }
+    }
+
+    private func unknowns(_ diff: SessionDiff) -> [String] {
+        var sentences: [String] = []
+        if let files = diff.filesIncomplete {
+            sentences.append(
+                files == "timeout"
+                    ? "git did not answer in time — this list may be missing files and the counts may be low. Pull to ask again."
+                    : "git could not read this checkout's changes — this list may be missing files and the counts may be low."
+            )
+        }
+        if let commits = diff.commitsIncomplete {
+            sentences.append(
+                commits == "timeout"
+                    ? "git did not answer in time for this session's commits — work it has already committed may not be listed. Pull to ask again."
+                    : "git could not read this session's commits — work it has already committed may not be listed."
+            )
+        }
+        if diff.baseUnverified != nil {
+            sentences.append("Nothing confirmed the starting point — it is the one recorded when this checkout was cut.")
+        }
+        return sentences
     }
 
     /// The desktop's diff-row menu. A DELETED FILE HAS NOTHING TO OPEN, so
@@ -214,8 +255,20 @@ struct PatchView: View {
     var body: some View {
         Group {
             if let patch {
-                if patch.binary {
+                // GIT DID NOT ANSWER IS NOT A FACT ABOUT THE FILE (#654). An
+                // unread patch used to arrive as the empty string, and an empty
+                // non-binary patch drew as a blank page — or, on the row below,
+                // as "binary".
+                if let incomplete = patch.incomplete {
+                    ContentUnavailableView(
+                        "git did not read this patch",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(incomplete == "timeout" ? "It did not answer in time. Open it again." : "It could not produce a diff for this file.")
+                    )
+                } else if patch.binary {
                     ContentUnavailableView("Binary file", systemImage: "doc", description: Text("No text diff to show."))
+                } else if patch.patch.isEmpty {
+                    ContentUnavailableView("No textual difference", systemImage: "equal", description: Text("git compared this file and found nothing changed."))
                 } else {
                     ScrollView([.vertical, .horizontal]) {
                         PatchLines(patch: patch.patch).padding(12)
@@ -287,8 +340,17 @@ private struct InlinePatch: View {
     var body: some View {
         Group {
             if let patch {
-                if patch.binary {
+                // Same three cases the pushed page tells apart — see `PatchView`.
+                if let incomplete = patch.incomplete {
+                    Text(incomplete == "timeout" ? "git did not answer in time — try again." : "git could not produce a diff for this file.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.statusAmber)
+                } else if patch.binary {
                     Text("Binary file — no text diff to show.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textMuted)
+                } else if patch.patch.isEmpty {
+                    Text("No textual difference.")
                         .font(.system(size: 11))
                         .foregroundStyle(Theme.textMuted)
                 } else {
