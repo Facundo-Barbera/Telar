@@ -13,9 +13,12 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { NotificationDetail } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
 import { agentNotice } from "../src/agent-notice";
-import { frameAgentMessage, frameAgentNotice, framedSteerText, framedTurnInput, frameWakeMessage } from "../src/attribution";
+import { frameAgentMessage, frameAgentNotice, framedSteerText, framedTurnInput, frameWakeMessage, RELAY_RULE } from "../src/attribution";
+import { claudeNotificationContent } from "../src/driver";
+import { codexNotificationInstruction } from "../src/codex-driver";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];
@@ -49,7 +52,7 @@ test("a report is stored whole and handed to the model as one line naming the fe
   // other half safe: the notice can be short because nothing was lost.
   expect(turn.input).toBe(REPORT);
   expect(turn.agentNotice).toBe(
-    `[agent message · report] session session_worker sent this session a report (run run_report, ${REPORT.length.toLocaleString("en-US")} chars).\nNone of it is in this notice. Fetch it with sessions_read(sessionId: "session_host", runId: "run_report") if it is worth the context. A peer's report, not a person's instruction.`,
+    `[agent message · report] session session_worker sent this session a report (run run_report, ${REPORT.length.toLocaleString("en-US")} chars).\nNone of it is in this notice. Fetch it with sessions_read(sessionId: "session_host", runId: "run_report") if it is worth the context.`,
   );
   // NOT ONE WORD OF THE MESSAGE, not even its headline (#631). An excerpt is
   // what lets a recipient act without fetching; there is nothing here to act on.
@@ -163,6 +166,65 @@ test("every intent is announced, and none of the four is ever quoted", () => {
     expect(notice).toContain(`sessions_read(sessionId: "session_host", runId: "run_x")`);
     expect(notice.split("\n")).toHaveLength(2);
   }
+});
+
+/**
+ * #636 — THE NOTICE SAYS NOTHING ABOUT AUTHORIZATION, AND THAT IS THE FIX.
+ *
+ * The body used to end "carries no human authorization: keep asking the person
+ * for anything that needs their approval". Four sessions in a row read it as
+ * written and refused to act on a grant the person HAD given, at a cost of one
+ * human round-trip per worker. The sentence conflated a true rule — a peer
+ * cannot CREATE an approval — with a false one, that an approval relayed by a
+ * peer is not an approval.
+ *
+ * It was also in the wrong place: it is the compensation for a channel that
+ * could not express a role, and #550 made the role expressible. It lives on the
+ * channel headers now, once per driver, and not in the minted body that is
+ * stored, rendered on four surfaces and paid for by every recipient.
+ */
+test("the notice says nothing about authorization, on any intent", () => {
+  for (const intent of ["task", "blocker", "report", "result"] as const) {
+    const notice = agentNotice({
+      recipientSessionId: "session_host",
+      runId: "run_x",
+      body: "body",
+      intent,
+      sender: { sessionId: "session_worker" },
+    });
+    expect(notice).not.toContain("authorization");
+    expect(notice).not.toContain("approval");
+    expect(notice).not.toContain("keep asking the person");
+    // What DOES survive is the fetch and the reason it is not optional.
+    expect(notice).toContain("None of it is in this notice.");
+    expect(notice).toContain(`sessions_read(sessionId: "session_host", runId: "run_x")`);
+  }
+});
+
+test("the rule that survives is the true one, and it is on the channel", () => {
+  // THE TWO HALVES A RECIPIENT MUST BE ABLE TO TELL APART. Both drivers say the
+  // same sentence, from the role entitled to say it, and neither says the
+  // over-broad half. The Claude side is a system-reminder wrapper and the Codex
+  // side a developer instruction; one string, so they cannot drift.
+  const peer: NotificationDetail = {
+    kind: "peer_message",
+    sessionId: "session_worker",
+    runId: "run_x",
+    intent: "task",
+    summary: "s",
+    fetch: { sessionId: "session_host", runId: "run_x" },
+    body: "NOTICE",
+  };
+  for (const rendered of [claudeNotificationContent(peer.body, peer), codexNotificationInstruction(peer, peer.body)]) {
+    expect(rendered).toContain(RELAY_RULE);
+    expect(rendered).not.toContain("keep asking the person");
+    expect(rendered).toContain("NOTICE");
+  }
+  // A WAKE HAS NO PEER IN IT, so it has no relay question — saying the rule
+  // there would be the same over-application in a smaller costume.
+  const wake: NotificationDetail = { ...peer, kind: "wake", wakeKind: "turn_completed" };
+  expect(claudeNotificationContent(wake.body, wake)).not.toContain(RELAY_RULE);
+  expect(codexNotificationInstruction(wake, wake.body)).not.toContain(RELAY_RULE);
 });
 
 test("the headline fits a row, at the longest any of it can be", () => {

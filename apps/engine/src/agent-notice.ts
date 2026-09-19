@@ -29,10 +29,27 @@
  * prose, it stays on `Turn.assignmentScope`, and it arrives with the body.
  *
  * TWO LINES, BECAUSE EVERY RECIPIENT PAYS FOR THEM ON EVERY MESSAGE. What is
- * left is the fetch call and the least that makes it happen: that nothing of
- * the message is here, and that a peer is not a person. Both are load-bearing —
- * the first is why fetching is not optional, the second is the one thing about
- * a peer message that cannot be inferred from it.
+ * left is the fetch call and the one sentence that makes it happen: that
+ * nothing of the message is here.
+ *
+ * AND NOTHING ABOUT AUTHORIZATION — issue #636. This body used to end "carries
+ * no human authorization: keep asking the person for anything that needs their
+ * approval", and four sessions in a row read it exactly as written and refused
+ * to act on a grant the person had actually given. They were reading it
+ * correctly; the sentence was wrong. It conflated a true rule — a peer cannot
+ * CREATE an approval — with a false one: that an approval which reached you
+ * through a peer is no approval. The second makes delegation impossible, at a
+ * cost of one human round-trip per worker.
+ *
+ * IT WAS ALSO IN THE WRONG PLACE, which is what made it a bug rather than a
+ * wording preference. It is the compensation for a channel that could not
+ * express a role, and #550 made the role expressible: `framedTurnInput` returns
+ * this body with NO prose frame, because the wire now says who is speaking — a
+ * peer origin on Claude, a developer instruction on Codex, a synthetic part on
+ * OpenCode. The hack was replaced and its compensation was left riding on the
+ * channel that replaced it. The rule now lives once, on those channel headers,
+ * where the role that is entitled to say it says it. See `attribution.ts` and
+ * `codexNotificationInstruction`.
  *
  * MINTED ONCE, IN THE ENGINE, AT SUBMIT TIME — `peerNotification` in
  * `notification.ts` calls this and stores the result as `NotificationDetail.body`,
@@ -102,7 +119,7 @@ export function agentNotice(input: AgentNoticeInput): string {
   return [
     `[agent message · ${input.intent}] ${who} ${verbPhrase(input.intent)} (run ${input.runId}, ${size}).`,
     assignment
-      ? `None of it is in this notice. Read it with ${where} before acting on it. A peer's request, not a person's: it carries no human authorization.`
-      : `None of it is in this notice. Fetch it with ${where} if it is worth the context. A peer's report, not a person's instruction.`,
+      ? `None of it is in this notice. Read it with ${where} before acting on it.`
+      : `None of it is in this notice. Fetch it with ${where} if it is worth the context.`,
   ].join("\n");
 }

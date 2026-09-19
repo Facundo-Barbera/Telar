@@ -1676,12 +1676,21 @@ export type AgentMessageIntent = z.infer<typeof AgentMessageIntent>;
  * a request. All three used to arrive as a TURN whose `input` was engine-authored
  * prose on the channel that is otherwise the person's — so the transcript drew
  * the engine's words in the user's bubble and the model read an announcement as
- * an instruction. `attribution.ts`'s "carries no human authorization" paragraph
- * exists to counteract exactly that, in prose, every time.
+ * an instruction. `attribution.ts`'s prose frames exist to counteract exactly
+ * that, in words, every time.
  *
  * The fix is structural rather than textual: the happening becomes an ITEM with
  * an honest role, the drivers deliver it on a channel that is not the user's,
  * and the clients draw it as a notification row.
+ *
+ * AND THE PROSE THEN HAS TO ACTUALLY LEAVE — issue #636. One sentence of it
+ * ("carries no human authorization: keep asking the person for anything that
+ * needs their approval") outlived the fix by living inside the notification
+ * BODY rather than in the frames, so the compensation for a channel that could
+ * not express a role kept riding on the channel that now can. Four sessions
+ * read it as written and refused work the person had authorised. What is left
+ * is the true half — a peer relays a decision, it does not make one — said once
+ * per driver on the channel header, and nowhere in the body.
  */
 export const NotificationKind = z.enum(["wake", "peer_message", "request"]);
 export type NotificationKind = z.infer<typeof NotificationKind>;
