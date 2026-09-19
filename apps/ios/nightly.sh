@@ -56,7 +56,21 @@ fi
 : "${TELAR_ASC_ISSUER_ID:?set TELAR_ASC_ISSUER_ID}"
 : "${TELAR_ASC_KEY_PATH:?set TELAR_ASC_KEY_PATH (path to the .p8)}"
 
-xcodebuild \
+# SYSTEM rsync AHEAD OF HOMEBREW, and the export is why. Its last step stages
+# the IPA with `/usr/bin/rsync -8aPhhE` — openrsync, which spells `-E` out as
+# `--extended-attributes` for the SERVER half of the copy and resolves that
+# half from PATH rather than by absolute path. A Homebrew rsync answers there
+# instead, and 3.5.0 calls the flag `--xattrs`, so the copy dies and xcodebuild
+# reports only `error: exportArchive Copy failed` with exit 70 — no mention of
+# rsync, the archive having already succeeded.
+#
+# Measured: `rsync 3.5.0` landed in /opt/homebrew on the mini at 2026-09-18
+# 20:07 and the next nightly was the first of four straight reds; the last
+# green ran 15:43 the same day. Pinning /usr/bin first keeps the two halves of
+# the copy speaking the same dialect whatever else gets brewed on later, which
+# is the point — unlinking the brew rsync would fix today and break again on
+# the next install.
+PATH="/usr/bin:/bin:$PATH" xcodebuild \
   -exportArchive \
   -archivePath "$ARCHIVE" \
   -exportOptionsPlist "$DIR/ExportOptions.plist" \
