@@ -1785,8 +1785,16 @@ export const Turn = z.object({
    * before, so the history read as the human typing a slash command — three
    * times in a row, on one measured session, because nothing refused a
    * second one while the first was in flight.
+   *
+   * `import` IS THE SAME LESSON AGAIN, for `/resume` (#616). Adopting a Claude
+   * Code conversation writes one turn that nobody typed and no worker ran: it
+   * holds the imported history as its items, and `input` is the engine's own
+   * one-line description of the adoption. A renderer must not draw that as the
+   * person's words — which is exactly what happened to `/compact` before this
+   * enum had a second member — so the kind is what says so, structurally,
+   * rather than a prefix on the text that somebody has to remember to strip.
    */
-  kind: z.enum(["message", "compact"]).optional(),
+  kind: z.enum(["message", "compact", "import"]).optional(),
   /**
    * WHO STARTED THIS TURN. Absent means a human (or another session, through
    * `sessions_send`) sent a message. `provider` is a turn the CLI started ON

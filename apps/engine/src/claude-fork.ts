@@ -177,9 +177,14 @@ export type ForkOptions = {
   /** The conversation being adopted. */
   sourceSessionId: string;
   /**
-   * The Telar session's working directory. The fork is relocated into THIS
-   * project's directory, which is what keeps it out of the person's own picker
-   * while leaving it resumable by id.
+   * WHERE THE FORK IS RELOCATED TO, as a working directory to be slugged — what
+   * keeps it out of the person's own picker while leaving it resumable by id.
+   *
+   * IT IS A DESTINATION, NOT THE SESSION'S CWD, and the distinction was learned
+   * from a hole: passing the Telar session's own working directory is correct
+   * for a worktree session (already under Telar's home) and exactly wrong for a
+   * `local` one, whose cwd IS the project checkout the person runs Claude Code
+   * in. See `adoptedForkHome` in `claude-adopt.ts`, which is what callers pass.
    */
   cwd: string;
   /** What the fork is called. A fork that inherits its parent's title cannot
