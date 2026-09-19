@@ -418,7 +418,14 @@ export class ExecutionStore {
      * down: the tail of a conversation may not survive the machine losing power.
      * A checkpoint still fsyncs, so the database file itself is never at risk.
      */
-    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;");
+    // BUSY TIMEOUT FIRST, and the order is the whole point. `journal_mode=WAL`
+    // takes a brief exclusive lock, so it is the statement most likely to meet
+    // another connection — and a pragma only governs the statements that follow
+    // it. Setting the timeout last left the one statement that needs a retry
+    // budget running without one: a second opener (the export script, a second
+    // daemon) got SQLITE_BUSY instantly instead of waiting out the handful of
+    // milliseconds the first connection needed to finish closing.
+    this.db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
     const version = Number(this.db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
     if (version > 1) throw new Error("execution database requires a newer Telar version");
     this.db.exec(`CREATE TABLE IF NOT EXISTS documents (key TEXT PRIMARY KEY, value TEXT NOT NULL);
