@@ -75,6 +75,11 @@ const TERMINAL_TURN_TYPES = ["turn.completed", "turn.failed", "turn.stopped", "t
  */
 const COMPACT_WATERMARK_PREFIX = "journal-compacted/";
 
+/** How long after opening the first compaction starts. Long enough that the
+ *  daemon is answering before housekeeping touches the database, short enough
+ *  that a person who launches Telar to reclaim space does not wait on it. */
+const COMPACT_AFTER_OPEN_MS = 5_000;
+
 /**
  * HOW LONG THE JSON THE IMPORT REPLACED IS KEPT — issue #457.
  *
@@ -293,6 +298,9 @@ export type ExecutionStoreOptions = {
   now?: () => number;
   receiptRetentionMs?: number;
   legacyBackupRetentionMs?: number;
+  /** Told what the background journal sweep removed, once it has. The daemon
+   *  prints it; a test asserts on it without waiting on a timer. */
+  onJournalCompacted?: (swept: { deltas: number; starts: number; sessions: number }) => void;
 };
 
 /** One authoritative execution database; legacy files become a migration backup.
@@ -357,6 +365,11 @@ export class ExecutionStore {
   private readonly receiptRetentionMs: number;
   private readonly legacyBackupRetentionMs: number;
   private pruneTimer?: ReturnType<typeof setInterval>;
+  private compactTimer?: ReturnType<typeof setTimeout>;
+  /** Said out loud by the daemon when the background sweep finds something.
+   *  A callback rather than a return because the sweep no longer happens while
+   *  anybody is waiting on the open — see the constructor. */
+  private readonly onJournalCompacted?: (swept: { deltas: number; starts: number; sessions: number }) => void;
   /**
    * WHAT THE HOUSEKEEPING ON OPEN REMOVED — issue #457, step 4.
    *
@@ -383,6 +396,7 @@ export class ExecutionStore {
     this.now = options.now ?? Date.now;
     this.receiptRetentionMs = Math.max(0, options.receiptRetentionMs ?? RECEIPT_RETENTION_MS);
     this.legacyBackupRetentionMs = Math.max(0, options.legacyBackupRetentionMs ?? LEGACY_BACKUP_RETENTION_MS);
+    if (options.onJournalCompacted) this.onJournalCompacted = options.onJournalCompacted;
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
     this.db = process.versions.bun ? new native.Database(file) : new native.DatabaseSync(file);
@@ -520,13 +534,6 @@ export class ExecutionStore {
     // A previous binary must fail closed instead of reading stale JSON state.
     for (const sessionId of this.sessionIds()) this.fenceLegacy(sessionId);
     this.housekeeping.receipts = this.pruneReceipts();
-    // DELETES ONLY, HERE AND IN THE TIMER. Reclaiming the pages these free is a
-    // VACUUM, which rewrites the whole database under an exclusive lock —
-    // measured at 7 s on the owner's gigabyte, which is 7 s of a Telar that
-    // looks hung on EVERY launch for a payoff worth taking monthly. Whoever
-    // adds that must put it behind an explicit ask, not on this path.
-    const journal = this.compactJournal();
-    if (journal.deltas > 0 || journal.starts > 0) this.housekeeping.journal = journal;
     const backup = this.sweepLegacyBackup();
     if (backup) this.housekeeping.backup = backup;
     } catch (error) { this.db.close(); throw error; }
@@ -538,9 +545,40 @@ export class ExecutionStore {
       // A timer has no caller to throw at, and housekeeping is not worth taking
       // the daemon down for; the next sweep covers whatever this one missed.
       try { this.pruneReceipts(); } catch {}
-      try { this.compactJournal(); } catch {}
+      this.sweepJournal();
     }, RECEIPT_PRUNE_EVERY_MS);
     this.pruneTimer.unref?.();
+    /**
+     * THE FIRST COMPACTION IS OFF THE OPEN PATH, and that is a measurement
+     * rather than a preference.
+     *
+     * Running it in the constructor took FIFTY-FOUR SECONDS on the owner's
+     * gigabyte — a one-time cost, since the watermark means later sweeps see
+     * only new turns, but one-time on the launch right after an update, which
+     * is the worst possible moment to hold the daemon shut. It would also have
+     * been a longer stall than the VACUUM this deliberately keeps off the same
+     * path, which would have made the argument for the button incoherent.
+     *
+     * So the daemon opens, and the sweep starts a few seconds later against the
+     * same single-writer database. It is transactional per session, so a turn
+     * that arrives mid-sweep waits for one session's DELETE and not for the
+     * backlog. `unref` for the same reason as the timers above: housekeeping is
+     * never the reason a process stays up.
+     */
+    this.compactTimer = setTimeout(() => { this.sweepJournal(); }, COMPACT_AFTER_OPEN_MS);
+    this.compactTimer.unref?.();
+  }
+
+  /** The sweep as housekeeping runs it: never throwing, and saying what went
+   *  once it has actually gone rather than promising it at open. */
+  private sweepJournal(): void {
+    if (this.closed) return;
+    try {
+      const swept = this.compactJournal();
+      if (swept.deltas === 0 && swept.starts === 0) return;
+      this.housekeeping.journal = swept;
+      this.onJournalCompacted?.(swept);
+    } catch { /* the next sweep covers whatever this one missed */ }
   }
 
   /**
@@ -605,9 +643,15 @@ export class ExecutionStore {
    * so each event is examined once in its life rather than daily forever.
    *
    * ONE TRANSACTION PER SESSION, not one for the store. The first sweep on a
-   * year-old store is most of the work this will ever do, and holding a write
-   * lock across a million rows to do it would stall the streaming path behind
-   * housekeeping. Returns what went, so the daemon can say it.
+   * year-old store is most of the work this will ever do — around a minute
+   * over the owner's 446 sessions, against 0.13 s for every sweep after it —
+   * and holding a write lock across a million rows for that long would stall
+   * the streaming path behind housekeeping. Per session
+   * it is a fraction of a second, so a turn arriving mid-sweep waits for one
+   * session's DELETE rather than for the backlog. That length is also why the
+   * constructor no longer calls this; see the timer it arms instead.
+   *
+   * Returns what went, so the daemon can say it and a test can hold it to it.
    */
   compactJournal(): { deltas: number; starts: number; sessions: number } {
     const total = { deltas: 0, starts: 0, sessions: 0 };
@@ -681,6 +725,68 @@ export class ExecutionStore {
         .run(key, String(high));
     });
     return swept;
+  }
+
+  /** The database and the files sqlite keeps beside it, as they are right now. */
+  private journalBytes(): number {
+    const file = path.join(this.root, "execution.sqlite");
+    let bytes = 0;
+    for (const name of [file, `${file}-wal`, `${file}-shm`]) {
+      try { bytes += fs.statSync(name).size; } catch { /* -wal and -shm need not exist */ }
+    }
+    return bytes;
+  }
+
+  /**
+   * GIVE THE FREED PAGES BACK TO THE FILESYSTEM — issue #646, and ONLY on ask.
+   *
+   * A `DELETE` moves pages to sqlite's freelist, where later inserts reuse
+   * them; the file itself never shrinks. So `compactJournal` above makes the
+   * database hold less without making it WEIGH less, and this is the half that
+   * finishes the job. Measured on the owner's store: the compaction dropped
+   * 570,951 rows and left the file at 1005.6 MiB to the byte, and the VACUUM
+   * after it brought it to 695.1 MiB.
+   *
+   * ══ WHY THIS IS A BUTTON AND NOT PART OF THE OPEN ══
+   *
+   * `VACUUM` rewrites the entire database under an exclusive lock and needs
+   * free space about equal to its own size. On the owner's gigabyte, in place
+   * and through the WAL, that measured at 20–35 SECONDS across runs.
+   * (`VACUUM INTO` a fresh file on the same machine is 7 s — worth knowing,
+   * because that is the figure a quick experiment produces and it is not the
+   * one this path pays. Anyone re-measuring this should measure the real
+   * thing.) Half a minute of a Telar that looks hung, on every launch, to
+   * return space that accrues over a month, is not a trade worth making for
+   * somebody. A person who wants the bytes back asks for them.
+   *
+   * ON ITS OWN IT IS ALMOST NOTHING. Vacuuming this database WITHOUT compacting
+   * it first returned 22.5 MiB of 1005.6 — 2.2%, because the freelist was only
+   * 1.7% of the file. That is why this compacts first and reports one number:
+   * the VACUUM is not the fix, it is what makes the fix visible.
+   *
+   * Returns the size either side of the work, because the difference is the
+   * whole point of the button — and because it is also how a person learns that
+   * pressing it again tomorrow will do nothing.
+   */
+  reclaim(): { before: number; after: number; deltas: number; starts: number; sessions: number } {
+    const before = this.journalBytes();
+    const journal = this.compactJournal();
+    // Everything held must be on disk before the rewrite: VACUUM cannot run
+    // inside a transaction, so there is no scope here to carry them into.
+    this.flush();
+    /**
+     * `wal_checkpoint(TRUNCATE)` FIRST, for a reason that is not the bytes.
+     *
+     * The WAL is a high-water mark — 24.3 MiB on the owner's machine holding
+     * 2.67 MiB of live frames — and that is only 2% of the problem, which is
+     * why nothing else here touches it. But a VACUUM's rewrite lands in the WAL
+     * before it lands in the database, and starting it against a WAL already
+     * carrying a burst is how a 7-second rewrite becomes a longer one.
+     */
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    this.db.exec("VACUUM");
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    return { before, after: this.journalBytes(), ...journal };
   }
 
   /**
@@ -1269,6 +1375,7 @@ export class ExecutionStore {
     if (this.closed) return;
     this.disarm();
     if (this.pruneTimer) { clearInterval(this.pruneTimer); this.pruneTimer = undefined; }
+    if (this.compactTimer) { clearTimeout(this.compactTimer); this.compactTimer = undefined; }
     // An orderly shutdown stores the tail. Only a crash may lose it.
     try { this.flush(); } finally { this.statements.clear(); this.cursors.clear(); this.db.close(); this.closed = true; }
   }

@@ -52,6 +52,7 @@ import type {
   DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
+  JournalReclaim,
   StorageReport,
   TextGenPolicy,
   WorktreeMoveResult,
@@ -626,6 +627,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `refresh` asks for another. Never put this on a timer (#629). */
     storage: (options: { refresh?: boolean } = {}) =>
       request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`),
+    /** Compact the turn journal and return its freed pages to the filesystem —
+     *  see `JournalReclaim`. SLOW and exclusive: the vacuum behind it rewrites
+     *  the database under a lock. It drops rows a settled turn has superseded
+     *  and never a turn, an item or an answer. */
+    reclaimJournal: () => request<{ reclaimed: JournalReclaim }>(fetcher, "POST", "/api/storage/journal/reclaim", {}),
     /** Where session checkouts go on this install — see `WorktreesRoot`. */
     worktreesRoot: () => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "GET", "/api/worktrees-root"),
     /** Put them somewhere else from the next cut on; `null` restores the
