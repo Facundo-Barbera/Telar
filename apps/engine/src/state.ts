@@ -12716,6 +12716,29 @@ function processExists(pid: number): boolean {
   }
 }
 
+/**
+ * A LOCK WRITTEN BY ANOTHER MACHINE IS NEVER STALE — issue #630.
+ *
+ * `processExists` asks THIS kernel about a pid. That is a sound test for a
+ * stale lock exactly as long as the state root can only ever have been locked
+ * from here, which was true while it lived on the machine's own disk.
+ *
+ * A store on a removable volume can be carried to a second Mac, and pids are
+ * small integers that every machine hands out from the same low range. So the
+ * recorded pid being "alive" over there says nothing about here, and — the
+ * dangerous direction — the recorded pid being dead HERE says nothing about a
+ * daemon that is very much alive THERE. Without this check, plugging a drive
+ * into a second machine while the first is still running breaks a live lock and
+ * puts two daemons on one store, which is data loss with no warning.
+ *
+ * The hostname was already being written and never read. Reading it is the fix.
+ * An unrecorded hostname (a lock from before this) is treated as ours, because
+ * that is what it was.
+ */
+function lockHeldElsewhere(owner: { hostname?: string }): boolean {
+  return typeof owner.hostname === "string" && owner.hostname !== "" && owner.hostname !== os.hostname();
+}
+
 /** Exclusive state-root ownership. A dead owner's lock is reclaimed, never a live one. */
 export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
   fs.mkdirSync(paths.root, { recursive: true, mode: 0o700 });
@@ -12739,15 +12762,18 @@ export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let owner: { pid?: number } = {};
+      let owner: { pid?: number; hostname?: string } = {};
       let fingerprint: string | undefined;
       try {
         const stat = fs.statSync(paths.lock);
         fingerprint = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-        owner = JSON.parse(fs.readFileSync(paths.lock, "utf8")) as { pid?: number };
+        owner = JSON.parse(fs.readFileSync(paths.lock, "utf8")) as { pid?: number; hostname?: string };
       } catch {
         // A torn stale lock cannot establish a live owner. The retry below is
         // still guarded by unlink + O_EXCL and never replaces an active lock.
+      }
+      if (lockHeldElsewhere(owner)) {
+        throw new EngineStateError("conflict", `engine state root is locked by ${owner.hostname}`);
       }
       if (processExists(owner.pid ?? -1)) throw new EngineStateError("conflict", "engine state root is already locked");
       const breakerToken = crypto.randomUUID();
@@ -12767,8 +12793,10 @@ export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
         try {
           const stat = fs.statSync(paths.lock);
           const current = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-          const currentOwner = JSON.parse(fs.readFileSync(paths.lock, "utf8")) as { pid?: number };
-          if (current !== fingerprint || processExists(currentOwner.pid ?? -1)) continue;
+          const currentOwner = JSON.parse(fs.readFileSync(paths.lock, "utf8")) as { pid?: number; hostname?: string };
+          // Re-checked inside the breaker window for the same reason the pid is:
+          // the lock may have been replaced between the read above and here.
+          if (current !== fingerprint || lockHeldElsewhere(currentOwner) || processExists(currentOwner.pid ?? -1)) continue;
           fs.unlinkSync(paths.lock);
         } catch (unlinkError) {
           if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") throw unlinkError;
