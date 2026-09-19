@@ -61,7 +61,7 @@ describe("the menu can always be closed", () => {
     // close it. Escape must be the one key that does not need a row.
     const open = composer.indexOf("if (stashOpen) {");
     const escape = composer.indexOf('event.key === "Escape"', open);
-    const counted = composer.indexOf("stash.entries.length > 0", open);
+    const counted = composer.indexOf("shelf.rows.length > 0", open);
     expect(open).toBeGreaterThan(-1);
     expect(escape).toBeGreaterThan(open);
     expect(escape).toBeLessThan(counted);
@@ -94,7 +94,9 @@ describe("nothing the stash adds is ever disabled", () => {
     // Anchored AFTER the badge, not at the file's first `<LayersIcon`: the
     // chrome menu's Stash draft row wears the same glyph, and a slice taken
     // from the first one is empty — a test that passes by measuring nothing.
-    const at = composer.indexOf("aria-label=\"Stashed prompts\"");
+    // Anchored on the RENDER CONDITION rather than the label, because the label
+    // now names what is in the shelf (#87) and an agent's draft changes it.
+    const at = composer.indexOf("shelf.rows.length > 0 || stashing");
     const badge = composer.slice(at, composer.indexOf("<LayersIcon", at));
     expect(badge.length).toBeGreaterThan(0);
     expect(badge).not.toContain("disabled");

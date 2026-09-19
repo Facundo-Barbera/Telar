@@ -70,6 +70,7 @@ import type {
   ModelSelection,
   Project,
   ProjectNote,
+  PreparedPrompt,
   TurnAttachment,
   TurnModelSelection,
   ProviderDriverKind,
@@ -695,6 +696,36 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `deleted: false` means it was already gone, never an error. */
     deleteProjectNote: (projectId: string, noteId: string) =>
       request<{ deleted: boolean }>(fetcher, "DELETE", `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`),
+    /**
+     * THE PROJECT'S PROMPT SHELF — the composer's stash draws this beside the
+     * ⌘S queue.
+     *
+     * Uncached for a sharper version of the notebook's reason: the other writer
+     * is a WORKER, drafting a follow-up while you watch the turn that writes it.
+     * Already ordered newest-first, so nothing on this side re-sorts.
+     */
+    projectPrompts: (projectId: string) =>
+      request<{ prompts: PreparedPrompt[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/prompts`),
+    /** `text` is required and may not be blank: a prepared prompt with no
+     *  message is a row that does nothing when you press it. */
+    createProjectPrompt: (projectId: string, input: { title: string; text: string; reason?: string; sessionId?: string }) =>
+      request<{ prompt: PreparedPrompt }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/prompts`, input),
+    /** The author NEVER changes — the engine refuses a patch that names it. */
+    updateProjectPrompt: (projectId: string, promptId: string, patch: { title?: string; text?: string; reason?: string }) =>
+      request<{ prompt: PreparedPrompt }>(
+        fetcher,
+        "PATCH",
+        `/api/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`,
+        patch,
+      ),
+    /** How a prepared prompt ends: sent, or discarded. `deleted: false` means it
+     *  was already gone, never an error. */
+    deleteProjectPrompt: (projectId: string, promptId: string) =>
+      request<{ deleted: boolean }>(
+        fetcher,
+        "DELETE",
+        `/api/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`,
+      ),
     pinProjectNote: (projectId: string, noteId: string, pinned: boolean) =>
       request<{ note: ProjectNote }>(
         fetcher,
