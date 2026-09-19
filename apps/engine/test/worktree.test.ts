@@ -569,6 +569,17 @@ test("the overview lists cuttable refs: locals and remote-tracking, current mark
   git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
 
   const overview = gitOverview(defaultGitRunner, projectRoot);
+  /**
+   * ASSERTED FIRST, so a loaded machine says what happened — issue #650.
+   *
+   * This ran real `for-each-ref` children and failed roughly one run in four
+   * with `Expected to contain: "local:main" / Received: [ "remote:origin/main" ]`
+   * — a message that reads like the listing is wrong when what happened is that
+   * git was killed at its bound. The engine can now tell those apart, so the
+   * test does too: an incomplete listing is a stalled machine, not a regression
+   * in what this test is about.
+   */
+  expect(overview.refsIncomplete).toBeUndefined();
   const names = (overview.refs ?? []).map((ref) => `${ref.kind}:${ref.name}`);
   expect(names).toContain("local:main");
   expect(names).toContain("local:feature-x");
