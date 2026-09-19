@@ -51,6 +51,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { forkSession, listSessions } from "@anthropic-ai/claude-agent-sdk";
+import type { ClaudeConversation } from "@telar/engine-client";
 
 /**
  * Claude's own encoding of a working directory into a project-directory name:
@@ -76,22 +77,12 @@ export function claudeProjectsRoot(env: NodeJS.ProcessEnv = process.env): string
  * only distinguishing field a caller has — `firstPrompt`, `lastActivityAt`,
  * `cwd` and `bytes` are carried precisely so two conversations that share a
  * title are still tellable apart.
+ *
+ * THE SHAPE IS THE PROTOCOL'S, not this module's: the cockpit's picker draws
+ * exactly these rows over HTTP, and a second definition here would be a second
+ * place for the field that distinguishes two conversations to go missing.
  */
-export type ClaudeConversation = {
-  sessionId: string;
-  /** Custom title, else the CLI's auto-title, else the first prompt. */
-  title: string;
-  /** The first real user prompt, when the CLI extracted one. */
-  firstPrompt?: string;
-  /** Set only when the person renamed it themselves, via `/rename`. */
-  customTitle?: string;
-  lastActivityAt: number;
-  createdAt?: number;
-  cwd?: string;
-  gitBranch?: string;
-  /** Transcript size on disk. Local JSONL storage only. */
-  bytes?: number;
-};
+export type { ClaudeConversation };
 
 export type ListOptions = {
   /** Restrict to one project's conversations. Omit for every project. */
@@ -103,6 +94,14 @@ export type ListOptions = {
    * a person fork a fork without ever being told that is what they did.
    */
   includeAdopted?: boolean;
+  /**
+   * The directory adopted forks are relocated into — how "already adopted" is
+   * recognised. Supplied by the caller that also chose it, rather than derived
+   * here a second time: the engine owns that directory (it is under the engine
+   * root), and two derivations of one path is one place for them to disagree
+   * and start re-offering forks as conversations. Defaults to Telar's home.
+   */
+  adoptedRoot?: string;
   env?: NodeJS.ProcessEnv;
 };
 
@@ -118,7 +117,7 @@ export type ListOptions = {
  */
 export async function listClaudeConversations(options: ListOptions = {}): Promise<ClaudeConversation[]> {
   const env = options.env ?? process.env;
-  const adopted = options.includeAdopted ? new Set<string>() : adoptedSessionIds(env);
+  const adopted = options.includeAdopted ? new Set<string>() : adoptedSessionIds(env, options.adoptedRoot);
   const sessions = await listSessions({
     ...(options.cwd ? { dir: options.cwd } : {}),
     ...(options.limit !== undefined ? { limit: options.limit } : {}),
@@ -357,9 +356,9 @@ function forkHomeRoot(env: NodeJS.ProcessEnv): string {
  * `/x/telar-a` encode identically — which is the CLI's own and not worth
  * out-thinking here.
  */
-function adoptedSessionIds(env: NodeJS.ProcessEnv): Set<string> {
+function adoptedSessionIds(env: NodeJS.ProcessEnv, adoptedRoot?: string): Set<string> {
   const projects = claudeProjectsRoot(env);
-  const prefix = claudeProjectSlug(forkHomeRoot(env));
+  const prefix = claudeProjectSlug(adoptedRoot?.trim() || forkHomeRoot(env));
   const ids = new Set<string>();
   let entries: string[];
   try {

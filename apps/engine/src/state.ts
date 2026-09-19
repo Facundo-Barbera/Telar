@@ -8654,6 +8654,16 @@ export class EngineStore {
     return process.env.CLAUDE_CONFIG_DIR?.trim() || undefined;
   }
 
+  /**
+   * WHERE ADOPTED FORKS LIVE — under the engine root, because the engine owns
+   * that directory and knows where it is. Derived HERE and passed to both the
+   * fork and the listing, so "we relocated it there" and "a fork there is ours
+   * already" can never be two different answers.
+   */
+  private adoptedForkHome(): string {
+    return path.join(this.paths.root, "adopted");
+  }
+
   /** The conversations this session's login could adopt. Scoped to that login's
    *  store for the reason `claudeConfigDirFor` gives at length. */
   async listAdoptableClaudeConversations(
@@ -8669,6 +8679,7 @@ export class EngineStore {
       ...(options.cwd ? { cwd: options.cwd } : {}),
       ...(options.limit !== undefined ? { limit: options.limit } : {}),
       ...(configDir ? { configDir } : {}),
+      forkHome: this.adoptedForkHome(),
     });
   }
 
@@ -8719,6 +8730,7 @@ export class EngineStore {
         ...(input.sourceCwd ? { sourceCwd: input.sourceCwd } : {}),
         ...(input.maxRows !== undefined ? { maxRows: input.maxRows } : {}),
         ...((dir) => (dir ? { configDir: dir } : {}))(this.claudeConfigDirFor(session)),
+        forkHome: this.adoptedForkHome(),
       });
     } catch (error) {
       // The module's own sentences — "No conversation found with session ID",

@@ -4039,6 +4039,54 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           );
           return;
         }
+        /**
+         * THE CONVERSATIONS THIS SESSION COULD ADOPT — `/resume`'s picker,
+         * #616.
+         *
+         * SCOPED TO THE SESSION rather than to the machine, and not for
+         * politeness: which conversations exist depends on which LOGIN is
+         * asking, because a configured instance keeps its own
+         * `CLAUDE_CONFIG_DIR` with its own history in it. A machine-wide route
+         * would list one store and adopt into another.
+         *
+         * `?cwd=` narrows to one project directory; absent lists every project,
+         * which is the right default here — resume finds a conversation BY ID
+         * from any directory, so restricting the list to cwd-matched projects
+         * would hide conversations that would adopt perfectly well.
+         */
+        if (request.method === "GET" && session.tail === "/claude-conversations") {
+          const cwd = url.searchParams.get("cwd")?.trim();
+          writeJson(response, 200, {
+            conversations: await store.listAdoptableClaudeConversations(session.sessionId, {
+              ...(cwd ? { cwd } : {}),
+              limit: positiveParam(url.searchParams.get("limit"), 100, 500, "limit"),
+            }),
+          });
+          return;
+        }
+        /**
+         * ADOPT ONE — fork it, import its history, and point this session's
+         * next turn at the fork.
+         *
+         * A POST ON THE SESSION, because that is what changes: nothing about
+         * the person's own conversation is touched (asserted, not assumed), and
+         * what comes back is this session's new turn plus the stamp saying
+         * where it came from.
+         */
+        if (request.method === "POST" && session.tail === "/adopt") {
+          const input = await body(request);
+          const cut = input.cut === "since_compact_boundary" || input.cut === "whole" ? input.cut : undefined;
+          writeJson(
+            response,
+            201,
+            await store.adoptClaudeConversation(session.sessionId, {
+              sourceSessionId: stringValue(input.sourceSessionId, "source session id")!,
+              ...(cut ? { cut } : {}),
+              ...((value) => (value ? { sourceCwd: value } : {}))(stringValue(input.sourceCwd, "source cwd", true)),
+            }),
+          );
+          return;
+        }
         /** The session twin of `/v2/projects/:id/files/raw` — one file's bytes,
          *  fenced inside the session's own checkout. */
         if (request.method === "GET" && session.tail === "/files/raw") {

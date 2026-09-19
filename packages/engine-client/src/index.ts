@@ -111,6 +111,8 @@ import {
   type AgentTurnInput,
   type WorkerStatus,
   type ProviderSkills,
+  type ClaudeConversation,
+  type ConversationImportDetail,
   type WorkspaceFile,
   type WorkspaceListing,
   type WorkerTurnFailure,
@@ -1816,6 +1818,37 @@ export class EngineClient {
    */
   sessionSkills(sessionId: string): Promise<ProviderSkills> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/skills`);
+  }
+
+  /**
+   * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, newest first — `/resume`'s
+   * picker (#616).
+   *
+   * PER SESSION, like the skills above and for a sharper version of the same
+   * reason: which conversations exist depends on which LOGIN is asking, because
+   * a configured instance keeps its own config directory with its own history.
+   * A machine-wide list would offer conversations this session could not adopt.
+   *
+   * Forks Telar has already adopted are not in the answer: adopting an adoption
+   * is something a person could do without ever being told that is what it was.
+   */
+  claudeConversations(sessionId: string): Promise<{ conversations: ClaudeConversation[] }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/claude-conversations`);
+  }
+
+  /**
+   * Adopt one into this session: fork it, import its history as journal rows,
+   * and point the session's next turn at the fork.
+   *
+   * THE PERSON'S OWN HISTORY IS NOT WRITTEN TO — asserted by the engine after
+   * the fork rather than assumed, and the adoption is refused if the original
+   * moved by so much as a byte.
+   */
+  adoptClaudeConversation(
+    sessionId: string,
+    input: { sourceSessionId: string; cut?: "whole" | "since_compact_boundary"; sourceCwd?: string },
+  ): Promise<{ session: Session; turn: Turn; provenance: ConversationImportDetail }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/adopt`, input);
   }
 
   /**

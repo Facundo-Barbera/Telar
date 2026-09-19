@@ -72,6 +72,13 @@ import { readClaudeTranscriptFile, type ImportedRow, type TranscriptImport } fro
  * by session id is global, so the fork stays resumable from any cwd, and new
  * turns append to it here rather than in whatever directory the CLI was run
  * from (measured, #616).
+ *
+ * THE ENGINE PASSES ITS OWN ROOT rather than letting this be derived twice.
+ * `TELAR_HOME` is the fallback for a caller with no store in hand (a script, a
+ * test); the store knows the directory it owns, and the SAME path has to reach
+ * `listAdoptableConversations`, which recognises an already-adopted fork by
+ * where it lives. Two derivations would be one place for them to disagree, and
+ * the symptom would be forks quietly offered back as conversations to adopt.
  */
 export function adoptedForkHome(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.TELAR_HOME?.trim() || path.join(env.HOME ?? "", "Library", "Application Support", "Telar");
@@ -121,11 +128,12 @@ export function withClaudeConfigDir<T>(configDir: string | undefined, work: () =
  * store while forking into the session's.
  */
 export function listAdoptableConversations(
-  options: ListOptions & { configDir?: string } = {},
+  options: ListOptions & { configDir?: string; forkHome?: string } = {},
 ): Promise<ClaudeConversation[]> {
-  const { configDir, ...rest } = options;
+  const { configDir, forkHome, ...rest } = options;
+  const env = withConfigDir(rest.env ?? process.env, configDir);
   return withClaudeConfigDir(configDir, () =>
-    listClaudeConversations({ ...rest, env: withConfigDir(rest.env ?? process.env, configDir) }),
+    listClaudeConversations({ ...rest, env, adoptedRoot: forkHome ?? adoptedForkHome(env) }),
   );
 }
 
@@ -157,6 +165,9 @@ export type AdoptOptions = {
   configDir?: string;
   /** Rows to import at most. The reader's own default when omitted. */
   maxRows?: number;
+  /** Where the fork is relocated to. The engine passes the directory it owns;
+   *  see `adoptedForkHome`, which is the fallback. */
+  forkHome?: string;
   env?: NodeJS.ProcessEnv;
   /**
    * THE SEAM THE ASSERTION NEEDS, and the only reason it exists.
@@ -210,7 +221,7 @@ export async function adoptClaudeConversation(options: AdoptOptions): Promise<Ad
     cutFork({
       sourceSessionId: options.sourceSessionId,
       // NOT the session's working directory — see `adoptedForkHome`.
-      cwd: adoptedForkHome(env),
+      cwd: options.forkHome ?? adoptedForkHome(env),
       title: options.title,
       ...(options.cut ? { cut: options.cut } : {}),
       ...(options.sourceCwd ? { sourceCwd: options.sourceCwd } : {}),

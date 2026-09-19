@@ -734,6 +734,46 @@ export const SessionSettledBy = z.object({
 });
 export type SessionSettledBy = z.infer<typeof SessionSettledBy>;
 
+/**
+ * ONE OF THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, as `/resume`'s picker has
+ * to show it (#616).
+ *
+ * EVERY FIELD HERE EXISTS TO TELL TWO CONVERSATIONS APART, and the shape is
+ * what it is because the obvious design was measured and fails. The CLI's own
+ * titles do NOT distinguish conversations: six identically-titled sessions were
+ * produced deliberately in one directory and the CLI itself refused to resolve
+ * between them — `--resume "PINEAPPLE-7742" matches 6 sessions`. A picker
+ * listing titles would reproduce that failure in Telar, where the person has
+ * even less context to guess with.
+ *
+ * So `title` is never the only thing a row can show. `firstPrompt` says what
+ * the conversation was ABOUT in the person's own opening words,
+ * `lastActivityAt` when they were last in it, `cwd` which project it belongs
+ * to, and `bytes` how much of it there is — four independent handles, of which
+ * at least one differs between any two real conversations.
+ */
+export const ClaudeConversation = z.object({
+  sessionId: z.string().min(1),
+  /** Custom title, else the CLI's auto-title, else the first prompt. Not, on
+   *  its own, an identifier — see above. */
+  title: z.string(),
+  /** The first real user prompt, when the CLI extracted one. */
+  firstPrompt: z.string().optional(),
+  /** Set only when the person renamed it themselves, via `/rename`. Worth
+   *  distinguishing: a name somebody CHOSE is trustworthy in a way a generated
+   *  one is not. */
+  customTitle: z.string().optional(),
+  lastActivityAt: Timestamp,
+  createdAt: Timestamp.optional(),
+  /** The working directory the conversation happened in. */
+  cwd: z.string().optional(),
+  gitBranch: z.string().optional(),
+  /** Transcript size on disk. The rough measure of how much conversation there
+   *  is, and the one that tells a long thread from a one-line question. */
+  bytes: z.number().int().nonnegative().optional(),
+});
+export type ClaudeConversation = z.infer<typeof ClaudeConversation>;
+
 export const Session = z.object({
   id: Id,
   /**

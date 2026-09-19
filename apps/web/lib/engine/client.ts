@@ -3,6 +3,8 @@
 import type { Channel } from "@/lib/build-identity";
 import type {
   BrowserSnapshot,
+  ClaudeConversation,
+  ConversationImportDetail,
   GitCommitEntry,
   GitHubCheckLog,
   GitHubFacets,
@@ -1105,6 +1107,34 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      */
     sessionSkills: (sessionId: string) =>
       request<ProviderSkills>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/skills`),
+    /**
+     * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, for `/resume` (#616).
+     *
+     * ASKED THROUGH THE SESSION rather than the machine, because which
+     * conversations there are depends on which LOGIN is asking: a configured
+     * instance keeps its own config directory with its own history in it, and a
+     * machine-wide list would offer conversations this session could not adopt.
+     *
+     * NOT SCOPED TO THE SESSION'S PROJECT by default. Resume finds a
+     * conversation by id from any directory, so filtering to the current
+     * checkout would hide conversations that would adopt perfectly well — the
+     * project path is shown on each row instead, and the person decides.
+     */
+    claudeConversations: (sessionId: string) =>
+      request<{ conversations: ClaudeConversation[] }>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/claude-conversations`,
+      ),
+    /** Adopt one: fork it, import its history, and point this session's next
+     *  turn at the fork. The person's own conversation is not written to. */
+    adoptClaudeConversation: (sessionId: string, sourceSessionId: string) =>
+      request<{ session: Session; turn: Turn; provenance: ConversationImportDetail }>(
+        fetcher,
+        "POST",
+        `/api/sessions/${encodeURIComponent(sessionId)}/adopt`,
+        { sourceSessionId },
+      ),
     /**
      * The same, one scope wider — what a CANVAS asks, because the session that
      * would answer for itself does not exist yet (#500). `driver` is the
