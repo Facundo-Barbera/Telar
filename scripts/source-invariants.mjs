@@ -68,6 +68,12 @@ const SWEPT_FILES = [
     1,
     "the file strip's 28×28 tree toggle",
   ],
+  [
+    "apps/ios/TelarMobile/Views/SessionSidebar.swift",
+    2,
+    "the footer's settings and usage glyphs, both 44pt squares",
+  ],
+  ["apps/ios/TelarMobile/Views/AgentModelPickerSheet.swift", 0, ""],
 ];
 
 const LITERAL = ".system(size:";
