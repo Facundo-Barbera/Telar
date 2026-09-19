@@ -29,6 +29,8 @@ const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = requi
 const { windowTargetUrl } = require("./window-target");
 const { provisionPushRelay } = require("./push-relay");
 const { watchVolumes } = require("./volume-watch");
+const { awaitStore } = require("./store-gate");
+const { createStoreGateWindow } = require("./store-gate-window");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
 const { readProfileRegistry } = require("./browser-profiles");
@@ -383,14 +385,104 @@ function resolveServerJs() {
  * verifying a build against the user's own store would kill their live sessions.
  */
 let smokeHome = null;
+/**
+ * AND SINCE #630 THE PERSON MAY HAVE CHOSEN SOMEWHERE ELSE. `openStoreGate`
+ * settles that once, before either child is spawned, and parks the answer here
+ * — so every later caller of `telarHome()` gets the same root the engine was
+ * started with rather than re-deriving one that could have changed underneath
+ * it. Before the gate has run this falls through to exactly the old behaviour,
+ * which is what keeps the smoke path and an explicit TELAR_HOME unchanged.
+ */
+let resolvedStoreHome = null;
 function telarHome() {
   if (SMOKE) {
     smokeHome ??= fs.mkdtempSync(path.join(os.tmpdir(), "telar-smoke-"));
     return smokeHome;
   }
+  if (resolvedStoreHome) return resolvedStoreHome;
   // A dev-packaged build never follows an inherited TELAR_HOME — see DEV_BUILD.
   if (DEV_BUILD) return app.getPath("userData");
   return process.env.TELAR_HOME?.trim() || app.getPath("userData");
+}
+
+/**
+ * SETTLE ON A STORE BEFORE ANYTHING OPENS ONE — issue #630.
+ *
+ * The engine's only available answer to "my state root is not reachable" is to
+ * fail to start, and a daemon that dies during boot takes the app with it
+ * (`startEngineChild`'s exit handler). So the question is asked HERE, by the
+ * process that owns a screen, and the engine is spawned only once there is an
+ * answer. The loop, and the guarantee that no path through it initialises over
+ * an absent store, are in `store-gate.js`.
+ *
+ * AN EXPLICIT `TELAR_HOME` SKIPS THE GATE ENTIRELY. It is a developer pointing
+ * this build at a dogfood store for one run, not a choice somebody recorded in
+ * Settings, and making it consult (or worse, write) the marker would have the
+ * dev stack quietly adopt whatever it was last pointed at.
+ *
+ * Returns the root, or `null` when the person chose to quit rather than
+ * continue without their store.
+ */
+let storeGate = null;
+async function openStoreGate() {
+  const explicit = DEV_BUILD ? "" : process.env.TELAR_HOME?.trim();
+  if (explicit) return explicit;
+  storeGate = createStoreGateWindow();
+  /**
+   * WATCHING WHILE WE WAIT. `volume-watch.js` needs no engine and no window —
+   * it is a pure module taking an `onChanged` — so the same mechanism that
+   * makes a remounted project appear in the rail is what ends this wait
+   * without anyone clicking. `resume` covers the drive pulled during sleep.
+   */
+  const watcher = watchVolumes({ onChanged: () => storeGate.volumesChanged(), powerMonitor });
+  try {
+    const settled = await awaitStore(
+      { userData: app.getPath("userData"), defaultRoot: app.getPath("userData") },
+      { present: (outcome) => storeGate.present(outcome), findVolumeMount },
+    );
+    return settled.quit ? null : settled.root;
+  } finally {
+    watcher.stop();
+    storeGate.close();
+    storeGate = null;
+  }
+}
+
+/**
+ * WHERE THIS DRIVE IS MOUNTED NOW, by its own identifier rather than its name.
+ *
+ * The shell's own copy of `apps/engine/src/volumes.ts`'s search, for the same
+ * reason `volume-watch.js` keeps its own mount-root list: the gate runs before
+ * the engine exists, so it cannot ask the engine. macOS only, and absent rather
+ * than invented elsewhere — every path through the gate copes without a uuid.
+ */
+function findVolumeMount(uuid) {
+  if (process.platform !== "darwin") return undefined;
+  for (const root of ["/Volumes"]) {
+    let names;
+    try {
+      names = fs.readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const mount = path.join(root, name);
+      try {
+        if (fs.statSync(mount).dev === fs.statSync(root).dev) continue;
+        const plist = execFileSync("diskutil", ["info", "-plist", mount], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          // Bounded for the same reason the engine's is: `diskutil` talks to
+          // diskarbitrationd, and a wedged daemon must not hold the launch.
+          timeout: 5_000,
+        });
+        if (/<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]?.trim() === uuid) return mount;
+      } catch {
+        // Not a mount, not readable, or no uuid: not the drive we want.
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -2827,6 +2919,17 @@ if (SMOKE) {
         let url = OVERRIDE_URL;
         if (!url) {
           captureLoginShellEnv();
+          /**
+           * THE STORE BEFORE THE ENGINE — issue #630. This may wait
+           * indefinitely, which is the point: a drive that is meant to be
+           * plugged in and is not is a condition to sit in, not a reason to
+           * start without somebody's history and create a second one.
+           */
+          resolvedStoreHome = await openStoreGate();
+          if (resolvedStoreHome === null) {
+            app.quit();
+            return;
+          }
           // THE ENGINE FIRST, AND WAITED FOR. The cockpit's server components
           // ask the engine for the session list while rendering the first page;
           // starting them together means that first paint races a daemon that

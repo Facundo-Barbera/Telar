@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- The store gate window (#630). WORDING IS LOAD-BEARING: every state here has
+     to say, in as many words, that nothing has been opened or created. Somebody
+     whose drive is in their bag is looking at a Telar with no sessions in it,
+     and the one thing they need to know is that their history is fine and this
+     is a cable problem. "Start a new store" is deliberately the quietest
+     control on the window and is never the default. -->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Telar's store</title>
+  <style>
+    :root { color-scheme: light dark; }
+    /* Explicit canvas colors: the window may composite over transparency, and
+       an unpainted background leaves dark-mode text unreadable. */
+    body { font: 13px/1.5 -apple-system, system-ui, sans-serif; margin: 0; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; height: calc(100vh - 36px); background: Canvas; color: CanvasText; }
+    h1 { font-size: 15px; margin: 0; }
+    p { margin: 0; opacity: 0.85; }
+    #detail { opacity: 0.7; }
+    .waiting { display: flex; gap: 8px; align-items: center; opacity: 0.7; font-size: 12px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+    .buttons { margin-top: auto; display: flex; gap: 8px; align-items: center; }
+    .buttons .spacer { flex: 1; }
+    button { font: inherit; padding: 6px 14px; border-radius: 6px; }
+    /* Starting over is a real choice and is allowed to look like the smallest
+       one on the window. It is never focused by default. */
+    #new-store { background: none; border: none; padding: 6px 4px; opacity: 0.6; text-decoration: underline; cursor: pointer; }
+    #new-store:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <h1 id="title">…</h1>
+  <p id="message"></p>
+  <p id="detail"></p>
+  <div class="waiting" id="watching" hidden><span class="dot"></span><span>Watching for the drive…</span></div>
+  <div class="buttons">
+    <button id="new-store" hidden>Start a new store instead</button>
+    <span class="spacer"></span>
+    <button id="quit">Quit Telar</button>
+    <button id="retry" autofocus>Try again</button>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function render(state) {
+      $("title").textContent = state.title || "";
+      $("message").textContent = state.message || "";
+      $("detail").textContent = state.detail || "";
+      $("watching").hidden = state.severity !== "waiting";
+      $("new-store").hidden = state.newStore !== true;
+      $("retry").hidden = state.retry !== true;
+    }
+
+    // THE DRIVE ARRIVING ENDS THE WAIT WITHOUT A CLICK. The main process is
+    // watching the mount roots (volume-watch.js) and tells this window to
+    // resolve itself; the button is for the person who knows better than the
+    // watcher does.
+    window.telarStoreGate.onResolve(() => window.telarStoreGate.answer("retry"));
+    $("retry").addEventListener("click", () => window.telarStoreGate.answer("retry"));
+    $("quit").addEventListener("click", () => window.telarStoreGate.answer("quit"));
+    $("new-store").addEventListener("click", async () => {
+      // Typed confirmation, not a second button: this is the one control here
+      // that changes which store this install belongs to.
+      const ok = await window.telarStoreGate.confirmNewStore();
+      if (ok) window.telarStoreGate.answer("new-store");
+    });
+
+    window.telarStoreGate.state().then(render);
+    window.telarStoreGate.onState(render);
+  </script>
+</body>
+</html>
