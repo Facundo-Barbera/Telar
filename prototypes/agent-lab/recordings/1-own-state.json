@@ -1,0 +1,9 @@
+{
+  "name": "1-own-state",
+  "steps": [
+    { "text": "", "toolCalls": [{ "name": "sessions_list", "args": {} }] },
+    { "text": "One session is live: \"Nightly triage\" on the Agent Lab project." },
+    { "text": "You first asked which sessions are live, and I answered: \"Nightly triage\"." }
+  ],
+  "fallback": { "text": "Nothing further." }
+}

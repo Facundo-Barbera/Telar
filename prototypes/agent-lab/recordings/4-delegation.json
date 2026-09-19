@@ -1,0 +1,39 @@
+{
+  "name": "4-delegation",
+  "steps": [
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_create",
+          "args": { "projectId": "prj_lab", "title": "Release notes for 0.4", "envMode": "worktree" }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_send",
+          "args": {
+            "sessionId": "ses_1",
+            "intent": "task",
+            "input": "Draft the release notes for 0.4 from the merged PRs and report back what you wrote."
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        { "name": "sessions_subscribe", "args": { "sessionId": "ses_1", "events": ["turn_completed"], "once": true } }
+      ]
+    },
+    { "text": "I created a worktree session for the release notes, gave it the task, and subscribed to its result." },
+    { "text": "", "toolCalls": [{ "name": "sessions_status", "args": { "sessionId": "ses_1" } }] },
+    {
+      "text": "The release-notes session finished: its turn completed. It reports it worked on drafting the release notes for 0.4."
+    }
+  ],
+  "fallback": { "text": "Nothing further." }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "5-cancellation",
+  "steps": [
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_send",
+          "args": { "sessionId": "ses_1", "intent": "task", "input": "Start the long sweep." }
+        }
+      ]
+    },
+    { "text": "The sweep is queued on Nightly triage." }
+  ],
+  "fallback": { "text": "Nothing further." }
+}

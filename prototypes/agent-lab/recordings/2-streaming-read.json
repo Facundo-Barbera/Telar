@@ -1,0 +1,10 @@
+{
+  "name": "2-streaming-read",
+  "steps": [
+    { "text": "", "toolCalls": [{ "name": "sessions_status", "args": { "sessionId": "ses_1" } }] },
+    {
+      "text": "Nightly triage is idle. It has taken one turn and that turn completed, so nothing is running on it right now and it is waiting for a message."
+    }
+  ],
+  "fallback": { "text": "Nothing further." }
+}

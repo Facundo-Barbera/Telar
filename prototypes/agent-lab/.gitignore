@@ -1,0 +1,5 @@
+node_modules/
+# Scenario scratch: sqlite threads and live captures are evidence of a run,
+# not of the lab. Re-made by the command in REPORT.md.
+.threads/
+recordings/live/
