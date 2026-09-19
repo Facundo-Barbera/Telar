@@ -62,6 +62,7 @@ import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { chooseDirectory } from "@/lib/choose-directory";
 import { paletteBack, type PaletteSubPage } from "@/lib/command-palette";
+import { claimChords } from "@/lib/commands";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { announceProjectsChanged } from "@/lib/projects";
 import { cn } from "@/lib/utils";
@@ -131,6 +132,24 @@ const PAGE_SENTENCES: Record<Page, string> = {
  *  useful with a query typed: the number is the row's place in front of you,
  *  not its place in an unfiltered registry. */
 export const QUICK_PICK_LIMIT = 9;
+
+/**
+ * THE CHORDS THIS PALETTE OWNS WHILE A LIST PAGE IS UP — issue #656.
+ *
+ * IT USED TO OWN THEM ONLY IN THIS FILE'S IMAGINATION. The rows have drawn a
+ * ⌘digit since they existed and `onKeyDown` below has always tested for one, and
+ * on the desktop neither ever ran: `jump-1`..`jump-9` sit in the File menu, and
+ * macOS matches a menu's key equivalent before the keydown reaches the page. So
+ * ⌘1 over this palette switched to the first conversation in the rail and threw
+ * away whatever was being composed. `claimChords` is what makes the advertisement
+ * true — for the interval the claim is held, and not one keystroke longer.
+ *
+ * SPELLED AS CHORDS RATHER THAN AS `jump-N`, which is what survives a rebind:
+ * this palette wants ⌘-and-a-digit, and has no opinion about which command
+ * happens to be sitting on that chord today. Move the jumps to ⌥1..⌥9 in
+ * Settings and this claim suppresses nothing, while the rows keep working.
+ */
+const QUICK_PICK_CHORDS = Array.from({ length: QUICK_PICK_LIMIT }, (_, index) => `CommandOrControl+${index + 1}`);
 
 /**
  * WHERE THE PROJECT IS, as one line: "Local · /Users/you/code/telar", or the
@@ -384,6 +403,30 @@ export function ProjectPalettePages({
       setCloneUrl(undefined);
     }
   }
+
+  /**
+   * THE ⌘-DIGITS ARE OURS WHILE A LIST IS UP, AND NOT OTHERWISE (#656).
+   *
+   * SCOPED TO THE SAME TWO PAGES `onKeyDown` ANSWERS ON. The folder browser and
+   * the clone-URL page draw no numbered rows and would do nothing with ⌘1, so
+   * they hand it straight back to the rail rather than holding a chord they
+   * cannot use — the claim and the handler agree about which pages own digits
+   * because they are written off the same condition.
+   *
+   * KEYED ON `open` AS WELL AS THE PAGE, so the release happens at the moment
+   * the dialog is dismissed rather than when Radix finally unmounts it: the
+   * content lingers for the length of the exit animation, and a couple of
+   * hundred milliseconds of dead ⌘1 in the rail is a real thing a person can
+   * press into. Escape, a click on the backdrop and a route change all flip
+   * `open` first, so all three release on the same line — and the unmount path
+   * (the command palette embeds these pages and never passes `open`) is covered
+   * by the effect's own teardown.
+   */
+  const listPage = page === "projects" || page === "sources";
+  useEffect(() => {
+    if (!open || !listPage) return undefined;
+    return claimChords(QUICK_PICK_CHORDS);
+  }, [open, listPage]);
 
   const go = (next: Page) => {
     setPage(next);
