@@ -1350,6 +1350,45 @@ test("stale lock recovery uses exclusive replacement and never removes a newly h
   first.release();
 });
 
+/**
+ * ISSUE #630. A store on a removable volume can be carried to a second Mac, so
+ * "is that pid alive?" stops being a sound staleness test: pids are small
+ * integers every machine hands out from the same range, and the one recorded by
+ * a daemon still running over there is very likely dead here. Breaking that
+ * lock puts two daemons on one store.
+ */
+test("a lock written by another machine is held, not stale, however dead its pid looks here", () => {
+  const stateRoot = root();
+  const paths = statePaths(stateRoot);
+  fs.mkdirSync(paths.root, { recursive: true });
+  // A pid that cannot exist, which is exactly what makes this the dangerous
+  // case: every local test says the owner is gone.
+  fs.writeFileSync(paths.lock, JSON.stringify({ pid: -1, token: "elsewhere", hostname: `${os.hostname()}-other` }));
+  expect(() => acquireDaemonLock(paths)).toThrow(/locked by/);
+  // And it is still there afterwards: refusing must not have broken it.
+  expect(JSON.parse(fs.readFileSync(paths.lock, "utf8")).token).toBe("elsewhere");
+});
+
+test("a lock from before hostnames were compared is still reclaimable when its pid is gone", () => {
+  const stateRoot = root();
+  const paths = statePaths(stateRoot);
+  fs.mkdirSync(paths.root, { recursive: true });
+  fs.writeFileSync(paths.lock, JSON.stringify({ pid: -1, token: "old" }));
+  const lock = acquireDaemonLock(paths);
+  expect(lock.token).not.toBe("old");
+  lock.release();
+});
+
+test("this machine's own stale lock is still reclaimed", () => {
+  const stateRoot = root();
+  const paths = statePaths(stateRoot);
+  fs.mkdirSync(paths.root, { recursive: true });
+  fs.writeFileSync(paths.lock, JSON.stringify({ pid: -1, token: "dead", hostname: os.hostname() }));
+  const lock = acquireDaemonLock(paths);
+  expect(lock.token).not.toBe("dead");
+  lock.release();
+});
+
 test("concurrent stale-lock breakers elect exactly one replacement owner", async () => {
   const stateRoot = root();
   const paths = statePaths(stateRoot);

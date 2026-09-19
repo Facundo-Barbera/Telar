@@ -25,6 +25,21 @@
  * exactly what it was designed to be — a cockpit you can still reach from the
  * machine it runs on — rather than an open door onto a network.
  *
+ * ── THE SAME DISCIPLINE LANDS SOMEWHERE ELSE IN `store-location.js` (#630) ──
+ * That module reads the shell's OTHER before-anything-opens file — where this
+ * install's store lives — and applies this rule's shape exactly: missing,
+ * version-known and version-unknown are three answers, and the unknown one
+ * never collapses into the missing one.
+ *
+ * Its terminal answer is the opposite of this one's, deliberately. Here the
+ * irreversible direction is WIDENING, so an untrusted file stays on loopback
+ * and the app still runs. There the irreversible direction is PROCEEDING — a
+ * store that falls back to the default path initialises a fresh empty one over
+ * somebody's absent history — so an untrusted file refuses to start at all.
+ *
+ * They are two readers rather than one parameterised helper for that reason:
+ * collapsing them would hide the only interesting thing about the pair.
+ *
  * ── AND IT IS ONE DEFINITION, NOT TWO ───────────────────────────────────────
  * `scripts/dev.mjs` imports this module rather than restating the rule. The
  * direction matters: a dev script may depend on the desktop app, which is

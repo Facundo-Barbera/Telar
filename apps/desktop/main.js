@@ -30,6 +30,10 @@ const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = requi
 const { windowTargetUrl } = require("./window-target");
 const { provisionPushRelay } = require("./push-relay");
 const { watchVolumes } = require("./volume-watch");
+const { awaitStore } = require("./store-gate");
+const { createStoreGateWindow } = require("./store-gate-window");
+const { adoptStore, clearPending, clearRetired, readMarker, setPending } = require("./store-location");
+const { deleteRetiredSubtrees, migrateStore, preflight: preflightMove, retiredSubtrees } = require("./store-migrate");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
 const { readProfileRegistry } = require("./browser-profiles");
@@ -384,14 +388,104 @@ function resolveServerJs() {
  * verifying a build against the user's own store would kill their live sessions.
  */
 let smokeHome = null;
+/**
+ * AND SINCE #630 THE PERSON MAY HAVE CHOSEN SOMEWHERE ELSE. `openStoreGate`
+ * settles that once, before either child is spawned, and parks the answer here
+ * — so every later caller of `telarHome()` gets the same root the engine was
+ * started with rather than re-deriving one that could have changed underneath
+ * it. Before the gate has run this falls through to exactly the old behaviour,
+ * which is what keeps the smoke path and an explicit TELAR_HOME unchanged.
+ */
+let resolvedStoreHome = null;
 function telarHome() {
   if (SMOKE) {
     smokeHome ??= fs.mkdtempSync(path.join(os.tmpdir(), "telar-smoke-"));
     return smokeHome;
   }
+  if (resolvedStoreHome) return resolvedStoreHome;
   // A dev-packaged build never follows an inherited TELAR_HOME — see DEV_BUILD.
   if (DEV_BUILD) return app.getPath("userData");
   return process.env.TELAR_HOME?.trim() || app.getPath("userData");
+}
+
+/**
+ * SETTLE ON A STORE BEFORE ANYTHING OPENS ONE — issue #630.
+ *
+ * The engine's only available answer to "my state root is not reachable" is to
+ * fail to start, and a daemon that dies during boot takes the app with it
+ * (`startEngineChild`'s exit handler). So the question is asked HERE, by the
+ * process that owns a screen, and the engine is spawned only once there is an
+ * answer. The loop, and the guarantee that no path through it initialises over
+ * an absent store, are in `store-gate.js`.
+ *
+ * AN EXPLICIT `TELAR_HOME` SKIPS THE GATE ENTIRELY. It is a developer pointing
+ * this build at a dogfood store for one run, not a choice somebody recorded in
+ * Settings, and making it consult (or worse, write) the marker would have the
+ * dev stack quietly adopt whatever it was last pointed at.
+ *
+ * Returns the root, or `null` when the person chose to quit rather than
+ * continue without their store.
+ */
+let storeGate = null;
+async function openStoreGate() {
+  const explicit = DEV_BUILD ? "" : process.env.TELAR_HOME?.trim();
+  if (explicit) return explicit;
+  storeGate = createStoreGateWindow();
+  /**
+   * WATCHING WHILE WE WAIT. `volume-watch.js` needs no engine and no window —
+   * it is a pure module taking an `onChanged` — so the same mechanism that
+   * makes a remounted project appear in the rail is what ends this wait
+   * without anyone clicking. `resume` covers the drive pulled during sleep.
+   */
+  const watcher = watchVolumes({ onChanged: () => storeGate.volumesChanged(), powerMonitor });
+  try {
+    const settled = await awaitStore(
+      { userData: app.getPath("userData"), defaultRoot: app.getPath("userData") },
+      { present: (outcome) => storeGate.present(outcome), findVolumeMount },
+    );
+    return settled.quit ? null : settled.root;
+  } finally {
+    watcher.stop();
+    storeGate.close();
+    storeGate = null;
+  }
+}
+
+/**
+ * WHERE THIS DRIVE IS MOUNTED NOW, by its own identifier rather than its name.
+ *
+ * The shell's own copy of `apps/engine/src/volumes.ts`'s search, for the same
+ * reason `volume-watch.js` keeps its own mount-root list: the gate runs before
+ * the engine exists, so it cannot ask the engine. macOS only, and absent rather
+ * than invented elsewhere — every path through the gate copes without a uuid.
+ */
+function findVolumeMount(uuid) {
+  if (process.platform !== "darwin") return undefined;
+  for (const root of ["/Volumes"]) {
+    let names;
+    try {
+      names = fs.readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const mount = path.join(root, name);
+      try {
+        if (fs.statSync(mount).dev === fs.statSync(root).dev) continue;
+        const plist = execFileSync("diskutil", ["info", "-plist", mount], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          // Bounded for the same reason the engine's is: `diskutil` talks to
+          // diskarbitrationd, and a wedged daemon must not hold the launch.
+          timeout: 5_000,
+        });
+        if (/<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]?.trim() === uuid) return mount;
+      } catch {
+        // Not a mount, not readable, or no uuid: not the drive we want.
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -1715,6 +1809,135 @@ ipcMain.handle("telar:dialog:choose-directory", async (event, input) => {
   return result.canceled || !directory ? { cancelled: true } : { path: directory };
 });
 
+// --- Where the store lives (#630) --------------------------------------------
+/**
+ * THE SETTINGS SURFACE FOR MOVING THE STORE.
+ *
+ * IT IS THE SHELL'S AND NOT THE ENGINE'S, for the same reason update
+ * preferences are: this is a property of THIS INSTALLATION on THIS MACHINE,
+ * decided before the engine exists and read at launch. An engine route would be
+ * asking the thing being moved where it should be.
+ *
+ * AND IT REPORTS `restartRequired` RATHER THAN PRETENDING. The root is read
+ * once and handed to both children (`childEnv`), and the daemon holds
+ * `engine.lock` and its sqlite handles for its whole life — so a move takes
+ * effect at the next launch, and saying otherwise would be the "setting that
+ * looks like it applied" failure `PATCH /api/remote` already avoids.
+ */
+function storeStatus() {
+  const userData = app.getPath("userData");
+  const { marker } = readMarker(userData);
+  const active = marker?.active;
+  const retired = marker?.retired;
+  return {
+    path: telarHome(),
+    defaultPath: app.getPath("userData"),
+    storeId: active?.storeId,
+    volume: active?.volume,
+    // An explicit TELAR_HOME is a developer pointing this run somewhere; the
+    // controls say so rather than offering to move a store they do not own.
+    pinnedByEnvironment: Boolean(!DEV_BUILD && process.env.TELAR_HOME?.trim()),
+    retired: retired
+      ? {
+          ...retired,
+          bytes: retiredSubtrees(retired.source, retired.stamp).reduce((total, entry) => total + entry.bytes, 0),
+          removable: (active?.lastOpenedAt ?? 0) > Number(retired.stamp),
+        }
+      : undefined,
+  };
+}
+
+ipcMain.handle("telar:store:status", () => storeStatus());
+
+ipcMain.handle("telar:store:preflight", (_event, input) => {
+  const target = typeof input?.path === "string" ? input.path.trim() : "";
+  if (!target) return { ok: false, message: "Choose a folder." };
+  return preflightMove({ source: telarHome(), target });
+});
+
+ipcMain.handle("telar:store:move", async (event, input) => {
+  const target = typeof input?.path === "string" ? input.path.trim() : "";
+  if (!target) return { ok: false, message: "Choose a folder." };
+  const source = telarHome();
+  const userData = app.getPath("userData");
+  const { marker } = readMarker(userData);
+  if (!marker?.active) return { ok: false, message: "Telar has not settled on a store yet." };
+
+  // Recorded BEFORE the copy, cleared after: an intent, never consulted when
+  // deciding where to open, so a move that dies halfway cannot strand anyone.
+  setPending(userData, { path: target });
+  const outcome = await migrateStore({
+    source,
+    target,
+    onProgress: (progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send("telar:store:progress", progress);
+    },
+  });
+  if (!outcome.ok) {
+    clearPending(userData);
+    return outcome;
+  }
+
+  /**
+   * AND ONLY NOW DOES ANYTHING POINT AT THE NEW STORE. This single write is the
+   * switch — before it Telar opens the old store, after it the new one, and
+   * there is no state in between. The old store is retired, not deleted;
+   * removing it is a separate act, gated on the new one having been opened.
+   */
+  adoptStore(userData, {
+    path: target,
+    storeId: outcome.storeId,
+    volume: volumeIdentityFor(target),
+    retired: { source, stamp: outcome.stamp },
+  });
+  clearPending(userData);
+  return { ok: true, restartRequired: true, bytes: outcome.bytes, path: target };
+});
+
+ipcMain.handle("telar:store:remove-old", () => {
+  const userData = app.getPath("userData");
+  const { marker } = readMarker(userData);
+  if (!marker?.retired) return { ok: false, message: "There is no previous store to remove." };
+  const outcome = deleteRetiredSubtrees({
+    source: marker.retired.source,
+    stamp: marker.retired.stamp,
+    openedAt: marker.active?.lastOpenedAt ?? 0,
+  });
+  if (outcome.ok) clearRetired(userData);
+  return outcome;
+});
+
+ipcMain.handle("telar:store:keep-old", () => {
+  clearRetired(app.getPath("userData"));
+  return { ok: true };
+});
+
+/**
+ * The drive a chosen path is on, recorded at adoption so a remount under a
+ * different name is recognisable later. Absent for a path on this machine's own
+ * disk, and absent rather than invented where `diskutil` has nothing to say.
+ */
+function volumeIdentityFor(target) {
+  if (process.platform !== "darwin") return undefined;
+  const prefix = "/Volumes/";
+  if (!target.startsWith(prefix)) return undefined;
+  const [name] = target.slice(prefix.length).split(path.sep);
+  if (!name) return undefined;
+  const mount = path.join("/Volumes", name);
+  try {
+    if (fs.statSync(mount).dev === fs.statSync("/Volumes").dev) return undefined;
+    const plist = execFileSync("diskutil", ["info", "-plist", mount], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000,
+    });
+    const uuid = /<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]?.trim();
+    return { mount, label: name, ...(uuid ? { uuid } : {}) };
+  } catch {
+    return { mount, label: name };
+  }
+}
+
 // --- Auto-update (electron-updater) ------------------------------------------
 // electron-updater has no way to bake a custom request header into the
 // generated app-update.yml itself, so the shared secret that the R2 update
@@ -2849,6 +3072,17 @@ if (SMOKE) {
         let url = OVERRIDE_URL;
         if (!url) {
           captureLoginShellEnv();
+          /**
+           * THE STORE BEFORE THE ENGINE — issue #630. This may wait
+           * indefinitely, which is the point: a drive that is meant to be
+           * plugged in and is not is a condition to sit in, not a reason to
+           * start without somebody's history and create a second one.
+           */
+          resolvedStoreHome = await openStoreGate();
+          if (resolvedStoreHome === null) {
+            app.quit();
+            return;
+          }
           // THE ENGINE FIRST, AND WAITED FOR. The cockpit's server components
           // ask the engine for the session list while rendering the first page;
           // starting them together means that first paint races a daemon that

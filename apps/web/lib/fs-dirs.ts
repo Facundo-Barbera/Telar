@@ -68,6 +68,22 @@ export type DirectoryListing = {
    *  `~/code`. On a paired Mac this is not the machine asking, which is exactly
    *  why it is answered rather than assumed. */
   home: string;
+  /**
+   * THE PLACES BROWSING MAY START — home, and whatever is mounted right now.
+   *
+   * WHY THIS IS ANSWERED RATHER THAN ASSUMED (#630). `browseRoots` has always
+   * allowed a mounted volume, and `listDirectories("/Volumes")` has always
+   * worked. But the browser opens at home and home's `parent` is `null` — by
+   * design, since `/Users` is outside the roots — so there was no gesture that
+   * reached a drive. The only way in was to know the path and type it, which is
+   * indistinguishable from "Telar cannot see my external disk".
+   *
+   * So the roots travel with the listing: the same list the refusal already
+   * names, in a form a picker can render. Nothing new is PERMITTED here — the
+   * containment check is unchanged — something already permitted is made
+   * visible. A client that does not know the key ignores it.
+   */
+  roots: { name: string; path: string }[];
   dirs: DirectoryEntry[];
   /** The listing was cut. Said out loud, because a silently truncated list is
    *  one a reader scrolls to the bottom of looking for a folder that is there. */
@@ -256,7 +272,44 @@ export function listDirectories(
     // offering it would be an up gesture whose answer is a refusal.
     parent: up !== target && roots.some((root) => within(root, up)) ? up : null,
     home,
+    roots: listRoots(resolved),
     dirs,
     truncated,
   };
+}
+
+/**
+ * The browsable roots, each with the name a person would call it.
+ *
+ * A MOUNT ROOT IS EXPANDED TO THE DRIVES INSIDE IT, because "/Volumes" is not
+ * somewhere anybody means to go — the drive is. Home keeps its own entry and is
+ * always first, so the list reads as "your files, then your disks". A mount
+ * root with nothing in it contributes nothing rather than an empty heading.
+ */
+export function listRoots(deps: DirectoryDeps = {}): { name: string; path: string }[] {
+  const resolved = resolveDeps(deps);
+  const { home, mounts, readdir, exists } = resolved;
+  const roots = [{ name: "Home", path: home }];
+  for (const mount of mounts) {
+    if (!exists(mount)) continue;
+    let names: string[];
+    try {
+      names = readdir(mount).map((entry) => entry.name);
+    } catch {
+      continue;
+    }
+    for (const name of names.filter((entry) => !entry.startsWith(".")).sort(compareNames)) {
+      const full = path.join(mount, name);
+      // The same `st_dev` test `volumes.ts` uses: the empty folder macOS leaves
+      // behind at an old mount point looks exactly like a drive by its path,
+      // and offering it would send somebody into a directory that disappears.
+      try {
+        if (resolved.stat(full).dev === resolved.stat(mount).dev) continue;
+      } catch {
+        continue;
+      }
+      roots.push({ name, path: full });
+    }
+  }
+  return roots;
 }
