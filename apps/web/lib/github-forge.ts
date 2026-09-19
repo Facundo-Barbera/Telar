@@ -135,6 +135,11 @@ export function checkHeadline(summary: CheckSummary): string {
  *   - `UNSTABLE` means checks are failing that nothing requires. GitHub allows
  *     that merge, so this does too — with the failure named, because a person
  *     merging over a red check should have to see it.
+ *
+ * EVERY OPEN PULL REQUEST GETS A NOTE, including the one nothing is wrong with.
+ * The clean case used to return no sentence at all, which left the merge button
+ * standing alone with nothing beside it saying what it would do or whether GitHub
+ * would take it — a control that only explains itself when it is refusing.
  */
 export type MergeReadiness = {
   canMerge: boolean;
@@ -171,8 +176,11 @@ export function mergeReadiness(pull: Pick<GitHubPullDetail, "state" | "isDraft" 
       return { canMerge: true, caution: true, note: "GitHub has not finished working out whether this merges. Pressing merge is what asks it." };
     case "HAS_HOOKS":
       return { canMerge: true, caution: true, note: "The repository runs a pre-receive hook on merge, which may still refuse." };
+    // `CLEAN`, and any word this cockpit has not met. Both already enable the
+    // button, so both say the same thing: GitHub named nothing in the way. It is
+    // a report of what GitHub answered, not a promise about what it will do.
     default:
-      return { canMerge: true };
+      return { canMerge: true, note: `GitHub has nothing holding this back from ${pull.baseRefName ?? "its base branch"}.` };
   }
 }
 
