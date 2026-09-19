@@ -10,38 +10,26 @@
 import { useEffect } from "react";
 import { AppearancePublisher } from "@/components/appearance-publisher";
 import { HostLookFollower } from "@/components/host-look-follower";
-import { applyAppearance, applyWindowChrome, useAppearance } from "@/lib/appearance";
-import { applyBackdrop, useBackdrop } from "@/lib/backdrop";
-import { isPreviewActive } from "@/lib/studio-preview";
-import { applyThemeCss, useThemeLibrary } from "@/lib/theme-palettes";
+import { applyAppearance, useAppearance } from "@/lib/appearance";
+import { applyBackdrop, useBackdropCss } from "@/lib/backdrop";
+import { applyThemeCss, useComposition } from "@/lib/composition";
 
 export function AppearanceProvider({ children }: { children: React.ReactNode }) {
   const { appearance } = useAppearance();
-  const { backdrop } = useBackdrop();
-  const { activeId, themes } = useThemeLibrary();
-  // While the studio is previewing a draft on the document, the replays stand
-  // back: the preview wrote these same surfaces from the draft, and clearing
-  // the preview replays the stores itself (lib/studio-preview.ts).
-  //
-  // EXCEPT THE WINDOW CHROME, which the preview does not own and therefore
-  // cannot restore. `translucent` is a property of the machine rather than of
-  // the look, so it is replayed unconditionally; without this, toggling
-  // Translucency with a draft open rebuilt the window with vibrancy behind an
-  // opaque page and appeared to do nothing at all until Apply.
-  useEffect(() => {
-    if (isPreviewActive()) applyWindowChrome(appearance);
-    else applyAppearance(appearance);
-  }, [appearance]);
-  useEffect(() => {
-    if (!isPreviewActive()) applyBackdrop(backdrop);
-  }, [backdrop]);
-  // The theme library writes its compiled stylesheet to localStorage; this
-  // keeps the injected <style id="telar-theme"> tracking it after the init
-  // script's one shot — on switches AND on edits to the active theme (the
-  // hook re-renders for both, and applyThemeCss no-ops when unchanged).
-  // Not gated on the preview: the preview element sits after this one and
-  // wins ties, so a stale telar-theme is refreshed harmlessly beneath it.
-  useEffect(() => applyThemeCss(), [activeId, themes]);
+  const { backdrop } = useBackdropCss();
+  const { composition } = useComposition();
+  // UNCONDITIONAL AGAIN (#471). These replays used to stand back while the
+  // appearance studio painted a draft on the document, which is what made the
+  // pane's preview possible — and the draft is gone: every control there writes
+  // the store this effect is watching, so the replay IS the preview now.
+  useEffect(() => applyAppearance(appearance), [appearance]);
+  useEffect(() => applyBackdrop(backdrop), [backdrop]);
+  // The composition writes its compiled stylesheet to localStorage; this keeps
+  // the injected <style id="telar-theme"> tracking it after the init script's
+  // one shot. Watching the COMPOSITION rather than the cache: the cache is
+  // written by the same call that changes the composition, and applyThemeCss
+  // no-ops when the text is unchanged.
+  useEffect(() => applyThemeCss(), [composition]);
   // Both render null. The publisher watches the same three stores and tells
   // the engine what this window resolved to; the follower is its mirror, and
   // wears what the HOST published when this is a remote window. Each is gated

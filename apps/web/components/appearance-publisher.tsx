@@ -47,13 +47,13 @@
  */
 
 import { useEffect } from "react";
-import type { Accent, MonoFont, PublishedAppearance, SansFont } from "@telar/engine-client";
+import type { MonoFont, PublishedAppearance, SansFont } from "@telar/engine-client";
+import { ACCENT_COLOURS, LIGHT_PRIMARY_FOREGROUND } from "@/lib/accent-colours";
 import { useAppearance } from "@/lib/appearance";
-import { useBackdrop } from "@/lib/backdrop";
+import { useComposition } from "@/lib/composition";
 import { createEngineApi } from "@/lib/engine/client";
 import { isHostWindow } from "@/lib/host-window";
 import { captureLook } from "@/lib/looks";
-import { useThemeLibrary } from "@/lib/theme-palettes";
 import { readTheme, useTheme } from "@/components/theme-provider";
 
 const api = createEngineApi();
@@ -74,35 +74,6 @@ const PUBLISH_DEBOUNCE_MS = 2_000;
 let published: string | undefined;
 
 /**
- * THE ACCENT HUES, RESOLVED — the one restatement of app/globals.css's
- * `[data-accent="…"]` blocks.
- *
- * They cannot be READ from the stylesheet: `getComputedStyle` would only ever
- * report the accent this window is wearing, and the published look has to name
- * both schemes of the chosen one. And they cannot be REFERENCED: a client that
- * never loaded globals.css has no `--primary` to look up. So they are copied,
- * once, here — beside the publisher that is their only consumer.
- *
- * KEEP IN STEP WITH globals.css §ACCENTS. The `light` half is that file's
- * `[data-accent=x]` rule and the `dark` half its `.dark[data-accent=x]` rule.
- * Light needs no `--primary-foreground` of its own (the base token is already
- * correct against every accent at L 0.488), so light's foreground is the base
- * palette's value, restated once below.
- */
-const LIGHT_PRIMARY_FOREGROUND = "oklch(1 0 0)";
-
-const ACCENT_COLOURS: Record<Accent, { light: string; dark: { primary: string; primaryForeground: string } }> = {
-  indigo: { light: "oklch(0.488 0.16 264)", dark: { primary: "oklch(0.68 0.16 264)", primaryForeground: "oklch(0.17 0.04 264)" } },
-  sky: { light: "oklch(0.488 0.15 240)", dark: { primary: "oklch(0.68 0.15 240)", primaryForeground: "oklch(0.17 0.04 240)" } },
-  sea: { light: "oklch(0.488 0.1 205)", dark: { primary: "oklch(0.68 0.11 205)", primaryForeground: "oklch(0.17 0.04 205)" } },
-  moss: { light: "oklch(0.488 0.11 140)", dark: { primary: "oklch(0.68 0.13 140)", primaryForeground: "oklch(0.17 0.04 140)" } },
-  amber: { light: "oklch(0.488 0.12 70)", dark: { primary: "oklch(0.68 0.14 70)", primaryForeground: "oklch(0.17 0.04 70)" } },
-  rose: { light: "oklch(0.488 0.17 15)", dark: { primary: "oklch(0.68 0.17 15)", primaryForeground: "oklch(0.17 0.04 15)" } },
-  plum: { light: "oklch(0.488 0.16 325)", dark: { primary: "oklch(0.68 0.15 325)", primaryForeground: "oklch(0.17 0.04 325)" } },
-  violet: { light: "oklch(0.488 0.17 293)", dark: { primary: "oklch(0.68 0.16 293)", primaryForeground: "oklch(0.17 0.04 293)" } },
-};
-
-/**
  * THE TYPEFACE STACKS, RESOLVED — globals.css §TYPEFACES, with the build-time
  * font variables substituted out.
  *
@@ -116,16 +87,41 @@ const ACCENT_COLOURS: Record<Accent, { light: string; dark: { primary: string; p
 const SANS_TAIL = "ui-sans-serif, system-ui, sans-serif";
 const MONO_TAIL = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
-const SANS_STACKS: Record<SansFont, string> = {
-  geist: `"Geist", ${SANS_TAIL}`,
+/**
+ * ONE TABLE FOR THE FACES THE SLOT DOES NOT CHANGE, which is all of them but
+ * `geist`. The two slots used to keep near-identical copies of this, and the
+ * copies were what went stale the moment the catalogue grew — a face missing
+ * here publishes the DEFAULT stack, so a paired reader sees the wrong typeface
+ * with nothing anywhere saying why.
+ *
+ * THE TAIL FOLLOWS THE FACE, NOT THE SLOT: a monospaced face chosen for the
+ * interface keeps monospaced fallbacks, because falling back to a proportional
+ * one would silently undo the one thing the reader asked for.
+ */
+type SharedFace = Exclude<SansFont, "geist" | "system" | "custom">;
+
+const FACE_STACKS: Record<SharedFace, string> = {
   inter: `"Inter", ${SANS_TAIL}`,
   "plex-sans": `"IBM Plex Sans", ${SANS_TAIL}`,
-  // A monospaced face chosen for the INTERFACE — its fallbacks are monospaced
-  // too, because falling back to a proportional face would silently undo the
-  // one thing the reader asked for.
+  "source-sans": `"Source Sans 3", ${SANS_TAIL}`,
+  roboto: `"Roboto", ${SANS_TAIL}`,
+  "noto-sans": `"Noto Sans", ${SANS_TAIL}`,
+  "space-grotesk": `"Space Grotesk", ${SANS_TAIL}`,
+  lato: `"Lato", ${SANS_TAIL}`,
   jetbrains: `"JetBrains Mono", ${MONO_TAIL}`,
   "plex-mono": `"IBM Plex Mono", ${MONO_TAIL}`,
   "fira-code": `"Fira Code", ${MONO_TAIL}`,
+  "geist-mono": `"Geist Mono", ${MONO_TAIL}`,
+  "source-code-pro": `"Source Code Pro", ${MONO_TAIL}`,
+  "roboto-mono": `"Roboto Mono", ${MONO_TAIL}`,
+  "cascadia-code": `"Cascadia Code", ${MONO_TAIL}`,
+};
+
+const SANS_STACKS: Record<SansFont, string> = {
+  ...FACE_STACKS,
+  // The one id whose face depends on the slot — Geist in the interface, Geist
+  // Mono in code, which is what it has always meant in each.
+  geist: `"Geist", ${SANS_TAIL}`,
   system: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
   // Replaced below by the reader's own typed family; this is the fallback tail
   // the cockpit appends to it, and the answer when nothing was typed.
@@ -133,12 +129,8 @@ const SANS_STACKS: Record<SansFont, string> = {
 };
 
 const MONO_STACKS: Record<MonoFont, string> = {
+  ...FACE_STACKS,
   geist: `"Geist Mono", ${MONO_TAIL}`,
-  inter: `"Inter", ${SANS_TAIL}`,
-  "plex-sans": `"IBM Plex Sans", ${SANS_TAIL}`,
-  jetbrains: `"JetBrains Mono", ${MONO_TAIL}`,
-  "plex-mono": `"IBM Plex Mono", ${MONO_TAIL}`,
-  "fira-code": `"Fira Code", ${MONO_TAIL}`,
   system: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
   custom: MONO_TAIL,
 };
@@ -157,8 +149,7 @@ function stack(choice: string, typed: string, fallbacks: string): string {
 
 export function AppearancePublisher(): null {
   const { appearance } = useAppearance();
-  const { backdrop } = useBackdrop();
-  const { active, themes } = useThemeLibrary();
+  const { composition, images } = useComposition();
   // Subscribed rather than read once: changing the scheme is a publishable
   // change, and `readTheme` inside the effect is what actually reads it.
   const { theme } = useTheme();
@@ -212,7 +203,7 @@ export function AppearancePublisher(): null {
         });
     }, PUBLISH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [appearance, backdrop, active, themes, theme]);
+  }, [appearance, composition, images, theme]);
 
   return null;
 }

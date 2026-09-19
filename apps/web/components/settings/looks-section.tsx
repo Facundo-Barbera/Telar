@@ -1,47 +1,64 @@
 "use client";
 
 /**
- * LOOKS — the shelf of whole appearances, and where a design session starts.
+ * LOOKS — the gallery of whole appearances, and the ONLY preset system (#471).
  *
- * A card here is the theme AND the backdrop AND the accent AND the type AND
- * the translucency strength, captured together (lib/looks.ts states what is in
+ * A row here is a COMPOSITION — both colour states, their bases, their layers
+ * and anything set by hand — plus the accent, the two faces, their sizes, the
+ * show-through and the depth, captured together (lib/looks.ts states what is in
  * the bundle and why the desktop translucency TOGGLE is not).
  *
- * TWO GESTURES, TWO MEANINGS. Clicking a card SELECTS it — loaded into the
- * editor, previewed on the real app, nothing persisted. Hovering reveals WEAR,
- * which puts it on outright. The shelf used to offer only the first, so the
- * cheapest thing anyone wants to do here — "just put that one on" — cost a
- * click, a scan for the Apply button, and a second click. Wear keeps the pane's
- * one rule intact: it is Apply, reached from the card instead of the masthead.
+ * THERE IS NOTHING UNDERNEATH IT ANY MORE. This used to sit above a LIBRARY of
+ * themes answering an overlapping question — a look referenced a palette, a
+ * palette could also be picked on its own, and a reader had to hold two ideas
+ * apart to change one colour. "Themes should not exist, there should be default
+ * settings for the composer." The defaults are the ten built-ins at the bottom
+ * of this list (lib/built-in-looks.ts), and the composer below is what a look
+ * is made of.
  *
- * OPENING A LOOK IS A DRAFT EDIT, like everything else on the pane now:
- * clicking a card loads the whole Look into the studio draft, which the
- * preview paints on the app instantly — it LOOKS worn, but nothing persists
- * until Apply. The id rides along, so Save updates this card rather than
- * copying it. Import goes the same way: the file becomes a card and opens as
- * the draft, previewed rather than auto-worn.
+ * A TABLE, NOT A STACK OF CARDS (#471). It was a strip of thumbnails, then a
+ * stack of full-height `Row`s — and the owner ran the build: "the looks UI is
+ * too long; when you land on the looks you have to scroll a lot. We should use
+ * tables for this like we do in other interfaces." Ten built-ins as rows with a
+ * 56px thumbnail and a control column was most of a screen before a reader got
+ * to the composer that the whole pane is actually about. A person looking at a
+ * list of looks is COMPARING them, which is what columns are for — the same
+ * reasoning remote-section.tsx's device table already lives under.
  *
- * Saving lives in the pane header ("Save look") — one save path, fed by the
- * draft, instead of the old second button here that captured the live stores
- * behind the draft's back.
+ * SO THE ROW IS THREE CELLS: what it looks like and what it is called, what it
+ * carries in one phrase, and what you can do to it. Ten rows fit in about 320px,
+ * which is the number the ask was actually about.
  *
- * THE SHELF IS NEVER EMPTY. Six STARTERS (lib/starter-looks.ts) stand after
- * whatever has been saved — built from the same themes and presets the pane
- * offers, so they cost no storage and cannot be deleted away. They are what
- * makes this pane legible on first arrival: the first thing you can do here is
- * wear something, not read a paragraph about what a Look would be.
+ * ONE GESTURE, ONE MEANING. The NAME wears the look — it is the row's primary
+ * action and the only one that is always visible, because wearing is the thing
+ * you came here to do. The other three (rename, export, delete) sit in a
+ * trailing cell that appears on hover or focus: they act on a card you already
+ * own, so they can wait to be reached for, and `group-focus-within` is what
+ * keeps them reachable by keyboard rather than by pointer alone.
+ *
+ * Import goes the same way as wearing: the file becomes a card and is worn.
+ *
+ * SAVE LIVES HERE, on the group that holds the list. It photographs both
+ * appearance stores as they stand (`captureLook`) — which is the whole of what
+ * saving means once nothing is pending — and the new card appears right here.
+ *
+ * THE DEFAULTS ARE NEVER EMPTY AND NEVER DELETABLE, being a table rather than
+ * storage. They are what makes this pane legible on first arrival: the first
+ * thing you can do here is wear something, not read a paragraph about what a
+ * Look would be.
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { CheckIcon, DownloadIcon, MonitorSmartphoneIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { DownloadIcon, MonitorSmartphoneIcon, PencilIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
 import { useFollowHost } from "@/lib/host-follow";
 import { isHostWindow } from "@/lib/host-window";
 import {
+  captureLook,
   lookFilename,
-  lookThemeId,
   newLookId,
   parseLookFile,
+  sameComposition,
   serializeLook,
   upsertLook,
   useLooks,
@@ -50,34 +67,51 @@ import {
   LOOKS_QUOTA_MESSAGE,
   type Look,
 } from "@/lib/looks";
-import { STARTER_LOOKS } from "@/lib/starter-looks";
-import { matchThemeHalf, useThemeLibrary } from "@/lib/theme-palettes";
+import { BUILT_IN_LOOKS, BUILT_IN_NOTES } from "@/lib/built-in-looks";
 import { useAppearance } from "@/lib/appearance";
-import { useBackdrop, type Backdrop } from "@/lib/backdrop";
-
-/** Same scene, by the CHOICE rather than by the resolved pixels — two gradients
- *  from one preset are the same scene even if one carries a dim the other does
- *  not, and comparing megabytes of image data to draw a tick would be absurd. */
-function sameScene(look: Look["backdrop"], worn: Backdrop): boolean {
-  if (look.kind !== worn.kind) return false;
-  if (look.kind === "gradient" && worn.kind === "gradient") return look.id === worn.id;
-  return true;
-}
-import { cn } from "@/lib/utils";
+import { useComposition } from "@/lib/composition";
+import { MONO_LABEL, SANS_LABEL } from "./studio/tools";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { LookThumb } from "./look-thumb";
 import { Row, SettingsGroup } from "./settings-shell";
 
-/** The one word the HOST row still needs — a row has no thumbnail to say it
- *  with. The cards do, so they carry no subtitle at all. */
-const BACKDROP_LABEL: Record<Look["backdrop"]["kind"], string> = {
-  none: "no backdrop",
-  gradient: "gradient",
-  "custom-gradient": "custom gradient",
-  image: "image",
-  scene: "composed scene",
-};
+/**
+ * WHAT A LOOK'S COMPOSITION IS, IN A PHRASE.
+ *
+ * A thumbnail shows the scene but cannot say how it is MADE — a photograph and
+ * a gradient can look alike at 56px, and only one of them will still be there
+ * when the gradient presets change. The two states are counted separately
+ * because they genuinely can differ; when they agree, which is the common case,
+ * the phrase says it once.
+ */
+function stackPhrase(layers: readonly { type: string }[]): string {
+  if (layers.length === 0) return "flat";
+  const images = layers.filter((layer) => layer.type === "image").length;
+  const gradients = layers.length - images;
+  const parts: string[] = [];
+  if (gradients > 0) parts.push(`${gradients} gradient${gradients === 1 ? "" : "s"}`);
+  if (images > 0) parts.push(`${images} image${images === 1 ? "" : "s"}`);
+  return parts.join(" + ");
+}
+
+function compositionPhrase(look: Look): string {
+  const light = stackPhrase(look.composition.light.layers);
+  const dark = stackPhrase(look.composition.dark.layers);
+  return light === dark ? light : `${light} / ${dark}`;
+}
+
+/** WHAT A LOOK CARRIES, IN ONE LINE: what it is made of, and its two faces.
+ *  A built-in says what it is in its own words instead — the table wrote them,
+ *  and "Tide, under a dusk gradient" is a better sentence than anything a
+ *  layer count can assemble. */
+function lookSummary(look: Look): string {
+  const sans = look.fontSans === "custom" ? look.fontSansCustom || "a custom face" : SANS_LABEL[look.fontSans];
+  const mono = look.fontMono === "custom" ? look.fontMonoCustom || "a custom face" : MONO_LABEL[look.fontMono];
+  const what = BUILT_IN_NOTES[look.id] ?? compositionPhrase(look);
+  return `${what} · ${look.accent} · ${sans} / ${mono}`;
+}
 
 function downloadFile(filename: string, contents: string): void {
   const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
@@ -99,115 +133,147 @@ function LookStrip({ look }: { look: Look }) {
 }
 
 /**
- * A CARD IS THE LOOK ITSELF — a thumbnail, and a name under it. The old card
- * spent two thirds of its width on words ("Gradient", "Composed scene") that
- * the picture says better, and the picture is the only thing anyone chooses a
- * look by.
+ * ONE LOOK, AS A TABLE ROW.
+ *
+ * The thumbnail is small on purpose — 40px wide, an aspect-video sliver — which
+ * is what lets ten of these fit a short window. It is still the real compiled
+ * tile (look-thumb.tsx), not a swatch: at that size it says "dark, with a
+ * gradient" and that is the whole job.
+ *
+ * THE NAME IS THE WEAR BUTTON. It reads as a name and behaves as the row's
+ * action, which is the one thing every reader wants from this list. When the
+ * look is already on it is inert and the Worn mark says why.
+ *
+ * RENAMING IS INLINE, and it is the only editing a Look supports: everything
+ * else about a look is changed by wearing it and moving the controls below,
+ * then saving again. The field commits on Enter or blur and abandons on Escape,
+ * the same contract `HexField` has in the palette rows — an empty name is a
+ * refusal rather than a card with no name.
  */
-function LookCard({
+function LookRow({
   look,
-  active,
-  selected,
-  onOpen,
+  summary,
+  worn,
   onWear,
+  onRename,
   onExport,
   onRemove,
 }: {
   look: Look;
-  /** Worn: the library is wearing the theme this Look installs. */
-  active: boolean;
-  /** Open in the editor: the draft in front of you came from this card. */
-  selected?: boolean;
-  onOpen: () => void;
-  /** Put it on now — Apply, without the trip to the masthead. */
+  /** What the bundle carries, in one line — built by the caller, which is where
+   *  the defaults' own notes live. */
+  summary: string;
+  /** The window has this look on. */
+  worn: boolean;
   onWear: () => void;
+  /** Absent for a default: it is a table this build rebuilds every load, not a
+   *  card, so there is nothing of yours to rename. */
+  onRename?: (label: string) => void;
   onExport?: () => void;
   onRemove?: () => void;
 }) {
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(look.label);
+
+  const commitRename = () => {
+    setRenaming(false);
+    const trimmed = draftName.trim();
+    if (trimmed.length > 0 && trimmed !== look.label) onRename?.(trimmed);
+  };
+
   return (
-    <div
-      className={cn(
-        // A RANK, NOT A GRID: the shelf runs across the top of the editor,
-        // where it is a place to start from rather than a section to read.
-        // SELECTED AND WORN ARE DIFFERENT FACTS. Clicking a card loads it into
-        // the editor and previews it; wearing it is Apply. The shelf drew only
-        // one of those, so "the look I am working on" and "the look this window
-        // has on" were the same pixel — and after a click they disagree.
-        "group relative w-32 shrink-0 cursor-pointer rounded-lg p-1 ring-1 transition-colors",
-        selected ? "ring-2 ring-primary" : active ? "ring-2 ring-muted-foreground/40" : "ring-foreground/10 hover:bg-accent/50",
-      )}
-      onClick={onOpen}
-      role="button"
-      title={`Open ${look.label}`}
-      aria-label={`Open ${look.label}`}
-      aria-pressed={active}
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onOpen();
-        }
-      }}
-    >
-      <LookThumb look={look} />
-      {/* WEAR sits ON the thumbnail, centred, revealed on hover: the card's
-          primary verb, where the eye already is. Export and delete stay in the
-          corner — they are about the file, not about wearing it. */}
-      {!active && (
-        <div className="pointer-events-none absolute inset-x-1 top-1 flex items-center justify-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" style={{ height: "calc(100% - 2.25rem)" }}>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="pointer-events-auto h-7 shadow-1"
-            title={`Wear ${look.label} now`}
-            onClick={(event) => (event.stopPropagation(), onWear())}
-          >
+    <tr className="group border-b border-border/60 align-middle last:border-0">
+      <td className="py-1.5 pr-3 pl-4">
+        <span className="flex items-center gap-2.5">
+          <span className="w-10 shrink-0">
+            <LookThumb look={look} />
+          </span>
+          {renaming ? (
+            <Input
+              autoFocus
+              value={draftName}
+              aria-label={`Rename ${look.label}`}
+              className="h-6 w-40 px-1.5 text-xs"
+              onChange={(event) => setDraftName(event.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitRename();
+                }
+                if (event.key === "Escape") {
+                  setRenaming(false);
+                  setDraftName(look.label);
+                }
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              disabled={worn}
+              // No title when worn: the mark beside it already says so, and two
+              // elements claiming "the window has this on" is two claims.
+              {...(worn ? {} : { title: `Wear ${look.label}` })}
+              onClick={onWear}
+              className="min-w-0 truncate text-left font-medium decoration-dotted underline-offset-2 hover:underline disabled:cursor-default disabled:no-underline"
+            >
+              {look.label}
+            </button>
+          )}
+          {worn && (
+            <span className="shrink-0 font-mono text-4xs tracking-[0.08em] text-primary uppercase" title="The window has this look on">
+              Worn
+            </span>
+          )}
+        </span>
+      </td>
+      <td className="py-1.5 pr-3 text-muted-foreground">
+        <span className="block truncate">{summary}</span>
+      </td>
+      <td className="py-1.5 pr-4">
+        {/* HOVER OR FOCUS, and focus is the half that matters: the buttons stay
+            in the tab order at opacity 0, so reaching one reveals the set. */}
+        <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+          <Button size="sm" variant="ghost" disabled={worn} title={`Wear ${look.label}`} onClick={onWear}>
             Wear
           </Button>
-        </div>
-      )}
-      <div className="flex items-center gap-1 px-0.5 pt-1.5 pb-0.5 text-xs">
-        <span className="min-w-0 flex-1 truncate font-medium">{look.label}</span>
-        {active && (
-          <span className="shrink-0 text-muted-foreground [&_svg]:size-3" title="Worn">
-            <CheckIcon />
-          </span>
-        )}
-        {selected && <span className="shrink-0 font-mono text-4xs tracking-[0.08em] text-primary uppercase">Open</span>}
-      </div>
-      {(onExport || onRemove) && (
-        <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-          {onExport && (
+          {onRename && (
             <Button
               size="icon-sm"
-              variant="secondary"
-              className="size-6 shadow-1"
-              title="Export"
-              aria-label={`Export ${look.label}`}
-              onClick={(event) => (event.stopPropagation(), onExport())}
+              variant="ghost"
+              title="Rename"
+              aria-label={`Rename ${look.label}`}
+              onClick={() => {
+                setDraftName(look.label);
+                setRenaming(true);
+              }}
             >
+              <PencilIcon />
+            </Button>
+          )}
+          {onExport && (
+            <Button size="icon-sm" variant="ghost" title="Export" aria-label={`Export ${look.label}`} onClick={onExport}>
               <DownloadIcon />
             </Button>
           )}
           {onRemove && (
-            // WHAT DELETING DOES NOT DESTROY. A look is a bundle of references —
-            // removing the card takes the bundle off the shelf and leaves the
-            // theme it names in the library, and the window keeps whatever it
-            // has on. Said here, where the hand is, rather than nowhere.
+            // WHAT DELETING DOES NOT DESTROY. Removing the card takes the
+            // composition off the shelf; the window keeps whatever it has on,
+            // and the built-ins below are a table this build rebuilds every
+            // load. Said here, where the hand is, rather than nowhere.
             <Button
               size="icon-sm"
-              variant="secondary"
-              className="size-6 shadow-1"
-              title="Take this look off the shelf. Its theme stays in the library, and the window keeps what it has on."
+              variant="ghost"
+              title="Take this look off the shelf. The window keeps what it has on."
               aria-label={`Delete ${look.label}`}
-              onClick={(event) => (event.stopPropagation(), onRemove())}
+              onClick={onRemove}
             >
               <Trash2Icon />
             </Button>
           )}
         </div>
-      )}
-    </div>
+      </td>
+    </tr>
   );
 }
 
@@ -224,9 +290,9 @@ function LookCard({
  * once.
  *
  * DETACHED, THE ROW IS STILL A SOURCE. The published blob parses into a `Look`
- * — the same type a shelf card holds — so "Open" loads it into the draft like
- * an import or a card does: previewed on the real app, undoable, worn only on
- * Apply. Following, the look is already on; Open would preview what is worn.
+ * — the same type a shelf card holds — so "Wear" puts the host's look on like
+ * any card does, without resuming the follow. Following, the look is already
+ * on, so the button would do nothing and is not drawn.
  *
  * ONLY WHERE IT IS NOT A REFLECTION. The host publishes; showing the host its
  * own published look would be a card of what it is already wearing, and a
@@ -249,7 +315,7 @@ const HOST_LOOK_HINT: Record<"loading" | "empty" | "failed" | "invalid", string>
   invalid: "The host published something this build cannot read.",
 };
 
-function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
+function HostLookRow({ onWear }: { onWear: (look: Look) => void }) {
   const { mode, detach, follow } = useFollowHost();
   const following = mode === "follow";
   const [state, setState] = useState<HostLookState>({ status: "loading" });
@@ -311,14 +377,14 @@ function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
       }
       hint={
         ready
-          ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}${following ? " · changing anything here stops following" : ""}`
+          ? `“${state.look.label}” — ${compositionPhrase(state.look)}${following ? " · changing anything here stops following" : ""}`
           : HOST_LOOK_HINT[state.status]
       }
       control={
         <div className="flex items-center gap-2">
           {ready && !following && (
-            <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
-              Open
+            <Button size="sm" variant="outline" onClick={() => onWear(state.look)}>
+              Wear
             </Button>
           )}
           {!ready && (
@@ -357,38 +423,26 @@ const subscribeToNothing = () => () => {};
 const hostNow = () => isHostWindow();
 const hostOnTheServer = () => true;
 
-export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) => void; onWear: (look: Look) => void; openId?: string }) {
+export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
   // Defaults to "this IS the host" on the server, so the row never renders into
   // the first paint and then vanishes on hydration.
   const isHost = useSyncExternalStore(subscribeToNothing, hostNow, hostOnTheServer);
-  const { activeId, active, themes } = useThemeLibrary();
   const { appearance } = useAppearance();
-  const { backdrop } = useBackdrop();
+  const { composition } = useComposition();
   /**
-   * WORN IS ABOUT WHAT THE WINDOW HAS ON, NOT ABOUT AN ID. Wearing a look whose
-   * palette is already in the library now wears THAT theme rather than minting
-   * a copy (applyLook), so the id this card would have installed may never
-   * exist and an id test would mark nothing at all.
+   * WORN IS ABOUT WHAT THE WINDOW HAS ON, NOT ABOUT AN ID. Wearing a look
+   * copies its composition into the live store and installs nothing anywhere,
+   * so there is no id to test against — and the built-ins are rebuilt from a
+   * table on every load, which an id test would mark worn or not by accident.
    *
-   * BUT A PALETTE IS NOT A LOOK. Dusk and Deep Sea are both built on Tide, so a
-   * colours-only test marked both of them worn at once — two cards claiming the
-   * one thing only one of them can be true of. A look is its palette AND its
-   * scene AND its accent, so all three have to agree.
+   * BUT A COMPOSITION IS NOT A LOOK. Dusk and Deep Sea share a base, and Ember
+   * and Emberglow share everything but a layer, so the comparison has to be the
+   * whole composition AND the accent — anything looser marks two cards worn at
+   * once, which is a claim only one of them can be true of.
    */
   const worn = useCallback(
-    (look: Look) => {
-      if (look.accent !== appearance.accent) return false;
-      if (!sameScene(look.backdrop, backdrop)) return false;
-      if (activeId === lookThemeId(look)) return true;
-      const lightTheme = themes.find((theme) => theme.id === active.light);
-      const darkTheme = themes.find((theme) => theme.id === active.dark);
-      if (!lightTheme || !darkTheme) return false;
-      return (
-        matchThemeHalf(look.theme.light, [lightTheme], "light") !== undefined &&
-        matchThemeHalf(look.theme.dark, [darkTheme], "dark") !== undefined
-      );
-    },
-    [activeId, active, themes, appearance.accent, backdrop],
+    (look: Look) => look.accent === appearance.accent && sameComposition(look.composition, composition),
+    [appearance.accent, composition],
   );
   const looks = useLooks();
   // The MESSAGE, not a flag: "full", "will not fit", and "not a look file" are
@@ -419,8 +473,23 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
       setError(LOOKS_FULL_MESSAGE);
       return;
     }
-    // Shelved, then opened as the draft — previewed on the app, worn on Apply.
-    if (commit(next)) onOpen(look);
+    // Shelved, then worn: importing a look is asking to see it.
+    if (commit(next)) onWear(look);
+  };
+
+  /** A photograph of both appearance stores, shelved. A fresh id every time —
+   *  Save means "keep this one too", never "overwrite the last one". Named
+   *  after whatever is worn when one of the defaults is, so saving a tweak to
+   *  Dusk gives a card that says where it came from; otherwise it is untitled
+   *  and renamed on its row. */
+  const saveLook = () => {
+    const from = BUILT_IN_LOOKS.find((entry) => worn(entry))?.label;
+    const next = upsertLook(looks, captureLook(from ? `${from} — edited` : "My look"));
+    if (!next) {
+      setError(LOOKS_FULL_MESSAGE);
+      return;
+    }
+    commit(next);
   };
 
   return (
@@ -432,12 +501,17 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
     // a control that acts on the WHOLE group belongs.
     <SettingsGroup
       title="Looks"
-      description="Whole appearances — palette, scene, accent and type together. Click one to open it as a draft; hover to wear it outright."
+      description="A look is a whole composition — both colour states, their layers and their colours — with the accent, the type and the depth saved around it. Wear one to put the lot on, then change anything below."
       action={
         <div className="flex items-center gap-2">
           <span className="font-mono text-3xs tracking-[0.08em] text-muted-foreground/60 uppercase tabular-nums">
-            {looks.length + STARTER_LOOKS.length}
+            {looks.length + BUILT_IN_LOOKS.length}
           </span>
+          {/* SAVE IS A PLAIN BUTTON, and it acts on the whole group rather than
+              on any row in it — which is exactly what `action` is for. */}
+          <Button size="sm" variant="outline" title="Keep what the window is wearing as a card" onClick={saveLook}>
+            Save look
+          </Button>
           <Button size="icon-sm" variant="ghost" title="Import a look file" aria-label="Import a look" onClick={() => fileInput.current?.click()}>
             <UploadIcon />
           </Button>
@@ -459,38 +533,61 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
         }}
       />
       {error && <p className="py-1.5 text-xs text-warning">{error}</p>}
-      {!isHost && <HostLookRow onOpen={onOpen} />}
-      <div className="overflow-x-auto py-2">
-        <div className="flex items-start gap-1.5">
-          {looks.map((look) => (
-            <LookCard
-              key={look.id}
-              look={look}
-              active={worn(look)}
-              selected={openId === look.id}
-              onOpen={() => onOpen(look)}
-              onWear={() => onWear(look)}
-              onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
-              onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
-            />
-          ))}
-          {looks.length > 0 && <span className="mx-1 h-16 w-px shrink-0 self-center bg-border" />}
-          {STARTER_LOOKS.map((look) => (
-            <LookCard
-              key={look.id}
-              look={look}
-              active={worn(look)}
-              selected={openId === look.id}
-              onWear={() => onWear(look)}
-              // The starter's OWN id rides into the draft. It is stable, so
-              // opening Dusk twice and applying both updates one theme instead
-              // of breeding a second one called Dusk. The fresh id is minted at
-              // SAVE (appearance-section), which is the moment it stops being a
-              // starter and becomes a card of your own.
-              onOpen={() => onOpen(look)}
-            />
-          ))}
-        </div>
+      {/* THE HOST STAYS A ROW, not a table row. It is not a card on the shelf:
+          it is a SOURCE with a follow switch and four different things it can
+          say about itself, and squeezing that into three columns headed
+          Look/Carries/Actions would be a table lying about what its rows are. */}
+      {!isHost && <HostLookRow onWear={onWear} />}
+      {/* `-mx-4` because the group pads its direct children and the cells do
+          their own padding — the same bleed remote-section.tsx's table uses.
+          NO `max-h`: the point of the table is that ten looks fit without
+          scrolling, and a scroll box inside a scrolling pane would put that
+          back. */}
+      <div className="-mx-4">
+        <table className="w-full border-collapse text-left text-xs">
+          <thead>
+            <tr className="border-b border-border/60 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
+              <th scope="col" className="py-1.5 pr-3 pl-4 font-normal">
+                Look
+              </th>
+              <th scope="col" className="py-1.5 pr-3 font-normal">
+                Carries
+              </th>
+              {/* The actions column is headed by nothing: its contents are
+                  invisible until reached for, and a heading over empty space
+                  would be the one thing on the row that never goes away. */}
+              <th scope="col" className="py-1.5 pr-4 font-normal">
+                <span className="sr-only">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {looks.map((look) => (
+              <LookRow
+                key={look.id}
+                look={look}
+                summary={lookSummary(look)}
+                worn={worn(look)}
+                onWear={() => onWear(look)}
+                onRename={(label) => {
+                  const next = upsertLook(looks, { ...look, label });
+                  if (next) commit(next);
+                }}
+                onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
+                onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
+              />
+            ))}
+            {/* THE DEFAULTS, AFTER WHAT YOU SAVED. They are a table this build
+                rebuilds every load, not cards — wearing one copies its
+                composition into the live store and installs nothing, and Save is
+                what mints a card of your own from whatever is on. Which is also
+                why a default has no rename, export or delete: there is nothing
+                of yours to act on. */}
+            {BUILT_IN_LOOKS.map((look) => (
+              <LookRow key={look.id} look={look} summary={lookSummary(look)} worn={worn(look)} onWear={() => onWear(look)} />
+            ))}
+          </tbody>
+        </table>
       </div>
     </SettingsGroup>
   );

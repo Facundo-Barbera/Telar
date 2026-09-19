@@ -339,30 +339,49 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           { title: "Glass", hint: "Blur or clear, behind a translucent window.", keywords: ["frost", "blur"], icon: MonitorIcon },
           {
             title: "Show-through",
-            hint: "The desktop behind a translucent window, and the backdrop under the app.",
-            keywords: ["opacity", "wallpaper", "backdrop"],
+            hint: "The desktop behind a translucent window, and the composition's layers under the app.",
+            keywords: ["opacity", "wallpaper", "backdrop", "layers"],
             icon: MonitorIcon,
           },
           {
-            title: "Depth",
-            hint: "How far raised surfaces — cards, the composer, menus — sit off the page.",
-            keywords: ["shadow", "elevation", "flat", "soft", "deep", "raised"],
-            icon: LayersIcon,
+            title: "Colour scheme",
+            hint: "Light, dark, or whatever the system is doing — and which state of the composition the composer edits.",
+            keywords: ["light", "dark", "system", "theme", "mode"],
+            icon: MonitorIcon,
           },
         ],
       },
       {
-        // THE ONE ROW OF THE TYPE GROUP THAT IS A ROW. The rest of that group is
-        // two font fields with a specimen under each — not `Row`s, because a
-        // specimen has nowhere to live in one — so they carry no anchor to aim
-        // at, per the rule at the top of this file.
-        title: "Type",
+        // THE COMPOSER'S OWN ROWS. The layer stack and the sixteen token rows
+        // are not `Row`s — a layer card and a colour row have nowhere to live in
+        // one — so they carry no anchor to aim at, per the rule at the top of
+        // this file. The base is the control a person comes looking for.
+        title: "Composer",
+        rows: [
+          {
+            title: "Base",
+            hint: "The app colour every surface is derived from, per colour state.",
+            keywords: ["colour", "color", "theme", "palette", "hue", "tint", "background", "canvas"],
+            icon: PaletteIcon,
+          },
+        ],
+      },
+      {
+        // DEPTH MOVED HERE WITH THE PANE'S OWN REORGANISATION (#471): it is
+        // TASTE and travels in a look, unlike everything in the Window group.
+        title: "Type and surfaces",
         rows: [
           {
             title: "Accent",
             hint: "The one hue that means a person acted — buttons, links, the caret.",
             keywords: ["colour", "color", "highlight", "primary", "hue"],
             icon: PaletteIcon,
+          },
+          {
+            title: "Depth",
+            hint: "How far raised surfaces — cards, the composer, menus — sit off the page.",
+            keywords: ["shadow", "elevation", "flat", "soft", "deep", "raised"],
+            icon: LayersIcon,
           },
         ],
       },

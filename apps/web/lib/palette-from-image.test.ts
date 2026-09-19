@@ -1,7 +1,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { dominantHues, pickSecondary, rgbToHsl, themeFromPalette, themeFromPixels, tintForSaturation, type Rgb } from "./palette-from-image";
-import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
+import { dominantHues, halfFor, halfFromBase, pickSecondary, rgbToHsl, themeFromPalette, themeFromPixels, tintForSaturation, type Rgb } from "./palette-from-image";
+import { cssColorToHex, FOREGROUND_SURFACES, TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
+import { contrastRatio, parseVsCodeColor } from "./vscode-theme-import";
 
 /** An RGBA buffer of `count` copies of one colour — a synthetic "photograph"
  *  the extraction can chew on without a canvas anywhere. */
@@ -204,5 +205,101 @@ describe("themeFromPixels", () => {
     const theme = themeFromPixels(fill(ORANGE, 64));
     expect(theme.label).toBe("From image");
     expect(theme.light.background).toMatch(/^oklch\(/);
+  });
+});
+
+/**
+ * THE COMPOSER'S BASE, AND THE PROMISE IT MAKES.
+ *
+ * The composition derives its sixteen tokens from one base colour (#471), so
+ * the base is the only colour decision a person has to get right — and the
+ * whole reason it goes through THIS engine rather than becoming `--background`
+ * directly is that the engine keeps Telar's lightness spine. Any base
+ * therefore yields a palette whose text sits readably on its surfaces: you
+ * cannot pick a canvas your foreground disappears into, because the foreground
+ * moves with it.
+ *
+ * That is a claim about EVERY base, so it is tested against a spread of them
+ * rather than against one, in both states, on every foreground/surface pair
+ * the designer itself repairs to.
+ */
+describe("halfFromBase", () => {
+  /** A hue wheel plus the awkward ones: black, white, a mid grey, a neon and a
+   *  colour written the way the app actually stores them. */
+  const BASES = [
+    "#ff0000", "#ff8800", "#ffee00", "#88ff00", "#00ff44", "#00ffee",
+    "#0044ff", "#5500ff", "#cc00ff", "#ff0088", "#000000", "#ffffff",
+    "#808080", "#1e1e2e", "#f8f8f9", "oklch(0.5 0.2 240)",
+  ];
+
+  test("every base keeps every foreground readable, in both states", () => {
+    for (const base of BASES) {
+      for (const mode of ["light", "dark"] as const) {
+        const half = halfFromBase(base, mode);
+        for (const [text, surface] of FOREGROUND_SURFACES) {
+          const fg = parseVsCodeColor(cssColorToHex(half[text]));
+          const bg = parseVsCodeColor(cssColorToHex(half[surface]));
+          expect(fg, `${base} ${mode} ${text}`).not.toBeNull();
+          expect(bg, `${base} ${mode} ${surface}`).not.toBeNull();
+          // WCAG AA for body copy — the bar the VS Code importer repairs to.
+          expect(contrastRatio(fg!, bg!), `${base} ${mode} ${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+  });
+
+  test("a base with no hue to trust derives Telar itself", () => {
+    // Same rule a grey photograph gets: under the saturation floor there is no
+    // hue, and inventing one tints the identity look on a rounding error.
+    expect(halfFromBase("#808080", "light")).toEqual(TELAR_LIGHT);
+    expect(halfFromBase("#ffffff", "dark")).toEqual(TELAR_DARK);
+    expect(halfFromBase("not a colour", "light")).toEqual(TELAR_LIGHT);
+  });
+
+  test("a coloured base moves every token onto its hue, and only C and H", () => {
+    const half = halfFromBase("#0044ff", "light");
+    const lightness = (value: string) => /^oklch\(([\d.]+)/.exec(value)?.[1];
+    for (const token of THEME_TOKENS) {
+      // The lightness string is carried across VERBATIM — it is the contrast
+      // contract, and re-formatting a number is a chance to drift it.
+      expect(lightness(half[token]), token).toBe(lightness(TELAR_LIGHT[token]));
+    }
+    // Every token lands on ONE hue — the base's, in the space it is written in.
+    const hues = new Set(THEME_TOKENS.map((token) => /\s([\d.]+)\)$/.exec(half[token])?.[1]).filter(Boolean));
+    expect(hues.size).toBe(1);
+  });
+
+  /**
+   * THE HUE IS THE ONE YOU PICKED, in the space it will be written in.
+   *
+   * The base used to be read as an HSL hue and written straight into oklch,
+   * which agree nowhere: #c88337 is an orange, and its HSL hue of 30 would have
+   * produced a PINK app. `dominantHues` can cross spaces because nobody sees the
+   * pixels a photograph is reduced from; a base is a colour somebody is looking
+   * at while they pick it.
+   */
+  test("the derived hue is the base's own, not its HSL number", () => {
+    const hueOf = (value: string) => Number(/\s([\d.]+)\)$/.exec(value)?.[1]);
+    // An orange, a green, a blue and a violet — each read back within a degree
+    // of where oklch actually puts it.
+    for (const [base, expected] of [
+      ["#c88337", 65],
+      ["#49b668", 150],
+      ["#4999b6", 225],
+      ["#7749b6", 300],
+    ] as const) {
+      expect(hueOf(halfFromBase(base, "light").background), base).toBeCloseTo(expected, 0);
+    }
+    // And emphatically not the HSL hue, which for this orange is 30.
+    expect(hueOf(halfFromBase("#c88337", "light").background)).toBeGreaterThan(50);
+  });
+
+  test("an override wins over what the base derived, and only where it is set", () => {
+    const state = { base: "#0044ff", overrides: { card: "#ffffff" } };
+    const half = halfFor(state, "light");
+    expect(half.card).toBe("#ffffff");
+    // Everything absent still follows the base, which is what makes clearing
+    // one override hand that token back.
+    expect(half.background).toBe(halfFromBase("#0044ff", "light").background);
   });
 });

@@ -622,9 +622,34 @@
   --depth-lift: 0;
   --depth-ink: 0;
 }
+
+/* DEEP HAS TO BE A DIFFERENT PLACE ON THE LADDER, NOT A NUDGE ALONG IT (#471).
+
+   It was 1.5 / 1.6, and the setting read as doing nothing: on a `shadow-1` card
+   — which is most of the app — that moved the ambient layer from 2px/6px/-4px
+   to 3px/9px/-6px and its ink from 26% to 42% in the light half. A one-pixel
+   offset and a blur that grows by three is under the threshold of noticing on a
+   single card, and there is nothing to compare it against, because the whole
+   app moves at once.
+
+   2.5 / 2.2 puts a `shadow-1` card at 5px/15px/-10px: a shadow you can see the
+   shape of, sitting clearly off the page rather than pressed onto it, and the
+   gap between the rungs grows with it (`shadow-3` reaches 45px/120px/-65px, a
+   dialog that is plainly floating over the thing behind it).
+
+   BOTH HALVES, AND THEY DO NOT MOVE THE SAME DISTANCE. The multipliers ride the
+   half's own dials, which is the whole reason they are multipliers: light is
+   ambient-led (lift 1, ink 26%) so deep lands at 2.5× travel and 57% ink, while
+   dark is ring-led (lift 0.5, ink 9%) so the same stops land at 1.25× travel
+   and 20% ink. That is the authored balance kept, not a shortfall — a dark
+   theme with a light theme's ambient shadow is a smear, and dark's separation
+   comes from the contact ring, which Depth deliberately leaves alone: a deeper
+   surface is one that has travelled further from the page, not one with a
+   heavier edge. Both halves' ink stays well inside 100%, so the complement in
+   --shadow-ambient never goes negative. */
 [data-depth="deep"] {
-  --depth-lift: 1.5;
-  --depth-ink: 1.6;
+  --depth-lift: 2.5;
+  --depth-ink: 2.2;
 }
 
 @theme {
@@ -685,18 +710,45 @@
    mistake, and the picker no longer pretends they are. `geist` stays
    role-dependent because that is what it has always meant in each slot:
    Geist in the interface, Geist Mono in code. */
+/* THE FALLBACK STACK FOLLOWS THE FACE, NOT THE SLOT. A proportional face falls
+   back to the system's proportional stack and a monospaced one to its
+   monospaced stack, in BOTH slots — so a reader who puts Fira Code in the
+   interface still gets a monospaced fallback while it loads, and one who puts
+   Lato in the code slot gets the proportional one they asked for. */
 [data-font-sans="inter"] { --app-font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif; }
 [data-font-sans="plex-sans"] { --app-font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="source-sans"] { --app-font-sans: var(--font-source-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="roboto"] { --app-font-sans: var(--font-roboto), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="noto-sans"] { --app-font-sans: var(--font-noto-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="space-grotesk"] { --app-font-sans: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="lato"] { --app-font-sans: var(--font-lato), ui-sans-serif, system-ui, sans-serif; }
 [data-font-sans="jetbrains"] { --app-font-sans: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-sans="plex-mono"] { --app-font-sans: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-sans="fira-code"] { --app-font-sans: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="geist-mono"] { --app-font-sans: var(--font-geist-mono-face), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="source-code-pro"] { --app-font-sans: var(--font-source-code-pro), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="roboto-mono"] { --app-font-sans: var(--font-roboto-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="cascadia-code"] { --app-font-sans: var(--font-cascadia-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-sans="system"] { --app-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
 
 [data-font-mono="inter"] { --app-font-mono: var(--font-inter), ui-sans-serif, system-ui, sans-serif; }
 [data-font-mono="plex-sans"] { --app-font-mono: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="source-sans"] { --app-font-mono: var(--font-source-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="roboto"] { --app-font-mono: var(--font-roboto), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="noto-sans"] { --app-font-mono: var(--font-noto-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="space-grotesk"] { --app-font-mono: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="lato"] { --app-font-mono: var(--font-lato), ui-sans-serif, system-ui, sans-serif; }
 [data-font-mono="jetbrains"] { --app-font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-mono="plex-mono"] { --app-font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-mono="fira-code"] { --app-font-mono: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* `geist-mono` in the code slot names the same face `geist` already resolves to
+   there. It exists for the OTHER slot — `geist` means Geist in the interface,
+   so there was no way to ask for Geist Mono outside code — and a slot that
+   silently had no rule would fall through to the default. */
+[data-font-mono="geist-mono"] { --app-font-mono: var(--font-geist-mono-face), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="source-code-pro"] { --app-font-mono: var(--font-source-code-pro), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="roboto-mono"] { --app-font-mono: var(--font-roboto-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="cascadia-code"] { --app-font-mono: var(--font-cascadia-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-mono="system"] { --app-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 /* THE SIZE OF MONO CONTENT, and pointedly not of mono CHROME.
@@ -880,9 +932,21 @@ html:not(.dark)[data-telar-shell][data-translucent] {
 
    One fixed div, first child of body, painted entirely from variables the
    init script and applyBackdrop write on <html>. Inset is negative so a
-   blurred image's soft edges bleed off-screen instead of vignetting. The
-   scrim (::after) dims toward the CANVAS colour, not black — dimming is
-   "more theme", so it works in both schemes and on any theme. */
+   layer's soft edges bleed off-screen instead of vignetting.
+
+   EACH COLOUR STATE HAS ITS OWN FOUR LISTS, AND THIS IS WHERE THEY ARE CHOSEN
+   BETWEEN (#471). Light and dark are two states of one composition with
+   genuinely separate layer stacks, so entry n of one can be an image where the
+   other's is a gradient — and `background-size/position/repeat` take one comma
+   entry per image, so one shared list cannot serve both. The init script writes
+   both states' variables and makes no decision; the `.dark` rule below is the
+   decision. That is what makes first paint correct with no flash, and what
+   keeps it correct when the OS flips scheme under a window set to `system`
+   with no script running at all.
+
+   THE `-dark` VARIABLES FALL BACK TO THE `-light` ONES so a composition whose
+   dark state is untouched paints its light stack rather than nothing — the
+   same courtesy --backdrop-dark has always done for the image list. */
 #app-backdrop {
   display: none;
 }
@@ -927,19 +991,15 @@ html:not(.dark)[data-telar-shell][data-translucent] {
   /* `none` is the honest fallback: the variables are written inline on <html>
      by lib/backdrop.ts, and until they are, there is no scene. */
   background-image: var(--backdrop-light, none);
-  background-size: var(--backdrop-size, cover);
-  background-position: var(--backdrop-position, center);
-  background-repeat: var(--backdrop-repeat, no-repeat);
-  filter: blur(var(--backdrop-blur, 0px));
+  background-size: var(--backdrop-size-light, cover);
+  background-position: var(--backdrop-position-light, center);
+  background-repeat: var(--backdrop-repeat-light, no-repeat);
 }
 .dark[data-backdrop] #app-backdrop {
   background-image: var(--backdrop-dark, var(--backdrop-light));
-}
-[data-backdrop] #app-backdrop::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-color: color-mix(in oklab, var(--background) var(--backdrop-dim, 0%), transparent);
+  background-size: var(--backdrop-size-dark, var(--backdrop-size-light, cover));
+  background-position: var(--backdrop-position-dark, var(--backdrop-position-light, center));
+  background-repeat: var(--backdrop-repeat-dark, var(--backdrop-repeat-light, no-repeat));
 }
 
 /* ─── A SCENE AND THE DESKTOP, TOGETHER ─────────────────────────────────────

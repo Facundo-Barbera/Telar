@@ -1,46 +1,83 @@
 "use client";
 
 /**
- * THEMES — the surface palette as a library, modelled on t3 code's.
+ * THE SURFACE VOCABULARY — sixteen tokens, what each one paints, and the colour
+ * conversion every picker needs.
  *
- * A theme is TWO HALVES, light and dark, each a complete set of SURFACE
- * tokens over the vocabulary globals.css defines. The division of labour with
- * the rest of Appearance is deliberate:
+ * WHAT THIS FILE WAS, AND WHY THE STORE IS GONE (#471). It held a LIBRARY:
+ * built-in palettes, custom ones, an active PAIR naming which palette owned
+ * light and which owned dark, a compiler from that pair to a stylesheet, and
+ * the cache the pre-paint script injected. "Themes should not exist, there
+ * should be default settings for the composer." So there is no theme object to
+ * pick any more — lib/composition.ts holds a base per colour state and DERIVES
+ * these sixteen from it, compiles the stylesheet, and owns the cache. The
+ * defaults that used to be built-in themes are built-in Looks
+ * (lib/built-in-looks.ts); the old keys are read forward once
+ * (lib/legacy-appearance.ts) and then dropped.
  *
- *   - THEMES own the neutral spine — canvas, cards, chips, borders, the rail.
- *   - THE ACCENT ROW keeps owning --primary (and the state ramps are never
- *     themed at all: --success meaning "good" is not a matter of taste).
- *
- * So switching themes never silently changes what buttons look like, and an
- * accent choice survives every theme change.
- *
- * THE HALVES ARE INDEPENDENTLY WEARABLE, as in t3 code: the active selection
- * is a PAIR — one theme owns light, another owns dark — so you can take
- * Ember's day and Tide's night. Clicking a card wears both halves; clicking
- * one of its orbs wears only that half.
- *
- * HOW IT REACHES PIXELS: the active pair compiles to a tiny stylesheet
- * (`html:root { … } html:root.dark { … }` — one level of specificity above
- * globals.css's `:root`/`.dark`, so it wins by construction, while the
- * translucency rules at (0,2,0) still win above IT). The compiled CSS is
- * cached in localStorage so the pre-paint init script can inject it without
- * knowing how to compile — the same trick THEME_INIT_SCRIPT uses for the
- * scheme class.
- *
- * "telar" is the default theme and compiles to NOTHING: the base tokens in
- * globals.css are the single source of the default look.
+ * WHAT STAYED IS WHAT WAS NEVER ABOUT THE LIBRARY: the names of the tokens, a
+ * phrase saying where each one paints, and `cssColorToHex` / `hexToCssColor` —
+ * which every colour input in the app goes through, and which the VS Code
+ * importer and the base derivation both measure with.
  */
 
-import { useCallback, useMemo, useSyncExternalStore } from "react";
-import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type ThemeHalf, type ThemeToken } from "@telar/engine-client";
+import type { ThemeHalf, ThemeToken } from "@telar/engine-client";
 
 /**
- * THE TOKENS AND THE BASE HALVES MOVED to @telar/engine-client: a `Look` on the
- * wire embeds two concrete halves, and the parser that reads one fills the gaps
- * from exactly these values. They are plain data — the COMPILER, the cache and
- * the library store all stayed here. Re-exported so no importer changed.
+ * THE TOKENS AND THE BASE HALVES LIVE IN @telar/engine-client: a `Look` on the
+ * wire carries hand-set overrides over exactly this vocabulary, and the parser
+ * that reads one fills its gaps from exactly these values. Re-exported so no
+ * importer changed.
  */
 export { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type ThemeHalf, type ThemeToken } from "@telar/engine-client";
+
+/**
+ * WHERE EACH TOKEN ACTUALLY PAINTS, in one phrase (#471).
+ *
+ * The sixteen rows carried a NAME and nothing else — "Hover", "Chip", "Rail
+ * hover" — and the owner's complaint about this editor was exactly that: "you
+ * basically need to know how each component of each surface reacts to these".
+ * A name is only legible to somebody who already knows the token; a phrase
+ * naming the thing on screen it colours is legible to anybody who has looked at
+ * the app. These are the app's own surfaces, not the CSS variable restated.
+ */
+export const THEME_TOKEN_HINTS: Record<ThemeToken, string> = {
+  background: "The canvas the whole window sits on",
+  foreground: "Body text on that canvas",
+  card: "Raised surfaces — cards, panels, dialogs",
+  "card-foreground": "Text on a card",
+  popover: "Menus, dropdowns and tooltips",
+  "popover-foreground": "Text inside a menu",
+  secondary: "Chips, badges and quiet buttons",
+  "secondary-foreground": "Text on a chip",
+  muted: "Quiet fills — empty states, stripes",
+  "muted-foreground": "Hints, captions and secondary text",
+  accent: "A row under the pointer",
+  "accent-foreground": "Text on a row under the pointer",
+  border: "Every hairline in the app",
+  input: "The edge of a text field",
+  sidebar: "The rail down the side",
+  "sidebar-accent": "A rail row under the pointer",
+};
+
+/**
+ * WHICH SURFACE EACH FOREGROUND IS JUDGED AGAINST.
+ *
+ * `muted-foreground` is secondary text on the CANVAS (hints, timestamps) rather
+ * than on `muted`, which is why it is not the pairing the token names suggest.
+ * A fact about what the tokens MEAN, so it lives beside the phrases saying
+ * where they paint rather than inside whichever tool measures with it — the
+ * composer's token rows show a live ratio from this table, and the VS Code
+ * importer repairs against the same pairs.
+ */
+export const FOREGROUND_SURFACES: ReadonlyArray<readonly [ThemeToken, ThemeToken]> = [
+  ["foreground", "background"],
+  ["card-foreground", "card"],
+  ["popover-foreground", "popover"],
+  ["secondary-foreground", "secondary"],
+  ["muted-foreground", "background"],
+  ["accent-foreground", "accent"],
+];
 
 export const THEME_TOKEN_LABELS: Record<ThemeToken, string> = {
   background: "Canvas",
@@ -61,392 +98,23 @@ export const THEME_TOKEN_LABELS: Record<ThemeToken, string> = {
   "sidebar-accent": "Rail hover",
 };
 
+/**
+ * TWO HALVES AND A NAME — what arrives from OUTSIDE this app.
+ *
+ * It is no longer a stored object anybody picks: the composer holds a
+ * composition and derives its sixteen tokens from a base (lib/composition.ts),
+ * so nothing in this build SAVES one of these. What still produces one is an
+ * import — a VS Code `*-color-theme.json`, or a photograph read through
+ * palette-from-image — and lib/vscode-theme-import.ts turns it into a Look on
+ * the way in. So this is an interchange shape, and the tokens above are its
+ * vocabulary.
+ */
 export type ThemeDefinition = {
   id: string;
   label: string;
-  builtIn?: boolean;
   light: ThemeHalf;
   dark: ThemeHalf;
 };
-
-/**
- * A tinted half, derived the way the base palette was tuned: Telar's exact
- * lightness spine (every contrast claim in globals.css is a claim about L),
- * with the neutral's chroma and hue swapped for the theme's. Chroma stays
- * small — these are TINTS; a theme whose canvas is saturated is a poster, not
- * a workspace.
- */
-function tintedLight(hue: number, chroma: number): ThemeHalf {
-  const c = (factor: number) => (chroma * factor).toFixed(4);
-  return {
-    background: `oklch(0.988 ${c(0.5)} ${hue})`,
-    foreground: `oklch(0.28 ${c(0.8)} ${hue})`,
-    card: `oklch(0.999 ${c(0.25)} ${hue})`,
-    "card-foreground": `oklch(0.28 ${c(0.8)} ${hue})`,
-    popover: `oklch(0.999 ${c(0.25)} ${hue})`,
-    "popover-foreground": `oklch(0.28 ${c(0.8)} ${hue})`,
-    secondary: `oklch(0.955 ${c(1)} ${hue})`,
-    "secondary-foreground": `oklch(0.28 ${c(0.8)} ${hue})`,
-    muted: `oklch(0.962 ${c(0.9)} ${hue})`,
-    "muted-foreground": `oklch(0.52 ${c(1.2)} ${hue})`,
-    accent: `oklch(0.948 ${c(1)} ${hue})`,
-    "accent-foreground": `oklch(0.22 ${c(0.8)} ${hue})`,
-    border: `oklch(0.91 ${c(1.1)} ${hue})`,
-    input: `oklch(0.65 ${c(1.2)} ${hue})`,
-    sidebar: `oklch(0.968 ${c(0.9)} ${hue})`,
-    "sidebar-accent": `oklch(0.94 ${c(1.1)} ${hue})`,
-  };
-}
-
-function tintedDark(hue: number, chroma: number): ThemeHalf {
-  const c = (factor: number) => (chroma * factor).toFixed(4);
-  return {
-    background: `oklch(0.16 ${c(1)} ${hue})`,
-    foreground: `oklch(0.965 ${c(0.35)} ${hue})`,
-    card: `oklch(0.21 ${c(1.1)} ${hue})`,
-    "card-foreground": `oklch(0.965 ${c(0.35)} ${hue})`,
-    popover: `oklch(0.235 ${c(1.1)} ${hue})`,
-    "popover-foreground": `oklch(0.965 ${c(0.35)} ${hue})`,
-    secondary: `oklch(0.275 ${c(1.2)} ${hue})`,
-    "secondary-foreground": `oklch(0.965 ${c(0.35)} ${hue})`,
-    muted: `oklch(0.275 ${c(1.2)} ${hue})`,
-    "muted-foreground": `oklch(0.72 ${c(0.8)} ${hue})`,
-    accent: `oklch(0.315 ${c(1.3)} ${hue})`,
-    "accent-foreground": `oklch(0.965 ${c(0.35)} ${hue})`,
-    /**
-     * THE HAIRLINE IS TINTED TOO, and it was the one token in this half that
-     * was not.
-     *
-     * `oklch(1 0 0 / 10%)` is the base palette's dark border, and copying it
-     * verbatim into a tinted theme put pure achromatic white on every edge in
-     * the app — the most repeated mark there is, and the only one still
-     * insisting the theme was grey. Alpha is what makes --border work on all
-     * four rungs of the elevation ladder from one value (see globals.css), so
-     * that part stays; only the ink it lays down moves.
-     *
-     * L 0.92 RATHER THAN 1, and it buys the hue rather than costing contrast.
-     * sRGB has almost no chroma left at L 1, so a tinted white clamps straight
-     * back to white; at 0.92 the chroma actually lands. The composite over a
-     * 0.16 canvas is within a thousandth of a lightness step of the old value
-     * once the alpha is nudged 10% → 11% to pay for the darker ink, so the
-     * hairline reads exactly as heavy as it did — just warm on Ember and cool
-     * on Tide. Chroma is 3× the theme's base because a 11% veil dilutes it by
-     * an order of magnitude; the surfaces above can afford subtlety, an edge
-     * this thin cannot.
-     */
-    border: `oklch(0.92 ${c(3)} ${hue} / 11%)`,
-    input: `oklch(0.53 ${c(0.8)} ${hue})`,
-    sidebar: `oklch(0.19 ${c(1)} ${hue})`,
-    "sidebar-accent": `oklch(0.275 ${c(1.2)} ${hue})`,
-  };
-}
-
-/**
- * The library's built-ins. "telar" is identity — no overrides, globals.css IS
- * that theme. The rest tint the spine toward a family: warm sand, forest,
- * deep sea, violet dusk. Hues chosen off the accent wheel's stops so a theme
- * plus any accent still reads deliberate.
- */
-export const BUILT_IN_THEMES: ReadonlyArray<ThemeDefinition> = [
-  { id: "telar", label: "Telar", builtIn: true, light: {} as ThemeHalf, dark: {} as ThemeHalf },
-  { id: "ember", label: "Ember", builtIn: true, light: tintedLight(65, 0.016), dark: tintedDark(55, 0.014) },
-  { id: "grove", label: "Grove", builtIn: true, light: tintedLight(150, 0.014), dark: tintedDark(155, 0.014) },
-  { id: "tide", label: "Tide", builtIn: true, light: tintedLight(225, 0.014), dark: tintedDark(235, 0.018) },
-  { id: "iris", label: "Iris", builtIn: true, light: tintedLight(300, 0.014), dark: tintedDark(295, 0.016) },
-];
-
-const ACTIVE_KEY = "telar-theme-active";
-const CUSTOM_KEY = "telar-themes-custom";
-/** The COMPILED stylesheet, cached for the pre-paint init script — which must
- *  not need the compiler. Rewritten on every theme change. */
-export const THEME_CSS_KEY = "telar-theme-css";
-
-/** Which theme owns each half. Both halves are usually the same theme. */
-export type ActivePair = { light: string; dark: string };
-
-export const DEFAULT_PAIR: ActivePair = { light: "telar", dark: "telar" };
-
-function declarations(half: ThemeHalf): string {
-  return THEME_TOKENS.filter((token) => half[token])
-    .map((token) => `--${token}: ${half[token]};`)
-    .join(" ");
-}
-
-/**
- * The two halves of the active pair, each from its own theme. "telar" is
- * identity, so its half contributes no block at all — the absent rule IS the
- * default look, and emitting an empty one would only be noise in the cache.
- *
- * `html:root` outranks globals.css's `:root` by one type selector; the
- * translucency overrides at two attributes still outrank both.
- */
-export function compilePair(light: ThemeDefinition, dark: ThemeDefinition): string {
-  const blocks: string[] = [];
-  const lightRules = light.id === "telar" ? "" : declarations(light.light);
-  if (lightRules) blocks.push(`html:root { ${lightRules} }`);
-  const darkRules = dark.id === "telar" ? "" : declarations(dark.dark);
-  if (darkRules) blocks.push(`html:root.dark { ${darkRules} }`);
-  return blocks.join(" ");
-}
-
-/** One theme wearing both halves. */
-export function compileTheme(theme: ThemeDefinition): string {
-  return compilePair(theme, theme);
-}
-
-/**
- * Total, and deliberately forgiving of history: installs from before the pair
- * existed stored a bare id ("tide"), which means that theme wore both halves.
- * Anything else unreadable falls back to the default rather than throwing on
- * a path that runs before first paint.
- */
-export function parseActivePair(raw: string | null): ActivePair {
-  if (typeof raw !== "string") return DEFAULT_PAIR;
-  const trimmed = raw.trim();
-  if (trimmed === "") return DEFAULT_PAIR;
-  if (trimmed.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      const half = (value: unknown) => (typeof value === "string" && value !== "" ? value : "telar");
-      return { light: half(parsed.light), dark: half(parsed.dark) };
-    } catch {
-      return DEFAULT_PAIR;
-    }
-  }
-  // LEGACY: a bare theme id, and only that — anything else stored here is not
-  // a selection this build ever wrote.
-  if (/^[\w-]+$/.test(trimmed)) return { light: trimmed, dark: trimmed };
-  return DEFAULT_PAIR;
-}
-
-/** Deleting a theme you are wearing sends that half home rather than leaving
- *  a dangling id pointing at nothing. */
-export function dropTheme(active: ActivePair, removedId: string): ActivePair {
-  return {
-    light: active.light === removedId ? "telar" : active.light,
-    dark: active.dark === removedId ? "telar" : active.dark,
-  };
-}
-
-function isHalf(value: unknown): value is ThemeHalf {
-  return typeof value === "object" && value !== null && THEME_TOKENS.every((token) => typeof (value as Record<string, unknown>)[token] === "string");
-}
-
-/** Total: a garbage entry is dropped, never thrown on. */
-export function parseCustomThemes(raw: string | null): ThemeDefinition[] {
-  try {
-    const parsed: unknown = JSON.parse(raw ?? "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((entry) => {
-      const candidate = entry as Partial<ThemeDefinition>;
-      if (typeof candidate.id !== "string" || typeof candidate.label !== "string") return [];
-      if (!isHalf(candidate.light) || !isHalf(candidate.dark)) return [];
-      return [{ id: candidate.id, label: candidate.label, light: candidate.light, dark: candidate.dark }];
-    });
-  } catch {
-    return [];
-  }
-}
-
-/** One custom theme as a shareable file — the import dialog reads the same
- *  shape back, so export → import round-trips. */
-export function serializeTheme(theme: ThemeDefinition): string {
-  return JSON.stringify({ label: theme.label, light: theme.light, dark: theme.dark }, null, 2);
-}
-
-export function parseThemeFile(raw: string): Omit<ThemeDefinition, "id"> | undefined {
-  try {
-    const parsed = JSON.parse(raw) as Partial<ThemeDefinition>;
-    if (typeof parsed.label !== "string" || !isHalf(parsed.light) || !isHalf(parsed.dark)) return undefined;
-    return { label: parsed.label, light: parsed.light, dark: parsed.dark };
-  } catch {
-    return undefined;
-  }
-}
-
-/** A half with every token filled — the editor and preview need concrete
- *  values, and the identity theme's halves are deliberately empty. */
-/**
- * WHICH THEME THIS HALF CAME FROM — or nothing, if it came from your hands.
- *
- * The studio could never say what you were editing. Loading Ember put its
- * halves in the draft and renamed the LOOK; the palette itself stayed
- * anonymous, and the library's rings went on marking the theme you were
- * WEARING, which after a load is a different theme entirely. So the grid
- * pointed at Telar while you edited Ember.
- *
- * Comparison is by resolved hex rather than by the stored string, so a half
- * loaded from a theme still matches after a round trip through the colour
- * input — `oklch(0.16 0.018 235)` and `#0a0e12` are the same decision, and a
- * reader who has changed nothing should not be told they have.
- *
- * Ambiguity resolves to the FIRST match, built-ins before customs, because the
- * only way two themes tie is that they are the same palette under two names —
- * and then either answer is true.
- */
-export function matchThemeHalf(half: ThemeHalf, themes: readonly ThemeDefinition[], mode: "light" | "dark"): ThemeDefinition | undefined {
-  return themes.find((theme) => {
-    const candidate = concreteHalf(theme, mode);
-    return THEME_TOKENS.every((token) => cssColorToHex(candidate[token]) === cssColorToHex(half[token]));
-  });
-}
-
-export function concreteHalf(theme: ThemeDefinition, mode: "light" | "dark"): ThemeHalf {
-  const base = mode === "light" ? TELAR_LIGHT : TELAR_DARK;
-  return { ...base, ...(theme[mode] ?? {}) };
-}
-
-// ── The store ────────────────────────────────────────────────────────────────
-
-const listeners = new Set<() => void>();
-
-function subscribe(onChange: () => void): () => void {
-  listeners.add(onChange);
-  window.addEventListener("storage", onChange);
-  return () => {
-    listeners.delete(onChange);
-    window.removeEventListener("storage", onChange);
-  };
-}
-
-function notify(): void {
-  for (const listener of listeners) listener();
-}
-
-type ThemeState = { active: ActivePair; custom: ThemeDefinition[] };
-
-let cache: { raw: string; value: ThemeState } | undefined;
-
-function readState(): ThemeState {
-  let activeRaw: string | null = null;
-  let customRaw: string | null = null;
-  try {
-    activeRaw = window.localStorage.getItem(ACTIVE_KEY);
-    customRaw = window.localStorage.getItem(CUSTOM_KEY);
-  } catch {
-    // Private browsing — the default theme.
-  }
-  const raw = `${activeRaw ?? ""}\n${customRaw ?? ""}`;
-  if (!cache || cache.raw !== raw) cache = { raw, value: { active: parseActivePair(activeRaw), custom: parseCustomThemes(customRaw) } };
-  return cache.value;
-}
-
-const SERVER_STATE: ThemeState = { active: DEFAULT_PAIR, custom: [] };
-
-function findTheme(state: ThemeState, id: string): ThemeDefinition | undefined {
-  return BUILT_IN_THEMES.find((theme) => theme.id === id) ?? state.custom.find((theme) => theme.id === id);
-}
-
-/** A random suffix beside the timestamp: two ids minted in the same
- *  millisecond (duplicate, duplicate) must not collide and overwrite. */
-function newCustomThemeId(): string {
-  return `custom-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
-}
-
-/** Every write funnels here so the COMPILED cache can never go stale against
- *  the choice it caches. */
-function write(next: Partial<{ active: ActivePair; custom: ThemeDefinition[] }>): void {
-  const current = readState();
-  const state: ThemeState = { active: next.active ?? current.active, custom: next.custom ?? current.custom };
-  // Resolve before persisting: a half pointing at a theme that no longer
-  // exists is stored as the default, never as a dangling id.
-  const light = findTheme(state, state.active.light) ?? BUILT_IN_THEMES[0];
-  const dark = findTheme(state, state.active.dark) ?? BUILT_IN_THEMES[0];
-  try {
-    window.localStorage.setItem(ACTIVE_KEY, JSON.stringify({ light: light.id, dark: dark.id }));
-    window.localStorage.setItem(CUSTOM_KEY, JSON.stringify(state.custom));
-    window.localStorage.setItem(THEME_CSS_KEY, compilePair(light, dark));
-  } catch {
-    // The in-page listeners still fire; only persistence is lost.
-  }
-  notify();
-}
-
-export function applyThemeCss(): void {
-  let css = "";
-  try {
-    css = window.localStorage.getItem(THEME_CSS_KEY) ?? "";
-  } catch {
-    // Default theme.
-  }
-  let style = document.getElementById("telar-theme") as HTMLStyleElement | null;
-  if (!style) {
-    style = document.createElement("style");
-    style.id = "telar-theme";
-    document.head.appendChild(style);
-  }
-  if (style.textContent !== css) style.textContent = css;
-}
-
-export function useThemeLibrary(): {
-  /** The theme worn WHOLE, or undefined while the halves disagree. */
-  activeId: string | undefined;
-  active: ActivePair;
-  themes: ThemeDefinition[];
-  setActive: (id: string) => void;
-  setHalf: (mode: "light" | "dark", id: string) => void;
-  saveCustom: (theme: ThemeDefinition) => void;
-  removeCustom: (id: string) => void;
-  /** Returns the copy so the caller can load it straight into the draft. */
-  duplicate: (id: string) => ThemeDefinition | undefined;
-  /** Adds to the library WITHOUT wearing it — the studio decides what happens
-   *  next. Returns the added theme, or undefined for an unreadable file. */
-  importTheme: (raw: string) => ThemeDefinition | undefined;
-} {
-  const state = useSyncExternalStore(subscribe, readState, () => SERVER_STATE);
-
-  const setActive = useCallback((id: string) => write({ active: { light: id, dark: id } }), []);
-
-  const setHalf = useCallback((mode: "light" | "dark", id: string) => write({ active: { ...readState().active, [mode]: id } }), []);
-
-  const saveCustom = useCallback((theme: ThemeDefinition) => {
-    const { custom } = readState();
-    const next = custom.some((entry) => entry.id === theme.id) ? custom.map((entry) => (entry.id === theme.id ? theme : entry)) : [...custom, theme];
-    write({ custom: next });
-  }, []);
-
-  const removeCustom = useCallback((id: string) => {
-    const current = readState();
-    write({ custom: current.custom.filter((entry) => entry.id !== id), active: dropTheme(current.active, id) });
-  }, []);
-
-  const duplicate = useCallback((id: string) => {
-    const current = readState();
-    const source = findTheme(current, id);
-    if (!source) return undefined;
-    const copy: ThemeDefinition = {
-      id: newCustomThemeId(),
-      label: `${source.label} copy`,
-      light: concreteHalf(source, "light"),
-      dark: concreteHalf(source, "dark"),
-    };
-    write({ custom: [...current.custom, copy] });
-    return copy;
-  }, []);
-
-  const importTheme = useCallback((raw: string) => {
-    const parsed = parseThemeFile(raw);
-    if (!parsed) return undefined;
-    const theme: ThemeDefinition = { id: newCustomThemeId(), ...parsed };
-    write({ custom: [...readState().custom, theme] });
-    return theme;
-  }, []);
-
-  return useMemo(
-    () => ({
-      activeId: state.active.light === state.active.dark ? state.active.light : undefined,
-      active: state.active,
-      themes: [...BUILT_IN_THEMES, ...state.custom],
-      setActive,
-      setHalf,
-      saveCustom,
-      removeCustom,
-      duplicate,
-      importTheme,
-    }),
-    [state, setActive, setHalf, saveCustom, removeCustom, duplicate, importTheme],
-  );
-}
 
 // ── Colour conversion for the editor's pickers ──────────────────────────────
 // <input type="color"> speaks hex only; the built-ins speak oklch. Ported from
@@ -519,20 +187,15 @@ function resolveThroughCss(value: string): string | undefined {
 }
 
 /**
- * A CSS colour as the six-digit hex `<input type="color">` insists on.
+ * A CSS colour as six-digit hex, or NOTHING when it is not a colour at all.
  *
- * IT MUST ALWAYS RETURN `#rrggbb`. Both callers put the result straight into an
- * `<input type="color">`, whose value sanitiser rejects anything else and shows
- * black — so "return the original when it is exotic" would trade a wrong colour
- * for a wrong colour AND a broken swatch. Everything below exists to make the
- * last-resort grey unreachable in practice instead.
- *
- * It used to be two branches — a strict oklch shape, and literal `#rrggbb` —
- * and everything else became `#808080`. That grey is not a display artefact:
- * lib/studio-draft.ts fingerprints a draft through this function and
- * lib/vscode-theme-import.ts reads imported colours through it, so a value it
- * could not parse became a real grey downstream. `oklch(96% 0 0)`, `#abc`,
- * `rgb(20 20 20)` and every named colour all took that path.
+ * THE STRICT HALF OF `cssColorToHex`, split out for the one caller that has to
+ * tell the two apart (#471): a field somebody TYPES into. Everywhere else reads
+ * a value this app itself stored, so "it did not parse" is a bug rather than an
+ * input, and a fallback grey is the kindest thing to show. In a text field it is
+ * the opposite — typing `bananas` and getting a real grey stop is the field
+ * quietly accepting nonsense — so the composer's colour field wants the
+ * undefined and does the snapping back itself.
  *
  * ALPHA IS DROPPED, AND THAT IS A PROPERTY OF THE WIDGET, NOT A BUG HERE. There
  * is no way to show 10% white in a colour input. `oklch(1 0 0 / 10%)` reports
@@ -540,7 +203,7 @@ function resolveThroughCss(value: string): string | undefined {
  * survives in the stored value and is only lost if the reader actually picks a
  * new colour through that swatch, which is an edit.
  */
-export function cssColorToHex(value: string): string {
+export function parseCssColor(value: string): string | undefined {
   const trimmed = value.trim();
 
   const oklch = /^oklch\(\s*(none|[\d.]+%?)\s+(none|[\d.]+%?)\s+(none|-?[\d.]+(?:deg|rad|grad|turn)?)/i.exec(trimmed);
@@ -587,7 +250,27 @@ export function cssColorToHex(value: string): string {
     if (channels.every(Number.isFinite)) return toHex(channels);
   }
 
-  return resolveThroughCss(trimmed) ?? "#808080";
+  return resolveThroughCss(trimmed);
+}
+
+/**
+ * A CSS colour as the six-digit hex `<input type="color">` insists on.
+ *
+ * IT MUST ALWAYS RETURN `#rrggbb`. Most callers put the result straight into an
+ * `<input type="color">`, whose value sanitiser rejects anything else and shows
+ * black — so "return the original when it is exotic" would trade a wrong colour
+ * for a wrong colour AND a broken swatch. `parseCssColor` above exists to make
+ * the last-resort grey unreachable in practice instead.
+ *
+ * It used to be two branches — a strict oklch shape, and literal `#rrggbb` —
+ * and everything else became `#808080`. That grey is not a display artefact:
+ * lib/studio-draft.ts fingerprints a draft through this function and
+ * lib/vscode-theme-import.ts reads imported colours through it, so a value it
+ * could not parse became a real grey downstream. `oklch(96% 0 0)`, `#abc`,
+ * `rgb(20 20 20)` and every named colour all took that path.
+ */
+export function cssColorToHex(value: string): string {
+  return parseCssColor(value) ?? "#808080";
 }
 
 /** Hex straight through — CSS accepts it, and round-tripping user picks
