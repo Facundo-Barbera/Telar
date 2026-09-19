@@ -765,6 +765,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   if (swept) {
     const parts: string[] = [];
     if (swept.receipts > 0) parts.push(`${swept.receipts.toLocaleString("en-US")} spent command receipts`);
+    if (swept.journal) {
+      const rows = swept.journal.deltas + swept.journal.starts;
+      // "Superseded", not "removed": these rows say nothing their turn's
+      // `item.completed` does not already say, which is the only reason they
+      // could go. The sentence should not read as history being deleted.
+      parts.push(
+        `${rows.toLocaleString("en-US")} superseded journal rows across ${swept.journal.sessions.toLocaleString("en-US")} sessions`,
+      );
+    }
     if (swept.backup?.removed) {
       const mb = (swept.backup.bytes / 1_000_000).toFixed(1);
       const days = Math.floor(swept.backup.ageMs / 86_400_000);

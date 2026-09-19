@@ -528,3 +528,94 @@ test("a store with no migration behind it has no backup to consider", () => {
   expect(store.executionHousekeeping()?.backup).toBeUndefined();
   expect(store.executionHousekeeping()?.receipts).toBe(0);
 });
+
+/**
+ * THE JOURNAL ROWS A SETTLED TURN HAS SUPERSEDED (#646).
+ *
+ * `events` was 68% of a gigabyte store, and 57% of its rows said nothing their
+ * own `item.completed` did not already say. The sweep drops those — but only
+ * where it can PROVE the completed item holds the text, which is the single
+ * thing worth asserting here: the guard, not the byte count.
+ */
+function journal(root: string, sessionId: string, store: ExecutionStore) {
+  store.write(path.join(root, "sessions", sessionId, "session.json"), { id: sessionId });
+  let id = 0;
+  const at = Date.parse("2026-09-01T00:00:00Z");
+  const runId = "run_one";
+  return {
+    start: (itemId: string) => store.append({ id: ++id, at, sessionId, runId, type: "item.started",
+      item: { id: itemId, runId, sessionId, status: "inProgress", detail: { type: "assistant_message", text: "" }, startedAt: at } } as never),
+    delta: (itemId: string, text: string) => store.append({ id: ++id, at, sessionId, runId, type: "content.delta",
+      itemId, stream: "assistant_text", text } as never),
+    complete: (itemId: string, text: string) => store.append({ id: ++id, at, sessionId, runId, type: "item.completed",
+      item: { id: itemId, runId, sessionId, status: "completed", detail: { type: "assistant_message", text }, startedAt: at, completedAt: at } } as never),
+    endTurn: () => store.append({ id: ++id, at, sessionId, runId, type: "turn.completed", resultText: "done" } as never),
+  };
+}
+const types = (store: ExecutionStore, sessionId: string) => store.events(sessionId).map((event) => event.type);
+
+test("a settled turn keeps its completed items and drops the rows they supersede", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  const store = new ExecutionStore(root);
+  try {
+    const write = journal(root, "session_one", store);
+    write.start("item_one");
+    write.delta("item_one", "Once upon ");
+    write.delta("item_one", "a time");
+    write.complete("item_one", "Once upon a time");
+    write.endTurn();
+
+    const swept = store.compactJournal();
+    expect(swept).toEqual({ deltas: 2, starts: 1, sessions: 1 });
+    // The completed item survives, and with it the text both dropped kinds held.
+    expect(types(store, "session_one")).toEqual(["item.completed", "turn.completed"]);
+    expect(store.events("session_one")[0]).toMatchObject({ item: { detail: { text: "Once upon a time" } } });
+
+    // AND IT IS INCREMENTAL. The watermark means the second sweep looks at
+    // nothing, rather than re-scanning a settled journal every day forever.
+    expect(store.compactJournal()).toEqual({ deltas: 0, starts: 0, sessions: 0 });
+  } finally { store.close(); }
+});
+
+test("the guard keeps the deltas a completed item cannot account for", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-guard-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  const store = new ExecutionStore(root);
+  try {
+    const write = journal(root, "session_one", store);
+    write.start("item_short");
+    write.delta("item_short", "the whole streamed paragraph");
+    // Nine items in a 4,000-item sample completed with LESS text than was
+    // streamed into them. This is that case: dropping the deltas here would
+    // lose the difference, so the comparison keeps them.
+    write.complete("item_short", "truncated");
+    write.endTurn();
+
+    expect(store.compactJournal()).toEqual({ deltas: 0, starts: 1, sessions: 1 });
+    expect(types(store, "session_one")).toEqual(["content.delta", "item.completed", "turn.completed"]);
+  } finally { store.close(); }
+});
+
+test("an unfinished turn is left entirely alone, and swept once it ends", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-live-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  const store = new ExecutionStore(root);
+  try {
+    const write = journal(root, "session_one", store);
+    write.start("item_one");
+    write.delta("item_one", "still ");
+    write.complete("item_one", "still streaming");
+    write.delta("item_two", "an item with no completion at all");
+
+    // No terminal turn event yet: nothing below it is final, so nothing goes.
+    expect(store.compactJournal()).toEqual({ deltas: 0, starts: 0, sessions: 0 });
+    expect(store.events("session_one")).toHaveLength(4);
+
+    write.endTurn();
+    expect(store.compactJournal()).toEqual({ deltas: 1, starts: 1, sessions: 1 });
+    // `item_two` never completed, so its delta is the only record of that text
+    // and it stays — the same rule as the guard, for the same reason.
+    expect(types(store, "session_one")).toEqual(["item.completed", "content.delta", "turn.completed"]);
+  } finally { store.close(); }
+});
