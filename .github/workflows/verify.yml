@@ -63,7 +63,7 @@ jobs:
           set -euo pipefail
           bun install --frozen-lockfile
 
-      # These three are exactly `bun run verify` from the repo root, in order,
+      # These four are exactly `bun run verify` from the repo root, in order,
       # so a red run reproduces with one command locally. Separate steps only so
       # the failure lands in the right place in the log.
       #
@@ -81,6 +81,14 @@ jobs:
       # not be made clean in one go. packages/core was deleted with the Loom
       # engine (#501 step 3), and the ceiling went with it rather than being
       # left behind to rot. Every tree that remains typechecks outright.
+      # THINGS THAT ARE TRUE OF THE SOURCE TEXT, and they belong on a job with
+      # no Mac in it. These read Swift but compile none — asserting them from
+      # inside a unit test is the trap #248 and ActivitySegmentsTests both fell
+      # into, where `#filePath` resolves to the COMPILING machine's path and so
+      # passes on a simulator and throws on a device. Here they gate every PR.
+      - name: Check the source invariants
+        run: bun run check:source
+
       - name: Typecheck engine-client, env, engine, and web
         run: bun run typecheck
 

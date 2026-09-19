@@ -12,14 +12,14 @@ struct CellOutputView: View {
     var body: some View {
         switch output {
         case .text(let stream, let text, let truncated):
-            ClampedLines(text: text + (truncated ? " … truncated" : ""), size: 11)
+            ClampedLines(text: text + (truncated ? " … truncated" : ""))
                 .foregroundStyle(stream == "stderr" ? Theme.statusAmber : stream == "result" ? Theme.text : Theme.text.opacity(0.8))
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .error(let error):
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(error.ename): \(error.evalue)").font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.statusRed)
+                Text("\(error.ename): \(error.evalue)").font(.system(Theme.caption, design: .monospaced, weight: .semibold)).foregroundStyle(Theme.statusRed)
                 if !error.traceback.isEmpty {
-                    ClampedLines(text: error.traceback.map(stripAnsi).joined(separator: "\n"), size: 10)
+                    ClampedLines(text: error.traceback.map(stripAnsi).joined(separator: "\n"))
                         .foregroundStyle(Theme.textMuted)
                 }
             }
@@ -52,7 +52,7 @@ struct CellOutputView: View {
         case .clear:
             EmptyView()
         case .unknown(let kind):
-            Text("[\(kind)]").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Text("[\(kind)]").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
         }
     }
 }
@@ -64,7 +64,6 @@ struct CellOutputView: View {
 /// tap away and says how much it is holding.
 struct ClampedLines: View {
     let text: String
-    var size: CGFloat = 11
     /// JupyterLab clamps around this too. Enough for a traceback's head and a
     /// dataframe's first rows.
     static let limit = 12
@@ -75,8 +74,13 @@ struct ClampedLines: View {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         let hidden = max(0, lines.count - Self.limit)
         VStack(alignment: .leading, spacing: 2) {
+            // ONE SIZE, BECAUSE THE TWO THIS TOOK WERE THE SAME SIZE. Stream
+            // output asked for 11 and a traceback for 10, and both land on
+            // `Theme.caption` — the point between them was never deliberate,
+            // so the parameter that carried it is gone rather than left as a
+            // knob with one setting.
             Text(expanded || hidden == 0 ? text : lines.prefix(Self.limit).joined(separator: "\n"))
-                .font(.system(size: size, design: .monospaced))
+                .font(.system(Theme.caption, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if hidden > 0 {
@@ -84,7 +88,7 @@ struct ClampedLines: View {
                     withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
                 } label: {
                     Text(expanded ? "Show less" : "\(hidden) more line\(hidden == 1 ? "" : "s")")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(Theme.caption, weight: .medium))
                         .foregroundStyle(Theme.accent)
                         .frame(minHeight: 28)
                 }
@@ -120,7 +124,7 @@ private struct OutputImage: View {
             } else if attachmentId != nil || dataB64 != nil {
                 ProgressView().frame(height: 60)
             } else {
-                Text("[image]").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text("[image]").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
             }
         }
         .task(id: attachmentId ?? dataB64?.prefix(32).description ?? "") {
@@ -133,6 +137,16 @@ private struct OutputImage: View {
     }
 }
 
+/// THE ONE BLOCK HERE THAT KEEPS ABSOLUTE SIZES, and not by oversight. Every
+/// cell below is pinned to a fixed 96×30 header or 96×22 row so the columns
+/// line up across a horizontal scroll — text that grew with the reader's
+/// setting inside a frame that did not would simply be cut off. Making this
+/// grid scale means `@ScaledMetric` on the width and both heights, which is a
+/// layout change rather than a token swap, so it gets its own pass.
+///
+/// The dtype label's 8 is the smallest size in the app and DOES have a rung —
+/// `captionTiny`, since `.caption2` is the floor of Apple's ramp and an 8 can
+/// go nowhere else. It waits here for the frame, not for a token.
 private struct DataframeGrid: View {
     let columns: [String]
     let dtypes: [String]
@@ -170,7 +184,7 @@ private struct DataframeGrid: View {
             }
             .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
             Text("\(shape.first ?? rows.count) × \(shape.last ?? columns.count)\(truncated ? " · preview" : "")")
-                .font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                .font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
         }
     }
 

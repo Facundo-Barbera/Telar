@@ -168,7 +168,7 @@ enum Theme {
     }
 
     /// THE SUB-BODY RAMP, NAMED. The app writes its small type as a hard point
-    /// size — `.system(size: 11)` — on a four-step ramp between 9 and 15 that
+    /// size — `.system(size: 11)` — on a four-step ramp between 8 and 15 that
     /// nothing here ever named. A hard size is absolute: it does not move when
     /// the reader turns their text up, so every one of those sites silently
     /// ignores Dynamic Type, which is the one accessibility setting a phone
@@ -191,7 +191,9 @@ enum Theme {
     /// The frame cannot grow with the reader's text, and it clips, so a glyph
     /// that scaled inside it would only outgrow its own circle. Those need a
     /// `@ScaledMetric` frame, which is a layout change rather than a swap.
-    static let captionTiny: Font.TextStyle = .caption2   // was 9
+    /// `.caption2` IS THE FLOOR — Apple's ramp has nothing below it — so an 8
+    /// has exactly one place to go, and it is the same rung as the 9.
+    static let captionTiny: Font.TextStyle = .caption2   // was 8, 9
     static let caption: Font.TextStyle = .caption        // was 10, 11
     static let footnote: Font.TextStyle = .footnote      // was 12, 13
     static let subhead: Font.TextStyle = .subheadline    // was 14, 15
