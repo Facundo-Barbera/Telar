@@ -102,6 +102,8 @@ import { THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX } from "./agent/thread-log";
 import { INBOX_PAGE_DEFAULT, INBOX_PAGE_MAX } from "./agent/inbox";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
+import * as shelf from "./prompts";
+import { PreparedPromptsError } from "./prompts";
 import type { GhRunner } from "./github";
 import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
@@ -298,6 +300,10 @@ function errorFor(error: unknown): HttpError {
   // The notebook's own refusals, carried out whole: they are sentences written
   // for a person, and a 500 would replace each one with "internal error".
   if (error instanceof ProjectNotesError) {
+    return new HttpError(error.code === "not_found" ? 404 : 400, error.code, error.message);
+  }
+  // The prompt shelf's, for the same reason and in the same shape.
+  if (error instanceof PreparedPromptsError) {
     return new HttpError(error.code === "not_found" ? 404 : 400, error.code, error.message);
   }
   return new HttpError(500, "internal_error", "engine encountered an internal error");
@@ -2474,6 +2480,66 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const note = notebook.updateNote(store.paths, projectId, noteId, patch);
         if (!note) throw new HttpError(404, "not_found", "no note goes by that id in this project's notebook");
         writeJson(response, 200, { note });
+        return;
+      }
+      /**
+       * THE PROMPT SHELF — unsent messages kept by name, either hand's.
+       *
+       * Under `/v2/projects/:id/` for the notebook's reason, and with the same
+       * `store.getProject` FIRST on every one of them: it is the registration
+       * check, and it is what keeps a caller-supplied id from becoming a
+       * filename before anything has vouched for it.
+       *
+       * A prompt may also carry the SESSION it was prepared for. This route
+       * answers the whole shelf rather than filtering by session, because the
+       * caller that wants one composer's list (`promptsForComposer`) and the
+       * caller that wants the project's count are both real.
+       */
+      const projectPrompts = /^\/v2\/projects\/([^/]+)\/prompts$/.exec(url.pathname);
+      if (projectPrompts && (request.method === "GET" || request.method === "POST")) {
+        const projectId = decodeURIComponent(projectPrompts[1]);
+        store.getProject(projectId);
+        if (request.method === "GET") {
+          writeJson(response, 200, { prompts: shelf.readPrompts(store.paths, projectId) });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 201, {
+          // ABSENT `author` MEANS THE HUMAN'S, as on the notebook: only the tool
+          // wall declares "session", so a prompt arriving undeclared is a hand's.
+          prompt: shelf.createPrompt(store.paths, projectId, {
+            title: input.title as string,
+            text: (input.text ?? "") as string,
+            ...(input.sessionId ? { sessionId: String(input.sessionId) } : {}),
+            ...(input.reason !== undefined ? { reason: String(input.reason) } : {}),
+            author: input.author === "session" ? "session" : "you",
+          }),
+        });
+        return;
+      }
+      const projectPrompt = /^\/v2\/projects\/([^/]+)\/prompts\/([^/]+)$/.exec(url.pathname);
+      if (projectPrompt && (request.method === "GET" || request.method === "PATCH" || request.method === "DELETE")) {
+        const projectId = decodeURIComponent(projectPrompt[1]);
+        const promptId = decodeURIComponent(projectPrompt[2]);
+        store.getProject(projectId);
+        if (request.method === "DELETE") {
+          // `deleted: false` RATHER THAN A 404 on one that is already gone: the
+          // ordinary way a prompt leaves this shelf is being sent, possibly from
+          // the other window, and a retried delete has reached the state it asked
+          // for.
+          writeJson(response, 200, { deleted: shelf.deletePrompt(store.paths, projectId, promptId) });
+          return;
+        }
+        if (request.method === "GET") {
+          const prompt = shelf.getPrompt(store.paths, projectId, promptId);
+          if (!prompt) throw new HttpError(404, "not_found", "no prepared prompt goes by that id on this project's shelf");
+          writeJson(response, 200, { prompt });
+          return;
+        }
+        const patch = await body(request);
+        const prompt = shelf.updatePrompt(store.paths, projectId, promptId, patch);
+        if (!prompt) throw new HttpError(404, "not_found", "no prepared prompt goes by that id on this project's shelf");
+        writeJson(response, 200, { prompt });
         return;
       }
       /** Pin or unpin. Its own route rather than a PATCH field on the caller's
