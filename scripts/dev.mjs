@@ -27,6 +27,12 @@ import {
   webDevCommand,
 } from "./dev-lifecycle.mjs";
 import { httpsBaseUrl, probeServe, readStatus, serveTarget, startServe, stopServe } from "./tailscale.mjs";
+// THE ONE DEFINITION OF THE remote.json READ RULE (#627), imported rather than
+// restated. The direction is what makes this safe where the `tailscale.mjs`
+// twin had to be duplicated: a dev script may depend on the desktop app, which
+// is always in the repo; the packaged shell must never depend on `scripts/`,
+// which cannot be required from an asar.
+import { gateWillRequireAuth, tailscaleServeRequested } from "../apps/desktop/remote-file.js";
 
 const repoDir = path.resolve(import.meta.dirname, "..");
 const defaultTelarHome = path.join(os.homedir(), ".telar-dogfood");
@@ -110,33 +116,22 @@ async function stop(exitCode) {
 }
 
 /**
- * requireAuth as the pairing store last wrote it — for the posture line only.
+ * requireAuth as the GATE will apply it — for the posture line only.
  *
  * A MISSING FILE IS A FRESH STORE, WHICH REQUIRES PAIRING. Mirrors `FRESH` in
  * apps/web/lib/remote/store.ts; without this the warning line would announce an
- * unguarded cockpit on the one install that is guarded by default.
+ * unguarded cockpit on the one install that is guarded by default. An unknown
+ * version mirrors `RESET` and reads as OFF, so the line warns about a file the
+ * gate has given up on rather than repeating the file's own claim (#627).
  */
 function readRequireAuth(telarHome) {
-  const file = path.join(telarHome, "remote", "remote.json");
-  if (!fs.existsSync(file)) return true;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    return parsed?.requireAuth === true;
-  } catch {
-    return false;
-  }
+  return gateWillRequireAuth(telarHome);
 }
 
-/** The Settings toggle's persisted wish — honoured only with pairing on,
- *  the same rule the store enforces on write, re-checked here because a
- *  hand-edited file must not publish an open cockpit onto the tailnet. */
+/** The Settings toggle's persisted wish — honoured only with pairing on and a
+ *  version this build knows, the same rule the packaged shell applies. */
 function readTailscaleServe(telarHome) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(telarHome, "remote", "remote.json"), "utf8"));
-    return parsed?.tailscaleServe === true && parsed?.requireAuth === true;
-  } catch {
-    return false;
-  }
+  return tailscaleServeRequested(telarHome);
 }
 
 async function probeEngine(engineRoot) {

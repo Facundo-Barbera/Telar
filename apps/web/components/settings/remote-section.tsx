@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { QrMatrix } from "@/lib/remote/qr";
+import { describeServeError, type TailscaleServeError } from "@/lib/remote/tailscale-serve";
 import { fmtAgo } from "@/lib/format";
 import { desktopApp } from "@/lib/desktop-app";
 import { cn } from "@/lib/utils";
@@ -53,6 +54,8 @@ interface RemoteStatus {
   requireAuth: boolean;
   exposure?: "local-only" | "network-accessible";
   tailscaleServe?: boolean;
+  /** Why the ts.net URL is absent, when the launcher tried and failed (#627). */
+  tailscaleServeError?: TailscaleServeError;
   host?: RemoteHost;
   devices: RemoteDevice[];
   callerDeviceId?: string;
@@ -413,6 +416,14 @@ export function RemoteSection() {
                 <>
                   Served at <span className="font-mono text-foreground">{magicdns.url}/</span> — a real certificate, so phone browsers get a secure context.
                 </>
+              ) : /**
+                   * THE FAILURE BEATS THE PROMISE. "Publishes at the next
+                   * launch" is what this said for ever to somebody whose last
+                   * launch already tried and failed — so when the launcher
+                   * reported a reason, that is the hint (#627).
+                   */
+              status.tailscaleServeError ? (
+                <span className="text-destructive">{describeServeError(status.tailscaleServeError)}</span>
               ) : status.tailscaleServe ? (
                 "Publishes at the next launch. Needs Tailscale running, with HTTPS certificates on for your tailnet."
               ) : (

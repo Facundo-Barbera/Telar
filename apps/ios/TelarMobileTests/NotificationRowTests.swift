@@ -26,7 +26,7 @@ import Testing
            "kind":"peer_message","sessionId":"session_worker123456","runId":"run_x","intent":"task",
            "summary":"[agent message · task] session session_worker ASSIGNED this session work",
            "fetch":{"sessionId":"session_host","runId":"run_x"},
-           "body":"[agent message · task] …\nIt opens: \"Rewrite the parser\""}}}
+           "body":"[agent message · task] …\nNone of it is in this notice. Read it with sessions_read(sessionId: \"session_host\", runId: \"run_x\") before acting on it."}}}
         """#)
         guard case .notification(let detail) = item.detail else {
             Issue.record("expected a notification detail")
@@ -35,7 +35,7 @@ import Testing
         #expect(detail.kind == "peer_message")
         #expect(detail.intent == "task")
         #expect(detail.sessionId == "session_worker123456")
-        #expect(detail.body.contains("Rewrite the parser"))
+        #expect(detail.body.contains("sessions_read(sessionId: \"session_host\", runId: \"run_x\")"))
     }
 
     @Test func anUnknownKindStillDrawsSomething() throws {

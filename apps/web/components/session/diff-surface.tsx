@@ -66,11 +66,12 @@ import {
   HardDriveIcon,
   GitCommitHorizontalIcon,
   ListFilterIcon,
+  RefreshCwIcon,
   RotateCwIcon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
-import type { GitFileChange, SessionDiff, TurnState } from "@telar/engine-client";
+import type { GitFilePatch, GitFileChange, SessionDiff, TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { describeReview, reconcileReview, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
@@ -202,7 +203,7 @@ function ReviewFileRow({
 }: {
   /** Session-scoped or project-scoped — the row does not care which, which is
    *  what lets one surface serve a conversation and a canvas. */
-  readPatch: (path: string, untracked: boolean) => Promise<{ file: { patch: string; binary: boolean } }>;
+  readPatch: (path: string, untracked: boolean) => Promise<{ file: GitFilePatch }>;
   file: GitFileChange;
   reported: boolean;
   /** How many times the journal saw this path written, when that is more than
@@ -227,7 +228,9 @@ function ReviewFileRow({
   onInsertReference?: (text: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [patch, setPatch] = useState<string>();
+  /** THE WHOLE ANSWER, not just its text — `patch: ""` alone could not say
+   *  whether this file is binary, identical, or unread (#654). */
+  const [patch, setPatch] = useState<GitFilePatch>();
   const [failed, setFailed] = useState(false);
   const cut = file.path.lastIndexOf("/");
 
@@ -236,7 +239,7 @@ function ReviewFileRow({
     let cancelled = false;
     void readPatch(file.path, file.status === "untracked")
       .then((result) => {
-        if (!cancelled) setPatch(result.file.binary ? "" : result.file.patch);
+        if (!cancelled) setPatch(result.file);
       })
       .catch(() => {
         if (!cancelled) setFailed(true);
@@ -333,12 +336,153 @@ function ReviewFileRow({
           <p className="flex items-center gap-2 px-4 pb-2 text-2xs text-muted-foreground">
             <Spinner className="size-3" /> reading the diff…
           </p>
-        ) : patch === "" ? (
+        ) : /* GIT DID NOT ANSWER IS NOT A FACT ABOUT THE FILE — issue #654. An
+               unread patch arrived here as the empty string and this branch
+               rendered "Binary file", which is a specific, confident and wrong
+               claim about the contents. */
+        patch.incomplete ? (
+          <p className="px-4 pb-2 text-2xs text-warning">
+            {patch.incomplete === "timeout" ? "git did not answer in time — open it again." : "git could not read this file's diff."}
+          </p>
+        ) : patch.binary ? (
           <p className="px-4 pb-2 text-2xs text-muted-foreground">Binary file — no textual diff.</p>
+        ) : patch.patch === "" ? (
+          // The third case the old `patch === ""` swallowed: git answered, and
+          // its answer is that nothing in this file differs.
+          <p className="px-4 pb-2 text-2xs text-muted-foreground">No textual difference.</p>
         ) : (
-          <Patch patch={patch} />
+          <Patch patch={patch.patch} />
         ))}
       {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-2xs text-muted-foreground">Renamed from {file.renamedFrom}</p>}
+    </div>
+  );
+}
+
+/**
+ * WHAT GIT DID NOT ANSWER, IN THE ONE PLACE IT CHANGES A DECISION — issue #654.
+ *
+ * THE ENGINE FIX ALONE DOES NOT FIX THIS BUG, which is #650's lesson repeated:
+ * `filesIncomplete` arriving on the answer is worth nothing while this surface
+ * draws a review that timed out exactly as it draws a session that changed
+ * nothing. An empty Diff panel is how a person decides a session did no work
+ * and archives it — there is no search box to blame here and no short list to
+ * look suspicious, so the surface has to say it out loud or nobody will know.
+ *
+ * ABOVE THE ROWS, NEVER IN PLACE OF THEM. The files that did arrive are real
+ * changes, still worth reading and still about to be in the commit; replacing
+ * them with an error would trade a misleading review for a useless one.
+ *
+ * THREE SENTENCES BECAUSE THEY ARE THREE DIFFERENT DOUBTS, and the point of the
+ * engine carrying three flags rather than one is that a reader should distrust
+ * the half of the screen that is actually unknown — a `git log` that was killed
+ * says nothing whatever about the file list under it.
+ *
+ * "ASK GIT AGAIN" IS THE OFFER FOR A TIMEOUT, because that is the failure that
+ * goes away on its own: the machine was busy. It is this surface's own refresh
+ * rerun rather than a new request. A failure for another reason keeps the
+ * button — it costs one read — but says what it is, so somebody who presses it
+ * twice to no effect knows this is not a busy machine.
+ */
+export function DiffUnknownBand({
+  diff,
+  onRetry,
+}: {
+  diff: Pick<SessionDiff, "filesIncomplete" | "commitsIncomplete" | "baseUnverified">;
+  onRetry?: () => void | Promise<void>;
+}) {
+  const [retrying, setRetrying] = useState(false);
+  const sentences: string[] = [];
+  if (diff.filesIncomplete) {
+    sentences.push(
+      diff.filesIncomplete === "timeout"
+        ? "git did not answer in time, so this list may be missing files and the counts may be low — it is not the whole change."
+        : "git could not read this checkout's changes, so this list may be missing files and the counts may be low.",
+    );
+  }
+  if (diff.commitsIncomplete) {
+    sentences.push(
+      diff.commitsIncomplete === "timeout"
+        ? "git did not answer in time for this session's commits, so work it has already committed may not be listed."
+        : "git could not read this session's commits, so work it has already committed may not be listed.",
+    );
+  }
+  if (diff.baseUnverified) {
+    sentences.push("Nothing confirmed the starting point below — it is the one recorded when this checkout was cut.");
+  }
+  if (sentences.length === 0) return null;
+  const retry = async () => {
+    if (!onRetry || retrying) return;
+    setRetrying(true);
+    try {
+      await onRetry();
+    } finally {
+      setRetrying(false);
+    }
+  };
+  return (
+    <div className="border-b border-warning/30 bg-warning/10 px-4 py-2.5">
+      {sentences.map((sentence) => (
+        <p key={sentence} className="flex gap-1.5 text-2xs leading-relaxed text-warning">
+          <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+          <span>{sentence}</span>
+        </p>
+      ))}
+      {onRetry && (
+        <button
+          type="button"
+          onClick={() => void retry()}
+          disabled={retrying}
+          className="mt-1 flex items-center gap-1 rounded-md px-1 py-0.5 text-2xs font-medium text-warning transition-colors outline-none hover:bg-warning/15 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+        >
+          <RefreshCwIcon className={cn("size-3 shrink-0", retrying && "animate-spin")} />
+          {retrying ? "Asking git again…" : "Ask git again"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * WHY THIS LIST IS EMPTY — three different claims that were one sentence.
+ *
+ * A FILTER THAT MATCHES NOTHING IS NOT AN EMPTY REVIEW: saying "nothing differs"
+ * over a tree with forty changed files would send somebody looking for a bug in
+ * git. And "nothing differs" is itself a CLAIM ABOUT THE CHECKOUT (#654), safe
+ * only when the reads that would have contradicted it actually answered — this
+ * is the exact conflation #650 found in the base picker's `"No matching refs."`,
+ * arriving on the surface where it costs the most, because an empty review is
+ * how somebody decides a session did no work.
+ */
+export function ReviewEmptyState({
+  review,
+  trimmed,
+  filesIncomplete,
+}: {
+  review: SessionReview;
+  /** The filter as it MEANS, not as the field holds it. */
+  trimmed?: string;
+  filesIncomplete?: SessionDiff["filesIncomplete"];
+}) {
+  return (
+    <div className="px-4 py-6 text-center text-2xs text-muted-foreground">
+      {trimmed ? (
+        <>
+          {/* "differs" is the claim; "was listed" is all that can be said over a
+              read that was cut short — the filter's own sentence has to give way
+              on the same word the unfiltered one does. */}
+          Nothing under <span className="font-mono">{trimmed}</span> {filesIncomplete ? "was listed" : "differs"}.
+          {review.rows.length > 0 && ` The rest of the review has ${review.rows.length} ${review.rows.length === 1 ? "file" : "files"}.`}
+        </>
+      ) : filesIncomplete ? (
+        // The band above owns the explanation; this line only has to stop
+        // repeating the claim underneath it.
+        <>Nothing was listed — and with git not answering in full, that is not the same as nothing having changed.</>
+      ) : (
+        <>
+          Nothing differs from where this session started.
+          {review.settled.length > 0 && " Everything it wrote has been put back or committed."}
+        </>
+      )}
     </div>
   );
 }
@@ -425,6 +569,7 @@ function CommitBox({
   sessionId,
   suggestion,
   files,
+  countIncomplete,
   busy,
   workspacePath,
   onCommitted,
@@ -432,6 +577,17 @@ function CommitBox({
   sessionId: string;
   suggestion: string;
   files: number;
+  /**
+   * `files` IS A FLOOR, NOT THE COUNT — issue #654.
+   *
+   * This button runs `git add -A`, so it commits the real tree whatever this
+   * surface managed to read. A label reading "Commit 3 files" over a review
+   * whose file list was cut short by a timeout would commit forty-eight — the
+   * same lie the note on `shown` forbids for the filter, arriving by a different
+   * door. And `files === 0` must not disable it, because zero here may only mean
+   * nobody could look.
+   */
+  countIncomplete?: boolean;
   busy: boolean;
   /** Named in full, because the next thing a reader does is `cd` to it. */
   workspacePath: string;
@@ -483,7 +639,7 @@ function CommitBox({
           <div className="flex items-center gap-2">
             <Button type="button" size="xs" disabled={working || !message.trim()} onClick={() => void commit()}>
               {working ? <Spinner className="size-3" /> : <GitCommitHorizontalIcon />}
-              Commit {files} {files === 1 ? "file" : "files"}
+              {countIncomplete ? "Commit everything in the checkout" : `Commit ${files} ${files === 1 ? "file" : "files"}`}
             </Button>
             <Button type="button" size="xs" variant="ghost" disabled={working} onClick={() => setOpen(false)}>
               Cancel
@@ -495,7 +651,7 @@ function CommitBox({
           type="button"
           size="xs"
           variant="outline"
-          disabled={busy || files === 0}
+          disabled={busy || (files === 0 && !countIncomplete)}
           title={busy ? "A turn is running — the agent may be mid-write" : undefined}
           onClick={() => {
             setMessage(suggestion);
@@ -713,7 +869,14 @@ export function DiffSurface({
             <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
           </button>
         </div>
-        <p className="mt-1 text-sm font-medium tabular-nums">{describeReview(shown)}</p>
+        {/* THE FIGURE IS THE FIRST THING READ, so it is the first thing that has
+            to stop being a fact when it is a floor (#654). The band below says
+            why; this only has to make sure nobody's eye lands on a bold "0
+            files" and takes it for the answer. */}
+        <p className={cn("mt-1 text-sm font-medium tabular-nums", diff.filesIncomplete && "text-warning")}>
+          {describeReview(shown)}
+          {diff.filesIncomplete && <span className="ml-1.5 text-2xs font-normal">· incomplete</span>}
+        </p>
         <p className="mt-0.5 text-2xs leading-snug text-muted-foreground">
           {/* WITHOUT A BASE THIS IS A SMALLER QUESTION, and saying so is the
               difference between an honest figure and a wrong one: a session
@@ -722,7 +885,11 @@ export function DiffSurface({
           {!sessionId
             ? "Everything uncommitted in this project right now."
             : diff.base
-              ? "Everything this session changed, committed and uncommitted."
+              ? // "Everything" is a promise this line cannot keep over a read
+                // that was cut short.
+                diff.filesIncomplete
+                ? "What this session changed, committed and uncommitted — as much of it as git reported."
+                : "Everything this session changed, committed and uncommitted."
               : "No starting commit was recorded, so this counts only what is uncommitted."}
           {/* THE FILTER IS SAID OUT LOUD, because the figure above it is a
               count of a SUBSET and everything else on this line describes the
@@ -765,6 +932,9 @@ export function DiffSurface({
         )}
       </div>
 
+      {/* FIRST OF THE BANDS, because it is the only one that can make everything
+          under it untrustworthy — including the other band's own figures. */}
+      <DiffUnknownBand diff={diff} onRetry={load} />
       {/* The reconciliation needs a TRANSCRIPT to disagree with. A canvas has
           none, so the band would be reporting every file as "never mentioned"
           by a session that has not said anything yet. */}
@@ -772,22 +942,7 @@ export function DiffSurface({
       <CommitList commits={diff.commits} />
 
       {shown.rows.length === 0 ? (
-        <div className="px-4 py-6 text-center text-2xs text-muted-foreground">
-          {/* A FILTER THAT MATCHES NOTHING IS NOT AN EMPTY REVIEW, and saying
-              "nothing differs" over a tree with forty changed files would send
-              somebody looking for a bug in git. */}
-          {trimmed ? (
-            <>
-              Nothing under <span className="font-mono">{trimmed}</span> differs.
-              {review.rows.length > 0 && ` The rest of the review has ${review.rows.length} ${review.rows.length === 1 ? "file" : "files"}.`}
-            </>
-          ) : (
-            <>
-              Nothing differs from where this session started.
-              {review.settled.length > 0 && " Everything it wrote has been put back or committed."}
-            </>
-          )}
-        </div>
+        <ReviewEmptyState review={review} trimmed={trimmed} filesIncomplete={diff.filesIncomplete} />
       ) : (
         <div className="flex flex-col">
           {/* Unreported rows lead. They are the ones a reviewer has not seen,
@@ -830,6 +985,7 @@ export function DiffSurface({
           sessionId={sessionId}
           suggestion={suggestion}
           files={review.filesChanged}
+          {...(diff.filesIncomplete ? { countIncomplete: true } : {})}
           busy={active === "running" || active === "claimed"}
           workspacePath={diff.workspacePath}
           onCommitted={() => void load()}

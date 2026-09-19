@@ -50,5 +50,8 @@ export function keymapConflicts(keymap: Readonly<Keymap>): Record<string, string
 export function chordsForEvent(event: CommandKeyEventLike): string[];
 export function chordForEvent(event: CommandKeyEventLike): string;
 export function resolveCommandForEvent(keymap: Readonly<Keymap>, event: CommandKeyEventLike): string | null;
+/** Which commands a surface's chord claim suppresses under this keymap (#656).
+ *  Computed against the LIVE chords, so a rebind hands the chord back. */
+export function claimedCommandIds(keymap: Readonly<Keymap>, chords: readonly string[] | undefined): string[];
 export function menuCommands(keymap: Readonly<Keymap>, menu: CommandMenu): (Command & { accelerator: string })[];
 export function commandById(id: string): Command | undefined;

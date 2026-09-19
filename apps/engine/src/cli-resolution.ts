@@ -1,4 +1,4 @@
-import { OPENCODE_VERSION } from "./opencode/version";
+import { OPENCODE_VERSION, openCodeVersionMessage, openCodeVersionVerdict } from "./opencode/version";
 /**
  * WHERE THE CLIs ACTUALLY ARE, AND WHETHER WE CAN TALK TO THEM.
  *
@@ -158,8 +158,15 @@ const SPECS: Record<CliId, CliSpec> = {
   opencode: { id: "opencode", label: "OpenCode", bin: "opencode", overrideEnv: "OPENCODE_BIN",
     installHint: `Install opencode-ai@${OPENCODE_VERSION} and sign in, or set OPENCODE_BIN to its full path.`,
     expectedVersion: () => OPENCODE_VERSION,
-    verdict: (found, expected) => found === expected ? { status: "ok" } : {
-      status: "incompatible", message: `OpenCode ${found} does not match this adapter. Install opencode-ai@${expected} or choose its binary path in Settings.`,
+    /**
+     * PATCH DRIFT IS `drifted`, NOT `incompatible` — issue #655, and see
+     * ./opencode/version.ts for the whole of why. This spec used to demand an
+     * exact match, which made a self-updating CLI empty the model picker and
+     * refuse every session the morning OpenCode shipped 1.18.31.
+     */
+    verdict: (found, expected) => {
+      const status = openCodeVersionVerdict(found, expected);
+      return status === "ok" ? { status } : { status, message: openCodeVersionMessage(found, expected) };
     } },
   claude: {
     id: "claude",

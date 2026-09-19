@@ -13,7 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ConnectionIcon, ModelRowIcon } from "./connection-icon";
+import { ConnectionIcon, connectionMark, ModelRowIcon, OPENCODE_MARK } from "./connection-icon";
 import { ProviderIcon } from "./provider-icon";
 
 const SIZES = [11, 13, 14, 16, 20];
@@ -56,5 +56,59 @@ describe("a connection mark", () => {
   test("a model row inherits the same sizing through whichever mark it resolves to", () => {
     const markup = renderToStaticMarkup(<ModelRowIcon driver="claude" modelId="sonnet" size={16} />);
     expect(markup).toContain("width:16px");
+  });
+});
+
+/**
+ * A PROVIDER'S MARK AND AN ACCOUNT'S MARK ARE DIFFERENT THINGS — issue #655.
+ *
+ * models.dev's `opencode` entry is OPENCODE ZEN, one account type under the
+ * OpenCode provider: a blocky Z, beside `opencode-go`'s blocky G. Telar drew
+ * that Z for the provider itself, so every OpenCode row — Bedrock-routed,
+ * Copilot-routed — answered "who serves this?" with "Zen". The fix is the
+ * distinction; the asset is a consequence of it.
+ */
+describe("OpenCode's provider mark is not Zen's account mark", () => {
+  test("the provider draws OpenCode's own mark, and the Zen connection keeps the Z", () => {
+    const zen = connectionMark("opencode")!;
+    expect(zen.d).not.toBe(OPENCODE_MARK.d);
+
+    const provider = renderToStaticMarkup(<ProviderIcon provider="opencode" />);
+    expect(provider).toContain(OPENCODE_MARK.d);
+    expect(provider).not.toContain(zen.d);
+
+    // And Zen, ASKED FOR BY NAME, still gets its own mark — this was never a
+    // wrong asset, only a wrongly borrowed one.
+    expect(renderToStaticMarkup(<ConnectionIcon connection="opencode" />)).toContain(zen.d);
+  });
+
+  test("a Bedrock-routed OpenCode row wears Bedrock's mark, not Zen's and not OpenCode's", () => {
+    const markup = renderToStaticMarkup(<ModelRowIcon driver="opencode" modelId="amazon-bedrock/anthropic.claude-fable-5" />);
+    expect(markup).toContain(connectionMark("amazon-bedrock")!.d);
+    expect(markup).not.toContain(connectionMark("opencode")!.d);
+    expect(markup).not.toContain(OPENCODE_MARK.d);
+  });
+
+  test("OpenCode Go wears its own G rather than borrowing Zen's Z", () => {
+    // `opencode-go` used to be ALIASED to `opencode`. models.dev publishes Go
+    // its own mark, and the one it was borrowing was not even the right one.
+    const go = connectionMark("opencode-go")!;
+    expect(go.d).not.toBe(connectionMark("opencode")!.d);
+    expect(renderToStaticMarkup(<ConnectionIcon connection="opencode-go" />)).toContain(go.d);
+  });
+
+  test("an unrouted OpenCode id falls back to the provider, which says nothing about an account", () => {
+    const markup = renderToStaticMarkup(<ModelRowIcon driver="opencode" modelId="some-manually-added-id" />);
+    expect(markup).toContain(OPENCODE_MARK.d);
+    expect(markup).not.toContain(connectionMark("opencode")!.d);
+  });
+
+  test("the two-tone mark keeps both tones, dimmer block first", () => {
+    // Drawn in two fills upstream; flattening it to one shape would be the
+    // redrawing this directory's provenance rule forbids.
+    expect(OPENCODE_MARK.dim).toBeString();
+    const markup = renderToStaticMarkup(<ProviderIcon provider="opencode" size={14} />);
+    expect(markup.indexOf(OPENCODE_MARK.dim!)).toBeLessThan(markup.indexOf(OPENCODE_MARK.d));
+    expect(markup).toContain('opacity="0.45"');
   });
 });

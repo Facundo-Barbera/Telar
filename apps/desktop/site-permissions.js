@@ -53,14 +53,37 @@ const STORE_VERSION = 1;
 const PERMISSION_KINDS = ["camera", "microphone", "notifications", "geolocation", "clipboard-read", "display-capture"];
 
 /**
- * ASKED FOR BY A GESTURE, ANSWERED BY CHROMIUM'S OWN UI. Fullscreen shows its
- * own "press Esc to exit" overlay and pointer lock its own escape hatch, both
- * require a user gesture to request, and no browser interrupts either with a
- * modal. Granting them here is what makes a video player and a canvas game work
- * the way they do everywhere else; they are remembered nowhere because there is
- * nothing to remember.
+ * GRANTED WITHOUT ASKING, BECAUSE CHROMIUM IS ALREADY THE GATE. No browser
+ * interrupts any of these with a modal, and each has a condition Chromium
+ * enforces itself that a prompt would only duplicate. They are remembered
+ * nowhere because there is nothing to remember — no row in the lock popover, no
+ * line in the file, nothing to revoke.
+ *
+ * FULLSCREEN and POINTERLOCK need a user gesture to request and show their own
+ * way out — the "press Esc to exit" overlay, the escape hatch. Granting them is
+ * what makes a video player and a canvas game work the way they do everywhere.
+ *
+ * CLIPBOARD-SANITIZED-WRITE is what Chromium asks for when a page calls
+ * `navigator.clipboard.writeText` — every "Copy" button on the web (#614). It
+ * was falling into the unknown bucket below and being refused, so those buttons
+ * did nothing in Telar's browser and most sites swallowed the rejection. Two
+ * things measured on Electron 43 rather than assumed, because they are the
+ * whole reason this is safe to grant (clipboard-write.electron-test.js):
+ *
+ *   - CHROMIUM'S GATE IS THE FOCUSED DOCUMENT, and it is checked BEFORE this
+ *     handler is ever consulted. A page that is not focused gets
+ *     `NotAllowedError: Document is not focused` whatever we answer — so what
+ *     is granted here is only ever "the page the person is looking at".
+ *   - THAT GATE IS THE ONLY ONE. Once granted, a focused page may write with no
+ *     user gesture at all. That is exactly Chrome's own behaviour — Chrome
+ *     auto-grants clipboard-write to a focused document — and it is the cost of
+ *     the Copy button working: a focused page can replace the clipboard.
+ *
+ * WRITE IS NOT READ. `clipboard-read` is deliberately NOT here: reading what a
+ * person copied somewhere else is a real question, it stays a prompt, and it
+ * keeps its row in the panel.
  */
-const GESTURE_PERMISSIONS = new Set(["fullscreen", "pointerLock"]);
+const GRANTED_WITHOUT_ASKING = new Set(["fullscreen", "pointerLock", "clipboard-sanitized-write"]);
 
 /** A prompt nobody answers is a page left hanging. Sixty seconds, then Block —
  *  and an agent's tab is no exception (#422 item 6): it waits for the human
@@ -566,7 +589,7 @@ function createPermissionHandlers({
    */
   const request = async (webContents, permission, callback, details = {}) => {
     try {
-      if (GESTURE_PERMISSIONS.has(permission)) return callback(true);
+      if (GRANTED_WITHOUT_ASKING.has(permission)) return callback(true);
       const kinds = kindsFor(permission, details);
       if (!kinds) return callback(false);
       const origin = originOf(details.requestingUrl || details.securityOrigin || webContents?.getURL?.());
@@ -598,7 +621,7 @@ function createPermissionHandlers({
    * request, which is the path that asks.
    */
   const check = (webContents, permission, requestingOrigin, details = {}) => {
-    if (GESTURE_PERMISSIONS.has(permission)) return true;
+    if (GRANTED_WITHOUT_ASKING.has(permission)) return true;
     const kinds = kindsFor(permission, details);
     if (!kinds) return false;
     const origin = originOf(requestingOrigin || details.requestingUrl || webContents?.getURL?.());
@@ -698,7 +721,7 @@ module.exports = {
   describeKinds,
   systemSettingsSentence,
   PERMISSION_KINDS,
-  GESTURE_PERMISSIONS,
+  GRANTED_WITHOUT_ASKING,
   PROMPT_TIMEOUT_MS,
   KIND_WORDS,
   FILE_NAME,

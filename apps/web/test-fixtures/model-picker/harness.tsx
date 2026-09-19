@@ -30,7 +30,7 @@ function Harness() {
     h(
       "p",
       { className: "max-w-xl text-sm text-muted-foreground" },
-      "Codex is the installed CLI's Astra-era list; OpenCode is the verbatim 201-row multi-connection catalogue (gpt-5.6-luna exists on both OpenAI direct and OpenCode Go).",
+      "Codex is the installed CLI's Astra-era list; OpenCode is the verbatim 305-row multi-connection catalogue (gpt-5.6-luna exists on both OpenAI direct and OpenCode Go).",
     ),
     h(
       "label",

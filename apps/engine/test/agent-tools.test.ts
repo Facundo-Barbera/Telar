@@ -260,14 +260,22 @@ test("the spoken wall is the saving, and it is paid on every lap", () => {
    * for the reason the test above this one gives: prose may move, the tax may
    * not come back.
    *
-   * THE WIDE ONE HAD SEVEN CHARACTERS OF HEADROOM and now has 47, which is not
-   * slack that was found — it was bought. #608 needed `sessions_read` to say
+   * THE WIDE ONE HAD SEVEN CHARACTERS OF HEADROOM and then had 47, which was
+   * not slack that was found — it was bought. #608 needed `sessions_read` to say
    * that it folds by default and `sessions_answer` that its limit is a floor,
    * and paid for both out of `sessions_read`'s own parameters: four
    * descriptions whose second halves were already stated by the answers those
    * calls return. The ceiling was NOT raised, and the rule it enforces is
    * unchanged — retire something or argue the number up deliberately, never
    * nudge it to fit one more clause.
+   *
+   * #654 SPENT 45 OF THOSE 47, leaving TWO. `sessions_diff` had to say that an
+   * empty answer may be unread rather than unchanged, because it is the one diff
+   * surface an agent reads and a wrong "this session changed nothing" gets
+   * reported onward as fact. The first draft of that clause was 199 characters
+   * and broke this test, which is the test working: everything except the
+   * warning itself moved to the answer's own `note`, which is free per lap.
+   * THE NEXT CLAUSE HERE HAS TO BUY ITS SPACE. Two characters is not headroom.
    */
   expect(wide).toBeLessThan(14_000);
   expect(spoken).toBeLessThan(6_000);

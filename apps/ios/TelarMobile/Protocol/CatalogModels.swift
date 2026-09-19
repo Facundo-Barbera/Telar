@@ -83,10 +83,29 @@ struct SessionDiff: Decodable {
     /// Absent = no recorded base; the diff is against HEAD and committed work
     /// is NOT included — the surface must say so.
     var base: String?
+    /// `"timeout"` | `"failed"` — nothing corroborated `base` (#654). It is
+    /// still what this diff is measured from: the session recorded it when its
+    /// checkout was cut, so a `rev-parse` the engine killed is corroboration
+    /// that never arrived rather than a ref that is gone.
+    var baseUnverified: String?
     var ahead: Int?
     var behind: Int?
     var files: [GitFileChange]
+    /// `"timeout"` | `"failed"` — WHY `files` IS NOT THE WHOLE CHANGE (#654).
+    ///
+    /// The list is three git reads, and a non-zero exit from any of them used to
+    /// produce fewer rows rather than an error — one of the ways they exit
+    /// non-zero being the engine killing them at its bound. So a diff that timed
+    /// out said "this session changed nothing", which is a claim somebody acts
+    /// on. What arrived is kept and `linesAdded`/`linesRemoved` stay honest sums
+    /// over it; nil here is the ONLY state in which an empty `files` means
+    /// nothing differs.
+    var filesIncomplete: String?
     var commits: [GitCommitEntry]
+    /// `"timeout"` | `"failed"` — `git log` is its own read, and "0 commits" for
+    /// a session that committed its work is the same wrong claim. Never set when
+    /// `base` is nil: there is no range to ask about then.
+    var commitsIncomplete: String?
     var linesAdded: Int
     var linesRemoved: Int
     var truncated: Bool
@@ -95,6 +114,10 @@ struct SessionDiff: Decodable {
 struct FilePatch: Decodable {
     var patch: String
     var binary: Bool
+    /// `"timeout"` | `"failed"` — git did not produce this patch (#654). An
+    /// empty `patch` means "no textual diff" ONLY when this is nil; it used to
+    /// mean that or "unread", and the surface drew the second as the first.
+    var incomplete: String?
 }
 
 // MARK: - the base-ref picker (`/api/projects/:id/git`)

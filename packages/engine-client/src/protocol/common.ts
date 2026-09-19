@@ -416,6 +416,192 @@ export const UsageLimits = z.object({
 export type UsageLimits = z.infer<typeof UsageLimits>;
 
 /**
+ * ══ WHAT TELAR KEEPS ON DISK, BY CATEGORY — issue #642 ══
+ *
+ * A CLOSED SET, AND `other` IS WHY IT CAN STAY CLOSED. Everything under the
+ * store root is attributed to exactly one of these, so the categories sum to
+ * the total and nothing is quietly left out of the figure a person reads. A
+ * file a later version writes lands in `other` rather than in no row at all,
+ * which is the failure this list is arranged to avoid: the whole argument for
+ * the pane is that `execution.sqlite` was a gigabyte nobody had ever seen.
+ *
+ * IDS, NOT COPY. The engine says what the categories ARE and how big each one
+ * is; the cockpit says what they are CALLED, because "Session checkouts" is a
+ * sentence written for a reader and the engine has no readers. See
+ * `components/settings/storage-section.tsx` for the words.
+ *
+ * TELAR'S OWN FOOTPRINT AND NOTHING ELSE. There is no category here for Docker,
+ * for a toolchain, or for the projects a person works on, however much disk
+ * those take — a pane that grew opinions about the whole machine would be a
+ * disk cleaner, which is a different product.
+ */
+export const StorageCategory = z.enum([
+  /** Session checkouts. Reproducible: the engine re-cuts one from a recorded
+   *  base sha, which is what makes it the one category worth relocating (#642
+   *  part 2) — with only this away, Telar still starts completely. */
+  "worktrees",
+  /** `execution.sqlite` and its WAL — every turn, item and receipt. */
+  "journal",
+  /** Transcripts and what each session was asked. Irreplaceable. */
+  "sessions",
+  /** Interpreters and packages the data-science plugin installed. */
+  "python",
+  /** Chromium partitions for Telar's own browser. */
+  "browser-profiles",
+  /** The parsed-transcript cache behind Usage, and its price list. */
+  "usage",
+  /** The cockpit Agent's own thread, memory and checkpoints. */
+  "agent",
+  /** Project notebooks. */
+  "notes",
+  "dictation",
+  /** Per-run mounts. */
+  "run",
+  /** Worker diagnostics. */
+  "diagnostics",
+  /** Projects, providers, appearance — this install's configuration. */
+  "settings",
+  /** Attributed to nothing above, so the rows still sum to the total. */
+  "other",
+]);
+export type StorageCategory = z.infer<typeof StorageCategory>;
+
+/**
+ * One category's measured size and the path a person can be taken to.
+ *
+ * `path` IS WHAT "REVEAL" OPENS, and `kind` is what tells the shell whether to
+ * select a file in its folder or open the folder itself — the journal's row
+ * points at `execution.sqlite`, and a row for a group of loose files points at
+ * the store root they sit in.
+ */
+export const StorageEntry = z.object({
+  category: StorageCategory,
+  bytes: z.number().min(0),
+  path: z.string().min(1),
+  kind: z.enum(["directory", "file"]),
+});
+export type StorageEntry = z.infer<typeof StorageEntry>;
+
+/**
+ * The whole measurement, AS OF A MOMENT — never as of now.
+ *
+ * `measuredAt` IS PART OF THE ANSWER rather than a detail the client could
+ * infer, because sizing a 13 GB tree takes seconds and the honest thing to show
+ * is a figure with a timestamp and a refresh beside it. Nothing polls this: it
+ * is measured when a reader first asks and again when one presses refresh (#629
+ * is open because four timers in the rail cost ~97,000 requests a day, and a
+ * directory's size does not change by the second).
+ *
+ * `partial` WHEN SOMETHING COULD NOT BE READ — a permission, a volume that went
+ * away mid-walk. The total is then a floor rather than a figure, and the pane
+ * says so instead of quietly under-reporting.
+ */
+export const StorageReport = z.object({
+  /** Where the store is, which is the other half of "what is Telar keeping". */
+  root: z.string().min(1),
+  total: z.number().min(0),
+  entries: z.array(StorageEntry),
+  measuredAt: Timestamp,
+  /** How long the walk took. Shown to nobody; it is what makes a pane that got
+   *  slow diagnosable without re-measuring by hand. */
+  tookMs: z.number().min(0),
+  partial: z.boolean(),
+});
+export type StorageReport = z.infer<typeof StorageReport>;
+
+/**
+ * WHAT ONE PRESS OF RECLAIM RETURNED — issue #646.
+ *
+ * BEFORE AND AFTER, NOT A SAVING, because the difference is not the only thing
+ * a person is owed: a press that moved nothing should read as "already
+ * compact", and only both numbers say that. The file is the database plus its
+ * `-wal` and `-shm`, so a WAL truncated by the same work is counted where
+ * somebody would look for it.
+ *
+ * `deltas` AND `starts` ARE ROWS, NOT BYTES, and they are here so the sentence
+ * can name what went. Both kinds are superseded by the `item.completed` of
+ * their own turn — no turn, item or answer is ever dropped — and saying
+ * "570,951 rows" without saying which would read like history going away.
+ */
+export const JournalReclaim = z.object({
+  before: z.number().min(0),
+  after: z.number().min(0),
+  deltas: z.number().min(0),
+  starts: z.number().min(0),
+  sessions: z.number().min(0),
+});
+export type JournalReclaim = z.infer<typeof JournalReclaim>;
+
+/**
+ * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
+ *
+ * FOUR KINDS AND NOT A PATH, because three of them are things a person has to
+ * be told rather than a location to quietly use: nothing chosen, chosen and
+ * present, chosen and on a drive that is not connected, and a record this
+ * build cannot read.
+ *
+ * THERE IS NO `restartRequired` HERE, and its absence is a finding rather than
+ * an omission. The root is consulted at exactly one moment — planning where a
+ * new checkout lands — and everything afterwards addresses a worktree by the
+ * absolute path recorded on its session, including the prune guard that
+ * derives its root per-worktree from that path. So a new root takes effect on
+ * the next cut. #630's store move genuinely cannot apply until the next
+ * launch; this one can, and inheriting the restart out of symmetry would cost
+ * somebody a restart they do not need.
+ *
+ * `blocker` IS THE WHOLE SENTENCE, not a code to switch on. It names the drive
+ * by the label recorded when it was chosen, because the moment it is needed is
+ * the moment the drive is not there to be asked.
+ */
+export const WorktreesRoot = z.object({
+  kind: z.enum(["default", "configured", "absent", "unreadable"]),
+  /** Where checkouts go, or would go. Absent only when the record is
+   *  unreadable — the one state with no location to name. */
+  root: z.string().min(1).optional(),
+  /** Where they would go with nothing configured. What "put it back" means. */
+  default: z.string().min(1),
+  volume: z.object({ mount: z.string(), uuid: z.string() }).partial({ uuid: true }).optional(),
+  /** The drive's name the day it was chosen. */
+  label: z.string().optional(),
+  /** Why no worktree session can be cut right now, in words a person can act
+   *  on. Absent when one can. */
+  blocker: z.string().optional(),
+});
+export type WorktreesRoot = z.infer<typeof WorktreesRoot>;
+
+/**
+ * WHAT MOVING THE CHECKOUTS ALREADY CUT DID — issue #642 part 2.
+ *
+ * ONE REASON PER SKIPPED CHECKOUT, NOT A TOTAL, because the reasons lead a
+ * person to different places: commit your work, versus a branch that no longer
+ * exists and cannot be re-cut from, versus git said something nobody predicted.
+ * A single "3 could not be moved" would send them looking for the wrong thing.
+ *
+ * A PARTIAL RESULT IS A SUCCESS, and that is safe here in a way it would not be
+ * for a copy-based move: checkouts are moved by being re-cut from their own
+ * branch, one at a time, each with its own state rewrite. Skipping one changes
+ * nothing about the others, and the operation is re-runnable — commit the work
+ * and press it again.
+ */
+export const WorktreeMoveSkip = z.object({
+  sessionId: z.string().min(1),
+  path: z.string().min(1),
+  reason: z.enum(["dirty", "branch-gone", "detached", "failed"]),
+  /** Git's own words, or the branch that has gone. Never a substitute for
+   *  `reason`: a sentence from git is diagnostic, not copy. */
+  detail: z.string().optional(),
+});
+export type WorktreeMoveSkip = z.infer<typeof WorktreeMoveSkip>;
+
+export const WorktreeMoveResult = z.object({
+  moved: z.array(z.object({ sessionId: z.string().min(1), from: z.string().min(1), to: z.string().min(1) })),
+  skipped: z.array(WorktreeMoveSkip),
+  /** The whole thing said in a sentence, composed where the reasons are known. */
+  summary: z.string(),
+});
+export type WorktreeMoveResult = z.infer<typeof WorktreeMoveResult>;
+
+/**
  * The untranslated provider payload behind a normalized event.
  *
  * KEEP IT, KEEP IT OPTIONAL, AND NEVER DEPEND ON IT. It is how a normalization

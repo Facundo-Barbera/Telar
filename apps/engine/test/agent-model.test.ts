@@ -48,6 +48,29 @@ function agentDirWith(key: string): string {
  *  — an id going to the wrong endpoint is the failure this suite is for. */
 type Call = { path: string; headers: Headers; body: Record<string, unknown> };
 
+/** The thinking a chat answer comes back with. One sentence, so a test that
+ *  prints it stays readable. */
+const THOUGHT = "The user wants the running sessions. sessions_list answers that.";
+
+/** The same answer as an SSE stream — the shape a real turn receives, since the
+ *  Agent streams. `reasoning_content` arrives on its own delta, before the text. */
+function chatStream(): Response {
+  const chunks = [
+    { id: "chatcmpl_1", choices: [{ index: 0, delta: { role: "assistant", reasoning_content: THOUGHT } }] },
+    { id: "chatcmpl_1", choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 1 } },
+  ];
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    }),
+    { headers: { "Content-Type": "text/event-stream" } },
+  );
+}
+
 /**
  * A server that records what it was asked and answers one short completion —
  * IN THE SHAPE THE ENDPOINT IT WAS ASKED ON RETURNS.
@@ -64,7 +87,8 @@ async function withServer<T>(run: (base: string, seen: () => Call[]) => Promise<
     port: 0,
     async fetch(request) {
       const path = new URL(request.url).pathname;
-      calls.push({ path, headers: request.headers, body: (await request.json()) as Record<string, unknown> });
+      const body = (await request.json()) as Record<string, unknown>;
+      calls.push({ path, headers: request.headers, body });
       if (path.endsWith("/messages")) {
         return Response.json({
           id: "msg_1",
@@ -87,9 +111,17 @@ async function withServer<T>(run: (base: string, seen: () => Call[]) => Promise<
           usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
         });
       }
+      /**
+       * THE CHAT ANSWER CARRIES `reasoning_content`, BECAUSE THE REAL ONE DOES
+       * (#613). `deepseek-v4.1-flash` — the id the Agent runs — is a thinking
+       * model on this route, and measured against Go on 2026-09-18 it returns
+       * this field on every answer, whether or not `reasoning_effort` was sent.
+       * A stub without it would have made the round trip below untestable.
+       */
+      if (body.stream) return chatStream();
       return Response.json({
         id: "chatcmpl_1",
-        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        choices: [{ index: 0, message: { role: "assistant", content: "ok", reasoning_content: THOUGHT }, finish_reason: "stop" }],
         usage: { prompt_tokens: 3, completion_tokens: 1 },
       });
     },
@@ -208,6 +240,53 @@ test("an unset effort sends no reasoning field at all, rather than a default", a
     // would change what every existing conversation asks for, and on a strict
     // server it is a 400 where there was an answer.
     expect("reasoning_effort" in seen()[0]!.body).toBe(false);
+  });
+});
+
+/**
+ * THE FIELD THAT COMES BACK AND NEVER GOES OUT AGAIN — `reasoning_content` on
+ * the chat route (#613).
+ *
+ * ── WHAT IS TRUE TODAY, AND WHY IT IS A TEST RATHER THAN A COMMENT ──────────
+ * `@langchain/openai` 1.5.13 CAPTURES the field — into `additional_kwargs`, on
+ * both the streamed and the whole answer — and its outgoing converter does NOT
+ * put it back on the wire: an assistant message is serialised with `content`,
+ * `tool_calls` and nothing else. So the Agent holds the model's thinking in its
+ * checkpoint and never shows it to the model again.
+ *
+ * ── THAT IS A HAZARD, NOT A BUG, AND THE DIFFERENCE IS MEASURED ─────────────
+ * `deepseek-v4.1-flash` is a thinking model on this route and will REFUSE a
+ * prompt whose history is missing the field: measured against Go on 2026-09-18,
+ * a six-message history carrying two assistant messages with tool calls came
+ * back `400 [invalid_request_error] … The reasoning_content in the thinking mode
+ * must be passed back to the API`. The identical history is ACCEPTED when the
+ * request carries the parameters a real turn sends — `reasoning_effort` set and
+ * `stream: true` — which is why the Agent has run hundreds of laps through this
+ * without seeing it, and why the live smoke that sends neither did see it on its
+ * first multi-message call. See `agent-cache.live.test.ts`.
+ *
+ * SO THIS TEST PINS THE SHAPE RATHER THAN ASSERTING A FIX. If a future client
+ * library starts echoing the field, this fails — and that failure is GOOD NEWS:
+ * it means the hazard closed, and the right response is to update this test
+ * rather than to restore the old behaviour.
+ */
+test("reasoning_content is captured off a chat answer and is not sent back (#613)", async () => {
+  await withServer(async (base, seen) => {
+    const agentDir = agentDirWith("sk-test-key");
+    // BOTH PATHS, because a turn streams and a smoke does not, and the capture
+    // happens in a different converter for each.
+    for (const streaming of [false, true]) {
+      const model = agentChatModel({ threadId: "thread_abc", effort: "high", agentDir, base, streaming });
+      const answer = await model.invoke([new HumanMessage("what is running?")]);
+      expect(answer.additional_kwargs.reasoning_content, `streaming: ${streaming}`).toBe(THOUGHT);
+
+      // AND NOW BACK, the way the next lap sends it.
+      await model.invoke([new HumanMessage("what is running?"), answer, new HumanMessage("and the projects?")]);
+      const sent = seen()[seen().length - 1]!.body.messages as Record<string, unknown>[];
+      const assistant = sent.find((message) => message.role === "assistant")!;
+      expect(assistant.content, `streaming: ${streaming}`).toBe("ok");
+      expect("reasoning_content" in assistant, `streaming: ${streaming}`).toBe(false);
+    }
   });
 });
 

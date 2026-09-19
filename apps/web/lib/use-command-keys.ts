@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { commandDestination, jumpDestinations, resolveWebCommandKeyAction } from "@/lib/command-keys";
 import {
   bindCommands,
+  claimedCommandIds,
   isCapturingChord,
   keymapSnapshot,
   runCommand,
@@ -225,6 +226,22 @@ export function useCommandKeys(
       if (isCapturingChord()) return;
       const id = resolveWebCommandKeyAction(latestKeymap.current, event);
       if (!id) return;
+      /**
+       * A SURFACE ON SCREEN OWNS THIS CHORD (#656) — the press is its own.
+       *
+       * NO `preventDefault` ON THIS PATH, deliberately: the whole point is that
+       * the palette's own keydown handler gets to answer, and this listener sits
+       * at the END of the bubble chain. Cancelling here would take the key from
+       * the surface we just stood down for. The surface calls `preventDefault`
+       * itself, as `project-palette.tsx` already did.
+       *
+       * IT MATTERS IN A BROWSER TAB AND ON THE DESKTOP BOTH. On the desktop the
+       * shell has already stripped the accelerator, so this is the second half
+       * of one decision; in a plain tab there is no menu and this is the only
+       * half — and without it the palette's handler and this one would BOTH fire
+       * on one press, opening a project and then jumping the rail.
+       */
+      if (claimedCommandIds(latestKeymap.current).includes(id)) return;
       event.preventDefault();
       run(id);
     };

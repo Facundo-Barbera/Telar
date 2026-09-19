@@ -72,6 +72,33 @@
  * `messages` array of that shape, which is exactly what it was written to be —
  * see its note on leaving a body it has nothing to do with byte-identical.
  *
+ * ── THE ONE FIELD THAT COMES BACK AND NEVER GOES OUT AGAIN (#613) ───────────
+ * `reasoning_content`. The chat route's models think — `deepseek-v4.1-flash`,
+ * which the Agent runs, returns the field on every answer, with or without
+ * `reasoning_effort` — and `@langchain/openai` 1.5.13 captures it into
+ * `additional_kwargs` and then omits it when that same message is serialised
+ * back. So the Agent keeps the model's thinking in its checkpoint and never
+ * shows it to the model again, and NOTHING HERE PUTS IT BACK.
+ *
+ * DELIBERATELY, BECAUSE THE PROVIDER DOES NOT ASK FOR IT ON THE REQUEST THIS
+ * FACTORY BUILDS. Measured against Go on 2026-09-18: a six-message history with
+ * two assistant tool-call messages, all of them stripped of the field, is
+ * ACCEPTED when the request carries `reasoning_effort` and `stream: true` — what
+ * a turn sends — and REFUSED with `400 … The reasoning_content in the thinking
+ * mode must be passed back to the API` when it carries neither, which is how the
+ * live cache smoke found it. Writing the echo would mean inventing a field this
+ * route's client does not serialise, onto a body no server has yet rejected.
+ *
+ * IT IS A HAZARD ON A SHORT LEASH, THOUGH, AND THE LEASH IS A SETTING. The two
+ * parameters were moved TOGETHER, so which of them does the immunising is not
+ * measured — and that is the point rather than a gap to shrug at: an `agent.json`
+ * with no `effort` sends no `reasoning_effort`, and if that is the one that
+ * matters, clearing a settings field is all it takes to make every three-lap turn
+ * a 400. One live call with the failing history and only the effort restored
+ * would settle it. `agent-model.test.ts` pins the round trip meanwhile, so the day
+ * a client library starts echoing the field is a failing test rather than a
+ * silent change.
+ *
  * ── AND ONE FIELD GOES ON, ON THE ONE ROUTE THAT HAS IT (#563 item 3) ───────
  * `withAnthropicCaching` puts `cache_control` breakpoints on an Anthropic-shaped
  * body and leaves every other body byte-identical, by the same shape test and

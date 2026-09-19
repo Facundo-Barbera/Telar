@@ -3,6 +3,8 @@
 import type { Channel } from "@/lib/build-identity";
 import type {
   BrowserSnapshot,
+  ClaudeConversation,
+  ConversationImportDetail,
   GitCommitEntry,
   GitHubCheckLog,
   GitHubFacets,
@@ -52,7 +54,11 @@ import type {
   DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
+  JournalReclaim,
+  StorageReport,
   TextGenPolicy,
+  WorktreeMoveResult,
+  WorktreesRoot,
   UsageReport,
   UsageResolution,
   UsageLimits,
@@ -97,6 +103,7 @@ import type {
   ProjectPlugins,
   Subscription,
   WakeKind,
+  GitFilePatch,
 } from "@telar/engine-client";
 import { forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pathnameFetcher, pinnedHost } from "@/lib/hosts/client";
@@ -617,6 +624,27 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `refresh`, which waits for a fresh read of every configured hub. */
     usageLimits: (options: { refresh?: boolean } = {}) =>
       request<{ limits: UsageLimits }>(fetcher, "GET", `/api/usage/limits${options.refresh ? "?refresh=1" : ""}`),
+    /** What Telar keeps on disk, by category — see `StorageReport`. The first
+     *  call of an engine's life walks the store and is SLOW; every call after
+     *  it returns that walk's answer with the moment it was taken, until
+     *  `refresh` asks for another. Never put this on a timer (#629). */
+    storage: (options: { refresh?: boolean } = {}) =>
+      request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`),
+    /** Compact the turn journal and return its freed pages to the filesystem —
+     *  see `JournalReclaim`. SLOW and exclusive: the vacuum behind it rewrites
+     *  the database under a lock. It drops rows a settled turn has superseded
+     *  and never a turn, an item or an answer. */
+    reclaimJournal: () => request<{ reclaimed: JournalReclaim }>(fetcher, "POST", "/api/storage/journal/reclaim", {}),
+    /** Where session checkouts go on this install — see `WorktreesRoot`. */
+    worktreesRoot: () => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "GET", "/api/worktrees-root"),
+    /** Put them somewhere else from the next cut on; `null` restores the
+     *  default. Nothing is moved and no restart is needed — a checkout already
+     *  cut is addressed by the path recorded on its session. */
+    setWorktreesRoot: (root: string | null) => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "PUT", "/api/worktrees-root", { root }),
+    /** Move the checkouts already cut, by re-cutting each from its own branch.
+     *  SLOW (two git commands per checkout) and partial by design: one holding
+     *  uncommitted changes is refused by git, reported, and left alone. */
+    moveWorktrees: () => request<{ move: WorktreeMoveResult }>(fetcher, "POST", "/api/worktrees-root/move", {}),
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>
@@ -1046,7 +1074,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     projectFilePatch: (projectId: string, path: string, options: { untracked?: boolean } = {}) => {
       const query = new URLSearchParams({ path });
       if (options.untracked) query.set("untracked", "1");
-      return request<{ file: { patch: string; binary: boolean } }>(
+      return request<{ file: GitFilePatch }>(
         fetcher,
         "GET",
         `/api/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`,
@@ -1060,7 +1088,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     sessionFilePatch: (sessionId: string, path: string, options: { untracked?: boolean } = {}) => {
       const query = new URLSearchParams({ path });
       if (options.untracked) query.set("untracked", "1");
-      return request<{ file: { patch: string; binary: boolean } }>(
+      return request<{ file: GitFilePatch }>(
         fetcher,
         "GET",
         `/api/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`,
@@ -1086,6 +1114,34 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      */
     sessionSkills: (sessionId: string) =>
       request<ProviderSkills>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/skills`),
+    /**
+     * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, for `/resume` (#616).
+     *
+     * ASKED PER LOGIN, NOT PER SESSION, because the picker runs on a canvas —
+     * before the session it would adopt into exists. `instanceId` is whose
+     * history to read (a configured login keeps its own config directory);
+     * absent is the built-in slot, where a terminal `claude` writes.
+     *
+     * NOT SCOPED TO A PROJECT either. Resume finds a conversation by id from
+     * any directory, so filtering to the current checkout would hide
+     * conversations that would adopt perfectly well — the project path is shown
+     * on each row instead, and the person decides.
+     */
+    claudeConversations: (instanceId?: string) =>
+      request<{ conversations: ClaudeConversation[] }>(
+        fetcher,
+        "GET",
+        `/api/claude-conversations${instanceId ? `?${new URLSearchParams({ instanceId }).toString()}` : ""}`,
+      ),
+    /** Adopt one: fork it, import its history, and point this session's next
+     *  turn at the fork. The person's own conversation is not written to. */
+    adoptClaudeConversation: (sessionId: string, sourceSessionId: string) =>
+      request<{ session: Session; turn: Turn; provenance: ConversationImportDetail }>(
+        fetcher,
+        "POST",
+        `/api/sessions/${encodeURIComponent(sessionId)}/adopt`,
+        { sourceSessionId },
+      ),
     /**
      * The same, one scope wider — what a CANVAS asks, because the session that
      * would answer for itself does not exist yet (#500). `driver` is the
