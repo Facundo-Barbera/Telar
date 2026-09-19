@@ -74,7 +74,7 @@ import {
 import type { GitFilePatch, GitFileChange, SessionDiff, TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
-import { describeReview, reconcileReview, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
+import { reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -493,24 +493,32 @@ export function ReviewEmptyState({
  * Rendered only when there is something to say, and stated as a fact rather
  * than an alarm: side effects are normal — installs, builds, formatters — and
  * the point is that you should know they are in the commit before you make it.
+ *
+ * THE WARNING HALF IS GONE ON A SHARED CHECKOUT (#690) — see `reviewFraming`.
+ * "The transcript never mentioned this" is evidence of nothing in a tree the
+ * editor and every other local session also write to, and the band stated it as
+ * an accusation. The SETTLED half stays: the journal claiming a write that the
+ * diff does not have is the journal's own testimony about itself, and sharing
+ * the checkout with somebody else does not weaken it.
  */
-function ReconciliationBand({ review }: { review: SessionReview }) {
-  if (review.unreported.length === 0 && review.settled.length === 0) return null;
+function ReconciliationBand({ review, journal }: { review: SessionReview; journal: boolean }) {
+  const unreported = journal ? review.unreported : [];
+  if (unreported.length === 0 && review.settled.length === 0) return null;
   return (
     <div className="border-b border-border bg-muted/25 px-4 py-2.5 text-2xs leading-relaxed">
-      {review.unreported.length > 0 && (
+      {unreported.length > 0 && (
         <p className="flex gap-1.5 text-foreground">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-warning" />
           <span>
             <span className="font-medium">
-              {review.unreported.length} {review.unreported.length === 1 ? "file" : "files"} the transcript never mentioned
+              {unreported.length} {unreported.length === 1 ? "file" : "files"} the transcript never mentioned
             </span>{" "}
             — an install, a build, or a formatter.
           </span>
         </p>
       )}
       {review.settled.length > 0 && (
-        <p className={cn("text-muted-foreground", review.unreported.length > 0 && "mt-1.5")}>
+        <p className={cn("text-muted-foreground", unreported.length > 0 && "mt-1.5")}>
           {review.settled.length} {review.settled.length === 1 ? "file the session wrote is" : "files the session wrote are"} back to how
           {review.settled.length === 1 ? " it" : " they"} started.
         </p>
@@ -841,6 +849,14 @@ export function DiffSurface({
     );
   }
 
+  /**
+   * WHOSE CHANGES THESE ARE, decided once and read by the headline, the band
+   * and the row lists — the three places that disagreed (#690). A plain fold
+   * rather than a memo: it is three comparisons and a string, and every reader
+   * of it is in the JSX below.
+   */
+  const framing = reviewFraming(diff, shown, Boolean(sessionId));
+
   return (
     <div className="flex min-h-full flex-col">
       {/* THE HEADLINE ANSWERS THE QUESTION IN ONE LINE: how far back the
@@ -872,25 +888,21 @@ export function DiffSurface({
         {/* THE FIGURE IS THE FIRST THING READ, so it is the first thing that has
             to stop being a fact when it is a floor (#654). The band below says
             why; this only has to make sure nobody's eye lands on a bold "0
-            files" and takes it for the answer. */}
+            files" and takes it for the answer. WHOSE figure it is comes from
+            the fold (#690); how COMPLETE it is stays here, being a property of
+            the read rather than of the checkout. */}
         <p className={cn("mt-1 text-sm font-medium tabular-nums", diff.filesIncomplete && "text-warning")}>
-          {describeReview(shown)}
+          {framing.headline}
           {diff.filesIncomplete && <span className="ml-1.5 text-2xs font-normal">· incomplete</span>}
         </p>
         <p className="mt-0.5 text-2xs leading-snug text-muted-foreground">
-          {/* WITHOUT A BASE THIS IS A SMALLER QUESTION, and saying so is the
-              difference between an honest figure and a wrong one: a session
-              that committed its work would otherwise review as having done
-              nothing at all. */}
-          {!sessionId
-            ? "Everything uncommitted in this project right now."
-            : diff.base
-              ? // "Everything" is a promise this line cannot keep over a read
-                // that was cut short.
-                diff.filesIncomplete
-                ? "What this session changed, committed and uncommitted — as much of it as git reported."
-                : "Everything this session changed, committed and uncommitted."
-              : "No starting commit was recorded, so this counts only what is uncommitted."}
+          {/* WHICH QUESTION THESE FIGURES ANSWER — `reviewFraming`. Without a
+              base it is a smaller question; over a read git cut short it is "as
+              much as git reported" rather than "everything" (#654); and on a
+              SHARED checkout it is a question about the checkout rather than
+              about this session (#690), so the sentence says so instead of
+              claiming work the session may never have done. */}
+          {framing.note}
           {/* THE FILTER IS SAID OUT LOUD, because the figure above it is a
               count of a SUBSET and everything else on this line describes the
               whole. A tab you came back to an hour later has to be able to
@@ -937,8 +949,9 @@ export function DiffSurface({
       <DiffUnknownBand diff={diff} onRetry={load} />
       {/* The reconciliation needs a TRANSCRIPT to disagree with. A canvas has
           none, so the band would be reporting every file as "never mentioned"
-          by a session that has not said anything yet. */}
-      {sessionId && <ReconciliationBand review={shown} />}
+          by a session that has not said anything yet — and a shared checkout
+          has one that cannot speak for the tree (#690, `framing.journal`). */}
+      {sessionId && <ReconciliationBand review={shown} journal={framing.journal} />}
       <CommitList commits={diff.commits} />
 
       {shown.rows.length === 0 ? (
@@ -949,8 +962,11 @@ export function DiffSurface({
               and burying them in alphabetical order defeats the point. On a
               canvas there is no transcript, so NOTHING is unreported — badging
               every row would be reporting a disagreement with a conversation
-              that has not happened. */}
-          {sessionId && shown.rows.filter((row) => !row.reported).length > 0 && shown.rows.some((row) => row.reported) && (
+              that has not happened. A SHARED CHECKOUT is the same case for a
+              different reason (#690): the transcript is real, but it was never
+              the only thing writing to this tree, so its silence about a row
+              accuses nobody. */}
+          {framing.journal && shown.rows.filter((row) => !row.reported).length > 0 && shown.rows.some((row) => row.reported) && (
             <PanelDivider label="not in the transcript" />
           )}
           {shown.rows
@@ -960,12 +976,12 @@ export function DiffSurface({
                 key={row.file.path}
                 readPatch={readPatch}
                 file={row.file}
-                reported={!sessionId}
+                reported={!framing.journal}
                 {...(row.registration ? { registration: row.registration } : {})}
                 {...rowMenu}
               />
             ))}
-          {sessionId && shown.rows.some((row) => row.reported) && shown.rows.some((row) => !row.reported) && (
+          {framing.journal && shown.rows.some((row) => row.reported) && shown.rows.some((row) => !row.reported) && (
             <PanelDivider label="the session wrote these" />
           )}
           {shown.rows
