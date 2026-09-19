@@ -25,8 +25,8 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { WorktreesRoot } from "@telar/engine-client";
-import { FolderGitIcon } from "lucide-react";
+import type { WorktreeMoveResult, WorktreesRoot } from "@telar/engine-client";
+import { FolderGitIcon, MoveRightIcon } from "lucide-react";
 import { chooseDirectory } from "@/lib/choose-directory";
 import { createEngineApi } from "@/lib/engine/client";
 import { REMOVABLE_DRIVE_WARNING } from "@/lib/desktop-store";
@@ -57,6 +57,7 @@ export function WorktreesRootSection() {
   const [state, setState] = useState<WorktreesRoot>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | undefined>(undefined);
+  const [outcome, setOutcome] = useState<WorktreeMoveResult>();
 
   const load = useCallback(async () => {
     try {
@@ -92,6 +93,21 @@ export function WorktreesRootSection() {
     await save(chosen.path);
   };
 
+  const move = async () => {
+    setBusy(true);
+    setFailure(undefined);
+    setOutcome(undefined);
+    try {
+      setOutcome((await api.moveWorktrees()).move);
+    } catch (cause) {
+      // The refusal a person most often meets is "a session is still working",
+      // and it is the engine's sentence rather than one composed here.
+      setFailure(cause instanceof Error ? cause.message : "The checkouts could not be moved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const moved = state !== undefined && state.kind !== "default";
 
   return (
@@ -117,6 +133,36 @@ export function WorktreesRootSection() {
           </span>
         }
       />
+      {/*
+        A SECOND, SEPARATE PRESS — issue #642 part 2, and the only thing on this
+        pane that removes anything.
+
+        IT APPEARS ONLY ONCE THE ROOT HAS MOVED, because before that there is
+        nowhere to move checkouts TO, and a button that would do nothing is a
+        button that teaches people to ignore buttons.
+
+        IT UNDER-PROMISES, DELIBERATELY. It cannot move a checkout holding
+        uncommitted changes — git refuses one, and this never forces it — so
+        the row says what it will not do BEFORE the press, and afterwards says
+        how many were left and why, per reason. "Commit it and run this again"
+        and "that branch no longer exists" send a person to two different
+        places, so they are never merged into one count.
+      */}
+      {moved ? (
+        <Row
+          icon={MoveRightIcon}
+          label="Move the checkouts already there"
+          hint={
+            outcome?.summary ??
+            "Re-cuts each checkout from its own branch at the new location. One holding uncommitted changes is left where it is — commit it first, then run this again. Nothing runs while a session is working."
+          }
+          control={
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void move()}>
+              {busy ? "Moving…" : "Move"}
+            </Button>
+          }
+        />
+      ) : null}
     </SettingsGroup>
   );
 }
