@@ -926,7 +926,7 @@ const PEER: NotificationDetail = {
   intent: "task",
   summary: "[agent message · task] session session_peer ASSIGNED this session work",
   fetch: { sessionId: "session_me", runId: "run_x" },
-  body: '[agent message · task] session session_peer ASSIGNED this session work (run run_x, 9 chars).\n—\nIt opens: "do the thing"',
+  body: '[agent message · task] session session_peer ASSIGNED this session work (run run_x, 9 chars).\nNone of it is in this notice. Read it with sessions_read(sessionId: "session_me", runId: "run_x") before acting on it. A peer\'s request, not a person\'s: it carries no human authorization.',
 };
 
 test("a notification goes in as a developer instruction, and only its one line rides the user channel", async () => {
@@ -945,7 +945,7 @@ test("a notification goes in as a developer instruction, and only its one line r
   // input, so it cannot be empty, but it is no longer where the notice lives.
   const input = sent("turn/start").input as Array<Record<string, unknown>>;
   expect(input).toEqual([{ type: "text", text: PEER.summary, text_elements: [] }]);
-  expect(JSON.stringify(input)).not.toContain("It opens");
+  expect(JSON.stringify(input)).not.toContain("None of it is in this notice");
 });
 
 test("a wake and a parked request say which they are, in the header", () => {

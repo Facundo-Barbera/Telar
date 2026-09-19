@@ -201,7 +201,7 @@ import Testing
     @Test func theCollapsedRowShowsTheNoticesFirstLineOnly() {
         // The rest of the notice tells the MODEL how to fetch the body; a row
         // one line tall has no use for it.
-        let notice = "[agent message · task] session session_x ASSIGNED work (run run_y, 2,158 chars).\n—\nIt opens: \"…\""
+        let notice = "[agent message · task] session session_x ASSIGNED work (run run_y, 2,158 chars).\nNone of it is in this notice. Read it with sessions_read(sessionId: \"session_z\", runId: \"run_y\") before acting on it."
         #expect(noticeFirstLine(notice) == "[agent message · task] session session_x ASSIGNED work (run run_y, 2,158 chars).")
         #expect(noticeFirstLine("one line") == "one line")
         #expect(noticeFirstLine("") == "")

@@ -127,9 +127,8 @@ function intentLabel(intent?: string): string {
  * EVERY INTENT COLLAPSES, A TASK INCLUDED.
  *
  * A task used to render in full here, on the reasoning that the instruction is
- * why the session is doing anything. But the notice already carries that
- * instruction's opening paragraph and its scope, and the full-render arm meant
- * a peer decided how much of someone else's prose sat in the middle of this
+ * why the session is doing anything. But the full-render arm meant a peer
+ * decided how much of someone else's prose sat in the middle of this
  * conversation — on the phone it put 3 KB of a worker's report between two of
  * the reader's own messages. The intent is the row's LABEL instead, the scope
  * stays on the header line, and the body opens on tap into a bounded scroll.
