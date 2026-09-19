@@ -35,7 +35,17 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { audioConstraints, audioInputs, labelsWithheld, readMicrophone, writeMicrophone, type AudioInput, type MicrophoneChoice } from "./devices";
+import {
+  audioConstraints,
+  audioInputs,
+  labelsWithheld,
+  microphoneSnapshot,
+  readMicrophone,
+  subscribeMicrophone,
+  writeMicrophone,
+  type AudioInput,
+  type MicrophoneChoice,
+} from "./devices";
 import type { DictationBox } from "./interim";
 import { createLevelMeter, type LevelMeter } from "./level";
 import { microphoneRefusal, microphoneUnavailable } from "./refusal";
@@ -80,10 +90,18 @@ export type AudioInputsHandle = {
 /**
  * The picker's list and the stored choice.
  *
- * ENUMERATED IN AN EFFECT AND RE-ENUMERATED ON `devicechange`, which is the
- * event a headset being plugged in fires. Without it the list is whatever was
- * true when the pane opened, and the commonest moment to open this pane is right
- * after plugging something in.
+ * THE CHOICE IS READ SYNCHRONOUSLY, ON THE FIRST RENDER — `useSyncExternalStore`
+ * over this browser's own storage, not an effect that loads it a tick later. The
+ * tick was a bug rather than a slower path: this section mounts only once the
+ * engine has answered with a provider, so a deferred read lands two renders after
+ * the pane's, and until it does the row says "System default" over a choice
+ * somebody made. See `microphoneSnapshot` in `devices.ts`, which is where the
+ * cache that makes this safe lives.
+ *
+ * THE LIST CANNOT BE — `enumerateDevices` is a promise — so it is an effect, and
+ * RE-ENUMERATED ON `devicechange`, which is the event a headset being plugged in
+ * fires. Without that the list is whatever was true when the pane opened, and the
+ * commonest moment to open this pane is right after plugging something in.
  *
  * THE LIST IS NOT A PERMISSION PROMPT. `enumerateDevices` does not ask for
  * anything — it answers with empty labels until a grant exists — so building it
@@ -92,14 +110,13 @@ export type AudioInputsHandle = {
 export function useAudioInputs(): AudioInputsHandle {
   const [inputs, setInputs] = useState<AudioInput[]>([]);
   const [withheld, setWithheld] = useState(false);
-  const [choice, setChoice] = useState<MicrophoneChoice>();
+  /** `undefined` on the server, which is also what "nobody has chosen" is — so
+   *  the first paint is the system default either way and hydration matches. */
+  const choice = useSyncExternalStore(subscribeMicrophone, microphoneSnapshot, () => undefined);
 
   useEffect(() => {
     const media = navigator.mediaDevices;
-    // Deferred a tick like every other loader in this app: setting state from an
-    // effect BODY is the cascade this app's lint forbids.
-    const task = window.setTimeout(() => setChoice(readMicrophone()), 0);
-    if (!media?.enumerateDevices) return () => window.clearTimeout(task);
+    if (!media?.enumerateDevices) return;
 
     let live = true;
     const look = (): void => {
@@ -116,19 +133,15 @@ export function useAudioInputs(): AudioInputsHandle {
     media.addEventListener?.("devicechange", look);
     return () => {
       live = false;
-      window.clearTimeout(task);
       media.removeEventListener?.("devicechange", look);
     };
   }, []);
 
-  const choose = useCallback((next: MicrophoneChoice | undefined) => {
-    writeMicrophone(next);
-    // THE STORE IS THE TRUTH AND THIS IS THE MIRROR — read back rather than
-    // adopting what was sent, so a write that did not land (a full or blocked
-    // store) leaves the control showing what is actually stored. The same rule
-    // every row on this pane follows with the engine.
-    setChoice(readMicrophone());
-  }, []);
+  // THE STORE IS THE TRUTH AND THE ROW IS ITS READER: the write notifies, the
+  // snapshot re-reads, and a write that did not land (a full or blocked store)
+  // leaves the control showing what is actually stored. No mirrored copy to keep
+  // in step — the same rule every row on this pane follows with the engine.
+  const choose = useCallback((next: MicrophoneChoice | undefined) => writeMicrophone(next), []);
 
   return { inputs, choice, choose, withheld };
 }

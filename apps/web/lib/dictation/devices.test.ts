@@ -16,6 +16,7 @@ import {
   connected,
   labelsWithheld,
   microphoneOptions,
+  microphoneSnapshot,
   microphoneStatus,
   readMicrophone,
   writeMicrophone,
@@ -152,5 +153,57 @@ describe("what is stored, and what is refused", () => {
   test("no storage at all is not a crash — a browser tab with storage blocked still dictates", () => {
     expect(readMicrophone(undefined)).toBeUndefined();
     expect(() => writeMicrophone({ deviceId: "a", label: "A" }, undefined)).not.toThrow();
+  });
+});
+
+/**
+ * THE SNAPSHOT, AND THE RENDER THAT SAID THE WRONG THING (#643).
+ *
+ * The picker first loaded the stored choice in an effect, deferred a tick. That
+ * tick is a real defect and not merely a slower path: the microphone section
+ * mounts only once the engine has answered with a provider, so its deferred read
+ * lands two renders after the pane's — and in between, the row states "System
+ * default" over a choice somebody made. CI rendered exactly that intermediate
+ * state and failed on it.
+ *
+ * `localStorage` is synchronous, so the fix is to read it synchronously. The only
+ * thing that makes `useSyncExternalStore` safe over a parser is a stable
+ * identity, which is what these pin.
+ */
+describe("read synchronously, and the same object until the text changes", () => {
+  test("two reads of one stored value are the SAME object, or React would loop forever", () => {
+    const held = store({ "telar:dictation-microphone:v1": '{"deviceId":"airpods","label":"AirPods Pro"}' });
+    const first = microphoneSnapshot(held);
+    expect(microphoneSnapshot(held)).toBe(first);
+    expect(first).toEqual({ deviceId: "airpods", label: "AirPods Pro" });
+  });
+
+  test("and a different value is a different object, or the picker would never update", () => {
+    const held = store();
+    expect(microphoneSnapshot(held)).toBeUndefined();
+    writeMicrophone({ deviceId: "built-in", label: "MacBook Pro Microphone" }, held);
+    expect(microphoneSnapshot(held)).toEqual({ deviceId: "built-in", label: "MacBook Pro Microphone" });
+    writeMicrophone(undefined, held);
+    expect(microphoneSnapshot(held)).toBeUndefined();
+  });
+
+  test("a value written by another window is picked up, not served from the cache", () => {
+    // The `storage` event carries no value this module trusts — the snapshot
+    // re-reads the text every call and only the PARSE is cached.
+    const held = store();
+    microphoneSnapshot(held);
+    held.read().set("telar:dictation-microphone:v1", '{"deviceId":"usb","label":"Scarlett Solo"}');
+    expect(microphoneSnapshot(held)).toEqual({ deviceId: "usb", label: "Scarlett Solo" });
+  });
+
+  test("a storage that throws answers the system default rather than taking the pane down", () => {
+    // Safari in a private window with a cross-origin frame on the page. A
+    // preference is not worth a blank settings pane.
+    const hostile = {
+      getItem: () => {
+        throw new Error("The operation is insecure.");
+      },
+    };
+    expect(microphoneSnapshot(hostile)).toBeUndefined();
   });
 });

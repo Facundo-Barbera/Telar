@@ -94,6 +94,71 @@ export function writeMicrophone(
     // A full or blocked store costs the preference for this session and nothing
     // else — the dictation still runs on the system default.
   }
+  // AFTER THE WRITE, WHETHER OR NOT IT LANDED. Every listener re-reads the store
+  // rather than being handed the value, so a refused write tells the picker to
+  // show what is actually there — the same rule every row on this pane follows
+  // with the engine.
+  for (const listener of [...listeners]) listener();
+}
+
+/**
+ * THE STORED CHOICE, AS A SNAPSHOT `useSyncExternalStore` CAN HOLD — and why the
+ * pane reads it this way rather than loading it in an effect.
+ *
+ * `readMicrophone` builds a fresh object per call, which `useSyncExternalStore`
+ * would take for a new value on every render and loop forever. So the parsed
+ * answer is cached against the RAW string it was parsed from: same text, same
+ * object identity, and a write of any kind produces a different text.
+ *
+ * WHY NOT AN EFFECT. The first cut of the picker loaded this in one, deferred a
+ * tick to avoid setting state from an effect body — and that tick is a real bug,
+ * not just a slower path. The microphone section mounts only once the engine has
+ * answered with a provider, so its own deferred read lands two renders after the
+ * pane's, and until it does the row shows "System default" over a choice somebody
+ * made. A person watching would see the picker flick from Default to their
+ * headset; CI saw the render in between and failed on it, which is the honest way
+ * to find out. Reading `localStorage` is synchronous, so nothing is gained by
+ * waiting: this is the same `useSyncExternalStore` answer `use-dictation.ts`
+ * gives for `supported`, for the same reason — a question about `window`,
+ * answered without a cascade and without a render that states the wrong thing.
+ */
+export function microphoneSnapshot(storage: Pick<Storage, "getItem"> | undefined = safeStorage()): MicrophoneChoice | undefined {
+  let raw: string | null = null;
+  try {
+    raw = storage?.getItem(KEY) ?? null;
+  } catch {
+    raw = null;
+  }
+  if (cached === undefined || cached.raw !== raw) cached = { raw, choice: readMicrophone(storage) };
+  return cached.choice;
+}
+
+/** Whoever is drawing the picker. A `Set` so a double-mounted component (dev
+ *  StrictMode) does not register twice. */
+const listeners = new Set<() => void>();
+
+/** The parsed answer, held against the text it came from — see
+ *  `microphoneSnapshot`. */
+let cached: { raw: string | null; choice: MicrophoneChoice | undefined } | undefined;
+
+/**
+ * Be told when the choice changes.
+ *
+ * `storage` AS WELL AS OUR OWN WRITES, because this key is per browser profile
+ * and a person may have Settings open in two windows of it. The event does not
+ * fire in the window that wrote, which is exactly why `writeMicrophone` notifies
+ * directly as well.
+ */
+export function subscribeMicrophone(listener: () => void): () => void {
+  listeners.add(listener);
+  const fromAnotherWindow = (event: StorageEvent): void => {
+    if (event.key === null || event.key === KEY) listener();
+  };
+  window.addEventListener("storage", fromAnotherWindow);
+  return () => {
+    listeners.delete(listener);
+    window.removeEventListener("storage", fromAnotherWindow);
+  };
 }
 
 /**

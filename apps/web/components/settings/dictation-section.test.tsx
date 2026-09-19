@@ -103,7 +103,9 @@ describe("what the pane shows before anybody has chosen", () => {
   });
 
   /** One render of the pane against a fixed engine answer. */
-  async function pane(dictation: Record<string, unknown>): Promise<{ host: HTMLElement; unmount: () => Promise<void> }> {
+  async function pane(
+    dictation: Record<string, unknown>,
+  ): Promise<{ host: HTMLElement; settled: (until: () => boolean) => Promise<void>; unmount: () => Promise<void> }> {
     globalThis.fetch = (async () => Response.json({ dictation })) as typeof fetch;
     const { DictationSection } = await import("./dictation-section");
     const host = document.createElement("div");
@@ -122,6 +124,25 @@ describe("what the pane shows before anybody has chosen", () => {
     });
     return {
       host,
+      /**
+       * WAIT FOR WHAT THIS TEST IS ABOUT, rather than for a number of turns.
+       *
+       * The five turns above are enough on this machine and were not on CI, and
+       * a count that has to be right is a count that is wrong on a slower box:
+       * the microphone section mounts only once the ENGINE has answered with a
+       * provider, so its own asynchronous work — `enumerateDevices` — starts an
+       * unknown number of turns into that window. Polling for the state the
+       * assertions need is bounded, deterministic, and fails with the real
+       * assertion message rather than a timeout when the state genuinely never
+       * arrives.
+       */
+      settled: async (until: () => boolean) => {
+        for (let turn = 0; turn < 50 && !until(); turn += 1) {
+          await act(async () => {
+            await new Promise((settle) => setTimeout(settle, 0));
+          });
+        }
+      },
       unmount: async () => {
         await act(() => root.unmount());
         host.remove();
@@ -283,8 +304,16 @@ describe("what the pane shows before anybody has chosen", () => {
    * microphone, and the PR says so rather than implying a green suite covered it.
    * ---------------------------------------------------------------- */
 
-  /** The three facts the section reasons about, all of them `window`'s. */
+  /**
+   * The facts the section reasons about, all of them `window`'s — and it CLEARS
+   * THE STORED CHOICE, which is not incidental. A test that set the key and
+   * cleaned up afterwards leaks it to its neighbours the moment one of its own
+   * assertions throws, and a picker test that passes because of what ran before
+   * it is a picker kept working by luck. Every case states its own starting
+   * point; the one that wants a stored choice writes it after this.
+   */
   function browser(facts: { secure: boolean; inputs?: MediaDeviceInfo[] }): void {
+    window.localStorage.clear();
     Object.defineProperty(window, "isSecureContext", { value: facts.secure, configurable: true });
     Object.defineProperty(globalThis, "MediaRecorder", { value: class {}, configurable: true, writable: true });
     Object.defineProperty(navigator, "mediaDevices", {
@@ -313,7 +342,8 @@ describe("what the pane shows before anybody has chosen", () => {
 
   test("three rows: pick, test, watch", async () => {
     browser({ secure: true, inputs: [input("built-in", "MacBook Pro Microphone"), input("airpods", "AirPods Pro")] });
-    const { host, unmount } = await pane(configured);
+    const { host, settled, unmount } = await pane(configured);
+    await settled(() => host.textContent?.includes("Live transcript") === true);
 
     expect(host.textContent).toContain("Microphone");
     expect(host.querySelector('[aria-label="Dictation microphone"]')).not.toBeNull();
@@ -330,7 +360,8 @@ describe("what the pane shows before anybody has chosen", () => {
 
   test("nothing starts on its own — no meter reading and no transcript box until pressed", async () => {
     browser({ secure: true, inputs: [input("built-in", "MacBook Pro Microphone")] });
-    const { host, unmount } = await pane(configured);
+    const { host, settled, unmount } = await pane(configured);
+    await settled(() => host.querySelector('[role="meter"]') !== null);
 
     // A pane somebody opened to read must not raise a permission prompt or spend
     // provider credit. Both are a press.
@@ -345,7 +376,8 @@ describe("what the pane shows before anybody has chosen", () => {
 
   test("the picker offers the system default first, and names the inputs the browser named", async () => {
     browser({ secure: true, inputs: [input("built-in", "MacBook Pro Microphone"), input("airpods", "AirPods Pro")] });
-    const { host, unmount } = await pane(configured);
+    const { host, settled, unmount } = await pane(configured);
+    await settled(() => host.textContent?.includes("Kept in this browser alone") === true);
 
     // The trigger reads the LABEL, never the value — #318, which is why this
     // row goes through `Dropdown` rather than a hand-written Select.
@@ -356,9 +388,12 @@ describe("what the pane shows before anybody has chosen", () => {
   });
 
   test("a chosen microphone that is not connected is named, not shown as a hash", async () => {
-    window.localStorage.setItem("telar:dictation-microphone:v1", JSON.stringify({ deviceId: "airpods-9f3c", label: "AirPods Pro" }));
+    // AFTER `browser`, WHICH CLEARS THE STORE. The stored choice is this test's
+    // own starting point rather than something left behind by another.
     browser({ secure: true, inputs: [input("built-in", "MacBook Pro Microphone")] });
-    const { host, unmount } = await pane(configured);
+    window.localStorage.setItem("telar:dictation-microphone:v1", JSON.stringify({ deviceId: "airpods-9f3c", label: "AirPods Pro" }));
+    const { host, settled, unmount } = await pane(configured);
+    await settled(() => host.textContent?.includes("Not connected") === true);
 
     expect(host.textContent).toContain("Not connected");
     expect(host.textContent).toContain("AirPods Pro is not connected");
@@ -368,14 +403,14 @@ describe("what the pane shows before anybody has chosen", () => {
     expect(host.textContent).not.toContain("airpods-9f3c");
 
     await unmount();
-    window.localStorage.clear();
   });
 
   test("before the first grant the list says why it is short instead of rendering blanks", async () => {
     // `enumerateDevices` reports one entry per input with an empty label until a
     // microphone has been allowed once.
     browser({ secure: true, inputs: [input("a", ""), input("b", "")] });
-    const { host, unmount } = await pane(configured);
+    const { host, settled, unmount } = await pane(configured);
+    await settled(() => host.textContent?.includes("hides input names") === true);
 
     expect(host.textContent).toContain("hides input names until a microphone has been allowed once");
     expect(host.querySelector('[aria-label="Dictation microphone"]')?.textContent).toContain("System default");
@@ -385,7 +420,8 @@ describe("what the pane shows before anybody has chosen", () => {
 
   test("over plain HTTP the section says so instead of drawing a meter that never moves (#639)", async () => {
     browser({ secure: false, inputs: [input("built-in", "MacBook Pro Microphone")] });
-    const { host, unmount } = await pane(configured);
+    const { host, settled, unmount } = await pane(configured);
+    await settled(() => host.textContent?.includes("not a secure context") === true);
 
     expect(host.textContent).toContain("not a secure context");
     // The way out, which is not a certificate.
@@ -405,7 +441,8 @@ describe("what the pane shows before anybody has chosen", () => {
 
   test("the pane's prose stays under the budget the cut bought", async () => {
     browser({ secure: true, inputs: [input("built-in", "MacBook Pro Microphone")] });
-    const { host, unmount } = await pane(configured);
+    const { host, settled, unmount } = await pane(configured);
+    await settled(() => host.textContent?.includes("Live transcript") === true);
 
     /**
      * WHAT A READER ACTUALLY SEES, on the pane's fullest ordinary state: a
