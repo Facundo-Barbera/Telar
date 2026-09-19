@@ -171,8 +171,8 @@ struct NotebookSurface: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "text.book.closed").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
-            Text(path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.head)
+            Image(systemName: "text.book.closed").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
+            Text(path).font(.system(Theme.caption, design: .monospaced)).foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.head)
             Spacer(minLength: 4)
             // UNSAVED WORK IS VISIBLE. A debounced autosave with no sign of
             // itself is indistinguishable from one that is broken.
@@ -180,22 +180,22 @@ struct NotebookSurface: View {
                 Circle().fill(Theme.accent).frame(width: 6, height: 6)
                     .accessibilityLabel("Saving")
             } else if saved {
-                Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.statusEmerald)
+                Image(systemName: "checkmark").font(.system(Theme.captionTiny, weight: .bold)).foregroundStyle(Theme.statusEmerald)
                     .accessibilityLabel("Saved")
             }
             KernelPill(state: signals.kernelState ?? kernel)
             Button { Task { await runAll() } } label: {
-                Image(systemName: runningAll ? "hourglass" : "play.fill").font(.system(size: 11))
+                Image(systemName: runningAll ? "hourglass" : "play.fill").font(.system(Theme.caption))
             }
             .buttonStyle(.plain).foregroundStyle(Theme.text).disabled(runningAll || notebook == nil)
             .accessibilityLabel("Run all cells")
             if kernel.isLive {
-                Button { Task { await act(.interrupt) } } label: { Image(systemName: "stop.fill").font(.system(size: 11)) }
+                Button { Task { await act(.interrupt) } } label: { Image(systemName: "stop.fill").font(.system(Theme.caption)) }
                     .buttonStyle(.plain).foregroundStyle(Theme.statusRed).disabled(acting)
                     .accessibilityLabel("Interrupt kernel")
             }
             if kernel != .none {
-                Button { Task { await act(.restart) } } label: { Image(systemName: "arrow.clockwise").font(.system(size: 11)) }
+                Button { Task { await act(.restart) } } label: { Image(systemName: "arrow.clockwise").font(.system(Theme.caption)) }
                     .buttonStyle(.plain).foregroundStyle(Theme.textMuted).disabled(acting)
                     .accessibilityLabel("Restart kernel")
             }
@@ -208,13 +208,13 @@ struct NotebookSurface: View {
 
     private func problemBanner(_ message: String) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle").font(.system(size: 11)).foregroundStyle(Theme.statusRed)
-            Text(message).font(.system(size: 12)).foregroundStyle(Theme.statusRed).lineLimit(3)
+            Image(systemName: "exclamationmark.triangle").font(.system(Theme.caption)).foregroundStyle(Theme.statusRed)
+            Text(message).font(.system(Theme.footnote)).foregroundStyle(Theme.statusRed).lineLimit(3)
             Spacer(minLength: 0)
             if message.range(of: "conflict|changed on disk", options: [.regularExpression, .caseInsensitive]) != nil {
-                Button("Re-read") { Task { drafts = [:]; await read() } }.font(.system(size: 12, weight: .medium)).buttonStyle(.plain).foregroundStyle(Theme.text)
+                Button("Re-read") { Task { drafts = [:]; await read() } }.font(.system(Theme.footnote, weight: .medium)).buttonStyle(.plain).foregroundStyle(Theme.text)
             }
-            Button { problem = nil } label: { Image(systemName: "xmark").font(.system(size: 10)) }.buttonStyle(.plain).foregroundStyle(Theme.textMuted)
+            Button { problem = nil } label: { Image(systemName: "xmark").font(.system(Theme.caption)) }.buttonStyle(.plain).foregroundStyle(Theme.textMuted)
         }
         .padding(10)
         .background(Theme.statusRed.opacity(0.08))
@@ -222,11 +222,11 @@ struct NotebookSurface: View {
 
     private func staleBanner(_ failure: NotebookReadFailure) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle").font(.system(size: 11)).foregroundStyle(Theme.statusAmber)
+            Image(systemName: "exclamationmark.triangle").font(.system(Theme.caption)).foregroundStyle(Theme.statusAmber)
             Text(failure == .missing ? "This notebook is no longer in the workspace." : { if case .unreadable(let m) = failure { return m } else { return "" } }())
-                .font(.system(size: 12)).foregroundStyle(Theme.statusAmber).lineLimit(2)
+                .font(.system(Theme.footnote)).foregroundStyle(Theme.statusAmber).lineLimit(2)
             Spacer(minLength: 0)
-            Button("Retry") { Task { await read() } }.font(.system(size: 12, weight: .medium)).buttonStyle(.plain).foregroundStyle(Theme.text)
+            Button("Retry") { Task { await read() } }.font(.system(Theme.footnote, weight: .medium)).buttonStyle(.plain).foregroundStyle(Theme.text)
         }
         .padding(10)
         .background(Theme.statusAmber.opacity(0.08))
@@ -241,7 +241,7 @@ struct NotebookSurface: View {
             Button("+ Text") { Task { await insert(after: .string(after), type: "markdown") } }
             Rectangle().fill(Theme.borderSubtle).frame(height: 1)
         }
-        .font(.system(size: 11, weight: .medium))
+        .font(.system(Theme.caption, weight: .medium))
         .foregroundStyle(Theme.accent)
         .buttonStyle(.plain)
         .frame(height: 32)
@@ -265,7 +265,7 @@ struct NotebookSurface: View {
             }
             Spacer(minLength: 0)
         }
-        .font(.system(size: 12, weight: .medium))
+        .font(.system(Theme.footnote, weight: .medium))
         .buttonStyle(.bordered)
         .tint(Theme.textMuted)
         .padding(.horizontal, 10)
@@ -278,6 +278,12 @@ struct NotebookSurface: View {
                 if cell.type == .code {
                     // A 44pt TARGET. An 11pt glyph is a dart-throw on a
                     // touchscreen, and running a cell is the thing you do most.
+                    //
+                    // THE 14 STAYS ABSOLUTE, unlike the rest of this file. The
+                    // square is fixed and it clips, so a glyph that grew with
+                    // the reader's text would only outgrow its own target. It
+                    // wants a @ScaledMetric frame — a layout change, not a
+                    // token swap — so it is left for that pass.
                     Button { Task { await run(cell) } } label: {
                         Image(systemName: running.contains(cell.id) ? "hourglass" : "play.fill")
                             .font(.system(size: 14))
@@ -287,8 +293,11 @@ struct NotebookSurface: View {
                     .buttonStyle(.plain).foregroundStyle(Theme.textMuted).disabled(running.contains(cell.id))
                     .accessibilityLabel("Run cell")
                     Text(cell.executionCount.map { "[\($0)]" } ?? "[ ]")
-                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                        .font(.system(Theme.captionTiny, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 } else {
+                    // The markdown marker sits in the same fixed 44pt square as
+                    // the run button above, so it keeps its absolute size for
+                    // the same reason — see that comment.
                     Image(systemName: "text.alignleft").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                         .frame(width: 44, height: 44)
                 }
@@ -323,7 +332,7 @@ struct NotebookSurface: View {
                     .accessibilityHint(selected == cell.id ? "Edit this cell" : "Select this cell")
                 } else {
                     TextEditor(text: Binding(get: { drafts[cell.id] ?? cell.source }, set: { edit(cell, $0) }))
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.system(Theme.footnote, design: .monospaced))
                         .scrollContentBackground(.hidden)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -691,9 +700,9 @@ struct ReadOnlyNotebookView: View {
     /// why there is no Run button.
     private var kernelNote: some View {
         HStack(spacing: 8) {
-            Image(systemName: "eye").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Image(systemName: "eye").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
             Text("Read-only — running cells needs Data Science turned on for this project, on the Mac.")
-                .font(.system(size: 11))
+                .font(.system(Theme.caption))
                 .foregroundStyle(Theme.textMuted)
             Spacer(minLength: 0)
         }
@@ -709,11 +718,11 @@ struct ReadOnlyNotebookView: View {
                 switch cell.type {
                 case .code:
                     Text(cell.executionCount.map { "[\($0)]" } ?? "[ ]")
-                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                        .font(.system(Theme.captionTiny, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 case .markdown:
-                    Image(systemName: "text.alignleft").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    Image(systemName: "text.alignleft").font(.system(Theme.footnote)).foregroundStyle(Theme.textMuted)
                 case .raw, .unknown:
-                    Image(systemName: "doc.plaintext").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    Image(systemName: "doc.plaintext").font(.system(Theme.footnote)).foregroundStyle(Theme.textMuted)
                 }
             }
             .frame(width: 44, alignment: .top)
@@ -789,7 +798,7 @@ struct KernelPill: View {
 
     var body: some View {
         Text(state == .none ? "no kernel" : state.rawValue)
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(Theme.captionTiny, weight: .semibold))
             .textCase(.uppercase)
             .foregroundStyle(tone)
             .padding(.horizontal, 7).padding(.vertical, 2)
