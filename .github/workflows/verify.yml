@@ -28,9 +28,43 @@ permissions:
 # `github.event.pull_request.head.repo.full_name` is the fork's name on a fork
 # PR and this repo's on a branch PR; a push to main has no pull_request at all.
 
+# CANCELLING IS RIGHT ON A BRANCH AND WRONG ON MAIN — one setting, two refs,
+# and it needed splitting rather than choosing between (#687).
+#
+# On a pull request ref, cancelling is what you want: a new push supersedes the
+# commit under test, and a serial runner should not spend minutes proving
+# something nobody is waiting on. That half is unchanged.
+#
+# On `refs/heads/main` the same setting destroys the evidence it was meant to
+# produce. Every merge pushes the same ref, joins the same concurrency group,
+# and kills the run verifying the PREVIOUS merge. Merge quickly enough and main
+# is never proven at all — each merge erases the proof for the one before it.
+#
+# MEASURED, 2026-09-19: 12 of the last 20 verify runs on main were cancelled —
+# 60% — including five consecutively, `fbc250c0` through `4aaa8979`, five
+# merges of which not one was verified. The sharpest case is `7b77a276`, the
+# merge of #684's SQLite busy-timeout fix: the commit is on main and its own
+# verification was cancelled by the next merge, so nothing ever confirmed main
+# was green with it. Serialising merges by hand stopped it dead — five clean
+# runs in a row — which is what this expression makes automatic rather than
+# something a person has to remember.
+#
+# NOT A RUNNER-LOAD PROBLEM, and the intuitive reading is wrong. `group` is
+# keyed on the ref, so a branch push (`refs/heads/telar/…`) and main's run
+# (`refs/heads/main`) are in DIFFERENT groups and cannot reach each other.
+# Only a merge pushes `refs/heads/main`, so only a merge can cancel a main run.
+# Throttling PR pushes buys nothing here; it was verified live that a branch
+# push queues behind an in-progress main run rather than killing it.
+#
+# THE COST, accepted knowingly: on one self-hosted runner main's runs stop
+# being discardable, so a burst of merges builds a queue competing with PR
+# verification. That is the trade — a slower runner against a main that has
+# actually been checked. If the queue ever proves too expensive the fallback is
+# in #687: go back to cancelling, but verify main's TIP on a schedule, so the
+# current state of main is always proven even when intermediate commits are not.
 concurrency:
   group: verify-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   verify:
