@@ -35,8 +35,8 @@ struct DataSurface: View {
                 ForEach(Sub.allCases) { tab in
                     Button { subRaw = tab.rawValue } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: tab.icon).font(.system(size: 11))
-                            Text(tab.label).font(.system(size: 12, weight: .medium))
+                            Image(systemName: tab.icon).font(.system(Theme.caption))
+                            Text(tab.label).font(.system(Theme.footnote, weight: .medium))
                         }
                         .foregroundStyle(sub == tab ? Theme.text : Theme.textMuted)
                         .padding(.horizontal, 8).frame(height: 26)
@@ -48,11 +48,11 @@ struct DataSurface: View {
                 Spacer(minLength: 0)
                 KernelPill(state: signals.kernelState ?? kernel)
                 if kernel.isLive {
-                    Button { Task { await act(.interrupt) } } label: { Image(systemName: "stop.fill").font(.system(size: 11)) }
+                    Button { Task { await act(.interrupt) } } label: { Image(systemName: "stop.fill").font(.system(Theme.caption)) }
                         .buttonStyle(.plain).foregroundStyle(Theme.statusRed).disabled(acting).accessibilityLabel("Interrupt kernel")
                 }
                 if kernel != .none {
-                    Button { Task { await act(.restart) } } label: { Image(systemName: "arrow.clockwise").font(.system(size: 11)) }
+                    Button { Task { await act(.restart) } } label: { Image(systemName: "arrow.clockwise").font(.system(Theme.caption)) }
                         .buttonStyle(.plain).foregroundStyle(Theme.textMuted).disabled(acting).accessibilityLabel("Restart kernel")
                 }
             }
@@ -179,13 +179,13 @@ private struct PlotCard: View {
             .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
             .onTapGesture(perform: onOpen)
             HStack(spacing: 6) {
-                Text(plot.producer ?? plot.name).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                Text(plot.producer ?? plot.name).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 Spacer(minLength: 0)
                 if let at = plot.createdAt {
-                    Text(at.date.formatted(date: .omitted, time: .shortened)).font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                    Text(at.date.formatted(date: .omitted, time: .shortened)).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 }
                 Button { Task { await onPin() } } label: {
-                    Image(systemName: plot.isPinned ? "pin.fill" : "pin").font(.system(size: 10)).foregroundStyle(plot.isPinned ? Theme.accent : Theme.textMuted)
+                    Image(systemName: plot.isPinned ? "pin.fill" : "pin").font(.system(Theme.caption)).foregroundStyle(plot.isPinned ? Theme.accent : Theme.textMuted)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(plot.isPinned ? "Unpin plot" : "Pin plot")
@@ -228,12 +228,12 @@ struct VariablesSurface: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Button { Task { await inspect(row.name) } } label: {
                                     HStack(spacing: 8) {
-                                        Text(row.name).font(.system(size: 12, weight: .medium, design: .monospaced)).foregroundStyle(Theme.text)
-                                        Text(row.type).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
-                                        if let shape = row.shape { Text(shape.map(String.init).joined(separator: "×")).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted) }
-                                        else if let len = row.len { Text("len \(len)").font(.system(size: 11)).foregroundStyle(Theme.textMuted) }
+                                        Text(row.name).font(.system(Theme.footnote, design: .monospaced, weight: .medium)).foregroundStyle(Theme.text)
+                                        Text(row.type).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
+                                        if let shape = row.shape { Text(shape.map(String.init).joined(separator: "×")).font(.system(Theme.caption, design: .monospaced)).foregroundStyle(Theme.textMuted) }
+                                        else if let len = row.len { Text("len \(len)").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted) }
                                         Spacer(minLength: 0)
-                                        if let size = row.sizeBytes { Text(humanBytes(size)).font(.system(size: 10)).foregroundStyle(Theme.textMuted) }
+                                        if let size = row.sizeBytes { Text(humanBytes(size)).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted) }
                                     }
                                 }
                                 .buttonStyle(.plain)
@@ -300,19 +300,19 @@ struct EnvironmentSurface: View {
                     if let env = list.environment {
                         Section {
                             LabeledContent("Manager", value: env.manager)
-                            LabeledContent("Python", value: env.python).font(.system(size: 12, design: .monospaced))
-                            LabeledContent("Root", value: env.root).font(.system(size: 11, design: .monospaced)).lineLimit(1).truncationMode(.head)
+                            LabeledContent("Python", value: env.python).font(.system(Theme.footnote, design: .monospaced))
+                            LabeledContent("Root", value: env.root).font(.system(Theme.caption, design: .monospaced)).lineLimit(1).truncationMode(.head)
                         }
-                        .font(.system(size: 12))
+                        .font(.system(Theme.footnote))
                         .listRowBackground(Color.clear)
                     }
                     Section("\(list.packages.count) packages") {
                         ForEach(list.packages.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { package in
                             HStack {
-                                Text(package.name).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text)
+                                Text(package.name).font(.system(Theme.footnote, design: .monospaced)).foregroundStyle(Theme.text)
                                 Spacer()
-                                Text(package.version).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted)
-                                if package.direct == true { Image(systemName: "pin").font(.system(size: 9)).foregroundStyle(Theme.textMuted) }
+                                Text(package.version).font(.system(Theme.caption, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                                if package.direct == true { Image(systemName: "pin").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted) }
                             }
                             .listRowBackground(Color.clear)
                             .listRowSeparatorTint(Theme.borderSubtle)

@@ -80,6 +80,8 @@ const SWEPT_FILES = [
     1,
     "the request row's 28pt ellipsis square",
   ],
+  ["apps/ios/TelarMobile/Views/Panel/LatexSurface.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/Panel/DataSurface.swift", 0, ""],
 ];
 
 const LITERAL = ".system(size:";
