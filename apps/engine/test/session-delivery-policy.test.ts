@@ -17,19 +17,116 @@ function setup() {
   store.markRunning("session_worker", "run_source", claimToken);
   return { store, home, proof: { sessionId: "session_worker", runId: "run_source", claimToken } };
 }
+/** Make the recipient BUSY, which since #631 part 2 is what `passive` turns on.
+ *  Hands back the claim so a test can settle it and drain the mailbox. */
+function busy(store: EngineStore, runId = "run_host"): string {
+  store.submitTurn("session_host", { runId, input: "a long think" });
+  const token = store.claimTurn("session_host", "worker_two")!.claim!.token;
+  store.markRunning("session_host", runId, token);
+  return token;
+}
+
 test("routine reports are durable activity, never a claimed run or a notification cascade", () => {
   const { store, home, proof } = setup();
   store.subscribe("session_observer", { targetSessionId: "session_host" });
   store.subscribe("session_host", { targetSessionId: "session_worker", once: true });
+  // BUSY IS WHAT MAKES IT PASSIVE NOW (#631 part 2). The cost `passive` exists
+  // to refuse is interrupting a coordinator mid-reasoning, and that is exactly
+  // this: a routine report must not steer, claim, or cascade into one.
+  busy(store);
   const report = store.submitAgentTurn("session_host", { runId: "run_report", input: "routine progress" }, proof);
   expect(report.turn).toMatchObject({ state: "completed", agentIntent: "report", agentDelivery: "passive" });
-  expect(store.claimTurn("session_host", "worker_two")).toBeUndefined();
+  expect(store.claimTurn("session_host", "worker_three")).toBeUndefined();
   expect(store.turns("session_observer")).toHaveLength(0);
   expect(store.subscriptionsFor("session_host")).toHaveLength(1);
   store.closeExecutionStore();
   const reopened = new EngineStore(home); stores.push(reopened);
-  expect(reopened.turns("session_host")[0]?.agentDelivery).toBe("passive");
-  expect(reopened.claimTurn("session_host", "worker_two")).toBeUndefined();
+  expect(reopened.turns("session_host").find((turn) => turn.runId === "run_report")?.agentDelivery).toBe("passive");
+});
+
+/**
+ * #631 PART 2 — A PASSIVE MESSAGE TO AN IDLE SESSION USED TO BE A LOST MESSAGE.
+ *
+ * It waited for a next turn that nobody was going to give it. That cost a real
+ * finding: a measurement about `git worktree lock` on removable media was
+ * reported to an orchestrator, never read, and surfaced only because a person
+ * asked aloud whether it had arrived.
+ *
+ * The wake is paid ONLY where the message would otherwise be lost. A busy
+ * recipient is untouched (the test above); an idle one takes the message as a
+ * turn, which is the cheapest moment a turn can be paid.
+ */
+test("a report to an IDLE session is delivered, because passive there means never", () => {
+  const { store, proof } = setup();
+  const report = store.submitAgentTurn("session_host", { runId: "run_report", input: "routine progress" }, proof);
+  expect(report.turn).toMatchObject({ state: "queued", agentIntent: "report", agentDelivery: "wake" });
+  // It is the MESSAGE that was delivered, not a wake about one: the turn keeps
+  // its sender and its intent, exactly as a task does.
+  expect(report.turn.sender).toEqual({ sessionId: "session_worker" });
+  expect(store.claimTurn("session_host", "worker_two")?.runId).toBe("run_report");
+});
+
+/**
+ * THE HALF THAT "WAKE IF IDLE ON ARRIVAL" WOULD HAVE MISSED.
+ *
+ * Report #1 wakes an idle coordinator; report #2 lands while that turn is
+ * running, stays passive, and under an arrival-only rule is dropped exactly as
+ * before — the same bug, one step later. The rule is on the IDLE TRANSITION, so
+ * everything held arrives when the session next comes up for air.
+ *
+ * AND IT COSTS ONE TURN, NOT N. Three reports during one long turn are three
+ * lines in one notice, which is the whole reason the mailbox and the cohort
+ * merge exist.
+ */
+test("messages held during a long turn arrive together, as ONE turn, when it ends", () => {
+  const { store, proof } = setup();
+  const token = busy(store);
+  for (const n of [1, 2, 3]) {
+    const held = store.submitAgentTurn("session_host", { runId: `run_report_${n}`, input: `progress ${n}`, intent: "report" }, proof);
+    expect(held.turn.agentDelivery).toBe("passive");
+  }
+  expect(store.pendingNotifications("session_host")).toHaveLength(3);
+
+  store.completeTurn("session_host", "run_host", token, { text: "done" });
+
+  const delivered = store.turns("session_host").filter((turn) => turn.state === "queued");
+  expect(delivered).toHaveLength(1);
+  const notification = delivered[0]!.notification!;
+  expect(notification.entries!.map((entry) => entry.kind)).toEqual(["peer_message", "peer_message", "peer_message"]);
+  expect(store.pendingNotifications("session_host")).toHaveLength(0);
+  // A HELD PEER MESSAGE IS NOT A WAKE. Nothing this session subscribed to did
+  // anything, so the turn carries its sender rather than an invented
+  // `turn_completed` that would have told every surface a run had finished.
+  expect(delivered[0]!.wakeReason).toBeUndefined();
+  expect(delivered[0]!.sender).toEqual({ sessionId: "session_worker" });
+  expect(delivered[0]!.input).toBe("[notification: peer message · session session_worker]");
+});
+
+test("a single held message says it was held, so the arrival row and the delivery do not read as one event twice", () => {
+  const { store, proof } = setup();
+  const token = busy(store);
+  store.submitAgentTurn("session_host", { runId: "run_one", input: "progress", intent: "report" }, proof);
+  store.completeTurn("session_host", "run_host", token, { text: "done" });
+  const delivered = store.turns("session_host").find((turn) => turn.state === "queued")!;
+  expect(delivered.notification!.body).toContain("It arrived while this session was working and was held until now");
+  // The body it points at is still the message, untouched and unabridged.
+  expect(store.turns("session_host").find((turn) => turn.runId === "run_one")!.input).toBe("progress");
+});
+
+test("a shelved or snoozed session is not un-shelved by a peer's routine report", () => {
+  // THE ONE DELIBERATE EXCLUSION. `wakeSessionForNewWork` treats new work as the
+  // shelf lifting itself, and a peer's report is not a person changing their
+  // mind about a row they put away. The message is still recorded and still
+  // rowed; it simply does not start anything.
+  const { store, proof } = setup();
+  store.updateSession("session_host", { settledOverride: "settled" });
+  const shelved = store.submitAgentTurn("session_host", { runId: "run_shelved", input: "progress" }, proof);
+  expect(shelved.turn.agentDelivery).toBe("passive");
+  expect(store.getSession("session_host").settledOverride).toBe("settled");
+  expect(store.claimTurn("session_host", "worker_two")).toBeUndefined();
+  // And it is not lost either — it waits in the mailbox where `sessions_status`
+  // reports it, rather than being dropped.
+  expect(store.pendingNotifications("session_host")).toHaveLength(1);
 });
 test("a routine report never steers an already running coordinator", () => {
   const { store, proof } = setup();
@@ -94,6 +191,9 @@ test("a parked request does not spend a one-shot — the target is waiting, not 
 });
 test("an unawaited result is passive; a blocker wakes but never overrides human Stop", () => {
   const { store, proof } = setup();
+  // Busy, because that is what passive means since #631 part 2 — nobody is
+  // waiting on this result, so it must not interrupt the turn in flight.
+  busy(store);
   expect(store.submitAgentTurn("session_host", { runId: "run_result", input: "FYI", intent: "result" }, proof).turn.agentDelivery).toBe("passive");
   expect(store.submitAgentTurn("session_host", { runId: "run_blocker", input: "need intervention", intent: "blocker" }, proof).turn.agentDelivery).toBe("wake");
   store.stopSession("session_host", "user");

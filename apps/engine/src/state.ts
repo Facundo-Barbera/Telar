@@ -174,7 +174,7 @@ import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRec
 import { commitSessionWork, gitOverview, gitOverviewAsync, projectRemoteAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
+import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
 import {
   DEFAULT_ISSUE_FILTER,
   DEFAULT_PULL_FILTER,
@@ -8177,6 +8177,23 @@ export class EngineStore {
       // The ROW is still written — a passive report reaches no model but it
       // does reach the transcript, and it is a notification there too.
       if (turn.notification) this.writeNotificationItem(sessionId, turn);
+      /**
+       * AND IT GOES IN THE MAILBOX, SO IT IS NOT LOST — issue #631 part 2.
+       *
+       * Passive is now only chosen when the recipient is BUSY or put away (see
+       * `submitAgentTurn`), and a busy session's next idle moment is exactly
+       * when held mail is meant to arrive. Holding it here puts a peer message
+       * on the same path a `settled_only` wake has taken since #550: merged
+       * with whatever else piled up, delivered as ONE turn by
+       * `flushPendingNotifications` on the next `completeTurn`, `failTurn`,
+       * `stopTurn` or `stopSession`.
+       *
+       * A SHELVED SESSION HOLDS IT INDEFINITELY, on purpose. The flush is
+       * guarded on a live turn, not on a shelf, so the mail simply waits — and
+       * `pendingNotifications` reports it to `sessions_status` meanwhile, which
+       * is the poll a coordinator that cares already has.
+       */
+      if (turn.notification) this.holdNotification(sessionId, turn.notification);
       this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
       return { turn: structuredClone(turn), replayed: false };
     }
@@ -8378,7 +8395,47 @@ export class EngineStore {
     const waiting = intent === "result" && sender.sessionId
       ? this.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
       : undefined;
-    const delivery = intent === "task" || intent === "blocker" || waiting ? "wake" : "passive";
+    /**
+     * A PASSIVE MESSAGE TO AN IDLE SESSION IS A LOST MESSAGE — issue #631 part 2.
+     *
+     * `report` and an unawaited `result` wait for the recipient's next turn.
+     * That is right while it is WORKING: a report is a peer talking, and
+     * interrupting a coordinator mid-reasoning is the cost `passive` exists to
+     * refuse. But a session that is idle and that nobody gives a turn to waits
+     * FOREVER, and the wait is silent. It cost a real finding: a session had
+     * measured that `git worktree lock` is mandatory for worktrees on removable
+     * media — without it, unmounting makes git prune the registration and
+     * destroy sessions — reported it, and the orchestrator never saw it while
+     * another session built the feature without it. The sender could see the
+     * message was going nowhere and sent it anyway, because passive was the
+     * documented default.
+     *
+     * SO THE WAKE IS PAID ONLY WHERE THE MESSAGE WOULD OTHERWISE BE LOST. A
+     * BUSY recipient is not woken and not steered — unchanged, and that is the
+     * expensive case this whole mechanism exists for. An IDLE one takes the
+     * message as a turn, which is the cheapest moment a turn can be paid: there
+     * is no context in flight to interrupt, and since #631 the notice it opens
+     * on is ~345 characters.
+     *
+     * AND NOT ON ARRIVAL ALONE, which is the version of this that fixes the
+     * incident and not the class. Report #1 wakes an idle coordinator; report #2
+     * lands while that turn runs, stays passive, and is dropped exactly as
+     * before. So the held ones are delivered at the IDLE TRANSITION too — see
+     * the passive branch of `submitTurn`, which hands them to the mailbox
+     * `flushPendingNotifications` already drains on every `completeTurn`,
+     * `failTurn`, `stopTurn` and `stopSession`. N messages arriving during one
+     * long turn cost ONE wake carrying one merged notice, not N.
+     *
+     * A SHELVED OR SNOOZED SESSION IS NOT WOKEN, and that exclusion is
+     * deliberate rather than an oversight. `wakeSessionForNewWork` treats new
+     * work as the shelf lifting itself; a peer's routine report is not a person
+     * changing their mind about a row they put away. Those sessions keep
+     * today's behaviour — the message is recorded, the row is written, and the
+     * session's own row carries it whenever the person comes back.
+     */
+    const shelved = this.getSession(sessionId);
+    const wouldBeLost = !this.hasLiveTurn(sessionId) && shelved.settledOverride !== "settled" && shelved.snoozedUntil === undefined;
+    const delivery = intent === "task" || intent === "blocker" || waiting || wouldBeLost ? "wake" : "passive";
     /**
      * THE NOTICE IS MINTED HERE, ONCE, AND STORED — see `agent-notice.ts`.
      *
@@ -10672,7 +10729,7 @@ export class EngineStore {
     const pending = this.readPendingNotifications(sessionId);
     if (pending.length === 0) return;
     if (this.hasLiveTurn(sessionId)) return;
-    const merged = mergeNotifications(pending);
+    const merged = heldDelivery(mergeNotifications(pending));
     // CLEARED BEFORE THE SUBMIT, so a submit that throws cannot be retried into
     // a duplicate — and after it, the facts live on the turn, which is durable.
     this.writePendingNotifications(sessionId, []);
@@ -10682,15 +10739,29 @@ export class EngineStore {
         runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
         input: notificationLabel(delivered),
         origin: "session",
-        // The COHORT'S newest happening is what stamps the turn — the same one
-        // whose fields lead the merged detail. A turn needs exactly one wake
-        // reason and this is the honest choice of one.
-        wakeReason: {
-          kind: merged.wakeKind ?? "turn_completed",
-          sessionId: merged.sessionId ?? sessionId,
-          ...(merged.runId ? { runId: merged.runId } : {}),
-          ...(merged.requestId ? { requestId: merged.requestId } : {}),
-        },
+        /**
+         * The COHORT'S newest happening is what stamps the turn — the same one
+         * whose fields lead the merged detail. A turn needs exactly one wake
+         * reason and this is the honest choice of one.
+         *
+         * AND A PEER-LED COHORT CARRIES A SENDER INSTEAD (#631 part 2). A held
+         * peer message is not a wake: nothing this session subscribed to did
+         * anything, and the old `?? "turn_completed"` fallback would have told
+         * the transcript, the phone and the inbox that some run finished. What
+         * it IS is a message from the session that sent it, so that is what
+         * stamps the turn — which is also the shape `submitTurn` insists on,
+         * exactly one of a wake reason or a sender on a session-origin turn.
+         */
+        ...(merged.wakeKind
+          ? {
+              wakeReason: {
+                kind: merged.wakeKind,
+                sessionId: merged.sessionId ?? sessionId,
+                ...(merged.runId ? { runId: merged.runId } : {}),
+                ...(merged.requestId ? { requestId: merged.requestId } : {}),
+              },
+            }
+          : { sender: merged.sessionId ? { sessionId: merged.sessionId } : {} }),
         notification: delivered,
       });
     } catch (error) {
