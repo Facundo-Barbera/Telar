@@ -2309,6 +2309,332 @@ export const GitOverview = z.object({
 export type GitOverview = z.infer<typeof GitOverview>;
 
 /**
+ * ══ WHAT IS BEING KEPT, AND WHICH OF IT CAN GO — issue #671 ══
+ *
+ * THE CLASSIFICATION IS THE FEATURE; A LIST IS NOT. Telar knows whether a
+ * checkout is merged, clean, and whether anything still needs it. A surface
+ * that drew the same four columns and left the person to reason from them
+ * would be the count with extra steps — they would check three things by hand
+ * before daring to delete, which is exactly what nobody does, which is how
+ * 7.3 GB accumulates behind sessions that finished weeks ago.
+ *
+ * SO THE VERDICT IS THE PAYLOAD AND THE EVIDENCE IS BESIDE IT, never the other
+ * way round. The chips exist so a person can check Telar's reasoning; the
+ * verdict exists so they do not have to.
+ */
+
+/**
+ * WHO STILL NEEDS THIS CHECKOUT — the replacement for the old surface's "active
+ * loom", which cannot be ported straight across because looms are gone (#501).
+ *
+ * IT DID NOT TRANSLATE ONE-FOR-ONE, AND THAT IS THE INTERESTING PART. A loom
+ * had one axis: running, or not. A session has two that matter independently —
+ * its LIFECYCLE (is the record live or archived) and its SHELF (is it settled).
+ * Settled is the state the old vocabulary had no word for, and it is the one
+ * doing the accumulating: `archiveSession` releases a checkout and settling
+ * deliberately does not, because "settled is a shelf, not an ending, and a
+ * settled session's checkout is still the thing it would resume into". That
+ * policy is right and this contract does not touch it. What it does is make
+ * the consequence VISIBLE, which is all that was ever missing.
+ */
+export const WorktreeOwner = z.discriminatedUnion("kind", [
+  /**
+   * NOTHING CLAIMS IT. No session record names this path. Nothing will ever
+   * resume it, and no count derived from sessions or from `git worktree list`
+   * can show it — which is why the inventory reads the checkouts root itself.
+   * This is the class the issue was filed about.
+   */
+  z.object({ kind: z.literal("none") }),
+  z.object({
+    kind: z.literal("session"),
+    sessionId: Id,
+    title: z.string().optional(),
+    /**
+     * `live` — the session is active and on the rail. Its checkout is what it
+     * is working in or would resume into.
+     * `settled` — shelved. Still resumable, still holding its checkout, and
+     * the state this feature exists to surface.
+     * `archived` — put down, and its checkout should already have been given
+     * back. Finding one here means the release did not happen (it is
+     * best-effort and skips an unavailable disk), so the bytes are still out
+     * there with nothing left that could ever use them.
+     */
+    lifecycle: z.enum(["live", "settled", "archived"]),
+  }),
+]);
+export type WorktreeOwner = z.infer<typeof WorktreeOwner>;
+
+/**
+ * WHY A CHECKOUT CANNOT BE REMOVED AT ALL. No affordance reaches these and no
+ * force overrides them — the old surface's rule, kept, because a force that can
+ * reach everything teaches people to type it without reading.
+ */
+export const WorktreeLockReason = z.enum([
+  /**
+   * NOBODY LOOKED. The checkouts' drive is not mounted, or the project's is.
+   *
+   * IT IS THE FIRST QUESTION ASKED AND NOT A FOOTNOTE, because every other
+   * proof below reads the disk. An unmounted volume is a state to sit in, not
+   * an absence to act on: a checkout that cannot be seen is not a checkout that
+   * has gone, and classifying one as an orphan would offer to reclaim things
+   * that are merely out of the room.
+   */
+  "unreadable",
+  /**
+   * A SESSION IS WORKING IN IT RIGHT NOW, and this is a refusal a person can
+   * only be told in advance.
+   *
+   * NOT GIT'S LOCK, WHICH IS A DIFFERENT GUARD AGAINST A DIFFERENT PARTY.
+   * #641 locks every session worktree so that `gh pr merge --delete-branch`
+   * cannot delete one out from under a running agent — an OUTSIDER's removal.
+   * Telar's own teardown unlocks first and deliberately
+   * (`removeSessionWorktreeAsync`), so there is no lock error here to surface
+   * and no failure to render honestly: a reclaim would simply SUCCEED and take
+   * the directory an agent is writing in. The refusal has to be Telar's own
+   * policy, asserted before the press — the same predicate `moveWorktrees`
+   * refuses wholesale on and `deleteSession` refuses on.
+   */
+  "in-use",
+  /** The repository's own main checkout, or the tree this engine runs from. */
+  "protected",
+  /**
+   * A live, unsettled session's checkout — somebody's current work, whether or
+   * not a turn is in flight this second. Removing it does not free a session;
+   * nothing re-cuts a missing worktree, so it would leave a record naming a
+   * directory that is not there and a session that fails on its next read.
+   */
+  "active",
+]);
+export type WorktreeLockReason = z.infer<typeof WorktreeLockReason>;
+
+/**
+ * WHY A CHECKOUT NEEDS A TYPED CONFIRMATION RATHER THAN A CHECKBOX. Each of
+ * these is a proof that did not come back clean, and they are separate because
+ * they send a person to different places: push your branch, versus commit your
+ * work, versus go and look because Telar could not tell.
+ */
+export const WorktreeForceReason = z.enum([
+  /** Uncommitted or untracked files. The work is only here. */
+  "dirty",
+  /** The branch is not an ancestor of the project's default base. The commits
+   *  are only here. */
+  "unmerged",
+  /**
+   * TELAR COULD NOT TELL, AND THAT IS ITS OWN ANSWER — never quietly folded
+   * into "not merged" and never into "merged".
+   *
+   * A git read that exits non-zero is not a fact about the repository (#650,
+   * #654 — the same lesson, twice, in two other surfaces). On a loaded machine
+   * a killed `merge-base` would otherwise mark a merged branch unmerged, which
+   * is merely annoying, or a `status` that timed out would mark a dirty tree
+   * clean, which loses work. So an unproven checkout is removable and asks for
+   * the typed force, exactly like a dirty one.
+   */
+  "unknown",
+  /**
+   * NO BRANCH TO CHECK. Either the checkout is detached, or its branch is gone
+   * from the repository — the state #641 could produce, where a merge deleted
+   * the branch and the checkout outlived it. Nothing can be proved merged
+   * without a branch, so it is never assumed.
+   */
+  "no-branch",
+]);
+export type WorktreeForceReason = z.infer<typeof WorktreeForceReason>;
+
+/**
+ * THE LADDER'S ANSWER FOR ONE ROW. First reason that holds is the row's reason;
+ * a row that reaches the bottom with nothing against it is reclaimable.
+ *
+ * THE ORDER IS NOT COSMETIC — it is the order of certainty, and each rung's
+ * read is only sound if the ones above it passed. Asking "is it merged" about a
+ * checkout on a drive that is not mounted produces an answer about nothing.
+ */
+export const WorktreeVerdict = z.discriminatedUnion("kind", [
+  /** Merged, clean, and nothing needs it. Selected by default: this is the
+   *  proof done FOR the person, which is the whole point of the surface. */
+  z.object({ kind: z.literal("reclaimable") }),
+  /** Removable, but at least one proof failed or could not be made. */
+  z.object({ kind: z.literal("needs-force"), reasons: z.array(WorktreeForceReason).min(1) }),
+  /** Not removable. Force can never reach it. */
+  z.object({ kind: z.literal("locked"), reason: WorktreeLockReason }),
+]);
+export type WorktreeVerdict = z.infer<typeof WorktreeVerdict>;
+
+/**
+ * ONE CHECKOUT, CLASSIFIED.
+ *
+ * EVERY PROOF FIELD IS OPTIONAL AND ABSENT MEANS "NOT ASKED OR NOT ANSWERED",
+ * never a default. `merged: false` is a claim somebody made a read to support;
+ * absent is the honest shape for a branch that does not exist, a drive that is
+ * not there, and a git command that was killed. This is `GitOverview`'s own
+ * discipline — "ABSENT when git did not answer — never 0, which a reader takes
+ * for a clean working tree somebody actually looked at".
+ */
+export const WorktreeRow = z.object({
+  /** The absolute path, which is this row's identity everywhere: it is what
+   *  the session records, what git registers, and what a reclaim names. */
+  path: z.string().min(1),
+  basename: z.string().min(1),
+  /** Absent on a detached checkout, which is a real state and not a name. */
+  branch: z.string().optional(),
+  projectId: Id.optional(),
+  /** What a person calls the project. The path is not it. */
+  projectName: z.string().optional(),
+  owner: WorktreeOwner,
+  /**
+   * WHETHER GIT STILL HAS A REGISTRATION FOR IT. A directory git has pruned is
+   * no longer a worktree at all — it is a folder full of somebody's files, and
+   * removing it is `rm`, not `git worktree remove`. Rendered because the two
+   * are different promises.
+   */
+  registered: z.boolean(),
+  /** Whether the directory is there. Meaningful ONLY when the row is readable:
+   *  see `unreadable`, and never infer a removal from a drive being out. */
+  onDisk: z.boolean(),
+  /** Telar's #641 lock is on it. Shown as evidence, never as a verdict — it
+   *  guards against outsiders and Telar's own teardown takes it off. */
+  gitLocked: z.boolean().optional(),
+  /** What it costs, measured the way the storage pane measures (allocated
+   *  blocks, symlinks never followed, hard links counted once), so the rows sum
+   *  to the figure that sent the person here. */
+  bytes: z.number().min(0).optional(),
+  /** When the checkout was last written to. */
+  updatedAt: Timestamp.optional(),
+  /** `git status --porcelain` came back empty. Absent = not proven either way. */
+  clean: z.boolean().optional(),
+  /** The branch is an ancestor of `mergedInto`. Absent = not proven either
+   *  way, which is a different thing from `false`. */
+  merged: z.boolean().optional(),
+  /** What `merged` was measured against — the same default base the cut picker
+   *  uses. Absent when there was nothing to measure against. */
+  mergedInto: z.string().optional(),
+  /** Set when a git read did not answer, so a surface can offer to ask again
+   *  rather than presenting a killed subprocess as a finding. */
+  incomplete: GitReadFailure.optional(),
+  verdict: WorktreeVerdict,
+});
+export type WorktreeRow = z.infer<typeof WorktreeRow>;
+
+/**
+ * THE WHOLE INVENTORY, AS OF A MOMENT.
+ *
+ * `roots` IS PLURAL BECAUSE A MOVE CAN BE HALF-DONE. Changing where checkouts
+ * go affects the next cut; the ones already cut stay where they are until they
+ * are moved or their sessions end (#642 part 2). An inventory that read only
+ * the configured root would omit exactly the gigabytes somebody changed the
+ * setting to shed — the same reason `measureStorage` walks both.
+ *
+ * `unreadable` IS A ROOT-LEVEL FACT AS WELL AS A PER-ROW ONE. When the drive
+ * holding the checkouts is out there are no rows to draw at all, and "0
+ * checkouts" would be the reassuring lie this whole contract is built to avoid
+ * — the same care the composer's count already takes when `git worktree list`
+ * cannot answer.
+ */
+export const WorktreeInventory = z.object({
+  rows: z.array(WorktreeRow),
+  roots: z.array(z.string().min(1)),
+  /** Why the inventory is not a full answer, in words a person can act on.
+   *  Absent when it is. */
+  blocker: z.string().optional(),
+  /** Something under a root could not be read — a permission, a drive that went
+   *  away mid-walk. The sizes are then a floor rather than a figure. */
+  partial: z.boolean(),
+  measuredAt: Timestamp,
+});
+export type WorktreeInventory = z.infer<typeof WorktreeInventory>;
+
+/**
+ * ONE CHECKOUT A PERSON ASKED TO HAVE BACK.
+ *
+ * ADDRESSED BY PATH, which is this row's identity in all three witnesses — the
+ * session records it, git registers it, and the disk holds it. A session id
+ * would not do: the rows that matter most have no session.
+ *
+ * `confirm` IS THE BASENAME, TYPED. Required for every `needs-force` row and
+ * meaningless on a reclaimable one. The typing is not ceremony: these rows are
+ * the ones where Telar could NOT prove the work is safe, so the person is being
+ * asked to say they looked — which a checkbox cannot express and a second
+ * "are you sure" does not either.
+ */
+export const WorktreeReclaimItem = z.object({
+  path: z.string().min(1),
+  confirm: z.string().optional(),
+});
+export type WorktreeReclaimItem = z.infer<typeof WorktreeReclaimItem>;
+
+/**
+ * WHY ONE ITEM WAS NOT DONE. Machine-stable, so the surface renders the
+ * sentence and the wire carries the reason — the old surface's one good lesson,
+ * kept: "the server's per-item refusals are rendered honestly."
+ *
+ * THE LOCK REASONS APPEAR HERE AGAIN, AND THAT IS NOT DUPLICATION. The row said
+ * them before the press so the person could predict them; the server says them
+ * again at the press because the inventory it was read from may be seconds old
+ * and a session can start working in that window. A refusal predicted and then
+ * re-proved is the design — the prediction is the courtesy, the re-proof is the
+ * guarantee.
+ */
+export const WorktreeReclaimRefusal = z.enum([
+  /** Nothing at that path any more — already gone, or never there. */
+  "not-found",
+  /** The drive went away between the listing and the press. */
+  "unreadable",
+  /** A session started working in it. See `WorktreeLockReason`. */
+  "in-use",
+  "protected",
+  "active",
+  /** A `needs-force` row arrived with no typed confirmation. */
+  "needs-confirm",
+  /** It arrived with one that did not match the basename. */
+  "confirm-mismatch",
+  /** Git or the archive said something this does not model. `detail` carries
+   *  its words, which are diagnostic and never copy. */
+  "failed",
+]);
+export type WorktreeReclaimRefusal = z.infer<typeof WorktreeReclaimRefusal>;
+
+/**
+ * WHAT ONE RECLAIM ACTUALLY DID — and the two are genuinely different acts,
+ * so they are never merged into "cleaned up".
+ *
+ * `archived` — the checkout belonged to a settled session, and giving it back
+ * means ARCHIVING THAT SESSION. That is the only supported way: settling
+ * deliberately does not release a checkout, because a settled session's
+ * checkout is still the thing it would resume into, and nothing re-cuts a
+ * missing worktree. So the session is ended, which is a decision about the
+ * session and only incidentally about the disk. The confirm says so in those
+ * words rather than naming the space — a confirm that names the gigabytes and
+ * hides the session is the kind people click and regret.
+ *
+ * `removed` — nothing claimed it: no session, or an archived one whose release
+ * never happened. There is no session to end, so the directory goes.
+ */
+export const WorktreeReclaimResult = z.object({
+  path: z.string().min(1),
+  ok: z.boolean(),
+  action: z.enum(["archived", "removed"]).optional(),
+  /** The session that was archived, when one was. */
+  sessionId: Id.optional(),
+  refusal: WorktreeReclaimRefusal.optional(),
+  detail: z.string().optional(),
+  /** What it gave back, as last measured. A figure from the inventory rather
+   *  than a fresh walk: the directory is gone, so there is nothing left to
+   *  measure, and re-walking before removal would double the work for a number
+   *  already on the row. */
+  bytes: z.number().min(0).optional(),
+});
+export type WorktreeReclaimResult = z.infer<typeof WorktreeReclaimResult>;
+
+export const WorktreeReclaimOutcome = z.object({
+  results: z.array(WorktreeReclaimResult),
+  /** The whole thing in a sentence, composed where the reasons are known —
+   *  `WorktreeMoveResult`'s discipline, for the same reason. */
+  summary: z.string(),
+});
+export type WorktreeReclaimOutcome = z.infer<typeof WorktreeReclaimOutcome>;
+
+
+/**
  * WHAT IS IN A CHECKOUT — the flat list a file tree is built from.
  *
  * FLAT PATHS, NOT A TREE. A nested payload would encode one client's idea of how
