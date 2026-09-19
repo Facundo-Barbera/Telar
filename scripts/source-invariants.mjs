@@ -38,12 +38,39 @@ const read = (path) => readFile(join(ROOT, path), "utf8");
  * and nobody notices, because nothing about an absolute size looks wrong until
  * a reader turns their text up.
  *
- * Every non-zero count below is a site deliberately held back because its
- * frame is fixed in BOTH dimensions and clips, so a glyph that grew with the
- * reader's text would only outgrow its own target. Those need a
- * `@ScaledMetric` frame — a layout change rather than a token swap — and are
- * tracked in #674. THESE NUMBERS ARE MEANT TO DROP as that work lands, and
- * the failure is how you find out it did.
+ * A non-zero count is NOT a to-do. Three different reasons hide behind one,
+ * and each entry says which:
+ *
+ *   1. HELD FOR A FRAME fixed in BOTH dimensions, which clips — a glyph that
+ *      grew with the reader's text would only outgrow its own target. These
+ *      need a `@ScaledMetric` frame, a layout change rather than a token
+ *      swap, and are tracked in #674. These numbers are MEANT TO DROP as that
+ *      work lands, and the failure is how you find out it did.
+ *   2. A SCALED METRIC ALREADY — `.system(size: someScaledMetric)` still
+ *      matches the string counted below, so it reads as a literal and is not
+ *      one. WelcomeView's wordmark is the only one.
+ *   3. CORRECT AS IT STANDS — a size derived from a caller's parameter rather
+ *      than an absolute standing in for a rung. ProjectAvatar's glyphs are
+ *      fractions of the box they sit in. These are finished and are NOT
+ *      waiting on #674.
+ *
+ * WHAT "REMAINING" MEANS, because three different figures were circulating
+ * on the day this was written and all three were arithmetically correct:
+ *
+ *     the queue = UNSWEPT APP SOURCE ONLY
+ *
+ * Excluded, and each excluded for its own reason:
+ *   - files listed below. They are swept; a non-zero count here is a recorded
+ *     decision, not outstanding work, per the three cases above.
+ *   - anything under `apps/ios/DerivedData/`. Vendored checkouts — at the
+ *     time of writing swift-markdown-ui contributes ten hits that are not
+ *     ours to convert and never will be.
+ *   - `.system(size:)` inside comments and doc comments. `Theme.swift` and
+ *     `TypeScaleTests.swift` between them hold four, written as prose about
+ *     the sweep rather than as calls.
+ *
+ * A raw `grep -rc '\.system(size:' apps/ios` counts all three and answers a
+ * question nobody asked. If you are re-deriving the queue, subtract them.
  */
 const SWEPT_FILES = [
   ["apps/ios/TelarMobile/Views/TranscriptViews.swift", 0, ""],
@@ -114,7 +141,18 @@ const SWEPT_FILES = [
   [
     "apps/ios/TelarMobile/Views/ProjectAvatar.swift",
     4,
-    "not literals at all — each is a fraction of the caller's `size`, so the glyph is proportional to its own square by construction. These are correct as they stand and are NOT waiting on #674",
+    "not literals at all — each is a fraction of the caller's `size`, so the glyph is proportional to its own square by construction. These are correct as they stand and are NOT waiting on #674. They are also invisible to a `\\d+` regex, so a future sweep will not re-find them: this entry is the only record",
+  ],
+  [
+    "apps/ios/TelarMobile/Views/Panel/PanelView.swift",
+    2,
+    "the full-screen and close glyphs, both 30pt squares",
+  ],
+  ["apps/ios/TelarMobile/Views/Panel/FileBody.swift", 0, ""],
+  [
+    "apps/ios/TelarMobile/Views/StashMenu.swift",
+    1,
+    "the tray's 44pt circle; its count badge has no frame and does scale",
   ],
 ];
 

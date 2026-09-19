@@ -48,8 +48,8 @@ struct PanelView: View {
                     panel.select(tab)
                 } label: {
                     HStack(spacing: 5) {
-                        Image(systemName: tab.icon).font(.system(size: 12, weight: .medium))
-                        Text(tab.label).font(.system(size: 13, weight: .medium))
+                        Image(systemName: tab.icon).font(.system(Theme.footnote, weight: .medium))
+                        Text(tab.label).font(.system(Theme.footnote, weight: .medium))
                     }
                     .foregroundStyle(panel.active == tab ? Theme.text : Theme.textMuted)
                     .padding(.horizontal, 10)
@@ -69,6 +69,11 @@ struct PanelView: View {
                 Button {
                     panel.setFullScreen(!panel.isFullScreen)
                 } label: {
+                    // BOTH CHROME GLYPHS KEEP AN ABSOLUTE SIZE — this one and
+                    // the close button below. Each sits in a 30pt square fixed
+                    // in both dimensions, which clips, so a glyph that grew
+                    // with the reader's text would only outgrow its own box.
+                    // They want a @ScaledMetric frame (#674).
                     Image(systemName: panel.isFullScreen
                           ? "arrow.down.right.and.arrow.up.left"
                           : "arrow.up.left.and.arrow.down.right")
