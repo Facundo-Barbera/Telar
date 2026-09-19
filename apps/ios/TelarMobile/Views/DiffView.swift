@@ -44,10 +44,10 @@ struct DiffView: View {
                             ForEach(diff.commits) { commit in
                                 HStack(spacing: 10) {
                                     Text(commit.shortSha)
-                                        .font(.system(size: 12, design: .monospaced))
+                                        .font(.system(Theme.footnote, design: .monospaced))
                                         .foregroundStyle(Theme.textMuted)
                                     Text(commit.subject)
-                                        .font(.system(size: 14))
+                                        .font(.system(Theme.subhead))
                                         .foregroundStyle(Theme.text)
                                         .lineLimit(1)
                                 }
@@ -57,7 +57,7 @@ struct DiffView: View {
                             }
                         } header: {
                             Text("Commits")
-                                .font(.system(size: 13, weight: .medium))
+                                .font(.system(Theme.footnote, weight: .medium))
                                 .foregroundStyle(Theme.textMuted)
                         }
                     }
@@ -68,7 +68,7 @@ struct DiffView: View {
                         // under load arrived here empty and this row read as a
                         // session that had done no work.
                         Text(diff.filesIncomplete == nil ? "No changes yet." : "Nothing was listed — which is not the same as nothing having changed.")
-                            .font(.system(size: 14))
+                            .font(.system(Theme.subhead))
                             .foregroundStyle(diff.filesIncomplete == nil ? Theme.textMuted : Theme.statusAmber)
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
@@ -106,23 +106,23 @@ struct DiffView: View {
             HStack(spacing: 8) {
                 if let branch = diff.branch {
                     Text(branch)
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(.system(Theme.footnote, design: .monospaced))
                         .foregroundStyle(Theme.textMuted)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 Text("+\(diff.linesAdded)")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(Theme.footnote, weight: .medium))
                     .foregroundStyle(Theme.statusEmerald)
                     .tabularNumbers()
                 Text("−\(diff.linesRemoved)")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(Theme.footnote, weight: .medium))
                     .foregroundStyle(Theme.statusRed)
                     .tabularNumbers()
             }
             if diff.base == nil {
                 Text("No recorded base — committed work is not included.")
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.statusAmber)
             }
             /// WHAT GIT DID NOT ANSWER (#654), above the rows rather than in
@@ -135,13 +135,13 @@ struct DiffView: View {
             /// is the failure that clears on its own, so it is named.
             ForEach(unknowns(diff), id: \.self) { sentence in
                 Text(sentence)
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.statusAmber)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if diff.truncated {
                 Text("File list truncated.")
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
             }
         }
@@ -193,29 +193,29 @@ struct DiffView: View {
     private func fileRow(_ file: GitFileChange) -> some View {
         HStack(spacing: 10) {
             Text(statusLetter(file.status))
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .font(.system(Theme.footnote, design: .monospaced, weight: .bold))
                 .foregroundStyle(statusColor(file.status))
                 .frame(width: 14)
             Text(file.path)
-                .font(.system(size: 13, design: .monospaced))
+                .font(.system(Theme.footnote, design: .monospaced))
                 .foregroundStyle(Theme.text)
                 .lineLimit(1)
                 .truncationMode(.head)
             Spacer(minLength: 8)
             if file.binary == true {
                 Text("binary")
-                    .font(.system(size: 11))
+                    .font(.system(Theme.caption))
                     .foregroundStyle(Theme.textMuted)
             } else {
                 if let added = file.linesAdded {
                     Text("+\(added)")
-                        .font(.system(size: 12))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.statusEmerald)
                         .tabularNumbers()
                 }
                 if let removed = file.linesRemoved {
                     Text("−\(removed)")
-                        .font(.system(size: 12))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.statusRed)
                         .tabularNumbers()
                 }
@@ -309,14 +309,14 @@ struct PatchLines: View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(shown.enumerated()), id: \.offset) { _, line in
                 Text(String(line))
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(Theme.caption, design: .monospaced))
                     .foregroundStyle(patchLineColor(line))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(patchLineBackground(line))
             }
             if shown.count < all.count {
                 Text("\(all.count - shown.count) more lines — tap the row to read the whole patch.")
-                    .font(.system(size: 11))
+                    .font(.system(Theme.caption))
                     .foregroundStyle(Theme.textMuted)
                     .padding(.top, 4)
             }
@@ -343,15 +343,15 @@ private struct InlinePatch: View {
                 // Same three cases the pushed page tells apart — see `PatchView`.
                 if let incomplete = patch.incomplete {
                     Text(incomplete == "timeout" ? "git did not answer in time — try again." : "git could not produce a diff for this file.")
-                        .font(.system(size: 11))
+                        .font(.system(Theme.caption))
                         .foregroundStyle(Theme.statusAmber)
                 } else if patch.binary {
                     Text("Binary file — no text diff to show.")
-                        .font(.system(size: 11))
+                        .font(.system(Theme.caption))
                         .foregroundStyle(Theme.textMuted)
                 } else if patch.patch.isEmpty {
                     Text("No textual difference.")
-                        .font(.system(size: 11))
+                        .font(.system(Theme.caption))
                         .foregroundStyle(Theme.textMuted)
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -360,7 +360,7 @@ private struct InlinePatch: View {
                     .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             } else if let error {
-                Text(error).font(.system(size: 11)).foregroundStyle(Theme.statusRed)
+                Text(error).font(.system(Theme.caption)).foregroundStyle(Theme.statusRed)
             } else {
                 ProgressView().frame(maxWidth: .infinity)
             }
