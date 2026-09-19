@@ -57,7 +57,7 @@ struct BranchPickerSheet: View {
                 }
                 if !browsing && visible.isEmpty {
                     Text("No matching branches.")
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .listRowBackground(Color.clear)
                 }
@@ -85,7 +85,7 @@ struct BranchPickerSheet: View {
                 ForEach(Array(rows)) { row($0) }
             } header: {
                 Text(title)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(Theme.footnote, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
             }
         }
@@ -98,22 +98,22 @@ struct BranchPickerSheet: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.triangle.branch")
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
                 Text(label)
-                    .font(mono ? .system(size: 14, design: .monospaced) : .system(size: 14))
+                    .font(mono ? .system(Theme.subhead, design: .monospaced) : .system(Theme.subhead))
                     .foregroundStyle(Theme.text)
                     .lineLimit(1)
                     .truncationMode(.head)
                 Spacer(minLength: 8)
                 if let badge {
                     Text(badge)
-                        .font(.system(size: 10))
+                        .font(.system(Theme.caption))
                         .foregroundStyle(Theme.textMuted)
                 }
                 if selected == value {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(Theme.footnote, weight: .medium))
                         .foregroundStyle(Theme.accent)
                 }
             }

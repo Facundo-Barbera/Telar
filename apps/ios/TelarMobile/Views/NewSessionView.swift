@@ -85,12 +85,12 @@ struct NewSessionView: View {
                     VStack(spacing: 12) {
                         if loading { ProgressView() }
                         Text(loading ? "Loading projects" : targets.isEmpty ? "No projects found" : "No project matches that")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(.headline, weight: .bold))
                             .foregroundStyle(Theme.text)
                         Text(loading ? "Reading every paired Mac's registry."
                              : targets.isEmpty ? "No Mac reported a project. Add one below."
                              : "Try another name, Mac or path.")
-                            .font(.system(size: 14))
+                            .font(.system(Theme.subhead))
                             .foregroundStyle(Theme.textMuted)
                             .multilineTextAlignment(.center)
                     }
@@ -203,25 +203,25 @@ struct NewSessionView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(target.project.name)
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.system(.callout, weight: .bold))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
                     HStack(spacing: 3) {
-                        Image(systemName: "desktopcomputer").font(.system(size: 10))
-                        Text(target.hostName).font(.system(size: 11)).lineLimit(1)
+                        Image(systemName: "desktopcomputer").font(.system(Theme.caption))
+                        Text(target.hostName).font(.system(Theme.caption)).lineLimit(1)
                     }
                     .foregroundStyle(Theme.textMuted)
                 }
                 if let root = target.root {
                     Text(root)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.system(Theme.caption, design: .monospaced))
                         .foregroundStyle(Theme.textMuted)
                         .lineLimit(1).truncationMode(.head)
                 }
             }
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.chevron)
         }
         .padding(.horizontal, 16)
@@ -276,16 +276,20 @@ struct NewSessionView: View {
 
     private var addProjectLabel: some View {
         HStack(spacing: 12) {
+            // ABSOLUTE ON PURPOSE: a 27pt square, fixed in both dimensions and
+            // clipping, so a glyph that grew with the reader's text would only
+            // outgrow its own box. Wants a @ScaledMetric frame — a layout
+            // change rather than a token swap — so it waits for that pass.
             Image(systemName: "plus.circle.fill")
                 .font(.system(size: 17))
                 .foregroundStyle(Theme.accent)
                 .frame(width: 27, height: 27)
             Text("Add project…")
-                .font(.system(size: 16, weight: .bold))
+                .font(.system(.callout, weight: .bold))
                 .foregroundStyle(Theme.text)
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.chevron)
         }
         .padding(.horizontal, 16)
@@ -378,7 +382,7 @@ struct NewSessionDraftView: View {
             // A subject line, not a rival composer: one quiet row above the
             // prompt. Left empty, the message's first line becomes the title.
             TextField("Title — optional, taken from your message", text: $title)
-                .font(.system(size: 14))
+                .font(.system(Theme.subhead))
                 .foregroundStyle(Theme.text)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
@@ -417,7 +421,7 @@ struct NewSessionDraftView: View {
                 Rectangle().fill(Theme.border).frame(height: 1)
                 if let error {
                     Text(error)
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.statusRed)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
@@ -425,7 +429,7 @@ struct NewSessionDraftView: View {
                 }
                 if let intakeNote {
                     Text(intakeNote)
-                        .font(.system(size: 12))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
@@ -440,6 +444,10 @@ struct NewSessionDraftView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             PhotosPicker(selection: $pickedPhotos, maxSelectionCount: 8, matching: .images) {
+                                // The composer's 44pt circles keep their
+                                // absolute size, exactly as SessionView's do
+                                // (#449): the circle cannot grow, so a glyph
+                                // that scaled inside it would outgrow it.
                                 Image(systemName: "plus")
                                     .font(.system(size: 16))
                                     .foregroundStyle(Theme.text)
@@ -476,9 +484,9 @@ struct NewSessionDraftView: View {
                             workspaceChip
                             if let hostName {
                                 HStack(spacing: 8) {
-                                    Image(systemName: "desktopcomputer").font(.system(size: 14))
+                                    Image(systemName: "desktopcomputer").font(.system(Theme.subhead))
                                     Text(hostName)
-                                        .font(.system(size: 14, weight: .semibold))
+                                        .font(.system(Theme.subhead, weight: .semibold))
                                         .lineLimit(1)
                                 }
                                 .foregroundStyle(Theme.textMuted)
@@ -500,6 +508,8 @@ struct NewSessionDraftView: View {
                                 .background(Theme.subtleStrong)
                                 .clipShape(Circle())
                         } else {
+                            // Send: the same fixed 44pt circle as the attach
+                            // button above, held back for the same reason.
                             Image(systemName: "arrow.up")
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundStyle(canStart ? Theme.primaryGlyph : Theme.textMuted)
@@ -680,11 +690,11 @@ struct NewSessionDraftView: View {
             items()
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: icon).font(.system(size: 14))
+                Image(systemName: icon).font(.system(Theme.subhead))
                 Text(label)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(Theme.subhead, weight: .semibold))
                     .lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
+                Image(systemName: "chevron.down").font(.system(Theme.caption, weight: .medium))
             }
             .foregroundStyle(Theme.text)
             .padding(.horizontal, 14)
