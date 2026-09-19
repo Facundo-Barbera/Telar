@@ -47,11 +47,34 @@
  * and absent for network shares (`apps/engine/src/volumes.ts`), so nothing
  * load-bearing may require one. Every path through here works without it.
  *
- * AN UNRECOGNISED MARKER REFUSES; IT NEVER GUESSES. `remote.json` falls OPEN on
- * a version it does not know (`apps/web/lib/remote/store.ts`) because there the
- * worse failure was locking a working install out of itself. Here the worse
- * failure is the opposite one — falling back to the default path IS the fresh-
- * store-over-absent-history bug. Same lesson from #628, pointing the other way.
+ * ══ VERSION DISCIPLINE: THE SAME SHAPE AS `remote-file.js`, THE OPPOSITE
+ *    TERMINAL ANSWER, AND BOTH ON PURPOSE ══
+ *
+ * `remote-file.js` is this module's sibling — the other file the shell reads,
+ * before anything opens, to decide something it cannot take back. #627/#628
+ * established the rule there and it is the same rule here:
+ *
+ *   THREE STATES, NEVER TWO. Missing, version-known, and version-unknown are
+ *   different answers, and the unknown one must never collapse into the missing
+ *   one. `remote-file.js` says it as "a first launch is guarded, and the shell
+ *   must not read that as unconfigured, so open"; here it is "an absent store
+ *   must never read as no store". Same sentence, different nouns. An
+ *   unparseable file is a fourth state and is not a missing one either.
+ *
+ * WHAT DIFFERS IS THE TERMINAL ANSWER, and it differs because the irreversible
+ * direction is opposite. For `remote.json` the unsafe direction is WIDENING, so
+ * an untrusted file keeps the socket on loopback and the cockpit's own gate
+ * falls open — being locked out of a working install would need a reinstall to
+ * undo. Here the unsafe direction is PROCEEDING: falling back to the default
+ * path is precisely the fresh-store-over-absent-history bug, and no reinstall
+ * undoes that. So there an untrusted file yields the narrow answer and the app
+ * still runs; here it yields no answer at all and the app refuses to start.
+ *
+ * WHICH IS WHY THE TWO ARE NOT ONE HELPER. A shared reader parameterised by
+ * "what to do when you do not trust it" would hide the only thing about these
+ * two files worth understanding — that the same discipline lands in opposite
+ * places because the unrecoverable failure is in opposite directions. They
+ * cite each other instead.
  *
  * EVERY DEPENDENCY IS INJECTED, which is why the unit tests need no drive: the
  * mount checks and the uuid reader are seams, and every transition this module

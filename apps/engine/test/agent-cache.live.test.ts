@@ -17,14 +17,34 @@
  *     TELAR_LIVE_CACHE=1 bun test --cwd apps/engine test/agent-cache.live.test.ts
  *
  * `TELAR_HOME` may name an engine root so rung 1 of the key ladder is read the
- * way a real turn reads it; `TELAR_LIVE_CACHE_MODEL` points it at another id.
+ * way a real turn reads it; `TELAR_LIVE_CACHE_MODEL` points it at another id and
+ * `TELAR_LIVE_CACHE_EFFORT` at another depth.
  *
- * ── THE BUDGET: FOUR CALLS, ONE OUTPUT TOKEN EACH ───────────────────────────
+ * ── THE BUDGET: FOUR CALLS, AND THE PARAMETERS ARE PRODUCTION'S (#613) ──────
  * The prompt is large on purpose — it is the Agent's REAL system block and its
- * REAL 25-tool array, which is the thing whose caching is in question — and the
- * answer is capped at a single token, because this buys a measurement rather
- * than a reply. No retry: a smoke that retried could bill somebody twice for a
- * mistake, which is `agent.live.test.ts`'s rule and is kept here.
+ * REAL 25-tool array, which is the thing whose caching is in question. No retry:
+ * a smoke that retried could bill somebody twice for a mistake, which is
+ * `agent.live.test.ts`'s rule and is kept here.
+ *
+ * THE PARAMETERS ARE THE AGENT'S OWN, AND THAT IS NOT COSMETIC. This file first
+ * shipped asking for `streaming: false` and `maxTokens: 1`, on the reasoning that
+ * it was buying a round trip rather than a reply — and its third call, the first
+ * one carrying a history, came back `400 [invalid_request_error] … The
+ * reasoning_content in the thinking mode must be passed back to the API`, which
+ * is #613. The measurement that closed it: THE SAME six-message history is
+ * ACCEPTED when the request carries what a real turn carries — `reasoning_effort`
+ * set and `stream: true` — and REFUSED when it does not, with the ceiling present
+ * or absent either way. So the ceiling was never the problem and the two missing
+ * parameters were. WHICH of the two is not isolated: they were restored together,
+ * and the budget for the question was three live calls. `agent/model.ts` carries
+ * why that open end matters more than it looks.
+ *
+ * Which leaves the rule this file should have followed from the start: A SMOKE
+ * THAT MEASURES PRODUCTION'S CACHING MUST SEND PRODUCTION'S REQUEST. A cheaper
+ * request is a different request, and a number measured on one that production
+ * never sends is a number about nothing. The answers are now a couple of hundred
+ * tokens each instead of one, on a flash model, which is the whole price of the
+ * change.
  *
  * ── WHAT THE FOUR CALLS ARE, AND WHY THE FOURTH IS THE INTERESTING ONE ──────
  *   1. COLD. The first send of this prefix. Whatever it reports is the floor.
@@ -64,6 +84,14 @@ const CACHE_THREAD = "thread_telar_cache_probe";
 /** The id the Agent runs today. Overridable, because the point of the file is
  *  the measurement rather than this particular model. */
 const MODEL = process.env.TELAR_LIVE_CACHE_MODEL?.trim() || "deepseek-v4.1-flash";
+
+/**
+ * AND THE DEPTH IT RUNS AT — `agent.json`'s `effort`, which on this machine is
+ * `high`. It is part of the request being measured rather than a knob: see the
+ * header on why a smoke that omitted it measured a request production never
+ * sends, and was refused for it.
+ */
+const EFFORT = (process.env.TELAR_LIVE_CACHE_EFFORT?.trim() || "high") as "low" | "medium" | "high";
 
 const agentDir = process.env.TELAR_HOME ? path.join(process.env.TELAR_HOME, "engine", "agent") : undefined;
 
@@ -150,14 +178,16 @@ describe.skipIf(!LIVE)("OpenCode Go, live, does the Agent's prefix get cached", 
     const specs = agentToolSpecs(tools);
     say(`[cache] model: ${MODEL} — ${specs.length} tools, ${JSON.stringify(specs).length} chars of definitions`);
 
-    /** One measured call. `maxTokens: 1` buys the round trip, not an answer. */
+    say(`[cache] effort: ${EFFORT} — the request is the Agent's own (#613)`);
+
+    /** One measured call, with the parameters a real turn sends: the effort set,
+     *  streaming on, and no ceiling. See the header. */
     const probe = async (label: string, messages: unknown[]): Promise<{ input: number; cached?: number }> => {
       const model = agentChatModel({
         threadId: CACHE_THREAD,
         model: MODEL,
+        effort: EFFORT,
         ...(agentDir ? { agentDir } : {}),
-        streaming: false,
-        maxTokens: 1,
       });
       const answer = (await model.bindTools!(specs as never).invoke(messages as never)) as { usage_metadata?: { input_tokens?: number; input_token_details?: { cache_read?: number } } };
       const usage = answer.usage_metadata;
@@ -165,6 +195,11 @@ describe.skipIf(!LIVE)("OpenCode Go, live, does the Agent's prefix get cached", 
       // ABSENT IS THE FINDING, NOT A ZERO. If Go forwards no cache statistics at
       // all this stays undefined on every call, and that IS the answer to item 3
       // — see the note at the bottom of this test.
+      //
+      // IT IS REPORTED FOR THIS MODEL, incidentally measured while closing #613:
+      // a second call against `deepseek-v4.1-flash` came back `cache_read: 4480`
+      // of 4,720 input tokens. One observation is not the measurement this file
+      // exists to take, but it does say the four lines below will carry numbers.
       const cached = usage?.input_token_details?.cache_read;
       say(`[cache] ${label}: input ${input}, cache_read ${cached === undefined ? "NOT REPORTED" : cached} (${cached === undefined || input === 0 ? "—" : `${Math.round((cached / input) * 100)}%`})`);
       return { input, ...(cached === undefined ? {} : { cached }) };

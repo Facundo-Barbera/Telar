@@ -5,6 +5,13 @@ the interface, verification as the gate, and environment leasing as the
 scarce-resource manager. Normative companion: [`env-contract-v1.md`](env-contract-v1.md)
 (implemented by `packages/env`). A visual summary lives in [`artifacts/`](artifacts/).
 
+**One standing commitment lives in an investigation rather than in source**, because
+the code it governs does not exist yet and the sentence must not be lost before it
+does: [`investigations/627-remote-access-without-tailscale.md`](investigations/627-remote-access-without-tailscale.md)
+§1a states, in the words to reuse, what a user of a *hosted* Telar cockpit would be
+trusting us with. Anyone writing the first hosted sign-up screen, onboarding, or
+marketing page should read it before writing the promise.
+
 Fresh documentation is being written here. What is already in this directory is
 not part of that effort — it is the set of pages that **live source code cites as
 its own rationale**, kept when the generated 2026-07-17 doc set was cleared:
