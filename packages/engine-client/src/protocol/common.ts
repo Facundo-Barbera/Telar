@@ -547,6 +547,38 @@ export const WorktreesRoot = z.object({
 export type WorktreesRoot = z.infer<typeof WorktreesRoot>;
 
 /**
+ * WHAT MOVING THE CHECKOUTS ALREADY CUT DID — issue #642 part 2.
+ *
+ * ONE REASON PER SKIPPED CHECKOUT, NOT A TOTAL, because the reasons lead a
+ * person to different places: commit your work, versus a branch that no longer
+ * exists and cannot be re-cut from, versus git said something nobody predicted.
+ * A single "3 could not be moved" would send them looking for the wrong thing.
+ *
+ * A PARTIAL RESULT IS A SUCCESS, and that is safe here in a way it would not be
+ * for a copy-based move: checkouts are moved by being re-cut from their own
+ * branch, one at a time, each with its own state rewrite. Skipping one changes
+ * nothing about the others, and the operation is re-runnable — commit the work
+ * and press it again.
+ */
+export const WorktreeMoveSkip = z.object({
+  sessionId: z.string().min(1),
+  path: z.string().min(1),
+  reason: z.enum(["dirty", "branch-gone", "detached", "failed"]),
+  /** Git's own words, or the branch that has gone. Never a substitute for
+   *  `reason`: a sentence from git is diagnostic, not copy. */
+  detail: z.string().optional(),
+});
+export type WorktreeMoveSkip = z.infer<typeof WorktreeMoveSkip>;
+
+export const WorktreeMoveResult = z.object({
+  moved: z.array(z.object({ sessionId: z.string().min(1), from: z.string().min(1), to: z.string().min(1) })),
+  skipped: z.array(WorktreeMoveSkip),
+  /** The whole thing said in a sentence, composed where the reasons are known. */
+  summary: z.string(),
+});
+export type WorktreeMoveResult = z.infer<typeof WorktreeMoveResult>;
+
+/**
  * The untranslated provider payload behind a normalized event.
  *
  * KEEP IT, KEEP IT OPTIONAL, AND NEVER DEPEND ON IT. It is how a normalization
