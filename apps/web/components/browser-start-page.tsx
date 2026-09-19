@@ -49,7 +49,7 @@ function BrowserStartPageContent({ scopeKey, onOpen }: Props) {
         {data?.recent.length ? (
           <section className="space-y-2" aria-label="Recent sites in this project">
             <h3 className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><HistoryIcon className="size-3.5" /> Recent sites in this project</h3>
-            <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+            <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
               {data.recent.map(({ url }) => (
                 <div key={url} className="flex items-center">
                   <button type="button" className="min-w-0 flex-1 truncate px-3 py-2.5 text-left text-sm hover:bg-muted focus-visible:outline focus-visible:outline-ring" onClick={() => onOpen(url)}>{url.replace(/^https?:\/\//, '').replace(/\/$/, '')}</button>
@@ -62,7 +62,7 @@ function BrowserStartPageContent({ scopeKey, onOpen }: Props) {
         {data?.servers.length ? (
           <section className="space-y-2" aria-label="Local servers on this Mac">
             <h3 className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><RadioTowerIcon className="size-3.5" /> Local servers</h3>
-            <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+            <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
               {data.servers.map(({ url, port }) => <button type="button" key={url} className="block w-full px-3 py-2.5 text-left text-sm hover:bg-muted focus-visible:outline focus-visible:outline-ring" onClick={() => onOpen(url)}>localhost:{port}</button>)}
             </div>
           </section>

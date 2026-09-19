@@ -224,7 +224,7 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
         {catalogue.message && <p className="text-xs-plus text-warning">{catalogue.message}</p>}
       </div>
 
-      <div className="divide-y divide-border/60 rounded-lg border border-border/70">
+      <div className="divide-y divide-border/60 rounded-lg border border-border/70 bg-card">
         {models.map((model, index) => {
           const starred = overlay.favorites.includes(model.id);
           const added = model.source === "user";
