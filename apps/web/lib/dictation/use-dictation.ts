@@ -35,6 +35,21 @@
  * puts the browser's recording indicator away — a page that keeps a live track
  * after the button says idle is a page nobody trusts twice.
  *
+ * ── WHICH MICROPHONE IS THIS BROWSER'S ANSWER, NOT THE MAC'S (#643) ─────────
+ * Read from `devices.ts` at the press, not carried on the token with the
+ * language and the glossary. Those are facts about the Mac and are the same for
+ * every surface reading it; a microphone is plugged into ONE machine and its
+ * `deviceId` is minted per browser profile, so the engine is the wrong place to
+ * keep it and a phone could not use the answer anyway. It rides as `ideal`,
+ * which is what makes an unplugged headset degrade to the default rather than
+ * fail the press.
+ *
+ * ── AND THE STREAM IS TAPPABLE, SO THE SETTINGS PANE HAS ONE MICROPHONE ─────
+ * `onStream` hands the live track to whoever asked to read it — the level meter
+ * in Settings › Dictation — and hands over `undefined` on every path out. It is a
+ * tap and not a transfer: this hook remains the only thing that stops those
+ * tracks.
+ *
  * ── REFS, NOT STATE, FOR THE MACHINERY ──────────────────────────────────────
  * The socket, the recorder, the tracks and the interim writer are not rendered
  * and must not re-render anything when they change; what state carries is the
@@ -44,7 +59,9 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createEngineApi } from "@/lib/engine/client";
 import { CHUNK_MS, listenProtocols, listenUrl, recordingType } from "./deepgram";
+import { audioConstraints, readMicrophone } from "./devices";
 import { createDictationWriter, type DictationBox } from "./interim";
+import { microphoneRefusal } from "./refusal";
 import { parseFrame, readFrame } from "./transcript";
 
 export type DictationPhase =
@@ -94,8 +111,13 @@ const neverChanges = () => () => {};
 /** No `MediaRecorder` (an old browser), or no `getUserMedia` (an insecure
  *  origin, or an embed with no microphone permission) — either way there is
  *  nothing to offer, and a control that is permanently disabled is an
- *  advertisement for something the reader cannot have. */
-const canRecord = (): boolean => typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia !== undefined;
+ *  advertisement for something the reader cannot have.
+ *
+ *  EXPORTED FOR THE SETTINGS PANE (#643), which asks the same question and then
+ *  says WHY rather than drawing nothing — see `refusal.ts`. One fact, one
+ *  expression: a second copy is how the button and the pane come to disagree
+ *  about whether this browser can dictate. */
+export const canRecord = (): boolean => typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia !== undefined;
 
 export function useDictation(input: {
   /** THE BOX BEING SPOKEN INTO, resolved per dictation rather than held: the
@@ -107,6 +129,21 @@ export function useDictation(input: {
    *  a silent no-op. Injected so a test can drive the whole loop against a box
    *  that is a string. */
   box?: () => DictationBox | undefined;
+  /**
+   * THE LIVE TRACK, HANDED OUT SO IT CAN BE TAPPED — never so it can be owned
+   * (#643).
+   *
+   * Called with the stream the moment it is open, and with `undefined` on every
+   * path out. It exists for the level meter in Settings › Dictation, which has
+   * to read the SAME audio going up to the provider rather than open a second
+   * microphone: two streams could disagree, and two recording lights is one
+   * more than anybody asked for.
+   *
+   * THE CALLEE MUST NOT STOP THE TRACKS. This hook releases the microphone on
+   * every path out — that release is what puts the browser's recording dot away
+   * — and a tap that stopped them would be a second owner of one device.
+   */
+  onStream?: (stream: MediaStream | undefined) => void;
 }): DictationState {
   const [phase, setPhase] = useState<DictationPhase>("idle");
   const [error, setError] = useState<string>();
@@ -146,6 +183,13 @@ export function useDictation(input: {
   useEffect(() => {
     box.current = input.box;
   }, [input.box]);
+  /** The tap, held for `box`'s reason: the pane passes a fresh closure on every
+   *  render and it is only ever called from a path that is already past the
+   *  commit. */
+  const onStream = useRef(input.onStream);
+  useEffect(() => {
+    onStream.current = input.onStream;
+  }, [input.onStream]);
   /** THE SPAN, FOR ONE DICTATION. Built at the press and dropped at the
    *  teardown: a writer kept between presses would hold offsets into a draft
    *  the person has since rewritten, and the next utterance would replace their
@@ -202,6 +246,10 @@ export function useDictation(input: {
         // Already closing.
       }
     }
+    // THE TAP IS TOLD BEFORE THE TRACKS STOP, so whatever is reading the stream
+    // lets go of it while it is still a valid one — an analyser left connected
+    // to a dead track is a bar frozen at the last thing it heard.
+    if (stream.current) onStream.current?.(undefined);
     for (const track of stream.current?.getTracks() ?? []) track.stop();
     stream.current = null;
     // THE WORDS STAY IN THE BOX, the span does not. Whatever was written is the
@@ -250,7 +298,12 @@ export function useDictation(input: {
       if (minted.provider !== "deepgram") {
         throw new Error(`This browser does not know how to dictate with ${minted.provider}. Update Telar, or choose another provider in Settings → Dictation.`);
       }
-      const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // WHICH MICROPHONE, READ AT THE PRESS (#643). A per-device choice kept in
+      // this browser's own storage rather than on the engine — see `devices.ts`
+      // for why a headset is not a fact about the Mac — so it is read here
+      // rather than carried on the token, and it rides as `ideal`: an unplugged
+      // headset degrades to the default instead of failing the press.
+      const microphone = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(readMicrophone()) });
       // A PERMISSION PROMPT CAN OUTLAST THE PRESS. Granted after a stop, the
       // track is live and owned by nobody — so it is stopped here rather than
       // stored, which is the one case the teardown above cannot reach.
@@ -259,6 +312,11 @@ export function useDictation(input: {
         return;
       }
       stream.current = microphone;
+      // THE TAP, ONCE THE STREAM IS OURS TO SPEAK FOR. Before the socket opens,
+      // so the meter in the settings pane is already moving while the provider
+      // is still connecting — which is exactly the interval where a person needs
+      // to know whether the microphone or the provider is the problem.
+      onStream.current?.(microphone);
 
       // THE TOKEN IS THE SECOND ARGUMENT, NOT A QUERY PARAMETER. Deepgram
       // refuses `?access_token=` on this endpoint (close 1002, "Expected 101
@@ -357,17 +415,14 @@ export function useDictation(input: {
       // pressed stop, and a toast about the start they cancelled would be the
       // app arguing with them.
       if (abandoned()) return;
-      // WHOSE PROBLEM IT IS, SAID DIFFERENTLY. A refused microphone is the
-      // person's own browser asking them something; anything else is the
-      // engine's or Deepgram's sentence, which is already written for them.
-      const denied = cause instanceof Error && (cause.name === "NotAllowedError" || cause.name === "SecurityError");
-      setError(
-        denied
-          ? "This browser did not allow the microphone. Allow it for this site and press the button again."
-          : cause instanceof Error
-            ? cause.message
-            : "Dictation could not start.",
-      );
+      // WHOSE PROBLEM IT IS, SAID DIFFERENTLY — and said in ONE place (#643).
+      // This used to tell a refused permission from everything else and pass
+      // the rest of them through as `cause.message`, which meant "no
+      // microphone connected" and "another app has it open" both arrived as
+      // whatever the browser happened to call them. `microphoneRefusal` is the
+      // whole table now, shared with the settings pane's own microphone test so
+      // the two surfaces cannot drift: see `refusal.ts`.
+      setError(microphoneRefusal(cause));
       teardown();
     }
   }, [teardown]);
