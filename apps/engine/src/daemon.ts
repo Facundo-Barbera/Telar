@@ -106,7 +106,8 @@ import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
 import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
-import { worktreesRoot, type AsyncGitRunner, type GitRunner } from "./worktree";
+import type { AsyncGitRunner, GitRunner } from "./worktree";
+import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
 import { measureStorage } from "./storage";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
@@ -937,7 +938,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const storageCache: { report?: StorageReport; inFlight?: Promise<StorageReport> } = {};
   const readStorage = (refresh: boolean): Promise<StorageReport> => {
     if (!refresh && storageCache.report) return Promise.resolve(storageCache.report);
-    storageCache.inFlight ??= measureStorage({ root: store.paths.root, worktreesRoot: worktreesRoot(store.paths.root) })
+    /**
+     * BOTH ROOTS WHILE A SPLIT LASTS — #642 part 2.
+     *
+     * Changing where checkouts go affects the NEXT cut; the ones already cut
+     * stay where they are until they are moved or their sessions end. So for a
+     * while there are checkouts under two roots, and a "Session checkouts" row
+     * that counted only the configured one would under-report by exactly the
+     * gigabytes somebody changed the setting to get rid of.
+     */
+    const configured = rootOf(readWorktreesRoot(store.paths.root)) ?? defaultWorktreesRoot(store.paths.root);
+    const fallback = defaultWorktreesRoot(store.paths.root);
+    storageCache.inFlight ??= measureStorage({
+      root: store.paths.root,
+      worktreesRoot: configured,
+      ...(configured === fallback ? {} : { alsoWorktrees: [fallback] }),
+    })
       .then((report) => {
         storageCache.report = report;
         return report;
@@ -2138,6 +2154,48 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       if (request.method === "GET" && url.pathname === "/v2/storage") {
         writeJson(response, 200, { storage: await readStorage(url.searchParams.get("refresh") === "1") });
+        return;
+      }
+      /**
+       * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
+       *
+       * NO `restartRequired`, and that is a finding rather than an omission.
+       * The root is consulted at exactly one moment — planning where a new
+       * checkout lands — and everything afterwards addresses a worktree by the
+       * absolute path recorded on its session. So a new root takes effect on
+       * the next cut, and printing a restart out of symmetry with #630 would
+       * cost somebody a restart they do not need.
+       *
+       * AND NOTHING IS MOVED BY THIS. Checkouts already cut keep working where
+       * they are; moving them is a separate, explicit operation with its own
+       * refusals. A PUT here cannot lose anybody's work.
+       */
+      if (url.pathname === "/v2/worktrees-root" && (request.method === "GET" || request.method === "PUT")) {
+        if (request.method === "PUT") {
+          const input = (await body(request)) as { root?: unknown };
+          // PRESENT-BUT-NULL IS "put it back beside the store", the same shape
+          // every other nullable setting here uses to mean the default.
+          if (input.root === null) clearWorktreesRoot(store.paths.root);
+          else if (typeof input.root === "string" && input.root.trim()) {
+            if (!path.isAbsolute(input.root.trim())) throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path");
+            try {
+              writeWorktreesRoot(store.paths.root, input.root.trim());
+            } catch (cause) {
+              throw new HttpError(400, "invalid_request", cause instanceof Error ? cause.message : "that folder could not be used for session checkouts");
+            }
+          } else throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path, or null for the default");
+          // The figures are about to be wrong in the one way that matters, so
+          // the next read measures rather than serving the old split.
+          storageCache.report = undefined;
+        }
+        const state = readWorktreesRoot(store.paths.root);
+        writeJson(response, 200, {
+          worktreesRoot: {
+            ...state,
+            default: defaultWorktreesRoot(store.paths.root),
+            ...(worktreesRootBlocker(state) ? { blocker: worktreesRootBlocker(state) } : {}),
+          },
+        });
         return;
       }
       /**

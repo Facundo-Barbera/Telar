@@ -54,6 +54,7 @@ import type {
   SidebarLayout,
   StorageReport,
   TextGenPolicy,
+  WorktreesRoot,
   UsageReport,
   UsageResolution,
   UsageLimits,
@@ -624,6 +625,12 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `refresh` asks for another. Never put this on a timer (#629). */
     storage: (options: { refresh?: boolean } = {}) =>
       request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`),
+    /** Where session checkouts go on this install — see `WorktreesRoot`. */
+    worktreesRoot: () => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "GET", "/api/worktrees-root"),
+    /** Put them somewhere else from the next cut on; `null` restores the
+     *  default. Nothing is moved and no restart is needed — a checkout already
+     *  cut is addressed by the path recorded on its session. */
+    setWorktreesRoot: (root: string | null) => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "PUT", "/api/worktrees-root", { root }),
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>

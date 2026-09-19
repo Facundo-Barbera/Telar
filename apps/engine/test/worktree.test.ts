@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
-import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WorktreeError, worktreeLockReason, worktreesRoot, type AsyncGitRunner, type GitRunner } from "../src/worktree";
+import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WorktreeError, worktreeLockReason, defaultWorktreesRoot, type AsyncGitRunner, type GitRunner } from "../src/worktree";
 import { gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync } from "../src/git";
 
 const roots: string[] = [];
@@ -179,7 +179,7 @@ test("prune never runs when the worktrees root is gone, however available the pr
 
   // The drive goes: the worktrees root and everything under it is absent. The
   // PROJECT is untouched and reads as available, which is the whole trap.
-  fs.rmSync(worktreesRoot(engineRoot), { recursive: true, force: true });
+  fs.rmSync(defaultWorktreesRoot(engineRoot), { recursive: true, force: true });
 
   let ran: string[][] = [];
   const watched: AsyncGitRunner = async (cwd, args) => {

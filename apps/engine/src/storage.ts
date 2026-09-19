@@ -221,7 +221,21 @@ function targetOf(category: StorageCategory, root: string): Target {
  * inside case is skipped during the root's own walk so its bytes are counted in
  * its own row and not twice.
  */
-export async function measureStorage(input: { root: string; worktreesRoot: string; now?: number }): Promise<StorageReport> {
+export async function measureStorage(input: {
+  root: string;
+  worktreesRoot: string;
+  /**
+   * Roots that ALSO hold checkouts — a location the setting has moved away
+   * from, whose worktrees have not been moved yet (#642 part 2).
+   *
+   * They are summed into the same row rather than given rows of their own: a
+   * person reading "Session checkouts" wants to know what their checkouts cost
+   * them, and splitting that across two rows because of an in-progress move
+   * would make the pane report Telar's bookkeeping instead of their disk.
+   */
+  alsoWorktrees?: readonly string[];
+  now?: number;
+}): Promise<StorageReport> {
   const started = Date.now();
   const root = path.resolve(input.root);
   const worktrees = path.resolve(input.worktreesRoot);
@@ -231,9 +245,12 @@ export async function measureStorage(input: { root: string; worktreesRoot: strin
 
   const add = (category: StorageCategory, amount: number) => bytes.set(category, (bytes.get(category) ?? 0) + amount);
 
-  const checkouts = await walk(worktrees, seen);
-  if (checkouts.bytes > 0) add("worktrees", checkouts.bytes);
-  partial ||= checkouts.partial;
+  const alsoWorktrees = (input.alsoWorktrees ?? []).map((extra) => path.resolve(extra)).filter((extra) => extra !== worktrees);
+  for (const target of [worktrees, ...alsoWorktrees]) {
+    const checkouts = await walk(target, seen);
+    if (checkouts.bytes > 0) add("worktrees", checkouts.bytes);
+    partial ||= checkouts.partial;
+  }
 
   let children: fs.Dirent[] = [];
   try {
@@ -241,9 +258,10 @@ export async function measureStorage(input: { root: string; worktreesRoot: strin
   } catch {
     partial = true;
   }
+  const checkoutRoots = new Set([worktrees, ...alsoWorktrees]);
   for (const child of children) {
     const target = path.join(root, child.name);
-    if (target === worktrees) continue; // Counted in its own row, wherever it is.
+    if (checkoutRoots.has(target)) continue; // Counted in its own row, wherever it is.
     if (child.isDirectory()) {
       const measured = await walk(target, seen);
       add(DIRECTORY_CATEGORIES[child.name] ?? "other", measured.bytes);

@@ -76,6 +76,7 @@ const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.Plu
 const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
 const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
 const StorageSection = dynamic(() => import("./storage-section").then((mod) => mod.StorageSection));
+const WorktreesRootSection = dynamic(() => import("./worktrees-root-section").then((mod) => mod.WorktreesRootSection));
 const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
 const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
 
@@ -392,6 +393,11 @@ export function SettingsPage() {
       {active === "storage" && (
         <>
           <StorageSection />
+          {/* THE REPRODUCIBLE HALF BEFORE THE WHOLE (#642 part 2). Moving only
+              the checkouts leaves Telar able to start without the drive;
+              moving the store does not. The cheaper, safer choice should be
+              the one a reader meets first. */}
+          <WorktreesRootSection />
           <StoreSection />
         </>
       )}

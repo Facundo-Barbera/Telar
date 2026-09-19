@@ -951,6 +951,24 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       {
+        /**
+         * TWO ROWS CALLED "Location", ON ONE PANE, AND DELIBERATELY. One moves
+         * the reproducible 92%; the other moves everything including the
+         * history that nothing reproduces. The group is what tells them apart,
+         * and it is half the anchor, so both are findable and neither is
+         * mistaken for the other.
+         */
+        title: "Session checkouts",
+        rows: [
+          {
+            title: "Location",
+            hint: "Where session checkouts are made, and how to put them on another drive without moving your history.",
+            keywords: ["worktree", "checkout", "external", "drive", "move", "space", "disk", "12 gb", "relocate"],
+            icon: FolderGitIcon,
+          },
+        ],
+      },
+      {
         title: "Store",
         rows: [
           {
