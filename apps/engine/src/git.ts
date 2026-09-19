@@ -48,24 +48,104 @@ export type GitRefEntry = {
   head?: boolean;
 };
 
+/**
+ * WHY A GIT READ IS NOT AN ANSWER — the distinction this module used to collapse.
+ *
+ * `timeout` is the case that earned this type. `defaultGitRunner` kills a child
+ * at `DEFAULT_GIT_TIMEOUT_MS` and reports `GIT_TIMEOUT_STATUS`, so a stalled
+ * subprocess arrives here as an ordinary non-zero exit — and every reader below
+ * used to turn a non-zero exit into a FACT about the repository: no branches, a
+ * clean tree, no worktrees. Those are confident wrong answers, and a person acts
+ * on them. `files.ts` learnt this first (see `gitWorkspaceFilesAsync`); this is
+ * the same lesson applied to the overview.
+ *
+ * `failed` is the rest — not a repository, an unreadable object store, a locked
+ * index. Also not evidence of absence, but actionable differently: a retry is
+ * the honest offer for a timeout and rarely the answer for the others.
+ */
+export type GitReadFailure = "timeout" | "failed";
+
+/** `timedOut` first, because a killed child also carries a non-zero status. */
+function failureOf(result: { status: number; timedOut?: true }): GitReadFailure | undefined {
+  if (result.timedOut) return "timeout";
+  return result.status === 0 ? undefined : "failed";
+}
+
+/** The worse of two failures, so a listing built from several reads reports the
+ *  one a person can act on. A timeout outranks a plain failure: it is the case
+ *  that says "ask again". */
+function worseFailure(left: GitReadFailure | undefined, right: GitReadFailure | undefined): GitReadFailure | undefined {
+  if (left === "timeout" || right === "timeout") return "timeout";
+  return left ?? right;
+}
+
+/**
+ * A REF LISTING AND WHETHER IT IS THE WHOLE LISTING — issue #650.
+ *
+ * `refs` alone could not say that. The listing is two `for-each-ref` calls, one
+ * per namespace, and when the local half timed out while the remote half
+ * answered the result was a SHORTER LIST rather than an empty one — which is the
+ * worse failure, because an empty picker looks broken and a short picker looks
+ * complete. The person reads "that branch does not exist" and cuts their session
+ * from a base they did not mean.
+ *
+ * SO THE PARTIAL LIST IS KEPT AND MARKED, rather than discarded. What git did
+ * answer is still worth offering; what it must never do is pass for the whole
+ * repository.
+ */
+export type GitRefListing = {
+  /** What was listed. POSSIBLY PARTIAL — see `incomplete` before reading an
+   *  absence here as "this repository has no such branch". */
+  refs: GitRefEntry[];
+  /** Set when at least one namespace did not answer. Absent is the ONLY state in
+   *  which an empty `refs` means "this repository has no branches". */
+  incomplete?: GitReadFailure;
+};
+
 export type GitOverview = {
   repository: boolean;
   branch?: string;
-  /** Paths with staged, unstaged or untracked changes. */
-  dirtyFiles: number;
+  /** Paths with staged, unstaged or untracked changes. ABSENT when git did not
+   *  answer — never 0, which reads as a clean tree nobody looked at. */
+  dirtyFiles?: number;
   /** Commits this branch has that its upstream does not, and vice versa.
    *  Both absent when there is no upstream — which is not the same as zero. */
   ahead?: number;
   behind?: number;
-  worktrees: GitWorktreeEntry[];
+  /** Absent when `git worktree list` did not answer; `[]` only when there
+   *  genuinely are none. */
+  worktrees?: GitWorktreeEntry[];
   /** Cuttable bases, newest commit first, capped. Absent on a non-repository. */
   refs?: GitRefEntry[];
+  /** Why `refs` is not the whole listing. Set means the picker must say so
+   *  rather than draw a short list as if it were the repository. */
+  refsIncomplete?: GitReadFailure;
   /** Whether the project's disk was there at all — stamped by the store, never
    *  by this module, which has no project to ask about. See `withAvailability`. */
   availability?: ProjectAvailability;
 };
 
 const EMPTY: GitOverview = { repository: false, dirtyFiles: 0, worktrees: [] };
+
+/**
+ * A TIMED-OUT PROBE IS NOT AN UNVERSIONED DIRECTORY — the same refusal
+ * `files.ts:349` makes, at the top of every reader here.
+ *
+ * `rev-parse --is-inside-work-tree` is the gate: everything below reads its
+ * answer as "this is/is not a repository". A killed child exits non-zero like a
+ * plain `false` does, so without this the ONE state the engine supports on
+ * purpose — an unversioned directory hosting `envMode: "local"` sessions — is
+ * indistinguishable from a machine under load. The composer's foot drew the
+ * second as the first: "Not a git repository", over a repository.
+ *
+ * THROWN RATHER THAN REPORTED because there is no smaller true answer to give:
+ * every field below is a read of a repository we have not established exists.
+ * The web's poll already has the channel for it — a rejected `projectGit` sets
+ * `reachable: false` and the strip says the engine did not answer.
+ */
+function refuseTimedOutProbe(probe: { stderr: string; timedOut?: true }, what: string): void {
+  if (probe.timedOut) throw new Error(probe.stderr || `${what} timed out`);
+}
 
 function basenameOf(target: string): string {
   const parts = target.split(/[\\/]/).filter(Boolean);
@@ -286,6 +366,7 @@ export function parseGitLog(stdout: string): GitCommitEntry[] {
 export function sessionDiff(git: GitRunner, input: { cwd: string; baseRef?: string }): SessionDiff {
   const { cwd, baseRef } = input;
   const inside = git(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  refuseTimedOutProbe(inside, "Git review");
   if (inside.status !== 0 || inside.stdout.trim() !== "true") {
     return { repository: false, workspacePath: cwd, files: [], commits: [], linesAdded: 0, linesRemoved: 0, truncated: false };
   }
@@ -403,6 +484,10 @@ export function commitSessionWork(
   input: { cwd: string; message: string },
 ): { committed: boolean; commit?: GitCommitEntry; reason?: string } {
   const inside = git(input.cwd, ["rev-parse", "--is-inside-work-tree"]);
+  // NOT "not a git repository" — a killed probe is a machine under load, and
+  // telling someone their checkout is unversioned sends them looking for a
+  // problem that is not there rather than pressing the button again.
+  if (inside.timedOut) return { committed: false, reason: "git did not answer in time — try again." };
   if (inside.status !== 0 || inside.stdout.trim() !== "true") {
     return { committed: false, reason: "This session's workspace is not a git repository." };
   }
@@ -439,28 +524,48 @@ const MAX_REFS = 200;
  * must never become the thing that talks to a server. `origin/HEAD` is a
  * pointer, not a branch, and is dropped.
  */
-export function listGitRefs(git: GitRunner, projectRoot: string): GitRefEntry[] {
+export function listGitRefs(git: GitRunner, projectRoot: string): GitRefListing {
   /**
    * TWO CALLS, ONE PER NAMESPACE, so the kind is known by which call answered
    * — never guessed from the shape of the name, where a local branch called
    * `origin/anything` (legal, if perverse) would misfile. This listing rides
    * the composer foot's 15-second poll, so it must stay two subprocesses, not
    * one per ref.
+   *
+   * EACH HALF REPORTS ITS OWN FAILURE, which is the whole point: the observed
+   * defect was one half timing out under load while the other answered, and the
+   * caller could not tell the short list from a short repository.
    */
-  const half = (namespace: string, kind: GitRefEntry["kind"]): GitRefEntry[] => {
+  const half = (namespace: string, kind: GitRefEntry["kind"]): GitRefListing => {
     const listed = git(projectRoot, ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(HEAD)", namespace]);
-    if (listed.status !== 0) return [];
-    const refs: GitRefEntry[] = [];
-    for (const line of listed.stdout.split("\n")) {
-      if (!line.trim()) continue;
-      const [name = "", headMark = ""] = line.split("\t");
-      if (!name || name.endsWith("/HEAD")) continue;
-      refs.push({ name, kind, ...(headMark.trim() === "*" ? { head: true } : {}) });
-      if (refs.length >= MAX_REFS) break;
-    }
-    return refs;
+    const failure = failureOf(listed);
+    return { refs: failure ? [] : parseRefLines(listed.stdout, kind), ...(failure ? { incomplete: failure } : {}) };
   };
-  return [...half("refs/heads", "local"), ...half("refs/remotes", "remote")].slice(0, MAX_REFS);
+  return joinRefHalves(half("refs/heads", "local"), half("refs/remotes", "remote"));
+}
+
+/** One namespace's `for-each-ref` output. Shared by both runners so the sync and
+ *  async listings can never drift in what they consider a ref. */
+function parseRefLines(stdout: string, kind: GitRefEntry["kind"]): GitRefEntry[] {
+  const refs: GitRefEntry[] = [];
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const [name = "", headMark = ""] = line.split("\t");
+    if (!name || name.endsWith("/HEAD")) continue;
+    refs.push({ name, kind, ...(headMark.trim() === "*" ? { head: true } : {}) });
+    if (refs.length >= MAX_REFS) break;
+  }
+  return refs;
+}
+
+/** Locals then remotes, capped — and INCOMPLETE IF EITHER HALF WAS, because a
+ *  listing missing one namespace is not a listing of the repository. */
+function joinRefHalves(local: GitRefListing, remote: GitRefListing): GitRefListing {
+  const incomplete = worseFailure(local.incomplete, remote.incomplete);
+  return {
+    refs: [...local.refs, ...remote.refs].slice(0, MAX_REFS),
+    ...(incomplete ? { incomplete } : {}),
+  };
 }
 
 /**
@@ -470,17 +575,28 @@ export function listGitRefs(git: GitRunner, projectRoot: string): GitRefEntry[] 
  * never has one, so the common names are checked against the refs that
  * actually exist. Absent when there is no remote-tracking state at all, and
  * the caller's default falls back to the checkout's HEAD.
+ *
+ * TAKES THE LISTING, NOT THE REFS, because the corroboration below is only sound
+ * against a listing that is whole — see the pointer note.
  */
-export function defaultRemoteBase(git: GitRunner, projectRoot: string, refs: GitRefEntry[]): string | undefined {
+export function defaultRemoteBase(git: GitRunner, projectRoot: string, listing: GitRefListing): string | undefined {
   const pointed = git(projectRoot, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]);
   if (pointed.status === 0) {
     const name = pointed.stdout.trim().replace(/^refs\/remotes\//, "");
-    // Trusted only if the branch it points at is still real — a stale pointer
-    // to a deleted default would seed every worktree with a failing ref.
-    if (name && refs.some((ref) => ref.kind === "remote" && ref.name === name)) return name;
+    /**
+     * Trusted only if the branch it points at is still real — a stale pointer to
+     * a deleted default would seed every worktree with a failing ref.
+     *
+     * UNLESS THE LISTING IS INCOMPLETE, where absence from it is evidence of
+     * nothing. `symbolic-ref` answered this question on its own; letting a
+     * `for-each-ref` that was killed mid-flight veto it is how a timeout
+     * silently changed which branch a fresh session was cut from — the default
+     * quietly vanishing and the composer falling back to HEAD with nobody told.
+     */
+    if (name && (listing.incomplete !== undefined || listing.refs.some((ref) => ref.kind === "remote" && ref.name === name))) return name;
   }
   for (const guess of ["origin/main", "origin/master"]) {
-    if (refs.some((ref) => ref.kind === "remote" && ref.name === guess)) return guess;
+    if (listing.refs.some((ref) => ref.kind === "remote" && ref.name === guess)) return guess;
   }
   return undefined;
 }
@@ -559,6 +675,7 @@ export async function projectRemoteAsync(git: AsyncGitRunner, projectRoot: strin
 
 export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
   const inside = git(projectRoot, ["rev-parse", "--is-inside-work-tree"]);
+  refuseTimedOutProbe(inside, "Git overview");
   if (inside.status !== 0 || inside.stdout.trim() !== "true") return EMPTY;
 
   // `--abbrev-ref HEAD` gives "HEAD" on a detached checkout; that is a real
@@ -567,8 +684,15 @@ export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
   const raw = head.status === 0 ? head.stdout.trim() : "";
   const branch = raw && raw !== "HEAD" ? raw : undefined;
 
+  /**
+   * A COUNT NOBODY TOOK IS NO COUNT. A plain failure still reports 0 — a locked
+   * index is the pinned case, and the tree behind it is usually clean — but a
+   * KILLED `git status` is a measurement that never happened, and drawing it as
+   * "0 changed" is the reassuring picture of an unexamined working tree that the
+   * foot's own comment forbids.
+   */
   const status = git(projectRoot, ["status", "--porcelain"]);
-  const dirtyFiles = status.status === 0 ? countDirty(status.stdout) : 0;
+  const dirtyFiles = status.timedOut ? undefined : status.status === 0 ? countDirty(status.stdout) : 0;
 
   // No upstream is the common case for a fresh branch and is NOT an error —
   // git exits non-zero and both figures stay absent rather than becoming 0.
@@ -576,16 +700,19 @@ export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
   const divergence = tracking.status === 0 ? parseAheadBehind(tracking.stdout) : undefined;
 
   const worktrees = git(projectRoot, ["worktree", "list", "--porcelain"]);
-  const refs = listGitRefs(git, projectRoot);
-  const defaultBase = defaultRemoteBase(git, projectRoot, refs);
+  const listing = listGitRefs(git, projectRoot);
+  const defaultBase = defaultRemoteBase(git, projectRoot, listing);
 
   return {
     repository: true,
     ...(branch ? { branch } : {}),
-    dirtyFiles,
+    ...(dirtyFiles === undefined ? {} : { dirtyFiles }),
     ...(divergence ?? {}),
-    worktrees: worktrees.status === 0 ? parseWorktreeList(worktrees.stdout, projectRoot) : [],
-    refs,
+    // Same distinction as the count above: a killed `worktree list` is absent,
+    // never the "0 worktrees" a reader would take for a fact.
+    ...(worktrees.timedOut ? {} : { worktrees: worktrees.status === 0 ? parseWorktreeList(worktrees.stdout, projectRoot) : [] }),
+    refs: listing.refs,
+    ...(listing.incomplete ? { refsIncomplete: listing.incomplete } : {}),
     ...(defaultBase ? { defaultBase } : {}),
   };
 }
@@ -594,6 +721,7 @@ export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
 export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string; baseRef?: string }): Promise<SessionDiff> {
   const { cwd, baseRef } = input;
   const inside = await git(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  refuseTimedOutProbe(inside, "Git review");
   if (inside.status !== 0 || inside.stdout.trim() !== "true") {
     return { repository: false, workspacePath: cwd, files: [], commits: [], linesAdded: 0, linesRemoved: 0, truncated: false };
   }
@@ -659,59 +787,53 @@ export async function sessionFilePatchAsync(
   return { patch, binary: /^Binary files .* differ$/m.test(patch) };
 }
 
-export async function listGitRefsAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitRefEntry[]> {
-
-  const half = async (namespace: string, kind: GitRefEntry["kind"]): Promise<GitRefEntry[]> => {
+export async function listGitRefsAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitRefListing> {
+  const half = async (namespace: string, kind: GitRefEntry["kind"]): Promise<GitRefListing> => {
     const listed = await git(projectRoot, ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(HEAD)", namespace]);
-    if (listed.status !== 0) return [];
-    const refs: GitRefEntry[] = [];
-    for (const line of listed.stdout.split("\n")) {
-      if (!line.trim()) continue;
-      const [name = "", headMark = ""] = line.split("\t");
-      if (!name || name.endsWith("/HEAD")) continue;
-      refs.push({ name, kind, ...(headMark.trim() === "*" ? { head: true } : {}) });
-      if (refs.length >= MAX_REFS) break;
-    }
-    return refs;
+    const failure = failureOf(listed);
+    return { refs: failure ? [] : parseRefLines(listed.stdout, kind), ...(failure ? { incomplete: failure } : {}) };
   };
-  return [...await half("refs/heads", "local"), ...await half("refs/remotes", "remote")].slice(0, MAX_REFS);
+  return joinRefHalves(await half("refs/heads", "local"), await half("refs/remotes", "remote"));
 }
 
-export async function defaultRemoteBaseAsync(git: AsyncGitRunner, projectRoot: string, refs: GitRefEntry[]): Promise<string | undefined> {
+export async function defaultRemoteBaseAsync(git: AsyncGitRunner, projectRoot: string, listing: GitRefListing): Promise<string | undefined> {
   const pointed = await git(projectRoot, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]);
   if (pointed.status === 0) {
     const name = pointed.stdout.trim().replace(/^refs\/remotes\//, "");
-    if (name && refs.some((ref) => ref.kind === "remote" && ref.name === name)) return name;
+    // See `defaultRemoteBase`: an incomplete listing cannot veto the pointer.
+    if (name && (listing.incomplete !== undefined || listing.refs.some((ref) => ref.kind === "remote" && ref.name === name))) return name;
   }
   for (const guess of ["origin/main", "origin/master"]) {
-    if (refs.some((ref) => ref.kind === "remote" && ref.name === guess)) return guess;
+    if (listing.refs.some((ref) => ref.kind === "remote" && ref.name === guess)) return guess;
   }
   return undefined;
 }
 
 export async function gitOverviewAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitOverview> {
   const inside = await git(projectRoot, ["rev-parse", "--is-inside-work-tree"]);
+  refuseTimedOutProbe(inside, "Git overview");
   if (inside.status !== 0 || inside.stdout.trim() !== "true") return EMPTY;
   const head = await git(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const raw = head.status === 0 ? head.stdout.trim() : "";
   const branch = raw && raw !== "HEAD" ? raw : undefined;
 
   const status = await git(projectRoot, ["status", "--porcelain"]);
-  const dirtyFiles = status.status === 0 ? countDirty(status.stdout) : 0;
+  const dirtyFiles = status.timedOut ? undefined : status.status === 0 ? countDirty(status.stdout) : 0;
   const tracking = await git(projectRoot, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
   const divergence = tracking.status === 0 ? parseAheadBehind(tracking.stdout) : undefined;
 
   const worktrees = await git(projectRoot, ["worktree", "list", "--porcelain"]);
-  const refs = await listGitRefsAsync(git, projectRoot);
-  const defaultBase = await defaultRemoteBaseAsync(git, projectRoot, refs);
+  const listing = await listGitRefsAsync(git, projectRoot);
+  const defaultBase = await defaultRemoteBaseAsync(git, projectRoot, listing);
 
   return {
     repository: true,
     ...(branch ? { branch } : {}),
-    dirtyFiles,
+    ...(dirtyFiles === undefined ? {} : { dirtyFiles }),
     ...(divergence ?? {}),
-    worktrees: worktrees.status === 0 ? parseWorktreeList(worktrees.stdout, projectRoot) : [],
-    refs,
+    ...(worktrees.timedOut ? {} : { worktrees: worktrees.status === 0 ? parseWorktreeList(worktrees.stdout, projectRoot) : [] }),
+    refs: listing.refs,
+    ...(listing.incomplete ? { refsIncomplete: listing.incomplete } : {}),
     ...(defaultBase ? { defaultBase } : {}),
   };
 }
