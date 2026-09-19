@@ -193,7 +193,7 @@ import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeMod
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
-import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
@@ -9034,6 +9034,25 @@ export class EngineStore {
         // A `none` workspace sends nothing rather than a path nobody chose.
         ...(workspacePath(session.workspace) ? { projectRoot: workspacePath(session.workspace)! } : {}),
         ...(session.projectId ? { projectId: session.projectId } : {}),
+        /**
+         * WHAT MAKES `projectRoot` ABOVE A WORKTREE — issue #641, and resolved
+         * here for the reason everything else on this claim is: the worker holds
+         * no store handle, and "is that path a worktree, and whose" is a store
+         * question. Both facts or neither: a branch with no repository root
+         * still cannot tell the worker that the PROJECT is fine.
+         */
+        ...(() => {
+          if (session.workspace.mode !== "worktree" || !session.projectId) return {};
+          try {
+            const project = this.getProject(session.projectId);
+            return { worktree: { branch: session.workspace.branch, repoRoot: project.root } };
+          } catch {
+            // A session whose project record went. Nothing to say about it that
+            // would be true, so it says nothing and the worker keeps the
+            // path-only wording.
+            return {};
+          }
+        })(),
         driver: session.driver,
         providerInstanceId: session.providerInstanceId,
         providerInstance,
@@ -9975,6 +9994,57 @@ export class EngineStore {
     void this.worktreeQueue(project.root, () =>
       removeSessionWorktreeAsync(this.worktreeGit, project.root, worktreePath, this.projectAvailability(project)),
     );
+  }
+
+  /**
+   * LOCK THE WORKTREES THAT ALREADY EXIST — issue #641.
+   *
+   * `createSessionWorktreeAsync` locks at the cut, which covers everything made
+   * from now on and nothing made before. That is the entire installed base on
+   * the day this ships, including the sessions the bug was reported against, so
+   * without this the fix arrives for the worktrees nobody has yet.
+   *
+   * ON THE WAY UP, LIKE THE OTHER SWEEPS, and for the sharper version of their
+   * reason: the window this closes is between a daemon starting and a PR being
+   * merged, and the orchestrator merges as soon as CI passes. A lock that waited
+   * for the session's next turn would routinely lose that race.
+   *
+   * NOT ARCHIVED, which is the whole policy in one predicate. An archived
+   * session has already been put down and its worktree released; locking that
+   * one would be locking a corpse, and `removeSessionWorktreeAsync`'s unlock is
+   * what any survivor needs rather than a fresh lock. Everything else is live by
+   * definition — settled is a shelf, not an ending, and a settled session's
+   * checkout is still the thing it would resume into.
+   *
+   * IDEMPOTENT AND BEST-EFFORT. `git worktree lock` on an already-locked tree
+   * answers non-zero and that is not a failure; a project on an absent drive
+   * cannot be asked at all and is skipped rather than waited for. Nothing here
+   * may fail a boot — an unlocked worktree is the status quo, not a regression.
+   */
+  lockLiveWorktrees(): { locked: number } {
+    let locked = 0;
+    for (const session of this.allSessions()) {
+      if (session.state === "archived") continue;
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      let project: Project;
+      try {
+        project = this.getProject(session.projectId);
+      } catch {
+        continue;
+      }
+      // The same question `releaseWorktree` asks, and for the same reason: git
+      // run against a repository nobody can read answers about a repository
+      // nobody can read. See `worktree.ts`'s header.
+      if (this.projectAvailability(project) !== "available") continue;
+      if (!fs.existsSync(session.workspace.path)) continue;
+      locked++;
+      const worktreePath = session.workspace.path;
+      // ON THE QUEUE so a lock cannot race a cut or a removal on the same
+      // repository, and NOT AWAITED so a machine with forty worktrees does not
+      // hold the boot open while git walks every one of them.
+      void this.worktreeQueue(project.root, () => lockSessionWorktree(this.worktreeGit, project.root, worktreePath));
+    }
+    return { locked };
   }
 
   private releaseDataScience(session: Session, reason: string): void {
