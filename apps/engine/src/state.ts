@@ -9034,6 +9034,25 @@ export class EngineStore {
         // A `none` workspace sends nothing rather than a path nobody chose.
         ...(workspacePath(session.workspace) ? { projectRoot: workspacePath(session.workspace)! } : {}),
         ...(session.projectId ? { projectId: session.projectId } : {}),
+        /**
+         * WHAT MAKES `projectRoot` ABOVE A WORKTREE — issue #641, and resolved
+         * here for the reason everything else on this claim is: the worker holds
+         * no store handle, and "is that path a worktree, and whose" is a store
+         * question. Both facts or neither: a branch with no repository root
+         * still cannot tell the worker that the PROJECT is fine.
+         */
+        ...(() => {
+          if (session.workspace.mode !== "worktree" || !session.projectId) return {};
+          try {
+            const project = this.getProject(session.projectId);
+            return { worktree: { branch: session.workspace.branch, repoRoot: project.root } };
+          } catch {
+            // A session whose project record went. Nothing to say about it that
+            // would be true, so it says nothing and the worker keeps the
+            // path-only wording.
+            return {};
+          }
+        })(),
         driver: session.driver,
         providerInstanceId: session.providerInstanceId,
         providerInstance,

@@ -284,6 +284,63 @@ test("an unplugged drive is never described as a folder to re-register — that 
   expect(() => assertProjectRoot(root, mounts.deps)).not.toThrow(/re-register the project with its current location/i);
 });
 
+/**
+ * ══ A MISSING WORKTREE IS NOT A MISSING PROJECT — issue #641 ══
+ *
+ * The second defect in that issue, and the one that costs somebody an hour:
+ * "re-register the project with its current location" was the advice given when
+ * a worktree had been removed. Following it mints a new project id and leaves
+ * the session's history behind — for a project that was never the problem.
+ */
+test("a removed worktree says so, and never sends anyone to re-register the project", () => {
+  const projectRoot = home();
+  const worktree = path.join(home(), "worktrees", "telar--some-feature-ab12cd34");
+  // The state gh leaves behind: the worktree gone, the project untouched.
+  expect(fs.existsSync(worktree)).toBe(false);
+
+  expect(() => assertProjectRoot(worktree, {}, { branch: "telar/some-feature", repoRoot: projectRoot })).toThrow(
+    /this session's worktree .* no longer exists/i,
+  );
+  // The whole point: the wrong remedy is absent and the right facts are present.
+  expect(() => assertProjectRoot(worktree, {}, { branch: "telar/some-feature", repoRoot: projectRoot })).not.toThrow(
+    /re-register the project with its current location/i,
+  );
+  let message = "";
+  try {
+    assertProjectRoot(worktree, {}, { branch: "telar/some-feature", repoRoot: projectRoot });
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  expect(message).toContain(projectRoot);
+  expect(message).toContain("do NOT re-register it");
+  expect(message).toContain("telar/some-feature");
+  // It names the thing that actually did it, because the reader merged a PR
+  // two minutes ago and will recognise their own command.
+  expect(message).toContain("gh pr merge --delete-branch");
+});
+
+test("a project with no worktree facts keeps the sentence it always had", () => {
+  const missing = path.join(home(), "gone");
+  // A LOCAL session, and an older engine that sends no worktree block: the
+  // project folder really is what is missing, and re-registering really is the
+  // remedy. The fix must not take that sentence away from the case it fits.
+  expect(() => assertProjectRoot(missing)).toThrow(/re-register the project with its current location/i);
+});
+
+test("a worktree whose project also vanished does not claim the project is fine", () => {
+  const worktree = path.join(home(), "worktrees", "telar--x-ab12cd34");
+  let message = "";
+  try {
+    assertProjectRoot(worktree, {}, { branch: "telar/x", repoRoot: path.join(home(), "no-such-project") });
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  // Saying "the project itself is fine" over a project that is also gone would
+  // be a comforting sentence and a false one.
+  expect(message).not.toContain("The project itself is fine");
+  expect(message).toContain("larger loss than one worktree");
+});
+
 test("a worktree cut blames the drive, not the repository", () => {
   const mounts = fixture();
   const mount = mounts.mount("TelarVR");
