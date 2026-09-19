@@ -244,6 +244,22 @@ describe("navigation continuity", () => {
 });
 
 describe("prefers-reduced-motion", () => {
+  test("with reduce set, no paced prefix is ever painted", async () => {
+    // THE REQUIREMENT, AT THE PAINT. Honouring the preference in an effect is
+    // one paint too late: the commit before it holds the paced prefix — for a
+    // first chunk, the empty string — so a reader who asked for no motion
+    // still watches the text arrive a frame behind every chunk.
+    reduced = true;
+    const probe = mount();
+    await probe.set(long(400));
+    expect(probe.shown()).toBe(long(400));
+    await probe.set(long(900));
+    expect(probe.shown()).toBe(long(900));
+    expect(probe.log).toEqual(["", long(400), long(900)]);
+    // Nothing to animate means nothing scheduled.
+    expect(frames.size).toBe(0);
+  });
+
   test("turning reduce on mid-reply flushes, with no new text", async () => {
     const probe = mount();
     await probe.set(long(600));
