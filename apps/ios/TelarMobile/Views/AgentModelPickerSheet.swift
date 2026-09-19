@@ -74,7 +74,7 @@ struct AgentModelPickerSheet: View {
                         ForEach(section.models) { row($0) }
                     } header: {
                         Text(section.family)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(Theme.footnote, weight: .medium))
                             .foregroundStyle(Theme.textMuted)
                     }
                 }
@@ -113,18 +113,18 @@ struct AgentModelPickerSheet: View {
         } label: {
             HStack(spacing: 10) {
                 Text("Default")
-                    .font(.system(size: 14))
+                    .font(.system(Theme.subhead))
                     .foregroundStyle(Theme.text)
                 Spacer(minLength: 8)
                 // Named rather than left as a word — the engine marks which row
                 // it means, so nobody has to go and look it up.
                 if let fallback = catalogue.models.first(where: \.isDefault) {
                     Text(fallback.name)
-                        .font(.system(size: 12))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                 }
                 if selected == nil {
-                    Image(systemName: "checkmark").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.accent)
+                    Image(systemName: "checkmark").font(.system(Theme.footnote, weight: .medium)).foregroundStyle(Theme.accent)
                 }
             }
             .contentShape(Rectangle())
@@ -142,14 +142,14 @@ struct AgentModelPickerSheet: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 10) {
                     Text(model.name)
-                        .font(.system(size: 14))
+                        .font(.system(Theme.subhead))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     // WHAT IT CAN HOLD, which is the fact that decides whether
                     // a long conversation survives on this model.
                     if let context = model.context {
-                        Text(tokens(context)).font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.textMuted)
+                        Text(tokens(context)).font(.system(Theme.caption).monospacedDigit()).foregroundStyle(Theme.textMuted)
                     }
                     // Go's own path segment, not a paraphrase. `unknown` gets
                     // no badge: it is this build admitting it has not been told
@@ -157,14 +157,14 @@ struct AgentModelPickerSheet: View {
                     // model.
                     if model.route != "unknown" {
                         Text(model.route)
-                            .font(.system(size: 10))
+                            .font(.system(Theme.caption))
                             .foregroundStyle(Theme.textMuted)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.borderSubtle, lineWidth: 1))
                     }
                     if selected == model.id {
-                        Image(systemName: "checkmark").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.accent)
+                        Image(systemName: "checkmark").font(.system(Theme.footnote, weight: .medium)).foregroundStyle(Theme.accent)
                     }
                 }
                 // THE ENGINE'S ANSWER FIRST, then words for it — the desktop's
@@ -172,7 +172,7 @@ struct AgentModelPickerSheet: View {
                 // baked into this binary.
                 if !model.supported {
                     Text(agentRouteObstacle(model.route) ?? agentRouteUnsupported)
-                        .font(.system(size: 11))
+                        .font(.system(Theme.caption))
                         .foregroundStyle(Theme.textMuted)
                 }
             }
@@ -188,7 +188,7 @@ struct AgentModelPickerSheet: View {
 
     private func note(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 13))
+            .font(.system(Theme.footnote))
             .foregroundStyle(Theme.textMuted)
             .listRowBackground(Color.clear)
     }

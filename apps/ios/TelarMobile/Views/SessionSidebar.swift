@@ -478,6 +478,12 @@ struct SessionSidebar: View {
         //
         // The glyphs keep the web's size and the tap targets do not: 32pt is a
         // mouse target, and a finger is owed the full 44.
+        //
+        // BOTH GLYPHS BELOW KEEP AN ABSOLUTE SIZE, unlike the rest of this
+        // file. The squares are fixed in both dimensions and they clip, so a
+        // glyph that grew with the reader's text would only outgrow its own
+        // target. They want a @ScaledMetric frame — a layout change rather
+        // than a token swap — and are tracked in #674.
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 0) {
                 Button(action: openSettings) {
@@ -796,7 +802,7 @@ struct SessionSidebar: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 if row.session.settledOverride == "active" {
-                    Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(Theme.textMuted.opacity(0.7))
+                    Image(systemName: "pin.fill").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted.opacity(0.7))
                 }
                 // The attention and pinned bands, search and the shelves
                 // mix projects, so the row names its own. A row under its
@@ -831,8 +837,8 @@ struct SessionSidebar: View {
             // SAY. A branch differs per row; the model does not.
             if let branch = row.session.workspace.branch {
                 HStack(spacing: 5) {
-                    Image(systemName: "arrow.triangle.branch").font(.system(size: 9))
-                    Text(branch).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                    Image(systemName: "arrow.triangle.branch").font(.system(Theme.captionTiny))
+                    Text(branch).font(.system(Theme.caption)).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 4)
                     ProviderIconView(driver: row.session.driver, size: 11).opacity(0.6)
                 }
@@ -859,7 +865,7 @@ struct SessionSidebar: View {
     @ViewBuilder private func slimBody(_ row: HostedSession, host: String?) -> some View {
         HStack(spacing: 6) {
             if row.session.settledOverride == "active" {
-                Image(systemName: "pin.fill").font(.system(size: 8)).foregroundStyle(Theme.textMuted.opacity(0.7))
+                Image(systemName: "pin.fill").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted.opacity(0.7))
             }
             if let project = inbox.project(row) {
                 ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: 13)
@@ -928,7 +934,7 @@ struct SessionSidebar: View {
     /// — beside a group header's list of them, above and below other rows
     /// wearing the same shape — and in company the shape is already the word.
     private func hostBadge(_ name: String) -> some View {
-        Text(name).font(.system(size: 10)).foregroundStyle(Theme.textMuted.opacity(0.7))
+        Text(name).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted.opacity(0.7))
             .lineLimit(1).truncationMode(.tail)
             .padding(.horizontal, 4).background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
             .accessibilityLabel("On \(name)")
@@ -982,7 +988,7 @@ struct SessionSidebar: View {
         HStack(spacing: 3) {
             switch status.tone {
             case .working: SteppedPulseDot(color: Theme.statusSky)
-            case .waiting: Image(systemName: "circle.circle").font(.system(size: 9))
+            case .waiting: Image(systemName: "circle.circle").font(.system(Theme.captionTiny))
             case .idle: EmptyView()
             }
             Text(status.label).lineLimit(1)
@@ -1005,13 +1011,13 @@ struct SessionSidebar: View {
         let now = Timestamp(Date().timeIntervalSince1970 * 1000)
         if let until = session.snoozedUntil, until > now, session.activity != .blocked {
             HStack(spacing: 3) {
-                Image(systemName: "alarm").font(.system(size: 9))
+                Image(systemName: "alarm").font(.system(Theme.captionTiny))
                 Text(relativeTime(until)).monospacedDigit()
             }
             .font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.7))
         } else if session.activity == .blocked {
             HStack(spacing: 3) {
-                Image(systemName: "circle.circle").font(.system(size: 9))
+                Image(systemName: "circle.circle").font(.system(Theme.captionTiny))
                 Text("Needs you")
             }
             .font(.caption2.weight(.medium)).foregroundStyle(Theme.statusAmber)
