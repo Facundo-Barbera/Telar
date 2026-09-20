@@ -399,22 +399,20 @@ const CASES: Array<{ tool: string; args?: Record<string, unknown>; ceiling: numb
    * backstop before it had one.
    */
   /**
-   * 4,809 CHARACTERS MEASURED, AGAINST THE "UNDER 3 KB" #516 ASKS FOR — and the
-   * gap is arithmetic rather than a missing bound.
+   * 4,809 CHARACTERS HERE AGAINST 2,801 ON THE REAL FIXTURE, and the difference
+   * is the fixture rather than the tool.
    *
-   * Ten hits is the default, `WHY_CHARS` is 200, and the quoted line is the
-   * whole point of the tool: a list an agent can choose from rather than one it
-   * has to open to evaluate. Ten of those alone is 2 KB before a single title,
-   * id or timestamp, and `json()` pretty-prints at two spaces, which adds about
-   * 45% on a shape this key-dense. The issue's number is reachable only by
-   * dropping the quotation or by emitting compact JSON, and the first guts the
-   * feature while the second is a decision about every answer on every wall.
+   * The issue asks for `find` under 3 KB at default arguments, and
+   * `query-acceptance.test.ts` measures exactly that on a 300-session engine:
+   * 2,801 B, inside the budget. This file's rows are deliberately the worst case
+   * — every title 74 characters, every `why` filled to the last of its 200 —
+   * which is what a ceiling should be measured against and is NOT the number the
+   * acceptance criterion is about.
    *
-   * So the ceiling is the measured worst case plus a little, stated rather than
-   * nudged — and it IS a worst case: the fixture gives every row a 74-character
-   * title and a `why` filled to the last character.
+   * So this ceiling is the worst case plus a little, stated rather than nudged,
+   * and the acceptance number lives in the file that measures acceptance.
    */
-  { tool: "sessions_find", args: { q: "appearance" }, ceiling: 5_000, why: "ten hits at the default, each quoting a full 200-character line" },
+  { tool: "sessions_find", args: { q: "appearance" }, ceiling: 5_000, why: "ten worst-case hits, each quoting a full 200-character line" },
   { tool: "sessions_find", args: { q: "appearance", limit: 50 }, ceiling: MAX_ANSWER_CHARS, why: "50 hits each quoting a 200-character line" },
   /**
    * THE ISSUE'S OWN NUMBER, ON THE THING THE ISSUE BUDGETS. "Under 6 KB per
