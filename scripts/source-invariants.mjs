@@ -422,7 +422,169 @@ function markSizeArguments(source) {
   return found;
 }
 
+/**
+ * EVERY SHELL SCRIPT IN THE TREE, repo-relative. Same exclusions as
+ * `testFilesUnder` and for the same reason: `release/` and `.next-desktop/`
+ * hold copies of source nobody can fix in place.
+ */
+async function shellFiles() {
+  const found = [];
+  const walk = async (from) => {
+    let entries;
+    try {
+      entries = await readdir(join(ROOT, from), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const next = from ? `${from}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "release" || entry.name === ".git") continue;
+        if (entry.name.startsWith(".next")) continue;
+        await walk(next);
+      } else if (entry.name.endsWith(".sh")) {
+        found.push(next);
+      }
+    }
+  };
+  await walk("");
+  return found.sort();
+}
+
+/** Does this script opt into `set -u`, where an empty array becomes fatal? */
+const enablesNounset = (source) => /^\s*set\s+(-[a-zA-Z]*u|-o\s+nounset)/m.test(source);
+
+/**
+ * ARRAY EXPANSIONS THAT ARE NOT GUARDED AGAINST THE EMPTY CASE (#808).
+ *
+ * Under `set -u`, bash 3.2 — the 3.2.57 macOS ships as /bin/bash — treats
+ * `"${A[@]}"` on an EMPTY array as an unbound variable and kills the script.
+ * Bash 4.4 stopped doing it, so the failure is invisible to anyone with a
+ * Homebrew bash earlier on PATH, and a script can carry it for years.
+ *
+ * Safe, and therefore not reported:
+ *   `${#A[@]}`             a count, never unbound
+ *   `${A[@]+"${A[@]}"}`    the portable guard — nothing when empty, the
+ *                          elements with their quoting when not
+ *   `${A[*]-}` `${A[@]:-}` the same thing for a `[*]` inside a message string
+ *
+ * The scan skips a guarded construct WHOLE, brace-matched, because the guard
+ * contains a second copy of the bare expansion inside itself — counting that
+ * copy would flag every correctly-written line in the repo.
+ *
+ * Deliberately NOT extended to `.github/workflows/*.yml`: a `run:` block gets
+ * the runner's bash, GitHub's default shell is `bash -e {0}` rather than
+ * `-euo`, and the three blocks there that do set `-u` expand only arrays a
+ * preceding count has already proven non-empty. That was checked, not skipped.
+ */
+function unguardedArrayExpansions(source) {
+  const hits = [];
+  source.split("\n").forEach((line, index) => {
+    if (line.trimStart().startsWith("#")) return; // a comment, including this file's own prose
+    for (let i = 0; i < line.length; i += 1) {
+      if (!line.startsWith("${", i)) continue;
+      const opened = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\[([@*])\]/.exec(line.slice(i));
+      if (!opened) continue;
+      const after = line[i + opened[0].length];
+      if (after === "}") {
+        hits.push({ line: index + 1, name: opened[1], text: line.trim() });
+        continue;
+      }
+      // Guarded: jump past the whole `${A[@]+…}` so the copy nested in it is
+      // not read as a bare expansion of its own.
+      let depth = 0;
+      let end = i;
+      for (let j = i; j < line.length; j += 1) {
+        if (line.startsWith("${", j)) {
+          depth += 1;
+          j += 1;
+          continue;
+        }
+        if (line[j] === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            end = j;
+            break;
+          }
+        }
+      }
+      i = end;
+    }
+  });
+  return hits;
+}
+
+const ARRAY_GUARD_SAMPLES = [
+  { flags: true, why: "the #808 line as it was", code: 'bunx electron-builder --dir "${CONFIG_OVERRIDES[@]}"' },
+  { flags: true, why: "a `[*]` in a message string is unbound on 3.2 too", code: 'log "--mac ${TARGET_ARGS[*]}"' },
+  { flags: true, why: "an unquoted bare expansion is no safer", code: "for a in ${ARTIFACTS[@]}; do :; done" },
+  { flags: false, why: "the portable guard", code: 'bunx electron-builder ${CONFIG_OVERRIDES[@]+"${CONFIG_OVERRIDES[@]}"}' },
+  { flags: false, why: "the `-` guard for a string context", code: 'log "--mac ${TARGET_ARGS[*]-}"' },
+  { flags: false, why: "a count is never unbound", code: 'if [ "${#ARTIFACTS[@]}" -gt 0 ]; then :; fi' },
+  { flags: false, why: "positional parameters are special-cased by bash", code: 'install "$@"' },
+  { flags: false, why: "a single element is not the empty-array case", code: 'echo "${ARTIFACTS[0]}"' },
+  { flags: false, why: "prose in a comment", code: '# `"${A[@]}"` is what broke; see #808' },
+];
+
 const CHECKS = [
+  {
+    name: "shell-empty-array-self-test",
+    protects: "#808: the scan below still fires on the shape that broke, and stays quiet on the fix",
+    async run() {
+      const failures = [];
+      for (const { flags, why, code } of ARRAY_GUARD_SAMPLES) {
+        const hits = unguardedArrayExpansions(code);
+        if (flags && hits.length === 0) {
+          failures.push(
+            `the scan MISSED a sample it must catch (${why}): ${JSON.stringify(code)}. ` +
+              "shell-empty-array below is now reporting green for a spelling it no longer sees.",
+          );
+        }
+        if (!flags && hits.length > 0) {
+          failures.push(
+            `the scan FIRED on a sample it must ignore (${why}): ${JSON.stringify(code)}. ` +
+              "This spelling is safe on bash 3.2; flagging it makes the check wrong about correct code, and the " +
+              "next person to hit it will delete the check rather than argue with it.",
+          );
+        }
+      }
+      return failures;
+    },
+  },
+  {
+    name: "shell-empty-array",
+    protects: "#808: no `set -u` shell script expands an array that could be empty, which aborts on the bash macOS ships",
+    async run() {
+      const failures = [];
+      let scanned = 0;
+      for (const path of await shellFiles()) {
+        const source = await read(path);
+        if (!enablesNounset(source)) continue;
+        scanned += 1;
+        for (const hit of unguardedArrayExpansions(source)) {
+          failures.push(
+            `${path}:${hit.line}: \`${hit.name}\` is expanded without a guard — ${hit.text}\n` +
+              `        Write it as \${${hit.name}[@]+"\${${hit.name}[@]}"} (or \${${hit.name}[*]-} inside a message ` +
+              "string). Under `set -u` bash 3.2 treats an expansion of an EMPTY array as an unbound variable and " +
+              "kills the script; macOS ships 3.2.57 as /bin/bash, so `#!/usr/bin/env bash` gets it on any machine " +
+              "without a newer bash earlier on PATH. Bash 4.4 stopped doing this, which is why it will very likely " +
+              "work when you try it. Do not reach for `set +u` (it drops the check for every variable on the line) " +
+              "or for seeding the array (the seed becomes a real argument to the command).",
+          );
+        }
+      }
+      // An empty result from a scan is a claim about the scan. If the walker
+      // stopped finding shell scripts, this check would pass by finding nothing
+      // to check — the failure mode that looks exactly like success.
+      if (scanned === 0) {
+        failures.push(
+          "no `set -u` shell script was found anywhere in the tree, which cannot be right — " +
+            "shellFiles() has stopped walking, so this check is green because it read nothing.",
+        );
+      }
+      return failures;
+    },
+  },
   {
     name: "ios-type-scale-self-test",
     protects: "#721: the absolute-size patterns still fire on what they claim, and stay quiet on correct code",

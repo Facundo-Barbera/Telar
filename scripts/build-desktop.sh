@@ -194,9 +194,19 @@ fi
 
 # shellcheck disable=SC2206 # intentional word-split of a CSV into --mac args
 TARGET_ARGS=(${TARGETS//,/ })
-log "electron-builder --mac ${TARGET_ARGS[*]}"
+# `${A[@]+"${A[@]}"}` RATHER THAN `"${A[@]}"`, AND IT IS NOT STYLE (#808).
+# Under `set -u`, bash 3.2 — what macOS ships as /bin/bash, and what this
+# script's `#!/usr/bin/env bash` resolves to without a newer bash earlier on
+# PATH — treats an expansion of an EMPTY array as an unbound variable and
+# aborts. Bash 4.4 stopped doing it, so a Homebrew bash hides the failure.
+#
+# CONFIG_OVERRIDES is empty whenever neither --channel nor --publish-r2 was
+# given, which is every local invocation; the release and nightly workflows
+# both pass --channel, which is why CI never saw this. TARGET_ARGS is empty if
+# --targets is ever handed an empty or comma-only value.
+log "electron-builder --mac ${TARGET_ARGS[*]-}"
 cd "$SNAP/apps/desktop"
-NODE_OPTIONS= bunx electron-builder --mac "${TARGET_ARGS[@]}" "${CONFIG_OVERRIDES[@]}"
+NODE_OPTIONS= bunx electron-builder --mac ${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"} ${CONFIG_OVERRIDES[@]+"${CONFIG_OVERRIDES[@]}"}
 
 BUILT_APP="$SNAP/apps/desktop/release/mac-arm64/Telar.app"
 if [ ! -d "$BUILT_APP" ]; then
@@ -321,11 +331,16 @@ if [ "$PUBLISH_R2" -eq 1 ]; then
     AWS_DEFAULT_REGION="auto" \
       aws s3 cp "$1" "s3://$R2_BUCKET/$(basename "$1")" --endpoint-url "$R2_ENDPOINT"
   }
-  for a in "${ARTIFACTS[@]}"; do
+  # Guarded like every other array expansion in this repo's shell (#808), even
+  # though the count check above already proves ARTIFACTS is non-empty here.
+  # The rule is worth more without an exception: "no unguarded array expansion
+  # under set -u" is something a reader can apply without tracing which
+  # enclosing conditional happens to cover this line.
+  for a in ${ARTIFACTS[@]+"${ARTIFACTS[@]}"}; do
     case "$a" in *-mac.yml) continue ;; esac
     upload "$a"
   done
-  for a in "${ARTIFACTS[@]}"; do
+  for a in ${ARTIFACTS[@]+"${ARTIFACTS[@]}"}; do
     case "$a" in *-mac.yml) upload "$a" ;; esac
   done
 fi
@@ -341,7 +356,7 @@ if [ -n "$CHANNEL" ]; then
 fi
 if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
   echo "  artifacts:"
-  for a in "${ARTIFACTS[@]}"; do
+  for a in ${ARTIFACTS[@]+"${ARTIFACTS[@]}"}; do
     echo "    $a"
   done
   if [ "$PUBLISH_R2" -eq 1 ]; then
@@ -350,6 +365,6 @@ if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
   else
     echo
     echo "To publish to a private GitHub Release, run e.g.:"
-    echo "  gh release create v<version> --repo <owner>/<repo> ${ARTIFACTS[*]}"
+    echo "  gh release create v<version> --repo <owner>/<repo> ${ARTIFACTS[*]-}"
   fi
 fi
