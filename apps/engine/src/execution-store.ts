@@ -1401,6 +1401,20 @@ export class ExecutionStore {
       atomicWrite(path.join(destination, String(row.key)), JSON.parse(String(row.value)));
       documents += 1;
     }
+    /**
+     * AND THE ITEMS, WHEREVER #658 PUT THEM. A migrated session has no
+     * `items.json` row to have been copied above — its items are rows — so an
+     * export that only walked `documents` would write a session directory with
+     * the conversation's own item projection missing, silently, and only for
+     * sessions that had been migrated. Written back in the blob's shape,
+     * which is the shape `exportLegacy` has always produced and the one an
+     * older build could read.
+     */
+    if (this.itemsAreRows(sessionId)) {
+      const rows = this.itemRows(sessionId);
+      fs.writeFileSync(path.join(directory, "items.json"), `{"items":[${rows.join(",")}]}`, { mode: 0o600 });
+      documents += 1;
+    }
     const file = path.join(directory, "events.ndjson");
     const handle = fs.openSync(file, "w", 0o600);
     let events = 0;
@@ -1466,16 +1480,42 @@ export class ExecutionStore {
     );
     if (summaries !== ended) return { retired: false, events: 0, refused: "summaries" };
     try {
-      // `json_array_length` rather than parsing the blob in JavaScript: an
-      // `items.json` has been measured at 17 MiB (#658), and the question is
-      // only whether it reads as an array of items. sqlite throws on malformed
-      // JSON, which is the refusal.
-      const items = this.statement("SELECT json_array_length(value,'$.items') AS count FROM documents WHERE key=?")
-        .get(`sessions/${sessionId}/items.json`);
-      if (items !== undefined && items.count === null) return { retired: false, events: 0, refused: "items" };
+      /**
+       * WHEREVER #658 PUT THEM. A session's items are a blob or a table of
+       * rows, and `itemsAreRows` is the only thing that decides which — never
+       * the presence of the document, which cannot tell "migrated, blob
+       * deleted" from "never written". Asking the wrong side would refuse every
+       * migrated session forever, or pass every one of them without looking.
+       *
+       * Either way the question is the same and it is asked in sqlite:
+       * `json_valid` over the rows, `json_array_length` over the blob. An
+       * `items.json` has been measured at 17 MiB, and parsing it in JavaScript
+       * to learn whether it parses is the cost this guard must not have.
+       */
+      const readable = this.itemsAreRows(sessionId)
+        ? this.statement("SELECT COUNT(*) AS bad FROM items WHERE session_id=? AND json_valid(value)=0").get(sessionId)?.bad === 0
+        : (() => {
+            const blob = this.statement("SELECT json_array_length(value,'$.items') AS count FROM documents WHERE key=?")
+              .get(`sessions/${sessionId}/items.json`);
+            // No document and no rows is a session that never wrote an item,
+            // which is readable in the only sense that matters here.
+            return blob === undefined || blob.count !== null;
+          })();
+      if (!readable) return { retired: false, events: 0, refused: "items" };
     } catch { return { retired: false, events: 0, refused: "items" }; }
 
-    const exported = this.exportSession(sessionId, path.join(options.exportTo, sessionId));
+    /**
+     * AN EXPORT THAT WILL NOT WRITE REFUSES THE SESSION, IT DOES NOT STOP THE
+     * SWEEP. A document that no longer parses, a destination already there from
+     * an interrupted run, a full disk — each of those is a reason to leave ONE
+     * conversation exactly as it was, and none of them is a reason for the other
+     * four hundred to go unswept. It is counted as a refusal, which is the same
+     * signal every other guard here produces.
+     */
+    let exported: { documents: number; events: number };
+    try {
+      exported = this.exportSession(sessionId, path.join(options.exportTo, sessionId));
+    } catch { return { retired: false, events: 0, refused: "export" }; }
     let outcome: { retired: boolean; events: number; refused?: "export" } = { retired: false, events: 0, refused: "export" };
     this.alone(() => {
       this.drain(this.depth > 0);

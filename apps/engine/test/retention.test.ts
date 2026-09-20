@@ -227,13 +227,25 @@ test("#646's guard: a session missing a turn summary is skipped and counted, not
   expect(store.events("session_one")).toHaveLength(built.events.session_one!);
 });
 
-test("#646's guard, the other way: an unreadable item projection is skipped too", () => {
-  const built = build((engine) => { conversation(engine, "session_one", 2); });
+test("#646's guard, the other way: a session whose documents will not read is skipped too", () => {
+  const built = build((engine) => { conversation(engine, "session_one", 2); conversation(engine, "session_two", 2); });
   const store = reopen(built);
+  /**
+   * ONE BAD CONVERSATION MUST NOT STOP THE SWEEP, which is a different claim
+   * from the guards above and the one a backlog actually meets.
+   *
+   * Which door this comes in by depends on #658: a session that has migrated
+   * holds its items as rows and the blob is gone, so a malformed document is
+   * caught when the export tries to write it; one that has not is caught by the
+   * item guard before the export is attempted. Either way it is ONE refusal,
+   * counted, and the session beside it is retired normally — a sweep that threw
+   * would leave the whole backlog unswept for a document nobody can read.
+   */
   store.writeText(path.join(built.home, "sessions", "session_one", "items.json"), "{ not json at all");
   expect(store.retireJournal(window(7, START + 30 * DAY), { exportTo: built.exportTo }))
-    .toEqual({ retired: 0, skipped: 1, events: 0 });
+    .toEqual({ retired: 1, skipped: 1, events: built.events.session_two! });
   expect(store.events("session_one")).toHaveLength(built.events.session_one!);
+  expect(store.events("session_two")).toHaveLength(0);
 });
 
 test("the rail survives: the row, its summaries and its search row outlive the journal", () => {
@@ -321,6 +333,15 @@ test("the export is the copy, and its line count is what licenses the delete", (
   expect(fs.existsSync(path.join(directory, "session.json"))).toBe(true);
   expect(fs.existsSync(path.join(directory, "queue.json"))).toBe(true);
   expect(fs.existsSync(path.join(directory, "items.index.json"))).toBe(false);
+  /**
+   * AND THE ITEMS, WHEREVER #658 PUT THEM. A migrated session holds its items
+   * as rows and has no `items.json` document at all, so an export that only
+   * walked `documents` would write a session directory with the conversation's
+   * own item projection missing — silently, and only for the sessions that had
+   * been migrated, which on a real store is all of them.
+   */
+  const items = JSON.parse(fs.readFileSync(path.join(directory, "items.json"), "utf8")) as { items: Array<{ id: string }> };
+  expect(items.items.map((item) => item.id)).toEqual(["item_0", "item_1"]);
 });
 
 test("a per-session export pages rather than materialising the whole journal", () => {
