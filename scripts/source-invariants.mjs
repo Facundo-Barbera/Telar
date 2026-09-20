@@ -22,12 +22,44 @@
  * when it holds). Keep the failure text actionable — it is read by someone
  * who has just been stopped by it and does not yet know why.
  */
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFile(join(ROOT, path), "utf8");
+
+/**
+ * Every test file under a directory, repo-relative, POSIX-separated.
+ *
+ * BUILD OUTPUTS ARE SKIPPED, and not as tidiness: `release/` and `.next-desktop/`
+ * hold COPIES of web source with the tests included, so a check that swept them
+ * would report the same file twice — once as itself and once as a stale artefact
+ * nobody can fix — which is why both bunfig.toml files exclude exactly these from
+ * the test run too.
+ */
+async function testFilesUnder(directory) {
+  const found = [];
+  const walk = async (relative) => {
+    let entries;
+    try {
+      entries = await readdir(join(ROOT, relative), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const next = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "release" || entry.name.startsWith(".next")) continue;
+        await walk(next);
+      } else if (/\.test\.tsx?$/.test(entry.name)) {
+        found.push(next);
+      }
+    }
+  };
+  await walk(directory);
+  return found;
+}
 
 /**
  * A SWEPT FILE STAYS SWEPT — the Dynamic Type sweep's regression guard (#248).
@@ -242,6 +274,72 @@ const CHECKS = [
       }
 
       return failures;
+    },
+  },
+  /**
+   * A TEST THAT TAKES THE GLOBAL DOM MUST GIVE IT BACK — #719's landmine.
+   *
+   * WHY THIS DEFECT IS SILENT, which is the whole reason it needs a machine and
+   * not a reviewer. `GlobalRegistrator.register` is PROCESS-WIDE and throws on a
+   * second call, and bun runs every `apps/web` test file in one process. So a
+   * file that registers happy-dom and never unregisters does not fail: the NEXT
+   * file to register dies, with `Failed to register. Happy DOM has already been
+   * globally registered.` and no failing assertion anywhere to explain it. The
+   * blame lands on whichever file bun happened to load afterwards — its author
+   * reads a green local run of their own file and a red CI log about a global
+   * they never touched.
+   *
+   * IT ALSO HIDES FROM ITS OWN PULL REQUEST. #719 introduced exactly this and
+   * passed, because at that moment nothing registered after it in bun's ordering.
+   * It detonated on the next branch to add a DOM test — a branch whose diff did
+   * not contain the bug. Nothing about that is discoverable by reading either
+   * diff, which is what makes it an invariant rather than a review note.
+   *
+   * WHY HERE AND NOT IN A LINT RULE OR THE TEST GUIDANCE: #691's lesson. The
+   * wash contract lived in prose and in a stylesheet test that never looked at
+   * the call sites, so a violating call site survived for months. A convention
+   * written down is not enforcement; `bun run check:source` is, and verify.yml
+   * runs it on every pull request.
+   */
+  {
+    name: "web-test-dom-release",
+    protects:
+      "the web suite's shared process (#719): a test file that registers happy-dom also unregisters it",
+    async run() {
+      const files = await testFilesUnder("apps/web");
+      const registers = [];
+      const unbalanced = [];
+      for (const path of files) {
+        const source = await read(path);
+        if (!/GlobalRegistrator\s*\.\s*register\s*\(/.test(source)) continue;
+        registers.push(path);
+        if (!/GlobalRegistrator\s*\.\s*unregister\s*\(/.test(source)) unbalanced.push(path);
+      }
+
+      /**
+       * NON-VACUITY FIRST, because the failure this check is most likely to
+       * suffer is the one it exists to catch, pointed the other way: a walk or a
+       * pattern that quietly stops matching sweeps nothing, finds nothing wrong,
+       * and reports `ok` forever. An empty result is a claim, and it needs a
+       * positive control — so the check refuses to pass unless it can still see
+       * the corpus it is about. (Measured when written: 270 test files under
+       * apps/web, 32 of them registering.)
+       */
+      if (files.length === 0) {
+        return [
+          "apps/web: found no *.test.ts(x) files at all, so this check swept nothing and proved nothing. The walk in testFilesUnder has stopped matching — fix it in scripts/source-invariants.mjs rather than trusting the pass.",
+        ];
+      }
+      if (registers.length === 0) {
+        return [
+          `apps/web: scanned ${files.length} test files and found none that call GlobalRegistrator.register, which cannot be true while this app has DOM tests. Either the call was renamed or the pattern here has rotted; either way this check is now vacuous and must be re-anchored, not removed.`,
+        ];
+      }
+
+      return unbalanced.map(
+        (path) =>
+          `${path}: registers happy-dom and never unregisters it. Add \`afterAll(async () => { await GlobalRegistrator.unregister(); });\` — the registration is process-wide, so the file this breaks is the NEXT one to register, not this one, and the error it throws names that file instead. ${registers.length - unbalanced.length} other file${registers.length - unbalanced.length === 1 ? "" : "s"} in apps/web already pair the two.`,
+      );
     },
   },
 ];
