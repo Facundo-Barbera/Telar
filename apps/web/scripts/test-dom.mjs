@@ -45,8 +45,29 @@ if (!hadDocument) {
 // answer freezes (`@base-ui/utils/useIsoLayoutEffect`, not a dependency of this
 // workspace and so not importable by name from here).
 await import("@base-ui/react/menu");
-// React's own feature detection, for the reason above. `react-dom/client` is
-// the entry the render tests use, and importing it is what runs the detection.
+/**
+ * React's own feature detection, for the reason above. `react-dom/client` is
+ * the entry the render tests use, and importing it is what runs the detection.
+ *
+ * IF YOU ARE ABOUT TO DELETE THIS LINE TO SEE WHAT IT DOES: it does not cost
+ * you a red test. `components/composer-controls.model-picker.test.tsx` HANGS
+ * without it — a process spinning at 96% of a core with no output, not a
+ * failure. Measured once, at about eight minutes before it was killed, on a
+ * machine also running the cockpit. Nothing in the run tells you which file is
+ * doing it, because the file never gets far enough to print its name.
+ *
+ * `lib/testing/type-into.test.tsx` fails CLEANLY and in well under a second in
+ * the same condition, six of its eight cases at once, and it names this import
+ * in its own header. That is the file to read if you want to know what this
+ * line is for — it is the regression for #732 and it is designed to answer
+ * exactly that question in the time a test takes.
+ *
+ * The hang was observed once and deliberately not chased: it appears only with
+ * this import gone, which is not a state the repo is ever in, and reproducing
+ * it costs another eight minutes of a pegged core to re-learn a fact already
+ * written down here. So treat "the picker test hangs" as reported rather than
+ * characterised — the cause is unknown, and the eight minutes is one sample.
+ */
 await import("react-dom/client");
 if (!hadDocument) {
   await GlobalRegistrator.unregister();

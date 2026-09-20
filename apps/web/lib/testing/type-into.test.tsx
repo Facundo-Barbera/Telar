@@ -6,14 +6,24 @@
  * environment, and that across 81 `.test.tsx` files not one typed into one —
  * the absence being the finding. The cause turned out to be import order in the
  * shared preload rather than a Happy DOM gap (see `scripts/test-dom.mjs`), and
- * the way that repair breaks again is silent: someone drops the
- * `react-dom/client` import from the preload as dead weight, every existing
- * test still passes, and typing stops working for whoever needs it next.
+ * the way that repair breaks again is quiet: someone drops the
+ * `react-dom/client` import from the preload as dead weight, and typing stops
+ * working for whoever needs it next.
  *
  * So the assertion below is deliberately the plainest possible statement of the
  * gap #732 is about: a `<input value={…} onChange={…} />`, typed into, state
- * read back. On the preload as it stood when this was written it fails with
- * `""`, and it fails for a reason no message in the run would explain.
+ * read back. Without that import it fails with `""` — six of eight cases, in
+ * well under a second — and it fails for a reason no message in the run would
+ * explain, which is why the two cases under "why the prototype setter is the
+ * route" exist to say which half broke.
+ *
+ * THIS FILE IS THE CHEAP WAY TO ASK THAT QUESTION, and that is worth knowing
+ * because the expensive way is right next door. `components/
+ * composer-controls.model-picker.test.tsx` depends on the same import and does
+ * NOT fail without it — it hangs, a core pegged at 96% with no output, measured
+ * once at about eight minutes before it was killed. Observed once and
+ * deliberately not chased; the cause is unknown. If you want to know what that
+ * preload line does, run THIS file, not that one.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
