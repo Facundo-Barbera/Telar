@@ -168,6 +168,27 @@ under GitHub Actions — zero locally across four environments — so its negati
 case could not have been exercised at all. **Choosing a worse-looking check you
 can falsify over a better-looking one you cannot is the whole of this section.**
 
+**`du` and link counts cannot see APFS block sharing.** `du` reports the apparent
+size of every clone, so it overstates a deduplicated tree; a link count reads `1`
+whether cloning worked or not, because a clone is not a hardlink. On macOS `bun
+install --backend` defaults to **`clonefile`**, so both of the natural ways to
+prove a dedup fix worked would show nothing had changed. Measure with a **`df`
+delta**.
+
+This is the strongest instance of the pattern so far because it is the only one
+where *both* obvious instruments fail in the same direction, and it is worth
+being precise about how it happened: **#633 measured a link count carefully and
+concluded deduplication was switched off.** The measurement was sound and the
+mechanism was wrong — bun does not hardlink on this platform, so `links 1` is
+what a *working* install looks like. Not sloppiness; the wrong quantity,
+measured well.
+
+**And "the filesystem supports it" is an inference, not an observation.** The
+volume in that issue is formatted APFS, which is a reason to expect cloning and
+not evidence of it. `cp -c` between two paths on that volume succeeding is the
+evidence. Formatted-as-APFS and mounted-with-cloning-available are two claims,
+and the cheap one to check is the second.
+
 **An empty result from a tool you just wrote is a claim about the tool.** This is
 the general form of the section above, and the sharper half, because silence
 reads as an answer. The `grep -E` with `\|` returned nothing and that looked
