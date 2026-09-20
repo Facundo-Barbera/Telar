@@ -472,6 +472,26 @@ describe("cards must paint", () => {
     return classes(value).some((name) => name.startsWith("bg-"));
   }
 
+  /**
+   * Whether the SAME element paints from a style prop instead of a class.
+   *
+   * A box showing a palette the window is not wearing cannot use `bg-*` at all:
+   * the classes resolve to the live theme, which is the one thing such a
+   * preview must not show (studio/tools.tsx's PaletteStrip, and the scene
+   * previews beside it). It paints `style={{ background: half.background }}`
+   * from the half's own tokens, which is a real fill — the rule's concern is a
+   * card borrowing an ancestor's ground, and this one does not.
+   *
+   * BOUNDED TO ONE ELEMENT'S ATTRIBUTES. The scan starts at the className and
+   * stops at the next one, so a painted sibling can never excuse an unpainted
+   * box; the character cap is a backstop for the last element in a file.
+   */
+  function paintsFromStyle(source: string, from: number): boolean {
+    const next = source.indexOf("className=", from + 1);
+    const end = Math.min(next === -1 ? source.length : next, from + 600);
+    return /style=\{\{[^}]*\b(background|backgroundColor|backgroundImage)\b/.test(source.slice(from, end));
+  }
+
   /** Every quoted string mentioning a radius — how a card is written here. */
   const CARD_SHAPED = /"([^"\n]*\brounded[^"\n]*)"|'([^'\n]*\brounded[^'\n]*)'/g;
 
@@ -487,6 +507,10 @@ describe("cards must paint", () => {
      * its own pixels: there is no ground to show through and a fill behind it
      * would never be seen. `aspect-*`, `size-full` and `object-*` are how those
      * are written (look-thumb, the studio's scene previews).
+     *
+     * SO IS ONE THAT PAINTS FROM A STYLE PROP — see `paintsFromStyle`. A
+     * preview of a palette the window is not wearing has to set its fill from
+     * that palette's own tokens, which `bg-*` cannot express.
      */
     const offenders: string[] = [];
     for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
@@ -497,6 +521,7 @@ describe("cards must paint", () => {
         const clips = names.some((name) => name === "overflow-hidden" || name.startsWith("divide-y"));
         const holdsAnImage = names.some((name) => name.startsWith("aspect-") || name === "size-full" || name.startsWith("object-"));
         if (!clips || holdsAnImage || paints(value) || !drawsAnEdge(value)) continue;
+        if (paintsFromStyle(source, hit.index)) continue;
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${value}`);
       }
     }
