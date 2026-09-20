@@ -82,6 +82,17 @@ describe("configurationPatch", () => {
       command: "bun run dev",
     });
   });
+
+  test("a pinned shell is left OUT of the patch, so editing the command does not unpin it", () => {
+    // This form has no shell field — a recipe gets one from an agent or the
+    // API. The engine merges shallowly, so the patch must not mention `shell`
+    // at all; mentioning it as `undefined` would be the same erasure the
+    // environment rule above exists to prevent.
+    const original = config({ shell: { program: "/bin/bash", args: ["-lc"] } });
+    const patch = configurationPatch(original, { ...draftFromConfiguration(original), command: "bun run start" });
+    expect("shell" in patch).toBe(false);
+    expect(patch.command).toBe("bun run start");
+  });
 });
 
 describe("the icon", () => {

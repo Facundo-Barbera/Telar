@@ -102,12 +102,36 @@ export type RunIcon = z.infer<typeof RunIcon>;
 
 export const DEFAULT_RUN_ICON: RunIcon = "play";
 
+/**
+ * WHICH PROGRAM IS HANDED THE COMMAND, WHEN THE RECIPE WANTS TO SAY.
+ *
+ * The launch is `spawn(program, [...args, command])` with no shell flag: the
+ * argv is spelled out, so nothing downstream has to know a convention for
+ * splitting a command line. `a && b` still works, because `program` is still a
+ * shell and the string is still its argument.
+ *
+ * ABSENT IS THE NORMAL CASE AND IS NOT A GAP. An unpinned recipe is resolved
+ * against the platform it launches on — see `shell.ts`. Storing a resolved
+ * `/bin/sh` here would put this machine's operating system inside a document
+ * that has to open on another one, which is what the portability rule this
+ * field exists for actually forbids.
+ */
+export const RunShell = z.object({
+  /** The program spawned. An absolute path, or a name found on PATH. */
+  program: z.string().min(1).max(1024),
+  /** Argv BEFORE the command, e.g. `["-c"]`. The command is appended to it. */
+  args: z.array(z.string().max(4000)).max(32).optional(),
+});
+export type RunShell = z.infer<typeof RunShell>;
+
 export const RunConfigurationInput = z.object({
   name: z.string().min(1).max(120),
   /** Which glyph the Run menu draws before the name. Default: `play`. */
   icon: RunIcon.optional(),
   /** Run by a shell, so `bun run dev` and `a && b` both mean what they look like. */
   command: z.string().min(1).max(4000),
+  /** Which shell, spelled out. Absent: this platform's own, resolved at launch. */
+  shell: RunShell.optional(),
   /** Relative to the worktree the run is launched from. Default: its root. */
   cwd: RelativeCwd.optional(),
   env: z.array(RunEnvVar).max(200).optional(),
@@ -302,7 +326,9 @@ export function redactText(text: string, secrets: readonly string[]): string {
  * human who marks `TOKEN` secret and then writes `curl -H "x: sk_live_…"` in the
  * command has put the same string in a field this used to spread verbatim. The
  * promise attached to the word "secret" is "you will not see this value in
- * Telar", so it has to hold across every text field we hand back.
+ * Telar", so it has to hold across every text field we hand back — INCLUDING
+ * every field added later. A pinned shell is text a human wrote, so its program
+ * and each of its arguments go through the scrubber like everything else.
  */
 export function redactConfiguration(config: RunConfiguration): RunConfigurationView {
   const secrets = secretValues(config);
@@ -310,6 +336,14 @@ export function redactConfiguration(config: RunConfiguration): RunConfigurationV
     ...config,
     name: redactText(config.name, secrets),
     command: redactText(config.command, secrets),
+    ...(config.shell === undefined
+      ? {}
+      : {
+          shell: {
+            program: redactText(config.shell.program, secrets),
+            ...(config.shell.args === undefined ? {} : { args: config.shell.args.map((arg) => redactText(arg, secrets)) }),
+          },
+        }),
     ...(config.cwd === undefined ? {} : { cwd: redactText(config.cwd, secrets) }),
     ...(config.readinessUrl === undefined ? {} : { readinessUrl: redactText(config.readinessUrl, secrets) }),
     env: (config.env ?? []).map((entry) => (entry.secret ? { key: entry.key, secret: true } : { key: entry.key, value: redactText(entry.value, secrets) })),
