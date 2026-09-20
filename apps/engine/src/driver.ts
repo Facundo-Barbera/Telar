@@ -4283,7 +4283,13 @@ export function withToolResult(detail: ItemDetail, output: string, structured?: 
   return withToolOutput(detail, output);
 }
 
-/** Fold a tool's output into the detail its call opened with. */
+/**
+ * Fold a tool's output into the detail its call opened with.
+ *
+ * THE CAP IS WHERE THE OUTPUT ENDS, not where its transport does. Nothing
+ * streams `command_output` or `tool_output` deltas, so what this truncates is
+ * not journalled anywhere else — see `CommandExecutionDetail.outputPreview`.
+ */
 function withToolOutput(detail: ItemDetail, output: string): ItemDetail {
   const preview = output.length > 4_000 ? `${output.slice(0, 4_000)}…` : output;
   switch (detail.type) {

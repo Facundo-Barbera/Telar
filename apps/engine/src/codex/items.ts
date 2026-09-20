@@ -37,7 +37,14 @@ function nonNegative(value: unknown): number {
   return n !== undefined && n >= 0 ? n : 0;
 }
 
-/** Output is carried in full as deltas; the row keeps a bounded preview. */
+/**
+ * The row keeps a bounded preview AND NOTHING KEEPS THE REST.
+ *
+ * This said the output was carried in full as deltas. It is not — no driver
+ * emits `command_output` or `tool_output` (see `ContentStream`), so beyond
+ * this cap the text exists only in what was sent to the model. Keep that in
+ * mind before treating the preview as a copy of the output: it is a label.
+ */
 function preview(value: string): string {
   return value.length > 4_000 ? `${value.slice(0, 4_000)}…` : value;
 }

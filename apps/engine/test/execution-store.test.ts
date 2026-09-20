@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { ContentStream, ItemDetail } from "@telar/engine-client";
+import { ContentStream as ContentStreamSchema, ItemDetail as ItemDetailSchema } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
 import { ExecutionStore } from "../src/execution-store";
 
@@ -542,13 +544,20 @@ function journal(root: string, sessionId: string, store: ExecutionStore) {
   let id = 0;
   const at = Date.parse("2026-09-01T00:00:00Z");
   const runId = "run_one";
+  // The kind and the stream are PARAMETERS rather than constants because the
+  // reach test below has to write every item kind the contract has, and a
+  // fixture that can only write `assistant_message` can only ever confirm the
+  // one kind that was never in doubt. Both default to what the older tests
+  // here pass, which is why those say nothing about either.
   return {
-    start: (itemId: string) => store.append({ id: ++id, at, sessionId, runId, type: "item.started",
-      item: { id: itemId, runId, sessionId, status: "inProgress", detail: { type: "assistant_message", text: "" }, startedAt: at } } as never),
-    delta: (itemId: string, text: string) => store.append({ id: ++id, at, sessionId, runId, type: "content.delta",
-      itemId, stream: "assistant_text", text } as never),
-    complete: (itemId: string, text: string) => store.append({ id: ++id, at, sessionId, runId, type: "item.completed",
-      item: { id: itemId, runId, sessionId, status: "completed", detail: { type: "assistant_message", text }, startedAt: at, completedAt: at } } as never),
+    start: (itemId: string, detail: ItemDetail = { type: "assistant_message", text: "" }) =>
+      store.append({ id: ++id, at, sessionId, runId, type: "item.started",
+        item: { id: itemId, runId, sessionId, status: "inProgress", detail, startedAt: at } } as never),
+    delta: (itemId: string, text: string, stream: ContentStream = "assistant_text") =>
+      store.append({ id: ++id, at, sessionId, runId, type: "content.delta", itemId, stream, text } as never),
+    complete: (itemId: string, text: string, detail: ItemDetail = { type: "assistant_message", text }) =>
+      store.append({ id: ++id, at, sessionId, runId, type: "item.completed",
+        item: { id: itemId, runId, sessionId, status: "completed", detail, startedAt: at, completedAt: at } } as never),
     endTurn: () => store.append({ id: ++id, at, sessionId, runId, type: "turn.completed", resultText: "done" } as never),
   };
 }
@@ -618,6 +627,174 @@ test("an unfinished turn is left entirely alone, and swept once it ends", () => 
     // and it stays — the same rule as the guard, for the same reason.
     expect(types(store, "session_one")).toEqual(["item.completed", "content.delta", "turn.completed"]);
   } finally { store.close(); }
+});
+
+/**
+ * HOW FAR COMPACTION REACHES, PER KIND, AND WHY IT STOPS WHERE IT DOES — #686.
+ *
+ * The guard compares an item's summed deltas against `detail.text` on its own
+ * `item.completed`. Three of the contract's eighteen detail kinds have a
+ * top-level `text`; the other fifteen keep their payload under a named field
+ * or do not keep it at all. So the reach is not a coverage gap somebody forgot
+ * to close — it is the guard correctly reporting that for those fifteen the
+ * completed row DOES NOT HOLD what was streamed, and dropping their deltas
+ * would be lossy rather than lossless. #686 opened as "compaction reaches 2 of
+ * 18 kinds"; the finding was that widening it is the bug, not the fix.
+ *
+ * THE FIXTURE IS DELIBERATELY GENEROUS. Every kind's completed detail carries
+ * the WHOLE streamed text in the most text-bearing field that kind has — the
+ * command's `outputPreview`, the tool call's `output`, the diff, the error
+ * message. They are kept anyway, which is the point: it is the shape the guard
+ * reads, not the presence of the characters somewhere on the row. In real
+ * traffic those fields are capped at 4,000 characters (see
+ * `CommandExecutionDetail.outputPreview`), so pointing the comparison at them
+ * would pass only where compaction was not worth doing.
+ *
+ * ASSERTED IN BOTH DIRECTIONS, WHICH IS WHAT MAKES IT A TEST. Only asserting
+ * "9 dropped" would pass just as well on a fixture that quietly stopped writing
+ * the other fifteen kinds' deltas. So the count is asserted BEFORE the sweep
+ * (every kind really wrote three), the sweep's own return is asserted, and the
+ * survivors are asserted per kind afterwards.
+ *
+ * THREE REACHABLE, TWO EMITTED. `user_message` is reachable and never streamed
+ * into — it is typed, not generated — so the issue's "2 of 18" is the emission
+ * count and this is the structural one. Both are worth having: the first can
+ * change without anyone touching this store, and the trip-wire below is what
+ * notices.
+ */
+const DELTAS_PER_KIND = 3;
+/** The detail kinds whose completed row keeps the streamed text where the
+ *  guard reads it — `$.item.detail.text`, no named field in between. */
+const REACHABLE: ItemDetail["type"][] = ["user_message", "assistant_message", "reasoning"];
+/** One row per contract kind: the stream that kind's deltas would arrive on if
+ *  anything emitted them, and the most generous completed detail it can hold. */
+const REACH: { kind: ItemDetail["type"]; stream: ContentStream; detail: (text: string) => ItemDetail }[] = [
+  { kind: "user_message", stream: "assistant_text", detail: (text) => ({ type: "user_message", text }) },
+  { kind: "notification", stream: "assistant_text", detail: (text) => ({ type: "notification", notification: { kind: "peer_message", summary: text, fetch: { sessionId: "session_one", runId: "run_one" }, body: text } }) },
+  { kind: "assistant_message", stream: "assistant_text", detail: (text) => ({ type: "assistant_message", text }) },
+  { kind: "reasoning", stream: "reasoning_text", detail: (text) => ({ type: "reasoning", text }) },
+  { kind: "plan", stream: "assistant_text", detail: (text) => ({ type: "plan", plan: { steps: [{ step: text, status: "completed" }] } }) },
+  { kind: "command_execution", stream: "command_output", detail: (text) => ({ type: "command_execution", command: { command: "bun test", outputPreview: text } }) },
+  { kind: "file_change", stream: "tool_output", detail: (text) => ({ type: "file_change", change: { path: "a.ts", kind: "edit", unifiedDiff: text } }) },
+  // Nowhere to put it at all: `FileReadDetail` is a path and a line range.
+  { kind: "file_read", stream: "tool_output", detail: () => ({ type: "file_read", read: { path: "a.ts" } }) },
+  { kind: "mcp_tool_call", stream: "tool_output", detail: (text) => ({ type: "mcp_tool_call", call: { name: "mcp__linear__search", output: text } }) },
+  { kind: "dynamic_tool_call", stream: "tool_output", detail: (text) => ({ type: "dynamic_tool_call", call: { name: "WebFetch", output: text } }) },
+  { kind: "web_search", stream: "tool_output", detail: (text) => ({ type: "web_search", query: text }) },
+  { kind: "browser_action", stream: "tool_output", detail: (text) => ({ type: "browser_action", call: { name: "browser_click", output: text } }) },
+  { kind: "task", stream: "assistant_text", detail: () => ({ type: "task", taskId: "task_one" }) },
+  { kind: "context_compaction", stream: "assistant_text", detail: (text) => ({ type: "context_compaction", reason: text }) },
+  { kind: "provider_wait", stream: "assistant_text", detail: () => ({ type: "provider_wait", wait: { kind: "api_retry", attempt: 1 } }) },
+  { kind: "conversation_import", stream: "assistant_text", detail: (text) => ({ type: "conversation_import", import: { provider: "claude", sourceSessionId: "session_src", sessionId: "session_one", firstPrompt: text, records: 1, cut: "whole", rows: 1, rowCut: "whole" } }) },
+  { kind: "error", stream: "assistant_text", detail: (text) => ({ type: "error", error: { message: text } }) },
+  { kind: "unknown", stream: "unknown", detail: (text) => ({ type: "unknown", label: text }) },
+];
+
+test("compaction reaches exactly the kinds whose settled row keeps the streamed text", () => {
+  // EXHAUSTIVE OR IT PROVES NOTHING. A nineteenth detail kind that nobody
+  // thought about compaction for fails here rather than being silently exempt.
+  expect(REACH.map((row) => row.kind)).toEqual(
+    ItemDetailSchema.options.map((option) => option.shape.type.value as ItemDetail["type"]),
+  );
+  expect(REACH).toHaveLength(18);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-reach-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  const store = new ExecutionStore(root);
+  try {
+    const write = journal(root, "session_one", store);
+    const streamed = "one two three";
+    for (const { kind, stream, detail } of REACH) {
+      const itemId = `item_${kind}`;
+      write.start(itemId, detail(""));
+      // Three deltas summing to exactly the completed text, so the guard's
+      // `settled.chars >= streamed.chars` holds wherever it can read both.
+      write.delta(itemId, "one ", stream);
+      write.delta(itemId, "two ", stream);
+      write.delta(itemId, "three", stream);
+      write.complete(itemId, streamed, detail(streamed));
+    }
+    write.endTurn();
+
+    const deltasPerItem = (): Map<string, number> => {
+      const counted = new Map<string, number>();
+      for (const event of store.events("session_one")) {
+        if (event.type !== "content.delta") continue;
+        counted.set(event.itemId, (counted.get(event.itemId) ?? 0) + 1);
+      }
+      return counted;
+    };
+
+    // BEFORE: the fixture really wrote three for every kind. Without this the
+    // "kept: 3" below would be satisfied by a fixture that wrote three and by
+    // one that stopped emitting deltas for a kind entirely.
+    const before = deltasPerItem();
+    expect(REACH.map(({ kind }) => before.get(`item_${kind}`) ?? 0)).toEqual(REACH.map(() => DELTAS_PER_KIND));
+
+    // The sweep's own accounting: 3 reachable kinds × 3 deltas, and an
+    // `item.started` dropped for each of the 18 items that completed.
+    expect(store.compactJournal()).toEqual({ deltas: REACHABLE.length * DELTAS_PER_KIND, starts: REACH.length, sessions: 1 });
+
+    // AFTER, per kind and in both directions.
+    const after = deltasPerItem();
+    expect(REACH.map(({ kind }) => ({
+      kind,
+      kept: after.get(`item_${kind}`) ?? 0,
+      dropped: (before.get(`item_${kind}`) ?? 0) - (after.get(`item_${kind}`) ?? 0),
+    }))).toEqual(REACH.map(({ kind }) => REACHABLE.includes(kind)
+      ? { kind, kept: 0, dropped: DELTAS_PER_KIND }
+      : { kind, kept: DELTAS_PER_KIND, dropped: 0 }));
+
+    // And the deltas that are the only record of their text are still there.
+    expect(store.events("session_one").filter((event) => event.type === "content.delta")).toHaveLength(
+      (REACH.length - REACHABLE.length) * DELTAS_PER_KIND,
+    );
+  } finally { store.close(); }
+});
+
+/**
+ * THE TRIP-WIRE AT THE EMITTER SEAM — #686, and the cheap form of it.
+ *
+ * The dangerous change is not a wider guard, it is a NEW EMISSION. The moment a
+ * driver streams a command's output or a tool's result, those deltas become the
+ * only durable copy of anything past the 4,000-character preview — history, not
+ * redundancy — and compaction must go on skipping them. The person that hurts
+ * most is the command-heavy user, who is also the one a "fix" to the guard
+ * would look like it was for.
+ *
+ * SO EVERY MEMBER IS CLASSIFIED, AND MOVING ONE IS A DECISION SOMEBODY MAKES ON
+ * PURPOSE. A sixth member fails here. A member moved between the sets fails
+ * here. Both failures are the prompt to answer one question first: what happens
+ * to those deltas when their turn settles?
+ *
+ * OVER VALUES, NEVER OVER SOURCE TEXT. This repository has shipped a check that
+ * grepped for a test name and therefore passed when the test was skipped; a
+ * grep here would additionally pass through a rename, or through a driver that
+ * emits via a variable rather than a literal.
+ */
+/** Streams whose deltas a settled `item.completed` can account for, because the
+ *  item they open keeps its text at `detail.text`. */
+const COMPACTABLE: ContentStream[] = ["assistant_text", "reasoning_text"];
+/** Streams no driver in this repository emits. Moving one out of here means
+ *  deciding what `compactJournal` should do with its deltas — the answer is
+ *  "keep them", and the reach test above is where that gets written down. */
+const NOT_EMITTED: ContentStream[] = ["command_output", "tool_output", "unknown"];
+
+test("every content stream is classified for compaction, exactly once", () => {
+  const classified = [...COMPACTABLE, ...NOT_EMITTED];
+  // Exhaustive: a new member of the enum belongs to one of the two sets, and
+  // until somebody puts it in one this fails.
+  expect([...classified].sort()).toEqual([...ContentStreamSchema.options].sort());
+  // And to exactly one: a member in both would make the pair agree with the
+  // enum while saying nothing.
+  expect(new Set(classified).size).toBe(classified.length);
+  expect(COMPACTABLE.filter((stream) => NOT_EMITTED.includes(stream))).toEqual([]);
+  // The two numbers #686 measured, held where a change has to walk past them.
+  expect(COMPACTABLE).toHaveLength(2);
+  expect(NOT_EMITTED).toHaveLength(3);
+  // The compactable streams are exactly the reachable kinds that are streamed
+  // into, which is the link between this trip-wire and the reach test above.
+  expect(COMPACTABLE.length).toBe(REACHABLE.filter((kind) => kind !== "user_message").length);
 });
 
 /**
