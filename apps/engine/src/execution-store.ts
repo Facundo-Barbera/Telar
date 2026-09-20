@@ -108,6 +108,18 @@ const USAGE_WATERMARK_PREFIX = "journal-usage-folded/";
  */
 const ITEMS_ROWS_PREFIX = "items-rows/";
 
+/**
+ * HOW FAR DURABILITY HAS REACHED — the row the device barrier commits, #632.
+ *
+ * The barrier needs a page to write, because a commit with nothing in it
+ * produces no WAL frame and therefore nothing to sync: an empty transaction at
+ * `synchronous=FULL` is a barrier that never happens. So it writes the id of
+ * the terminal turn event it is persisting, which is both a changed page and
+ * the only durable answer to "where did the last barrier land" — worth having
+ * in a diagnostic, and the reason this is a real row rather than a dummy one.
+ */
+const DURABILITY_BARRIER_KEY = "durability-barrier";
+
 /** How long after opening the first compaction starts. Long enough that the
  *  daemon is answering before housekeeping touches the database, short enough
  *  that a person who launches Telar to reclaim space does not wait on it. */
@@ -389,6 +401,18 @@ export type ExecutionStoreOptions = {
    *  prints it; a test asserts on it without waiting on a timer. */
   onJournalCompacted?: (swept: { deltas: number; starts: number; sessions: number }) => void;
   /**
+   * CALLED ONCE PER DEVICE BARRIER ACTUALLY ISSUED — issue #632, and it counts
+   * the real one rather than replacing it.
+   *
+   * The claim this feature makes is "a barrier per settled turn and none per
+   * delta", and the only assertion that can hold it is a COUNT: a marker string
+   * is printed by a barrier that did nothing, and a timing is an assertion about
+   * the runner's disk. This fires after the barrier's own commit returns, so a
+   * barrier that threw is not counted — which is the direction that matters,
+   * since the failure state must not look like the success one.
+   */
+  onDurabilityBarrier?: (at: { sessionId: string; eventId: number }) => void;
+  /**
    * How long after opening the first sweep starts. Defaults to
    * `COMPACT_AFTER_OPEN_MS`; nothing in production passes it.
    *
@@ -472,6 +496,17 @@ export class ExecutionStore {
    *  A callback rather than a return because the sweep no longer happens while
    *  anybody is waiting on the open — see the constructor. */
   private readonly onJournalCompacted?: (swept: { deltas: number; starts: number; sessions: number }) => void;
+  private readonly onDurabilityBarrier?: (at: { sessionId: string; eventId: number }) => void;
+  /**
+   * THE TERMINAL TURN EVENT THIS WRITE SCOPE APPENDED, if it appended one.
+   *
+   * Set by `append`, read and cleared by `maybeBarrier` once the scope commits.
+   * A number rather than a boolean because the barrier writes it down: see
+   * `DURABILITY_BARRIER_KEY`. Cleared by a rollback too — a turn that did not
+   * commit has nothing to persist, and issuing a barrier for it would be
+   * claiming a settlement that never happened.
+   */
+  private barrierDue?: { sessionId: string; eventId: number };
   /**
    * WHAT THE HOUSEKEEPING ON OPEN REMOVED — issue #457, step 4.
    *
@@ -499,6 +534,7 @@ export class ExecutionStore {
     this.receiptRetentionMs = Math.max(0, options.receiptRetentionMs ?? RECEIPT_RETENTION_MS);
     this.legacyBackupRetentionMs = Math.max(0, options.legacyBackupRetentionMs ?? LEGACY_BACKUP_RETENTION_MS);
     if (options.onJournalCompacted) this.onJournalCompacted = options.onJournalCompacted;
+    if (options.onDurabilityBarrier) this.onDurabilityBarrier = options.onDurabilityBarrier;
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
     this.db = process.versions.bun ? new native.Database(file) : new native.DatabaseSync(file);
@@ -1456,6 +1492,12 @@ export class ExecutionStore {
   }
   append(event: EngineEvent): void {
     this.cursors.set(event.sessionId, Math.max(event.id, this.cursors.get(event.sessionId) ?? 0));
+    // A TURN THAT ENDED IS THE ONE QUIESCENCE POINT THIS STORE HAS — see
+    // `barrier`. The last terminal event of the scope wins, because one barrier
+    // persists everything committed before it on the same device; a scope that
+    // ends two turns pays once, not twice.
+    if ((TERMINAL_TURN_TYPES as readonly string[]).includes(event.type))
+      this.barrierDue = { sessionId: event.sessionId, eventId: event.id };
     if (event.type !== "content.delta") {
       // Nothing may reach the disk ahead of a buffered delta; see `buffered`.
       // Outside a transaction that has to be ONE of them, or the batch this
@@ -1811,26 +1853,6 @@ export class ExecutionStore {
     return this.sessionIds().filter((id) => !summarised.has(id));
   }
 
-  /**
-   * THE DURABILITY PRAGMAS IN EFFECT ON THIS CONNECTION, READ BACK — #632.
-   *
-   * A pragma is per connection, so nothing outside this object can observe the
-   * ones it set: a test that opened the same file would be asserting about its
-   * own connection's defaults. This is the only honest way to hold the
-   * constructor to what its comment says, and it answers with VALUES because
-   * the alternative — grepping the source for the pragma text — passes on a
-   * line that was never executed.
-   *
-   * NOTE WHAT IT CANNOT PROVE. Under `bun:sqlite` `checkpoint_fullfsync` is
-   * already 1 before anything sets it, so an assertion here is vacuous for the
-   * packaged app, which runs `node:sqlite` where the default is 0. That gap is
-   * what `scripts/durability-pragmas.mjs` exists to close.
-   */
-  durabilityPragmas(): { synchronous: number; checkpointFullfsync: number; fullfsync: number } {
-    const read = (name: string): number => Number(Object.values(this.db.prepare(`PRAGMA ${name}`).get() ?? {})[0] ?? 0);
-    return { synchronous: read("synchronous"), checkpointFullfsync: read("checkpoint_fullfsync"), fullfsync: read("fullfsync") };
-  }
-
   /** Run `work` as one transaction, for a caller outside a command that still
    *  has to write a document and its row together. */
   atomically(work: () => void): void {
@@ -1897,8 +1919,100 @@ export class ExecutionStore {
       // rather than lose it to a failure that came after.
       this.buffered.unshift(...settled.filter((event) => !this.buffered.includes(event)));
       this.cursors.clear();
+      this.barrierDue = undefined;
       throw error;
     } finally { this.depth -= 1; }
+    this.maybeBarrier();
+  }
+
+  /**
+   * ONE DEVICE BARRIER PER SETTLED TURN — issue #632, change 3.
+   *
+   * ══ WHY IT IS A SECOND COMMIT AND NOT A PRAGMA AROUND THE FIRST ══
+   *
+   * The design this comes from says to raise `synchronous=FULL` immediately
+   * before the turn's own `COMMIT` and restore it after. **Sqlite refuses**:
+   * `PRAGMA synchronous` inside an open transaction throws "Safety level may
+   * not be changed inside a transaction", on both runtimes. And the flag this
+   * reads is only known once `operation()` has run, which is after `BEGIN` — so
+   * there is no moment at which the intended spelling is legal.
+   *
+   * What is legal, and is what the guarantee actually needs, is the amortised
+   * pattern `fcntl(2)` documents in so many words: *"as this drains the entire
+   * queue of the device and acts as a barrier, data that had been fsync'd on
+   * the same device before is guaranteed to be persisted when this call
+   * returns."* So the turn commits at NORMAL, and a second, one-row commit at
+   * `FULL` + `fullfsync=ON` immediately after is the barrier for it and for
+   * every delta underneath it. Measured (`bench:durability`, `node:sqlite`):
+   * 78–82 ms per barrier on a USB enclosure, once per turn, against turns
+   * measured in seconds to minutes.
+   *
+   * ══ BEFORE THE DAEMON ANSWERS ══
+   *
+   * This runs inside `transaction()`, before it returns — so the reply that
+   * says a turn completed goes out after the barrier, not before it. That is
+   * the ordering choice, and it is the one that lets Telar mean "on the
+   * platter" when it says a turn is settled. It is also why nothing here is a
+   * setting: a barrier the person can turn off is a claim that is sometimes
+   * true.
+   *
+   * ══ WHAT IT DOES NOT CLAIM ══
+   *
+   * That the drive obeyed. `fcntl(2)` is explicit that some drives ignore the
+   * request. The claim is exactly: Telar issued the call Apple documents as
+   * flushing the drive's cache, and issued it before acknowledging the turn.
+   *
+   * A FAILURE HERE DOES NOT FAIL THE TURN. The transaction is already
+   * committed; throwing now would report a command as failed that succeeded.
+   * What a failure costs is the stronger guarantee, leaving the NORMAL one the
+   * store had before — and it is uncounted, so a test asserting the count
+   * cannot mistake it for success.
+   */
+  private maybeBarrier(): void {
+    const due = this.barrierDue;
+    this.barrierDue = undefined;
+    if (!due || this.closed) return;
+    try {
+      this.db.exec("PRAGMA synchronous=FULL; PRAGMA fullfsync=ON;");
+      try {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+          this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            .run(DURABILITY_BARRIER_KEY, `${due.sessionId}:${due.eventId}`);
+          this.db.exec("COMMIT");
+        } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+      } finally { this.db.exec("PRAGMA synchronous=NORMAL; PRAGMA fullfsync=OFF;"); }
+    } catch { return; }
+    this.onDurabilityBarrier?.(due);
+  }
+
+  /**
+   * THE DURABILITY PRAGMAS IN EFFECT ON THIS CONNECTION, READ BACK — #632.
+   *
+   * A pragma is per connection, so nothing outside this object can observe the
+   * ones it set: a test that opened the same file would be asserting about its
+   * own connection's defaults. This is the only honest way to hold the
+   * constructor to what its comment says, and it answers with VALUES because
+   * the alternative — grepping the source for the pragma text — passes on a
+   * line that was never executed.
+   *
+   * NOTE WHAT IT CANNOT PROVE. Under `bun:sqlite` `checkpoint_fullfsync` is
+   * already 1 before anything sets it, so an assertion here is vacuous for the
+   * packaged app, which runs `node:sqlite` where the default is 0. That gap is
+   * what `scripts/durability-pragmas.mjs` exists to close.
+   */
+  durabilityPragmas(): { synchronous: number; checkpointFullfsync: number; fullfsync: number } {
+    const read = (name: string): number => Number(Object.values(this.db.prepare(`PRAGMA ${name}`).get() ?? {})[0] ?? 0);
+    return { synchronous: read("synchronous"), checkpointFullfsync: read("checkpoint_fullfsync"), fullfsync: read("fullfsync") };
+  }
+
+  /** `<sessionId>:<eventId>` of the last turn a device barrier persisted, or
+   *  `undefined` on a store no turn has ended on. See `DURABILITY_BARRIER_KEY`:
+   *  it is the barrier's own write, so its presence is the evidence that the
+   *  barrier's commit produced a WAL frame to sync rather than nothing. */
+  barrierWatermark(): string | undefined {
+    const row = this.statement("SELECT value FROM metadata WHERE key=?").get(DURABILITY_BARRIER_KEY);
+    return row ? String(row.value) : undefined;
   }
   /** Store what is held, in a transaction of its own — or, inside one already,
    *  as part of it. `transaction` flushes what is settled before it begins. */
@@ -1933,6 +2047,9 @@ export class ExecutionStore {
     const changesBefore = Number(this.statement("SELECT total_changes() AS count").get()?.count ?? 0);
     this.db.exec("BEGIN IMMEDIATE");
     this.depth += 1;
+    /** Assigned by every path that reaches the barrier below; the catch throws
+     *  and the replay returns, so the two paths that skip it never read it. */
+    let settled!: T;
     try {
       // A receipt id this call just minted cannot already be on file, so the
       // lookup is skipped entirely unless a CALLER supplied the id — which is
@@ -1941,6 +2058,9 @@ export class ExecutionStore {
       if (known) {
         if (known.command !== command) throw new Error("command id was already used for a different command");
         this.db.exec("COMMIT");
+        // NO BARRIER ON A REPLAY, and it is not an oversight: `operation` never
+        // ran, so nothing was appended and the turn this is re-answering was
+        // barriered when it actually happened.
         return JSON.parse(String(known.result)).value as T;
       }
       const result = operation();
@@ -1953,9 +2073,14 @@ export class ExecutionStore {
           JSON.stringify(commandId === undefined ? {} : { value: result }), this.now());
       this.db.exec("COMMIT");
       this.settle();
-      return result;
+      settled = result;
     } catch (error) { this.db.exec("ROLLBACK"); this.revert(); throw error; }
     finally { this.depth -= 1; }
+    // OUTSIDE THE TRANSACTION AND BEFORE THE RETURN — the barrier needs the
+    // first because sqlite refuses its pragmas inside one, and the second
+    // because the point is that the daemon answers after it. See `maybeBarrier`.
+    this.maybeBarrier();
+    return settled;
   }
   /** The deltas appended in the transaction that just committed are now this
    *  store's to answer for, and the ones it wrote are the disk's. */
@@ -1972,6 +2097,9 @@ export class ExecutionStore {
    *  it had written on an earlier transaction's behalf. */
   private revert(): void {
     this.pending = [];
+    // A turn that rolled back did not settle, so there is nothing to persist
+    // and nothing to claim: see `barrierDue`.
+    this.barrierDue = undefined;
     if (this.writtenAhead.length) {
       this.buffered.unshift(...this.writtenAhead);
       this.writtenAhead = [];

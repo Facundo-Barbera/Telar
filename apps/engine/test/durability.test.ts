@@ -97,3 +97,100 @@ test("an explicit synchronous survives entering WAL, which is why the constructo
   expect(Number(Object.values(db.prepare("PRAGMA synchronous").get() ?? {})[0] ?? 0)).toBe(1);
   db.close();
 });
+
+type Barrier = { sessionId: string; eventId: number };
+function watching(barriers: Barrier[]): { root: string; store: ExecutionStore } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-durability-"));
+  roots.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  const store = new ExecutionStore(root, { onDurabilityBarrier: (event) => { barriers.push(event); } });
+  stores.push(store);
+  store.write(path.join(root, "sessions", "session_one", "session.json"), { id: "session_one" });
+  return { root, store };
+}
+
+const at = Date.parse("2026-09-01T00:00:00Z");
+/** One event, in the journal's own shape. `at` is fixed: nothing here is about
+ *  time, and a clock in a fixture is a flake waiting for a slow machine. */
+const event = (id: number, type: string, extra: Record<string, unknown> = {}) =>
+  ({ id, at, sessionId: "session_one", runId: "run_one", type, ...extra }) as never;
+
+test("one barrier per settled turn and none per delta — counted, not timed", () => {
+  const barriers: Barrier[] = [];
+  const { store } = watching(barriers);
+  let id = 0;
+  // THE DELTA SIDE. Sixty streamed deltas across three commits, exactly as the
+  // engine coalesces them, and not one of them may buy a barrier — that is the
+  // per-commit cost #632 measured at 2.32 ms per event on a USB enclosure and
+  // ruled off the table.
+  for (let commit = 0; commit < 3; commit += 1) {
+    store.transaction(`stream_${commit}`, () => {
+      for (let n = 0; n < 20; n += 1) store.append(event((id += 1), "content.delta", { itemId: "item_one", text: "x" }));
+    });
+  }
+  expect(barriers).toHaveLength(0);
+
+  // THE TURN SIDE. Each terminal type ends a turn, so each buys exactly one.
+  for (const type of ["turn.completed", "turn.failed", "turn.stopped", "turn.ambiguous", "turn.discarded"]) {
+    store.transaction(`end_${type}`, () => { store.append(event((id += 1), type)); });
+  }
+  expect(barriers).toHaveLength(5);
+  // The barrier names the event it persisted, which is also what it wrote down.
+  expect(barriers.at(-1)).toEqual({ sessionId: "session_one", eventId: id });
+
+  // A turn that moved without ending — `turn.steered` and friends are
+  // deliberately absent from `TERMINAL_TURN_TYPES` — adds nothing.
+  store.transaction("steer", () => { store.append(event((id += 1), "turn.steered")); });
+  expect(barriers).toHaveLength(5);
+});
+test("a rolled-back turn issues no barrier, because it never settled", () => {
+  const barriers: Barrier[] = [];
+  const { store } = watching(barriers);
+  expect(() =>
+    store.transaction("doomed", () => {
+      store.append(event(9, "turn.completed"));
+      throw new Error("injected disk failure");
+    }),
+  ).toThrow("injected disk failure");
+  expect(barriers).toHaveLength(0);
+  /**
+   * AND THE ARMING MUST NOT OUTLIVE THE ROLLBACK — which is a different claim
+   * from the one above, and the only one that catches a missing reset.
+   *
+   * The throw leaves `transaction` through its catch, so the doomed turn's own
+   * barrier is never issued whether or not the flag was cleared. What a stale
+   * flag does is fire on the NEXT commit — and the next commit is usually
+   * another turn, which overwrites the flag and hides it. So the next scope
+   * here appends a DELTA and nothing else: a store that forgot to clear would
+   * barrier here, labelled with event 9, a turn that was rolled back.
+   */
+  store.transaction("stream", () => { store.append(event(1, "content.delta", { itemId: "item_one", text: "x" })); });
+  expect(barriers).toHaveLength(0);
+  // And a real turn afterwards still gets exactly one, named for itself.
+  store.transaction("real", () => { store.append(event(2, "turn.completed")); });
+  expect(barriers).toEqual([{ sessionId: "session_one", eventId: 2 }]);
+});
+
+test("the barrier leaves the connection exactly as it found it", () => {
+  const { store } = watching([]);
+  store.transaction("end", () => { store.append(event(1, "turn.completed")); });
+  // RESTORED, NOT LEFT RAISED. A store that forgot to put `synchronous` back
+  // would pass every count above while quietly paying an fsync per commit
+  // forever after the first turn ended — the exact regression this asserts is
+  // absent, in values rather than in a promise.
+  expect(store.durabilityPragmas()).toEqual({ synchronous: 1, checkpointFullfsync: 1, fullfsync: 0 });
+});
+
+test("the barrier records where durability reached, and the row survives a reopen", () => {
+  const { root, store } = watching([]);
+  store.transaction("end", () => { store.append(event(7, "turn.completed")); });
+  store.close();
+  stores.splice(stores.indexOf(store), 1);
+  const reopened = new ExecutionStore(root);
+  stores.push(reopened);
+  // Read through the store's own document surface rather than by reaching into
+  // sqlite: the row is the barrier's write, and its value is the event it
+  // persisted. A barrier that wrote nothing would produce no WAL frame and
+  // therefore no sync at all, so this is also how the mechanism is held up.
+  expect(reopened.barrierWatermark()).toBe("session_one:7");
+});
