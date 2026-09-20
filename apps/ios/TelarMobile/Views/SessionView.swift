@@ -607,9 +607,8 @@ struct SessionView: View {
             }
         } label: {
             Image(systemName: "arrow.down")
-                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Theme.text)
-                .frame(width: 36, height: 36)
+                .scaledGlyphBox(36, glyph: 14, weight: .semibold)
                 .background(Theme.card)
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
@@ -1152,9 +1151,8 @@ struct ComposerView: View {
                         pickingPhotos = true
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 16))
                             .foregroundStyle(Theme.text)
-                            .frame(width: 44, height: 44)
+                            .scaledGlyphBox(44, glyph: 16)
                             .background(Theme.subtle)
                             .clipShape(Circle())
                             .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
@@ -1182,7 +1180,7 @@ struct ComposerView: View {
                             dictation.toggle()
                         } label: {
                             Image(systemName: dictation.phase == .listening ? "mic.fill" : "mic")
-                                .font(.system(size: 16))
+                                .scaledGlyph(16)
                                 // A TOGGLE'S FAILURE MODE IS A RECORDING
                                 // SOMEBODY FORGOT, so the state is loud: the
                                 // pill turns red and the glyph fills.
@@ -1195,7 +1193,7 @@ struct ComposerView: View {
                         ToolbarPill(variant: .danger) {
                             stop()
                         } label: {
-                            Image(systemName: "stop.fill").font(.system(size: 14))
+                            Image(systemName: "stop.fill").scaledGlyph(14)
                         }
                         .accessibilityLabel("Stop the running turn")
                     }
@@ -1211,9 +1209,8 @@ struct ComposerView: View {
                 submit()
             } label: {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(canSend ? Theme.primaryGlyph : Theme.textMuted)
-                    .frame(width: 44, height: 44)
+                    .scaledGlyphBox(44, glyph: 16, weight: .semibold)
                     .background(canSend ? Theme.primaryFill : Theme.subtleStrong)
                     .clipShape(Circle())
             }
@@ -1472,9 +1469,8 @@ struct ControlPillButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: isRunning ? "stop.fill" : "arrow.up")
-                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(isRunning ? Theme.dangerGlyph : (canSend ? Theme.primaryGlyph : Theme.textMuted))
-                .frame(width: 44, height: 44)
+                .scaledGlyphBox(44, glyph: 16, weight: .semibold)
                 .background(isRunning ? Theme.dangerFill : (canSend ? Theme.primaryFill : Theme.subtleStrong))
                 .clipShape(Circle())
         }
@@ -1501,7 +1497,7 @@ struct ToolbarPill<Label: View>: View {
         Button(action: action) {
             label
                 .foregroundStyle(variant == .danger ? Theme.dangerGlyph : Theme.text)
-                .frame(width: 44, height: 44)
+                .scaledSquare(44)
                 .background(variant == .danger ? Theme.dangerFill : Theme.subtle)
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))

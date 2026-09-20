@@ -479,22 +479,20 @@ struct SessionSidebar: View {
         // The glyphs keep the web's size and the tap targets do not: 32pt is a
         // mouse target, and a finger is owed the full 44.
         //
-        // BOTH GLYPHS BELOW KEEP AN ABSOLUTE SIZE, unlike the rest of this
-        // file. The squares are fixed in both dimensions and they clip, so a
-        // glyph that grew with the reader's text would only outgrow its own
-        // target. They want a @ScaledMetric frame — a layout change rather
-        // than a token swap — and are tracked in #674.
+        // BOTH GLYPHS BELOW SCALE WITH THEIR OWN SQUARE (#674). 17-in-44 is
+        // the proportion at every text size, not just the default one — see
+        // `scaledGlyphBox`.
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 0) {
                 Button(action: openSettings) {
-                    Image(systemName: "gearshape").font(.system(size: 17))
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                    Image(systemName: "gearshape")
+                        .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
                 }
                 .keyboardShortcut(",", modifiers: .command)
                 .accessibilityLabel("Settings")
                 Button { showUsage = true } label: {
-                    Image(systemName: "chart.bar").font(.system(size: 17))
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                    Image(systemName: "chart.bar")
+                        .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Usage")
                 .disabled(settings.hosts.isEmpty)
