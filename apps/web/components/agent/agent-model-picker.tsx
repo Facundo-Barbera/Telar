@@ -230,13 +230,16 @@ function AgentModelRow({ model, selected, readOnly, onSelect }: { model: AgentMo
  * THE ROWS, FOR ONE QUERY — everything below the search field.
  *
  * ── WHY THIS IS SEPARATE FROM THE FIELD ABOVE IT ────────────────────────────
- * The shell owns the query and this owns the list, which is the ordinary split
- * — and it is also the only way this list is testable in this suite. React 19's
- * change plugin does not see a synthesised `input` event under happy-dom (the
- * value tracker never fires, so `onChange` never runs), so a test that typed
- * into the field would assert nothing about what the list then shows. Taking
- * the query as a PROP means the search rules are tested against real rendered
- * rows rather than against a string of markup that never re-rendered.
+ * The shell owns the query and this owns the list, which is the ordinary split:
+ * one place decides what is being asked and one decides what that asks for, and
+ * the rows can be exercised against a query without standing up a field.
+ *
+ * It used to be justified here as the ONLY way the list was testable, because
+ * React's change plugin never reached a controlled input in this suite. That
+ * was #732, it was import order in the test preload rather than a property of
+ * the DOM, and it is fixed — `lib/testing/type-into.ts` types into a real
+ * field. The split stays because it is the right split, not because a test
+ * cannot reach the other side of it.
  */
 export function AgentModelRows({
   model,

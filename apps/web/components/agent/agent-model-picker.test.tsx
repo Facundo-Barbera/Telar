@@ -41,6 +41,7 @@ import {
   matchesAgentQuery,
   ROUTE_LABEL,
 } from "./agent-model-picker";
+import { typeInto } from "@/lib/testing/type-into";
 
 /**
  * REGISTERED HERE AND RELEASED IN `afterAll` — the pairing every DOM test in
@@ -107,13 +108,16 @@ function rowsIn(): HTMLButtonElement[] {
 }
 
 /**
- * Search is driven through `AgentModelRows`' `query` prop rather than by typing
- * into the field, and that is a limit of this environment rather than a
- * shortcut: React 19's change plugin never fires under happy-dom — a
- * synthesised `input` event leaves the value tracker untouched, so `onChange`
- * does not run and the list never re-renders. Typing would therefore have
- * asserted nothing. The rows below are really rendered against the real filter;
- * only the field's own `setQuery` is taken on faith, and it is one line.
+ * The search RULES are driven through `AgentModelRows`' `query` prop: one mount
+ * per query, no field in the way, and the rows are really rendered against the
+ * real filter. That is the cheap way to say what a query matches, and it stays.
+ *
+ * It used to carry an apology — that typing into the field was impossible here
+ * because React's change plugin never fired under happy-dom, leaving the
+ * field's own `setQuery` "taken on faith, and it is one line". That was #732;
+ * the cause was import order in the test preload, not the DOM, and it is fixed.
+ * The one line is no longer on faith — `the field feeds the list` below types
+ * into the real shell.
  */
 function search(query: string, over: AgentModelCatalogue = catalogue): void {
   mount(<AgentModelRows catalogue={over} query={query} onPick={() => undefined} />);
@@ -373,5 +377,33 @@ describe("the two halves failing", () => {
     const markup = renderToStaticMarkup(<AgentModelList model="some-withdrawn-model" catalogue={catalogue} onPick={() => undefined} />);
     expect(markup).toContain("some-withdrawn-model");
     expect(markup).toContain("external");
+  });
+});
+
+/**
+ * THE FIELD FEEDS THE LIST (#732).
+ *
+ * Everything above drives `AgentModelRows` with a `query` prop, which says what
+ * a query matches and says nothing about whether the field ever produces one.
+ * That line was the gap this file named and could not close. It can now, so it
+ * does: the real shell, mounted, typed into, and the rows read off the result.
+ */
+describe("the field feeds the list", () => {
+  const listed = () => rowsIn().map((node) => node.dataset.modelId);
+  const field = () => host.querySelector<HTMLInputElement>('input[aria-label="Search models by name or id"]')!;
+
+  test("typing narrows the rows — the shell's own `setQuery`, driven", async () => {
+    mount(<AgentModelList catalogue={catalogue} onPick={() => undefined} />);
+    expect(listed()).toEqual(MODELS.map((model) => model.id));
+    await typeInto(field(), "kimi");
+    expect(listed()).toEqual(["kimi-k3", "kimi-k2.7-code"]);
+  });
+
+  test("and it matches the raw wire id as well as the name, through the field", async () => {
+    mount(<AgentModelList catalogue={catalogue} onPick={() => undefined} />);
+    // "k2.7" is in the id and not in the family heading — the case #551 asked
+    // for, now reachable the way a person reaches it.
+    await typeInto(field(), "k2.7");
+    expect(listed()).toEqual(["kimi-k2.7-code"]);
   });
 });
