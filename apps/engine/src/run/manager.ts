@@ -20,21 +20,29 @@
  * explicit human act that signals nothing and admits, in the text, that Telar is
  * no longer the one who can stop that process.
  *
- * WE SIGNAL PROCESS GROUPS WE CREATED, AND ONLY WHILE WE HOLD THE CHILD. Every
- * launch is `detached: true`, so the shell becomes a group leader and
- * `kill(-pid)` reaches the `bun`/`node`/`vite` descendants that a bare
+ * WE SIGNAL PROCESS GROUPS WE CREATED, AND ONLY WHILE WE HOLD THE CHILD. On
+ * POSIX every launch is `detached: true`, so the shell becomes a group leader
+ * and `kill(-pid)` reaches the `bun`/`node`/`vite` descendants that a bare
  * `kill(pid)` would strand. The pid is only ever used while our own
  * `ChildProcess` has not yet fired `exit`; once it has, the number is a number,
  * the kernel is free to reuse it, and this module will not aim a signal at it.
+ *
+ * WHICH OF THOSE MOVES EXIST IS A PROPERTY OF THE OPERATING SYSTEM, NOT OF THIS
+ * FILE. `platform.ts` owns both — whether a child is spawned as a group leader,
+ * how a whole tree is stopped, and whether "is the group gone?" can be asked at
+ * all — and is injected here, so the Windows branch is exercised from a Mac
+ * rather than written and hoped for.
  *
  * THE SHELL DYING IS NOT THE GROUP DYING. `bun run dev &` returns immediately:
  * the shell exits 0 with a server still running in the group behind it, and a
  * `trap`ping child can outlive a SIGTERM its parent obeyed. Treating the parent's
  * exit as the end of the run would free the slot while the port is still taken —
  * the precise thing the singleton exists to prevent. So every exit is followed by
- * asking the kernel whether the GROUP is gone, and a group with survivors makes
- * the run `unknown` rather than `exited`. Survivors are not signalled: we are
- * past the point where our handle vouches for that pid.
+ * asking whether the GROUP is gone, and a group with survivors makes the run
+ * `unknown` rather than `exited`. Survivors are not signalled: we are past the
+ * point where our handle vouches for that pid. A platform that CANNOT BE ASKED
+ * lands in the same place as one that answered "survivors", and for the same
+ * reason — see `GroupLiveness`.
  *
  * NO DURABLE SUPERVISOR, BUT ONE DURABLE FACT. Runs live in this process's
  * memory and `shutdown()` stops what it started. What it cannot do is survive
@@ -48,6 +56,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { nullRunJournal, RunJournalUnreadable, type RunJournal, type RunRecord } from "./journal";
+import { type GroupLiveness, processGroupFor, type RunKill, type RunProcessGroup } from "./platform";
 import { createOutputSplitter } from "./stream";
 import {
   isTerminal,
@@ -131,9 +140,19 @@ export type RunManagerOptions = {
   probe?: RunProbe;
   /**
    * Injected so a test can make a signal fail the way a stale pid would. Signal
-   * `0` is the existence check and delivers nothing.
+   * `0` is the existence check and delivers nothing. POSIX only: it is what the
+   * default POSIX process group is built from, and the Windows one stops trees
+   * with a command instead.
    */
-  kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
+  kill?: RunKill;
+  /**
+   * Which operating system's rules apply. Injected — as `volumes.ts`,
+   * `host-path.ts` and `git.ts` already do it — so the win32 branch can be
+   * asserted from a Mac rather than assumed.
+   */
+  platform?: NodeJS.Platform;
+  /** The whole group strategy, when a test wants one neither platform ships. */
+  processGroup?: RunProcessGroup;
   /** Durable record of runs believed live. Omit for a manager that forgets. */
   journal?: RunJournal;
   stopGraceMs?: number;
@@ -174,7 +193,8 @@ export class RunManager {
   private journalFault?: string;
   private readonly now: () => number;
   private readonly probe: RunProbe;
-  private readonly kill: (pid: number, signal: NodeJS.Signals | 0) => void;
+  private readonly platform: NodeJS.Platform;
+  private readonly group: RunProcessGroup;
   private readonly journal: RunJournal;
   private readonly stopGraceMs: number;
   private readonly readyPollMs: number;
@@ -183,7 +203,9 @@ export class RunManager {
   constructor(options: RunManagerOptions = {}) {
     this.now = options.now ?? Date.now;
     this.probe = options.probe ?? defaultProbe;
-    this.kill = options.kill ?? ((pid, signal) => process.kill(pid, signal));
+    const kill: RunKill = options.kill ?? ((pid, signal) => process.kill(pid, signal));
+    this.platform = options.platform ?? process.platform;
+    this.group = options.processGroup ?? processGroupFor(this.platform, kill);
     this.journal = options.journal ?? nullRunJournal;
     this.stopGraceMs = options.stopGraceMs ?? STOP_GRACE_MS;
     this.readyPollMs = options.readyPollMs ?? READY_POLL_MS;
@@ -506,7 +528,9 @@ export class RunManager {
     this.journal.open(this.record(run));
 
     // `shell: true` so a saved recipe means what it reads like (`bun run dev`,
-    // `a && b`); `detached` so the shell leads a group we can signal whole.
+    // `a && b`); `detached` comes from the PLATFORM — a POSIX group leader we
+    // can signal whole, and on Windows nothing of the sort, which is why
+    // stopping there is `taskkill /T` instead.
     /**
      * `[]` AND THE PINNED TUPLE ARE BOTH LOAD-BEARING. Under `shell: true`
      * there are no argv entries, but naming them picks the three-argument
@@ -518,7 +542,7 @@ export class RunManager {
       cwd: run.cwd,
       env,
       shell: true,
-      detached: true,
+      detached: this.group.detached,
       stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
     });
     run.child = child;
@@ -592,11 +616,14 @@ export class RunManager {
     // descendant it spawned keeps the port, taking the exit as "accounted for"
     // would hand the slot back over a process still holding it. The exit of our
     // handle is evidence about the shell, never about the group.
-    if (pid !== undefined && this.groupAlive(pid) && !(await this.groupGone(pid, this.groupDrainMs))) {
+    const verdict = pid === undefined ? "gone" : await this.groupVerdict(pid, this.groupDrainMs);
+    if (verdict !== "gone") {
       run.endedAt ??= this.now();
       this.markUnknown(
         run,
-        `"${run.configName}" exited but processes it started are still alive in its process group (${pid}). Telar will not free this project's deployment while something may still be holding its port, and will not signal a group its handle no longer covers — check what is left, then release this run.`,
+        verdict === "alive"
+          ? `"${run.configName}" exited but processes it started are still alive in its process group (${pid}). Telar will not free this project's deployment while something may still be holding its port, and will not signal a group its handle no longer covers — check what is left, then release this run.`
+          : `"${run.configName}" exited, and on this system Telar cannot ask whether the processes it started went with it — there is no process group to query. It will not free this project's deployment on a guess: check whether anything is still holding the port, then release this run.`,
       );
       run.settled = true;
       this.wake(run);
@@ -617,30 +644,27 @@ export class RunManager {
     });
   }
 
-  /** Does anything at all still belong to this process group? Signals nothing. */
-  private groupAlive(pid: number): boolean {
-    try {
-      this.kill(-pid, 0);
-      return true;
-    } catch (error) {
-      // ESRCH is the only answer that means "gone". EPERM means it exists and
-      // is not ours, which is still very much alive.
-      return (error as NodeJS.ErrnoException).code !== "ESRCH";
-    }
-  }
-
   /**
-   * Wait for the group to empty. On an ordinary stop the descendants are dying
-   * alongside their parent and this returns almost at once; the window is only
-   * long enough to tell that apart from a group that is staying.
+   * What is left of this run's process tree. SIGNALS NOTHING — it is a
+   * question, and by the time it is asked our handle no longer vouches for the
+   * pid, which is exactly when a shot would be aimed at a stranger.
+   *
+   * On an ordinary stop the descendants are dying alongside their parent and
+   * this returns almost at once; the window is only long enough to tell that
+   * apart from a group that is staying. A platform that cannot be asked returns
+   * `unanswerable` on the first try and is not polled — repeating a question
+   * nobody can answer would only spend the drain window.
    */
-  private async groupGone(pid: number, ms: number): Promise<boolean> {
+  private async groupVerdict(pid: number, ms: number): Promise<GroupLiveness> {
+    const first = this.group.liveness(pid);
+    if (first !== "alive") return first;
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_MS));
-      if (!this.groupAlive(pid)) return true;
+      const again = this.group.liveness(pid);
+      if (again !== "alive") return again;
     }
-    return !this.groupAlive(pid);
+    return this.group.liveness(pid);
   }
 
   /**
@@ -754,13 +778,13 @@ export class RunManager {
       throw this.unknownConflict(run);
     }
 
-    if (!this.signalGroup(run, pid, "SIGTERM")) throw this.unknownConflict(run);
+    if (!this.stopGroup(run, pid, false)) throw this.unknownConflict(run);
     if (await this.waitForExit(run, this.stopGraceMs)) return this.settled(run);
 
-    if (!run.handleClosed && !this.signalGroup(run, pid, "SIGKILL")) throw this.unknownConflict(run);
+    if (!run.handleClosed && !this.stopGroup(run, pid, true)) throw this.unknownConflict(run);
     if (await this.waitForExit(run, this.stopGraceMs)) return this.settled(run);
 
-    this.markUnknown(run, "the process did not exit after SIGKILL; Telar has stopped tracking it rather than guess");
+    this.markUnknown(run, "the process did not exit after being killed outright; Telar has stopped tracking it rather than guess");
     throw this.unknownConflict(run);
   }
 
@@ -773,11 +797,15 @@ export class RunManager {
     return run;
   }
 
-  /** Signal the whole group, and only while our handle says it is still ours. */
-  private signalGroup(run: LiveRun, pid: number, signal: NodeJS.Signals): boolean {
+  /**
+   * Stop the whole tree, and only while our handle says it is still ours.
+   * `force` is the second, impolite attempt — a signal on POSIX, `taskkill /F`
+   * on Windows; which one this platform means is `platform.ts`'s business.
+   */
+  private stopGroup(run: LiveRun, pid: number, force: boolean): boolean {
     if (run.handleClosed) return true;
     try {
-      this.kill(-pid, signal);
+      this.group.stop(pid, force);
       return true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
