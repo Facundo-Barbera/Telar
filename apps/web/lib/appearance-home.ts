@@ -23,37 +23,59 @@
  * version of this feature.
  */
 
-import type { Look } from "@telar/engine-client";
+import { compositionFromV1, type Look } from "@telar/engine-client";
+import { DEFAULT_APPEARANCE } from "./appearance";
 import { parseLook, parseThemeHalf } from "./looks";
-import type { ThemeDefinition } from "./theme-palettes";
 
 export type HomeRead = {
-  themes: ThemeDefinition[];
   looks: Look[];
   settings: Record<string, unknown> | null;
   images: string[];
   /** Files the engine could not parse as JSON, plus entries this build could
-   *  not read as a theme or a look. Both are things a person needs told. */
+   *  not read as a look. Both are things a person needs told. */
   unreadable: { file: string; reason: string }[];
 };
 
-const EMPTY: HomeRead = { themes: [], looks: [], settings: null, images: [], unreadable: [] };
+const EMPTY: HomeRead = { looks: [], settings: null, images: [], unreadable: [] };
 
 function isId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value);
 }
 
-/** A theme needs an id, a label and two halves; the halves are filled out by
- *  the same total parser a Look's are, so a file naming three tokens is a
- *  valid theme with thirteen defaults rather than a rejected one. */
-function parseTheme(entry: Record<string, unknown>): ThemeDefinition | undefined {
+/**
+ * A `themes/` FILE, READ AS A LOOK (#471). The folder predates the composition
+ * and holds the old shape — an id, a label and two halves — which is exactly
+ * what `compositionFromV1` exists to read forward, so an agent's theme file
+ * still lands and still paints. It arrives with every token pinned, the same as
+ * an imported VS Code theme, because those halves are work somebody did rather
+ * than something a base could regenerate.
+ *
+ * The halves are filled out by the same total parser a Look's are, so a file
+ * naming three tokens is a valid look with thirteen defaults rather than a
+ * rejected one.
+ */
+function themeFileAsLook(entry: Record<string, unknown>): Look | undefined {
   if (!isId(entry["id"])) return undefined;
   const label = typeof entry["label"] === "string" && entry["label"].trim() ? entry["label"].trim().slice(0, 80) : entry["id"];
+  const { composition, images } = compositionFromV1(
+    { light: parseThemeHalf(entry["light"], "light"), dark: parseThemeHalf(entry["dark"], "dark") },
+    { kind: "none" },
+  );
   return {
+    version: 2,
     id: entry["id"],
     label,
-    light: parseThemeHalf(entry["light"], "light"),
-    dark: parseThemeHalf(entry["dark"], "dark"),
+    composition,
+    images,
+    accent: DEFAULT_APPEARANCE.accent,
+    fontSans: DEFAULT_APPEARANCE.fontSans,
+    fontMono: DEFAULT_APPEARANCE.fontMono,
+    fontSansCustom: "",
+    fontMonoCustom: "",
+    fontSize: DEFAULT_APPEARANCE.fontSize,
+    fontMonoSize: DEFAULT_APPEARANCE.fontMonoSize,
+    translucencyLevel: DEFAULT_APPEARANCE.translucencyLevel,
+    depth: DEFAULT_APPEARANCE.depth,
   };
 }
 
@@ -84,14 +106,13 @@ export async function readAppearanceHome(signal?: AbortSignal): Promise<HomeRead
   const objects = (value: unknown): Record<string, unknown>[] =>
     Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && !Array.isArray(entry)) : [];
 
-  const themes: ThemeDefinition[] = [];
+  const looks: Look[] = [];
   for (const entry of objects(payload.themes)) {
-    const theme = parseTheme(entry);
-    if (theme) themes.push(theme);
+    const look = themeFileAsLook(entry);
+    if (look) looks.push(look);
     else unreadable.push({ file: `themes/${String(entry["id"] ?? "?")}.json`, reason: "not a theme this build can read" });
   }
 
-  const looks: Look[] = [];
   for (const entry of objects(payload.looks)) {
     // The web-side parser, which supplies THIS build's gradient preset table —
     // the shared one is deliberately ignorant of which presets exist.
@@ -105,7 +126,6 @@ export async function readAppearanceHome(signal?: AbortSignal): Promise<HomeRead
   }
 
   return {
-    themes,
     looks,
     settings: typeof payload.settings === "object" && payload.settings !== null && !Array.isArray(payload.settings) ? (payload.settings as Record<string, unknown>) : null,
     images: Array.isArray(payload.images) ? payload.images.filter((name): name is string => typeof name === "string") : [],

@@ -6,16 +6,17 @@
  * The Quick settings rows apply immediately, through exactly the stores the
  * Settings pane writes — the colour scheme's own store
  * (components/theme-provider.tsx), the appearance store (lib/appearance.ts),
- * the Looks shelf and `applyLook` (lib/looks.ts), the theme library that a worn
- * Look installs into (lib/theme-palettes.ts), and the shell's vibrancy bridge
+ * the Looks shelf and `applyLook` (lib/looks.ts), the composition a worn Look
+ * copies itself into (lib/composition.ts), and the shell's vibrancy bridge
  * (lib/desktop-appearance.ts). Nothing is reimplemented here: a quick row and
  * the pane's own control are the same write, or the two would drift.
  *
- * WHY IT IS ONE FILE, AND DELIBERATELY THIN. #471 reworks Appearance to direct
- * apply and may rename these stores. Every setter the palette needs is behind
- * this module, so that rebase is this file and nothing else — the palette's
- * fold (lib/command-palette.ts) knows only a `QuickSettingsState` of plain
- * strings and numbers, and the dialog knows only the rows and `apply`.
+ * WHY IT IS ONE FILE, AND DELIBERATELY THIN. #471 reworked Appearance to direct
+ * apply and did rename these stores — the theme library this file used to write
+ * through no longer exists. The palette's whole share of that rework was this
+ * file, which is what the thinness bought: the fold (lib/command-palette.ts)
+ * knows only a `QuickSettingsState` of plain strings and numbers, the dialog
+ * knows only the rows and `apply`, and neither had to change.
  *
  * WHAT IT IS NOT. It holds no state of its own and caches nothing: every value
  * is read live from the store that owns it, so a row's readout is the truth at
@@ -33,8 +34,8 @@ import {
   type Accent,
 } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
-import { applyLook, lookThemeId, useLooks, type Look } from "@/lib/looks";
-import { useThemeLibrary } from "@/lib/theme-palettes";
+import { applyLook, sameComposition, useLooks, type Look } from "@/lib/looks";
+import { useComposition } from "@/lib/composition";
 import { quickSettings, type PaletteQuickSetting, type QuickSettingId } from "@/lib/command-palette";
 import { runCommand } from "@/lib/commands";
 
@@ -45,8 +46,9 @@ import { runCommand } from "@/lib/commands";
  * its copy private: that file is a settings pane full of draft-editing
  * machinery, and importing a component module for one label map would drag all
  * of it into the palette's bundle. Eight strings are cheaper than that
- * coupling — and when #471 renames the vocabulary, this is already the file
- * that moves.
+ * coupling, and #471 left the accent vocabulary alone: tools.tsx still keeps
+ * its own copy, and lib/accent-colours.ts holds the colours rather than the
+ * names, so there is still no shared table to import.
  */
 export const ACCENT_LABELS: Record<Accent, string> = {
   indigo: "Indigo",
@@ -87,7 +89,7 @@ export type QuickSettings = {
 export function useQuickSettings({ railOpen }: { railOpen: boolean }): QuickSettings {
   const { theme, setTheme } = useTheme();
   const { appearance, setAppearance } = useAppearance();
-  const { activeId, themes, saveCustom, setActive } = useThemeLibrary();
+  const { composition } = useComposition();
   const looks = useLooks();
 
   /**
@@ -111,10 +113,14 @@ export function useQuickSettings({ railOpen }: { railOpen: boolean }): QuickSett
     };
   }, []);
 
-  /** The Look being worn, when the library's active theme is one a Look
-   *  installed. Anything else — a hand-edited palette, a starter theme — is
-   *  honestly not a Look, and the row says nothing rather than guessing. */
-  const worn = looks.find((look) => lookThemeId(look) === activeId);
+  /** The Look being worn — WHAT THE WINDOW HAS ON, not an id, and the same
+   *  test the shelf itself makes (looks-section.tsx). Wearing copies a look's
+   *  composition into the live store and installs nothing anywhere, so there is
+   *  no id left to match; and the comparison takes the accent too, because two
+   *  cards can share a composition and only one of them can be the worn one.
+   *  A hand-edited composition matches nothing, and the row says nothing rather
+   *  than guessing. */
+  const worn = looks.find((look) => look.accent === appearance.accent && sameComposition(look.composition, composition));
 
   const rows = useMemo(
     () =>
@@ -130,10 +136,7 @@ export function useQuickSettings({ railOpen }: { railOpen: boolean }): QuickSett
     [theme, worn?.label, appearance.accent, appearance.fontSize, appearance.translucent, translucency, railOpen],
   );
 
-  const wearLook = useCallback(
-    (look: Look) => applyLook(look, { saveCustom, setActive, themes }, setAppearance),
-    [saveCustom, setActive, themes, setAppearance],
-  );
+  const wearLook = useCallback((look: Look) => applyLook(look, setAppearance), [setAppearance]);
 
   const setAccent = useCallback((accent: Accent) => setAppearance({ accent }), [setAppearance]);
 

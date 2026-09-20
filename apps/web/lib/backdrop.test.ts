@@ -1,95 +1,99 @@
 /**
- * THE CHOICE PARSES TOTALLY, AND THE PRE-PAINT SCRIPT AGREES WITH IT.
+ * THE COMPILED BACKDROP PARSES TOTALLY, AND THE PRE-PAINT SCRIPT AGREES WITH IT.
  *
- * `parseBackdrop` runs on the path that decides the very first paint, so
+ * `parseBackdropCss` runs on the path that decides the very first paint, so
  * nothing here may throw — a hand-edited or stale value has to become "no
  * scene", never an exception in <head>.
  *
- * BACKDROP_INIT_SCRIPT is a second implementation of the same rules, inlined
- * as a string because it must not import anything. Two implementations drift;
- * these tests are what notices. They read the script as TEXT rather than
- * running it, which is enough to catch the failure that actually happened —
- * one side learning about a variable the other never writes.
+ * BACKDROP_INIT_SCRIPT is a second implementation of the same rules, inlined as
+ * a string because it must not import anything. Two implementations drift;
+ * these tests are what notices. They read the script as TEXT rather than running
+ * it, which is enough to catch the failure that actually happened — one side
+ * learning about a variable the other never writes.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { BACKDROP_INIT_SCRIPT, MAX_BACKDROP_DIM, parseBackdrop, type Backdrop } from "./backdrop";
+import { BACKDROP_CSS_KEY, BACKDROP_INIT_SCRIPT, parseBackdropCss } from "./backdrop";
 
 const stored = (value: unknown): string => JSON.stringify(value);
 
-describe("parseBackdrop", () => {
+describe("parseBackdropCss", () => {
   test.each([
     ["missing", null],
     ["empty", ""],
-    ["truncated json", '{"kind":"gradient"'],
+    ["truncated json", '{"light":"linear-gradient(red, blue)"'],
     ["an array", "[1,2]"],
     ["a bare string", '"gradient"'],
-    ["an unknown kind", '{"kind":"hologram"}'],
+    ["no image list at all", '{"sizeLight":"cover"}'],
+    ["a light list that is not a string", '{"light":42}'],
   ])("garbage (%s) is no scene rather than a throw", (_label: string, raw: string | null) => {
-    expect(parseBackdrop(raw)).toEqual({ kind: "none" });
+    expect(parseBackdropCss(raw)).toBeNull();
   });
 
-  test("a gradient preset round-trips", () => {
-    expect(parseBackdrop(stored({ kind: "gradient", id: "dusk" }))).toEqual({ kind: "gradient", id: "dusk" });
-  });
-});
-
-describe("dim, on every kind that can swallow the text over it", () => {
-  /**
-   * It used to be image-only — not by design, but because the image picker is
-   * where the slider was built. The scrim reading `--backdrop-dim`
-   * (`#app-backdrop::after` in globals.css) has never asked what kind of scene
-   * it is over, and a saturated gradient is exactly as capable of drowning a
-   * label as a photograph.
-   */
-  const kinds: ReadonlyArray<[string, Record<string, unknown>]> = [
-    ["gradient", { kind: "gradient", id: "dusk" }],
-    ["custom-gradient", { kind: "custom-gradient", light: "linear-gradient(red, blue)", dark: "linear-gradient(red, blue)" }],
-    ["scene", { kind: "scene", stamp: 7 }],
-  ];
-
-  test.each(kinds)("%s carries a dim through the store", (_label: string, choice: Record<string, unknown>) => {
-    const parsed = parseBackdrop(stored({ ...choice, dim: 40 })) as Backdrop & { dim?: number };
-    expect(parsed.kind).toBe(choice.kind);
-    expect(parsed.dim).toBe(40);
+  test("a compiled pair round-trips with both states' lists", () => {
+    const value = {
+      light: 'url("data:image/webp,a"), linear-gradient(red, blue)',
+      dark: "linear-gradient(black, navy)",
+      sizeLight: "60% auto, cover",
+      positionLight: "50% 50%, center",
+      repeatLight: "no-repeat, no-repeat",
+      sizeDark: "cover",
+      positionDark: "center",
+      repeatDark: "no-repeat",
+    };
+    expect(parseBackdropCss(stored(value))).toEqual(value);
   });
 
-  test.each(kinds)("%s clamps a dim past the ceiling", (_label: string, choice: Record<string, unknown>) => {
-    const parsed = parseBackdrop(stored({ ...choice, dim: 500 })) as Backdrop & { dim?: number };
-    expect(parsed.dim).toBe(MAX_BACKDROP_DIM);
+  test("a state with no lists of its own keeps none — the CSS falls through", () => {
+    // Light carries a scene, dark is bare. Inventing dark lists here would make
+    // the `.dark` rule stop falling back to light's.
+    const parsed = parseBackdropCss(stored({ light: "linear-gradient(red, blue)", dark: "none", sizeLight: "cover" }));
+    expect(parsed?.sizeLight).toBe("cover");
+    expect(parsed?.sizeDark).toBeUndefined();
+    expect(Object.hasOwn(parsed!, "sizeDark")).toBe(false);
   });
 
-  test.each(kinds)("%s without a dim stays without one, rather than storing a zero", (_label: string, choice: Record<string, unknown>) => {
-    const parsed = parseBackdrop(stored(choice)) as Backdrop & { dim?: number };
-    expect(parsed.dim).toBeUndefined();
-    expect(Object.hasOwn(parsed, "dim")).toBe(false);
+  test("dark falls back to light when it is missing, never to nothing", () => {
+    expect(parseBackdropCss(stored({ light: "linear-gradient(red, blue)" }))?.dark).toBe("linear-gradient(red, blue)");
   });
 
-  test.each(kinds)("%s rejects a dim that is not a number", (_label: string, choice: Record<string, unknown>) => {
-    const parsed = parseBackdrop(stored({ ...choice, dim: "lots" })) as Backdrop & { dim?: number };
-    expect(parsed.dim).toBeUndefined();
-  });
-
-  test("an image still parses its own dim, which was always required", () => {
-    expect(parseBackdrop(stored({ kind: "image", fit: "cover", blur: 0, dim: 25 }))).toEqual({
-      kind: "image",
-      fit: "cover",
-      blur: 0,
-      dim: 25,
-    });
+  test("a list that could close the declaration is dropped", () => {
+    // These go straight into a CSS custom property; a `;` or a `}` in one would
+    // end the declaration and let whatever follows become new rules.
+    const parsed = parseBackdropCss(stored({ light: "linear-gradient(red, blue)", sizeLight: "cover; } html { display: none" }));
+    expect(parsed?.sizeLight).toBeUndefined();
   });
 });
 
 describe("BACKDROP_INIT_SCRIPT", () => {
-  test("writes --backdrop-dim on the gradient and scene path too, not only the image one", () => {
-    // The script paints frame one; a dim it does not know about is a flash of
-    // undimmed wallpaper on every single launch.
-    const writes = [...BACKDROP_INIT_SCRIPT.matchAll(/--backdrop-dim/g)];
-    expect(writes.length).toBeGreaterThanOrEqual(2);
+  test("writes every per-state variable applyBackdrop does", () => {
+    // The script paints frame one. A variable it does not know about is a flash
+    // of a wrongly-sized scene on every single launch.
+    for (const name of [
+      "--backdrop-light",
+      "--backdrop-dark",
+      "--backdrop-size-light",
+      "--backdrop-position-light",
+      "--backdrop-repeat-light",
+      "--backdrop-size-dark",
+      "--backdrop-position-dark",
+      "--backdrop-repeat-dark",
+    ]) {
+      expect(BACKDROP_INIT_SCRIPT, name).toContain(name);
+    }
   });
 
-  test("clamps to the same ceiling the parser does", () => {
-    expect(BACKDROP_INIT_SCRIPT).toContain(`Math.min(${MAX_BACKDROP_DIM},Math.round(b.dim))+'%'`);
+  test("makes no decision about which state is showing", () => {
+    // CSS picks (globals.css's `.dark` rule), which is what keeps first paint
+    // right with no flash and keeps it right when the OS flips scheme under a
+    // window set to `system`. A script that branched on the class would be a
+    // second answer to the same question.
+    expect(BACKDROP_INIT_SCRIPT).not.toContain("classList");
+    expect(BACKDROP_INIT_SCRIPT).not.toContain("prefers-color-scheme");
+  });
+
+  test("reads the key the store writes", () => {
+    expect(BACKDROP_INIT_SCRIPT).toContain(BACKDROP_CSS_KEY);
   });
 
   test("stays dependency-free and swallows its own errors", () => {

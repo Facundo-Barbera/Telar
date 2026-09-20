@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
 import {
+  composeGradient,
+  DEFAULT_GRADIENT_SPECS,
+  MAX_GRADIENT_STOPS,
+  parseGradientCss,
+  parseGradientSpec,
   parseLook,
   parseLookBackdrop,
   parsePublishedAppearance,
@@ -7,7 +12,9 @@ import {
   TELAR_DARK,
   TELAR_LIGHT,
   THEME_TOKENS,
+  type CustomGradientSpec,
   type PublishedAppearance,
+  type ScenePresets,
 } from "../src/look";
 
 /** The smallest thing that is still a Look, so each test can say what it is
@@ -15,6 +22,19 @@ import {
 function look(patch: Record<string, unknown> = {}): Record<string, unknown> {
   return { version: 1, id: "l1", label: "A look", theme: { light: {}, dark: {} }, backdrop: { kind: "none" }, ...patch };
 }
+
+function spec(patch: Partial<CustomGradientSpec> = {}): CustomGradientSpec {
+  return { type: "linear", angle: 160, centerX: 50, centerY: 50, stops: [], ...patch };
+}
+
+/** A build that HAS a starter table, which is what the cockpit hands in. The
+ *  two halves differ, which is the whole reason expansion takes a mode. */
+const DUSK_LIGHT = spec({ angle: 180, stops: [{ color: "#ffdad0", position: 0, opacity: 100 }, { color: "#ffe4e3", position: 100, opacity: 100 }] });
+const DUSK_DARK = spec({ angle: 180, stops: [{ color: "#663028", position: 0, opacity: 100 }, { color: "#100606", position: 100, opacity: 100 }] });
+const PRESETS: ScenePresets = {
+  expand: (id, mode) => (id === "dusk" ? (mode === "light" ? DUSK_LIGHT : DUSK_DARK) : undefined),
+  fallback: "dusk",
+};
 
 test("a half is filled from the Telar base, and unsafe colours never land in it", () => {
   // The contract the whole format rests on: a PARTIAL half paints a complete
@@ -102,7 +122,176 @@ test("a look reads what it can and defaults the rest, and needs only an id and a
 
   // A FUTURE version is still read on a best effort — every member already
   // falls back on its own, so refusing outright would lose a readable look.
-  expect(parseLook(look({ version: 99, accent: "sea" }))).toMatchObject({ version: 1, accent: "sea" });
+  expect(parseLook(look({ version: 99, accent: "sea" }))).toMatchObject({ version: 2, accent: "sea" });
+});
+
+/**
+ * THE COMPOSITION REPLACED THE THEME PAIR, AND EVERY OLD FILE STILL OPENS.
+ *
+ * Every Look ever exported is `theme` + `backdrop`. None of them may change
+ * appearance on load: a migration that retints somebody's saved work is worse
+ * than one that refuses, and nobody would know which token had moved.
+ */
+test("a Look from the theme-pair model migrates into a composition without changing", () => {
+  const ember = { ...TELAR_LIGHT, background: "oklch(0.988 0.008 65)", foreground: "oklch(0.28 0.0128 65)" };
+  const parsed = parseLook(look({ theme: { light: ember, dark: TELAR_DARK } }))!;
+
+  expect(parsed.version).toBe(2);
+  // The base is the old canvas, flat — the honest answer to "what colour was
+  // this?", and what the base control opens on.
+  expect(parsed.composition.light.base).toBe(ember.background);
+  expect(parsed.composition.dark.base).toBe(TELAR_DARK.background);
+  // And every token is pinned, which is what makes the migration lossless: the
+  // base only starts deciding anything once somebody clears an override.
+  expect(parsed.composition.light.overrides).toEqual(ember);
+  expect(parsed.composition.dark.overrides).toEqual(TELAR_DARK);
+  expect(parsed.composition.light.layers).toEqual([]);
+});
+
+test("the old backdrop kinds each become layers over the migrated base", () => {
+  // A GRADIENT BACKDROP NAMED A PRESET, and a preset has two halves — so each
+  // state expands the half it needs. Expanding light into both would paint
+  // somebody's night in daylight colours.
+  const gradient = parseLook(
+    look({ backdrop: { kind: "gradient", id: "dusk", resolved: { light: "linear-gradient(#fff, #000)", dark: "linear-gradient(#000, #fff)" } } }),
+    PRESETS,
+  )!;
+  expect(gradient.composition.light.layers).toEqual([{ type: "gradient", spec: DUSK_LIGHT, opacity: 100 }]);
+  expect(gradient.composition.dark.layers).toEqual([{ type: "gradient", spec: DUSK_DARK, opacity: 100 }]);
+
+  // A build with no starter table at all still composes: the layer keeps its
+  // place and falls to the plain default rather than becoming a gap.
+  const unknown = parseLook(look({ backdrop: { kind: "gradient", id: "no-such-preset", resolved: { light: "linear-gradient(#fff, #000)" } } }))!;
+  expect(unknown.composition.light.layers).toEqual([{ type: "gradient", spec: DEFAULT_GRADIENT_SPECS.light, opacity: 100 }]);
+
+  // A custom gradient is the ONE place the old model held two values where the
+  // new one holds two stacks, so each state takes its own half — read back into
+  // the stops that made it, because it is one gradient kind now.
+  const custom = parseLook(
+    look({
+      backdrop: {
+        kind: "custom-gradient",
+        light: "linear-gradient(10deg, #ffffff 0%, #eeeeee 100%)",
+        dark: "linear-gradient(10deg, #111111 0%, #000000 100%)",
+        resolved: { light: "linear-gradient(10deg, #ffffff 0%, #eeeeee 100%)", dark: "linear-gradient(10deg, #111111 0%, #000000 100%)" },
+      },
+    }),
+  )!;
+  expect(custom.composition.light.layers).toEqual([
+    { type: "gradient", spec: spec({ angle: 10, stops: [{ color: "#ffffff", position: 0, opacity: 100 }, { color: "#eeeeee", position: 100, opacity: 100 }] }), opacity: 100 },
+  ]);
+  expect(custom.composition.dark.layers).toEqual([
+    { type: "gradient", spec: spec({ angle: 10, stops: [{ color: "#111111", position: 0, opacity: 100 }, { color: "#000000", position: 100, opacity: 100 }] }), opacity: 100 },
+  ]);
+
+  // A photograph keeps its pixels — which is the part somebody would miss —
+  // and loses the fit/blur/dim a scene layer has no room for.
+  const photo = parseLook(look({ backdrop: { kind: "image", fit: "tile", blur: 4, dim: 20, image: "data:image/webp;base64,AAAA" } }))!;
+  expect(photo.images).toEqual({ migrated: "data:image/webp;base64,AAAA" });
+  expect(photo.composition.light.layers).toMatchObject([{ type: "image", id: "migrated", tiled: true }]);
+
+  // And "no backdrop" is what "no layers" now means.
+  expect(parseLook(look({ backdrop: { kind: "none" } }))!.composition.light.layers).toEqual([]);
+});
+
+test("a preset gradient layer expands per state, and round-trips through export", () => {
+  // The v2 stack: a layer naming a preset, in a composition rather than a
+  // backdrop. Same rule — the state decides which half it expands.
+  const stored = {
+    version: 2,
+    id: "l9",
+    label: "Dusky",
+    composition: {
+      light: { base: "#f0f0f0", layers: [{ type: "gradient", presetId: "dusk", opacity: 60 }], overrides: {} },
+      dark: { base: "#101010", layers: [{ type: "gradient", presetId: "dusk", opacity: 60 }], overrides: {} },
+    },
+  };
+  const opened = parseLook(stored, PRESETS)!;
+  expect(opened.composition.light.layers).toEqual([{ type: "gradient", spec: DUSK_LIGHT, opacity: 60 }]);
+  expect(opened.composition.dark.layers).toEqual([{ type: "gradient", spec: DUSK_DARK, opacity: 60 }]);
+
+  // EXPORT WRITES THE SPEC, and reading that back is a fixed point: once a look
+  // has been opened by a build that has the starter table, it no longer depends
+  // on one.
+  const exported: unknown = JSON.parse(JSON.stringify(opened));
+  const reopened = parseLook(exported)!; // no starter table at all this time
+  expect(reopened.composition).toEqual(opened.composition);
+});
+
+test("a spec composes to CSS and the CSS reads back into the same spec", () => {
+  const cases: CustomGradientSpec[] = [
+    spec({ stops: [{ color: "#ff0000", position: 0, opacity: 100 }, { color: "#0000ff", position: 100, opacity: 100 }] }),
+    // Five stops, uneven positions, and a stop faded to nothing — which is how
+    // a gradient ends in what is under it.
+    spec({
+      angle: 42,
+      stops: [
+        { color: "#112233", position: 0, opacity: 100 },
+        { color: "#445566", position: 12, opacity: 80 },
+        { color: "#778899", position: 50, opacity: 40 },
+        { color: "#aabbcc", position: 73, opacity: 20 },
+        { color: "#ddeeff", position: 100, opacity: 0 },
+      ],
+    }),
+    spec({ type: "radial", centerX: 20, centerY: 80, stops: [{ color: "#abcdef", position: 0, opacity: 100 }, { color: "#fedcba", position: 100, opacity: 50 }] }),
+  ];
+  for (const value of cases) {
+    const css = composeGradient(value);
+    const back = parseGradientCss(css);
+    // A radial carries no angle, so the round trip restores the default rather
+    // than the one it was given — everything that PAINTS comes back exact.
+    expect(back).toEqual(value.type === "radial" ? { ...value, angle: DEFAULT_GRADIENT_SPECS.light.angle } : value);
+    expect(composeGradient(back!)).toBe(css);
+  }
+  expect(cases[1].stops.length).toBe(MAX_GRADIENT_STOPS);
+
+  // An authored mesh, or anything hand-edited, is refused rather than
+  // half-understood — the caller opens on a default instead.
+  expect(parseGradientCss("radial-gradient(at 14% 18%, oklch(0.93 0.07 165) 0px, transparent 55%)")).toBeNull();
+  expect(parseGradientCss("linear-gradient(10deg, #fff, #000)")).toBeNull(); // no positions
+  expect(parseGradientCss(42)).toBeNull();
+});
+
+test("a stored spec is total, and a stop list too short is no spec at all", () => {
+  expect(parseGradientSpec({ stops: [{ color: "#fff", position: 0, opacity: 100 }] })).toBeUndefined();
+  expect(parseGradientSpec(null)).toBeUndefined();
+  // Out of range clamps; an unsafe colour is dropped, which can take the list
+  // below two and so take the whole spec with it.
+  expect(parseGradientSpec({ type: "radial", angle: 400, centerX: -9, centerY: 900, stops: [{ color: "#fff", position: 900, opacity: -5 }, { color: "#000" }] })).toEqual({
+    type: "radial",
+    angle: 40,
+    centerX: 0,
+    centerY: 100,
+    stops: [{ color: "#fff", position: 100, opacity: 0 }, { color: "#000", position: 0, opacity: 100 }],
+  });
+  expect(parseGradientSpec({ stops: [{ color: "red; } html {", position: 0, opacity: 100 }, { color: "#000", position: 100, opacity: 100 }] })).toBeUndefined();
+});
+
+test("a composition is read as itself, and a hostile override never lands", () => {
+  const composed = parseLook({
+    version: 2,
+    id: "l2",
+    label: "Composed",
+    composition: {
+      light: { base: "#101010", layers: [{ type: "gradient", spec: DUSK_LIGHT, opacity: 40 }], overrides: { card: "#ffffff" } },
+      dark: { base: "#202020", layers: [], overrides: {} },
+    },
+    images: { a: "data:image/webp;base64,AAAA", b: "https://example.com/cat.png" },
+  })!;
+
+  expect(composed.composition.light).toEqual({
+    base: "#101010",
+    layers: [{ type: "gradient", spec: DUSK_LIGHT, opacity: 40 }],
+    overrides: { card: "#ffffff" },
+  });
+  // Overrides end up in a compiled stylesheet, so they pass the same gate every
+  // other colour in this file does; a remote URL is not image data.
+  expect(parseLook({ version: 2, id: "l3", label: "x", composition: { light: { base: "#fff", overrides: { card: "red; } html {" } } } })!.composition.light.overrides).toEqual({});
+  expect(composed.images).toEqual({ a: "data:image/webp;base64,AAAA" });
+
+  // A pre-composer layer whose value is not a gradient at all is dropped rather
+  // than left as a gap in a positional list.
+  expect(parseLook({ version: 2, id: "l4", label: "x", composition: { light: { layers: [{ type: "custom-gradient", css: "not a gradient" }] } } })!.composition.light.layers).toEqual([]);
 });
 
 test("a published appearance is total, gated, and fatal only in its look", () => {

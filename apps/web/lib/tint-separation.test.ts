@@ -8,9 +8,9 @@
  *
  * EVERYTHING IS READ, NOTHING IS COPIED. The floor and the state vocabulary come
  * out of globals.css — the file they paint from — and the cards come out of the
- * theme library and the starter shelf. A second copy of any of those numbers
- * here would be a test that keeps passing while the app changes underneath it,
- * which is the failure mode #691's guards were careful to avoid.
+ * built-in Looks. A second copy of any of those numbers here would be a test
+ * that keeps passing while the app changes underneath it, which is the failure
+ * mode #691's guards were careful to avoid.
  *
  * WHY THE FLOOR IS A WINDOW AND NOT A MINIMUM. The fill is made of the same
  * token as the ink standing on it, so raising --tint-floor pushes the fill away
@@ -24,8 +24,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { STARTER_LOOKS } from "./starter-looks";
-import { BUILT_IN_THEMES, concreteHalf } from "./theme-palettes";
+import { BUILT_IN_LOOKS } from "./built-in-looks";
+import { compositionHalf } from "./composition";
 import { deltaEOk, measureTint, TINT_ELEVATION, TINT_READABLE, tintOf, TONE_JND, toneSeparation } from "./tint-separation";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -88,17 +88,18 @@ const MODES: readonly Mode[] = ["light", "dark"];
  * `--card` is declared exactly twice in globals.css and is never washed (unlike
  * --sidebar and --muted-foreground, which have `-wash` variants the translucent
  * scene swaps in), so the second colour of every tint mix is precisely a
- * theme's card and nothing else composes over it.
+ * composition's card and nothing else composes over it.
  *
- * The starter Looks are walked separately from the themes they are built from.
- * Today `build()` fills their halves with `concreteHalf`, so the two lists
- * agree; a starter that ever hand-picks a card is held to this the day it
- * lands rather than the day someone notices.
+ * ONE LIST NOW, WHERE THERE WERE TWO (#471). This used to walk the built-in
+ * THEMES and the starter LOOKS separately, either side of a distinction the
+ * colour model no longer has — a palette with nothing over it is a composition
+ * with no layers, so the ten built-in Looks are every card this build can paint
+ * a tint onto. `compositionHalf` derives each one the way the app does, which
+ * keeps the guard reading the real card rather than a stored copy of it.
  */
-const surfaces: ReadonlyArray<{ label: string; mode: Mode; card: string }> = [
-  ...BUILT_IN_THEMES.flatMap((theme) => MODES.map((mode) => ({ label: `theme ${theme.id}`, mode, card: concreteHalf(theme, mode).card }))),
-  ...STARTER_LOOKS.flatMap((look) => MODES.map((mode) => ({ label: `look ${look.id}`, mode, card: look.theme[mode].card }))),
-];
+const surfaces: ReadonlyArray<{ label: string; mode: Mode; card: string }> = BUILT_IN_LOOKS.flatMap((look) =>
+  MODES.map((mode) => ({ label: `look ${look.id}`, mode, card: compositionHalf(look.composition, mode).card })),
+);
 
 /** The three declared tones. `.tint-warning` has no call site outside
  *  globals.css today; it is measured anyway, because the class exists and the
@@ -115,8 +116,8 @@ describe("the semantic tints, on every scheme and Look we ship", () => {
     expect(INK.light.success).toMatch(/^oklch\(/);
     expect(INK.dark.destructive).toMatch(/^oklch\(/);
     expect(INK.light.success).not.toBe(INK.dark.success);
-    expect(surfaces.length).toBeGreaterThanOrEqual(2 * BUILT_IN_THEMES.length);
-    expect(STARTER_LOOKS.length).toBeGreaterThan(0);
+    expect(BUILT_IN_LOOKS.length).toBeGreaterThan(0);
+    expect(surfaces.length).toBe(2 * BUILT_IN_LOOKS.length);
     for (const { label, card } of surfaces) expect(card, `${label} has a card`).toMatch(/^(oklch\(|#|rgb)/);
   });
 
@@ -218,9 +219,10 @@ describe("the semantic tints, on every scheme and Look we ship", () => {
   test("the measurement bites: a card chosen to break each separation does", () => {
     /**
      * A guard that has never failed is a guard nobody has checked. Each card
-     * here is reachable through the theme designer and the VS Code importer,
-     * neither of which constrains --card against the state vocabulary — which
-     * is the half of #705 a test cannot cover and theme-designer.ts must.
+     * here is reachable by hand: the composer's own base control and per-token
+     * overrides, and the VS Code importer, none of which constrains --card
+     * against the state vocabulary — which is the half of #705 a test cannot
+     * cover.
      *
      * NOTE WHICH SEPARATION EACH ONE BREAKS. A pale mint card does NOT hide the
      * fill: the fill still travels 12% of a long way in lightness, so elevation

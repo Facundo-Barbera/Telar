@@ -22,6 +22,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { APP_FONTS } from "@telar/engine-client";
 
 // `import.meta.url` rather than Bun's `import.meta.dir`: this app's tsconfig
 // does not carry Bun's types, and the URL form is standard and typed.
@@ -74,15 +75,18 @@ describe("the design token palette", () => {
     /**
      * Tokens supplied from OUTSIDE this stylesheet, which are therefore
      * legitimately read but never defined here:
-     *  - `--font-geist-*`, `--font-inter`, `--font-jetbrains`, `--font-plex-*`
-     *    and `--font-fira-code` are emitted by next/font in layout.tsx — one
-     *    per family the appearance pane offers.
+     *  - every `--font-*` is a next/font handle emitted by layout.tsx, one per
+     *    family the appearance pane offers. The pattern is the whole namespace
+     *    rather than a list of families: the list was a list, and it rotted the
+     *    first time the catalogue grew (#471) — a real bug would be a face
+     *    named in the CSS with no loader beside it in layout.tsx, and THAT is
+     *    caught by the pairing test below, which reads both files.
      *  - `--sdm-c`, `--shiki-light` and `--shiki-dark` are written by Shiki into
      *    inline styles — the first by Streamdown's copy for the transcript's
      *    code blocks, the other two by the file viewer's own tokens.
      *  - `--shimmer-*` are set by the Shimmer component's own inline style.
      */
-    const external = /^--(?:font-geist-|font-inter|font-jetbrains|font-plex-sans|font-plex-mono|font-fira-code|sdm-c|shiki-light|shiki-dark|shimmer-)/;
+    const external = /^--(?:font-|sdm-c|shiki-light|shiki-dark|shimmer-)/;
 
     const read = new Set([...css.matchAll(/var\(\s*(--[a-z0-9-]+)/g)].map((match) => match[1]));
     expect(read.size).toBeGreaterThan(10);
@@ -93,6 +97,50 @@ describe("the design token palette", () => {
       return !new RegExp(`var\\(\\s*${token}\\s*,`).test(css);
     });
     expect(bare).toEqual([]);
+  });
+
+  /**
+   * A TYPEFACE IS THREE FILES AGREEING, and none of them fails loudly (#471).
+   *
+   * A selectable face needs an id in `APP_FONTS`, a `[data-font-*]` rule in
+   * each slot here, and a next/font loader in layout.tsx declaring the very
+   * `--font-*` variable those rules read. Miss the loader and the rule reads an
+   * undefined variable, so the family silently drops out of the stack and the
+   * reader gets the fallback — the setting appears to do nothing. Miss a rule
+   * and the choice is stored, published and worn as the DEFAULT face.
+   */
+  describe("every selectable typeface is wired end to end", () => {
+    const layout = fs.readFileSync(path.join(here, "layout.tsx"), "utf8");
+    /** The two ids that deliberately have no `[data-font-*]` block: `geist` is
+     *  the default (the base tokens ARE it) and `custom` is written inline on
+     *  <html> from the reader's own typed family. */
+    const WITHOUT_A_BLOCK = new Set(["geist", "custom"]);
+
+    test("every font variable the stylesheet reads is loaded in layout.tsx", () => {
+      const read = new Set([...css.matchAll(/var\(\s*(--font-[a-z0-9-]+)/g)].map((match) => match[1]!));
+      // `--font-sans` / `--font-mono` are Tailwind's own theme keys, defined in
+      // the @theme block rather than loaded — everything else is next/font's.
+      const loaded = [...read].filter((name) => name !== "--font-sans" && name !== "--font-mono");
+      expect(loaded.length).toBeGreaterThan(8);
+      expect(loaded.filter((name) => !layout.includes(`variable: "${name}"`))).toEqual([]);
+    });
+
+    test("every face in the catalogue has a rule in both slots", () => {
+      const offered = [...css.matchAll(/\[data-font-sans="([a-z0-9-]+)"\]/g)].map((match) => match[1]!);
+      expect(offered.length).toBeGreaterThan(8);
+      for (const font of APP_FONTS) {
+        if (WITHOUT_A_BLOCK.has(font)) continue;
+        expect(css, `${font} has no interface-slot rule`).toContain(`[data-font-sans="${font}"]`);
+        expect(css, `${font} has no code-slot rule`).toContain(`[data-font-mono="${font}"]`);
+      }
+    });
+
+    test("no rule offers a face the catalogue does not list", () => {
+      // The other direction: a block left behind by a face removed from
+      // APP_FONTS is dead CSS that no attribute can ever match.
+      const offered = new Set([...css.matchAll(/\[data-font-(?:sans|mono)="([a-z0-9-]+)"\]/g)].map((match) => match[1]!));
+      expect([...offered].filter((font) => !(APP_FONTS as readonly string[]).includes(font))).toEqual([]);
+    });
   });
 
   test("bridges every colour token into @theme, so a utility exists for it", () => {
@@ -424,6 +472,26 @@ describe("cards must paint", () => {
     return classes(value).some((name) => name.startsWith("bg-"));
   }
 
+  /**
+   * Whether the SAME element paints from a style prop instead of a class.
+   *
+   * A box showing a palette the window is not wearing cannot use `bg-*` at all:
+   * the classes resolve to the live theme, which is the one thing such a
+   * preview must not show (studio/tools.tsx's PaletteStrip, and the scene
+   * previews beside it). It paints `style={{ background: half.background }}`
+   * from the half's own tokens, which is a real fill — the rule's concern is a
+   * card borrowing an ancestor's ground, and this one does not.
+   *
+   * BOUNDED TO ONE ELEMENT'S ATTRIBUTES. The scan starts at the className and
+   * stops at the next one, so a painted sibling can never excuse an unpainted
+   * box; the character cap is a backstop for the last element in a file.
+   */
+  function paintsFromStyle(source: string, from: number): boolean {
+    const next = source.indexOf("className=", from + 1);
+    const end = Math.min(next === -1 ? source.length : next, from + 600);
+    return /style=\{\{[^}]*\b(background|backgroundColor|backgroundImage)\b/.test(source.slice(from, end));
+  }
+
   /** Every quoted string mentioning a radius — how a card is written here. */
   const CARD_SHAPED = /"([^"\n]*\brounded[^"\n]*)"|'([^'\n]*\brounded[^'\n]*)'/g;
 
@@ -439,6 +507,10 @@ describe("cards must paint", () => {
      * its own pixels: there is no ground to show through and a fill behind it
      * would never be seen. `aspect-*`, `size-full` and `object-*` are how those
      * are written (look-thumb, the studio's scene previews).
+     *
+     * SO IS ONE THAT PAINTS FROM A STYLE PROP — see `paintsFromStyle`. A
+     * preview of a palette the window is not wearing has to set its fill from
+     * that palette's own tokens, which `bg-*` cannot express.
      */
     const offenders: string[] = [];
     for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
@@ -449,6 +521,7 @@ describe("cards must paint", () => {
         const clips = names.some((name) => name === "overflow-hidden" || name.startsWith("divide-y"));
         const holdsAnImage = names.some((name) => name.startsWith("aspect-") || name === "size-full" || name.startsWith("object-"));
         if (!clips || holdsAnImage || paints(value) || !drawsAnEdge(value)) continue;
+        if (paintsFromStyle(source, hit.index)) continue;
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${value}`);
       }
     }

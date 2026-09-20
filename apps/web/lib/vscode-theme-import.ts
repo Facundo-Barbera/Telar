@@ -25,6 +25,7 @@
  * the matrices here).
  */
 
+import { compositionFromV1, type Look } from "@telar/engine-client";
 import { cssColorToHex, TELAR_DARK, TELAR_LIGHT, type ThemeDefinition, type ThemeHalf } from "./theme-palettes";
 
 type Rgba = { r: number; g: number; b: number; a: number };
@@ -240,4 +241,25 @@ export function vsCodeThemeToDefinition(json: unknown): Omit<ThemeDefinition, "i
     light: mode === "light" ? half : TELAR_LIGHT,
     dark: mode === "dark" ? half : TELAR_DARK,
   };
+}
+
+/**
+ * AN IMPORT, AS A LOOK — which is what an imported palette becomes now (#471).
+ *
+ * There is nowhere else for one to land: the theme library is gone and the
+ * gallery of Looks is the only preset system. The composition it arrives as is
+ * the same one `compositionFromV1` gives every pre-composition Look — the base
+ * is the canvas the file described, and every one of the sixteen tokens is
+ * PINNED as a hand-set override.
+ *
+ * PINNED, AND THAT IS THE POINT RATHER THAN A SHORTCUT. A VS Code theme is a
+ * palette somebody tuned token by token; deriving fifteen of them from its
+ * canvas colour would import the file's hue and throw away its work. The base
+ * still opens on the right colour, and clearing any token hands that one back
+ * to it.
+ */
+export function vsCodeThemeToLook(json: unknown, id: string, appearance: Omit<Look, "version" | "id" | "label" | "composition" | "images">): Look {
+  const definition = vsCodeThemeToDefinition(json);
+  const { composition, images } = compositionFromV1({ light: definition.light, dark: definition.dark }, { kind: "none" });
+  return { version: 2, id, label: definition.label, composition, images, ...appearance };
 }
