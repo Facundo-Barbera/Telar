@@ -319,15 +319,22 @@ struct SessionSidebar: View {
             failureBanners
             layoutErrorLine
             if !query.isEmpty {
+                // ONE FILTER, NOT TWO. This arm ran `all.filter(matches)` once
+                // to draw the rows and again to ask whether there were any, so
+                // every keystroke walked every session on every Mac twice and
+                // called `localizedStandardContains` up to three times per row
+                // on each pass. Binding it is not an optimisation of the
+                // matcher; it is not doing the same work twice.
+                let found = all.filter(matches)
                 // A SEARCH RESULT IS ALREADY THE ANSWER to a question you
                 // asked, so every row in it is equally relevant and density
                 // beats detail — the desktop's rule, same reason.
-                ForEach(all.filter(matches)) { row in sessionRow(row, variant: .slim) }
+                ForEach(found) { row in sessionRow(row, variant: .slim) }
                 // THE DESKTOP'S WORDS, because a reader who has both open
                 // should not have to work out that two different sentences are
                 // the same answer (`SidebarEmpty`, app-sidebar.tsx). The detail
                 // line is the part that earns its space: it says what to try.
-                if all.filter(matches).isEmpty {
+                if found.isEmpty {
                     ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
                 }
             } else {
