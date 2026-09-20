@@ -82,7 +82,10 @@ struct TurnView: View {
         // boundary in the conversation, so the work after it belongs to it and
         // is drawn UNDER it. One response is every turn nobody steered, and it
         // renders exactly as it did before.
-        let responses = splitAtMessageBoundaries(turn.items)
+        // The opening arrival is drawn ONCE, by the header below (#590) — the
+        // one that is handed `turn.prompt`, so a peer's row carries the head of
+        // what was actually sent rather than the head of the envelope about it.
+        let responses = splitAtMessageBoundaries(withoutOpeningNotification(turn))
         let answering = responses[responses.count - 1]
         let earlier = responses.dropLast()
         let orphans = spawnlessTasks(turn.items, tasks: turn.tasks)
@@ -229,6 +232,27 @@ func segmentActivity(_ items: [JournalItem]) -> [ActivitySegment] {
 struct TurnResponse: Equatable {
     var boundary: JournalItem?
     var items: [JournalItem]
+}
+
+/// ONE ARRIVAL DRAWS ONE NOTIFICATION ROW — issue #590, on the phone.
+///
+/// An arrival that opens a turn is stored TWICE on purpose: on the turn, and on
+/// the turn's first item (`notification.ts`). The Mac learned to draw only one
+/// of them; this phone drew both — `NotificationTurnRow` above, and the
+/// `notification_<runId>` item again as the first response's boundary. For a
+/// peer's message the two at least differed; for a WAKE, which has no message on
+/// either side, they were the identical line, twice.
+///
+/// KEYED ON THE ITEM'S ID, which the engine mints from the run — never on
+/// matching summaries. A text heuristic eventually eats a real second arrival
+/// from the same session, which is the failure that costs someone an errand.
+/// A notification that landed MID-TURN has an id of its own and no header
+/// announcing it, so it is untouched: drawing it is what the item row is for.
+/// (The web's `withoutOpeningNotification`, 1:1.)
+func withoutOpeningNotification(_ turn: JournalTurn) -> [JournalItem] {
+    guard turn.notification != nil, turn.origin == "session" || turn.origin == "provider" else { return turn.items }
+    let drawn = "notification_\(turn.runId)"
+    return turn.items.filter { $0.id != drawn }
 }
 
 func splitAtMessageBoundaries(_ items: [JournalItem]) -> [TurnResponse] {
