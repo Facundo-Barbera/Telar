@@ -519,6 +519,32 @@ export class ExecutionStore {
      * The trade is the same one the delta buffer above already makes, one layer
      * down: the tail of a conversation may not survive the machine losing power.
      * A checkpoint still fsyncs, so the database file itself is never at risk.
+     *
+     * ══ AND `checkpoint_fullfsync=ON`, WHICH CLOSES A RUNTIME DIVERGENCE ══
+     *
+     * On macOS `fsync(2)` is not a device barrier. Its own man page says so —
+     * "the drive itself may not physically write the data to the platters for
+     * quite some time… this is not a theoretical edge case" — and `F_FULLFSYNC`
+     * is the call that asks the drive to flush its own cache. `checkpoint_
+     * fullfsync` is what makes sqlite use the second one when it checkpoints.
+     *
+     * IT WAS ON HERE AND OFF IN THE SHIPPED APP, BY ACCIDENT (#632). The dev
+     * stack runs `bun:sqlite` over Apple's system libsqlite3, which is compiled
+     * with `DEFAULT_CKPTFULLFSYNC`, so every measurement this repository has
+     * ever taken was on a connection that already had it. The packaged app runs
+     * the engine under Electron-as-Node on `node:sqlite`, whose bundled
+     * amalgamation is not — so the build a person actually uses issued NO
+     * device barrier anywhere at steady state, and the one developers use did.
+     * Setting it explicitly makes the two the same, in the stronger direction.
+     *
+     * WHAT IT COSTS, MEASURED RATHER THAN ASSUMED (`bench:durability`, on the
+     * shipped `node:sqlite`): a long streaming session checkpoints once every
+     * ~3,840 events, and the barrier adds 10–27 ms per checkpoint on this Mac's
+     * internal SSD and 211–281 ms on a USB enclosure. At the measured streaming
+     * peak of 133 deltas/s that is one checkpoint every ~29 s, so the worst disk
+     * measured pays under 1% of the event loop for it. Frequency is the half
+     * that was missing when this was written up, and it is the half that makes
+     * the answer yes.
      */
     // BUSY TIMEOUT FIRST, and the order is the whole point. `journal_mode=WAL`
     // takes a brief exclusive lock, so it is the statement most likely to meet
@@ -527,7 +553,12 @@ export class ExecutionStore {
     // budget running without one: a second opener (the export script, a second
     // daemon) got SQLITE_BUSY instantly instead of waiting out the handful of
     // milliseconds the first connection needed to finish closing.
-    this.db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+    //
+    // `synchronous` AFTER `journal_mode`, and it is not decoration: entering WAL
+    // resets the level to the build's `DEFAULT_WAL_SYNCHRONOUS` unless one has
+    // been set, which is 1 under bun and 2 under node. Spelling it here is what
+    // stops the shipped app paying an fsync per commit nobody asked it for.
+    this.db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA checkpoint_fullfsync=ON;");
     const version = Number(this.db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
     if (version > 1) throw new Error("execution database requires a newer Telar version");
     this.db.exec(`CREATE TABLE IF NOT EXISTS documents (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -1778,6 +1809,26 @@ export class ExecutionStore {
   turnSummaryGaps(): string[] {
     const summarised = new Set(this.statement("SELECT DISTINCT session_id FROM turn_summaries").all().map((row) => String(row.session_id)));
     return this.sessionIds().filter((id) => !summarised.has(id));
+  }
+
+  /**
+   * THE DURABILITY PRAGMAS IN EFFECT ON THIS CONNECTION, READ BACK — #632.
+   *
+   * A pragma is per connection, so nothing outside this object can observe the
+   * ones it set: a test that opened the same file would be asserting about its
+   * own connection's defaults. This is the only honest way to hold the
+   * constructor to what its comment says, and it answers with VALUES because
+   * the alternative — grepping the source for the pragma text — passes on a
+   * line that was never executed.
+   *
+   * NOTE WHAT IT CANNOT PROVE. Under `bun:sqlite` `checkpoint_fullfsync` is
+   * already 1 before anything sets it, so an assertion here is vacuous for the
+   * packaged app, which runs `node:sqlite` where the default is 0. That gap is
+   * what `scripts/durability-pragmas.mjs` exists to close.
+   */
+  durabilityPragmas(): { synchronous: number; checkpointFullfsync: number; fullfsync: number } {
+    const read = (name: string): number => Number(Object.values(this.db.prepare(`PRAGMA ${name}`).get() ?? {})[0] ?? 0);
+    return { synchronous: read("synchronous"), checkpointFullfsync: read("checkpoint_fullfsync"), fullfsync: read("fullfsync") };
   }
 
   /** Run `work` as one transaction, for a caller outside a command that still

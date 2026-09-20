@@ -21,6 +21,8 @@
     "bench:outline": "bun run bench/outline.ts",
     "bench:queue-write": "bun run bench/queue-write-cost.ts",
     "bench:durability": "bun run bench/durability-cost.ts",
+    "//durability:pragmas": "THE ASSERTION THE SUITE CANNOT MAKE — #632. `checkpoint_fullfsync` is 1 by default under bun:sqlite and 0 under node:sqlite, and the .app runs the second; a bun test asserting it is vacuous. This bundles the store the way build-app.sh bundles the engine, runs it under plain node, and asserts the three pragma values. Seconds, and it does not build the app.",
+    "durability:pragmas": "node scripts/durability-pragmas.mjs",
     "typecheck": "bunx --bun tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

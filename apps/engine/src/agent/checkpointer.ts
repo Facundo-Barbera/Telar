@@ -175,6 +175,37 @@ class RetainingSqliteSaver extends SqliteSaver {
 }
 
 /** Open the file with whichever sqlite this runtime has. */
+/**
+ * THE TWO PRAGMAS THIS DATABASE NEVER SET, AND THE SHIPPED APP PAID FOR — #632.
+ *
+ * `SqliteSaver` sets `journal_mode=WAL` in its own `setup()` and never sets
+ * `synchronous`, so the level this store runs at is whichever one the runtime's
+ * sqlite was compiled to default to in WAL: NORMAL under `bun:sqlite` (Apple's
+ * system libsqlite3) and **FULL under `node:sqlite`**, which is what the
+ * packaged app runs. Nothing chose that. It is an unmeasured fsync per
+ * checkpoint commit, in production only, on the Agent's hottest write.
+ *
+ * SO THIS PAIR IS NOT SYMMETRIC WITH THE EXECUTION STORE'S. There, adding
+ * `checkpoint_fullfsync=ON` ADDS a barrier the shipped app was missing. Here,
+ * `synchronous=NORMAL` REMOVES a per-commit fsync the shipped app was paying,
+ * and `checkpoint_fullfsync=ON` puts the device barrier at the checkpoint where
+ * it belongs — stronger where it matters and cheaper where it does not.
+ *
+ * SET BEFORE THE SAVER'S `setup()` ENTERS WAL, and that order is load-bearing:
+ * a level set explicitly is remembered across the mode change (verified on both
+ * runtimes), while one set after would be racing a lazy `setup()` that runs on
+ * the first `put`. Explicit-then-WAL reads back as NORMAL either way.
+ */
+function setDurabilityPragmas(db: NativeDatabase): void {
+  try {
+    db.exec("PRAGMA synchronous=NORMAL; PRAGMA checkpoint_fullfsync=ON;");
+  } catch {
+    // A sqlite build that will not take one of these is still one the Agent can
+    // converse on, exactly as the prune above is. Durability is worth asking
+    // for and never worth refusing to open a thread store over.
+  }
+}
+
 function openNative(file: string): NativeDatabase {
   const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite") as {
     Database?: new (file: string, options?: { create?: boolean }) => NativeDatabase;
@@ -212,6 +243,7 @@ export type OpenedCheckpointer = {
  */
 export function openAgentCheckpointer(file: string, options: { keep?: number } = {}): OpenedCheckpointer {
   const db = openNative(file);
+  setDurabilityPragmas(db);
   const adapter = new SqliteDriverAdapter(db);
   /**
    * PRUNED ON OPEN, BEFORE ANYTHING READS IT — #599, and the reason this is not
