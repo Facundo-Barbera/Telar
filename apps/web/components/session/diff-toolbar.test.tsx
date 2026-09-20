@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { filePatchQuery, parseFilePatchQuery } from "@telar/engine-client";
 import { DEFAULT_DIFF_VIEW, type DiffView } from "@/lib/diff-view";
-import { DiffToolbar } from "./diff-surface";
+import { DiffToolbar, patchRequestFor } from "./diff-surface";
 
 const toolbar = (view: Partial<DiffView> = {}, extra: { anyOpen?: boolean; expandable?: boolean } = {}) =>
   renderToStaticMarkup(
@@ -146,5 +146,39 @@ describe("the diff toolbar", () => {
       // The hand-written form that dropped the flag, in any of its spellings.
       expect(code, `${name} does not read a diff parameter by hand`).not.toMatch(/searchParams\.get\("untracked"\)/);
     }
+  });
+
+  test("a row asks for every option its file needs, in ONE place — issue #694", () => {
+    /**
+     * THE SHAPE #739's BUG LIVED IN, made assertable. Three optional fields
+     * spread into a request object: `untracked` from the row, `ignoreWhitespace`
+     * from the toolbar, `renamedFrom` from the list's own rename pairing. The
+     * failure mode is not a wrong value, it is a MISSING key — and TypeScript
+     * checks nothing at a call site that spreads.
+     *
+     * So the construction is one exported function and this reads its output,
+     * per file rather than per parameter: a renamed, untracked file with the
+     * toggle on and a base chosen must carry all four at once.
+     */
+    const view: DiffView = { ...DEFAULT_DIFF_VIEW, ignoreWhitespace: true };
+    expect(patchRequestFor({ path: "dst.txt", status: "renamed", renamedFrom: "src.txt" }, view, { base: "origin/main" })).toEqual({
+      ignoreWhitespace: true,
+      renamedFrom: "src.txt",
+      base: "origin/main",
+    });
+    expect(patchRequestFor({ path: "new.ts", status: "untracked" }, view, {})).toEqual({ untracked: true, ignoreWhitespace: true });
+
+    // ...and an ordinary row under default settings asks for nothing extra,
+    // which is what makes each key above a claim rather than a constant.
+    expect(patchRequestFor({ path: "a.ts", status: "modified" }, DEFAULT_DIFF_VIEW, {})).toEqual({});
+
+    // The rename reaches the WIRE through the shared builder, not just the
+    // object — the exact gap that made the last dead flag typecheck.
+    expect(filePatchQuery("dst.txt", patchRequestFor({ path: "dst.txt", status: "renamed", renamedFrom: "src.txt" }, DEFAULT_DIFF_VIEW, {}))).toContain(
+      "renamedFrom=src.txt",
+    );
+    expect(parseFilePatchQuery(new URLSearchParams(filePatchQuery("dst.txt", patchRequestFor({ path: "dst.txt", status: "renamed", renamedFrom: "src.txt" }, DEFAULT_DIFF_VIEW, {}))))).toMatchObject({
+      renamedFrom: "src.txt",
+    });
   });
 });

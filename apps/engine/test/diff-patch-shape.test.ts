@@ -177,6 +177,57 @@ test("a path that begins with pathspec magic is still just a path (#694)", async
 });
 
 /**
+ * A RENAME IS A FACT ABOUT TWO PATHS — §2.2.
+ *
+ * The LIST gets it right: `-z --numstat --find-renames` reports `0 0` with both
+ * paths, so the row says "Renamed from src.txt" with ±0. The PATCH was read
+ * with one path, which excludes the other from the pathspec and leaves rename
+ * detection nothing to pair — so git answered `new file mode 100644` with every
+ * line as an addition, and one row made two contradictory claims about one file.
+ */
+test("a renamed file's patch is a rename, not a brand-new file (#694)", async () => {
+  const { root, git } = repo({ "src.txt": "alpha\nbeta\n" });
+  git("mv", "src.txt", "dst.txt");
+
+  const answer = await sessionFilePatchAsync(async, { cwd: root, path: "dst.txt", renamedFrom: "src.txt" });
+  expect(answer.incomplete).toBeUndefined();
+  // git's own vocabulary for a rename, which is what the renderer models as
+  // `type="rename-pure"` with `prevName` set.
+  expect(answer.patch).toContain("rename from src.txt");
+  expect(answer.patch).toContain("rename to dst.txt");
+  // The wrong answer, named so this cannot pass vacuously: a pure rename read
+  // with one path comes back as a creation with the whole file added.
+  expect(answer.patch).not.toContain("new file mode");
+  expect(answer.patch).not.toContain("+alpha");
+  expect(filesIn(answer.patch)).toHaveLength(1);
+});
+
+/** ...and a rename that also CHANGED the file still carries both names, with
+ *  the hunks for what actually differs. */
+test("a renamed-and-edited file's patch pairs the names and keeps the hunks (#694)", async () => {
+  const { root, git } = repo({ "src.txt": "alpha\nbeta\ngamma\ndelta\nepsilon\n" });
+  git("mv", "src.txt", "dst.txt");
+  fs.writeFileSync(path.join(root, "dst.txt"), "alpha\nBETA\ngamma\ndelta\nepsilon\n");
+
+  const answer = await sessionFilePatchAsync(async, { cwd: root, path: "dst.txt", renamedFrom: "src.txt" });
+  expect(answer.patch).toContain("rename from src.txt");
+  expect(answer.patch).toContain("+BETA");
+  expect(answer.patch).not.toContain("new file mode");
+  expect(filesIn(answer.patch)).toHaveLength(1);
+});
+
+/** A path that is NOT a rename is read exactly as before — the option only
+ *  exists on the rows that carry the other name. */
+test("an ordinary file's patch is unchanged by the rename pairing (#694)", async () => {
+  const { root } = repo({ "plain.txt": "one\n" });
+  fs.appendFileSync(path.join(root, "plain.txt"), "two\n");
+  const answer = await sessionFilePatchAsync(async, { cwd: root, path: "plain.txt" });
+  expect(answer.patch).toContain("+two");
+  expect(answer.patch).not.toContain("rename from");
+  expect(filesIn(answer.patch)).toHaveLength(1);
+});
+
+/**
  * §2.7 — `core.quotePath` defaults to true and the header carries C escapes
  * rather than the name. Asserted on BOTH arms, because the untracked one builds
  * its header from a different command line.

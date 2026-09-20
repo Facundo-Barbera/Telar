@@ -577,7 +577,7 @@ function assembleDiff(
  */
 export function sessionFilePatch(
   git: GitRunner,
-  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean },
+  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean; renamedFrom?: string },
 ): GitFilePatch {
   const { cwd, baseRef, path: target } = input;
   // Same corroboration as the review's — see `resolveDiffBase`. A killed verify
@@ -588,7 +588,33 @@ export function sessionFilePatch(
   const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
   return input.untracked
     ? assemblePatch(git(cwd, [...RAW_PATHS, "diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
-    : assemblePatch(git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, against, "--", literal(target)]), { noIndex: false });
+    : assemblePatch(git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, ...renameArgs(input.renamedFrom), against, "--", ...paths(target, input.renamedFrom)]), {
+        noIndex: false,
+      });
+}
+
+/**
+ * BOTH PATHS, OR THE RENAME CANNOT BE SEEN — issue #694, §2.2.
+ *
+ * `git diff HEAD -- <newpath>` excludes the OLD path from the pathspec, so
+ * rename detection has nothing to pair the new one with and git answers
+ * `new file mode 100644` with every line as an addition. The row above it
+ * already said "Renamed from src.txt" with ±0, off the list's own
+ * `--find-renames` read — so one row made two contradictory claims, and the
+ * renderer read the patch's as `type="new"`.
+ *
+ * Pass both and git reports `similarity index 100% / rename from / rename to`,
+ * which the renderer models first-class as `rename-pure` with `prevName` set.
+ */
+function paths(target: string, renamedFrom?: string): string[] {
+  return renamedFrom && renamedFrom !== target ? [literal(renamedFrom), literal(target)] : [literal(target)];
+}
+
+/** `--find-renames` EXPLICITLY, though git has defaulted to it since 2.9: the
+ *  pairing above is the whole point of the second path, and `diff.renames=false`
+ *  in somebody's config would turn it back into two unrelated files. */
+function renameArgs(renamedFrom?: string): string[] {
+  return renamedFrom ? ["--find-renames"] : [];
 }
 
 /**
@@ -962,7 +988,7 @@ export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string
 
 export async function sessionFilePatchAsync(
   git: AsyncGitRunner,
-  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean },
+  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean; renamedFrom?: string },
 ): Promise<GitFilePatch> {
   const { cwd, baseRef, path: target } = input;
   const { base } = resolveDiffBase(baseRef, baseRef ? await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
@@ -970,7 +996,10 @@ export async function sessionFilePatchAsync(
   const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
   return input.untracked
     ? assemblePatch(await git(cwd, [...RAW_PATHS, "diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
-    : assemblePatch(await git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, against, "--", literal(target)]), { noIndex: false });
+    : assemblePatch(
+        await git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, ...renameArgs(input.renamedFrom), against, "--", ...paths(target, input.renamedFrom)]),
+        { noIndex: false },
+      );
 }
 
 export async function listGitRefsAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitRefListing> {

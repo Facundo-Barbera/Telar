@@ -53,20 +53,25 @@ index 1111111..2222222 100644
 async function row(
   patch: GitFilePatch,
   file: GitFileChange = { path: "big.txt", status: "modified" },
-): Promise<{ text: string; viewers: number }> {
+): Promise<{ text: string; viewers: number; asked: GitFileChange[] }> {
   const mount = document.createElement("div");
   document.body.appendChild(mount);
   const root = createRoot(mount);
   roots.push(root);
+  const asked: GitFileChange[] = [];
+  const readPatch = (requested: GitFileChange) => {
+    asked.push(requested);
+    return Promise.resolve({ file: patch });
+  };
   await act(async () => {
-    root.render(<ReviewFileRow readPatch={() => Promise.resolve({ file: patch })} file={file} reported view={{ layout: "stacked", wrap: false, ignoreWhitespace: false }} open onToggle={() => {}} />);
+    root.render(<ReviewFileRow readPatch={readPatch} file={file} reported view={{ layout: "stacked", wrap: false, ignoreWhitespace: false }} open onToggle={() => {}} />);
   });
   // The effect resolves its promise a microtask later, and the viewer tokenises
   // asynchronously after that.
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
   });
-  return { text: mount.textContent ?? "", viewers: mount.querySelectorAll(".diff-code-view").length };
+  return { text: mount.textContent ?? "", viewers: mount.querySelectorAll(".diff-code-view").length, asked };
 }
 
 describe("a row whose patch is not the whole patch (#694)", () => {
@@ -104,5 +109,20 @@ describe("a row whose patch is not the whole patch (#694)", () => {
     expect(drawn.text).not.toContain("may not be the whole change");
     expect(drawn.text).not.toContain("could not read");
     expect(drawn.viewers).toBe(1);
+  });
+
+  test("a renamed row asks for the patch with BOTH of its paths — issue #694", async () => {
+    /**
+     * The row is the only party that holds the pair: the LIST derived it with
+     * `--find-renames`, and a patch read with the new path alone excludes the
+     * old one from the pathspec, so git answers `new file mode` and the row's
+     * own "Renamed from src.txt" label contradicts the hunks under it.
+     */
+    const drawn = await row({ patch: HUNKS, binary: false }, { path: "dst.txt", status: "renamed", renamedFrom: "src.txt" });
+    expect(drawn.asked).toHaveLength(1);
+    expect(drawn.asked[0]).toMatchObject({ path: "dst.txt", renamedFrom: "src.txt" });
+    // And the row still says so in words, which is the claim the patch has to
+    // agree with.
+    expect(drawn.text).toContain("Renamed from src.txt");
   });
 });

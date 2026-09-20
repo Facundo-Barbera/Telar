@@ -76,7 +76,7 @@ import {
   WrapTextIcon,
   XIcon,
 } from "lucide-react";
-import type { GitFilePatch, GitFileChange, GitPatchIncomplete, GitRefEntry, SessionDiff, TurnState } from "@telar/engine-client";
+import type { DiffBaseOption, FilePatchOptions, GitFilePatch, GitFileChange, GitPatchIncomplete, GitRefEntry, SessionDiff, TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { describeReview, reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
@@ -188,6 +188,34 @@ export function reviewUnderFilter(review: SessionReview, filter?: string): Sessi
 }
 
 /**
+ * WHAT ONE ROW ASKS GIT FOR — every option on a patch read, in one expression.
+ *
+ * A FUNCTION RATHER THAN AN OBJECT LITERAL INSIDE THE CALLBACK, because this is
+ * exactly where #694's dead toggle lived: three fields spread into a request,
+ * one of them silently absent, and TypeScript checking nothing because the
+ * value was not a literal at the call site. It is the same reason
+ * `diffTabParams` is one writer — the shape has more than one contributor and
+ * no natural place to notice a missing one.
+ *
+ * PURE, AND EXPORTED FOR ITS TEST: what the row asks for can then be asserted
+ * without a poll, a fetch, or a mounted surface.
+ */
+export function patchRequestFor(file: GitFileChange, view: DiffView, base: DiffBaseOption): FilePatchOptions {
+  return {
+    /** Untracked files are in no diff at all — see the engine's `sessionFilePatch`. */
+    ...(file.status === "untracked" ? { untracked: true } : {}),
+    /** GIT decides which hunks exist, not the renderer (#694). */
+    ...(view.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+    /** BOTH PATHS OR GIT CALLS IT A NEW FILE (#694). The list already paired
+     *  them with `--find-renames`; this hands that pairing on rather than
+     *  making the engine re-derive it from a second full diff. */
+    ...(file.renamedFrom ? { renamedFrom: file.renamedFrom } : {}),
+    /** Last, so the scope's base cannot be shadowed by anything above it. */
+    ...base,
+  };
+}
+
+/**
  * WHAT EACH WAY OF NOT HAVING THE WHOLE PATCH SAYS — one sentence per member of
  * `GitPatchIncomplete`, so adding a member to the contract makes this fail to
  * compile rather than fall through to the wrong sentence.
@@ -226,7 +254,13 @@ export function ReviewFileRow({
 }: {
   /** Session-scoped or project-scoped — the row does not care which, which is
    *  what lets one surface serve a conversation and a canvas. */
-  readPatch: (path: string, untracked: boolean) => Promise<{ file: GitFilePatch }>;
+  /**
+   * THE WHOLE ROW, NOT JUST ITS PATH (#694). A renamed file's patch has to be
+   * read with BOTH paths or git reports it as a brand-new file — and the only
+   * party that knows the old one is the list this row came from, so the row
+   * hands over the record rather than a path and a flag derived from it.
+   */
+  readPatch: (file: GitFileChange) => Promise<{ file: GitFilePatch }>;
   file: GitFileChange;
   reported: boolean;
   /** How this reader likes a diff laid out. Passed down rather than read here
@@ -284,7 +318,7 @@ export function ReviewFileRow({
   useEffect(() => {
     if (!open || patch !== undefined || failed) return;
     let cancelled = false;
-    void readPatch(file.path, file.status === "untracked")
+    void readPatch(file)
       .then((result) => {
         if (!cancelled) setAnswer({ reader: readPatch, patch: result.file, failed: false });
       })
@@ -294,7 +328,12 @@ export function ReviewFileRow({
     return () => {
       cancelled = true;
     };
-  }, [open, patch, failed, readPatch, file.path, file.status]);
+    // `file.path`/`status`/`renamedFrom` rather than `file`: the row is rebuilt
+    // on every poll, so the object's identity changes fifteen seconds after it
+    // was last read while every field in it stays the same — and a re-read on
+    // that would put a spinner over a patch nobody asked to reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, patch, failed, readPatch, file.path, file.status, file.renamedFrom]);
 
   return (
     /* Draggable on the wrapper so the row can be dropped into the message while
@@ -1180,17 +1219,13 @@ export function DiffSurface({
    * this" is the same fact either way.
    */
   const readPatch = useCallback(
-    (path: string, untracked: boolean): Promise<{ file: GitFilePatch }> => {
+    (file: GitFileChange): Promise<{ file: GitFilePatch }> => {
       if (tab.kind === "turn") {
-        const patch = turn?.patches.get(path);
+        const patch = turn?.patches.get(file.path);
         return Promise.resolve({ file: patch ? { patch, binary: false } : { patch: "", binary: false, incomplete: "failed" } });
       }
-      const options = {
-        ...(untracked ? { untracked: true } : {}),
-        ...(view.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-        ...base,
-      };
-      return sessionId ? api.sessionFilePatch(sessionId, path, options) : api.projectFilePatch(projectId!, path, options);
+      const options = patchRequestFor(file, view, base);
+      return sessionId ? api.sessionFilePatch(sessionId, file.path, options) : api.projectFilePatch(projectId!, file.path, options);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sessionId, projectId, view.ignoreWhitespace, base.base, tab.kind, turn],

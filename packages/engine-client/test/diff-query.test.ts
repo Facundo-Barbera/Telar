@@ -73,4 +73,26 @@ describe("one file's patch", () => {
     expect(new URLSearchParams(query).get("path")).toBe("src/a&b=c.ts");
     expect(round(query).ignoreWhitespace).toBe(true);
   });
+
+  test("a rename carries BOTH of its paths — issue #694", () => {
+    /**
+     * THE OPTION #739's ARGUMENT WAS WRITTEN FOR. A patch read with one path
+     * cannot see a rename at all: git excludes the other from the pathspec and
+     * answers `new file mode`. So the old path is part of the REQUEST, and it
+     * is declared here — the one place a diff parameter may be declared —
+     * rather than at a call site, which is how the last one reached two layers
+     * of three and stopped.
+     */
+    const query = filePatchQuery("dst.txt", { renamedFrom: "src.txt" });
+    expect(new URLSearchParams(query).get("renamedFrom")).toBe("src.txt");
+    expect(round(query)).toEqual({ untracked: false, ignoreWhitespace: false, renamedFrom: "src.txt" });
+  });
+
+  test("no rename sends no parameter, and an empty one is not a rename", () => {
+    // A bare `?renamedFrom=` would reach a pathspec as the repository root,
+    // which matches everything — so absent and empty must both mean "no".
+    expect(filePatchQuery("dst.txt", {})).not.toContain("renamedFrom");
+    expect(round("path=dst.txt&renamedFrom=").renamedFrom).toBeUndefined();
+    expect(round("path=dst.txt&renamedFrom=%20%20").renamedFrom).toBeUndefined();
+  });
 });
