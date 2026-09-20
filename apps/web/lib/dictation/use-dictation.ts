@@ -164,6 +164,47 @@ export function useDictation(input: {
     refusals.current += 1;
     setError({ text, seq: refusals.current });
   }, []);
+  /**
+   * ASK THE ENGINE WHY, AND SAY THAT INSTEAD (#711).
+   *
+   * THIS TAB CANNOT LEARN IT AND NEVER WILL. A `WebSocket` error event carries
+   * no reason by design; the engine holds the key and can ask Deepgram, so it
+   * does — once, on a route every surface shares. `400 Bad Request — Keyterm
+   * limit exceeded` is the sentence that reached the owner as "the connection
+   * failed" and sent him to replace a key that was fine.
+   *
+   * AFTER THE HONEST SENTENCE, NOT INSTEAD OF IT. The refusal is shown the
+   * instant the socket fails, because a caption that waited on a round trip
+   * would be silence at exactly the moment somebody is wondering whether their
+   * press registered. The better sentence replaces it when it arrives.
+   *
+   * THROUGH `refuse`, so the replacement counts as a refusal of its own — which
+   * is what restarts the notice's dismissal timer. Arriving two seconds in and
+   * keeping the first sentence's timer would give a longer, more important
+   * sentence four seconds to be read.
+   *
+   * AND ONLY IF NOTHING HAS HAPPENED SINCE. `after` is the refusal count at the
+   * moment of the failure: a person who pressed again while this was in flight
+   * has a newer sentence on screen, and overwriting it with the diagnosis of an
+   * older press would be the app answering a question nobody is still asking.
+   *
+   * EVERY FAILURE HERE IS SILENT. This is a better sentence for a refusal that
+   * already has one; a toast about the diagnosis failing would be Telar
+   * reporting on its own plumbing.
+   */
+  const diagnose = useCallback(
+    async (after: number) => {
+      try {
+        const said = await createEngineApi().dictationDiagnosis();
+        if (refusals.current !== after || !said.reason) return;
+        refuse(said.reason);
+      } catch {
+        // An engine too old for the route, a Mac that is off, a failed fetch.
+        // The honest sentence is already on screen and stays.
+      }
+    },
+    [refuse],
+  );
   /** WHERE THE PILL GOES (#561), re-measured whenever words land. State rather
    *  than a ref because it is drawn; `undefined` is "nothing to draw". */
   const [caret, setCaret] = useState<{ rect: DOMRect; language: string }>();
@@ -420,13 +461,17 @@ export function useDictation(input: {
         // refused upgrade is an ordinary HTTP response — `400 Bad Request —
         // Keyterm limit exceeded` was this bug, and it took a raw TLS
         // handshake outside the browser to read it (`scripts/probe-deepgram-
-        // listen.ts`). The reason a person can act on lives on the engine,
-        // which holds the key; see the issue for what that would take.
+        // listen.ts`).
+        //
+        // SO THE ENGINE IS ASKED, AND ITS ANSWER REPLACES THIS (#711). It
+        // holds the key and can read that body; this sentence is what stands
+        // until it answers, and what stands for good if it cannot.
         //
         // WHAT IS ADDED IS AN INSTRUCTION, NOT A CAUSE: pressing again is the
         // one move there is, and the notice that draws this goes away by
         // itself, so the sentence has to say what to do while it is up.
         refuse("The connection to the transcription service failed. Press the button to try again.");
+        void diagnose(refusals.current);
         teardown();
       };
 
@@ -436,6 +481,11 @@ export function useDictation(input: {
       live.onclose = () => {
         if (socket.current !== live) return;
         refuse("The transcription service closed the connection. Press the button to try again.");
+        // A CLOSE NOBODY ASKED FOR IS THE SAME KIND OF UNEXPLAINED FAILURE as
+        // the error above, and Deepgram will say the same kind of thing about
+        // it — a refused upgrade can surface either way depending on the
+        // browser.
+        void diagnose(refusals.current);
         teardown();
       };
     } catch (cause) {
@@ -456,7 +506,7 @@ export function useDictation(input: {
       refuse(microphoneRefusal(cause));
       teardown();
     }
-  }, [teardown, refuse]);
+  }, [teardown, refuse, diagnose]);
 
   const toggle = useCallback(() => {
     // STOPPING IS SYNCHRONOUS AND STARTING IS NOT, so a second press during

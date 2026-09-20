@@ -51,6 +51,7 @@ import type {
   AgentThreadAnswer,
   DictationAnswer,
   DictationProviderId,
+  DictationDiagnosisAnswer,
   DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
@@ -604,6 +605,19 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  rather than holding one: it expires in minutes, and `expiresAt` is an
      *  instant so a caller compares it against its own clock. */
     dictationToken: () => request<DictationTokenAnswer>(fetcher, "POST", "/api/dictation/token"),
+    /**
+     * Why the last dictation failed (#711).
+     *
+     * AFTER A SOCKET FAILS, NOT BEFORE ONE OPENS. A browser's `WebSocket` error
+     * event carries no reason BY DESIGN — the status of a failed cross-origin
+     * handshake would be an oracle — so this asks the engine, which holds the
+     * key, to ask Deepgram and answer in Deepgram's own words.
+     *
+     * A CALLER MUST SURVIVE IT FAILING. The sentence it already has is honest;
+     * this one is better. An engine too old for this route answers 404, and
+     * then the honest one is what a person sees.
+     */
+    dictationDiagnosis: () => request<DictationDiagnosisAnswer>(fetcher, "POST", "/api/dictation/diagnose"),
     /** Where each project group sits in the rail — see `SidebarLayout`. One
      *  arrangement for every client of this engine. */
     sidebarLayout: () => request<{ layout: SidebarLayout }>(fetcher, "GET", "/api/sidebar-layout"),

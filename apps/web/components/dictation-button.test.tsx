@@ -518,6 +518,100 @@ describe("the mic button on a composer", () => {
     expect(notice?.className).toContain("absolute");
   });
 
+  /**
+   * WHAT #711 IS ABOUT: the sentence a refused socket leaves on screen.
+   *
+   * This tab cannot read why its `WebSocket` was refused and never will — the
+   * spec withholds it, because the status of a failed cross-origin handshake
+   * would be an oracle. So the engine is asked, and its answer replaces the
+   * honest-and-useless one. `Deepgram is never called`: the diagnosis route is
+   * a fetch like the token route, and it is stubbed the same way.
+   */
+  describe("when the socket is refused and only the engine can say why", () => {
+    /** The route answering, or refusing to. `fetch` is already the suite's
+     *  stub; this layers the one path over it. */
+    function engineSays(answer: () => Response): void {
+      const rest = globalThis.fetch;
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(typeof input === "object" && "url" in input ? input.url : input);
+        return url.includes("/api/dictation/diagnose") ? answer() : rest(input, init);
+      }) as typeof fetch;
+    }
+
+    /** The socket failing, and the round trip that follows it settling. A real
+     *  tick for `press`'s reason: the diagnosis is a `fetch` and a `json()`. */
+    async function fails(how: "onerror" | "onclose"): Promise<void> {
+      await act(async () => {
+        live?.[how]?.();
+        await new Promise((settle) => setTimeout(settle, 0));
+      });
+    }
+
+    const noticeIn = (host: HTMLElement): string => host.querySelector('[data-slot="dictation-notice"]')?.textContent ?? "";
+
+    test("Deepgram's own words replace the sentence the browser could honestly say", async () => {
+      // THE BUG THAT STARTED THIS. The owner saw "the connection to the
+      // transcription service failed" and replaced his Deepgram key, which
+      // could not possibly have worked — the glossary was over budget.
+      engineSays(() =>
+        Response.json({ fault: "refused", reason: "Deepgram refused the transcription connection: HTTP 400 — Keyterm limit exceeded." }),
+      );
+      const host = await mounted(<Box kind="session" />);
+      await press(micIn(host));
+      live?.open();
+      await fails("onerror");
+      expect(noticeIn(host)).toContain("Keyterm limit exceeded");
+      expect(noticeIn(host)).not.toContain("The connection to the transcription service failed");
+    });
+
+    test("a close nobody asked for is diagnosed too, because the same refusal arrives either way", async () => {
+      engineSays(() => Response.json({ fault: "refused", reason: "Deepgram refused the transcription connection: HTTP 403 — Project does not have access to the requested model." }));
+      const host = await mounted(<Box kind="session" />);
+      await press(micIn(host));
+      live?.open();
+      await fails("onclose");
+      expect(noticeIn(host)).toContain("does not have access to the requested model");
+    });
+
+    test("an engine that cannot answer leaves the honest sentence alone rather than blanking it", async () => {
+      // AN ENGINE TOO OLD FOR THE ROUTE, a Mac that is off, a failed fetch. The
+      // sentence a person already has is honest; losing it to report that a
+      // diagnosis failed would be Telar talking about its own plumbing.
+      engineSays(() => Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 }));
+      const host = await mounted(<Box kind="session" />);
+      await press(micIn(host));
+      live?.open();
+      await fails("onerror");
+      expect(noticeIn(host)).toContain("The connection to the transcription service failed");
+      expect(noticeIn(host)).toContain("Press the button to try again");
+    });
+
+    test("the honest sentence is shown at once and not held back waiting for the round trip", async () => {
+      // SILENCE AFTER A PRESS READS AS THE PRESS NOT REGISTERING, which is the
+      // property `seq` exists for (#707). A caption that waited on the engine
+      // would reintroduce exactly that, for as long as Deepgram takes.
+      // THE ROUTE LEFT HANGING, so "before the answer" is a state the test can
+      // actually stand in rather than a race it hopes to win.
+      let answer: ((value: Response) => void) | undefined;
+      const pending = new Promise<Response>((settle) => {
+        answer = settle;
+      });
+      engineSays(() => pending as unknown as Response);
+      const host = await mounted(<Box kind="session" />);
+      await press(micIn(host));
+      live?.open();
+      await fails("onerror");
+      // THE DIAGNOSIS HAS NOT ANSWERED and there is already a sentence up.
+      expect(answer).toBeDefined();
+      expect(noticeIn(host)).toContain("The connection to the transcription service failed");
+      await act(async () => {
+        answer?.(Response.json({ fault: "elsewhere", reason: "Deepgram accepted a connection from this Mac just now." }));
+        await new Promise((settle) => setTimeout(settle, 0));
+      });
+      expect(noticeIn(host)).toContain("accepted a connection from this Mac");
+    });
+  });
+
   test("a Mac with a provider chosen but no key refuses with the engine's sentence, not a status", async () => {
     // ONLY THE MINT REFUSES. The provider read still answers, because that is
     // the state this Mac is actually in: dictation is switched on, so there IS
