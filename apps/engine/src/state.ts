@@ -85,6 +85,7 @@ import {
   type BrowserTab,
   type GitCommitEntry,
   type GitHubCheckLog,
+  type GitHubCommentResult,
   type GitHubFacets,
   type GitHubIssueFilter,
   type GitHubIssueRead,
@@ -184,6 +185,7 @@ import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
 import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
 import {
+  commentOn,
   DEFAULT_ISSUE_FILTER,
   DEFAULT_PULL_FILTER,
   defaultGhRunner,
@@ -6298,6 +6300,65 @@ export class EngineStore {
       // it becomes the cached answer rather than being thrown away.
       this.githubDetailCache.set(`${project.id}:pull:${target}`, { pull: result.pull });
     }
+    return structuredClone(result);
+  }
+
+  /**
+   * Post one comment, attributed to the session that wrote it — issue #791.
+   *
+   * ── THE SESSION ID IS READ OFF A CLAIM, NEVER OFF AN ARGUMENT ───────────────
+   * This is the whole reason the write lives here rather than in a tool. `proof`
+   * is the CLAIM of the turn doing the commenting — a session id, a run id and
+   * the token this engine minted for that claim — and `requireSenderClaim` looks
+   * it up and refuses unless it is live. The id that reaches the comment body is
+   * the one the STORE found, not the one the caller named, so a model cannot
+   * attribute its words to a session it is not. Identical in mechanism to
+   * `submitAgentTurn`'s sender and to `Session.startedFrom`, deliberately: a
+   * second way to prove who is speaking would be a second way to get it wrong.
+   *
+   * ── AND WHAT THIS DOES NOT PROVE ────────────────────────────────────────────
+   * It binds the marker on comments that come through HERE. It cannot bind a
+   * comment an agent posts by running `gh issue comment` in its own worktree,
+   * which is how every agent comment in this repository is written today: that
+   * body is typed by the model, and a model can type any marker, including one
+   * it read off a public comment belonging to another session. The attribution
+   * is therefore a CLAIM that is ordinarily true rather than a signature, and
+   * `GitHubComment.attribution` says so to every reader. Nothing authorises on it.
+   *
+   * ── NO CACHE TO DROP, AND ONE TO ─────────────────────────────────────────────
+   * The detail read carries the thread, so a comment that posted while the panel
+   * holds a thirty-second-old copy would be invisible for the rest of that
+   * window — the same staleness `projectPullMerge` refuses. The LIST is left
+   * alone: a comment changes `updatedAt` and nothing a row renders.
+   */
+  async projectGitHubComment(
+    projectId: string,
+    input: { kind: "issue" | "pull"; number: number; body: string },
+    proof: { sessionId: string; runId: string; claimToken: string },
+  ): Promise<GitHubCommentResult> {
+    const project = this.getProject(projectId);
+    const target = this.forgeNumber(input.number);
+    assertId(proof.sessionId, "sender session id");
+    /**
+     * THE BUILT-IN AGENT CANNOT COMMENT, and the refusal is the same one
+     * `submitAgentTurn` gives for the same reason: the Agent is a LangGraph
+     * thread with no session document, so `agent` in a marker would be a
+     * permanent link on github.com to a conversation `sessions_read` cannot
+     * open. A dead link is worse than no attribution.
+     */
+    if (isAgentSelf(proof.sessionId)) {
+      throw new EngineStateError("invalid_request", "the built-in Agent has no session a comment could link to");
+    }
+    // Throws unless the claim is live and really is this session's. The id below
+    // is the store's finding, not the caller's claim.
+    const claimed = this.requireSenderClaim(proof);
+    const result = await commentOn(this.gh, project.root, {
+      kind: input.kind,
+      number: target,
+      body: input.body,
+      sessionId: claimed.sessionId,
+    });
+    if (result.posted) this.githubDetailCache.delete(`${project.id}:${input.kind}:${target}`);
     return structuredClone(result);
   }
 
