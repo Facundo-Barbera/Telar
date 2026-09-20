@@ -74,7 +74,235 @@ struct SessionSidebar: View {
             .contains { $0.localizedStandardContains(query) }
     }
 
+    /// THE LAST THREE MODIFIERS, and the outermost layer of five (#764).
+    ///
+    /// `body` was one 497-line view-builder chain and the Swift constraint
+    /// solver is superlinear in expression size, so it read 3703–6337 ms on
+    /// CI's own type-check floor — 7.4× to 12.7× the 500 ms bar, against a
+    /// population that spans 1.48× on byte-identical source. N small solves are
+    /// cheaper than one solve of the combined expression on EVERY machine, slow
+    /// or fast, because what is removed is combinatorial rather than constant.
+    /// That is what makes the split a fix and not a tuning.
+    ///
+    /// THE LAYERS ARE CONTIGUOUS SLICES OF ONE UNCHANGED SEQUENCE. Modifier
+    /// order is semantic in SwiftUI — `.background` before versus after
+    /// `.safeAreaInset` is a different view — so the boundaries fall between
+    /// adjacent modifiers and never reorder two. Reading inside-out,
+    /// `sessionList` receives 1–5 in `chrome`, 6–9 in `navigation`, 10–11 in
+    /// `presentations`, 12–14 in `lifecycle` and 15–17 here: seventeen, in the
+    /// order they were in before.
     var body: some View {
+        lifecycle
+            .sheet(item: $snoozing) { row in snoozeSheet(row) }
+            // RENAME IS AN ALERT, NOT A SHEET. One field and two buttons is the
+            // alert's whole shape, and a sheet for it would cost a push and a
+            // dismiss to type a title.
+            .alert("Rename session", isPresented: presenting($renaming)) {
+                TextField("Title", text: $renameDraft)
+                Button("Rename") {
+                    guard let row = renaming else { return }
+                    let title = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    renaming = nil
+                    guard !title.isEmpty, title != row.session.title else { return }
+                    Task { await patch(row, SessionPatch(title: title)) }
+                }
+                Button("Cancel", role: .cancel) { renaming = nil }
+            }
+            // THE CONFIRMATION SAYS WHAT IT TAKES rather than asking "are you
+            // sure": the engine deletes the transcript with the session and there
+            // is no undo, so the sentence is the only place that can be said.
+            .confirmationDialog(
+                deleting.map { "Delete “\($0.session.title.isEmpty ? "Untitled session" : $0.session.title)”?" } ?? "Delete session?",
+                isPresented: presenting($deleting),
+                titleVisibility: .visible
+            ) {
+                Button("Delete session", role: .destructive) {
+                    guard let row = deleting else { return }
+                    deleting = nil
+                    Task { await remove(row) }
+                }
+                Button("Cancel", role: .cancel) { deleting = nil }
+            } message: {
+                Text("The conversation and everything it holds go with it. This cannot be undone.")
+            }
+    }
+
+    /// Modifiers 12–14: the bottom inset, and the two that drive the list's own
+    /// lifecycle.
+    private var lifecycle: some View {
+        presentations
+            // AN ICON ROW, NOT A SENTENCE. The desktop's footer
+            // (app-sidebar-footer.tsx) is a row of muted glyphs on the left, and
+            // that is the right shape for a destination you reach twice a week: a
+            // full-width tinted "Settings" was the loudest thing on the rail,
+            // reading as the sidebar's primary action directly beneath the work
+            // that actually is.
+            //
+            // SETTINGS FIRST, THEN USAGE — the desktop's order and its reason
+            // (app-sidebar-footer.tsx, #389): Settings is the one a person reaches
+            // for, Usage is the one they look at. The phone drew only the gear
+            // because there was no usage screen to open; there is one now (#404), so
+            // the footer is the pair it is over there.
+            //
+            // The desktop's update control has no counterpart here — this app
+            // updates through TestFlight, which is the App Store's job and not a
+            // button's.
+            //
+            // The glyphs keep the web's size and the tap targets do not: 32pt is a
+            // mouse target, and a finger is owed the full 44.
+            //
+            // BOTH GLYPHS BELOW SCALE WITH THEIR OWN SQUARE (#674). 17-in-44 is
+            // the proportion at every text size, not just the default one — see
+            // `scaledGlyphBox`.
+            .safeAreaInset(edge: .bottom) {
+                HStack(spacing: 0) {
+                    Button(action: openSettings) {
+                        Image(systemName: "gearshape")
+                            .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
+                    }
+                    .keyboardShortcut(",", modifiers: .command)
+                    .accessibilityLabel("Settings")
+                    Button { showUsage = true } label: {
+                        Image(systemName: "chart.bar")
+                            .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Usage")
+                    .disabled(settings.hosts.isEmpty)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(Theme.textMuted)
+                .padding(.horizontal, 8)
+                .background(Theme.sheet)
+            }
+            // NO SEPARATE LAYOUT READ ANY MORE. The arrangement rides each Mac's
+            // live read (InboxStore), so refreshing the inbox refreshes where
+            // things sit — and the rail learns about a drag made on the Mac on the
+            // next poll instead of only when it is opened again.
+            .refreshable { await inbox.refresh() }
+            .task {
+                collapsed = Set(savedCollapsed.split(separator: "\n").map(String.init))
+            }
+    }
+
+    /// Modifiers 10–11: the two sheets whose subject is not a row.
+    private var presentations: some View {
+        navigation
+            // A REGISTRATION IS A PUSH INSIDE A SHEET, not a push onto the rail: the
+            // browser walks the MAC's folders and a person who gets lost in it wants
+            // one dismissal, not a stack of them to unwind.
+            .sheet(item: $addingTo) { target in
+                NavigationStack {
+                    AddProjectView(api: target.api) { _ in
+                        addingTo = nil
+                        Task { await inbox.refresh() }
+                    }
+                    .navigationTitle("Add project")
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { addingTo = nil } } }
+                }
+            }
+            .sheet(isPresented: $showUsage) {
+                NavigationStack {
+                    UsageView(settings: settings, hostId: inbox.filter ?? settings.hosts.first?.id)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showUsage = false } } }
+                }
+            }
+    }
+
+    /// Modifiers 6–9: the title, the search field and the bar.
+    private var navigation: some View {
+        chrome
+            .navigationTitle("Telar")
+            // LARGE AT BOTH WIDTHS. The sidebar column defaults to an inline title,
+            // which is what put "Telar" on the same line as the two toolbar buttons
+            // on the iPad and left the search field to collapse into the bar beside
+            // them. Asking for the large title gives the phone's arrangement back:
+            // the buttons on their own row, the title under them, and — because a
+            // navigation-bar DRAWER is a drawer under the title rather than a slot
+            // inside the bar — the search field under that.
+            .navigationBarTitleDisplayMode(.large)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions, projects, Macs")
+            // THE HEADER'S VERBS, THE DESKTOP'S SET — issue #404. The rail there is
+            // a search field with Add project and New conversation at its right
+            // (app-sidebar.tsx), and the phone had only the compose button.
+            //
+            // ADD PROJECT IS A VERB, NOT A SETTING. Registering a folder used to be
+            // reachable only from the new-conversation flow, which is the wrong way
+            // round: you add a project in order to start conversations in it, so the
+            // one that comes first cannot be behind the one that follows.
+            //
+            // THE PROJECT PICKER IS GONE, and the Mac filter stays. The desktop
+            // dropped its "All projects ▾" row (#400) because the rail is already
+            // grouped by project and the field already narrows it — a filter for the
+            // same fact, spending a control. The Mac filter has no desktop
+            // counterpart to drop: which machine a row is on is a fact only a phone
+            // holding several Macs has to ask about.
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    addProject
+                    Button("New conversation", systemImage: "square.and.pencil", action: newSession).keyboardShortcut("n", modifiers: .command)
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Picker("Mac", selection: Bindable(inbox).filter) {
+                            Text("All Macs").tag(nil as HostID?)
+                            ForEach(settings.hosts) { Text($0.name).tag(Optional($0.id)) }
+                        }
+                    } label: { Label(inbox.filter.map(hostName) ?? "All Macs", systemImage: "line.3.horizontal.decrease") }
+                }
+            }
+    }
+
+    /// Modifiers 1–5: what the list itself looks like.
+    private var chrome: some View {
+        sessionList
+            // ONE LIST STYLE, SO THERE IS ONE SIDEBAR.
+            //
+            // `.sidebar` is not a look, it is TWO looks: in a compact width it
+            // falls back to inset-grouped, and in the split view's sidebar column
+            // it renders flat. So the phone drew every band as its own rounded card
+            // — the pinned pair as one card with a hairline between the rows, each
+            // project group as a card, the Settled shelf as a card — while the iPad
+            // drew the same rows directly on the column with SPACING as the only
+            // grouping cue. Same file, same sections, two different products, and
+            // the reported preference was for the phone's: a card is a visible
+            // boundary, and a gap is a boundary you have to infer.
+            //
+            // `.insetGrouped` renders the same at both widths, so the cards are now
+            // the grouping cue everywhere. Nothing about the CONTENT changes: the
+            // section spacing, the 30pt row floor, and the card/slim row variants
+            // are all untouched — this only decides what encloses them.
+            .listStyle(.insetGrouped)
+            .listSectionSpacing(12)
+            // A ONE-LINE ROW CANNOT BE ONE LINE TALL while the list floors every
+            // row at the standard 44pt touch target. The slim rows are the whole
+            // point of the two volumes, so the floor comes down to meet them; a
+            // card is taller than either number and is unaffected, and a row is
+            // still a comfortable tap because its content is a full line of text
+            // plus the list's own padding.
+            .environment(\.defaultMinListRowHeight, 30)
+            // THE PAGE STAYS OURS AT BOTH WIDTHS, and that is a deliberate choice
+            // against letting the iPad's floating sidebar panel show its own
+            // material through.
+            //
+            // A card reads as a card because of what is BEHIND it. On the phone
+            // that is `Theme.sheet` with the system's grouped-secondary fill on top
+            // — a fixed, known contrast, in both appearances. The panel's material
+            // is translucent and takes its colour from whatever the window happens
+            // to be showing underneath, so the same card would separate cleanly
+            // over a dark transcript and nearly vanish over a light one. Trading a
+            // dependable boundary for a prettier backdrop is the wrong way round
+            // when the boundary is the entire point of this change.
+            //
+            // `scrollContentBackground(.hidden)` hides the SCROLL VIEW's fill only;
+            // the cells keep the system's grouped-secondary background, which is
+            // why the cards still look like system cards rather than like our
+            // colour twice.
+            .scrollContentBackground(.hidden)
+            .background(Theme.sheet)
+    }
+
+    /// The list itself, with no modifier on it at all.
+    private var sessionList: some View {
         List(selection: $selection) {
             ForEach(inbox.failures) { failure in
                 Label(failure.needsPairing ? "\(hostName(failure.hostId)) needs pairing" : "\(hostName(failure.hostId)) is offline · showing saved sessions", systemImage: failure.needsPairing ? "lock" : "wifi.slash")
@@ -384,191 +612,6 @@ struct SessionSidebar: View {
                     ContentUnavailableView("No projects yet", systemImage: "folder.badge.plus", description: Text("Register a project to start a session."))
                 }
             }
-        }
-        // ONE LIST STYLE, SO THERE IS ONE SIDEBAR.
-        //
-        // `.sidebar` is not a look, it is TWO looks: in a compact width it
-        // falls back to inset-grouped, and in the split view's sidebar column
-        // it renders flat. So the phone drew every band as its own rounded card
-        // — the pinned pair as one card with a hairline between the rows, each
-        // project group as a card, the Settled shelf as a card — while the iPad
-        // drew the same rows directly on the column with SPACING as the only
-        // grouping cue. Same file, same sections, two different products, and
-        // the reported preference was for the phone's: a card is a visible
-        // boundary, and a gap is a boundary you have to infer.
-        //
-        // `.insetGrouped` renders the same at both widths, so the cards are now
-        // the grouping cue everywhere. Nothing about the CONTENT changes: the
-        // section spacing, the 30pt row floor, and the card/slim row variants
-        // are all untouched — this only decides what encloses them.
-        .listStyle(.insetGrouped)
-        .listSectionSpacing(12)
-        // A ONE-LINE ROW CANNOT BE ONE LINE TALL while the list floors every
-        // row at the standard 44pt touch target. The slim rows are the whole
-        // point of the two volumes, so the floor comes down to meet them; a
-        // card is taller than either number and is unaffected, and a row is
-        // still a comfortable tap because its content is a full line of text
-        // plus the list's own padding.
-        .environment(\.defaultMinListRowHeight, 30)
-        // THE PAGE STAYS OURS AT BOTH WIDTHS, and that is a deliberate choice
-        // against letting the iPad's floating sidebar panel show its own
-        // material through.
-        //
-        // A card reads as a card because of what is BEHIND it. On the phone
-        // that is `Theme.sheet` with the system's grouped-secondary fill on top
-        // — a fixed, known contrast, in both appearances. The panel's material
-        // is translucent and takes its colour from whatever the window happens
-        // to be showing underneath, so the same card would separate cleanly
-        // over a dark transcript and nearly vanish over a light one. Trading a
-        // dependable boundary for a prettier backdrop is the wrong way round
-        // when the boundary is the entire point of this change.
-        //
-        // `scrollContentBackground(.hidden)` hides the SCROLL VIEW's fill only;
-        // the cells keep the system's grouped-secondary background, which is
-        // why the cards still look like system cards rather than like our
-        // colour twice.
-        .scrollContentBackground(.hidden)
-        .background(Theme.sheet)
-        .navigationTitle("Telar")
-        // LARGE AT BOTH WIDTHS. The sidebar column defaults to an inline title,
-        // which is what put "Telar" on the same line as the two toolbar buttons
-        // on the iPad and left the search field to collapse into the bar beside
-        // them. Asking for the large title gives the phone's arrangement back:
-        // the buttons on their own row, the title under them, and — because a
-        // navigation-bar DRAWER is a drawer under the title rather than a slot
-        // inside the bar — the search field under that.
-        .navigationBarTitleDisplayMode(.large)
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions, projects, Macs")
-        // THE HEADER'S VERBS, THE DESKTOP'S SET — issue #404. The rail there is
-        // a search field with Add project and New conversation at its right
-        // (app-sidebar.tsx), and the phone had only the compose button.
-        //
-        // ADD PROJECT IS A VERB, NOT A SETTING. Registering a folder used to be
-        // reachable only from the new-conversation flow, which is the wrong way
-        // round: you add a project in order to start conversations in it, so the
-        // one that comes first cannot be behind the one that follows.
-        //
-        // THE PROJECT PICKER IS GONE, and the Mac filter stays. The desktop
-        // dropped its "All projects ▾" row (#400) because the rail is already
-        // grouped by project and the field already narrows it — a filter for the
-        // same fact, spending a control. The Mac filter has no desktop
-        // counterpart to drop: which machine a row is on is a fact only a phone
-        // holding several Macs has to ask about.
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                addProject
-                Button("New conversation", systemImage: "square.and.pencil", action: newSession).keyboardShortcut("n", modifiers: .command)
-            }
-            ToolbarItem(placement: .topBarLeading) {
-                Menu {
-                    Picker("Mac", selection: Bindable(inbox).filter) {
-                        Text("All Macs").tag(nil as HostID?)
-                        ForEach(settings.hosts) { Text($0.name).tag(Optional($0.id)) }
-                    }
-                } label: { Label(inbox.filter.map(hostName) ?? "All Macs", systemImage: "line.3.horizontal.decrease") }
-            }
-        }
-        // A REGISTRATION IS A PUSH INSIDE A SHEET, not a push onto the rail: the
-        // browser walks the MAC's folders and a person who gets lost in it wants
-        // one dismissal, not a stack of them to unwind.
-        .sheet(item: $addingTo) { target in
-            NavigationStack {
-                AddProjectView(api: target.api) { _ in
-                    addingTo = nil
-                    Task { await inbox.refresh() }
-                }
-                .navigationTitle("Add project")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { addingTo = nil } } }
-            }
-        }
-        .sheet(isPresented: $showUsage) {
-            NavigationStack {
-                UsageView(settings: settings, hostId: inbox.filter ?? settings.hosts.first?.id)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showUsage = false } } }
-            }
-        }
-        // AN ICON ROW, NOT A SENTENCE. The desktop's footer
-        // (app-sidebar-footer.tsx) is a row of muted glyphs on the left, and
-        // that is the right shape for a destination you reach twice a week: a
-        // full-width tinted "Settings" was the loudest thing on the rail,
-        // reading as the sidebar's primary action directly beneath the work
-        // that actually is.
-        //
-        // SETTINGS FIRST, THEN USAGE — the desktop's order and its reason
-        // (app-sidebar-footer.tsx, #389): Settings is the one a person reaches
-        // for, Usage is the one they look at. The phone drew only the gear
-        // because there was no usage screen to open; there is one now (#404), so
-        // the footer is the pair it is over there.
-        //
-        // The desktop's update control has no counterpart here — this app
-        // updates through TestFlight, which is the App Store's job and not a
-        // button's.
-        //
-        // The glyphs keep the web's size and the tap targets do not: 32pt is a
-        // mouse target, and a finger is owed the full 44.
-        //
-        // BOTH GLYPHS BELOW SCALE WITH THEIR OWN SQUARE (#674). 17-in-44 is
-        // the proportion at every text size, not just the default one — see
-        // `scaledGlyphBox`.
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 0) {
-                Button(action: openSettings) {
-                    Image(systemName: "gearshape")
-                        .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
-                }
-                .keyboardShortcut(",", modifiers: .command)
-                .accessibilityLabel("Settings")
-                Button { showUsage = true } label: {
-                    Image(systemName: "chart.bar")
-                        .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
-                }
-                .accessibilityLabel("Usage")
-                .disabled(settings.hosts.isEmpty)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(Theme.textMuted)
-            .padding(.horizontal, 8)
-            .background(Theme.sheet)
-        }
-        // NO SEPARATE LAYOUT READ ANY MORE. The arrangement rides each Mac's
-        // live read (InboxStore), so refreshing the inbox refreshes where
-        // things sit — and the rail learns about a drag made on the Mac on the
-        // next poll instead of only when it is opened again.
-        .refreshable { await inbox.refresh() }
-        .task {
-            collapsed = Set(savedCollapsed.split(separator: "\n").map(String.init))
-        }
-        .sheet(item: $snoozing) { row in snoozeSheet(row) }
-        // RENAME IS AN ALERT, NOT A SHEET. One field and two buttons is the
-        // alert's whole shape, and a sheet for it would cost a push and a
-        // dismiss to type a title.
-        .alert("Rename session", isPresented: presenting($renaming)) {
-            TextField("Title", text: $renameDraft)
-            Button("Rename") {
-                guard let row = renaming else { return }
-                let title = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                renaming = nil
-                guard !title.isEmpty, title != row.session.title else { return }
-                Task { await patch(row, SessionPatch(title: title)) }
-            }
-            Button("Cancel", role: .cancel) { renaming = nil }
-        }
-        // THE CONFIRMATION SAYS WHAT IT TAKES rather than asking "are you
-        // sure": the engine deletes the transcript with the session and there
-        // is no undo, so the sentence is the only place that can be said.
-        .confirmationDialog(
-            deleting.map { "Delete “\($0.session.title.isEmpty ? "Untitled session" : $0.session.title)”?" } ?? "Delete session?",
-            isPresented: presenting($deleting),
-            titleVisibility: .visible
-        ) {
-            Button("Delete session", role: .destructive) {
-                guard let row = deleting else { return }
-                deleting = nil
-                Task { await remove(row) }
-            }
-            Button("Cancel", role: .cancel) { deleting = nil }
-        } message: {
-            Text("The conversation and everything it holds go with it. This cannot be undone.")
         }
     }
 
