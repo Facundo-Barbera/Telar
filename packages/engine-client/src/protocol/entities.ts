@@ -1661,6 +1661,40 @@ export type TurnFailureCode = z.infer<typeof TurnFailureCode>;
  * report, the store's record, the `turn.failed` event and `Turn.failure` all
  * carry the same thing, and they were four copies that had to be edited in step.
  */
+/**
+ * HOW LONG A RUNNING TURN MAY GO WITHOUT JOURNALLING ANYTHING before the engine
+ * will say so — issue #813. See `Turn.stalled`.
+ *
+ * TWENTY MINUTES, AND THE NUMBER IS SET BY THE LONGEST LEGITIMATE SILENCE
+ * RATHER THAN BY IMPATIENCE. Measured in the run #813 examined: one `bun run
+ * test:web` produced an `item.started` and an `item.completed` 107 seconds
+ * apart with nothing in between, and an install or a CI-length command is
+ * minutes. A sampled bound on the largest observed gap in that same HEALTHY run
+ * was 20.3 minutes across 58 unread events — so even this is not a number
+ * anybody should act on automatically, which is exactly why what it produces is
+ * an advisory rather than a kill.
+ *
+ * IT IS NOT A LEASE. `workerLeaseMs` is 15 s and answers a different question —
+ * whether a worker PROCESS is still there — and it exempts the embedded worker,
+ * which is what runs almost every session here.
+ *
+ * HERE RATHER THAN IN THE ENGINE because both sides of the wire need it: the
+ * store decides with it and the `sessions_status` note quotes it, and two
+ * copies of a threshold are two thresholds.
+ */
+export const STALLED_AFTER_MS = 20 * 60_000;
+
+/** What `Turn.stalled` carries. Named so the engine and the tools that report
+ *  it cannot describe the same advisory two different ways. */
+export const TurnStall = z.object({
+  /** The last evidence there was — what the silence is measured from. */
+  since: Timestamp,
+  /** When the engine's scan first said so. Distinct from `since`: the gap
+   *  between them is how long nobody was looking, which is worth seeing. */
+  noticedAt: Timestamp,
+});
+export type TurnStall = z.infer<typeof TurnStall>;
+
 export const TurnFailure = z.object({
   code: TurnFailureCode,
   message: z.string(),
@@ -2048,9 +2082,56 @@ export const Turn = z.object({
   interactionMode: InteractionMode.optional(),
 
   acceptedAt: Timestamp,
+  /**
+   * EVERY WRITER OF THIS IS A STATE TRANSITION, and that is worth knowing
+   * before anybody reads it as liveness — `claimTurn`, `markRunning`,
+   * `completeTurn`, `failTurn`, `stopTurn`, the steer paths, `recover`.
+   * NOTHING stamps it while a turn produces output, so a healthy turn of any
+   * length looks frozen by this measure. `lastProgressAt` below is the field
+   * that means what this one was mistaken for (#813).
+   */
   updatedAt: Timestamp,
   startedAt: Timestamp.optional(),
   completedAt: Timestamp.optional(),
+  /**
+   * WHEN THIS RUN LAST PRODUCED EVIDENCE — the `at` of the newest journal
+   * record naming it (#813).
+   *
+   * EVIDENCE THE ENGINE RECEIVED, never a claim a worker makes about itself.
+   * A journal append is a side effect of the worker actually doing work; the
+   * heartbeat is a `setInterval` that `worker.ts` deliberately keeps running
+   * while a turn is blocked, so a wedged turn on a live worker heartbeats
+   * forever and cannot be the evidence.
+   *
+   * MAINTAINED IN MEMORY AND FOLDED IN HERE AT MOST ONCE A MINUTE, because the
+   * alternative is an atomic queue write per streamed token-chunk. So this may
+   * lag the journal by up to that minute and must never be read as exact — the
+   * threshold it feeds is twenty times larger than the lag for that reason.
+   *
+   * Absent on turns that never ran, and on every turn stored before this
+   * existed; a reader that finds it missing falls back to `startedAt`.
+   */
+  lastProgressAt: Timestamp.optional(),
+  /**
+   * NO EVIDENCE FOR A LONG TIME — an ADVISORY, and never a kill (#813).
+   *
+   * It asserts exactly one thing: nothing has been journalled for this run in
+   * `STALLED_AFTER_MS`. It does NOT assert the turn is dead. The engine stops
+   * nothing, fails nothing and requeues nothing on account of it; a person or
+   * an agent reads it and decides, which is precisely what neither of #813's
+   * two occurrences had anything to decide from.
+   *
+   * THE THRESHOLD HAS TO CLEAR THE LONGEST LEGITIMATE SILENCE, and that silence
+   * is large: one `bun run test:web` in the very run this issue examined
+   * produced an `item.started` and an `item.completed` 107 seconds apart with
+   * nothing in between, and an install or a CI-length command is minutes. Tens
+   * of minutes, therefore — not seconds.
+   *
+   * CLEARED THE MOMENT EVIDENCE ARRIVES, so a long command that finishes turns
+   * this off by itself and the flag tracks the present rather than accusing the
+   * turn of its history.
+   */
+  stalled: TurnStall.optional(),
 
   claim: TurnClaim.optional(),
   usage: UsageSnapshot.optional(),

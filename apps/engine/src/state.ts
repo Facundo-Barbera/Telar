@@ -32,6 +32,7 @@ import {
   Item as ItemSchema,
   MAX_AUTO_SETTLE_HOURS,
   MAX_REPORT_WINDOW_MINUTES,
+  STALLED_AFTER_MS,
   MIN_AUTO_SETTLE_HOURS,
   MIN_REPORT_WINDOW_MINUTES,
   McpServer as McpServerSchema,
@@ -636,6 +637,16 @@ const GITHUB_CACHE_MS = 30_000;
  *  subprocess — and the answer changes far less often. */
 const MODEL_CACHE_MS = 5 * 60_000;
 
+/**
+ * How far the DURABLE `Turn.lastProgressAt` may drift behind the in-memory
+ * ledger before the sweep folds it in.
+ *
+ * A BUDGET ON WRITES, not a property anyone reads. Stamping the turn at every
+ * journal append would be one atomic queue write per streamed token-chunk; this
+ * makes it one a minute for a busy session. It is a twentieth of
+ * `STALLED_AFTER_MS`, so the lag can never be what decides a verdict.
+ */
+const PROGRESS_STAMP_MS = 60_000;
 
 /**
  * What could not possibly be a model id.
@@ -2271,6 +2282,11 @@ export class EngineStore {
     }
     catch (error) {
       this.journalHead.clear(); this.openPrefixes.clear(); this.liveQueueIndex = undefined;
+      // And the liveness ledger (#813): its stamps came from appends inside the
+      // transaction sqlite has just thrown away, so they name records that do
+      // not exist. Dropped rather than repaired — `lastProgressOf` falls back
+      // to the turn's own durable stamp, which is exactly what a restart uses.
+      this.runProgress.clear();
       // Same argument for the open-request index (#545): rows it names were
       // written inside the transaction sqlite has just thrown away. Dropped
       // rather than repaired — the next reader rebuilds it from the documents.
@@ -2391,6 +2407,44 @@ export class EngineStore {
    * a write fails, so the next append re-reads and repairs.
    */
   private readonly journalHead = new Map<string, number>();
+  /**
+   * WHEN THIS SESSION'S RUNNING TURN LAST PRODUCED EVIDENCE — issue #813.
+   *
+   * ═══ WHY THIS EXISTS AND WHY IT IS NOT THE HEARTBEAT ═══
+   *
+   * Nothing in this engine could tell a wedged turn from a working one. Both
+   * attempts to judge one by hand got it wrong, in opposite directions: a
+   * session whose cut had died read `working` for 45 minutes, and a healthy
+   * 80-minute turn was read as stalled and stopped 837 ms after a successful
+   * `git push`. The second mistake is the instructive one — it was made by
+   * reading `updatedAt`, and `updatedAt` cannot support it: `touchSession` is
+   * its only writer and the streaming path never calls it, so a healthy turn
+   * of any length has an `updatedAt` frozen at its first second, by design.
+   *
+   * THE HEARTBEAT CANNOT BE THE EVIDENCE EITHER, and `worker.ts` says why in
+   * its own words: the heartbeat must keep running while a turn is BLOCKED, so
+   * it is a `setInterval` deliberately decoupled from turn progress. A wedged
+   * turn on a live worker heartbeats forever. And `pruneWorkers` exempts the
+   * embedded registration — which is what runs almost every session here.
+   *
+   * SO THE EVIDENCE IS THE JOURNAL, which the engine writes ITSELF as a side
+   * effect of the worker doing work, and which no worker can claim on its own
+   * behalf. `appendEvent` stamps this on every record that names a run.
+   *
+   * KEYED BY SESSION, NOT BY RUN, and that is what bounds it: one turn per
+   * session is the engine's own invariant, so one entry per session is exact —
+   * and the entry carries its `runId` so a stamp left by an earlier run can
+   * never be read as this one's. Bounded exactly as `journalHead` above is, by
+   * the number of sessions this process has touched rather than by their age.
+   *
+   * IN MEMORY, AND THE DURABLE COPY IS `Turn.lastProgressAt`. Writing the queue
+   * on every journal append would be a full atomic queue write per streamed
+   * token-chunk; `sweepStalledTurns` folds this into the turn at most once a
+   * minute instead. A restart loses at most that minute, and `recover()`
+   * already decides what happens to a turn that was running when the process
+   * went away.
+   */
+  private readonly runProgress = new Map<string, { runId: string; at: number }>();
   /** Text streamed into still-open items, by `session\nitem`. A cache over the
    *  journal's deltas — see `openItemPrefix`. */
   private readonly openPrefixes = new Map<string, { text: string; through: number; sealed: boolean }>();
@@ -9431,6 +9485,75 @@ export class EngineStore {
     return session.resumeAfterRateLimit ?? session.driver === "claude";
   }
 
+  /** What the newest journal record naming this run said, falling back through
+   *  the durable copy to the turn's own start. The ledger is keyed by session
+   *  and carries its run, so an earlier run's stamp is never read as this
+   *  one's — see `runProgress`. */
+  private lastProgressOf(sessionId: string, turn: Turn): number {
+    const seen = this.runProgress.get(sessionId);
+    if (seen?.runId === turn.runId) return seen.at;
+    return turn.lastProgressAt ?? turn.startedAt ?? turn.claim?.at ?? turn.acceptedAt;
+  }
+
+  /**
+   * SAY WHEN A RUNNING TURN HAS GONE QUIET — issue #813, and the read half of
+   * `runProgress`.
+   *
+   * IT KILLS NOTHING. The verdict is `Turn.stalled`, an advisory on a turn that
+   * stays `running`, and it is withdrawn the moment evidence arrives again.
+   * Every mechanism that could ACT on a guess about liveness has been wrong at
+   * least once in this repository's history (see `runProgress`), so this one
+   * reports and stops there.
+   *
+   * HERE, BESIDE `sweepRateLimited`, FOR THE REASON THAT ONE GIVES: this is
+   * already the engine's only periodic pass over live queues, and a second
+   * scheduler would be a second thing to start, stop and get wrong at shutdown.
+   *
+   * CHEAP ON THE COMMON PATH, and it has two cheap paths rather than one. A
+   * session with nothing running costs one `some()`. A session that IS running
+   * costs a subtraction, and writes only when the verdict changes or when the
+   * durable stamp has drifted more than `PROGRESS_STAMP_MS` behind the ledger —
+   * so a busy session pays one queue write a minute rather than one per
+   * streamed token-chunk, which is what folding this in at the append would be.
+   *
+   * NOTHING IS JOURNALLED HERE, deliberately, and not only for the bytes: an
+   * event naming this run would be evidence of the run's own progress by this
+   * very method's definition, and the flag would clear itself on the next tick.
+   * `writeQueue` announces the change, which is how every client already hears
+   * about a queue.
+   */
+  private sweepStalledTurns(sessionId: string): void {
+    const scan = this.scanQueue(sessionId);
+    if (!scan.turns.some((turn) => turn.state === "running")) return;
+    const at = this.now();
+    const verdicts = scan.turns
+      .filter((turn) => turn.state === "running")
+      .map((turn) => {
+        const since = this.lastProgressOf(sessionId, turn);
+        return {
+          runId: turn.runId,
+          since,
+          stalled: at - since >= STALLED_AFTER_MS,
+          was: turn.stalled !== undefined,
+          drifted: since - (turn.lastProgressAt ?? 0) >= PROGRESS_STAMP_MS,
+        };
+      });
+    if (!verdicts.some((verdict) => verdict.stalled !== verdict.was || verdict.drifted)) return;
+    // Writes, so a queue of its own rather than the copy every other reader is
+    // sharing — `sweepRateLimited` immediately above does the same.
+    const own = this.readQueue(sessionId);
+    for (const verdict of verdicts) {
+      const turn = own.turns.find((candidate) => candidate.runId === verdict.runId);
+      // Re-read rather than trusted: the scan copy was taken before this call
+      // and a turn that has settled since must not be marked stalled on its way
+      // out. The same argument `settleWorktree`'s header makes.
+      if (!turn || turn.state !== "running") continue;
+      turn.lastProgressAt = verdict.since;
+      if (verdict.stalled) turn.stalled = { since: verdict.since, noticedAt: turn.stalled?.noticedAt ?? at };
+      else delete turn.stalled;
+    }
+    this.writeQueue(sessionId, own);
+  }
 
   /**
    * REQUEUE A TURN WHOSE USAGE LIMIT HAS LIFTED, or record that we decided not
@@ -9526,6 +9649,14 @@ export class EngineStore {
        * writing maintains the very index being iterated.
        */
       this.sweepRateLimited(sessionId);
+      /**
+       * AND THE LIVENESS SWEEP, for the same reason and in the same place
+       * (#813). It is the only pass that visits every live queue on a clock,
+       * and a turn that has gone quiet is exactly what nothing else here would
+       * ever notice — a running turn is `continue`d a few lines below, so
+       * BEFORE that skip rather than after it.
+       */
+      this.sweepStalledTurns(sessionId);
       // A SCAN, so the shared copy: the one session that wins is claimed
       // through `claimTurn`, which reads a queue of its own to write.
       const queue = this.scanQueue(sessionId);
@@ -10995,6 +11126,9 @@ export class EngineStore {
     // The journal is gone with the directory; a session recreated under this
     // id starts a new one from 1, not from where the old one stopped.
     this.journalHead.delete(sessionId);
+    // Same argument, for the liveness ledger: a session recreated under this id
+    // must not inherit a stamp from the one that was deleted (#813).
+    this.runProgress.delete(sessionId);
     this.dropSubscriptionsOf(sessionId);
     return true;
   }
@@ -13947,6 +14081,17 @@ export class EngineStore {
    * payload fails at compile time here rather than at a client's call site.
    */
   private appendEvent(sessionId: string, event: JournalEntry, runId?: string): EngineEvent {
+    /**
+     * EVERY RECORD THAT NAMES A RUN IS THAT RUN'S LIVENESS — issue #813, and
+     * this is the whole of the writing half. It costs a Map set on the engine's
+     * hottest path and no I/O at all; `sweepStalledTurns` does the reading, and
+     * `Turn.lastProgressAt` is where it lands durably. See `runProgress`.
+     *
+     * STAMPED FROM `this.now()` ONCE, below, so the ledger and the record it
+     * came from carry the same instant rather than two readings of the clock.
+     */
+    const at = this.now();
+    if (runId) this.runProgress.set(sessionId, { runId, at });
     // The head is read from disk ONCE per session per store, through the same
     // parse that validates every record and repairs a torn tail — so a restart
     // still recovers exactly as before. After that the daemon lock makes this
@@ -13956,7 +14101,7 @@ export class EngineStore {
     if (this.executionStore) {
       const stored = {
         id: this.executionStore.cursor(sessionId) + 1,
-        at: this.now(),
+        at,
         sessionId,
         ...(runId ? { runId } : {}),
         ...event,
@@ -13973,7 +14118,7 @@ export class EngineStore {
     const head = this.journalHead.get(sessionId) ?? readJournal(file).at(-1)?.id ?? 0;
     const record = {
       id: head + 1,
-      at: this.now(),
+      at,
       sessionId,
       ...(runId ? { runId } : {}),
       ...event,

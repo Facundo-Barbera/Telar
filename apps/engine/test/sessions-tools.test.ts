@@ -28,7 +28,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assertTelarToolNames, parseToolName, qualifyTelarTool, TELAR_CAPABILITIES } from "@telar/engine-client";
+import { assertTelarToolNames, parseToolName, qualifyTelarTool, STALLED_AFTER_MS, TELAR_CAPABILITIES } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
 import { sessionDiff } from "../src/git";
 import { GIT_TIMEOUT_STATUS, type AsyncGitRunner, type GitRunner } from "../src/worktree";
@@ -724,6 +724,57 @@ describe("a session whose checkout failed", () => {
     const note = String(status.json!.note);
     expect(note).toContain("still being made");
     expect(note).not.toContain(CUT_FAILURE);
+  });
+});
+
+// ── a running turn that has gone quiet ──────────────────────────────────────
+
+/**
+ * THE ADVISORY ON THE AGENT SURFACE — #813 step 5's other half.
+ *
+ * The store decides it (`test/turn-liveness.test.ts` owns that, including the
+ * heartbeat case a heartbeat-based implementation fails). What this asserts is
+ * that the decision REACHES a caller, and that the words it arrives in do not
+ * recommend the action that was the mistake: #813's healthy 80-minute turn was
+ * stopped by somebody who had guessed, and a note that said "stop it" would be
+ * that guess with the engine's name on it.
+ */
+describe("sessions_status reports a stalled turn", () => {
+  test("it names the silence, keeps the turn running, and tells nobody to stop it", async () => {
+    let now = 1_000_000;
+    // The injected clock is the whole time machinery — nothing sleeps here.
+    const timed = new EngineStore(tmp("telar-stall-wall-"), () => now);
+    openStores.push(timed);
+    const project = timed.registerProject({ name: "aurora", root: repo() });
+    const session = timed.createSession({ projectId: project.id, envMode: "local" });
+    timed.submitTurn(session.id, { runId: "run_one", input: "run the suite" });
+    const claim = timed.claimNextTurn("worker_one")!;
+    timed.markRunning(session.id, "run_one", claim.turn.claim!.token);
+
+    const tools = wall(timed);
+    const healthy = await call(tools, "sessions_status", { sessionId: session.id });
+    expect(healthy.json!.running).toBe(true);
+    expect((healthy.json!.turns as Array<Record<string, unknown>>)[0]!.stalled).toBeUndefined();
+
+    now += STALLED_AFTER_MS + 60_000;
+    timed.claimNextTurn("worker_one");
+
+    const stalled = await call(tools, "sessions_status", { sessionId: session.id });
+    const turns = stalled.json!.turns as Array<{ state: string; stalled?: { since: number }; lastProgressAt?: number }>;
+    expect(turns).toHaveLength(1);
+    // STILL RUNNING. The advisory does not change the turn's state, and
+    // `running` still answers the question the tool is for.
+    expect(turns[0]!.state).toBe("running");
+    expect(stalled.json!.running).toBe(true);
+    expect(turns[0]!.stalled?.since).toBe(claim.turn.acceptedAt);
+    expect(turns[0]!.lastProgressAt).toBe(turns[0]!.stalled!.since);
+    const note = String(stalled.json!.note);
+    expect(note).toContain(String(Math.round(STALLED_AFTER_MS / 60_000)));
+    expect(note).toContain("Nothing has been stopped.");
+    // THE SENTENCE THAT MUST NOT BE THERE. `sessions_stop` is what the ordinary
+    // running note offers; offering it here is how a healthy long command gets
+    // killed on a signal that only ever meant "no evidence yet".
+    expect(note).not.toContain("sessions_stop");
   });
 });
 

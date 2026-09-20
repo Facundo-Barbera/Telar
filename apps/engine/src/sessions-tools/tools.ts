@@ -81,7 +81,7 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
-import { MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES } from "@telar/engine-client";
+import { MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, STALLED_AFTER_MS } from "@telar/engine-client";
 
 /**
  * What the toolkit may do.
@@ -787,6 +787,16 @@ function turnLine(turn: Turn) {
     state: turn.state,
     ...(turn.completedAt === undefined ? {} : { endedAt: turn.completedAt }),
     ...(turn.failure ? { failure: turn.failure } : {}),
+    /**
+     * NO EVIDENCE FOR A LONG WHILE — #813. On the turn rather than the session,
+     * because that is what it is about, and only when it is true: an ordinary
+     * running turn carries neither key.
+     *
+     * `lastProgressAt` RIDES WITH IT rather than being reported always. The
+     * number is only worth its bytes when there is a silence to measure, and a
+     * caller handed `stalled` with no "since when" would have to ask again.
+     */
+    ...(turn.stalled ? { stalled: turn.stalled, lastProgressAt: turn.lastProgressAt ?? turn.stalled.since } : {}),
   };
 }
 
@@ -1456,6 +1466,14 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               ? "Its checkout is still being made. Nothing has started yet; anything queued runs once the checkout lands."
               : session.activity === "blocked"
               ? "It is WAITING ON A PERSON — a request is open and only a human can answer it. Nothing you send will unblock it."
+              : live.some((turn) => turn.stalled)
+                ? // #813. Said as what is KNOWN — no evidence since a time —
+                  // rather than as a diagnosis. The engine has not stopped it
+                  // and should not be read as recommending that anyone else
+                  // does: a long install or test run looks exactly like this,
+                  // and stopping a healthy turn on this signal is the mistake
+                  // this issue was opened about.
+                  `A turn is in flight but has journalled NOTHING for over ${Math.round(STALLED_AFTER_MS / 60_000)} minutes. That may be a long command and may be a wedge — read it with sessions_read before deciding. Nothing has been stopped.`
               : live.length > 0
                 ? `A turn is in flight. Read it with sessions_read, or stop it with sessions_stop.${pending.length > 0 ? ` ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting for it to finish.` : ""}`
                 : pending.length > 0
