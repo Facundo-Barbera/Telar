@@ -16,8 +16,9 @@
  */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChartNoAxesColumnIcon, DownloadIcon, Loader2Icon, PowerIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
+import { ChartNoAxesColumnIcon, DownloadIcon, FlameIcon, Loader2Icon, PowerIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
 import { useDesktopUpdate } from "@/lib/desktop-updates";
+import { formatCpu, useRunawayNotice, type RunawayRenderer } from "@/lib/desktop-metrics";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { UpdateToast } from "@/components/ui/update-toast";
 import { cn } from "@/lib/utils";
@@ -112,6 +113,60 @@ function UpdateButton() {
   );
 }
 
+/**
+ * WHAT A RUNAWAY RENDERER LOOKS LIKE FROM HERE — issue #787.
+ *
+ * ONE SENTENCE, NOT A PROCESS TABLE. The Usage page (#488) is where the figures
+ * live and this links to it; what this strip owes a person is the fact that
+ * something is wrong at a moment they were not looking, which is the whole gap
+ * #488 left open. Both incidents behind #487 and #488 ran for fifty minutes and
+ * an hour before anybody found them with Activity Monitor.
+ *
+ * NAMED IN BOTH DIRECTIONS, because the two states are different news. The
+ * shell KILLED it — a burst that is over, said in the past tense — or it did
+ * not, which is the case that persists: the watchdog will not kill while no
+ * candidate origin can be named, so that renderer is still burning a core and
+ * will keep doing so.
+ */
+export function RunawayIndicator() {
+  const notice = useRunawayNotice();
+  const hot = notice?.renderers ?? [];
+  if (hot.length === 0) return null;
+
+  // The worst one leads. A still-running orphan outranks a kill that already
+  // happened, and above that it is simply the hottest.
+  const worst = [...hot].sort(
+    (a: RunawayRenderer, b: RunawayRenderer) => Number(a.killed) - Number(b.killed) || b.percent - a.percent,
+  )[0]!;
+  const label = worst.killed
+    ? `Stopped a runaway renderer at ${formatCpu(worst.percent)} of a core`
+    : `A renderer is at ${formatCpu(worst.percent)} of a core with no page open`;
+  const detail = worst.killed
+    ? `pid ${worst.pid} was hosting no page${worst.origins.length > 0 ? ` — service workers running with no tab: ${worst.origins.join(", ")}` : ""}.`
+    : `pid ${worst.pid}, for ${worst.polls} polls. The shell will not stop it: no service worker is running without a tab to name it as.`;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Link
+            href="/usage"
+            aria-label={label}
+            className={cn(iconButton(), "text-warning hover:text-warning")}
+          >
+            <FlameIcon className="size-4" />
+          </Link>
+        }
+      />
+      <TooltipContent side="top">
+        <span className="block max-w-64">
+          {label}. {detail} {hot.length > 1 ? `${hot.length} in all. ` : ""}Open Usage for the figures.
+        </span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** The whole footer: icon row, Settings + Usage left, update right. */
 export function AppSidebarFooterRow({ onNavigate }: { onNavigate: () => void }) {
   return (
@@ -123,6 +178,9 @@ export function AppSidebarFooterRow({ onNavigate }: { onNavigate: () => void }) 
         <ChartNoAxesColumnIcon className="size-4" />
       </FooterLink>
       <div className="flex-1" />
+      {/* AMBIENT AND ZERO-COST AT REST. It renders nothing until the shell's
+          watchdog says otherwise, and it never polls — see `useRunawayNotice`. */}
+      <RunawayIndicator />
       <UpdateButton />
     </div>
   );
