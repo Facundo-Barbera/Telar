@@ -13,7 +13,10 @@ jobs:
   deploy:
     # On the Mac mini: a node script calling Cloudflare needs no Linux, and the
     # hosted lane stopped starting jobs (billing) on 2026-09-07.
-    runs-on: [self-hosted, macOS, ARM64, telar-nightly]
+    # NEVER NEEDED A MAC. This is `actions/setup-node` and `node`; it ran on the
+    # owner's Mac only because 89b65885 moved every workflow there together on
+    # 2026-09-11, when the hosted lane stopped starting jobs for billing.
+    runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4

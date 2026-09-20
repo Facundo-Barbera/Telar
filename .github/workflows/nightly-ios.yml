@@ -41,7 +41,11 @@ jobs:
   testflight:
     # Only trusted release triggers use the personal Mac.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, macOS, ARM64, telar-nightly]
+    # NEEDS macOS, NOT THIS PARTICULAR MAC. The signing setup was already
+    # written for a hosted runner — certificates come from repository secrets
+    # into a temporary per-run keychain that is torn down afterwards — and has
+    # simply been running on a self-hosted one since 2026-09-11.
+    runs-on: macos-latest
     timeout-minutes: 45
     env:
       # THE ONE XCODE ON THIS MAC, and it must be a release build: App Store

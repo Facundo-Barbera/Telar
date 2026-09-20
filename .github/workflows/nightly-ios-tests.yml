@@ -29,12 +29,42 @@ name: Nightly iOS tests (device)
 # apps/ios/README.md:49 records the 2026-09-11 decision: a runtime is 16 GB and
 # the phone is the test target. The device destination below is that decision
 # carried into CI, not a workaround for it.
+# ════════════════════════════════════════════════════════════════════════════
+# PARKED 2026-09-20, ONE DAY AFTER IT SHIPPED. See #755; #675 is why it exists.
+#
+# CI moved to GitHub-hosted runners, and this is the only one of the six
+# workflows that could not come. GitHub hosts Macs; it does not host a Mac with
+# Facundo's iPhone attached. Everything below still works and is left intact —
+# what is removed is the `schedule:` that ran it, nothing else.
+#
+# WHY, and it is about proportion rather than the tests mattering less: the iOS
+# app has two TestFlight users, so keeping a self-hosted runner alive for this
+# costs more than the coverage returns. That runner was also a single point of
+# failure for all of CI — the night this was written, runs queued 53 minutes
+# behind it and main went 27 commits without a green.
+#
+# THE COST, stated plainly: apps/ios/TelarMobileTests goes back to running only
+# when someone runs it by hand, which is the exact state #675 was opened to fix.
+# Accepted, not overlooked.
+#
+# TO BRING IT BACK: restore the `schedule:` block below and register a runner,
+# on any machine with the phone attached, carrying the `telar-nightly` label.
+# Nothing else here needs to change. The alternative — simulators on hosted
+# macOS — is a real decision about what "tested" means for this app, not a
+# config change: see the NO SIMULATOR note above and apps/ios/README.md:49.
+# Natural moment to revisit: more TestFlight users, or the first iOS regression
+# that reaches them.
+#
+# `workflow_dispatch` is KEPT so the job can still be run by hand against a
+# runner that has a phone, without editing this file first.
+# ════════════════════════════════════════════════════════════════════════════
 on:
-  schedule:
-    # 16:23 UTC = 10:23 America/Mexico_City (UTC-6). Off the hour deliberately:
-    # GitHub's scheduler queues the :00 spike and can delay a cron by many
-    # minutes, and this job wants the Mac awake, not the backlog.
-    - cron: "23 16 * * *"
+  # DISABLED — the timer is removed, not commented out at random. The original:
+  #   schedule:
+  #     - cron: "23 16 * * *"   # 16:23 UTC = 10:23 America/Mexico_City
+  # It was off the hour deliberately: GitHub's scheduler queues the :00 spike,
+  # and this job wanted the Mac awake rather than the backlog. Restore it exactly
+  # as above if the job comes back.
   workflow_dispatch:
 
 permissions:
