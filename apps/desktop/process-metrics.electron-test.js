@@ -253,9 +253,17 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 100));
       bridged = await window.webContents.executeJavaScript("window.__telarMetrics");
     }
+    // AND THE MESSAGE POINTS AT THE MAIN SIDE, because the symptom is on this
+    // one. When `ipcMain.handle` returns something structured clone refuses,
+    // Electron throws while SERIALISING the reply — after the handler has
+    // returned, inside Electron's own IPC layer. The renderer is told nothing
+    // at all: no rejection, no error, just an invoke that never answers. So a
+    // `try`/`catch` in the handler cannot help, and the only evidence is a line
+    // Electron logged before this one. Say so, or the next reader spends their
+    // time on the renderer.
     assert(
       bridged.state !== "pending",
-      "telar:metrics:read never answered a real renderer within four seconds — the preload bridge reaches the main process but the invoke does not come back",
+      "telar:metrics:read never answered a real renderer within four seconds. The invoke reached the main process and nothing came back, which is what a handler whose RETURN VALUE cannot be structured-cloned looks like from here — Electron throws while serialising the reply, after the handler returned, and tells the renderer nothing. Look for an 'An object could not be cloned' line above this one, and for a non-plain value (a function, a getter, a Proxy) on the payload in process-metrics.js.",
     );
     assert(bridged.state === "ok", `the bridge rejected: ${bridged.why}`);
     const throughBridge = bridged.summary;
