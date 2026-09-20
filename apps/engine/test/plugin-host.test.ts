@@ -87,14 +87,46 @@ describe("bounded startup", () => {
   });
 
   test("startup is concurrent, so one slow plugin does not add its wait to the others", async () => {
+    // Each init reports how long IT took, so the ceiling below can be measured
+    // against this runner rather than against a hoped-for one — see #803.
+    const ran: number[] = [];
+    const sleeps =
+      (ms: number) =>
+      (): Promise<void> =>
+        new Promise<void>((resolve) => {
+          const start = Date.now();
+          setTimeout(() => {
+            ran.push(Date.now() - start);
+            resolve();
+          }, ms);
+        });
     const subject = host([
-      { meta: meta("a"), init: () => new Promise<void>((resolve) => setTimeout(resolve, 60)) },
-      { meta: meta("b"), init: () => new Promise<void>((resolve) => setTimeout(resolve, 60)) },
-      { meta: meta("c"), init: () => new Promise<void>((resolve) => setTimeout(resolve, 60)) },
+      { meta: meta("a"), init: sleeps(60) },
+      { meta: meta("b"), init: sleeps(60) },
+      { meta: meta("c"), init: sleeps(60) },
     ]);
     const began = Date.now();
     await subject.startAll();
-    expect(Date.now() - began).toBeLessThan(160); // serial would be ≥180
+    const total = Date.now() - began;
+    const longest = Math.max(...ran);
+    /**
+     * RELATIVE, NOT ABSOLUTE — the same correction #706 made to
+     * `turnOutline` and #803 to the agent's batched calls.
+     *
+     * This read `total < 160 // serial would be ≥180`, which asserted that the
+     * runner was not busy: three concurrent `setTimeout(60)`s cost 61-64 ms
+     * here, so the ceiling tolerated a 2.5x stall and no more — and the stall
+     * that felled #803's assertion was 2.46x, on this suite, in CI. It also
+     * left only 20 ms between the ceiling and the serial cost it exists to
+     * catch.
+     *
+     * Concurrent, startup costs the LONGEST init and nothing else; serial, it
+     * costs their sum, so with three equal plugins the excess over the longest
+     * goes from ~0 to 2x it. Half the longest sits between those, and both
+     * sides are measured on the same clock, so a runner that doubles every
+     * timer doubles the budget too.
+     */
+    expect(total - longest).toBeLessThan(longest / 2);
   });
 
   test("A PARTIALLY STARTED PLUGIN GIVES BACK WHAT IT TOOK, newest first", async () => {

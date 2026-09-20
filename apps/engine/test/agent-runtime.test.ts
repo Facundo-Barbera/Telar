@@ -1126,7 +1126,15 @@ test("two calls in one AI message run together, not one after the other", async 
       },
       { text: "both read." },
     ],
-    timedWall(spans, { slow: 140, fast: 10 }),
+    // 70 RATHER THAN 10, AND THE RATIO IS THE POINT (#803). What separates
+    // "the batch cost the slowest" from "the batch cost the sum" is exactly
+    // the FAST call's duration — the slow one is in the bill either way. At
+    // 140/10 that difference was 10 ms, so the whole budget this assertion
+    // had to divide between tolerating a slow runner and detecting a
+    // serialised batch was 10 ms, and it went 8 ms to the first and 4 ms to
+    // the second. Measured: a serialised batch overran by 11-14 ms against a
+    // ceiling it cleared by 8. At 140/70 the same division has 70 ms to make.
+    timedWall(spans, { slow: 140, fast: 70 }),
   );
 
   agent.submit({ text: "how are things?" });
@@ -1138,8 +1146,40 @@ test("two calls in one AI message run together, not one after the other", async 
   // after the other, it could not have started before the slow one ended.
   expect(fast.start).toBeLessThan(slow.end);
   expect(fast.end).toBeLessThan(slow.end);
-  // And the batch cost about the slowest call, not the sum of both.
-  expect(Math.max(slow.end, fast.end) - Math.min(slow.start, fast.start)).toBeLessThan(140 + 10);
+  /**
+   * AND THE BATCH COST ABOUT THE SLOWEST CALL, NOT THE SUM OF BOTH.
+   *
+   * MEASURED AGAINST ITSELF, NOT AGAINST A CLOCK (#803). This used to read
+   * `span < 140 + 10` — an ABSOLUTE ceiling on a number a shared runner
+   * inflates. Run 35501011371 attempt 1 delivered `Expected < 150 / Received:
+   * 344` on a healthy tree: the runner stalled, `setTimeout(140)` took 344 ms,
+   * and the assertion reported a parallelism regression that did not exist.
+   * There was nothing to widen it to, because 140 and 10 were themselves the
+   * budget — see the delays above.
+   *
+   * What is load-independent is the EXCESS: how much the batch cost beyond the
+   * slow call it was always going to have to pay for. Both terms are measured
+   * on the same stalled clock, so a runner that doubles every timer doubles
+   * both and the check keeps its meaning. Over 30 unloaded runs the excess was
+   * 0 ms every time — the two calls are dispatched in one tick, so the span IS
+   * the slow call. Serialised it becomes the fast call's whole duration.
+   *
+   * `fastRan / 2` therefore sits halfway between the two hypotheses, and each
+   * gets half of a budget that is now 70 ms instead of 10: ~35 ms of room for a
+   * stall, ~35 ms of margin before a serialised batch is called concurrent.
+   *
+   * THIS FAILS ON PURPOSE WHEN IT SHOULD. Verified by chaining the tool calls
+   * in `runtime.ts` so the batch ran one after the other: serialised in the
+   * model's order the ORDERING assertions above catch it first (272.92 ms, at
+   * :1139); serialised the other way round — the fast call first, which both
+   * ordering assertions accept — this line catches it alone, excess 72 against
+   * a 35.5 budget. That second case is the one #570 exists for and the one
+   * only this line can see.
+   */
+  const slowRan = slow.end - slow.start;
+  const fastRan = fast.end - fast.start;
+  const span = Math.max(slow.end, fast.end) - Math.min(slow.start, fast.start);
+  expect(span - slowRan).toBeLessThan(fastRan / 2);
   agent.close();
 });
 
