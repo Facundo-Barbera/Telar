@@ -118,6 +118,44 @@ Four specific traps worth naming:
   it was actually merged with; +16 was what it added. Compare like with like, and
   say which head each number came from.
 
+### The inverse: a check that fails when it should not, and says nothing
+
+Everything above is about a check that **passes** when it should not. The mirror
+image is worse in one specific way, and it has now happened twice here.
+
+- #768's probe went red **on the run where the fix worked**.
+- #767's path filter went red on **every** non-iOS pull request — ~95% of them —
+  and the cause was invisible from reading the script: GitHub hands a `run:`
+  block to `bash -e {0}`, and `set -uo pipefail` does not clear that, so a `grep`
+  no-match in a bare assignment killed the step **silently**.
+
+A false red is indistinguishable from the runner breaking. Nobody trusts it,
+everybody re-runs, and the first thing anyone learns is to stop reading it.
+
+In both cases the **positive** direction passed either way, which is why
+"exercise both directions" is not only about marker greps. It applies to path
+filters, conditional gates and anything whose behaviour differs between the case
+you built it for and the case it will actually meet most often. **Run the
+negative case on a real run before you believe it** — for #767 that meant opening
+a throwaway pull request touching no iOS file, reading it, and closing it. It
+failed the first time, which is the whole argument for doing it.
+
+### Merging is verification too, and it outran itself twice
+
+Recorded against the orchestrator rather than any worker.
+
+On 2026-09-20 two pull requests were merged on a status rollup that had not
+finished: one **32 seconds** after green and before its own body recorded the
+cost decision it was asking for, one with a **cancelled** run and another **23
+seconds old** against an Electron job that takes over a minute. Both verified
+clean afterwards. That is luck about the outcome, not judgement about the
+decision.
+
+**An empty list of failing checks is not the same as a finished run.** Before
+merging, confirm the checks belong to the head commit and that their runs have
+**completed** — a rollup queried mid-flight reports nothing failing because
+nothing has reported yet.
+
 **If your task's premise turns out to be false, say so and stop.** That is a
 correct outcome, not a failure to deliver. One worker tonight was sent to build
 something that already existed and refused with proof — that was the right call
