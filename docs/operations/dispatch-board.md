@@ -379,15 +379,42 @@ was tractable instead. **Oldest first, one issue at a time, however long it
 takes.** The batch coordinators below exist only for small fixes that are
 genuinely independent of each other and of the main line; they are not a wave.
 
-### In flight, 2026-09-20 night
+### The night of 2026-09-20
 
-| Coordinator | Issue(s) | Note |
-|---|---|---|
-| #198 Terminal surface + Run | #198 | W1+W3 running, W2/W4 stacked |
-| #490 Loading latency + snooze | #490 | Audit before code; two workers |
-| #516 Query-based session tools | #516 | Mostly built; verify what remains |
-| Small verifiable fixes | #771, #779, #792 | One PR each, not combined |
-| GitHub surface | #790, #791 | #790 must stand alone if #791 is slow |
+**Closed:** #49, #199, #471, #488, #516, #771, #779, #790, #791, #792.
+**Merged:** #793–#795, #796, #797, #799, #801, #802, #804, #805, #809, #810, #811.
+**Filed by the work itself:** #789, #790, #792, #803, #807.
+
+The open count did not fall. Ten closed, five opened. That is the shape of a
+night spent on real causes rather than on the list.
+
+**Still in flight:** #198 W2 (the xterm.js surface, unblocked by #794's PTY) and
+#490 W3 (the snooze wake edge on #586's feed).
+
+### What the night taught, beyond the diffs
+
+**A premise died in almost every errand, and each death was cheaper than the
+build it prevented.** #198's first milestone had shipped ten days earlier and the
+brief would have rebuilt it. #490's transcript paging had shipped six days
+earlier, claimed missing because neither file holding it matched the grep. #792's
+stated cause was backwards — the ordering is the other way, verified by running
+it. #811 was sent to measure three tools that #805 had already measured, and
+confirmed the numbers to the byte rather than taking either report's word.
+
+**Three instruments were vacuous, and one of them was built to prevent exactly
+its own failure.** `perf-marks.test.ts`: six tests, all passing with the clock
+frozen at 0. `test-ceiling.test.ts`: could not see that a preload's ceiling stops
+at the first file, because every case it ran spawned a child with exactly one
+file — the only arrangement in which the preload holds. And a byte-budget table
+that would have accepted a `sessions_grep` answer of 241 bytes matching nothing,
+reading as an unusually good result.
+
+**The load was orphans, not concurrency.** At load 26.8, five `bun test`
+processes had been alive 28 to 56 minutes against a three-minute suite, four of
+them from one worktree. Killing them took the machine to 14.8 in a minute. The
+obvious reading — too many workers — was *also* true and separately corrected,
+but acting on it alone would have throttled real work while the leak continued.
+Filed as #807.
 
 ### Needs Facundo
 
