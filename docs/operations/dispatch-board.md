@@ -425,6 +425,33 @@ same load wearing a different name.
 Before starting a worker, look at what is already running across all
 coordinators, not just your own.
 
+**It happened again the same afternoon, with the rule above already written.**
+2026-09-20 13:23, load **21.7**, nine builders, five full suites running at
+once on the external volume, the engine unresponsive enough that the owner had
+to restart Telar. The orchestrator had the four-cap in front of it and let it
+drift to nine on the reasoning that each new builder "starts by reading". Every
+builder starts by reading. They all finish reading at about the same time, and
+then they all run the suite. A cap counted at dispatch time on what a builder is
+doing *now* is not a cap.
+
+The owner's words: *"El nivel de concurrencia que permitiste fue terrible… si es
+complicado gestionar tantos agentes al mismo tiempo no lo hagas."*
+
+So the rule is now mechanical, and smaller:
+
+- **Two builders live at once, machine-wide.** Not four. Two is what one
+  orchestrator can actually watch, and two suites is what this Mac absorbs while
+  the owner works.
+- **A builder counts as live from dispatch until its PR is open.** Reading,
+  building, testing, rebasing: all live. Nothing about its current phase reduces
+  the count.
+- **The orchestrator never runs a suite itself**, and never asks a builder to run
+  one "just to check".
+- **A builder runs only the test files it touched, and the full suite at most
+  once, at the end.** That sentence goes in every brief.
+- If `uptime`'s one-minute load is above 8, nothing new is dispatched until it is
+  under 6, whatever the count says.
+
 ---
 
 **Waves are retired.** On 2026-09-20 the owner stopped them:
