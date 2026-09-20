@@ -22,6 +22,7 @@ const { autoUpdater, CancellationToken } = require("electron-updater");
 const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
+const { startRunTerminalServer } = require("./run-terminal-server");
 const tailscale = require("./tailscale");
 const remoteFile = require("./remote-file");
 const { claimedCommandIds, keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
@@ -147,6 +148,9 @@ function requireBrowserSuggestions() {
 }
 let browserControl = null;
 let browserControlConfig = null;
+/** The engine's door to this process's PTYs (#198 W4). See run-terminal-server.js. */
+let runTerminalChannel = null;
+let runTerminalConfig = null;
 
 const REMOTE_DEBUGGING_PORT = process.env.TELAR_DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
 if (REMOTE_DEBUGGING_PORT && /^\d+$/.test(REMOTE_DEBUGGING_PORT)) {
@@ -717,6 +721,17 @@ function childEnv(home) {
       ? {
           TELAR_DESKTOP_BROWSER_CONTROL_PORT: String(browserControlConfig.port),
           TELAR_DESKTOP_BROWSER_CONTROL_TOKEN: browserControlConfig.token,
+        }
+      : {}),
+    // HOW THE ENGINE REACHES THIS PROCESS'S PTYs (#198 W4). A run is a terminal
+    // session, and the terminal lives here; the engine is a forked sibling with
+    // no `ipcRenderer`, so it gets a wire. Its own port and token, NOT the
+    // browser's: a leaked browser token buys driving a tab, and must never also
+    // buy starting a process.
+    ...(runTerminalConfig
+      ? {
+          TELAR_DESKTOP_RUN_TERMINAL_PORT: String(runTerminalConfig.port),
+          TELAR_DESKTOP_RUN_TERMINAL_TOKEN: runTerminalConfig.token,
         }
       : {}),
   };
@@ -1823,15 +1838,30 @@ function deliverToTerminalReader(id, channel, payload) {
   reader.send(channel, payload);
 }
 
+/**
+ * ONE HOST, TWO AUDIENCES (#198 W4). A terminal the human opened is read by the
+ * renderer that owns it; a terminal the ENGINE started for a run is read by the
+ * engine over `run-terminal-server.js`. Both get every frame, because neither
+ * knows which terminals belong to the other and a fate delivered to the wrong
+ * one is a fate nobody acts on. The renderer lookup already drops frames for a
+ * terminal it has no reader for, and the engine's client drops frames for an id
+ * it is not tracking, so the fan-out costs nothing but a map lookup.
+ */
 function requireTerminalHost() {
   if (terminalHost) return terminalHost;
   const { TerminalHost } = require("./terminal-host");
   terminalHost = new TerminalHost({
     version: app.getVersion(),
-    onData: (id, data) => deliverToTerminalReader(id, "telar:terminal:data", { id, data }),
+    onData: (id, data) => {
+      deliverToTerminalReader(id, "telar:terminal:data", { id, data });
+      runTerminalChannel?.onData(id, data);
+    },
     onExit: (id, ending) => {
       deliverToTerminalReader(id, "telar:terminal:exit", ending);
       terminalReaders.delete(id);
+      // AFTER the renderer, and unconditionally: this is the frame that decides
+      // whether a project's deployment slot is freed or held.
+      runTerminalChannel?.onExit(id, ending);
     },
   });
   return terminalHost;
@@ -3047,6 +3077,11 @@ app.on("will-quit", () => {
   // children. Saying "exited" here is how a slot gets freed for something that
   // is still listening — see terminal-host.js. It deliberately does not kill
   // them: that decision is the engine's, not the shell's.
+  // The engine's channel goes FIRST: a stream that outlives the host would
+  // deliver nothing and look healthy, which is the one state `unknown` exists to
+  // prevent. Closing it makes the engine mark its runs `unknown` and hold their
+  // slots, which is the truth once this process is going away.
+  if (runTerminalChannel) { try { void runTerminalChannel.close(); } catch {} runTerminalChannel = null; }
   if (terminalHost) { try { terminalHost.dispose("Telar quit"); } catch {} }
   killServer();
   closeBrowserControl();
@@ -3290,6 +3325,29 @@ if (SMOKE) {
           // call `app.getAppMetrics()` itself, so this is how the Usage page
           // and anything reaching it remotely get the figures.
           readProcessMetrics: () => processMetricsReader().summary(),
+        });
+        /**
+         * AND THE ENGINE'S DOOR TO THIS PROCESS'S PTYs (#198 W4).
+         *
+         * Its OWN port and token rather than more routes on the one above: the
+         * closed route set is the security property, and adding "start a
+         * process with this command line" to the browser surface would turn a
+         * leaked browser token into arbitrary code execution.
+         *
+         * Always an ephemeral port and a fresh token, with no environment
+         * override — unlike the browser channel, nothing outside this process
+         * has ever needed to predict these, so there is nothing to keep
+         * compatible and one less thing an installed app exports into a shell.
+         * `getTerminalHost` stays lazy so starting this server does not load
+         * node-pty.
+         */
+        runTerminalConfig = { port: await findFreePort(), token: randomUUID() };
+        runTerminalChannel = await startRunTerminalServer({
+          ...runTerminalConfig,
+          // `requireTerminalHost` rather than the variable: the engine may open the
+          // first terminal this process ever has. Constructing the host does not
+          // load node-pty — that is lazy behind its `spawnPty` getter.
+          getTerminalHost: () => requireTerminalHost(),
         });
         let url = OVERRIDE_URL;
         if (!url) {
