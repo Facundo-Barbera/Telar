@@ -202,6 +202,26 @@ case the artefacts themselves settled it (diff the live file against the intende
 one), because from the number alone both stories are equally credible: reasoning
 produces whichever one you went looking for.
 
+### A report of what happens next is not evidence that anything is running
+
+Worse than silence, because silence at least looks like silence. A worker ended a
+turn with *"#740 is committed and its full verify is running; I'll start #748 the
+moment the tree is free"* — and the turn was over. Three commits sat in its
+worktree, nothing was pushed, no PR existed, and the second issue had never been
+started. Nothing was lost and nothing had landed. The report read as progress
+because it described the future in the present tense, which is what a working
+agent's status update also does.
+
+**Check the remote, not the narration.** `git branch -r --list 'origin/telar/*'`
+and `gh pr list` answer this in one call each, and they answer it about the world
+rather than about the report.
+
+For coordinators specifically: **a worker's turn ending is not a worker's work
+finishing.** Confirm against pushed branches and open PRs before you relay a
+result, and before you free the slot — a batch that counts an unpushed worktree
+as delivered will report itself complete while the work sits on a disk nobody is
+reading.
+
 ---
 
 ## 4. Reporting
