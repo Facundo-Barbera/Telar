@@ -76,7 +76,7 @@ import {
   WrapTextIcon,
   XIcon,
 } from "lucide-react";
-import type { GitFilePatch, GitFileChange, GitRefEntry, SessionDiff, TurnState } from "@telar/engine-client";
+import type { GitFilePatch, GitFileChange, GitPatchIncomplete, GitRefEntry, SessionDiff, TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { describeReview, reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
@@ -188,11 +188,30 @@ export function reviewUnderFilter(review: SessionReview, filter?: string): Sessi
 }
 
 /**
+ * WHAT EACH WAY OF NOT HAVING THE WHOLE PATCH SAYS — one sentence per member of
+ * `GitPatchIncomplete`, so adding a member to the contract makes this fail to
+ * compile rather than fall through to the wrong sentence.
+ *
+ * `truncated` IS THE ONE THAT NAMES A SIZE, because it is the only one where
+ * hunks are drawn underneath it: the reader has to know that what they are
+ * scrolling stops early rather than ends.
+ */
+const INCOMPLETE_PATCH: Record<GitPatchIncomplete, string> = {
+  timeout: "git did not answer in time — open it again.",
+  failed: "git could not read this file's diff.",
+  truncated: "The engine stopped reading this patch at its size limit, so what follows may not be the whole change.",
+};
+
+/**
  * One changed file. The patch is fetched WHEN OPENED rather than carried on the
  * review, because a two-hundred-file review with every patch is a megabyte on a
  * timer for content nobody asked to see.
+ *
+ * EXPORTED FOR ITS TESTS, like `DiffUnknownBand` and `ReviewEmptyState` beside
+ * it: what an opened row says about a patch it could not fully read is decided
+ * here, and the surface around it needs a poll before it renders anything.
  */
-function ReviewFileRow({
+export function ReviewFileRow({
   readPatch,
   file,
   reported,
@@ -367,11 +386,23 @@ function ReviewFileRow({
         ) : /* GIT DID NOT ANSWER IS NOT A FACT ABOUT THE FILE — issue #654. An
                unread patch arrived here as the empty string and this branch
                rendered "Binary file", which is a specific, confident and wrong
-               claim about the contents. */
+               claim about the contents.
+
+               A TRUNCATED PATCH IS THE THIRD CASE AND IT IS NOT AN ABSENCE
+               (#694): git answered at length and the engine stopped listening
+               at its output bound, so there ARE hunks and they are real. The
+               band says how much to trust them and the viewer below still
+               draws them — hiding a megabyte of correct hunks because the
+               other two megabytes are missing would be the opposite mistake. */
         patch.incomplete ? (
-          <p className="px-4 pb-2 text-2xs text-warning">
-            {patch.incomplete === "timeout" ? "git did not answer in time — open it again." : "git could not read this file's diff."}
-          </p>
+          <>
+            <p className="px-4 pb-2 text-2xs text-warning">{INCOMPLETE_PATCH[patch.incomplete]}</p>
+            {patch.patch !== "" && (
+              <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
+                <DiffCodeView patch={patch.patch} layout={view.layout} wrap={view.wrap} />
+              </div>
+            )}
+          </>
         ) : patch.binary ? (
           <p className="px-4 pb-2 text-2xs text-muted-foreground">Binary file — no textual diff.</p>
         ) : patch.patch === "" ? (

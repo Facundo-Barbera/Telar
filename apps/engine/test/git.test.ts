@@ -547,6 +547,52 @@ describe("git did not answer about the diff", () => {
     expect(differs.patch).toContain("+new");
   });
 
+  test("exit 1 is success on the --no-index arm ONLY — issue #694", () => {
+    /**
+     * WHY THIS NEEDS A FAKE RUNNER while the rest of #694's patch fixtures need
+     * a real repository: no real `git diff HEAD -- <path>` exits 1. That is
+     * precisely what kept the special case looking harmless — the only two
+     * producers of a `1` on this arm are a future git and THE ENGINE'S OWN
+     * OUTPUT BOUND, which returns status 1 with a partial stdout (see
+     * `diff-patch-shape.test.ts` for that one against a real 1 MiB+ patch).
+     *
+     * So: the same reply, on the two arms, must not mean the same thing.
+     */
+    const reply = { status: 1, stdout: "@@ -1 +1 @@\n-a\n+b\n", stderr: "" };
+    const tracked = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --unified=3": reply }), { ...base, path: "src/a.ts" });
+    expect(tracked.incomplete).toBe("failed");
+    // ...and the partial output is NOT passed off as a patch.
+    expect(tracked.patch).toBe("");
+
+    const untracked = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --no-index": reply }), { ...base, path: "dist/app.js", untracked: true });
+    expect(untracked.incomplete).toBeUndefined();
+    expect(untracked.patch).toBe(reply.stdout);
+  });
+
+  test("a child killed at the output bound is truncated, not a timeout and not a success — issue #694", () => {
+    /**
+     * The runner's overflow path exits 1 with the prefix it collected, which is
+     * indistinguishable from `--no-index`'s success by status alone. `overflowed`
+     * is the field that makes it distinguishable, and it is checked on BOTH arms
+     * because the bound belongs to the read rather than to the command.
+     */
+    const overflowed = { status: 1, stdout: "@@ -1,9 +1,9 @@\n-a\n+b\n-cut mid-li", stderr: "wrote more than", overflowed: true } as const;
+    const tracked = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --unified=3": overflowed }), { ...base, path: "src/a.ts" });
+    expect(tracked.incomplete).toBe("truncated");
+    // What arrived is KEPT (#650): a real prefix of a real answer is worth
+    // reading and must never pass for all of it.
+    expect(tracked.patch).toBe(overflowed.stdout);
+    expect(tracked.binary).toBe(false);
+
+    const untracked = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --no-index": overflowed }), {
+      ...base,
+      path: "dist/app.js",
+      untracked: true,
+    });
+    expect(untracked.incomplete).toBe("truncated");
+    expect(untracked.patch).toBe(overflowed.stdout);
+  });
+
   test("the async twins answer identically on every one of these paths", async () => {
     for (const replies of [
       { ...REVIEW, "diff -z --numstat": timedOut("diff --numstat") },
