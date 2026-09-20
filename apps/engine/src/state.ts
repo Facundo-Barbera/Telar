@@ -87,6 +87,7 @@ import {
   Turn as TurnSchema,
   TurnAttachment as TurnAttachmentSchema,
   TurnObservation as TurnObservationSchema,
+  TurnState as TurnStateSchema,
   WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
   type BrowserProvider,
   type BrowserSnapshot,
@@ -1488,21 +1489,73 @@ function lastResultTurn(turns: readonly Turn[]): Turn | undefined {
   return latest;
 }
 
-function parseQueue(value: unknown, sessionId: string): SessionQueue {
+/**
+ * THE FOUR FIELDS EVERY READER OF A TURN KEYS ON — the queue's `isRequestRow`.
+ *
+ * A property test per row rather than a schema walk, and it is what stands
+ * between a document written outside this process and an `undefined` surfacing
+ * somewhere downstream as a blank rail pill or a turn nothing can claim. It
+ * checks identity (`runId`, `sessionId`), order (`sequence`) and the state
+ * machine's own alphabet — the four the fold, the window, the claim and the
+ * index all read without asking whether they are there.
+ *
+ * `TurnState` RATHER THAN A LIST WRITTEN OUT HERE, so a tenth state added to
+ * the protocol is accepted by this guard the moment it exists. `safeParse` on a
+ * z.enum is a set lookup, not a walk of the turn.
+ */
+function isTurnRow(row: unknown): row is Turn {
+  if (typeof row !== "object" || row === null) return false;
+  const candidate = row as Partial<Turn>;
+  return typeof candidate.runId === "string" && typeof candidate.sessionId === "string"
+    && Number.isSafeInteger(candidate.sequence) && TurnStateSchema.safeParse(candidate.state).success;
+}
+
+/**
+ * The document, and how much of it is re-checked — issue #547.
+ *
+ * `trusted` says this came out of the execution store, which is the daemon's
+ * own database under the daemon's own lock and is written by `writeQueue`
+ * alone — and `writeQueue` now runs `TurnSchema.array()` over every turn before
+ * it stores one. Re-running that walk per read re-checks a shape that cannot
+ * have changed since, and it was 24.9% of a turn's write path on #547's
+ * 400-turn fixture, because the queue is read nineteen times per turn and
+ * written four.
+ *
+ * THE JSON BACKEND IS NOT TRUSTED, and the split is deliberate rather than
+ * timid. `queue.json` is an ordinary file: a test rewrites it, an older engine
+ * wrote it, a person can open it. It is also the reference implementation the
+ * suite runs both ways against, so keeping the full walk there means every
+ * behaviour the schema enforces still has a backend that enforces it.
+ *
+ * THE STRUCTURAL GUARD RUNS ON BOTH, because "trusted" is an argument about
+ * which process wrote the bytes, not a promise that the bytes are there. A
+ * sqlite document that predates a migration, or one a downgrade wrote, still
+ * has to fail as "invalid session queue" rather than downstream.
+ */
+function parseQueue(value: unknown, sessionId: string, trusted = false): SessionQueue {
   assertStateVersion(value, "session queue");
   const stored = value as { sessionId?: unknown; nextSequence?: unknown; turns?: unknown };
   if (stored.sessionId !== sessionId || !Number.isSafeInteger(stored.nextSequence)) {
     throw new EngineStateError("invalid_request", "invalid session queue");
   }
-  const turns = TurnSchema.array().safeParse(stored.turns);
-  if (!turns.success) throw new EngineStateError("invalid_request", "invalid session queue");
+  let rows: Turn[];
+  if (trusted) {
+    if (!Array.isArray(stored.turns) || stored.turns.some((row) => !isTurnRow(row))) {
+      throw new EngineStateError("invalid_request", "invalid session queue");
+    }
+    rows = stored.turns as Turn[];
+  } else {
+    const turns = TurnSchema.array().safeParse(stored.turns);
+    if (!turns.success) throw new EngineStateError("invalid_request", "invalid session queue");
+    rows = turns.data;
+  }
   const ids = new Set<string>();
-  for (const turn of turns.data) {
+  for (const turn of rows) {
     assertId(turn.runId, "run id");
     if (ids.has(turn.runId)) throw new EngineStateError("invalid_request", "duplicate Telar turn id");
     ids.add(turn.runId);
   }
-  return { version: STATE_VERSION, sessionId, nextSequence: stored.nextSequence as number, turns: turns.data };
+  return { version: STATE_VERSION, sessionId, nextSequence: stored.nextSequence as number, turns: rows };
 }
 
 /**
@@ -1940,18 +1993,32 @@ export class EngineStore {
    * that reached the disk without its document (or the other way round) is a
    * sidebar that disagrees with the conversation behind it.
    */
-  private inRowTransaction(owner: { id: string; movesActivity: boolean } | undefined, write: () => void): void {
+  private inRowTransaction(owner: { id: string; movesActivity: boolean } | undefined, write: () => void, written?: SessionQueue): void {
     if (owner === undefined || !this.executionStore) return write();
     if (this.commandDepth > 0) {
       write();
-      // OR, never overwrite: a command that moved the queue and then the
-      // metadata owes the full fold, whichever of the two it wrote last.
-      this.dirtySessionRows.set(owner.id, (this.dirtySessionRows.get(owner.id) ?? false) || owner.movesActivity);
+      const owed = this.dirtySessionRows.get(owner.id);
+      this.dirtySessionRows.set(owner.id, {
+        // OR, never overwrite: a command that moved the queue and then the
+        // metadata owes the full fold, whichever of the two it wrote last.
+        movesActivity: (owed?.movesActivity ?? false) || owner.movesActivity,
+        /**
+         * AND THE LATEST QUEUE WINS, WHICH IS THE WHOLE RISK HERE (#547).
+         *
+         * `dirtySessionRows` coalesces every write one command makes to a
+         * session, and a queue carried from the FIRST of two queue writes would
+         * fold a history the second one has already replaced. So a queue write
+         * replaces what is carried and any other write leaves it alone — the
+         * metadata, requests and tasks writes that also mark a row dirty cannot
+         * have moved the turns, so the queue in hand is still the one on disk.
+         */
+        queue: written ?? owed?.queue,
+      });
       return;
     }
     this.executionStore.atomically(() => {
       write();
-      this.storeSessionRow(owner.id, owner.movesActivity);
+      this.storeSessionRow(owner.id, owner.movesActivity, undefined, written);
     });
   }
 
@@ -1961,13 +2028,20 @@ export class EngineStore {
    * Emptied by `flushSessionRows` before the commit, and by `executeCommand`'s
    * rollback path — a row owed on behalf of a write that did not happen is a row
    * that would describe a document sqlite no longer has.
+   *
+   * `queue` IS THE DOCUMENT THE COMMAND JUST WROTE, kept so the fold at the end
+   * of it does not fetch and re-parse what is already in memory — see
+   * `storeSessionRow`. Absent when nothing in this command wrote the queue.
    */
-  private dirtySessionRows = new Map<string, boolean>();
+  private dirtySessionRows = new Map<string, { movesActivity: boolean; queue?: SessionQueue }>();
 
   /** Fold one session's four documents into its row and store it. The read is
    *  the same one the live fold used to make per session per poll; it is made
-   *  here instead, once per command that could have moved the answer. */
-  private storeSessionRow(sessionId: string, movesActivity = true, at = this.settlingClock()): void {
+   *  here instead, once per command that could have moved the answer.
+   *
+   *  `written` is the queue this command already wrote, when it wrote one — see
+   *  `dirtySessionRows`. */
+  private storeSessionRow(sessionId: string, movesActivity = true, at = this.settlingClock(), written?: SessionQueue): void {
     if (!this.executionStore) return;
     const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
     const before = this.executionStore.sessionRow(sessionId);
@@ -1995,9 +2069,22 @@ export class EngineStore {
      *
      * Without a row on file there is nothing to carry, so the fold runs — which
      * is what the backfill and a session's first write both take.
+     *
+     * AND WHEN THE QUEUE IS THE THING THAT MOVED, IT IS ALREADY IN HAND (#547).
+     * `writeQueue` holds the parsed document it has just serialised, and this
+     * fold used to fetch it back out of sqlite and re-parse it — a second whole
+     * parse of a megabyte the same command wrote, measured at 19 whole-queue
+     * parses per turn on a 400-turn fixture. `writeQueue` carries it through
+     * `dirtySessionRows` instead; the fall back to the read stays for the
+     * commands that moved `requests.json` or `tasks.json` and never touched the
+     * turns, and for the backfill, which has no write to carry anything from.
+     *
+     * THE ONE THING THIS TRUSTS is that a command does not edit its queue after
+     * writing it and then not write again — which would already be a lost
+     * write, on disk, before this line could be wrong about it.
      */
     const folded = movesActivity || before === undefined
-      ? this.withActivityFrom(record, this.readQueue(sessionId).turns)
+      ? this.withActivityFrom(record, (written ?? this.readQueue(sessionId)).turns)
       : {
           ...record,
           activity: before.activity,
@@ -2026,7 +2113,7 @@ export class EngineStore {
     const owed = [...this.dirtySessionRows];
     this.dirtySessionRows.clear();
     const at = this.settlingClock();
-    for (const [sessionId, movesActivity] of owed) this.storeSessionRow(sessionId, movesActivity, at);
+    for (const [sessionId, row] of owed) this.storeSessionRow(sessionId, row.movesActivity, at, row.queue);
   }
 
   /**
@@ -2195,8 +2282,23 @@ export class EngineStore {
    * rows on the indexed one. Public because that difference is the fix, and a
    * claim that a 120-turn session now costs its tail is only worth making if
    * something can fail when it stops being true.
+   *
+   * AND IT NOW SEES `readQueue`, WHICH IT DID NOT — issue #547. `accountWholeRead`
+   * was called from the two windowed reads alone, so every whole-queue read the
+   * activity fold and the thirteen transitions make counted nothing: the
+   * counters read 0 before and 0 after a change that doubled the wall time, and
+   * anyone proving a fold improvement with them would have read 0 = 0 as
+   * success. The accounting lives in `readQueue` itself now, so all forty-odd
+   * call sites are covered by construction rather than by remembering.
+   *
+   * `queueParses` COUNTS WHOLE-DOCUMENT QUEUE PARSES, which is the number #547
+   * is about rather than the bytes — the parse this issue removed is one of
+   * several a transition makes, and it is invisible in a byte total that a
+   * cache hit also moves. The counts themselves live in
+   * `test/queue-write-path.test.ts`, where they are a ratchet: fifteen per turn
+   * survive this issue, and #547 is the argument that fifteen is too many.
    */
-  readonly readAccounting = { documentBytes: 0, documentReads: 0 };
+  readonly readAccounting = { documentBytes: 0, documentReads: 0, queueParses: 0 };
 
   /**
    * Write a document and the offset index that lets its tail be read alone.
@@ -2210,15 +2312,17 @@ export class EngineStore {
    * parsing the whole thing, which is what every document written before this
    * existed already does.
    */
-  private writeIndexedDocument(file: string, indexFile: string, value: unknown, property: string, rows: Array<{ key: string; tag?: string }>): void {
+  private writeIndexedDocument(file: string, indexFile: string, value: unknown, property: string, rows: Array<{ key: string; tag?: string }>, written?: SessionQueue): void {
     const sqlite = this.executionStore?.owns(file);
     const text = sqlite ? JSON.stringify(value) : `${JSON.stringify(value, null, 2)}\n`;
     // The queue is one of the four the row folds over, so it takes the same
-    // route `writeDocument` does — document and row, one transaction.
+    // route `writeDocument` does — document and row, one transaction. `written`
+    // is that queue when this IS the queue write, so the row's fold can use it
+    // rather than read it back (#547); the item projection passes nothing.
     this.inRowTransaction(this.indexedSessionOf(file), () => {
       if (sqlite) this.executionStore!.writeText(file, text);
       else atomicWriteText(file, text);
-    });
+    }, written);
     const bytes = Buffer.from(text, "utf8");
     const ranges = arrayElementRanges(bytes, property);
     const index: DocumentIndex = ranges && ranges.length === rows.length
@@ -8338,8 +8442,9 @@ export class EngineStore {
     const file = sessionQueueFile(this.paths, sessionId);
     const index = this.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
     if (!index) {
+      // `readQueue` accounts for itself now (#547), so the explicit call that
+      // used to be here would double this read.
       const all = this.readQueue(sessionId).turns;
-      this.accountWholeRead(file);
       const plan = planWindow(all.map((turn) => ({ key: turn.runId, tag: turn.state })), window);
       return { turns: all.filter((turn) => plan.chosen.has(turn.runId)), page: plan.page };
     }
@@ -13211,22 +13316,61 @@ export class EngineStore {
     return index;
   }
 
+  /**
+   * THE WHOLE QUEUE, PARSED — and accounted for, which it was not (#547).
+   *
+   * `accountWholeRead` here rather than at the forty-odd call sites: this is
+   * the one door every whole-queue read goes through, and an instrument a new
+   * caller can forget to reach for is the instrument that read 0 = 0 while the
+   * wall time doubled. `windowedTurns`' fallback used to account for itself and
+   * no longer does, because this would then count it twice.
+   */
   private readQueue(sessionId: string): SessionQueue {
-    const stored = this.readDocument(sessionQueueFile(this.paths, sessionId));
+    const file = sessionQueueFile(this.paths, sessionId);
+    const stored = this.readDocument(file);
+    // An absent document is an empty queue, not a read: nothing was fetched and
+    // nothing parsed, and counting it would put a floor under every measurement
+    // taken on a session that has never been written to.
     if (stored === undefined) return emptyQueue(sessionId);
-    return parseQueue(stored, sessionId);
+    this.accountWholeRead(file);
+    this.readAccounting.queueParses += 1;
+    return parseQueue(stored, sessionId, this.executionStore?.owns(file) === true);
   }
 
   /** THE ONLY WRITER, which is what lets `liveQueueIndex` and `queueCache` be
    *  maintained in one place rather than at each of the thirteen transitions
    *  that call this. */
   private writeQueue(sessionId: string, queue: SessionQueue): void {
+    /**
+     * VALIDATE ON WRITE, SO THE READ CAN TRUST — issue #547, and #545's clause
+     * for the queue at last.
+     *
+     * The schema walk runs HERE, once per write, instead of in `parseQueue`
+     * once per read. A turn is written four times a turn and read nineteen on
+     * the fixture #547's bench measures, so this moves zod off the hot side of
+     * a 5:1 ratio — and it moves the failure to the moment a bad turn is built,
+     * where the stack still names the transition that built it, rather than to
+     * whichever unlucky read finds it later.
+     *
+     * THE WHOLE ARRAY, not the turns that moved. Knowing which turn a
+     * transition touched means asking every transition to say so — thirteen
+     * places to keep right, and the one that forgets is a corrupt row that
+     * nothing catches. `parseQueue` keeps the structural guard for both
+     * backends regardless; see there for what a document written outside this
+     * process still has to satisfy.
+     */
+    if (!TurnSchema.array().safeParse(queue.turns).success) {
+      throw new EngineStateError("invalid_request", "invalid session queue");
+    }
     this.writeIndexedDocument(
       sessionQueueFile(this.paths, sessionId),
       sessionQueueIndexFile(this.paths, sessionId),
       queue,
       "turns",
       queue.turns.map((turn) => ({ key: turn.runId, tag: turn.state })),
+      // CARRIED TO THE ROW'S FOLD (#547): this is the document, parsed, and the
+      // fold at the end of this command would otherwise read it straight back.
+      queue,
     );
     // INSIDE `writeQueue` BECAUSE IT IS THE ONLY WRITER — the same reason the
     // live index and the queue cache are maintained here rather than at each of

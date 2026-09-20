@@ -19,6 +19,7 @@
     "bench:idle": "bun run bench/idle-heartbeat.ts",
     "bench:live": "bun run bench/live-list.ts",
     "bench:outline": "bun run bench/outline.ts",
+    "bench:queue-write": "bun run bench/queue-write-cost.ts",
     "typecheck": "bunx --bun tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
