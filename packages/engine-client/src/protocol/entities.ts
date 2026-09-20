@@ -1224,6 +1224,88 @@ export const DEFAULT_INBOX_POLICY: InboxPolicy = {
 };
 
 /**
+ * HOW LONG TELAR KEEPS THE RAW TURN JOURNAL — issues #542 and #646.
+ *
+ * ══ `null` IS THE DEFAULT AND IT MEANS NEVER ══
+ *
+ * The same shape `autoSettleAfterHours` uses, and for a stronger reason: this
+ * one DELETES. Nothing ages out of anybody's store until they open Settings,
+ * read their own numbers, and choose a window. An update must never quietly
+ * start removing history, and a default of "never" is the only version of that
+ * which is true rather than merely unlikely.
+ *
+ * ══ IT IS NOT THE SETTLING WINDOW, AND MUST NOT BE ══
+ *
+ * "Settled" is a live function of `autoSettleAfterHours`, which is a per-reader
+ * preference that accepts `null` = nothing ever settles. Keyed on it, retention
+ * would delete nothing forever on a machine whose owner turned the rail's clock
+ * off — with no error and no explanation. Retention reads `idleSince()`
+ * directly against its own window; this field IS that window.
+ *
+ * ══ `exportTo` IS REQUIRED TO DELETE, WHICH IS WHY THE PAIR IS ONE SCHEMA ══
+ *
+ * The approved design puts export before delete. Rather than make the copy
+ * optional and hope, a window without a destination sweeps nothing: what
+ * retention does is MOVE a settled session's journal out of the database into
+ * NDJSON files the person owns, and the disk comes back when they delete those
+ * files and press Reclaim. That is a weaker and more honest promise than
+ * "irreversible", and it is the one the code can keep.
+ */
+export const MIN_RETENTION_DAYS = 1;
+export const MAX_RETENTION_DAYS = 365;
+export const RetentionPolicy = z.object({
+  /** Days of idleness after which a settled session's raw journal may go.
+   *  `null` — the default — is never, and nothing sweeps. */
+  idleAfterDays: z.number().int().min(MIN_RETENTION_DAYS).max(MAX_RETENTION_DAYS).nullable(),
+  /** Absolute directory the journal is written to before it is dropped. A
+   *  window with no destination deletes nothing; see the header. */
+  exportTo: z.string().min(1).nullable().default(null),
+});
+export type RetentionPolicy = z.infer<typeof RetentionPolicy>;
+
+export const DEFAULT_RETENTION_POLICY: RetentionPolicy = { idleAfterDays: null, exportTo: null };
+
+/**
+ * THE WINDOWS THE STORAGE PANE OFFERS, and it is a list rather than a slider
+ * because the number that matters is the one beside it: a person choosing a
+ * window is choosing between four counts of their own sessions, not between
+ * 29 and 30 days.
+ */
+export const RETENTION_BUCKET_DAYS = [7, 14, 30, 60] as const;
+
+/**
+ * WHAT ONE WINDOW WOULD TAKE — issue #542, step 1, and nothing is deleted to
+ * answer it.
+ *
+ * `bytes` IS OPTIONAL BECAUSE IT IS EXPENSIVE. Session and event counts are
+ * index ranges; the byte sum has to read the rows, which on a gigabyte is a
+ * real scan. It is present only when a reader asked for it, and it is never on
+ * a polling path.
+ */
+export const RetentionBucket = z.object({
+  days: z.number().int().min(1),
+  sessions: z.number().min(0),
+  events: z.number().min(0),
+  bytes: z.number().min(0).optional(),
+});
+export type RetentionBucket = z.infer<typeof RetentionBucket>;
+
+/**
+ * WHAT A SWEEP DID — counts, and never a log line.
+ *
+ * A retired session and a skipped one print the same session id, so a grep is
+ * satisfied by either; these three numbers are what tell the states apart.
+ * `events` is rows dropped, which is NOT bytes returned — a DELETE moves pages
+ * to sqlite's freelist and the file shrinks only when Reclaim vacuums it.
+ */
+export const JournalRetirement = z.object({
+  retired: z.number().min(0),
+  skipped: z.number().min(0),
+  events: z.number().min(0),
+});
+export type JournalRetirement = z.infer<typeof JournalRetirement>;
+
+/**
  * WHETHER TELAR MAY TELL AN AGENT WHERE IT IS — the two things the engine
  * authors and puts in front of a provider, each with its own switch.
  *

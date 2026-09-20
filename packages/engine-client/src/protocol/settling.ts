@@ -259,8 +259,16 @@ export function hasUnreadResult(session: SettleableSession): boolean {
  *     reader saying they are still here; it must not stamp `updatedAt` (that
  *     is the session's work, and this clock is measured from it), so `readAt`
  *     is picked up here instead.
+ *
+ * EXPORTED FOR RETENTION (#542), which needs the baseline WITHOUT the window.
+ * `settled_at` looked like the column to key a retention sweep on and is not
+ * one: it is stamped only by an EXPLICIT settle, so a session shelved by the
+ * clock has none and a sweep keyed on it would skip almost the whole store.
+ * This is the durable fact underneath both, and it gives retention the right
+ * behaviour for free — reading a session resets its retention age, because
+ * `readAt` is a human's read receipt and not an agent calling `sessions_read`.
  */
-function idleSince(session: SettleableSession): number {
+export function idleSince(session: SettleableSession): number {
   const snoozedUntil = Number.isFinite(session.snoozedUntil) ? session.snoozedUntil! : 0;
   return Math.max(session.updatedAt, session.readAt ?? 0, snoozedUntil);
 }
