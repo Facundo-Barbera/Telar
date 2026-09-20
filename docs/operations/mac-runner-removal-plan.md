@@ -47,12 +47,28 @@ Service definition:
 
 ## Preconditions
 
-1. **Every workflow green on hosted.** Today that is `verify.yml` only (PR #754).
-   The other five still target the Mac and must be moved first.
-2. **`nightly-ios-tests.yml` has an answer.** It runs against a physical iPhone
-   by UDID and **cannot move to a hosted runner**. Removing this runner ends
-   device testing. That is the owner's decision — see the issue raised for it.
-3. **No job in flight.** `_work/_temp` was modified minutes before this was
+1. **Every workflow repointed off the runner.** ✅ Done — PR #754 (`verify.yml`)
+   and PR #756 (the other five). No workflow targets `telar-nightly` any more.
+   **Both must be MERGED, not merely green**, or `main` still asks for a runner
+   that is about to disappear.
+
+2. **`nightly-ios-tests.yml` has an answer.** ✅ Done — parked, see #755
+   following #675. Disabled rather than deleted; it is the one job that cannot
+   move, because it needs a Mac with a phone attached.
+
+3. **The three build-and-sign workflows proven green on `macos-latest`.**
+   ❌ **NOT DONE — this is the blocking one.** `nightly-desktop`,
+   `release-desktop` and `nightly-ios` have been repointed but never run there.
+   Their signing is already portable (certificates come from repository secrets
+   into a temporary per-run keychain), which is good evidence and is not proof.
+   Proving it is awkward on purpose: these build, sign, notarise and publish, so
+   a test run uploads a real nightly to R2 or a build to TestFlight. Either
+   accept a deliberate real run, or probe checkout → build → sign and stop
+   before publishing. **Do not deregister the runner on the strength of the
+   secrets being portable.** If they fail on hosted and the runner is already
+   gone, there is nothing to fall back to.
+
+4. **No job in flight.** `_work/_temp` was modified minutes before this was
    written, so check rather than assume.
 
 ---
@@ -107,20 +123,21 @@ After this the repository has no self-hosted runner. Any workflow still
 targeting `telar-nightly` will queue indefinitely rather than fail, which is
 why the preconditions are not optional.
 
-### 5. Delete the directory — optional, and the owner's call
+### 5. Do NOT delete the directory — decided
 
 ```sh
-rm -rf /Users/facundo/actions-runners/telar-nightly
+# rm -rf /Users/facundo/actions-runners/telar-nightly   ← deliberately not run
 ```
 
-**Destroys 1.9 GB of `_work` checkouts and job logs in `_diag`.** Nothing there
-is authoritative — the checkouts are clones of a repository that exists on
-GitHub — but the `_diag` logs are the only record of what ran on this machine,
-and this is the step where "leave it clean" and "keep the evidence" disagree.
-Reclaims roughly 2.1 GB.
+**Stop at deregistration.** The directory holds 1.9 GB of `_work` checkouts and
+`_diag`, and `_diag` is the only record of what ever ran on that machine. "Leave
+it clean" was about the Mac no longer being a runner, not about destroying that
+record — so the directory stays.
 
-Leaving the directory in place after step 4 is harmless: it is inert once
-deregistered.
+It is inert once step 4 has run: no service, no credentials, nothing listening.
+The disk is the owner's to reclaim whenever he wants, and it costs nothing to
+keep it now. If he does want the space later, this is the command, and the only
+thing lost is the history.
 
 ### 6. Confirm the other runner is untouched
 
