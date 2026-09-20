@@ -44,15 +44,22 @@ export type DiffTurn = {
   at: number;
   /** The rows, in the shape the file list already renders. */
   files: readonly GitFileChange[];
-  /** path → the patch that turn's tool reported for it. Absent for a path the
-   *  tool wrote without producing one, which the row then says. */
-  patches: ReadonlyMap<string, string>;
+  /**
+   * path → the patch that turn's tool reported for it. Absent for a path the
+   * tool wrote without producing one, which the row then says.
+   *
+   * `truncated` RIDES BESIDE THE TEXT rather than inside it (#694, §2.5). The
+   * bound used to announce itself as a line in the patch, which the renderer
+   * drops as unparseable — so a clipped patch drew as a complete one. It is a
+   * fact about the record, so it travels as one.
+   */
+  patches: ReadonlyMap<string, { patch: string; truncated: boolean }>;
 };
 
 /** A path is counted once per turn however many times the turn wrote it: the
  *  row shows the LAST reported patch, which is that turn's net result, and two
  *  rows for one file in one turn would be two answers to one question. */
-type Draft = { at: number; order: string[]; byPath: Map<string, { change: GitFileChange; patch?: string }> };
+type Draft = { at: number; order: string[]; byPath: Map<string, { change: GitFileChange; patch?: string; truncated?: boolean }> };
 
 /**
  * The journal's four kinds, in git's vocabulary — so one row component serves
@@ -100,6 +107,7 @@ export function diffTurns(items: readonly Item[], turns: readonly Turn[] = []): 
         ...(change.linesRemoved === undefined ? {} : { linesRemoved: change.linesRemoved }),
       },
       ...(change.unifiedDiff ? { patch: change.unifiedDiff } : {}),
+      ...(change.diffTruncated ? { truncated: true } : {}),
     });
     drafts.set(item.runId, draft);
   }
@@ -108,8 +116,8 @@ export function diffTurns(items: readonly Item[], turns: readonly Turn[] = []): 
   const built: DiffTurn[] = [];
   for (const [runId, draft] of drafts) {
     const turn = byRun.get(runId);
-    const patches = new Map<string, string>();
-    for (const [path, entry] of draft.byPath) if (entry.patch) patches.set(path, entry.patch);
+    const patches = new Map<string, { patch: string; truncated: boolean }>();
+    for (const [path, entry] of draft.byPath) if (entry.patch) patches.set(path, { patch: entry.patch, truncated: entry.truncated === true });
     built.push({
       runId,
       ...(turn ? { sequence: turn.sequence } : {}),

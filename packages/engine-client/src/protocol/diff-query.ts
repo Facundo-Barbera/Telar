@@ -50,6 +50,26 @@ export type FilePatchOptions = DiffBaseOption & {
    *  Applied by GIT, not by the renderer: a hunk that exists only because a
    *  line moved is a hunk before any of it reaches a client. */
   ignoreWhitespace?: boolean;
+  /**
+   * WHERE THE FILE CAME FROM, WHEN IT CAME FROM SOMEWHERE — issue #694, §2.2.
+   *
+   * A RENAME IS A FACT ABOUT TWO PATHS, and a patch read with one of them
+   * cannot express it: `git diff HEAD -- <newpath>` excludes the old path from
+   * the pathspec, so rename detection has nothing to pair, and git answers
+   * `new file mode 100644` with the whole file as additions. The row said
+   * "Renamed from src.txt, ±0" and the patch under it said the file was brand
+   * new — two contradictory claims inside one row.
+   *
+   * SO IT IS PART OF THE REQUEST rather than something the engine could look
+   * up: the LIST already knows it (`GitFileChange.renamedFrom`, from
+   * `--find-renames`), and the patch read is a separate command that would
+   * otherwise have to re-derive it from a second full diff.
+   *
+   * ...AND IT IS DEFINED HERE, which is the point of this module: #739 made
+   * this file the one place a diff parameter may be declared, precisely so the
+   * next option added could not reach two layers and stop.
+   */
+  renamedFrom?: string;
 };
 
 /**
@@ -76,6 +96,7 @@ export function filePatchQuery(path: string, options: FilePatchOptions): string 
   const query = new URLSearchParams({ path });
   if (options.untracked) query.set("untracked", "1");
   if (options.ignoreWhitespace) query.set("ignoreWhitespace", "1");
+  if (options.renamedFrom) query.set("renamedFrom", options.renamedFrom);
   return appendBase(query, options).toString();
 }
 
@@ -95,9 +116,14 @@ export function parseDiffBaseQuery(params: URLSearchParams): DiffBaseOption {
  *  which file rather than how to compare it, and every caller already has it
  *  from its own route. */
 export function parseFilePatchQuery(params: URLSearchParams): FilePatchOptions {
+  // An EMPTY `renamedFrom` is no rename rather than a rename from the
+  // repository root, which is what a bare `?renamedFrom=` would otherwise mean
+  // to a pathspec.
+  const renamedFrom = params.get("renamedFrom")?.trim();
   return {
     untracked: params.get("untracked") === "1",
     ignoreWhitespace: params.get("ignoreWhitespace") === "1",
+    ...(renamedFrom ? { renamedFrom } : {}),
     ...parseDiffBaseQuery(params),
   };
 }

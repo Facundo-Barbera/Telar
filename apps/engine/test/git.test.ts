@@ -43,10 +43,25 @@ const timedOut = (what = "for-each-ref"): GitResult => ({
   timedOut: true,
 });
 
+/**
+ * THE SUBCOMMAND, WITH GIT'S OWN GLOBAL OPTIONS STRIPPED OFF THE FRONT.
+ *
+ * `git -c core.quotePath=false diff …` is a `diff` call, and a fake that keyed
+ * on the raw argv would answer `fail()` to every one of them the moment a
+ * caller set a config — which is the fake disagreeing with git about what a
+ * command IS, and would have made #694's `core.quotePath` fix look like a
+ * hundred broken tests instead of one changed argument list.
+ */
+function subcommand(args: string[]): string[] {
+  let index = 0;
+  while (args[index] === "-c") index += 2;
+  return args.slice(index);
+}
+
 /** A runner keyed by the first two argv words, so a test states only the
  *  commands it cares about and every other call fails like a real git would. */
 function runner(replies: Record<string, GitResult>): GitRunner {
-  return (_cwd, args) => replies[args.slice(0, 2).join(" ")] ?? fail();
+  return (_cwd, args) => replies[subcommand(args).slice(0, 2).join(" ")] ?? fail();
 }
 
 /**
@@ -78,7 +93,8 @@ const BOTH_HALVES: Record<string, GitResult> = {
 function reviewRunner(replies: Record<string, GitResult>, seen?: string[][]): GitRunner {
   return (_cwd, args) => {
     seen?.push(args);
-    return replies[args.slice(0, 3).join(" ")] ?? replies[args.slice(0, 2).join(" ")] ?? fail();
+    const verb = subcommand(args);
+    return replies[verb.slice(0, 3).join(" ")] ?? replies[verb.slice(0, 2).join(" ")] ?? fail();
   };
 }
 
@@ -547,6 +563,52 @@ describe("git did not answer about the diff", () => {
     expect(differs.patch).toContain("+new");
   });
 
+  test("exit 1 is success on the --no-index arm ONLY — issue #694", () => {
+    /**
+     * WHY THIS NEEDS A FAKE RUNNER while the rest of #694's patch fixtures need
+     * a real repository: no real `git diff HEAD -- <path>` exits 1. That is
+     * precisely what kept the special case looking harmless — the only two
+     * producers of a `1` on this arm are a future git and THE ENGINE'S OWN
+     * OUTPUT BOUND, which returns status 1 with a partial stdout (see
+     * `diff-patch-shape.test.ts` for that one against a real 1 MiB+ patch).
+     *
+     * So: the same reply, on the two arms, must not mean the same thing.
+     */
+    const reply = { status: 1, stdout: "@@ -1 +1 @@\n-a\n+b\n", stderr: "" };
+    const tracked = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --unified=3": reply }), { ...base, path: "src/a.ts" });
+    expect(tracked.incomplete).toBe("failed");
+    // ...and the partial output is NOT passed off as a patch.
+    expect(tracked.patch).toBe("");
+
+    const untracked = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --no-index": reply }), { ...base, path: "dist/app.js", untracked: true });
+    expect(untracked.incomplete).toBeUndefined();
+    expect(untracked.patch).toBe(reply.stdout);
+  });
+
+  test("a child killed at the output bound is truncated, not a timeout and not a success — issue #694", () => {
+    /**
+     * The runner's overflow path exits 1 with the prefix it collected, which is
+     * indistinguishable from `--no-index`'s success by status alone. `overflowed`
+     * is the field that makes it distinguishable, and it is checked on BOTH arms
+     * because the bound belongs to the read rather than to the command.
+     */
+    const overflowed = { status: 1, stdout: "@@ -1,9 +1,9 @@\n-a\n+b\n-cut mid-li", stderr: "wrote more than", overflowed: true } as const;
+    const tracked = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --unified=3": overflowed }), { ...base, path: "src/a.ts" });
+    expect(tracked.incomplete).toBe("truncated");
+    // What arrived is KEPT (#650): a real prefix of a real answer is worth
+    // reading and must never pass for all of it.
+    expect(tracked.patch).toBe(overflowed.stdout);
+    expect(tracked.binary).toBe(false);
+
+    const untracked = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --no-index": overflowed }), {
+      ...base,
+      path: "dist/app.js",
+      untracked: true,
+    });
+    expect(untracked.incomplete).toBe("truncated");
+    expect(untracked.patch).toBe(overflowed.stdout);
+  });
+
   test("the async twins answer identically on every one of these paths", async () => {
     for (const replies of [
       { ...REVIEW, "diff -z --numstat": timedOut("diff --numstat") },
@@ -580,8 +642,8 @@ describe("sessionFilePatch, ignoring whitespace", () => {
   function recording(): { runner: GitRunner; calls: string[][] } {
     const calls: string[][] = [];
     const runner: GitRunner = (_cwd, args) => {
-      calls.push(args);
-      if (args[0] === "rev-parse") return ok("");
+      calls.push(subcommand(args));
+      if (subcommand(args)[0] === "rev-parse") return ok("");
       return ok("@@ -1 +1 @@\n-a\n+b\n");
     };
     return { runner, calls };
@@ -590,7 +652,7 @@ describe("sessionFilePatch, ignoring whitespace", () => {
   test("off by default — the ordinary read is unchanged", () => {
     const { runner, calls } = recording();
     sessionFilePatch(runner, { cwd: "/repo", path: "src/a.ts" });
-    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "HEAD", "--", "src/a.ts"]);
+    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "HEAD", "--", ":(literal)src/a.ts"]);
   });
 
   test("on, the command carries -w AND --ignore-blank-lines", () => {
@@ -599,15 +661,37 @@ describe("sessionFilePatch, ignoring whitespace", () => {
     // who asked for the noise to go.
     const { runner, calls } = recording();
     sessionFilePatch(runner, { cwd: "/repo", path: "src/a.ts", ignoreWhitespace: true });
-    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "-w", "--ignore-blank-lines", "HEAD", "--", "src/a.ts"]);
+    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "-w", "--ignore-blank-lines", "HEAD", "--", ":(literal)src/a.ts"]);
   });
 
   test("an untracked file ignores whitespace too, against /dev/null", () => {
     // The `--no-index` branch is a whole separate command line, so it is the
     // one that quietly keeps working while doing nothing.
+    //
+    // NO `:(literal)` HERE, and that asymmetry is deliberate (#694): the
+    // operands of `--no-index` are filesystem paths rather than pathspecs, and
+    // git answers the magic prefix with `error: Could not access`.
     const { runner, calls } = recording();
     sessionFilePatch(runner, { cwd: "/repo", path: "dist/app.js", untracked: true, ignoreWhitespace: true });
     expect(calls.at(-1)).toEqual(["diff", "--no-index", "--unified=3", "-w", "--ignore-blank-lines", "--", "/dev/null", "dist/app.js"]);
+  });
+
+  test("both arms read paths raw, so a non-ASCII name is a name — issue #694", () => {
+    // `core.quotePath` defaults to true, so the patch header for `café.ts` is
+    // `diff --git "a/caf\303\251.ts" …` and a renderer reads the escapes as the
+    // filename. The `-z` reads that build the LIST were never affected, which
+    // is why only the expanded row was wrong — and why BOTH arms are asserted:
+    // an untracked file gets its header from the other command line.
+    const raw: string[][] = [];
+    const watching: GitRunner = (_cwd, args) => {
+      raw.push(args);
+      return subcommand(args)[0] === "rev-parse" ? ok("") : ok("@@ -1 +1 @@\n-a\n+b\n");
+    };
+    sessionFilePatch(watching, { cwd: "/repo", path: "café.ts" });
+    sessionFilePatch(watching, { cwd: "/repo", path: "café.ts", untracked: true });
+    const patches = raw.filter((args) => subcommand(args)[0] === "diff");
+    expect(patches).toHaveLength(2);
+    for (const args of patches) expect(args.slice(0, 2)).toEqual(["-c", "core.quotePath=false"]);
   });
 
   test("the flag goes AFTER --unified=3 and BEFORE the base, so the base is still a base", () => {

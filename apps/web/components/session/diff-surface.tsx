@@ -76,7 +76,7 @@ import {
   WrapTextIcon,
   XIcon,
 } from "lucide-react";
-import type { GitFilePatch, GitFileChange, GitRefEntry, SessionDiff, TurnState } from "@telar/engine-client";
+import type { DiffBaseOption, FilePatchOptions, GitFilePatch, GitFileChange, GitPatchIncomplete, GitRefEntry, SessionDiff, TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { describeReview, reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
@@ -84,7 +84,7 @@ import { useDiffView, type DiffView } from "@/lib/diff-view";
 import { diffBaseFor, scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/diff-scope";
 import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
-import { DiffCodeView } from "@/components/session/diff-code-view";
+import { DiffCodeView, readPatchShape, type PatchReading } from "@/components/session/diff-code-view";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -188,11 +188,110 @@ export function reviewUnderFilter(review: SessionReview, filter?: string): Sessi
 }
 
 /**
+ * WHAT ONE ROW ASKS GIT FOR — every option on a patch read, in one expression.
+ *
+ * A FUNCTION RATHER THAN AN OBJECT LITERAL INSIDE THE CALLBACK, because this is
+ * exactly where #694's dead toggle lived: three fields spread into a request,
+ * one of them silently absent, and TypeScript checking nothing because the
+ * value was not a literal at the call site. It is the same reason
+ * `diffTabParams` is one writer — the shape has more than one contributor and
+ * no natural place to notice a missing one.
+ *
+ * PURE, AND EXPORTED FOR ITS TEST: what the row asks for can then be asserted
+ * without a poll, a fetch, or a mounted surface.
+ */
+export function patchRequestFor(file: GitFileChange, view: DiffView, base: DiffBaseOption): FilePatchOptions {
+  return {
+    /** Untracked files are in no diff at all — see the engine's `sessionFilePatch`. */
+    ...(file.status === "untracked" ? { untracked: true } : {}),
+    /** GIT decides which hunks exist, not the renderer (#694). */
+    ...(view.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+    /** BOTH PATHS OR GIT CALLS IT A NEW FILE (#694). The list already paired
+     *  them with `--find-renames`; this hands that pairing on rather than
+     *  making the engine re-derive it from a second full diff. */
+    ...(file.renamedFrom ? { renamedFrom: file.renamedFrom } : {}),
+    /** Last, so the scope's base cannot be shadowed by anything above it. */
+    ...base,
+  };
+}
+
+/**
+ * WHICH WITNESS A ROW'S PATCH CAME FROM — issue #694, and #741's argument
+ * applied one level down.
+ *
+ * `unstaged` and `branch` ask GIT. `turn` does not ask anything: its patch is
+ * the one the agent's own tool reported, already in hand. So a row in the turn
+ * scope that said "git could not read this file's diff" was naming a party that
+ * was never consulted — #690's defect in miniature, a true-sounding sentence
+ * about the wrong subject, and on the one scope whose whole design point is
+ * that it names its witness.
+ */
+type PatchWitness = "git" | "journal";
+
+/**
+ * WHAT EACH WAY OF NOT HAVING THE WHOLE PATCH SAYS — one sentence per member of
+ * `GitPatchIncomplete` per witness, so adding a member to the contract makes
+ * this fail to compile rather than fall through to the wrong sentence.
+ *
+ * `truncated` IS THE ONE THAT NAMES A SIZE, because it is the only one where
+ * hunks are drawn underneath it: the reader has to know that what they are
+ * scrolling stops early rather than ends.
+ */
+const INCOMPLETE_PATCH: Record<GitPatchIncomplete, Record<PatchWitness, string>> = {
+  timeout: {
+    git: "git did not answer in time — open it again.",
+    // No read to time out; kept honest rather than clever in case one appears.
+    journal: "This turn's patch for the file did not arrive.",
+  },
+  failed: {
+    git: "git could not read this file's diff.",
+    journal: "This turn reported writing this file without a patch for it.",
+  },
+  truncated: {
+    git: "The engine stopped reading this patch at its size limit, so what follows may not be the whole change.",
+    journal: "This turn's patch was cut short when it was recorded, so what follows may not be the whole change.",
+  },
+};
+
+/**
+ * WHAT A PATCH WITH NO HUNKS IS ABOUT — issue #694, §2.3.
+ *
+ * `chmod +x` on a script an agent just wrote is not exotic; it is most
+ * scaffolding runs. git emits three lines and no hunks, the patch is therefore
+ * NOT empty, and the "No textual difference" branch above never fires — so the
+ * row expanded into nothing at all: no lines, no explanation, no error. The
+ * library had parsed it perfectly (`mode=100755 prevMode=100644 hunks=0`) and
+ * was told not to draw a file header, which is the only place it can say so.
+ *
+ * DRAWN AS A SENTENCE ON TELAR'S ROW rather than by re-enabling that header,
+ * because Telar's argument for `disableFileHeader` still holds: its own row IS
+ * the header, and two headers are two answers to "which file is this".
+ * `old mode 100644 → new mode 100755` is a sentence, not a viewer.
+ *
+ * A PURE RENAME IS THE SAME SHAPE once the engine passes both paths, so fixing
+ * that without this would have turned one wrong answer into one blank one.
+ */
+function noHunkSentence(file: NonNullable<PatchReading["file"]>): string {
+  const parts: string[] = [];
+  if (file.prevName && file.prevName !== file.name) parts.push(`Moved from ${file.prevName}`);
+  if (file.mode && file.prevMode && file.mode !== file.prevMode) parts.push(`Mode ${file.prevMode} → ${file.mode}`);
+  // Neither — a whole-file read whose hunks were all suppressed, which is what
+  // `-w` does to a re-indentation. "Nothing differs" is exactly what the reader
+  // asked to be told, so it is said rather than left as an empty box.
+  if (parts.length === 0) return "No lines differ.";
+  return `${parts.join(" · ")}. No lines differ.`;
+}
+
+/**
  * One changed file. The patch is fetched WHEN OPENED rather than carried on the
  * review, because a two-hundred-file review with every patch is a megabyte on a
  * timer for content nobody asked to see.
+ *
+ * EXPORTED FOR ITS TESTS, like `DiffUnknownBand` and `ReviewEmptyState` beside
+ * it: what an opened row says about a patch it could not fully read is decided
+ * here, and the surface around it needs a poll before it renders anything.
  */
-function ReviewFileRow({
+export function ReviewFileRow({
   readPatch,
   file,
   reported,
@@ -200,6 +299,7 @@ function ReviewFileRow({
   registration,
   view,
   open,
+  witness = "git",
   onToggle,
   onOpenFile,
   onOpenInNewPanelTab,
@@ -207,7 +307,21 @@ function ReviewFileRow({
 }: {
   /** Session-scoped or project-scoped — the row does not care which, which is
    *  what lets one surface serve a conversation and a canvas. */
-  readPatch: (path: string, untracked: boolean) => Promise<{ file: GitFilePatch }>;
+  /**
+   * THE WHOLE ROW, NOT JUST ITS PATH (#694). A renamed file's patch has to be
+   * read with BOTH paths or git reports it as a brand-new file — and the only
+   * party that knows the old one is the list this row came from, so the row
+   * hands over the record rather than a path and a flag derived from it.
+   */
+  readPatch: (file: GitFileChange) => Promise<{ file: GitFilePatch }>;
+  /**
+   * WHO ANSWERED — `git` for the working tree and branch scopes, `journal` for
+   * a turn's own reported patches. Only the sentences about a MISSING patch
+   * depend on it, which is exactly where naming the wrong party is a claim
+   * rather than a wording choice. Defaults to git, because two of the three
+   * scopes are git and a row with no scope is a project's.
+   */
+  witness?: PatchWitness;
   file: GitFileChange;
   reported: boolean;
   /** How this reader likes a diff laid out. Passed down rather than read here
@@ -265,7 +379,7 @@ function ReviewFileRow({
   useEffect(() => {
     if (!open || patch !== undefined || failed) return;
     let cancelled = false;
-    void readPatch(file.path, file.status === "untracked")
+    void readPatch(file)
       .then((result) => {
         if (!cancelled) setAnswer({ reader: readPatch, patch: result.file, failed: false });
       })
@@ -275,7 +389,12 @@ function ReviewFileRow({
     return () => {
       cancelled = true;
     };
-  }, [open, patch, failed, readPatch, file.path, file.status]);
+    // `file.path`/`status`/`renamedFrom` rather than `file`: the row is rebuilt
+    // on every poll, so the object's identity changes fifteen seconds after it
+    // was last read while every field in it stays the same — and a re-read on
+    // that would put a spinner over a patch nobody asked to reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, patch, failed, readPatch, file.path, file.status, file.renamedFrom]);
 
   return (
     /* Draggable on the wrapper so the row can be dropped into the message while
@@ -359,7 +478,13 @@ function ReviewFileRow({
       </ContextMenu>
       {open &&
         (failed ? (
-          <p className="px-4 pb-2 text-2xs text-muted-foreground">git could not produce a patch for this path.</p>
+          /* The read itself threw — a dead engine, a rejected request. Named by
+             witness for the same reason the band below is (#694): the turn
+             scope resolves its patch from the journal already in hand and never
+             makes a request that could fail this way. */
+          <p className="px-4 pb-2 text-2xs text-muted-foreground">
+            {witness === "git" ? "git could not produce a patch for this path." : "This turn's patch for the file could not be read."}
+          </p>
         ) : patch === undefined ? (
           <p className="flex items-center gap-2 px-4 pb-2 text-2xs text-muted-foreground">
             <Spinner className="size-3" /> reading the diff…
@@ -367,11 +492,19 @@ function ReviewFileRow({
         ) : /* GIT DID NOT ANSWER IS NOT A FACT ABOUT THE FILE — issue #654. An
                unread patch arrived here as the empty string and this branch
                rendered "Binary file", which is a specific, confident and wrong
-               claim about the contents. */
+               claim about the contents.
+
+               A TRUNCATED PATCH IS THE THIRD CASE AND IT IS NOT AN ABSENCE
+               (#694): git answered at length and the engine stopped listening
+               at its output bound, so there ARE hunks and they are real. The
+               band says how much to trust them and the viewer below still
+               draws them — hiding a megabyte of correct hunks because the
+               other two megabytes are missing would be the opposite mistake. */
         patch.incomplete ? (
-          <p className="px-4 pb-2 text-2xs text-warning">
-            {patch.incomplete === "timeout" ? "git did not answer in time — open it again." : "git could not read this file's diff."}
-          </p>
+          <>
+            <p className="px-4 pb-2 text-2xs text-warning">{INCOMPLETE_PATCH[patch.incomplete][witness]}</p>
+            {patch.patch !== "" && <PatchBody patch={patch.patch} view={view} />}
+          </>
         ) : patch.binary ? (
           <p className="px-4 pb-2 text-2xs text-muted-foreground">Binary file — no textual diff.</p>
         ) : patch.patch === "" ? (
@@ -379,16 +512,62 @@ function ReviewFileRow({
           // its answer is that nothing in this file differs.
           <p className="px-4 pb-2 text-2xs text-muted-foreground">No textual difference.</p>
         ) : (
-          /* THE RENDERER IS NOT OURS ANY MORE (#694) — see diff-code-view.tsx.
-             The row above is still the file header, so the viewer is told not
-             to draw its own; everything inside it is Pierre's, wearing this
-             app's tokens through `.diff-code-view` in globals.css. */
-          <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
-            <DiffCodeView patch={patch.patch} layout={view.layout} wrap={view.wrap} />
-          </div>
+          <PatchBody patch={patch.patch} view={view} />
         ))}
       {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-2xs text-muted-foreground">Renamed from {file.renamedFrom}</p>}
     </div>
+  );
+}
+
+/**
+ * THE PATCH ITSELF, AND WHETHER IT WAS READABLE — issue #694, step 1.
+ *
+ * THE RENDERER IS NOT OURS (see diff-code-view.tsx). The row above is the file
+ * header, so the viewer is told not to draw its own; everything inside it is
+ * Pierre's, wearing this app's tokens through `.diff-code-view` in globals.css.
+ *
+ * WHAT IS OURS IS SAYING WHEN IT DID NOT WORK. The library RECOVERS from a
+ * malformed patch with a `console.error` nobody sees, so a patch cut mid-line,
+ * a truncation marker, or a header it mistook for a rename all drew as a
+ * confident, plausible, wrong answer — and no test could tell that apart from a
+ * correct render. The parse is asked once here and its complaint becomes a band
+ * the reader can act on.
+ *
+ * THE VIEWER IS STILL MOUNTED UNDER THE BAND, because the library's recovery is
+ * usually most of the patch and a warning over real hunks beats an empty box.
+ */
+function PatchBody({ patch, view }: { patch: string; view: DiffView }) {
+  const reading = useMemo(() => readPatchShape(patch), [patch]);
+  /* A CHANGE WITH NO HUNKS IS STILL A CHANGE — see `noHunkSentence`. Only when
+     the parse was clean and described exactly one file: a complaint means the
+     zero is the parser's failure rather than the file's shape, and the viewer
+     below is then the more honest thing to show. */
+  const noHunks = !reading.complaint && reading.files === 1 && reading.file?.hunks === 0 ? reading.file : undefined;
+  return (
+    <>
+      {reading.complaint && (
+        <p className="px-4 pb-2 text-2xs text-warning">
+          This patch did not parse cleanly, so what is drawn below may be wrong or incomplete.{" "}
+          <span className="font-mono text-3xs">{reading.complaint}</span>
+        </p>
+      )}
+      {/* ONE ROW IS ONE FILE. More than one means a pathspec reached a
+          neighbour (#694, §2.6) — the row's name and the hunks under it are
+          then about different files, which is the hardest wrong answer to
+          notice and the reason this is said rather than drawn over. */}
+      {reading.files > 1 && (
+        <p className="px-4 pb-2 text-2xs text-warning">
+          This patch describes {reading.files} files, and this row is one file.
+        </p>
+      )}
+      {noHunks ? (
+        <p className="px-4 pb-2 text-2xs text-muted-foreground">{noHunkSentence(noHunks)}</p>
+      ) : (
+        <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
+          <DiffCodeView patch={patch} layout={view.layout} wrap={view.wrap} />
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1149,17 +1328,21 @@ export function DiffSurface({
    * this" is the same fact either way.
    */
   const readPatch = useCallback(
-    (path: string, untracked: boolean): Promise<{ file: GitFilePatch }> => {
+    (file: GitFileChange): Promise<{ file: GitFilePatch }> => {
       if (tab.kind === "turn") {
-        const patch = turn?.patches.get(path);
-        return Promise.resolve({ file: patch ? { patch, binary: false } : { patch: "", binary: false, incomplete: "failed" } });
+        const reported = turn?.patches.get(file.path);
+        return Promise.resolve({
+          file: reported
+            ? // A JOURNAL PATCH CUT AT ITS BOUND USES THE SAME CHANNEL a git
+              // one does (#694, §2.5). "This is not the whole patch" is one
+              // fact about a read, however the read was made — and it used to
+              // be a sentence INSIDE the patch, which the renderer drops.
+              { patch: reported.patch, binary: false, ...(reported.truncated ? { incomplete: "truncated" as const } : {}) }
+            : { patch: "", binary: false, incomplete: "failed" as const },
+        });
       }
-      const options = {
-        ...(untracked ? { untracked: true } : {}),
-        ...(view.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-        ...base,
-      };
-      return sessionId ? api.sessionFilePatch(sessionId, path, options) : api.projectFilePatch(projectId!, path, options);
+      const options = patchRequestFor(file, view, base);
+      return sessionId ? api.sessionFilePatch(sessionId, file.path, options) : api.projectFilePatch(projectId!, file.path, options);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sessionId, projectId, view.ignoreWhitespace, base.base, tab.kind, turn],
@@ -1227,6 +1410,10 @@ export function DiffSurface({
   /** Built once and spread onto both row lists, so the two can never drift
    *  into offering different menus for the same kind of row. */
   const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}), ...(onInsertReference ? { onInsertReference } : {}) };
+  /** Which party a row may name when it has no patch to draw (#694). Decided
+   *  once here, beside `readPatch`, because the two answer the same question
+   *  from the same place. */
+  const witness: PatchWitness = tab.kind === "turn" ? "journal" : "git";
 
   /**
    * "ANY" RATHER THAN "ALL", so the button's two states cover the three real
@@ -1486,6 +1673,7 @@ export function DiffSurface({
                 file={row.file}
                 reported={!framing.journal}
                 view={view}
+                witness={witness}
                 open={openPaths.has(row.file.path)}
                 onToggle={() => toggleRow(row.file.path)}
                 {...(row.registration ? { registration: row.registration } : {})}
@@ -1504,6 +1692,7 @@ export function DiffSurface({
                 file={row.file}
                 reported
                 view={view}
+                witness={witness}
                 open={openPaths.has(row.file.path)}
                 onToggle={() => toggleRow(row.file.path)}
                 {...(row.edits ? { edits: row.edits } : {})}

@@ -1422,12 +1422,12 @@ test("a file edit carries a real diff, which nothing produced before", async () 
   const detail = closed?.kind === "item.completed" ? closed.detail : undefined;
   expect(detail?.type).toBe("file_change");
   expect(detail?.type === "file_change" && detail.change.unifiedDiff).toBe(
-    ["--- a/src/a.ts", "+++ b/src/a.ts", "@@ -10,3 +10,4 @@", " keep", "-gone", "+added", "+also added"].join("\n"),
+    ["diff --git a/src/a.ts b/src/a.ts", "--- a/src/a.ts", "+++ b/src/a.ts", "@@ -10,3 +10,4 @@", " keep", "-gone", "+added", "+also added"].join("\n"),
   );
   // An ABSOLUTE path drops the git `a/`/`b/` prefixes — with them the header
   // reads `--- a//tmp/x.ts`, which is neither absolute nor repo-relative.
   // Observed on a real turn.
-  expect(unifiedDiff("/tmp/x.ts", [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["+x"] }])).toStartWith("--- /tmp/x.ts\n+++ /tmp/x.ts");
+  expect(unifiedDiff("/tmp/x.ts", [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["+x"] }]).diff).toStartWith("--- /tmp/x.ts\n+++ /tmp/x.ts");
   expect(detail?.type === "file_change" && detail.change.linesAdded).toBe(2);
   expect(detail?.type === "file_change" && detail.change.linesRemoved).toBe(1);
 });
@@ -1452,7 +1452,7 @@ test("a CREATED file shows its whole content as a diff, since the SDK sends no p
   const closed = sink.observations.find((o) => o.kind === "item.completed");
   const detail = closed?.kind === "item.completed" ? closed.detail : undefined;
   expect(detail?.type === "file_change" && detail.change.unifiedDiff).toBe(
-    ["--- a/src/new.ts", "+++ b/src/new.ts", "@@ -0,0 +1,2 @@", "+export const a = 1;", "+export const b = 2;"].join("\n"),
+    ["diff --git a/src/new.ts b/src/new.ts", "--- a/src/new.ts", "+++ b/src/new.ts", "@@ -0,0 +1,2 @@", "+export const a = 1;", "+export const b = 2;"].join("\n"),
   );
   expect(detail?.type === "file_change" && detail.change.linesAdded).toBe(2);
   expect(detail?.type === "file_change" && detail.change.linesRemoved).toBe(0);

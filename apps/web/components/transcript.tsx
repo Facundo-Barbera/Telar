@@ -277,6 +277,20 @@ function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: Jou
             {change.linesRemoved ? <span className="text-destructive">−{change.linesRemoved}</span> : null}
           </span>
         ) : null}
+        {/* THE BOUND IS SAID ON THE ROW, BESIDE THE ± COUNTS — issue #694, §2.5.
+            `unifiedDiff` used to announce it as a line INSIDE the patch, on the
+            argument that a clipped patch would otherwise be applied as a whole
+            one; the parser that replaced the old `<pre>` drops that line as
+            unreadable, so the warning had silently stopped arriving. It is a
+            field now, and it goes where the counts are rather than behind the
+            disclosure: the reader who needs it is the one deciding whether to
+            open the row at all. The ± figures stay WHOLE — they are counted
+            from the hunks, and the bound is on what is carried. */}
+        {change?.diffTruncated && (
+          <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal text-warning" title="Only the beginning of this patch was recorded">
+            patch cut short
+          </Badge>
+        )}
         {item.status === "declined" && (
           <Badge variant="destructive" className="shrink-0 px-1 py-0 text-4xs">
             declined

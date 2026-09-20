@@ -6139,19 +6139,43 @@ export class EngineStore {
     const resolved = path.resolve(cwd, target);
     const prefix = cwd.endsWith(path.sep) ? cwd : `${cwd}${path.sep}`;
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the workspace");
+    /**
+     * THE OLD PATH IS FENCED EXACTLY AS THE NEW ONE IS (#694). It reaches the
+     * same pathspec on the same command line, so a `renamedFrom` of `../../`
+     * would be the same escape by a second door — and a door that was added
+     * later is exactly the one a fence written for one parameter misses.
+     */
+    const renamedFrom = EngineStore.insideWorkspace(cwd, prefix, options.renamedFrom);
     // `ignoreWhitespace` IS PART OF THE KEY, not a variation on one answer: the
     // two reads run different git commands and return different hunks for the
     // same path, so sharing a cache entry would serve whichever the reader
     // happened to ask for first and go on serving it after they flipped the
     // toggle — a toolbar control that works once per file per cache window.
-    const key = `patch:${cwd}:${baseRef ?? ""}:${resolved}:${!!options.untracked}:${!!options.ignoreWhitespace}`;
+    // `renamedFrom` IS PART OF THE KEY for the reason `ignoreWhitespace` is: it
+    // changes the git command, so the two reads return different patches for
+    // the same path — one of them saying the file is new.
+    const key = `patch:${cwd}:${baseRef ?? ""}:${resolved}:${!!options.untracked}:${!!options.ignoreWhitespace}:${renamedFrom ?? ""}`;
     return this.cachedGitRead(key, () => sessionFilePatchAsync(this.asyncGit, {
       cwd,
       path: path.relative(cwd, resolved),
       ...(baseRef ? { baseRef } : {}),
       ...(options.untracked ? { untracked: true } : {}),
       ...(options.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+      ...(renamedFrom ? { renamedFrom } : {}),
     }));
+  }
+
+  /**
+   * A second path on the same command line, fenced inside the same checkout —
+   * or nothing. Refuses rather than dropping: a rename read with the old path
+   * silently discarded is the very answer #694 is about, and it would then look
+   * like the engine had simply not fixed it.
+   */
+  private static insideWorkspace(cwd: string, prefix: string, candidate?: string): string | undefined {
+    if (!candidate?.trim()) return undefined;
+    const resolved = path.resolve(cwd, candidate);
+    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the workspace");
+    return path.relative(cwd, resolved);
   }
 
   projectGit(projectId: string): GitOverview {
@@ -6590,11 +6614,13 @@ export class EngineStore {
     const resolved = path.resolve(project.root, target);
     const prefix = project.root.endsWith(path.sep) ? project.root : `${project.root}${path.sep}`;
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the project");
+    const renamedFrom = EngineStore.insideWorkspace(project.root, prefix, options.renamedFrom);
     return sessionFilePatch(this.git, {
       cwd: project.root,
       path: path.relative(project.root, resolved),
       ...(options.untracked ? { untracked: true } : {}),
       ...(options.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+      ...(renamedFrom ? { renamedFrom } : {}),
     });
   }
 
@@ -6619,7 +6645,7 @@ export class EngineStore {
 
   /** One file's patch, on demand — see `sessionFilePatch` for why it is not
    *  carried on the review itself. */
-  sessionFilePatch(sessionId: string, target: string, options: { untracked?: boolean } = {}): GitFilePatch {
+  sessionFilePatch(sessionId: string, target: string, options: { untracked?: boolean; renamedFrom?: string } = {}): GitFilePatch {
     const session = this.getSession(sessionId);
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     /**
@@ -6634,11 +6660,13 @@ export class EngineStore {
     const resolved = path.resolve(workspaceRootOf(session), target);
     const prefix = workspaceRootOf(session).endsWith(path.sep) ? workspaceRootOf(session) : `${workspaceRootOf(session)}${path.sep}`;
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the session workspace");
+    const renamedFrom = EngineStore.insideWorkspace(workspaceRootOf(session), prefix, options.renamedFrom);
     return sessionFilePatch(this.git, {
       cwd: workspaceRootOf(session),
       ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
       path: path.relative(workspaceRootOf(session), resolved),
       ...(options.untracked ? { untracked: true } : {}),
+      ...(renamedFrom ? { renamedFrom } : {}),
     });
   }
 

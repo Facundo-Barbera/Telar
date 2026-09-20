@@ -4300,11 +4300,18 @@ export function withToolResult(detail: ItemDetail, output: string, structured?: 
   if (detail.type === "file_change") {
     const hunks = patchHunksOf(structured);
     if (!hunks) return detail;
+    const { diff, truncated } = unifiedDiff(detail.change.path, hunks);
     return {
       ...detail,
       change: {
         ...detail.change,
-        unifiedDiff: unifiedDiff(detail.change.path, hunks),
+        unifiedDiff: diff,
+        // Set only when it is true — absent reads as "nobody said", which is
+        // what an older engine's answer means (#694, §2.5).
+        ...(truncated ? { diffTruncated: true } : {}),
+        // COUNTED FROM THE HUNKS, so a truncated diff still reports the whole
+        // change's ± figures: the bound is on what is CARRIED, not on what
+        // happened.
         ...countDiffLines(hunks),
       },
     };

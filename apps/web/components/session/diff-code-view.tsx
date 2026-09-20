@@ -46,9 +46,85 @@
  *      `max-h-72` the `<pre>` had, for the same reason.
  */
 
+import { parsePatchFiles } from "@pierre/diffs";
 import { PatchDiff } from "@pierre/diffs/react";
 
 import { cn } from "@/lib/utils";
+
+/**
+ * WHAT THE PARSER MADE OF A PATCH, BEFORE ANYTHING IS DRAWN — issue #694,
+ * step 1, and the seam every other fix in that pass is checked against.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE LIBRARY RECOVERS RATHER THAN THROWING, AND THAT IS WORSE THAN A CRASH
+ * HERE. `parsePatchFiles(data, key, throwOnError)` defaults to reporting a
+ * malformed patch with `console.error` and carrying on with what it could
+ * make of the rest. Telar never passed the flag and never saw a console, so
+ * every malformed patch in #694's list — a truncation marker, a patch cut
+ * mid-line, a header the parser read as a rename — rendered as a confident,
+ * plausible, wrong answer. Nothing was ever red.
+ *
+ * Without this, the rest of the correctness pass is unfalsifiable: there is
+ * no way to tell "rendered correctly" from "recovered silently".
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * `throwOnError: true` RATHER THAN CAPTURING THE CONSOLE, which was the other
+ * option on the table. Measured on 1.4.3: the flag throws on exactly the
+ * malformed shapes and stays silent on a well-formed patch, a mode-only patch,
+ * a binary one, and the empty string — so it is a decision procedure rather
+ * than a log to be scraped, and it needs no global to be swapped out from under
+ * a React render.
+ *
+ * THIS FILE, because it is the only one in the app that imports the library —
+ * see the header. The SENTENCE goes on Telar's own row, where the file's
+ * identity already lives; this is the reading it is made from.
+ */
+export type PatchReading = {
+  /** Why the parser refused. Absent when it read the patch cleanly. */
+  complaint?: string;
+  /** How many files this patch describes. ONE is the only number a row can
+   *  honestly draw: two means a pathspec matched a neighbour (#694, §2.6). */
+  files: number;
+  /** The single file's own shape, when there is exactly one — the answers the
+   *  library computes and Telar used to throw away. */
+  file?: {
+    name: string;
+    prevName?: string;
+    /** Pierre's own vocabulary: `change`, `new`, `deleted`, `rename-pure`,
+     *  `rename-changed`, `binary`… Passed through rather than remapped, so a
+     *  new one shows up as itself instead of as a default. */
+    type?: string;
+    mode?: string;
+    prevMode?: string;
+    hunks: number;
+  };
+};
+
+export function readPatchShape(patch: string): PatchReading {
+  try {
+    const files = parsePatchFiles(patch, undefined, true).flatMap((parsed) => parsed.files ?? []);
+    const only = files.length === 1 ? files[0] : undefined;
+    return {
+      files: files.length,
+      ...(only
+        ? {
+            file: {
+              name: String(only.name ?? ""),
+              ...(only.prevName ? { prevName: String(only.prevName) } : {}),
+              ...(only.type ? { type: String(only.type) } : {}),
+              ...(only.mode ? { mode: String(only.mode) } : {}),
+              ...(only.prevMode ? { prevMode: String(only.prevMode) } : {}),
+              hunks: only.hunks?.length ?? 0,
+            },
+          }
+        : {}),
+    };
+  } catch (error) {
+    // The library's own message, which names the line it choked on — more use
+    // to whoever reads this row than a sentence of ours would be.
+    return { complaint: error instanceof Error ? error.message : String(error), files: 0 };
+  }
+}
 
 /** How a patch is laid out. Named for the toolbar rather than for the library:
  *  "stacked" is what the control says, `unified` is what Pierre calls it. */

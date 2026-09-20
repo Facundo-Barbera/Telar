@@ -154,6 +154,25 @@ export const FileChangeDetail = z.object({
   kind: FileChangeKind,
   renamedFrom: z.string().min(1).optional(),
   unifiedDiff: z.string().optional(),
+  /**
+   * `unifiedDiff` IS A PREFIX OF THE PATCH, NOT THE PATCH — issue #694, §2.5.
+   *
+   * The diff a row may carry is bounded (`MAX_DIFF_CHARS`), because `items.json`
+   * holds every item of every turn and is rewritten whole. That bound used to
+   * announce itself INSIDE the string — `… diff truncated at 12000 characters
+   * …` on a line of its own — on the argument that "a silently clipped patch
+   * looks like a complete one and would be applied as such".
+   *
+   * True of a renderer that printed every line. False since the renderer became
+   * a parser: the marker is not a diff line, so it is dropped as unreadable and
+   * the reader is shown a complete-looking patch. A fact about the READ cannot
+   * live in the CONTENT of the answer — the same reason `GitFilePatch` carries
+   * `incomplete` rather than an empty string.
+   *
+   * ABSENT means the diff is whole. Never `false` for an untruncated one, so an
+   * older engine's silence reads as "nobody said" rather than "it is complete".
+   */
+  diffTruncated: z.boolean().optional(),
   linesAdded: z.number().int().nonnegative().optional(),
   linesRemoved: z.number().int().nonnegative().optional(),
 });

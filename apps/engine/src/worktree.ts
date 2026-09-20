@@ -76,6 +76,17 @@ export type GitResult = {
   /** Set when the child was killed for outrunning its bound rather than exiting on its own. */
   timedOut?: true;
   /**
+   * Set when the child was killed for writing MORE THAN THE OUTPUT BOUND, and
+   * `stdout` is therefore a prefix of what it was saying — issue #694.
+   *
+   * IT IS NOT DEDUCIBLE FROM `status`, which is the whole reason it is a field.
+   * The overflow path exits 1, and `1` is also how `git diff --no-index` reports
+   * that two files differ — its success. So `assemblePatch` accepted a patch cut
+   * at 1 MiB as a complete one, and a 3.26 MiB rewrite rendered as the whole
+   * change with 69% of it missing and nothing anywhere saying so.
+   */
+  overflowed?: true;
+  /**
    * The pid of the child this runner killed, on either runner's timeout path —
    * absent everywhere else, including when the spawn itself failed and there was
    * no child, and when an async read expired while still queued and so never
@@ -228,6 +239,24 @@ export function createGitRunner(deps: GitRunnerDeps = {}): GitRunner {
       killSignal: "SIGKILL",
     });
     const failure = run.error as { code?: string } | undefined;
+    /**
+     * THE OUTPUT BOUND, NOT THE CLOCK — and it has to be read BEFORE the
+     * timeout clause below (#694).
+     *
+     * `spawnSync` reports a `maxBuffer` overflow as `ENOBUFS` and kills the
+     * child with `killSignal`, which is SIGKILL here — so `status == null &&
+     * signal === "SIGKILL"` matches, and a file git answered about at length
+     * came back labelled "git did not answer in time". Same bound as the async
+     * runner's, reported as the same fact.
+     */
+    if (failure?.code === "ENOBUFS") {
+      return {
+        status: 1,
+        stdout: run.stdout ?? "",
+        stderr: `git ${args.join(" ")} in ${cwd} wrote more than this runner's output bound`,
+        overflowed: true,
+      };
+    }
     // The second clause is the one `execFileSync` used to need and is kept: a
     // child that died on SIGKILL with no status is one this runner killed, even
     // where the platform did not also hand back an ETIMEDOUT.
@@ -478,7 +507,12 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
         child.on("close", (code) => {
           release();
           if (overflowed) {
-            finish({ status: 1, stdout, stderr: `git ${args.join(" ")} in ${cwd} wrote more than ${MAX_GIT_OUTPUT_CHARS} characters` });
+            finish({
+              status: 1,
+              stdout,
+              stderr: `git ${args.join(" ")} in ${cwd} wrote more than ${MAX_GIT_OUTPUT_CHARS} characters`,
+              overflowed: true,
+            });
             return;
           }
           finish({ status: code ?? 1, stdout, stderr });

@@ -2417,12 +2417,32 @@ export type SessionDiff = z.infer<typeof SessionDiff>;
  * diff". So a subprocess the engine killed said something specific, confident
  * and wrong about the file's contents.
  */
+/**
+ * WHY A PATCH HAS ONE MORE WAY TO BE INCOMPLETE THAN EVERY OTHER GIT READ —
+ * issue #694.
+ *
+ * `timeout` and `failed` are the two states in which git said NOTHING. A patch
+ * has a third: git said a great deal and the engine stopped listening at its
+ * output bound, so what arrived is a real prefix of a real answer. That is the
+ * most dangerous of the three, because it is the only one that renders as
+ * hunks — 24,642 lines of an 80,000-line change, ending mid-line, looking
+ * exactly like the whole thing.
+ *
+ * NOT ADDED TO `GitReadFailure` ITSELF, which would make `truncated` a legal
+ * value for a ref listing and a commit range that can never produce it.
+ */
+export const GitPatchIncomplete = z.enum(["timeout", "failed", "truncated"]);
+export type GitPatchIncomplete = z.infer<typeof GitPatchIncomplete>;
+
 export const GitFilePatch = z.object({
   patch: z.string(),
   binary: z.boolean(),
-  /** Set when git did not produce the patch. An empty `patch` means "no textual
-   *  diff" ONLY when this is absent. */
-  incomplete: GitReadFailure.optional(),
+  /**
+   * Set when what came back is not the whole patch. An empty `patch` means "no
+   * textual diff" ONLY when this is absent — and a NON-empty one is the whole
+   * change only when this is absent, which is `truncated`'s entire point.
+   */
+  incomplete: GitPatchIncomplete.optional(),
 });
 export type GitFilePatch = z.infer<typeof GitFilePatch>;
 

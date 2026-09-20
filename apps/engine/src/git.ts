@@ -577,7 +577,7 @@ function assembleDiff(
  */
 export function sessionFilePatch(
   git: GitRunner,
-  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean },
+  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean; renamedFrom?: string },
 ): GitFilePatch {
   const { cwd, baseRef, path: target } = input;
   // Same corroboration as the review's — see `resolveDiffBase`. A killed verify
@@ -586,12 +586,70 @@ export function sessionFilePatch(
   const { base } = resolveDiffBase(baseRef, baseRef ? git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
   const against = base ?? "HEAD";
   const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
-  return assemblePatch(
-    input.untracked
-      ? git(cwd, ["diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target])
-      : git(cwd, ["diff", "--unified=3", ...ignoring, against, "--", target]),
-  );
+  return input.untracked
+    ? assemblePatch(git(cwd, [...RAW_PATHS, "diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
+    : assemblePatch(git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, ...renameArgs(input.renamedFrom), against, "--", ...paths(target, input.renamedFrom)]), {
+        noIndex: false,
+      });
 }
+
+/**
+ * BOTH PATHS, OR THE RENAME CANNOT BE SEEN — issue #694, §2.2.
+ *
+ * `git diff HEAD -- <newpath>` excludes the OLD path from the pathspec, so
+ * rename detection has nothing to pair the new one with and git answers
+ * `new file mode 100644` with every line as an addition. The row above it
+ * already said "Renamed from src.txt" with ±0, off the list's own
+ * `--find-renames` read — so one row made two contradictory claims, and the
+ * renderer read the patch's as `type="new"`.
+ *
+ * Pass both and git reports `similarity index 100% / rename from / rename to`,
+ * which the renderer models first-class as `rename-pure` with `prevName` set.
+ */
+function paths(target: string, renamedFrom?: string): string[] {
+  return renamedFrom && renamedFrom !== target ? [literal(renamedFrom), literal(target)] : [literal(target)];
+}
+
+/** `--find-renames` EXPLICITLY, though git has defaulted to it since 2.9: the
+ *  pairing above is the whole point of the second path, and `diff.renames=false`
+ *  in somebody's config would turn it back into two unrelated files. */
+function renameArgs(renamedFrom?: string): string[] {
+  return renamedFrom ? ["--find-renames"] : [];
+}
+
+/**
+ * A PATH IS NOT A PATHSPEC — issue #694, §2.6.
+ *
+ * `git diff -- <path>` reads its operand as a PATTERN. A file called
+ * `brack[1].ts` next to `brack1.ts` therefore matched both, git printed two
+ * files, the renderer parsed two files, and the row for one of them drew the
+ * other one's changes inside it. `*`, `?` and a leading `!` have the same
+ * exposure, and a leading `:` is pathspec magic that errors outright.
+ *
+ * The row's LIST is unaffected — `-z --numstat` emits literal paths — so this
+ * is a disagreement between a row's label and the hunks underneath it, which is
+ * the hardest kind of wrong answer to notice.
+ *
+ * NOT APPLIED TO THE `--no-index` ARM, and that is measured rather than
+ * assumed: `--no-index` takes two FILESYSTEM PATHS, reads them literally
+ * already, and answers `:(literal)brack[1].ts` with `error: Could not access`.
+ * The magic prefix would turn a working read into a failing one.
+ */
+function literal(target: string): string {
+  return `:(literal)${target}`;
+}
+
+/**
+ * `core.quotePath` DEFAULTS TO TRUE, so a patch for `café.ts` is headed
+ * `diff --git "a/caf\303\251.ts" …` and the renderer reads the escapes as the
+ * name — issue #694, §2.7. Harmless while the file header is hidden; mojibake
+ * the moment anything draws it, and wrong grammar selection for any name whose
+ * quoting reaches the extension.
+ *
+ * ON BOTH ARMS, because both print that header. The `-z` reads that build the
+ * file LIST are already immune: `-z` NUL-terminates and never quotes.
+ */
+const RAW_PATHS = ["-c", "core.quotePath=false"] as const;
 
 /**
  * `-w` AND `--ignore-blank-lines` TOGETHER, because either alone leaves the
@@ -619,11 +677,31 @@ function patchWhitespaceArgs(ignoreWhitespace: boolean | undefined): string[] {
  * something specific and wrong about the file's CONTENTS.
  *
  * Shared by both runners, for the reason `assembleDiff` is.
+ *
+ * ══ AND SINCE #694, `status === 1` IS NOT UNCONDITIONALLY SUCCESS ══
+ *
+ * It was, and that one line is where #654's defect came back through a
+ * different door. `1` means "the two files differ" on the `--no-index` arm and
+ * means GIT FAILED on the tracked one — and, on either, it is also what the
+ * runner returns when it killed git for outrunning the output bound. So a
+ * 3.26 MiB patch arrived here as 1,048,576 characters ending mid-line, with
+ * `incomplete` absent, and rendered as the complete change.
+ *
+ * `#654 FIXED "AN UNREAD PATCH ARRIVES AS THE EMPTY STRING"; this is an unread
+ * patch arriving as a megabyte of real hunks, which no reader can tell from a
+ * whole one. WHICH ARM RAN IS PASSED IN rather than inferred from the status,
+ * because inferring it is the mistake.
  */
-function assemblePatch(result: GitResult): GitFilePatch {
-  // 1 is `--no-index` reporting that the two files differ, which is this
-  // command's success. Anything past it is git not answering.
-  if (result.status !== 0 && result.status !== 1) {
+function assemblePatch(result: GitResult, arm: { noIndex: boolean }): GitFilePatch {
+  // BEFORE THE STATUS, because the bound is a fact about the read whichever arm
+  // produced it — and on `--no-index` the overflow's `1` is indistinguishable
+  // from that command's success. What did arrive is KEPT and marked, per #650:
+  // a megabyte of real hunks is worth reading, and must never pass for all of
+  // them.
+  if (result.overflowed) return { patch: result.stdout, binary: false, incomplete: "truncated" };
+  // 1 is `--no-index` reporting that the two files differ, which is that
+  // command's success and nothing else's.
+  if (result.status !== 0 && !(arm.noIndex && result.status === 1)) {
     return { patch: "", binary: false, incomplete: result.timedOut ? "timeout" : "failed" };
   }
   const patch = result.stdout;
@@ -910,17 +988,18 @@ export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string
 
 export async function sessionFilePatchAsync(
   git: AsyncGitRunner,
-  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean },
+  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean; renamedFrom?: string },
 ): Promise<GitFilePatch> {
   const { cwd, baseRef, path: target } = input;
   const { base } = resolveDiffBase(baseRef, baseRef ? await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
   const against = base ?? "HEAD";
   const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
-  return assemblePatch(
-    input.untracked
-      ? await git(cwd, ["diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target])
-      : await git(cwd, ["diff", "--unified=3", ...ignoring, against, "--", target]),
-  );
+  return input.untracked
+    ? assemblePatch(await git(cwd, [...RAW_PATHS, "diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
+    : assemblePatch(
+        await git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, ...renameArgs(input.renamedFrom), against, "--", ...paths(target, input.renamedFrom)]),
+        { noIndex: false },
+      );
 }
 
 export async function listGitRefsAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitRefListing> {

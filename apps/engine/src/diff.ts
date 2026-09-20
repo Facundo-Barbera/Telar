@@ -89,10 +89,34 @@ export function patchHunksOf(value: unknown): PatchHunk[] | undefined {
  * prefix produces `--- a//tmp/x.ts` — a double slash, and a path that is now
  * neither absolute nor repo-relative. Observed on a real turn; git itself omits
  * the prefixes in the same situation.
+ *
+ * ══ AND IT OPENS WITH `diff --git`, OR THE PREFIXES BECOME THE NAME (#694) ══
+ *
+ * Without that line a parser does not know it is looking at a GIT diff, so it
+ * does not strip `a/` and `b/` — and since `a/x.ts ≠ b/x.ts` it concludes the
+ * file was renamed. Measured against `@pierre/diffs` 1.4.3, which is what the
+ * Diff surface renders with:
+ *
+ *   `--- a/x.ts` / `+++ b/x.ts`  alone  →  name="b/x.ts" prevName="a/x.ts"
+ *                                          type="rename-changed"
+ *   with `diff --git a/x.ts b/x.ts`     →  name="x.ts"   type="change"
+ *
+ * EVERY patch in the turn scope, in both the single-line and multi-line hunk
+ * forms. It is invisible today only because the viewer's file header is off;
+ * a file tree or a re-enabled header draws it as `a/x.ts → b/x.ts`.
+ *
+ * THE ABSOLUTE ARM GETS NO HEADER, and that asymmetry is measured rather than
+ * tidy. `diff --git /tmp/x.ts /tmp/x.ts` — the only form that would not
+ * reintroduce the double slash — is rejected outright ("invalid git diff
+ * header"), while the bare `---`/`+++` pair with no prefixes already parses as
+ * `name="/tmp/x.ts" type="change"`. The arm this module treats as the awkward
+ * exception is the one that was always right.
  */
-export function unifiedDiff(path: string, hunks: readonly PatchHunk[], max = MAX_DIFF_CHARS): string {
-  const [from, to] = path.startsWith("/") ? [path, path] : [`a/${path}`, `b/${path}`];
-  const body: string[] = [`--- ${from}`, `+++ ${to}`];
+export function unifiedDiff(path: string, hunks: readonly PatchHunk[], max = MAX_DIFF_CHARS): { diff: string; truncated: boolean } {
+  const absolute = path.startsWith("/");
+  const [from, to] = absolute ? [path, path] : [`a/${path}`, `b/${path}`];
+  const body: string[] = absolute ? [] : [`diff --git ${from} ${to}`];
+  body.push(`--- ${from}`, `+++ ${to}`);
   for (const hunk of hunks) {
     // `,1` is omitted by convention when a range covers exactly one line, and
     // some parsers are strict about it.
@@ -102,11 +126,28 @@ export function unifiedDiff(path: string, hunks: readonly PatchHunk[], max = MAX
     body.push(...hunk.lines);
   }
   const text = body.join("\n");
-  if (text.length <= max) return text;
-  // Truncation is ANNOUNCED IN THE DIFF ITSELF rather than left to a flag
-  // nobody renders. A silently clipped patch looks like a complete one and
-  // would be applied as such.
-  return `${text.slice(0, max)}\n… diff truncated at ${max} characters …`;
+  if (text.length <= max) return { diff: text, truncated: false };
+  /**
+   * TRUNCATION IS A FIELD, NOT A SENTENCE INSIDE THE PATCH — issue #694, §2.5.
+   *
+   * This used to append `… diff truncated at 12000 characters …` and the
+   * comment here said, correctly, that "a silently clipped patch looks like a
+   * complete one and would be applied as such". That was true of the `<pre>`
+   * that printed every line it was given. Since the renderer became a PARSER it
+   * has been false: the marker is not a diff line, so it is dropped as
+   * unreadable and the reader sees a complete-looking patch. Measured —
+   *
+   *   parseLineType: Invalid firstChar: "…"
+   *   processFile: invalid rawLine: … diff truncated at 12000 characters …
+   *   marker present in input: true    marker present in rendered output: NO
+   *
+   * THE FIX IS NOT TO MAKE THE MARKER PARSEABLE. A marker inside the patch was
+   * always a channel the renderer could drop, and the next renderer would drop
+   * it again. It becomes `FileChangeDetail.diffTruncated`, which is the same
+   * argument `assemblePatch` makes for `incomplete` over `patch: ""`: a fact
+   * about the READ does not belong in the CONTENT of the answer.
+   */
+  return { diff: text.slice(0, max), truncated: true };
 }
 
 /**
