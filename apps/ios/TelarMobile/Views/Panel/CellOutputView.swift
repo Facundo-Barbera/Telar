@@ -137,22 +137,34 @@ private struct OutputImage: View {
     }
 }
 
-/// THE ONE BLOCK HERE THAT KEEPS ABSOLUTE SIZES, and not by oversight. Every
-/// cell below is pinned to a fixed 96×30 header or 96×22 row so the columns
-/// line up across a horizontal scroll — text that grew with the reader's
-/// setting inside a frame that did not would simply be cut off. Making this
-/// grid scale means `@ScaledMetric` on the width and both heights, which is a
-/// layout change rather than a token swap, so it gets its own pass.
+/// THE GRID SCALES AS A UNIT (#674) — width and both heights together, which
+/// is why it could not be swept site by site. Every cell is pinned to one
+/// width so the columns line up across a horizontal scroll, so a cell that
+/// grew while its neighbours did not would not merely clip, it would break the
+/// alignment the grid is for. One `@ScaledMetric` seed per dimension, all off
+/// `.caption` — the style the text inside them now takes — keeps the columns
+/// square at every content size.
 ///
-/// The dtype label's 8 is the smallest size in the app and DOES have a rung —
-/// `captionTiny`, since `.caption2` is the floor of Apple's ramp and an 8 can
-/// go nowhere else. It waits here for the frame, not for a token.
+/// THIS IS THE ONE PLACE IN #674 THAT MOVES AT THE DEFAULT TEXT SIZE, and it
+/// is unavoidable rather than careless. The cells took a 10 and an 8; the ramp
+/// they belong on starts at `.caption` (12) and `.caption2` (11), because
+/// `.caption2` is the floor of Apple's ramp and an 8 can go nowhere else. Text
+/// two points bigger needs a box bigger than 30 to sit in and a column wider
+/// than 96 to finish a name in, so the header went 30 → 34, the rows 22 → 24
+/// and the columns 96 → 108. A reader who has not moved the slider sees a
+/// slightly roomier table; every other site in #674 they cannot see at all.
 private struct DataframeGrid: View {
     let columns: [String]
     let dtypes: [String]
     let rows: [[JSONValue]]
     let shape: [Int]
     let truncated: Bool
+
+    /// One column width and the two row heights, seeded with the figures above
+    /// and scaled off the same style the cells are drawn in.
+    @ScaledMetric(relativeTo: .caption) private var columnWidth: CGFloat = 108
+    @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 34
+    @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 24
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -161,10 +173,10 @@ private struct DataframeGrid: View {
                     HStack(spacing: 0) {
                         ForEach(Array(columns.enumerated()), id: \.offset) { i, column in
                             VStack(alignment: .leading, spacing: 0) {
-                                Text(column).font(.system(size: 10, weight: .semibold)).lineLimit(1)
-                                if let dtype = dtypes[safe: i] { Text(dtype).font(.system(size: 8)).foregroundStyle(Theme.textMuted) }
+                                Text(column).font(.system(Theme.caption, weight: .semibold)).lineLimit(1)
+                                if let dtype = dtypes[safe: i] { Text(dtype).font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted) }
                             }
-                            .padding(.horizontal, 6).frame(width: 96, height: 30, alignment: .leading)
+                            .padding(.horizontal, 6).frame(width: columnWidth, height: headerHeight, alignment: .leading)
                         }
                     }
                     .background(Theme.subtle)
@@ -172,10 +184,10 @@ private struct DataframeGrid: View {
                         HStack(spacing: 0) {
                             ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
                                 Text(cellString(cell))
-                                    .font(.system(size: 10, design: .monospaced))
+                                    .font(.system(Theme.caption, design: .monospaced))
                                     .foregroundStyle(cell == .null ? Theme.textMuted : Theme.text)
                                     .lineLimit(1)
-                                    .padding(.horizontal, 6).frame(width: 96, height: 22, alignment: .leading)
+                                    .padding(.horizontal, 6).frame(width: columnWidth, height: rowHeight, alignment: .leading)
                             }
                         }
                         .background(r % 2 == 0 ? Color.clear : Theme.subtle.opacity(0.4))
