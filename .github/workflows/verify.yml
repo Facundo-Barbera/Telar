@@ -154,6 +154,36 @@ jobs:
           bun install --frozen-lockfile
       - run: bun run check:source
 
+      # WORKFLOWS THAT DO NOT LOAD, CAUGHT BEFORE THEY SHIP.
+      #
+      # A workflow can be valid YAML and still be rejected by GitHub — and that
+      # failure is close to invisible. `join(needs.*.result, " ")` cost this
+      # repository a diagnosis on 2026-09-20: GitHub's expression language has
+      # no double-quoted string, so the file did not load, and what you get is
+      # a run listed under the file's PATH rather than its name, with ZERO
+      # jobs, no annotation anywhere in the REST API, and a pull request
+      # showing NO CHECKS AT ALL rather than a red one. You can read the PR and
+      # conclude CI simply has not started yet.
+      #
+      # `yaml.safe_load` parses that file perfectly. Only a workflow-aware
+      # linter catches it, which is why this is a check and not a convention.
+      #
+      # Pinned by version AND checksum: this downloads a binary and runs it,
+      # so "latest" would be an unreviewed executable in the middle of CI.
+      - name: Lint the workflow files themselves
+        run: |
+          set -euo pipefail
+          version=1.7.7
+          sha=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          url="https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+          curl -fsSL "$url" -o /tmp/actionlint.tar.gz
+          echo "${sha}  /tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          # shellcheck and pyflakes are disabled: this step is about whether
+          # GitHub can LOAD the file. Script linting is a separate argument and
+          # would fail this job on pre-existing findings across six workflows.
+          /tmp/actionlint -shellcheck= -pyflakes= .github/workflows/*.yml
+
   typecheck:
     name: Typecheck engine-client, env, engine, and web
     runs-on: ubuntu-latest
