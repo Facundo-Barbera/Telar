@@ -108,11 +108,25 @@
  * nothing, which is what it does. `agent-prefix.test.ts` measures that the
  * prefix really does hold; `agent-model.test.ts` asserts what reaches the wire
  * on each route here.
+ *
+ * ── AND THE WRAPPER WATCHES WHAT COMES BACK, WITHOUT READING IT (#710) ──────
+ * A provider that answers 200 with a body that is not a completion raises
+ * nothing on the way in, and every client library on this path then dies
+ * reading a field of `undefined` three frames down — naming no model, no route,
+ * and not the fact that a provider was involved. The wrapper records the
+ * ENVELOPE of each response (status, content type, length; never the body, so a
+ * credential cannot reach a message built from it) and the two model classes
+ * below raise the sentence. IT RECORDS RATHER THAN RAISES DELIBERATELY: an
+ * error thrown from `fetch` is a connection failure as far as an SDK is
+ * concerned, and is retried and then replaced. See `ResponseProbe`.
  */
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatAnthropic } from "@langchain/anthropic";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { goRouteOf } from "./catalogue";
+import type { ChatGenerationChunk, ChatResult } from "@langchain/core/outputs";
+import type { BaseMessage } from "@langchain/core/messages";
+import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
+import { type GoRoute, goRouteOf } from "./catalogue";
 import { DEFAULT_GO_MODEL, goHeaders, OPENCODE_GO_BASE } from "./go";
 import { resolveGoCredential } from "./credentials";
 
@@ -311,6 +325,236 @@ export class AgentCredentialError extends Error {
 }
 
 /**
+ * THE ERROR A PROVIDER THAT ANSWERED NOTHING PRODUCES (#710).
+ *
+ * Its own class for the same reason `AgentCredentialError` is one: "the model
+ * said nothing" is a DIFFERENT fact from "the model refused", and a caller that
+ * wants to tell them apart should not have to read a sentence to do it.
+ */
+export class AgentEmptyAnswerError extends Error {
+  /** The id that was asked — the first thing a bug report needs. */
+  readonly model: string;
+  /** Which of Go's three endpoints it was asked on. */
+  readonly route: GoRoute;
+  /** The HTTP status the call came back with, when one was seen. Present means
+   *  the request SUCCEEDED and the body was the problem. */
+  readonly status: number | undefined;
+  constructor(message: string, detail: { model: string; route: GoRoute; status: number | undefined; cause?: unknown }) {
+    super(message, detail.cause === undefined ? undefined : { cause: detail.cause });
+    this.name = "AgentEmptyAnswerError";
+    this.model = detail.model;
+    this.route = detail.route;
+    this.status = detail.status;
+  }
+}
+
+/**
+ * WHAT THE LAST RESPONSE WAS, AND NOTHING ABOUT WHAT WAS IN IT (#710).
+ *
+ * ── WHY THE WRAPPER RECORDS RATHER THAN RAISES ──────────────────────────────
+ * #710 proposed throwing from the `fetch` wrapper, since it is the one layer
+ * that sees every response. MEASURED, that is the one thing the wrapper must
+ * NOT do: `openai@7.15.0` treats ANY error thrown from `fetch` as a connection
+ * failure, and `client.js` retries it — seven attempts over more than twenty
+ * seconds against a local stub — and then throws `APIConnectionError:
+ * Connection error.`, carrying the real message only as `.cause`. A sentence
+ * naming the model and the route would have been replaced by a slower, vaguer
+ * one than the `TypeError` it was written to improve on.
+ *
+ * So the wrapper writes down the ENVELOPE and lets the call proceed, and the
+ * model class below is what raises — at a throw site no SDK retries.
+ *
+ * ── AND IT NEVER TOUCHES THE BODY ───────────────────────────────────────────
+ * Only the status line and two headers, which is both a privacy rule and a
+ * correctness one. A response body is the model's answer and reading it here
+ * would consume the stream every turn depends on; `Content-Length` answers "how
+ * big" without a single byte being read. NOTHING FROM THE REQUEST IS RECORDED —
+ * no headers, no body — so a credential cannot reach a message built from this.
+ *
+ * ── IT IS THE LAST RESPONSE, NOT THIS CALL'S ────────────────────────────────
+ * One probe per client, so two overlapping calls on one instance share it. That
+ * is deliberate and it is safe HERE: it is read only after a call has already
+ * failed, to add detail to a sentence, and the failure itself is decided by the
+ * result rather than by this. The status is what gates re-description, and a
+ * turn that got a 4xx never reaches that path at all — the SDK raised its own
+ * error long before.
+ */
+type ResponseProbe = { status?: number; contentType?: string | null; length?: string | null };
+
+/** `POST /chat/completions` and friends — the route in the words of the URL it
+ *  is, rather than this file's internal name for it. */
+function endpointOf(route: GoRoute): string {
+  switch (route) {
+    case "messages":
+      return "POST /messages";
+    case "responses":
+      return "POST /responses";
+    case "chat":
+      return "POST /chat/completions";
+    case "unknown":
+      // `agentChatModel` sends an unrecognised id to the chat client — see its
+      // note. Saying so is the point: the route is a GUESS this build made.
+      return "POST /chat/completions (an id this build has no route for, sent to the chat client)";
+  }
+}
+
+/**
+ * THE SENTENCE #710 IS ACTUALLY FOR.
+ *
+ * It names the four things the `TypeError` did not: the model id, the route,
+ * that the call SUCCEEDED at the HTTP level, and that what came back carried no
+ * answer. The original error is both quoted and attached as `cause` — quoted
+ * because `generations[0][0].message` is the string somebody will paste into a
+ * search box, and this issue is what they should find.
+ *
+ * THE BODY IS DESCRIBED, NEVER QUOTED. A 200 that is not a completion is often
+ * a proxy's error page, and an error page is exactly the kind of document that
+ * echoes a request header back. Its type and size say what a person needs —
+ * thirteen bytes of `application/json` is a gateway, not a truncated answer —
+ * and neither can carry a key.
+ */
+function emptyAnswerError(context: EmptyAnswerContext, cause: unknown): AgentEmptyAnswerError {
+  const { model, route, probe } = context;
+  const http =
+    probe.status === undefined
+      ? "No HTTP response was recorded for it"
+      : `It answered HTTP ${probe.status} (${probe.contentType ?? "no content-type"}${probe.length ? `, ${probe.length} bytes` : ""}) and the body carried no completion`;
+  const quoted = cause instanceof Error ? ` Underlying: ${cause.name}: ${cause.message}` : "";
+  return new AgentEmptyAnswerError(
+    `The model returned no answer. Telar asked \`${model}\` on the ${route} route (${endpointOf(route)}). ` +
+      `${http} — the call SUCCEEDED at the HTTP level and came back with nothing. ` +
+      `A 4xx or 5xx would have named a reason; a 200 that is not a completion comes from something in the chain that is not the model — a proxy, a gateway, or an error page served as JSON.${quoted}`,
+    { model, route, status: probe.status, ...(cause === undefined ? {} : { cause }) },
+  );
+}
+
+/** What a model needs to describe its own silence. */
+type EmptyAnswerContext = { model: string; route: GoRoute; probe: ResponseProbe };
+
+/**
+ * WHEN AN ERROR IS RE-DESCRIBED, AND WHEN IT IS LEFT ALONE.
+ *
+ * THE GATE IS THE STATUS, and it is the whole rule: re-describe only what
+ * followed a 2xx. A 4xx or 5xx already raised a real `APIError` naming the
+ * reason — #710 says so explicitly and it is right — and a connection failure
+ * records no response at all. Both come through here untouched, because
+ * replacing a good error with a guess is the defect this function exists to
+ * stop, pointed the other way.
+ *
+ * WHAT IS LEFT IS THE 200-SHAPED-WRONG CASE, where every client library on this
+ * path dies reading a field of `undefined` three frames down. MEASURED across
+ * all three routes, streaming and not, against a stub answering `200
+ * {"ok":true}`: six distinct `TypeError`s, none naming a model, a route or a
+ * provider. They are all the same defect and this gives them all one sentence.
+ */
+function describing(context: EmptyAnswerContext, error: unknown): unknown {
+  if (context.probe.status === undefined || context.probe.status < 200 || context.probe.status >= 300) return error;
+  return emptyAnswerError(context, error);
+}
+
+/**
+ * A RESULT WITH NO GENERATIONS IS A FAILURE, AND IT IS THE ONE #710 NAMED.
+ *
+ * `BaseChatModel.invoke` reads `generations[0][0].message` without looking, so
+ * an empty array becomes `undefined is not an object` one frame above anything
+ * that knows what was asked. Checked HERE, inside the model, where the id and
+ * the route are still in scope.
+ */
+function nonEmpty(context: EmptyAnswerContext, result: ChatResult): ChatResult {
+  if (!result?.generations?.length) throw emptyAnswerError(context, undefined);
+  return result;
+}
+
+/**
+ * ── THE TWO CLIENTS, TAUGHT TO SAY WHEN THEY GOT NOTHING (#710) ─────────────
+ *
+ * ── WHY A SUBCLASS AND NOT A WRAPPER AROUND `invoke` ────────────────────────
+ * `invoke` is not the seam: the runtime binds tools and streams, so a turn
+ * reaches this model as `bindTools(...).stream(...)` as often as it does
+ * `invoke`. `_generate` and `_streamResponseChunks` are the two methods ALL of
+ * those funnel through — `bindTools` returns a binding around this same
+ * instance — so overriding them covers every caller, including ones not written
+ * yet. `lc_name` is deliberately NOT overridden, so these serialise as the
+ * classes they extend and nothing about a checkpoint changes.
+ *
+ * TWO CLASSES AND NOT THREE, because `/responses` is `ChatOpenAI` in another
+ * mode — the same object with `useResponsesApi`, which is exactly why this file
+ * builds it from the same class.
+ *
+ * BOTH OVERRIDES DO THE SAME TWO THINGS: hand a failure to `describing`, which
+ * replaces it only when a 2xx preceded it, and treat an EMPTY success as a
+ * failure. The second is the half that matters — a stream that yields no chunks
+ * and a result with no generations are both "the provider said nothing", and
+ * neither throws anything on its own.
+ */
+class DescribingChatOpenAI extends ChatOpenAI {
+  readonly #context: EmptyAnswerContext;
+  constructor(fields: ConstructorParameters<typeof ChatOpenAI>[0] & { telar: EmptyAnswerContext }) {
+    const { telar, ...rest } = fields;
+    super(rest);
+    this.#context = telar;
+  }
+  override async _generate(messages: BaseMessage[], options: this["ParsedCallOptions"], runManager?: CallbackManagerForLLMRun): Promise<ChatResult> {
+    try {
+      return nonEmpty(this.#context, await super._generate(messages, options, runManager));
+    } catch (error) {
+      throw error instanceof AgentEmptyAnswerError ? error : describing(this.#context, error);
+    }
+  }
+  override async *_streamResponseChunks(
+    messages: BaseMessage[],
+    options: this["ParsedCallOptions"],
+    runManager?: CallbackManagerForLLMRun,
+  ): AsyncGenerator<ChatGenerationChunk> {
+    let chunks = 0;
+    try {
+      for await (const chunk of super._streamResponseChunks(messages, options, runManager)) {
+        chunks += 1;
+        yield chunk;
+      }
+    } catch (error) {
+      throw describing(this.#context, error);
+    }
+    // ONLY ON AN EXHAUSTED STREAM. A consumer that breaks early returns through
+    // the generator rather than falling out of the loop, so a turn that stopped
+    // reading is never reported as a provider that stopped answering.
+    if (chunks === 0) throw emptyAnswerError(this.#context, undefined);
+  }
+}
+
+class DescribingChatAnthropic extends ChatAnthropic {
+  readonly #context: EmptyAnswerContext;
+  constructor(fields: ConstructorParameters<typeof ChatAnthropic>[0] & { telar: EmptyAnswerContext }) {
+    const { telar, ...rest } = fields;
+    super(rest);
+    this.#context = telar;
+  }
+  override async _generate(messages: BaseMessage[], options: this["ParsedCallOptions"], runManager?: CallbackManagerForLLMRun): Promise<ChatResult> {
+    try {
+      return nonEmpty(this.#context, await super._generate(messages, options, runManager));
+    } catch (error) {
+      throw error instanceof AgentEmptyAnswerError ? error : describing(this.#context, error);
+    }
+  }
+  override async *_streamResponseChunks(
+    messages: BaseMessage[],
+    options: this["ParsedCallOptions"],
+    runManager?: CallbackManagerForLLMRun,
+  ): AsyncGenerator<ChatGenerationChunk> {
+    let chunks = 0;
+    try {
+      for await (const chunk of super._streamResponseChunks(messages, options, runManager)) {
+        chunks += 1;
+        yield chunk;
+      }
+    } catch (error) {
+      throw describing(this.#context, error);
+    }
+    if (chunks === 0) throw emptyAnswerError(this.#context, undefined);
+  }
+}
+
+/**
  * ── HOW HARD TO THINK, PER ROUTE ────────────────────────────────────────────
  *
  * Telar offers three words and each API spells them differently. The words are
@@ -418,15 +662,27 @@ export function agentChatModel(input: AgentModelInput): BaseChatModel {
    */
   const { Authorization: _authorization, ...forced } = goHeaders({ sessionId: input.threadId });
   const transport = input.fetchImpl ?? fetch;
-  const withTelarHeaders: typeof fetch = (url, init) => {
+  /** Filled on the way back, read only when a call has already failed — see
+   *  `ResponseProbe` for why this records instead of raising. */
+  const probe: ResponseProbe = {};
+  const withTelarHeaders: typeof fetch = async (url, init) => {
     const headers = new Headers(init?.headers);
     for (const [name, value] of Object.entries(forced)) headers.set(name, value);
     // ONE TAKES A FIELD OFF, THE OTHER PUTS ONE ON, and both are gated on the
     // body's SHAPE rather than on a route — see each function's note. The strip
     // runs first so the cache pass never marks a block on a message that was
     // about to be rewritten anyway.
-    return transport(url, { ...init, headers, body: withAnthropicCaching(withoutMessageNames(init?.body)) });
+    const response = await transport(url, { ...init, headers, body: withAnthropicCaching(withoutMessageNames(init?.body)) });
+    // THE ENVELOPE ONLY, AND THE RESPONSE IS HANDED BACK UNTOUCHED — not
+    // cloned, not read, not buffered. Three header reads cost a streaming turn
+    // nothing, which is the entire reason this is the shape it is.
+    probe.status = response.status;
+    probe.contentType = response.headers.get("content-type");
+    probe.length = response.headers.get("content-length");
+    return response;
   };
+  /** The two facts every message this client can raise is built from. */
+  const telar = (model: string): EmptyAnswerContext => ({ model, route: goRouteOf(model), probe });
 
   /**
    * THE NAMED DEFAULT, NOT THE CHECKED ONE — deliberately (#551).
@@ -453,7 +709,8 @@ export function agentChatModel(input: AgentModelInput): BaseChatModel {
     const maxTokens = input.maxTokens ?? MESSAGES_MAX_TOKENS;
     const budget = input.effort ? THINKING_BUDGET[input.effort] : undefined;
     const thinking = budget !== undefined && budget < maxTokens ? { type: "enabled" as const, budget_tokens: budget } : undefined;
-    return new ChatAnthropic({
+    return new DescribingChatAnthropic({
+      telar: telar(model),
       apiKey: credential.key,
       model,
       /**
@@ -499,7 +756,8 @@ export function agentChatModel(input: AgentModelInput): BaseChatModel {
   }
 
   if (goRouteOf(model) === "responses") {
-    return new ChatOpenAI({
+    return new DescribingChatOpenAI({
+      telar: telar(model),
       apiKey: credential.key,
       model,
       /**
@@ -548,7 +806,8 @@ export function agentChatModel(input: AgentModelInput): BaseChatModel {
     });
   }
 
-  return new ChatOpenAI({
+  return new DescribingChatOpenAI({
+    telar: telar(model),
     apiKey: credential.key,
     model,
     temperature: input.temperature ?? 0,
