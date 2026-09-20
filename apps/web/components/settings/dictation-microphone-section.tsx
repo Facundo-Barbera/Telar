@@ -132,10 +132,15 @@ export function DictationMicrophoneSection() {
           </div>
         }
       />
+      {/* THE SENTENCE, NOT THE WHOLE REFUSAL (#707). `error` carries which
+          refusal it is as well as what it says, because the composer's toolbar
+          draws a caption that dismisses itself and has to tell two identical
+          failures apart. This row is a settings pane: the refusal sits under
+          the control until it is fixed, so it only wants the words. */}
       <Row
         label="Live transcript"
         icon={TypeIcon}
-        {...(demo.error ? { error: demo.error } : {})}
+        {...(demo.error ? { error: demo.error.text } : {})}
         hint={
           listening
             ? // SAID WHILE IT IS TRUE, and only what cannot be seen: the rewriting
