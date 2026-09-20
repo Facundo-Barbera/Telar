@@ -360,7 +360,7 @@ jobs:
           # the one runner where "the guards are load-bearing" is asserted by
           # anything, and where a skip would leave the positive block passing
           # against scripts that had lost every guard.
-          prove "the guards are load-bearing: removing one reproduces #808" "the bash 3.2 empty-array guards in scripts/*.sh"
+          prove "the guards are load-bearing: removing one reproduces #808" "the bash 3.2 empty-array guards in scripts/*.sh and in the signing steps of .github/workflows/*.yml (#829)"
 
   # THE ELECTRON SUITE, WHICH NOTHING RAN UNTIL NOW (#622).
   #
