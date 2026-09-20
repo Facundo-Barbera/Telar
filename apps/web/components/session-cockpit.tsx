@@ -50,7 +50,7 @@ import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
 import { insertReference } from "@/lib/drag-reference";
 import { sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/lib/engine/session-connection";
-import { INITIAL_TURNS, loadOlderTurns, mergeRows } from "@/lib/engine/session-sync";
+import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/lib/engine/session-sync";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
 import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
 import { decideStale } from "@/lib/stale-state";
@@ -2867,14 +2867,47 @@ export function SessionCockpit({
         },
       )
       .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrate, sessionId, hostId, syncKey]);
+
+  /**
+   * THE TAIL, AT A CADENCE THAT FOLLOWS WHAT THE CONVERSATION IS DOING (#490).
+   *
+   * 1 s while a turn is running, 3 s once it has settled — `tailIntervalMs`,
+   * ported from the cadence iOS has had since `SessionSyncEngine.interval`. An
+   * idle cockpit was making 86,400 reads a day at a flat 1 s, and that figure
+   * is the same for somebody with three conversations as for somebody with
+   * three hundred, which is what made it the most valuable thing left on #490
+   * rather than the fourth.
+   *
+   * A SEPARATE EFFECT FROM THE OPENING ABOVE, and that is the whole reason for
+   * the split rather than tidiness: the cadence is derived from `turns`, so
+   * threading it into that effect's dependencies would re-run `hydrate` and the
+   * recorded-snapshot read every time a turn started or finished — a full
+   * re-open on each transition, which is worse than the poll it replaces.
+   *
+   * IT NEVER STOPS, only spaces out. A cockpit that had to be woken would need
+   * something to wake it, and there is no cross-session event feed to subscribe
+   * to (#586) — so "stop until something happens" would be a predicate with no
+   * edge behind it, which is precisely the snooze defect #490 §4.5 just fixed.
+   * At 3 s a turn somebody else started is seen within one tick and the effect
+   * re-arms to 1 s. `session-cockpit.tail-cadence.test.tsx` asserts that
+   * return, because it is the only failure mode that matters.
+   */
+  const tailMs = tailIntervalMs(turns);
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
     const interval = window.setInterval(() => {
       void tail().catch((cause) => !cancelled && fail(cause, "Could not tail the session journal."));
-    }, 1_000);
+    }, tailMs);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [hydrate, tail, sessionId, hostId, fail, syncKey]);
+  }, [tail, sessionId, fail, tailMs]);
 
   /**
    * NO SESSION, NO JOURNAL. Ordinarily a canvas has nothing to project anyway —
