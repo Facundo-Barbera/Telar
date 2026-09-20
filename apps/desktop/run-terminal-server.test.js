@@ -35,15 +35,27 @@ function fakeHost() {
   return {
     opened: [],
     killed: [],
+    wrote: [],
+    resized: [],
+    listedAs: [],
     open(request) {
       this.opened.push(request);
       return { id: `term_${this.opened.length}`, pid: 4200 + this.opened.length };
     },
-    kill(id, signal) {
-      this.killed.push({ id, signal });
+    kill(id, signal, owner) {
+      this.killed.push({ id, signal, owner });
       return true;
     },
-    list() {
+    write(id, data, owner) {
+      this.wrote.push({ id, data, owner });
+      return true;
+    },
+    resize(id, cols, rows, owner) {
+      this.resized.push({ id, cols, rows, owner });
+      return true;
+    },
+    list(owner) {
+      this.listedAs.push(owner);
       return this.opened.map((_, index) => ({ id: `term_${index + 1}`, pid: 4200 + index + 1 }));
     },
   };
@@ -104,6 +116,8 @@ test("every route needs the token, and a wrong one is refused before anything ru
   for (const [method, path] of [
     ["POST", "/open"],
     ["POST", "/kill"],
+    ["POST", "/write"],
+    ["POST", "/resize"],
     ["GET", "/events"],
     ["GET", "/state"],
   ]) {
@@ -112,14 +126,19 @@ test("every route needs the token, and a wrong one is refused before anything ru
     await response.body?.cancel();
   }
   // Refused BEFORE the host was touched, which is what "before anything runs"
-  // has to mean for a route that starts processes.
+  // has to mean for a route that starts processes — and, now, for one that
+  // types into them.
   expect(host.opened).toHaveLength(0);
   expect(host.killed).toHaveLength(0);
+  expect(host.wrote).toHaveLength(0);
 });
 
-test("the route set is closed: a path that is not one of the four is a 404", async () => {
+test("the route set is closed: a path that is not one of the six is a 404", async () => {
   const { host, url } = await serve();
-  for (const path of ["/", "/write", "/resize", "/open/../state", "/exec"]) {
+  // `/write` and `/resize` moved OUT of this list when they were built, so the
+  // list is kept adjacent to the positive cases below rather than trusted on
+  // its own: a route set that 404'd everything would satisfy this half alone.
+  for (const path of ["/", "/exec", "/open/../state", "/writes", "/resize/all"]) {
     const response = await fetch(`${url}${path}`, { method: "POST", headers: auth, body: "{}" });
     expect(response.status).toBe(404);
     await response.body?.cancel();
@@ -188,11 +207,54 @@ test("kill addresses a terminal id, and the server never invents one", async () 
   const { host, url } = await serve();
   const response = await fetch(`${url}/kill`, { method: "POST", headers: auth, body: JSON.stringify({ id: "term_9", signal: "SIGKILL" }) });
   expect(await response.json()).toEqual({ signalled: true });
-  expect(host.killed).toEqual([{ id: "term_9", signal: "SIGKILL" }]);
+  expect(host.killed).toEqual([{ id: "term_9", signal: "SIGKILL", owner: "engine" }]);
   // No id at all is passed through as the empty string rather than guessed at:
   // the host is the only thing entitled to decide an id means nothing.
   await (await fetch(`${url}/kill`, { method: "POST", headers: auth, body: "{}" })).json();
-  expect(host.killed[1]).toEqual({ id: "", signal: "SIGTERM" });
+  expect(host.killed[1]).toEqual({ id: "", signal: "SIGTERM", owner: "engine" });
+});
+
+// ── write and resize: the writable half ──────────────────────────────────────
+
+test("write and resize are real routes, and every verb names the engine's scope", async () => {
+  const { host, url } = await serve();
+  const wrote = await fetch(`${url}/write`, { method: "POST", headers: auth, body: JSON.stringify({ id: "term_3", data: "y\r" }) });
+  expect(wrote.status).toBe(200);
+  expect(await wrote.json()).toEqual({ ok: true });
+  expect(host.wrote).toEqual([{ id: "term_3", data: "y\r", owner: "engine" }]);
+
+  const resized = await fetch(`${url}/resize`, { method: "POST", headers: auth, body: JSON.stringify({ id: "term_3", cols: 100, rows: 40 }) });
+  expect(await resized.json()).toEqual({ ok: true });
+  expect(host.resized).toEqual([{ id: "term_3", cols: 100, rows: 40, owner: "engine" }]);
+
+  // AND THE SCOPE IS NOT ONLY ON THE NEW ROUTES. Every verb this channel has
+  // has to name it, or the guard is decoration: one route that forgot would
+  // let a run's terminal be reached with a renderer's vocabulary.
+  await fetch(`${url}/open`, { method: "POST", headers: auth, body: JSON.stringify({ shell: "/bin/sh", args: ["-c", "true"] }) });
+  await (await fetch(`${url}/state`, { headers: auth })).json();
+  expect(host.opened[0].owner).toBe("engine");
+  expect(host.listedAs).toEqual(["engine"]);
+});
+
+test("a write the host refuses is reported as not delivered, not as an error", async () => {
+  // The host answers `false` for an id it does not hold — a terminal that has
+  // already ended, or one belonging to the other scope. That is the ordinary
+  // race (the cockpit learns of an exit asynchronously), so it must arrive as
+  // an answer the caller can read rather than as a 4xx it has to catch.
+  const host = fakeHost();
+  host.write = () => false;
+  const { url } = await serve({ host });
+  const response = await fetch(`${url}/write`, { method: "POST", headers: auth, body: JSON.stringify({ id: "term_gone", data: "x" }) });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ ok: false });
+});
+
+test("a write with no data reaches the host as the empty string rather than as undefined", async () => {
+  // Same rule as `/kill` with no id: this side does not invent a value and
+  // does not guess one. The host is what decides an input means nothing.
+  const { host, url } = await serve();
+  await (await fetch(`${url}/write`, { method: "POST", headers: auth, body: "{}" })).json();
+  expect(host.wrote).toEqual([{ id: "", data: "", owner: "engine" }]);
 });
 
 // ── the stream, which is what `unknown` rests on ─────────────────────────────
