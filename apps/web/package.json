@@ -6,8 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "//test": "--timeout IS THE ONLY WAY TO MOVE THE CEILING. `[test] timeout` is not a bunfig.toml key — bun ignores unknown keys silently, so putting it in bunfig.toml next to this workspace's preload would read as configured and do nothing (#414 shipped exactly that for apps/engine). 20 s matches the other suites: nothing here spawns a daemon, but a render test that mounts React and polls for a toast is still wall-clock work, and on the shared CI Mac mini that is enough to push a 3 s test past 5 s for a reason that has nothing to do with the code (#458).",
-    "test": "NODE_ENV=test bun test --timeout 20000",
+    "//test": "THE CEILING IS NO LONGER ON THIS LINE — it is scripts/test-ceiling.mjs, preloaded from this workspace's bunfig.toml and from the root's (#740). `[test] timeout` is still not a bunfig.toml key — bun ignores unknown keys silently, and #414 shipped exactly that for apps/engine — but `preload` is one, which is how the ceiling reaches an invocation that did not carry the flag. This workspace was the worse of the two: a bare `bun test apps/web/…/one.test.ts` from the repo root dropped NODE_ENV=test as well as the ceiling. 20 s matches the other suites: nothing here spawns a daemon, but a render test that mounts React and polls for a toast is still wall-clock work, and on the shared CI Mac mini that is enough to push a 3 s test past 5 s for a reason that has nothing to do with the code (#458). `--timeout` on the command line still moves it in either direction — the preload reads the flag back off the operating system and stands aside for it, because a ceiling that ignored a number somebody typed would be this same bug wearing the fix's clothes — and `TELAR_TEST_TIMEOUT_MS=N` covers a run that cannot pass a flag. A test's own third-argument ceiling beats both.",
+    "test": "NODE_ENV=test bun test",
     "bench:journal": "bun run bench/journal-fold.ts",
     "typecheck": "bunx --bun tsc --noEmit",
     "lint": "eslint"
