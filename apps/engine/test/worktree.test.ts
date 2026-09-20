@@ -776,24 +776,67 @@ test("async git deadlines do not block timers and missing binaries return failur
   expect(missing.stderr).not.toBe("");
 });
 
+/**
+ * ── THE QUEUED CALL NEEDS AN ADMISSION BOUND TO BE THE CALL IT SAYS IT IS ──
+ *
+ * This read `{ timeoutMs: 50 }` and nothing else, and before #813 that bounded
+ * queue time and run time together, so it expired IN THE QUEUE and never
+ * spawned — which is what the title claims and what the marker checks.
+ *
+ * #813 moved the run deadline to the spawn. With no `admissionMs` this call now
+ * waits out the holder ahead of it, SPAWNS, and its 50 ms becomes a race
+ * against the interpreter's own start-up. Measured on the pre-fix test: it was
+ * killed at 303 ms carrying `killedPid: 74030` — a child, where the premise is
+ * that there is none — and at a 400 ms budget the same call returned `status:
+ * 0` and WROTE THE MARKER this test asserts can never exist. It passed on this
+ * Mac because bun loses that race here and failed on CI because bun wins it
+ * there. That is #748's defect exactly, one layer along: a bound that doubles
+ * as the child's start-up deadline.
+ *
+ * SO THE EXPIRY IS DRIVEN BY `admissionMs`, WHICH IS THE THING THAT NOW MEANS
+ * "expired while queued". 50 ms against a holder that runs for 250: the
+ * admission bound always fires first, by ordering rather than by luck, and no
+ * child is ever spawned to race anything. The run budget is deliberately huge
+ * for the same reason — if this call ever does spawn, the test must fail on the
+ * marker rather than be rescued by a second timeout.
+ *
+ * WHAT THIS TEST STILL UNIQUELY OWNS is the second half of its title: the pool
+ * gets its capacity back afterwards and a later read runs and returns output.
+ * The expiry claim itself is pinned on its own by "a starved call fails on its
+ * admission bound without ever spawning" above.
+ */
 test("async git pool expires queued reads without spawning them and recovers capacity", async () => {
   const root = tmp("telar-git-pool-");
   const marker = path.join(root, "should-not-run");
   const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
   const stalled = run(root, ["-e", "setTimeout(() => {}, 60000)"], { timeoutMs: 250 });
-  const queued = run(root, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], { timeoutMs: 50 });
+  const queued = run(
+    root,
+    ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`],
+    { timeoutMs: 30_000, admissionMs: 50 },
+  );
   expect((await queued).timedOut).toBe(true);
+  // NO CHILD, said as the runner says it: `killedPid` is set only where there
+  // was a process to kill, so its absence is the non-vacuous half of "without
+  // spawning them" — the marker alone was satisfiable by a child that was
+  // killed before its first write.
+  expect((await queued).killedPid).toBeUndefined();
   expect(fs.existsSync(marker)).toBe(false);
   expect((await stalled).timedOut).toBe(true);
   /**
    * THE BUDGET COVERS MORE THAN IT LOOKS LIKE IT DOES (#706).
    *
    * It reads as "a spawn takes under two seconds", and it never was: at
-   * `concurrency: 1` this call is enqueued behind `stalled`, so its deadline
-   * spans queue drain and spawn rather than spawn alone. Nothing is compared
-   * against it — the claim under test is the line below, that the pool recovers
+   * `concurrency: 1` this call is enqueued behind `stalled`, so its wait spans
+   * queue drain and spawn rather than spawn alone. Nothing is compared against
+   * it — the claim under test is the line below, that the pool recovers
    * capacity and a later read runs and returns its output — so it is a bound on
    * a hang rather than an assertion, and is raised freely.
+   *
+   * SINCE #813 THE WAIT AND THE RUN ARE BOUNDED SEPARATELY, and this call
+   * deliberately names neither tightly: `admissionMs` defaults to the read
+   * pool's own, which is far more than the 250 ms the holder ahead of it has
+   * left, and 10 s is a hang bound on a `process.stdout.write`.
    *
    * It used to cover the SIGKILLed child's reap as well, because the timeout
    * path did not free the slot. #743 fixed that; WHEN the slot comes back is
