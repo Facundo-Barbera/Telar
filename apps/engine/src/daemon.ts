@@ -410,6 +410,31 @@ function liveSessionsETag(revision: number, all: boolean): string {
 }
 
 /**
+ * THE SESSION TAIL'S OWN TAG — issue #586, and the largest single loop in the
+ * cockpit.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * The rail's tick was made nearly free by #459/#462/#493. NOTHING EQUIVALENT
+ * WAS EVER DONE FOR THE TAIL, which runs at 1 s against the rail's 10 — so a
+ * cockpit sitting inside one conversation spends ~86,400 requests a day asking
+ * a question whose answer is almost always `events: []`, and pays a fold and a
+ * body for every one of them.
+ *
+ * THE TAG IS THE CURSOR AND THE WINDOW TOGETHER, and both halves are load
+ * bearing. `after` selects which rows an answer would contain, so two asks at
+ * one cursor with DIFFERENT `after` are two different answers — a tag carrying
+ * only the cursor would hand a client paging backwards a 304 for a page it has
+ * never seen. `limit` is in it for the same reason.
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * WEAK, like the live list's and for the same reason: the claim is that the
+ * rows are the same, never that the bytes are.
+ */
+function sessionEventsETag(cursor: number, after: number, limit: number): string {
+  return `W/"events-${cursor}-${after}-${limit}"`;
+}
+
+/**
  * Does `If-None-Match` name this tag?
  *
  * WEAK COMPARISON, which is what RFC 9110 requires of `If-None-Match`: `W/"x"`
@@ -4532,16 +4557,43 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         if (request.method === "GET" && session.tail === "/events") {
           const after = Number(url.searchParams.get("after") ?? "0");
           const limit = eventPageLimit(url.searchParams.get("limit"));
+          /**
+           * `If-None-Match` ON THE TAIL — issue #586, and the same conditional
+           * read the live list has had since #462.
+           *
+           * BEFORE `readEvents`, because the whole point is to answer without
+           * folding: a 304 here costs one indexed cursor read against a page
+           * this route would otherwise build in memory and serialise.
+           *
+           * A CLIENT THAT GETS 304 MUST KEEP WHAT IT HAS, which is the one way
+           * this design fails in a reader's face — the rule `liveSessionsSince`
+           * already states for `unchanged`. `tailSession` treats it that way,
+           * and the engine test asserts both directions on the same fixture.
+           */
+          const etag = sessionEventsETag(store.eventCursor(session.sessionId), Number.isSafeInteger(after) ? after : 0, limit);
+          if (matchesETag(request.headers["if-none-match"], etag)) {
+            response.writeHead(304, { etag, "cache-control": "no-store" });
+            response.end();
+            return;
+          }
           // One over, to tell a full page from a full page with more behind it.
           const read = store.readEvents(session.sessionId, after, limit + 1);
           const events = read.length > limit ? read.slice(0, limit) : read;
           const cursor = events.at(-1)?.id ?? (Number.isSafeInteger(after) ? after : 0);
-          writeJson(response, 200, {
-            events,
-            cursor,
-            more: read.length > limit,
-            ...(read.length > limit ? { next: cursor } : {}),
-          });
+          writeJson(
+            response,
+            200,
+            {
+              events,
+              cursor,
+              more: read.length > limit,
+              ...(read.length > limit ? { next: cursor } : {}),
+            },
+            // THE TAG A CLIENT SPENDS ON THE NEXT TICK. Minted from the same
+            // three values the 304 above compares, so an answer and the tag
+            // that would suppress its repeat cannot disagree.
+            { etag },
+          );
           return;
         }
         /**

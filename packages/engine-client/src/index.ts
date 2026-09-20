@@ -1093,6 +1093,56 @@ export class EngineClient {
     return payload as T;
   }
 
+  /**
+   * A GET THAT MAY BE ANSWERED "UNCHANGED" — issue #586.
+   *
+   * SEPARATE FROM `request` RATHER THAN A FLAG ON IT, because a 304 has NO BODY
+   * AT ALL and `request` parses one unconditionally: sending `If-None-Match`
+   * through that path turns the cheap answer into `malformed_response`, which
+   * is the single most confusing way this could fail.
+   *
+   * THE TAG COMES BACK ON BOTH ANSWERS, and it has to. A 304 carries the tag
+   * the client just spent, so a caller that stored only the last 200's tag
+   * would work anyway; a 200 carries the NEW one, and a caller that did not
+   * read it would ask unconditionally for ever and quietly lose the saving
+   * while every test still passed.
+   */
+  private async requestConditional<T>(
+    pathname: string,
+    etag: string | undefined,
+  ): Promise<{ unchanged: true; etag?: string } | { unchanged: false; payload: T; etag?: string }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}${pathname}`, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${this.discovery.token}`,
+          ...(etag ? { "if-none-match": etag } : {}),
+        },
+      });
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+      throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, {
+        ...(sanitizeTransportCause(cause) ? { transport: sanitizeTransportCause(cause)! } : {}),
+      });
+    }
+    const tag = response.headers.get("etag") ?? undefined;
+    // BEFORE ANY PARSE. There is nothing to parse, and reaching for a body here
+    // is exactly the bug this method exists to avoid.
+    if (response.status === 304) return { unchanged: true, ...(tag ? { etag: tag } : {}) };
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new EngineClientError("engine_unavailable", "engine returned an invalid response", response.status, { transport: "malformed_response" });
+    }
+    if (!response.ok) {
+      const error = (payload as EngineErrorBody | null)?.error;
+      throw new EngineClientError(error?.code ?? "engine_unavailable", error?.message ?? "engine request failed", response.status);
+    }
+    return { unchanged: false, payload: payload as T, ...(tag ? { etag: tag } : {}) };
+  }
+
   /** The same envelope as `request`, for a body that is not JSON. Kept separate
    *  rather than generalised: exactly one route takes bytes, and folding the
    *  two would put a `content-type` branch on every call in this class. */
@@ -2697,6 +2747,33 @@ export class EngineClient {
   events(sessionId: string, after = 0, limit?: number): Promise<EventPage> {
     const bound = limit === undefined ? "" : `&limit=${limit}`;
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${bound}`);
+  }
+
+  /**
+   * The same page, asked conditionally — issue #586.
+   *
+   * THE TAIL IS THE COCKPIT'S LARGEST LOOP: 1 s while a conversation is open,
+   * ~86,400 requests a day, and almost every one of them answers `events: []`
+   * after folding a page and serialising a body. This is the ask that can be
+   * answered in no bytes at all.
+   *
+   * `unchanged` MEANS KEEP WHAT YOU HAVE — the same rule and the same word
+   * `liveSessionsSince` uses, deliberately, so there is one thing to learn
+   * rather than two. A caller that treated it as "no events, reset" would blank
+   * a transcript once a second, which is the way this design fails loudest.
+   *
+   * SEPARATE FROM `events` rather than an optional argument on it, because the
+   * RETURN TYPE differs: a caller must be made to handle the second arm by the
+   * compiler, not reminded to.
+   */
+  eventsIfChanged(
+    sessionId: string,
+    after = 0,
+    limit?: number,
+    etag?: string,
+  ): Promise<{ unchanged: true; etag?: string } | { unchanged: false; payload: EventPage; etag?: string }> {
+    const bound = limit === undefined ? "" : `&limit=${limit}`;
+    return this.requestConditional<EventPage>(`/v2/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${bound}`, etag);
   }
 
   /**
