@@ -972,7 +972,7 @@ jobs:
           xcodebuild \
             -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
             -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 17' \
+            -destination 'platform=iOS Simulator,name=iPhone 999 Ultra' \
             -destination-timeout 120 \
             -derivedDataPath "$RUNNER_TEMP/DerivedDataTests" \
             -resultBundlePath "$RESULT_BUNDLE" \
