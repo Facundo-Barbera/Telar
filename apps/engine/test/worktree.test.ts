@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
 import { worktreeReady } from "./worktree-ready";
-import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WorktreeError, worktreeLockReason, defaultWorktreesRoot, type AsyncGitRunner, type GitRunner } from "../src/worktree";
+import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_ADMISSION_MS, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WORKTREE_ADD_TIMEOUT_MS, WORKTREE_ADMISSION_MS, WorktreeError, worktreeLockReason, defaultWorktreesRoot, type AsyncGitRunner, type GitRunner } from "../src/worktree";
 import { gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync } from "../src/git";
 
 const roots: string[] = [];
@@ -974,21 +974,143 @@ test("the shared async runner is a bounded runner like any other", async () => {
   expect(result.timedOut).toBeUndefined();
 });
 
-test("a queued read's deadline counts the time it spent queued", async () => {
-  // The property the parity test must not depend on, pinned where it belongs:
-  // on a pool this test owns. One slot, occupied; the second read's 100ms
-  // budget expires while it is still in the queue, so it reports a timeout
-  // without ever having been spawned.
-  const root = tmp("telar-queue-deadline-");
+/**
+ * THIS TEST USED TO ASSERT THE DEFECT — issue #813, and the replacement is the
+ * two tests below it.
+ *
+ * It was "a queued read's deadline counts the time it spent queued", and it was
+ * a faithful statement of what the runner did: the run timer was armed before
+ * the `active < limit` test, so `timeoutMs` bounded queue time plus git time
+ * together. #813 is what that costs in production — a `worktree add` killed at
+ * a 30 s deadline it had spent waiting for a slot, leaving a session `queued`
+ * with no checkout for 45 minutes.
+ *
+ * WHAT SURVIVES OF IT is the half that was never the bug: a starved call must
+ * still fail rather than wait forever, and must not have spawned anything when
+ * it does. That is `admissionMs` now, and it is asserted below with its own
+ * bound rather than by stealing the run budget.
+ */
+test("a starved call fails on its admission bound without ever spawning", async () => {
+  const root = tmp("telar-git-admission-");
   const marker = path.join(root, "second-ran");
   const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
   const holder = run(root, ["-e", "setTimeout(() => {}, 60000)"], { timeoutMs: 1_500 });
-  const queued = await run(root, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], { timeoutMs: 100 });
+  const queued = await run(
+    root,
+    ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`],
+    // A run budget far LARGER than the admission bound, so a pass cannot come
+    // from the old behaviour: under the pre-#813 runner this call would have
+    // sat in the queue for its full 30 s and this test would time out.
+    { timeoutMs: 30_000, admissionMs: 100 },
+  );
   expect(queued.timedOut).toBe(true);
-  expect(queued.stderr).toContain("did not finish within 100ms");
+  // The wait is named, and the kill is not — there was no child to kill, and
+  // saying "was killed" about one is what made #813's two failure modes
+  // indistinguishable in `preparation.error`.
+  expect(queued.stderr).toContain("waited 100ms for a slot and never started");
+  expect(queued.stderr).not.toContain("was killed");
+  expect(queued.killedPid).toBeUndefined();
   expect(fs.existsSync(marker)).toBe(false);
   expect((await holder).timedOut).toBe(true);
 }, 10_000);
+
+/**
+ * THE DEADLINE IS MEASURED FROM THE SPAWN — issue #813, test (a), and it is RED
+ * on the runner this replaces.
+ *
+ * One slot, held for 1.5 s by each of two occupants in turn. The third call's
+ * run budget is 1.2 s — less than the 3 s it spends waiting, and far more than
+ * the instant of work it does. Before #813 its timer started at the call, so it
+ * expired in the queue at 1.2 s having done nothing, and its result was status
+ * 124 with the marker absent. Now the timer starts when it is spawned, so the
+ * 3 s it spent waiting is the admission bound's problem and not the budget's.
+ *
+ * THE NUMBERS ARE BOTH GENEROUS ON PURPOSE, and the earlier draft is why: at a
+ * 300 ms budget this test failed under a loaded `bun test` and passed standalone,
+ * because it was measuring interpreter start-up rather than the property. The
+ * claim only needs `budget < wait`, so both sides are sized to clear the noise.
+ *
+ * THE ADMISSION BOUND IS DELIBERATELY LOOSE HERE (10 s). This test's claim is
+ * "queue time is no longer charged to the run budget", and pinning it against a
+ * tight admission number would make it a test of two things at once — the one
+ * above already owns the second.
+ */
+test("a call held behind two occupied slots still gets its whole run budget", async () => {
+  const root = tmp("telar-git-spawn-deadline-");
+  const marker = path.join(root, "third-ran");
+  const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
+  const first = run(root, ["-e", "setTimeout(() => {}, 1500)"], { timeoutMs: 20_000 });
+  const second = run(root, ["-e", "setTimeout(() => {}, 1500)"], { timeoutMs: 20_000 });
+  const third = run(
+    root,
+    ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran'); process.stdout.write('ready')`],
+    { timeoutMs: 1_200, admissionMs: 10_000 },
+  );
+
+  const [a, b, c] = await Promise.all([first, second, third]);
+  // Non-vacuity: the two ahead of it must have RUN, not expired — otherwise
+  // the third was never queued and the test proves nothing.
+  expect(a.status).toBe(0);
+  expect(b.status).toBe(0);
+  expect(c.timedOut).toBeUndefined();
+  expect(c.status).toBe(0);
+  expect(c.stdout).toBe("ready");
+  expect(fs.existsSync(marker)).toBe(true);
+}, 15_000);
+
+/**
+ * AND A CALL THAT SPAWNS AND THEN HANGS IS STILL KILLED, WITH ITS PID — #813,
+ * test (b). The half of the old behaviour that must not have moved: the run
+ * deadline still fires, still reaps, and still says which process it reaped.
+ */
+test("a call that spawns and then hangs is killed at its run deadline and reports the pid", async () => {
+  const root = tmp("telar-git-spawn-kill-");
+  const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
+  const hung = await run(root, ["-e", "setTimeout(() => {}, 60000)"], { timeoutMs: 400, admissionMs: 10_000 });
+  expect(hung.timedOut).toBe(true);
+  expect(hung.status).toBe(GIT_TIMEOUT_STATUS);
+  expect(hung.killedPid).toBeGreaterThan(0);
+  expect(hung.stderr).toContain(`(pid ${hung.killedPid})`);
+  expect(hung.stderr).toContain("did not finish within 400ms");
+  // The group is gone, not merely abandoned. A SIGKILLed process answers
+  // `kill(pid, 0)` until it is reaped, so this is a bound rather than an instant.
+  await until(() => !alive(hung.killedPid as number), 5_000);
+  expect(alive(hung.killedPid as number)).toBe(false);
+}, 15_000);
+
+/** `worktree add` no longer shares a number with `git rev-parse` — #813. */
+test("a worktree cut is given its own deadline, not a read's", () => {
+  expect(WORKTREE_ADD_TIMEOUT_MS).toBeGreaterThan(DEFAULT_GIT_TIMEOUT_MS);
+  expect(WORKTREE_ADD_TIMEOUT_MS).toBe(120_000);
+  // And a starved cut may wait longer than a starved read, because the callers
+  // ahead of it may each legitimately hold a slot for a cut's whole budget.
+  expect(WORKTREE_ADMISSION_MS).toBeGreaterThan(WORKTREE_ADD_TIMEOUT_MS);
+  expect(DEFAULT_GIT_ADMISSION_MS).toBeGreaterThan(DEFAULT_GIT_TIMEOUT_MS);
+});
+
+/**
+ * AND THE CUT ACTUALLY ASKS FOR IT. The constant existing proves nothing —
+ * `createSessionWorktreeAsync` passing no `timeoutMs` at all is exactly what
+ * #813 was. This records the options the `worktree add` call carries.
+ */
+test("createSessionWorktreeAsync passes the worktree deadline down to git", async () => {
+  const calls: Array<{ args: string[]; options?: { timeoutMs?: number } }> = [];
+  const recording: AsyncGitRunner = async (_cwd, args, options) => {
+    calls.push({ args, ...(options ? { options } : {}) });
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const engineRoot = tmp("telar-cut-deadline-engine-");
+  const projectRoot = tmp("telar-cut-deadline-project-");
+  await createSessionWorktreeAsync(recording, {
+    engineRoot,
+    projectRoot,
+    plan: { path: path.join(engineRoot, "cut"), branch: "telar/deadline", named: false },
+    baseSha: "base000",
+  });
+  const add = calls.find((call) => call.args[0] === "worktree" && call.args[1] === "add");
+  expect(add).toBeDefined();
+  expect(add!.options?.timeoutMs).toBe(WORKTREE_ADD_TIMEOUT_MS);
+});
 
 test("async git reads preserve overview and review data for committed and untracked changes", async () => {
   const asyncGit = createAsyncGitRunner();
