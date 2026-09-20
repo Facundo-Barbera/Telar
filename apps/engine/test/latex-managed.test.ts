@@ -41,7 +41,12 @@ function fakeArchive(body: string): Buffer {
   fs.writeFileSync(path.join(stage, "tectonic"), body);
   fs.chmodSync(path.join(stage, "tectonic"), 0o755);
   const archive = path.join(stage, "out.tar.gz");
-  const made = spawnSync("tar", ["-czf", archive, "-C", stage, "tectonic"]);
+  // BOUNDED FOR #807: a sync child wait blocks this thread in `wait4`, where
+  // bun's per-test ceiling — an event-loop timer — cannot reach it, so an
+  // unbounded `tar` is a hang no ceiling above it can end. Five seconds is
+  // enormous for one small file in a temp directory; SIGKILL because a `tar`
+  // that has stopped answering is not about to handle a polite signal.
+  const made = spawnSync("tar", ["-czf", archive, "-C", stage, "tectonic"], { timeout: 5_000, killSignal: "SIGKILL" });
   if (made.status !== 0) throw new Error(`could not build the fixture archive: ${String(made.stderr)}`);
   return fs.readFileSync(archive);
 }
@@ -247,7 +252,8 @@ test("an archive without a tectonic binary is refused, not published empty", asy
   const stage = root();
   fs.writeFileSync(path.join(stage, "README"), "no binary here");
   const archive = path.join(stage, "out.tar.gz");
-  spawnSync("tar", ["-czf", archive, "-C", stage, "README"]);
+  // Bounded for the same reason as `fakeArchive` above — see #807.
+  spawnSync("tar", ["-czf", archive, "-C", stage, "README"], { timeout: 5_000, killSignal: "SIGKILL" });
   const { managed } = installer(home, fs.readFileSync(archive));
 
   const after = await managed.install();

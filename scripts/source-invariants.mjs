@@ -781,7 +781,128 @@ const WORKFLOW_BLOCK_SAMPLES = [
   },
 ];
 
+/**
+ * EVERY SYNCHRONOUS CHILD WAIT IN A SOURCE TEXT, with the text of its argument
+ * list — #807.
+ *
+ * WHY A BALANCED-PAREN READ AND NOT A LINE REGEX: the call this exists for
+ * spans six lines and the part being looked for is the options object at the
+ * end of them. A per-line scan would see the opening line of every real call
+ * site and none of their options.
+ *
+ * BOTH SPELLINGS, ONE HIT EACH. `spawnSync(` and `Bun.spawnSync(` are the two
+ * the engine suite uses; the lookbehind is what stops the second being counted
+ * twice, and stops `mySpawnSync(` being counted at all.
+ */
+function syncSpawnCalls(source) {
+  const calls = [];
+  const pattern = /(?<![\w$.])(?:Bun\.)?spawnSync\s*\(/g;
+  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
+    const open = match.index + match[0].length - 1;
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < source.length; i += 1) {
+      if (source[i] === "(") depth += 1;
+      else if (source[i] === ")" && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    if (end === -1) continue;
+    const args = source.slice(open + 1, end);
+    calls.push({
+      line: source.slice(0, match.index).split("\n").length,
+      call: match[0].slice(0, -1).trim(),
+      bounded: /\btimeout\s*:/.test(args),
+      forceful: /\bkillSignal\s*:\s*"SIGKILL"/.test(args),
+    });
+  }
+  return calls;
+}
+
+/**
+ * The shapes that matter, held to #721's standard: a scan never shown to fail
+ * has demonstrated nothing. The first three are the engine suite's own call
+ * sites before #807 and after it; the rest are the ways a line scan gets this
+ * wrong — an options object several lines below the call, a nested call inside
+ * the arguments, and two names that merely end in the same letters.
+ */
+const SYNC_SPAWN_SAMPLES = [
+  { flags: true, why: "the bare node call as latex-managed had it", code: `const made = spawnSync("tar", ["-czf", archive]);` },
+  { flags: true, why: "the bare Bun call as project-identity had it", code: `Bun.spawnSync(["git", ...args], { cwd: checkout });` },
+  { flags: true, why: "a timeout with a polite signal is still a process that may not answer", code: `spawnSync("tar", [], { timeout: 5_000 });` },
+  { flags: true, why: "a killSignal with no ceiling never fires at all", code: `spawnSync("tar", [], { killSignal: "SIGKILL" });` },
+  { flags: false, why: "the bounded node call", code: `spawnSync("tar", ["-czf", archive], { timeout: 5_000, killSignal: "SIGKILL" });` },
+  { flags: false, why: "the bounded Bun call", code: `Bun.spawnSync(["git", ...args], { cwd: checkout, timeout: 5_000, killSignal: "SIGKILL" });` },
+  {
+    flags: false,
+    why: "options several lines below the call, with a nested call in the arguments — the shape a line scan misses",
+    code: `const run = spawnSync(process.execPath, ["test", ...(flag ? ["--timeout", flag] : [])], {\n  cwd: REPO_ROOT,\n  timeout: budgetMs,\n  killSignal: "SIGKILL",\n});`,
+  },
+  { flags: false, why: "a different function that merely ends the same way", code: `mySpawnSync("tar", []);` },
+  { flags: false, why: "the async spawn, which no ceiling problem applies to", code: `spawn("tar", ["-czf", archive]);` },
+  { flags: false, why: "the import, which is not a call", code: `import { spawnSync } from "node:child_process";` },
+];
+
 const CHECKS = [
+  /**
+   * A SYNC CHILD WAIT IS OUTSIDE EVERY CEILING ABOVE IT — #807.
+   *
+   * bun's per-test ceiling is a timer on the event loop. `spawnSync` blocks the
+   * JS thread in `wait4`, so a thread parked there never reaches the timer:
+   * `--timeout 20000` bounds a test and cannot bound this. Measured for #807,
+   * none of the engine suite's four sync child waits passed a `timeout`, and
+   * the worst of them spawns seven child `bun test` runs — one stuck child is
+   * two unbounded `bun test` processes, neither bounded by anything.
+   *
+   * THE RULE IS NOT A BLANKET WRAPPER, which #807 rules out by name. It asks
+   * each call site to name its own ceiling, the way src/worktree.ts's sync git
+   * runner already does — that file is where the argument for SIGKILL over
+   * SIGTERM is written out, and it is why this check wants both: a ceiling with
+   * a signal the child may never get around to handling is a ceiling that can
+   * miss, and a signal with no ceiling never fires.
+   *
+   * SCOPED TO THE ENGINE TESTS, which is where the gap was and where the
+   * evidence is. src/ already passes; a rule over src/ would be a claim this
+   * issue did not measure.
+   */
+  {
+    name: "engine-test-spawn-sync-is-bounded",
+    protects: "#807: no synchronous child wait in the engine suite can outlive its own call site",
+    async run() {
+      const failures = [];
+      for (const file of (await testFilesUnder("apps/engine/test")).sort()) {
+        for (const call of syncSpawnCalls(await read(file))) {
+          if (call.bounded && call.forceful) continue;
+          const missing = call.bounded ? '`killSignal: "SIGKILL"`' : call.forceful ? "a `timeout`" : "a `timeout` and `killSignal: \"SIGKILL\"`";
+          failures.push(
+            `${file}:${call.line}: \`${call.call}(…)\` is missing ${missing}. A synchronous child wait blocks the JS thread in wait4, ` +
+              "where bun's per-test ceiling — an event-loop timer — can never reach it, so a child that does not exit is a test that never " +
+              "fails and a `bun test` that never ends. Give this call site a ceiling it knows is generous for what it spawns, and SIGKILL " +
+              "so the ceiling reaches a child that has stopped answering. See src/worktree.ts's sync git runner for the shape.",
+          );
+        }
+      }
+      return failures;
+    },
+  },
+
+  {
+    name: "engine-test-spawn-sync-scan-self-test",
+    protects: "#807: the scan still fires on both unbounded spellings, and stays quiet on a bounded call whose options are lines below it",
+    async run() {
+      const failures = [];
+      for (const { flags, why, code } of SYNC_SPAWN_SAMPLES) {
+        const unbounded = syncSpawnCalls(code).filter((call) => !(call.bounded && call.forceful));
+        if (flags && unbounded.length === 0) failures.push(`the scan MISSED a sample it must catch (${why}): ${JSON.stringify(code)}.`);
+        if (!flags && unbounded.length > 0) {
+          failures.push(`the scan FIRED on a sample it must ignore (${why}): ${JSON.stringify(code)}. Flagging a bounded call makes the check wrong about correct code.`);
+        }
+      }
+      return failures;
+    },
+  },
+
   {
     name: "shell-empty-array-self-test",
     protects:

@@ -295,11 +295,57 @@ const MAX_IDLE_RUNTIMES = 3;
 export const STOP_REAP_GRACE_MS = 3_000;
 
 /**
+ * HOW LONG BACKGROUND WORK MAY RUN WITH NOBODY WATCHING — #807.
+ *
+ * THIS IS NOT THE #201 CAP AGAIN, and the difference is the whole argument.
+ * `MAX_IDLE_RUNTIMES` bounds a COUNT, and #201 settled that correctly: between
+ * a memory bound and a person's running work, the work wins, so a runtime that
+ * owns live background work is never evictable however many sessions arrive.
+ * That policy has no clock in it at all, which is right for a dev server
+ * somebody wants to keep and wrong for a test suite the model stopped reading
+ * forty minutes ago. What was missing is a bound on AGE WITH NOBODY WATCHING,
+ * and it does not cost what a bound on count costs.
+ *
+ * THIRTY MINUTES, against a suite that takes three. Five #807 processes ran for
+ * 28 to 56 minutes; the shortest of them is the number this must sit under, and
+ * the longest legitimate thing anyone here backgrounds is the number it must
+ * sit above. Thirty is ten times the honest duration and inside the shortest
+ * incident.
+ *
+ * AND IT IS A STOP, NOT A KILL. Every task goes through `stopTask` — the
+ * affordance the driver already exposes and the CLI already answers with a
+ * `task_notification` of status `stopped` — so the row on the session says what
+ * happened. #201's real objection was to work disappearing SILENTLY; this is
+ * the opposite of silent.
+ */
+export const UNATTENDED_BACKGROUND_WORK_MS = 30 * 60_000;
+
+/** What one unattended sweep stopped, for the caller that has to say so. */
+export type UnattendedStop = {
+  sessionId: string;
+  /** The task row's id, which is what a person sees. */
+  taskId: string;
+  /** The provider handle `stopTask` was called with, when the row had one. */
+  providerTaskId: string | undefined;
+  /** How long the session had been idle when the ceiling caught it. */
+  idleForMs: number;
+  /** Did the provider accept the stop? False when the SDK offers no `stopTask`. */
+  stopped: boolean;
+};
+
+/**
  * The store: sessionId → live runtime, owned by one driver instance.
  *
- * NO TIMERS. Eviction happens lazily on `adopt()` (oldest-idle beyond the
- * cap) and eagerly on `destroyAll()`. A timer here would keep the worker
- * process — and every test that touches the driver — alive for its tick.
+ * ONE TIMER, AND IT IS UNREF'D. Eviction is still lazy — `adopt()` and
+ * `release()` prune the oldest idle beyond the cap, `destroyAll()` clears the
+ * lot — because a timer for THAT would tick forever for a bound nothing is
+ * waiting on. The unattended ceiling above is the one thing that cannot be
+ * lazy: its whole premise is that nobody is arriving, so there is no later call
+ * to hang it off. It is armed only while some runtime actually has an
+ * unattended deadline to meet, and it is unref'd for the reason this paragraph
+ * used to forbid timers outright — a pending sweep must never hold the worker
+ * process, or a test that touched the driver, open for its tick. `reapAfter`
+ * has carried exactly that arrangement since the stop escalation was written.
  */
 export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; providerTaskId?: string } = { id: string; providerTaskId?: string }> {
   private readonly runtimes = new Map<string, ClaudeSessionRuntime<T, Seed>>();
@@ -314,9 +360,93 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
    * and what a test that does not care about eviction gets.
    */
   private readonly liveBackgroundWork: (seed: Seed) => boolean;
+  /** The clock every deadline here is measured against. Injected so a test can
+   *  hold one still instead of sleeping for a real ceiling. */
+  private readonly now: () => number;
+  /** See `UNATTENDED_BACKGROUND_WORK_MS`. `Infinity` turns the ceiling off,
+   *  which is what a test that is not about it gets. */
+  private readonly unattendedAfterMs: number;
+  /** Told what the ceiling stopped, so the driver can say so. */
+  private readonly onUnattended: ((stops: readonly UnattendedStop[]) => void) | undefined;
+  /** The one armed sweep, or none. Never more than one; always unref'd. */
+  private unattendedTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(options: { liveBackgroundWork?: (seed: Seed) => boolean } = {}) {
+  constructor(
+    options: {
+      liveBackgroundWork?: (seed: Seed) => boolean;
+      now?: () => number;
+      unattendedAfterMs?: number;
+      onUnattended?: (stops: readonly UnattendedStop[]) => void;
+    } = {},
+  ) {
     this.liveBackgroundWork = options.liveBackgroundWork ?? (() => false);
+    this.now = options.now ?? Date.now;
+    // OFF BY DEFAULT, ON WHERE THE DRIVER TURNS IT ON. A store built without
+    // `liveBackgroundWork` protects nothing and would have nothing to sweep, so
+    // the default here keeps every existing test's arithmetic exactly as it was.
+    this.unattendedAfterMs = options.unattendedAfterMs ?? Infinity;
+    this.onUnattended = options.onUnattended;
+  }
+
+  /** The live background work inside one runtime, in row order. */
+  private liveWorkIn(runtime: ClaudeSessionRuntime<T, Seed>): Seed[] {
+    return [...runtime.tasks.known.values()].filter((seed) => this.liveBackgroundWork(seed));
+  }
+
+  /**
+   * Re-arm the one sweep at the EARLIEST deadline any runtime currently has.
+   *
+   * RE-ARMED RATHER THAN LEFT RUNNING: a runtime that is claimed, released,
+   * destroyed or whose wake-up ends changes when — or whether — the next sweep
+   * is due, and a timer that ticked on regardless would either fire early on a
+   * session somebody just used or sit on a stale deadline after the only
+   * candidate went away.
+   */
+  private armUnattendedSweep(): void {
+    if (this.unattendedTimer) clearTimeout(this.unattendedTimer);
+    this.unattendedTimer = undefined;
+    if (!Number.isFinite(this.unattendedAfterMs)) return;
+    let earliest: number | undefined;
+    for (const runtime of this.runtimes.values()) {
+      if (runtime.busy || runtime.wakeActive) continue;
+      if (this.liveWorkIn(runtime).length === 0) continue;
+      const due = runtime.lastUsedAt + this.unattendedAfterMs;
+      if (earliest === undefined || due < earliest) earliest = due;
+    }
+    if (earliest === undefined) return;
+    const timer = setTimeout(() => void this.sweepUnattended(), Math.max(0, earliest - this.now()));
+    timer.unref?.();
+    this.unattendedTimer = timer;
+  }
+
+  /**
+   * Stop the background work in every runtime that has been idle past the
+   * ceiling, and end the processes that were only alive to hold it.
+   *
+   * THE ORDER IS THE POINT. Each task is stopped through `stopTask` FIRST, so
+   * the CLI reports it and the session's rows say what became of the work;
+   * destroying the process is what follows, not what happens instead. A
+   * runtime that has just been claimed, or that has a provider-started turn in
+   * flight, is not idle and is never touched however old it looks.
+   */
+  async sweepUnattended(): Promise<UnattendedStop[]> {
+    const stopped: UnattendedStop[] = [];
+    const at = this.now();
+    for (const runtime of [...this.runtimes.values()]) {
+      if (runtime.busy || runtime.wakeActive) continue;
+      const idleForMs = at - runtime.lastUsedAt;
+      if (idleForMs < this.unattendedAfterMs) continue;
+      const live = this.liveWorkIn(runtime);
+      if (live.length === 0) continue;
+      for (const seed of live) {
+        const took = seed.providerTaskId === undefined ? false : await this.stopTask(runtime.sessionId, seed.providerTaskId);
+        stopped.push({ sessionId: runtime.sessionId, taskId: seed.id, providerTaskId: seed.providerTaskId, idleForMs, stopped: took });
+      }
+      this.destroy(runtime.sessionId);
+    }
+    if (stopped.length > 0) this.onUnattended?.(stopped);
+    this.armUnattendedSweep();
+    return stopped;
   }
 
   /**
@@ -399,7 +529,10 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     // nothing else would ever clear the flag. `busy` protects the runtime from
     // here, and the wake-up's own frames are parked for this turn.
     runtime.wakeActive = false;
-    runtime.lastUsedAt = Date.now();
+    runtime.lastUsedAt = this.now();
+    // Somebody is watching this one again: it drops out of the sweep, and the
+    // earliest remaining deadline may belong to a different runtime now.
+    this.armUnattendedSweep();
     return runtime;
   }
 
@@ -420,9 +553,10 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
   adopt(runtime: ClaudeSessionRuntime<T, Seed>): void {
     this.destroy(runtime.sessionId);
     runtime.busy = true;
-    runtime.lastUsedAt = Date.now();
+    runtime.lastUsedAt = this.now();
     this.runtimes.set(runtime.sessionId, runtime);
     this.prune();
+    this.armUnattendedSweep();
   }
 
   /**
@@ -443,11 +577,15 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     const runtime = this.runtimes.get(sessionId);
     if (!runtime) return;
     runtime.busy = false;
-    runtime.lastUsedAt = Date.now();
+    runtime.lastUsedAt = this.now();
     this.wakeIdle(sessionId);
     // The cap is enforced HERE too: this runtime has only just become
     // evictable, and adoption already ran before that was true.
     this.prune();
+    // AND THE CEILING'S CLOCK STARTS HERE. `release` is the moment a session
+    // stops being watched, so it is the moment the deadline it will be judged
+    // against becomes knowable.
+    this.armUnattendedSweep();
   }
 
   /**
@@ -458,8 +596,11 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     const runtime = this.runtimes.get(sessionId);
     if (!runtime) return;
     runtime.wakeActive = active;
-    runtime.lastUsedAt = Date.now();
+    runtime.lastUsedAt = this.now();
     if (!active) this.prune();
+    // A wake-up starting suspends the ceiling for this runtime; one ending
+    // restarts its clock. Either way the earliest deadline has moved.
+    this.armUnattendedSweep();
   }
 
   /**
@@ -488,10 +629,15 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     } catch {
       // A process that is already gone is the outcome destroy wanted.
     }
+    this.armUnattendedSweep();
   }
 
   destroyAll(): void {
     for (const sessionId of [...this.runtimes.keys()]) this.destroy(sessionId);
+    // Nothing is left to sweep, and a live timer here is what would keep a
+    // disposed driver's worker process from settling.
+    if (this.unattendedTimer) clearTimeout(this.unattendedTimer);
+    this.unattendedTimer = undefined;
   }
 
   get size(): number {

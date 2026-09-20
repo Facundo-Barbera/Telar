@@ -57,6 +57,27 @@ const fixture = (body: string): string => {
 };
 
 /**
+ * HOW LONG A CHILD `bun test` GETS BEFORE THIS HELPER KILLS IT — #807.
+ *
+ * THE CEILING ABOVE CANNOT REACH IN HERE, and that is the whole reason this
+ * number exists. Bun's per-test ceiling is a timer on the event loop;
+ * `spawnSync` blocks the JS thread in `wait4`, so a thread parked in that
+ * syscall never reaches the timer and a child that never exits is a test that
+ * never fails. On this file that is the sharpest case in the suite: seven child
+ * `bun test` invocations, so one stuck child is TWO unbounded `bun test`
+ * processes — this one blocked on a child of its own — and nothing bounded
+ * either of them.
+ *
+ * IT IS A PER-CALL-SITE NUMBER, NOT A BLANKET WRAPPER. Every child spawned here
+ * is a fixture of one or two tests that sleep for well under a second, so 45 s
+ * is two orders of magnitude of slack — and it sits UNDER the 60 s deadline each
+ * test using this helper declares. That ordering is the point: a stuck child
+ * comes back as `timedOut` from this helper, which a test can assert on, rather
+ * than as a dead test the runner reports with no reason attached.
+ */
+const CHILD_RUN_BUDGET_MS = 45_000;
+
+/**
  * The invocation under test: `bun test <path>` with the repo root as cwd, which
  * is where bun looks for the bunfig that registers the ceiling. `flag` is passed
  * the way a person would type it, so the child's own command line is what the
@@ -64,8 +85,8 @@ const fixture = (body: string): string => {
  */
 const runFromRepoRoot = (
   files: string | string[],
-  { ceiling, flag }: { ceiling?: string; flag?: string } = {},
-): { output: string; status: number | null } => {
+  { ceiling, flag, budgetMs = CHILD_RUN_BUDGET_MS }: { ceiling?: string; flag?: string; budgetMs?: number } = {},
+): { output: string; status: number | null; timedOut: boolean; killedPid: number | undefined } => {
   const environment = { ...process.env };
   delete environment.TELAR_TEST_TIMEOUT_MS;
   if (ceiling !== undefined) environment.TELAR_TEST_TIMEOUT_MS = ceiling;
@@ -80,8 +101,28 @@ const runFromRepoRoot = (
     cwd: REPO_ROOT,
     encoding: "utf8",
     env: environment,
+    timeout: budgetMs,
+    // SIGKILL, NOT SIGTERM, for the reason src/worktree.ts already argues at
+    // its own sync git runner: what this guards against is a process that is
+    // not answering, and a signal it may handle politely is a signal it may
+    // never get around to handling. A `bun test` parked on a module-scope await
+    // that never settles is exactly that — nothing of its own is running.
+    killSignal: "SIGKILL",
   });
-  return { output: `${run.stdout ?? ""}${run.stderr ?? ""}`, status: run.status };
+  const failure = run.error as { code?: string } | undefined;
+  // THE SECOND CLAUSE IS KEPT FOR THE REASON THE GIT RUNNER KEEPS IT: a child
+  // that died on SIGKILL with no status is one this helper killed, on a
+  // platform that did not also hand back ETIMEDOUT.
+  const timedOut = failure?.code === "ETIMEDOUT" || (run.status == null && run.signal === "SIGKILL");
+  return {
+    output: `${run.stdout ?? ""}${run.stderr ?? ""}`,
+    status: run.status,
+    timedOut,
+    // Reported because the SPAWN happened, not because the child cooperated —
+    // #748's argument for `spawnSync` over `execFileSync`, reused here so a
+    // killed child names the process that was killed.
+    killedPid: typeof run.pid === "number" && run.pid > 0 ? run.pid : undefined,
+  };
 };
 
 /**
@@ -111,12 +152,52 @@ const tally = (output: string): string => {
   return `${passed ?? "?"} pass, ${failed ?? "?"} fail`;
 };
 
+/**
+ * A SUITE THAT CAN NEVER FINISH, and the one shape the ceiling above cannot
+ * touch. The `await` is at MODULE SCOPE, so no test ever registers and bun's
+ * per-test timer is never armed; measured on bun 1.3.11 for #807, the child
+ * prints nothing past its banner and runs forever at ~0% CPU.
+ */
+const neverExits = (): string => `import { test, expect } from "bun:test";
+await new Promise(() => {});
+test("this line is never reached, so no ceiling ever applies to it", () => {
+  expect(1).toBe(1);
+});
+`;
+
 const sleeps = (ms: number): string => `import { test, expect } from "bun:test";
 test("sleeps ${ms}ms and declares no ceiling of its own", async () => {
   await new Promise((resolve) => setTimeout(resolve, ${ms}));
   expect(1).toBe(1);
 });
 `;
+
+/**
+ * THE CALL SITE'S OWN CEILING, WHICH IS THE ONLY ONE THAT REACHES A BLOCKED
+ * THREAD — #807.
+ *
+ * NOTHING IS COMPARED AGAINST A CLOCK HERE, for #706's reason: the assertion is
+ * that the helper RETURNED and what it returned about the child, never how long
+ * anything took. A loaded machine makes this slower and not redder.
+ *
+ * WHAT IT LOOKS LIKE WITHOUT THE FIX is not a red test — it is no test at all.
+ * Remove `timeout` from `runFromRepoRoot` and this case does not fail: it hangs,
+ * holding a `bun test` of its own open behind it, which is the failure #807
+ * reports and the reason scripts/test-engine-bounded.mjs has to tell a hang from
+ * a failure rather than reading an exit code.
+ */
+test("a child that can never finish comes back as a killed child, not as a blocked helper", () => {
+  const run = runFromRepoRoot(fixture(neverExits()), { budgetMs: 2_000 });
+  expect(run.timedOut).toBe(true);
+  // A child killed by a signal has no status at all — distinct from the
+  // ordinary non-zero of a suite that ran and failed.
+  expect(run.status).toBeNull();
+  expect(typeof run.killedPid).toBe("number");
+  // AND IT NEVER COUNTED ANYTHING. A run killed before its first test
+  // registered prints no end-of-run tally, which is exactly the signal the
+  // bounded wrapper reads to tell `hung` from `failed`.
+  expect(tally(run.output)).toBe("? pass, ? fail");
+}, 60_000);
 
 test("the preload ran in this process, and says which knob it took the ceiling from", async () => {
   const { TEST_CEILING_MS } = await import("../../../scripts/test-ceiling.mjs");

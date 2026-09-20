@@ -153,7 +153,15 @@ describe("a new conversation honours the project before the Mac", () => {
   function gitStore(): EngineStore {
     const checkout = dir("telar-identity-git-");
     for (const args of [["init"], ["config", "user.email", "t@t"], ["config", "user.name", "T"], ["commit", "--allow-empty", "-m", "root"]]) {
-      Bun.spawnSync(["git", ...args], { cwd: checkout });
+      // BOUNDED, BECAUSE A SYNC CHILD WAIT IS OUTSIDE EVERY CEILING ABOVE IT
+      // (#807): `spawnSync` parks this thread in `wait4`, where bun's per-test
+      // timer — an event-loop timer — can never reach it. A `git` that decides
+      // to prompt for credentials, or one waiting on an index.lock another
+      // process holds, never returns on its own. Five seconds is generous for
+      // four local plumbing commands in a fresh temp directory, and SIGKILL for
+      // the reason src/worktree.ts's sync runner argues: a git that has not
+      // answered is one that may never handle a polite signal.
+      Bun.spawnSync(["git", ...args], { cwd: checkout, timeout: 5_000, killSignal: "SIGKILL" });
     }
     const store = new EngineStore(dir("telar-identity-home-"), () => 100);
     store.registerProject({ id: "project_one", name: "One", root: checkout });
