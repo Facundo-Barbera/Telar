@@ -132,6 +132,42 @@ reason. Three tests in that file could not fail. If you add a grep-for-a-marker
 guard, exercise **both** directions: it passes on a real run, and it fails when
 the thing it guards did not happen.
 
+The general form, which is wider than error messages: **any check keyed on a
+string that both the success and the failure state emit is vacuous.** A substring
+in an error message is the mild instance. **A test-name grep is the dangerous
+one, because a skipped test prints its own name.**
+
+That is not hypothetical and the example matters more than the rule. The `macos`
+job's "prove the macOS-only block ran" check grepped `/tmp/desktop.log` for the
+describe name `the swap helper, run for real against fake bundles`. A real log —
+the ubuntu leg of run `35492116321` — contains:
+
+```
+(skip) the swap helper, run for real against fake bundles > success: candidate installed, …
+```
+
+So the string the guard required was present **exactly when the thing it guarded
+against had happened**. It was vacuous from the day it was written, and it was
+this repository's only example of the "prove it ran" idiom — which means it was
+also the thing being copied. It was held up as the template to mirror, in
+writing, twice, and mirroring it faithfully would have produced a second vacuous
+guard reported as proven. It was caught only because the same instruction said a
+guard whose string is satisfiable another way is not a guard, and that was applied
+to the template rather than only to the new code. **Anyone sweeping for this
+pattern will find that idiom in the history and reasonably read it as the good
+one. It was not.**
+
+Prefer a **count the failure state cannot produce** over a string that both
+states emit: `skipped="0"` and `assertions>0` from `--reporter=junit`, or a test
+total that moved by exactly what you added. Counts distinguish the states instead
+of sharing a substring, and they do not drift as tests are added.
+
+And when the honest mechanism looks worse than the elegant one, take the honest
+one. A `(pass) …` grep was rejected here because bun prints per-test lines only
+under GitHub Actions — zero locally across four environments — so its negative
+case could not have been exercised at all. **Choosing a worse-looking check you
+can falsify over a better-looking one you cannot is the whole of this section.**
+
 **An empty result from a tool you just wrote is a claim about the tool.** This is
 the general form of the section above, and the sharper half, because silence
 reads as an answer. The `grep -E` with `\|` returned nothing and that looked
