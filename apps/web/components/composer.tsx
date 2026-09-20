@@ -70,6 +70,7 @@ import {
 } from "./composer-controls";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { markComposerActive, registerComposer, type ComposerKind, type ComposerSubmit } from "@/lib/composer-registry";
+import { contextNoticeDue } from "@/lib/context-notice";
 import { ComposerMenu } from "./composer-menu";
 import { DictationButton } from "./dictation-button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -613,12 +614,19 @@ export function Composer({
    *  nothing and resets by construction when the composer shows another
    *  conversation — no effect clearing state behind the render. */
   const [contextNoticeDismissedFor, setContextNoticeDismissedFor] = useState<string>();
-  const contextShare = usage?.contextUsed && usage.contextMax ? usage.contextUsed / usage.contextMax : 0;
   /** Three quarters full is when compaction stops being trivia and starts
    *  being the next thing worth doing — late enough to never nag a short
-   *  conversation, early enough that the squeeze still has room to run. */
+   *  conversation, early enough that the squeeze still has room to run.
+   *
+   *  AND AN ABSOLUTE BAND AS WELL (#587). A proportion alone was right until
+   *  `contextMax` went from 200,000 to 1,000,000 and silently moved this nudge
+   *  from ~150k to 750,000 — with no edit to this file, and with the measured
+   *  sawtooth peaking at 700–740k just underneath it. `contextNoticeDue` fires
+   *  on whichever arm comes first; on a 200k window that is still 75%, so
+   *  nothing changes for a short conversation or an account without a 1M
+   *  window. The reasoning and the number live in lib/context-notice.ts. */
   const contextNotice = Boolean(
-    !fresh && session && onCompact && !compacting && contextShare >= 0.75 && contextNoticeDismissedFor !== session.id,
+    !fresh && session && onCompact && !compacting && contextNoticeDue(usage) && contextNoticeDismissedFor !== session.id,
   );
   const settledNotice = Boolean(!fresh && session && settled);
   /** A LIVE SNOOZE ONLY. `snoozeWakeIn` is absent once it has expired — the
