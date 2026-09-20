@@ -14,30 +14,25 @@
  * and each language. One labelled line each.
  *
  * ── IT NEEDS A KEY, AND IT NEVER PRINTS ONE ────────────────────────────────
- * The key is read from `DEEPGRAM_API_KEY` — an environment variable this script
- * is TOLD, never a credentials file it goes looking for, so running it cannot
- * quietly spend a key somebody did not mean to spend. It goes into one
- * `Authorization` header on the wire and nowhere else: not into the query, not
- * into the output, not into an error path (the transport's own error is
- * swallowed rather than echoed, for that reason alone). THE URL IS NEVER
- * PRINTED EITHER, on the principle that a URL is the thing a credential leaks
- * into — only the request line's LENGTH, which is what the second limit below
- * is about.
+ * The handshake, the key rule and the never-print-the-URL rule all live in
+ * `deepgram-handshake.ts`, which this shares with
+ * `probe-deepgram-keyterm-bound.ts` (#712). A second copy of a function that
+ * handles a credential is how one of them quietly stops scrubbing.
  *
  * Nothing it writes is safe to assume; nothing it writes is unsafe to paste.
  *
  *   DEEPGRAM_API_KEY=... bun scripts/probe-deepgram-listen.ts
+ *
+ * ── AND WHAT IT NO LONGER ANSWERS ──────────────────────────────────────────
+ * WHERE the limit is, as opposed to what it says. `GLOSSARY` below is built by
+ * the engine's own bounded builder, so the prefixes it sweeps stop at whatever
+ * that bound currently is — it can show a refusal but it cannot find a
+ * boundary. That question is `probe-deepgram-keyterm-bound.ts`.
  */
 import { deepgramKeyterms } from "../apps/engine/src/dictation/keyterms";
+import { handshake, listenQuery, requireKey, said } from "./deepgram-handshake";
 
-const HOST = "api.deepgram.com";
-const PATH = "/v1/listen";
-
-const key = process.env.DEEPGRAM_API_KEY?.trim();
-if (!key) {
-  console.error("Set DEEPGRAM_API_KEY in the environment. It is never printed.");
-  process.exit(2);
-}
+const key = requireKey();
 
 /**
  * THE GLOSSARY THIS MAC WOULD SEND, built by the engine's own builder against a
@@ -96,93 +91,14 @@ const GLOSSARY = deepgramKeyterms({
   },
 });
 
-/** The same query `listenUrl` builds, minus the credential (which is a header). */
-function query(input: { language: string; keyterms: readonly string[]; model?: string }): URLSearchParams {
-  const parameters = new URLSearchParams();
-  parameters.set("model", input.model ?? "nova-3");
-  parameters.set("interim_results", "true");
-  parameters.set("smart_format", "true");
-  parameters.set("language", input.language);
-  parameters.set("endpointing", "300");
-  for (const term of input.keyterms) parameters.append("keyterm", term);
-  return parameters;
-}
-
-/** One handshake. Returns the status line and the body Deepgram sends with a
- *  refusal — which is the whole point, and the thing a browser discards. */
-async function handshake(parameters: URLSearchParams): Promise<{ status: string; body: string; bytes: number }> {
-  const target = `${PATH}?${parameters.toString()}`;
-  const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
-  const request = [
-    `GET ${target} HTTP/1.1`,
-    `Host: ${HOST}`,
-    "Upgrade: websocket",
-    "Connection: Upgrade",
-    `Sec-WebSocket-Key: ${nonce}`,
-    "Sec-WebSocket-Version: 13",
-    `Authorization: Token ${key}`,
-    "",
-    "",
-  ].join("\r\n");
-
-  let received = "";
-  const done = Promise.withResolvers<void>();
-  const settle = setTimeout(() => done.resolve(), 10_000);
-
-  let socket: Awaited<ReturnType<typeof Bun.connect>> | undefined;
-  try {
-    socket = await Bun.connect({
-      hostname: HOST,
-      port: 443,
-      tls: true,
-      socket: {
-        open: (s) => void s.write(request),
-        data: (_s, chunk) => {
-          received += new TextDecoder().decode(chunk);
-          if (received.includes("\r\n\r\n")) setTimeout(() => done.resolve(), 200);
-        },
-        close: () => done.resolve(),
-        // NO CAUSE IS PRINTED HERE. A transport error message is not a place a
-        // credential ends up, but this script's rule is that nothing from the
-        // request side is ever echoed.
-        error: () => done.resolve(),
-      },
-    });
-    await done.promise;
-  } finally {
-    clearTimeout(settle);
-    try {
-      socket?.end();
-    } catch {
-      // Already closed.
-    }
-  }
-
-  const [head = "", ...rest] = received.split("\r\n\r\n");
-  return {
-    status: head.split("\r\n")[0]?.replace("HTTP/1.1 ", "").trim() || "(no answer)",
-    body: rest.join("\r\n\r\n").trim(),
-    bytes: `GET ${target} HTTP/1.1`.length,
-  };
-}
-
 /** One labelled line. Never the URL — see the header. */
 async function run(label: string, input: { language: string; keyterms: readonly string[]; model?: string }): Promise<void> {
-  const parameters = query(input);
-  const { status, body, bytes } = await handshake(parameters);
+  const { status, body, requestLineBytes } = await handshake(listenQuery(input), key);
   const chars = input.keyterms.reduce((n, t) => n + t.length, 0);
-  const shape = `${input.keyterms.length} terms / ${chars} chars / ${bytes}B request line`;
+  const shape = `${input.keyterms.length} terms / ${chars} chars / ${requestLineBytes}B request line`;
   const verdict = status.startsWith("101") ? "OPENS" : status;
-  let said = "";
-  if (body) {
-    try {
-      const parsed = JSON.parse(body) as { err_code?: string; err_msg?: string };
-      said = parsed.err_msg ? ` — ${parsed.err_code ?? "?"}: ${parsed.err_msg}` : ` — ${body.slice(0, 200)}`;
-    } catch {
-      said = ` — ${body.slice(0, 200)}`;
-    }
-  }
-  console.log(`${verdict.padEnd(26)} ${label.padEnd(44)} [${shape}]${said}`);
+  const reason = body ? ` — ${said(body)}` : "";
+  console.log(`${verdict.padEnd(26)} ${label.padEnd(44)} [${shape}]${reason}`);
 }
 
 const ACCENTED = "#974 revisión: Creatio sin ruta OData + pgTAP con datos reales";
@@ -195,7 +111,12 @@ console.log(`glossary the engine builds for this store: ${GLOSSARY.length} terms
 // a token never covers fewer than one byte, so this is the ceiling on what
 // Deepgram will count against its budget of 500. The characters are printed
 // beside it only because the estimate that broke this counted those.
-console.log(`(the bound charges ${glossaryBytes} of a 500-token budget; the estimate this replaced called it ${Math.ceil(glossaryChars / 4)})\n`);
+//
+// AND THE BOUND IS NO LONGER THE CEILING (#712): the list is built to a
+// MEASURED byte budget above 500 and confirmed with Deepgram at mint time, so
+// a glossary printed here may be over 500 bytes and perfectly legal. What that
+// bound is worth is `probe-deepgram-keyterm-bound.ts`.
+console.log(`(${glossaryBytes} bytes against a 500-token budget; the estimate this replaced called it ${Math.ceil(glossaryChars / 4)})\n`);
 
 // ── DOES IT OPEN AT ALL, PER LANGUAGE, WITH NO GLOSSARY ─────────────────────
 for (const language of ["multi", "es", "en"]) await run(`no keyterms · language=${language}`, { language, keyterms: [] });

@@ -165,7 +165,15 @@ export const TELAR_KEYTERMS: readonly string[] = ["Telar", "Agent", "worktree", 
  * "Telar" and the constant "Telar" are one term; so are a branch and the title
  * it was cut from, which is the commonest collision here by far.
  */
-export function deepgramKeyterms(input: { vocabulary: readonly string[]; context: DictationContext }): string[] {
+export function deepgramKeyterms(input: {
+  vocabulary: readonly string[];
+  context: DictationContext;
+  /** How many BYTES the list may weigh. Defaults to the bound above, and is a
+   *  parameter for one reason: the probe that measures the real boundary has to
+   *  build lists past it. */
+  budgetBytes?: number;
+}): string[] {
+  const budget = input.budgetBytes ?? DEEPGRAM_KEYTERM_TOKEN_BUDGET;
   const kept: string[] = [];
   const seen = new Set<string>();
   let spent = 0;
@@ -187,7 +195,7 @@ export function deepgramKeyterms(input: { vocabulary: readonly string[]; context
     // THE BUDGET STOPS THE LIST rather than skipping this one entry — see the
     // header for why the answer is always a prefix.
     const cost = tokenCeiling(term);
-    if (spent + cost > DEEPGRAM_KEYTERM_TOKEN_BUDGET) break;
+    if (spent + cost > budget) break;
     seen.add(key);
     kept.push(term);
     spent += cost;
