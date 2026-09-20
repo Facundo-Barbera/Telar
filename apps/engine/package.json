@@ -11,6 +11,7 @@
     "test": "bun test",
     "bench:append": "bun run bench/append-cost.ts",
     "bench:open": "bun run bench/session-open.ts",
+    "bench:events": "bun run bench/events-page.ts",
     "bench:journal": "bun run bench/journal-append.ts",
     "bench:idle": "bun run bench/idle-heartbeat.ts",
     "bench:live": "bun run bench/live-list.ts",
