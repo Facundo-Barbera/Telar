@@ -111,11 +111,18 @@ jobs:
       #
       # Do not read a green probe as #758 being fixed, and do not copy this into
       # nightly-ios.yml: it hides the very threshold #758 is about.
+      #
+      # ALL FOUR LIMITS, because the solver has four and the error names none
+      # of them. Run 35491585777 raised the scope and time thresholds alone and
+      # SessionView.swift:515 still failed, which says the limit it actually
+      # trips is the trail or the memory one. The memory figure is deliberately
+      # not enormous: a compiler that keeps allocating until the runner OOMs
+      # reports something far less legible than a threshold error.
       - name: Raise the Swift solver budget, for this probe only (#758)
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/probe.xcconfig" <<'XCCONFIG'
-          OTHER_SWIFT_FLAGS = $(inherited) -Xfrontend -solver-expression-time-threshold=1200 -Xfrontend -solver-scope-threshold=4000000
+          OTHER_SWIFT_FLAGS = $(inherited) -Xfrontend -solver-expression-time-threshold=1200 -Xfrontend -solver-scope-threshold=20000000 -Xfrontend -solver-trail-threshold=20000000 -Xfrontend -solver-memory-threshold=2147483648
           XCCONFIG
           cat "$RUNNER_TEMP/probe.xcconfig"
 
