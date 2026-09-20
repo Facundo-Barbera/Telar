@@ -4597,25 +4597,43 @@ export class EngineStore {
     if (missing.length === 0) return { sessions: 0, turns: 0 };
     let turns = 0;
     let sessions = 0;
-    for (const sessionId of missing) {
-      try {
-        this.executeCommand("backfillTurnSummaries", () => {
-          const queue = this.readQueue(sessionId);
-          if (queue.turns.length === 0) return;
-          const items = [...this.itemsById(sessionId).values()];
-          const byRun = new Map<string, Item[]>();
-          for (const item of items) {
-            const filed = byRun.get(item.runId);
-            if (filed) filed.push(item);
-            else byRun.set(item.runId, [item]);
-          }
-          for (const turn of queue.turns) store.writeTurnSummary(summariseTurn(turn, byRun.get(turn.runId) ?? []));
-          turns += queue.turns.length;
-          sessions += 1;
-        });
-      } catch {
-        // Unreadable is skipped, not thrown — see the note above.
+    /**
+     * AND IT MIGRATES NOTHING — issue #658, and #646's lesson kept.
+     *
+     * This pass reads every `items.json` on the machine, which makes it the
+     * most tempting place in the codebase to move them all to rows: the text is
+     * already parsed and the loop is already written. It is also the OPEN PATH,
+     * and #646's compaction sweep looked exactly this free in the constructor
+     * and cost 54 s on the first launch after it shipped.
+     *
+     * So the per-session migration stays lazy and stays where a person is
+     * already waiting for that one session. A store opened and never used
+     * migrates nothing at all.
+     */
+    this.suppressItemsMigration = true;
+    try {
+      for (const sessionId of missing) {
+        try {
+          this.executeCommand("backfillTurnSummaries", () => {
+            const queue = this.readQueue(sessionId);
+            if (queue.turns.length === 0) return;
+            const items = [...this.itemsById(sessionId).values()];
+            const byRun = new Map<string, Item[]>();
+            for (const item of items) {
+              const filed = byRun.get(item.runId);
+              if (filed) filed.push(item);
+              else byRun.set(item.runId, [item]);
+            }
+            for (const turn of queue.turns) store.writeTurnSummary(summariseTurn(turn, byRun.get(turn.runId) ?? []));
+            turns += queue.turns.length;
+            sessions += 1;
+          });
+        } catch {
+          // Unreadable is skipped, not thrown — see the note above.
+        }
       }
+    } finally {
+      this.suppressItemsMigration = false;
     }
     /**
      * AND THE BACKFILL LETS GO OF EVERYTHING IT READ TO GET HERE — the argument
@@ -8496,6 +8514,10 @@ export class EngineStore {
     // Already parsed and in hand: a streaming session is read once a second and
     // the cache is what that repetition is for. Nothing to save by seeking.
     if (this.itemsCache.has(sessionId)) return [...this.readItems(sessionId).values()].filter((item) => chosen.has(item.runId));
+    // ON ROWS THE DATABASE CHOOSES (#658). `items_run` is `(session_id, run_id,
+    // ord)`, so this is the window and only the window — no offset index, no
+    // span, and nothing to keep in step with the document it describes.
+    if (this.itemsOnRows(sessionId)) return this.itemRowsOf(sessionId, [...chosen]);
     const file = itemsFile(this.paths, sessionId);
     const index = this.documentIndex(file, itemsIndexFile(this.paths, sessionId));
     if (!index) {
@@ -8908,7 +8930,7 @@ export class EngineStore {
     };
     if (items.has(item.id)) return;
     items.set(item.id, item);
-    this.writeItems(sessionId, items);
+    this.writeItems(sessionId, items, new Set([item.id]));
     this.appendEvent(sessionId, { type: "item.started", item }, turn.runId);
     this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
   }
@@ -9498,7 +9520,7 @@ export class EngineStore {
       items.set(item.id, item);
       written.push(item);
     });
-    this.writeItems(sessionId, items);
+    this.writeItems(sessionId, items, new Set(written.map((row) => row.id)));
 
     this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, runId);
     for (const item of written) {
@@ -9532,7 +9554,7 @@ export class EngineStore {
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "task observations are invalid");
     const tasks = this.readTasks(sessionId);
-    const projection = { items: this.readItems(sessionId), tasks, itemsTouched: false, tasksTouched: false, turnTouched: false };
+    const projection = { items: this.readItems(sessionId), tasks, itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
     let accepted = 0;
     for (const observation of parsed.data) {
       /**
@@ -10355,7 +10377,7 @@ export class EngineStore {
     const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
-    const projection = { items: this.readItems(sessionId), tasks: this.readTasks(sessionId), itemsTouched: false, tasksTouched: false, turnTouched: false };
+    const projection = { items: this.readItems(sessionId), tasks: this.readTasks(sessionId), itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
     for (const observation of parsed.data) {
       this.journalObservation(sessionId, turn, observation, projection);
     }
@@ -10370,7 +10392,7 @@ export class EngineStore {
      * turn: 2.09 ms per delta, against 0.11 ms for the journal insert it was
      * wrapped around.
      */
-    if (projection.itemsTouched) this.writeItems(sessionId, projection.items);
+    if (projection.itemsTouched.size > 0) this.writeItems(sessionId, projection.items, projection.itemsTouched);
     // Most batches carry no task at all — a rewrite per batch would be a file
     // write per streamed provider message for nothing. Same rule for the
     // queue: only a `provider.session` observation ever mutates the turn.
@@ -12471,7 +12493,7 @@ export class EngineStore {
     }
     const item: Item = { ...existing, title: detail.summary, detail: { type: "notification", notification: detail } };
     items.set(item.id, item);
-    this.writeItems(sessionId, items);
+    this.writeItems(sessionId, items, new Set([item.id]));
     this.appendEvent(sessionId, { type: "item.updated", item }, turn.runId);
   }
 
@@ -13510,6 +13532,7 @@ export class EngineStore {
    */
   private itemsForRuns(sessionId: string, runs: Set<string>): Item[] {
     if (this.itemsCache.has(sessionId)) return [...this.itemsById(sessionId).values()].filter((item) => runs.has(item.runId));
+    if (this.itemsOnRows(sessionId)) return this.itemRowsOf(sessionId, [...runs]);
     const file = itemsFile(this.paths, sessionId);
     const index = this.documentIndex(file, itemsIndexFile(this.paths, sessionId));
     if (!index) return [...this.itemsById(sessionId).values()].filter((item) => runs.has(item.runId));
@@ -13773,12 +13796,69 @@ export class EngineStore {
     this.itemsCache.set(sessionId, items);
   }
 
+  /**
+   * IS THIS SESSION ON ROWS? — issue #658, and the one question the whole read
+   * path turns on.
+   *
+   * The marker, never the presence of a document: after a migration there is no
+   * `items.json`, and "no document" is also what a session that has never
+   * opened an item looks like. Those two want opposite answers, and only the
+   * marker can tell them apart. A store on JSON has no rows at all and is
+   * always false here.
+   */
+  private itemsOnRows(sessionId: string): boolean {
+    return this.executionStore?.itemsAreRows(sessionId) === true;
+  }
+
+  /** Set only while the open-path backfill runs — see `backfillTurnSummaries`.
+   *  Migrating a session is right when somebody asked for it and wrong when a
+   *  whole-store pass merely walked past it. */
+  private suppressItemsMigration = false;
+
+  /**
+   * MOVE ONE SESSION TO ROWS, LAZILY AND ONCE — issue #658.
+   *
+   * WHEN IT IS FIRST READ, never on the open path. #646's own correction is the
+   * precedent: its compaction sweep looked free in the constructor and cost 54 s
+   * on the first launch after the update. This is per session and bounded by
+   * that session's own size — 228 ms for the worst session on the dogfood store,
+   * and the store's whole 194 MiB of `items.json` is ~2.7 s spread over 446
+   * sessions, never paid at once.
+   *
+   * ONE TRANSACTION, MARKER INCLUDED — see `ExecutionStore.migrateItemsToRows`,
+   * which is where that property lives. A kill part-way through leaves the blob
+   * and no marker, which is a correct unmigrated session, and the next read
+   * tries again.
+   *
+   * Takes the map the caller already has rather than reading one: both callers
+   * reached this holding the whole projection, and fetching it again to store
+   * it would be a second parse of the text they just parsed.
+   */
+  private migrateItemsToRows(sessionId: string, items: Map<string, Item>): void {
+    this.executionStore!.migrateItemsToRows(
+      sessionId,
+      [...items.values()].map((item) => ({ id: item.id, runId: item.runId, value: JSON.stringify(item) })),
+      // THE OFFSET INDEX GOES WITH THE DOCUMENT IT DESCRIBES. An index left
+      // behind describes bytes that are not there, and `documentIndex` trusts
+      // one whose recorded length matches — against an absent document that
+      // comparison is `undefined === n`, false, so it would merely be dead
+      // weight; deleted because dead weight in a store #646 is shrinking is
+      // still weight.
+      [itemsFile(this.paths, sessionId), itemsIndexFile(this.paths, sessionId)],
+    );
+  }
+
   /** THE CACHED PROJECTION ITSELF — read-only, and never handed to a caller.
    *  Keyed rather than listed so the one question the streaming path asks can be
    *  answered without building anything: see `hasItem`. */
   private itemsById(sessionId: string): Map<string, Item> {
     const cached = this.itemsCache.get(sessionId);
     if (cached) return cached;
+    if (this.itemsOnRows(sessionId)) {
+      const items = this.parseItemRows(this.executionStore!.itemRows(sessionId));
+      this.cacheItems(sessionId, items);
+      return items;
+    }
     const file = itemsFile(this.paths, sessionId);
     const stored = this.readDocument(file);
     // An absent document is an empty projection, not a read — `readQueue`'s
@@ -13809,8 +13889,63 @@ export class EngineStore {
     const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
     const items = new Map(parsed.data.map((item) => [item.id, item]));
+    /**
+     * THE FIRST READ IS THE MIGRATION — see `migrateItemsToRows`.
+     *
+     * Here as well as in `writeItems` because a session can be read for a long
+     * time before it is next written — an archived conversation somebody opens
+     * — and the blob is the thing being paid for. The map in hand is the map
+     * the rows get, so the migration re-reads nothing it has not already
+     * parsed, and after it the marker decides for every reader after this one.
+     *
+     * Only when there WAS a document: a session that has never opened an item
+     * has nothing to move, and marking it here would write a metadata row on
+     * every read of an empty projection. Its first `writeItems` marks it.
+     */
+    if (this.executionStore && !this.suppressItemsMigration) this.migrateItemsToRows(sessionId, items);
     this.cacheItems(sessionId, items);
     return items;
+  }
+
+  /** The stored rows, validated — the row shape's half of `itemsById`. One
+   *  small parse per row instead of one large one over the whole document;
+   *  measured the same or faster at 800 items, and zod is unchanged. */
+  private parseItemRows(rows: string[]): Map<string, Item> {
+    this.readAccounting.itemParses += 1;
+    let bytes = 0;
+    const seen: unknown[] = [];
+    for (const row of rows) { bytes += Buffer.byteLength(row, "utf8"); seen.push(JSON.parse(row)); }
+    // Counted like a whole-document read because that is what it is — the whole
+    // projection, reaching `JSON.parse`. The shape changed; the price a reader
+    // pays for asking for all of it did not, and an instrument that stopped
+    // counting when the storage changed is #658's own trap (2).
+    this.readAccounting.documentBytes += bytes;
+    this.readAccounting.documentReads += 1;
+    const parsed = ItemSchema.array().safeParse(seen);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
+    return new Map(parsed.data.map((item) => [item.id, item]));
+  }
+
+  /**
+   * The rows filed under `runs`, parsed — a WINDOW of the projection, which on
+   * rows is a query rather than a byte range.
+   *
+   * Counted in `documentBytes` and NOT in `itemParses`: a window is not a whole
+   * read, and conflating the two would let a regression that reads everything
+   * hide inside a counter that says "one". Same split `readIndexedRows` makes
+   * for the span it fetches.
+   */
+  private itemRowsOf(sessionId: string, runs: readonly string[]): Item[] {
+    const rows = this.executionStore!.itemRowsForRuns(sessionId, runs);
+    if (rows.length === 0) return [];
+    let bytes = 0;
+    const seen: unknown[] = [];
+    for (const row of rows) { bytes += Buffer.byteLength(row, "utf8"); seen.push(JSON.parse(row)); }
+    this.readAccounting.documentBytes += bytes;
+    this.readAccounting.documentReads += 1;
+    const parsed = ItemSchema.array().safeParse(seen);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
+    return parsed.data;
   }
 
   /**
@@ -13820,8 +13955,17 @@ export class EngineStore {
    * MUTATES items and wrong for the streaming path: a delta asks this one
    * question and changes nothing, and on a 327-item session the copy was 327
    * entries rebuilt per token-chunk to answer it. See `ingestDeltas`.
+   *
+   * ON ROWS AND COLD, IT IS ONE INDEXED SELECT (#658) — the primary key answers
+   * it in microseconds without materialising anything. The cache still wins
+   * when it is warm, which on a streaming turn it is; this is what a delta
+   * arriving into a session nobody has read costs, and it used to be the whole
+   * document.
    */
   private hasItem(sessionId: string, itemId: string): boolean {
+    const cached = this.itemsCache.get(sessionId);
+    if (cached) return cached.has(itemId);
+    if (this.itemsOnRows(sessionId)) return this.executionStore!.hasItemRow(sessionId, itemId);
     return this.itemsById(sessionId).has(itemId);
   }
 
@@ -13829,7 +13973,39 @@ export class EngineStore {
     return new Map(this.itemsById(sessionId));
   }
 
-  private writeItems(sessionId: string, items: Map<string, Item>): void {
+  /**
+   * THE SINGLE WRITER — one row per touched item on a migrated session, the
+   * whole document everywhere else.
+   *
+   * `touched` is WHICH items moved, not whether any did. Its callers always
+   * knew; they simply had nowhere to say it, because the blob had to be
+   * rewritten whole regardless. On rows that set is the write: one `INSERT …
+   * ON CONFLICT` per item, rather than the session's entire projection.
+   *
+   * Absent `touched` means "all of them" — what a caller that rebuilt the map
+   * from somewhere other than a batch wants.
+   *
+   * NOTHING IN THIS FILE REMOVES AN ITEM, and the row path depends on it: an
+   * item dropped from the map would leave its row behind, because an upsert of
+   * what is present cannot notice what is missing. Every writer replaces
+   * (`items.set(id, {...old})`) or adds. A future caller that needs to delete
+   * one needs a delete here to go with it.
+   */
+  private writeItems(sessionId: string, items: Map<string, Item>, touched?: ReadonlySet<string>): void {
+    if (this.executionStore) {
+      // NOT ON ROWS YET — so this write is the migration. The map in hand is
+      // the post-edit projection, which is exactly what the rows should hold,
+      // and the blob it replaces goes in the same transaction. A session that
+      // never had a blob takes this path once too: the DELETE finds nothing and
+      // the marker is the whole of the work.
+      if (!this.itemsOnRows(sessionId)) this.migrateItemsToRows(sessionId, items);
+      else {
+        const moved = touched ? [...touched].map((id) => items.get(id)).filter((item): item is Item => item !== undefined) : [...items.values()];
+        this.executionStore.upsertItems(sessionId, moved.map((item) => ({ id: item.id, runId: item.runId, value: JSON.stringify(item) })));
+      }
+      this.cacheItems(sessionId, new Map(items));
+      return;
+    }
     const rows = [...items.values()];
     this.writeIndexedDocument(
       itemsFile(this.paths, sessionId),
@@ -13963,16 +14139,18 @@ export class EngineStore {
   private closeOpenItemsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
     if (runIds.size === 0) return 0;
     const items = this.readItems(sessionId);
-    let closed = 0;
+    // WHICH rows were settled, not how many — #658. The count is the caller's
+    // answer; the set is the write.
+    const closed = new Set<string>();
     for (const item of items.values()) {
       if (!runIds.has(item.runId) || item.status !== "inProgress") continue;
       const settled: Item = { ...item, status: "failed", completedAt: at };
       items.set(item.id, settled);
       this.appendEvent(sessionId, { type: "item.completed", item: settled }, item.runId);
-      closed += 1;
+      closed.add(item.id);
     }
-    if (closed > 0) this.writeItems(sessionId, items);
-    return closed;
+    if (closed.size > 0) this.writeItems(sessionId, items, closed);
+    return closed.size;
   }
 
   private closeOpenRequestsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
@@ -13996,16 +14174,16 @@ export class EngineStore {
 
   private closeOpenItems(sessionId: string, runId: string, at: number): number {
     const items = this.readItems(sessionId);
-    let closed = 0;
+    const closed = new Set<string>();
     for (const item of items.values()) {
       if (item.runId !== runId || item.status !== "inProgress") continue;
       const settled: Item = { ...item, status: "failed", completedAt: at };
       items.set(item.id, settled);
       this.appendEvent(sessionId, { type: "item.completed", item: settled }, runId);
-      closed += 1;
+      closed.add(item.id);
     }
-    if (closed > 0) this.writeItems(sessionId, items);
-    return closed;
+    if (closed.size > 0) this.writeItems(sessionId, items, closed);
+    return closed.size;
   }
 
   /**
@@ -14301,7 +14479,7 @@ export class EngineStore {
     sessionId: string,
     turn: Turn,
     observation: TurnObservation,
-    projection: { items: Map<string, Item>; tasks: Map<string, Task>; itemsTouched: boolean; tasksTouched: boolean; turnTouched: boolean },
+    projection: { items: Map<string, Item>; tasks: Map<string, Task>; itemsTouched: Set<string>; tasksTouched: boolean; turnTouched: boolean },
   ): void {
     const at = this.now();
     const items = projection.items;
@@ -14350,7 +14528,7 @@ export class EngineStore {
         ...(observation.detail ? { detail: observation.detail } : {}),
       };
       items.set(item.id, item);
-      projection.itemsTouched = true;
+      projection.itemsTouched.add(item.id);
       this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
       // The text lives in `detail` from here on, so the accumulator's copy is
       // dead weight. This is what bounds the map: one entry per OPEN item.
@@ -14546,7 +14724,7 @@ export class EngineStore {
       ...(seed.providerRefs ? { providerRefs: seed.providerRefs } : {}),
     };
     items.set(item.id, item);
-    projection.itemsTouched = true;
+    projection.itemsTouched.add(item.id);
     const written = this.appendEvent(sessionId, { type: started ? "item.started" : "item.updated", item }, turn.runId);
     // AN ITEM THAT JUST OPENED HAS NO EARLIER DELTAS, which is the only moment
     // the accumulator can know it holds the whole prefix. Every later extend
