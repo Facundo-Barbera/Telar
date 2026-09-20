@@ -32,7 +32,10 @@ import SwiftUI
 /// convention, and one reference means every tap target in the app grows by one
 /// ratio — targets that scaled at different rates would be a worse answer than
 /// targets that did not scale at all.
-private struct ScaledGlyphBox: ViewModifier {
+///
+/// The three modifiers are internal rather than `private` only because the
+/// `View` methods below hand them out; call those, not these.
+struct ScaledGlyphBox: ViewModifier {
     @ScaledMetric private var side: CGFloat
     @ScaledMetric private var glyph: CGFloat
     private let weight: Font.Weight
@@ -53,7 +56,7 @@ private struct ScaledGlyphBox: ViewModifier {
 /// The glyph half, for the targets whose box belongs to somebody else —
 /// `ToolbarPill` draws the circle and its caller draws the symbol. Same
 /// reference style as the box, so the two still move together across the gap.
-private struct ScaledGlyph: ViewModifier {
+struct ScaledGlyph: ViewModifier {
     @ScaledMetric private var glyph: CGFloat
     private let weight: Font.Weight
 
@@ -68,7 +71,7 @@ private struct ScaledGlyph: ViewModifier {
 }
 
 /// The box half, for the same split.
-private struct ScaledSquare: ViewModifier {
+struct ScaledSquare: ViewModifier {
     @ScaledMetric private var side: CGFloat
 
     init(side: CGFloat) {
