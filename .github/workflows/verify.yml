@@ -1,15 +1,37 @@
 name: Verify
 
-# Typecheck, lint and test everything that does not need a Mac.
-# Rationale, measurements and cost analysis: docs/ci-verification.md
+# Typecheck, lint and test everything that does not need a Mac — plus the one
+# block that does, on a hosted Mac rather than a personal one.
 #
-# ON THE MAC MINI SINCE 2026-09-11, though nothing here needs a Mac: the
-# hosted lane stopped starting jobs (billing) and the Mac was idle. The job
-# is unchanged in what it runs — `bun run verify`, in three steps so a red
-# lands in the right place. One job, not a matrix, because the runner takes
-# one job at a time and a split would only queue.
+# Measurements, cost analysis and the decisions behind this shape:
+#   docs/operations/ci-throughput-2026-09-20.md
+#
+# ON GITHUB-HOSTED RUNNERS SINCE 2026-09-20, having lived on the owner's Mac
+# mini since 2026-09-11. That move was made because the hosted lane stopped
+# starting jobs for billing; the repository is public now, hosted standard
+# runners are free for public repositories, and the lane starts jobs again.
+#
+# WHAT THAT PREVIOUS HEADER GOT WRONG, recorded because both errors cost real
+# time and neither was visible from this file:
+#
+#   - It said "nothing here needs a Mac". Nine tests disagreed. Eight resolved
+#     a Claude Code CLI from the host and so passed only on a machine that had
+#     one installed — the suite was reporting a fact about the owner's laptop
+#     (#752, fixed). The ninth runs `ditto` and is genuinely macOS-only; it is
+#     why the `macos` job below exists.
+#   - It said "one job, not a matrix, because the runner takes one job at a
+#     time and a split would only queue". True of one Mac, false here: the
+#     measured ceiling is at least 40 concurrent hosted jobs, so the matrix
+#     runs at once rather than queueing.
+#
+# MEASURED, 2026-09-20: 206s serial on the Mac against ~85s wall hosted — and
+# the queue, which was the real cost, is gone: runs waited 39, 49 and 53
+# minutes for the single runner on the night this was written.
+#
 # No paths-ignore: a filtered-out run never reports, and a required check that
-# never reports blocks the PR forever.
+# never reports blocks the PR forever. If work needs skipping, skip it with a
+# job-level `if:` — a job skipped that way reports success, where a workflow
+# skipped by `on: paths` stays pending for ever.
 
 on:
   push:
@@ -19,14 +41,20 @@ on:
 permissions:
   contents: read
 
-# THE REPO IS PUBLIC AND THE RUNNER IS THE OWNER'S MAC (2026-09-17). A
-# `pull_request` from a fork checks out and executes the fork's code on that
-# Mac. GitHub's approval gate is set to every external contributor, but this
-# job also refuses at the job level: only pull requests from branches IN this
-# repository run. A fork PR gets no check rather than a run, and the owner
-# reviews and re-pushes to a `telar/*` branch if it is wanted.
-# `github.event.pull_request.head.repo.full_name` is the fork's name on a fork
-# PR and this repo's on a branch PR; a push to main has no pull_request at all.
+# THE REPO IS PUBLIC, SO A FORK PR RUNS UNTRUSTED CODE. Until 2026-09-20 it
+# would have run on the owner's Mac, which is why this guard was written; it is
+# kept now that jobs are hosted, because a fork PR still gets repository
+# context and a runner. GitHub's approval gate is set to every external
+# contributor, and these jobs also refuse at the job level: only pull requests
+# from branches IN this repository run. A fork PR gets no check rather than a
+# run, and the owner reviews and re-pushes to a `telar/*` branch if it is
+# wanted. `github.event.pull_request.head.repo.full_name` is the fork's name on
+# a fork PR and this repo's on a branch PR; a push to main has no pull_request
+# at all.
+#
+# Every job below repeats this condition. That is deliberate duplication: a job
+# added without it would run fork code, and there is no inherited default to
+# rely on.
 
 # CANCELLING IS RIGHT ON A BRANCH AND WRONG ON MAIN — one setting, two refs,
 # and it needed splitting rather than choosing between (#687).
@@ -106,72 +134,163 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
-  verify:
-    name: Typecheck, lint, and test everything that does not need a Mac
-    runs-on: [self-hosted, macOS, ARM64, telar-nightly]
+  # One anchor for the fork guard and the shared setup would be nice; GitHub
+  # has neither, so each job repeats both. Five ubuntu jobs plus one macOS one,
+  # all independent, all starting at once.
+
+  source:
+    name: Source invariants
+    runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Without this a hang would hold the one runner for GitHub's 6-hour
-    # default, and every release behind it.
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      # No `bun-version:` is a PIN, not an omission — do not "fix" it.
-      # setup-bun@v2 with no version reads `packageManager` from package.json,
-      # resolving to the declared bun@1.3.11. Naming it here too would create a
-      # second place to update and a new way for the two to disagree. Kept on
-      # the self-hosted runner too: the service's PATH is the bare system one,
-      # and this is what puts bun on it.
       - uses: oven-sh/setup-bun@v2
-
-      # No actions/cache: the runner is a persistent Mac, so ~/.bun/install/cache
-      # survives between runs by itself, and a cache action would upload it to
-      # GitHub only to download it back.
       - name: Install dependencies
         env:
-          # apps/desktop trusts electron's postinstall, which would pull a
-          # ~100MB binary this job never boots.
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
+      - run: bun run check:source
 
-      # These four are exactly `bun run verify` from the repo root, in order,
-      # so a red run reproduces with one command locally. Separate steps only so
-      # the failure lands in the right place in the log.
-      #
-      # DELIBERATELY ABSENT: apps/web_old. The legacy cockpit is frozen as a
-      # read-only design source for the Telar rebuild and is no longer verified
-      # here — no typecheck, no lint ceiling, no test suite. Its lint ceiling
-      # (scripts/lint-ceiling.mjs) was deleted with the gate rather than left
-      # behind to rot. Do not re-add it: work belongs in apps/web.
+  typecheck:
+    name: Typecheck engine-client, env, engine, and web
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+      # SERIAL ON PURPOSE. `bun run typecheck` chains the four packages with
+      # `&&`, and making them concurrent was measured SLOWER — 9.9s to 15.0s —
+      # because apps/web alone is most of it and four tsc processes contend.
+      # The chain was never the constraint. Do not "fix" it.
+      - run: bun run typecheck
 
-      # Cheapest first.
-      #
-      # DELIBERATELY ABSENT: the packages/core test-tree ceiling. That gate
-      # (scripts/typecheck-ceiling.mjs) existed because core's tsconfig excluded
-      # its own `test` dir, so 116 test files were never typechecked and could
-      # not be made clean in one go. packages/core was deleted with the Loom
-      # engine (#501 step 3), and the ceiling went with it rather than being
-      # left behind to rot. Every tree that remains typechecks outright.
-      # THINGS THAT ARE TRUE OF THE SOURCE TEXT, and they belong on a job with
-      # no Mac in it. These read Swift but compile none — asserting them from
-      # inside a unit test is the trap #248 and ActivitySegmentsTests both fell
-      # into, where `#filePath` resolves to the COMPILING machine's path and so
-      # passes on a simulator and throws on a device. Here they gate every PR.
-      - name: Check the source invariants
-        run: bun run check:source
+  lint:
+    name: Lint apps/web
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+      - run: bun run lint
 
-      - name: Typecheck engine-client, env, engine, and web
-        run: bun run typecheck
+  # THE SUITES, ONE JOB EACH. Serially these are 173s and engine alone is 128s
+  # of that, so a matrix is worth far more than making the six concurrent on
+  # one machine ever was (measured: 173.1s -> 139.8s, only 19%, because they
+  # then contend). Here engine gets a whole runner and the other five finish
+  # long before it.
+  #
+  # fail-fast: false because one red suite must not hide the state of the
+  # others — "what else is broken" is the question you ask next.
+  test:
+    name: Test ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [engine, web, desktop, env, engine-client, workers]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      # DELIBERATELY NO actions/cache. `bun install` is 6 seconds cold on a
+      # hosted runner, and the cache action's own post-step costs up to 6 —
+      # measured net negative. The warm cache that made the Mac's install 1s
+      # was worth about five seconds, not the large number it was assumed to be.
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+      - run: bun run test:${{ matrix.suite }}
 
-      - name: Lint apps/web
-        run: bun run lint
+  # THE ONE THING HERE THAT REALLY NEEDS macOS — on a hosted Mac, not a person's.
+  #
+  # `dev-update.test.js`'s swap-helper block runs a generated bash script that
+  # calls `ditto`, so it is skipped off darwin. This job is the ONLY thing in
+  # the repository that then runs it: the nightly and release workflows build
+  # and sign but run no tests. Drop this job and that block stops executing
+  # rather than starting to fail, which is the quiet kind of coverage loss.
+  macos:
+    name: Test desktop on macOS (the ditto swap helper)
+    runs-on: macos-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+      # AND PROVE IT ACTUALLY RAN. A `skipIf` that starts matching everywhere
+      # would leave this job green while testing nothing, which is exactly the
+      # failure this job exists to prevent. So assert the block by name.
+      - name: Test desktop, and prove the macOS-only block ran
+        run: |
+          set -euo pipefail
+          bun run test:desktop 2>&1 | tee /tmp/desktop.log
+          if ! grep -q "the swap helper, run for real against fake bundles" /tmp/desktop.log; then
+            echo "::error::the macOS-only swap-helper block did not run on macOS — it is being skipped everywhere and this job is proving nothing"
+            exit 1
+          fi
 
-      # Desktop is the unit tier only. Smoke and e2e need a real Electron and a
-      # built bundle, and stay on the mac release path.
-      - name: Run the engine-client, env, engine, web, desktop and worker suites
-        run: bun run test
-
-      # DELIBERATELY ABSENT: `next build`. A reader may assume "Verify" proves
-      # the app still builds. It does not. See docs/ci-verification.md.
+  # THE SINGLE CHECK, so the set above can change without renaming a required
+  # check every time.
+  #
+  # `always()` or this is skipped the moment anything upstream fails — and a
+  # skipped job reports neutral, not red, so the gate would go quiet exactly
+  # when it matters. EVERY job must appear in `needs`: one left out is one
+  # whose failure this cannot see.
+  #
+  # THE FORK GUARD IS REPEATED HERE, AND `always()` IS WHY IT HAS TO BE. On a
+  # fork PR every job above is skipped; a bare `always()` would then run this
+  # one, find nothing failed, and post a GREEN "Verify passed" for code that
+  # was never verified. That is worse than the no-check-at-all this file
+  # already chose. With the guard, a fork PR gets no aggregate either.
+  #
+  # ONLY `success` PASSES. Because the guard above means a skip can no longer
+  # be the fork case, any skip reaching here is a job that quietly did not run,
+  # and treating it as a pass is how this kind of gate rots. `cancelled` fails
+  # for the same reason: a cancelled run is not a verified one.
+  verify-passed:
+    name: Verify passed
+    runs-on: ubuntu-latest
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    needs: [source, typecheck, lint, test, macos]
+    timeout-minutes: 5
+    steps:
+      - name: Report the aggregate
+        run: |
+          set -euo pipefail
+          results='${{ join(needs.*.result, " ") }}'
+          echo "upstream results: $results"
+          failed=0
+          for result in $results; do
+            if [ "$result" != "success" ]; then
+              echo "::error::Verify did not pass: an upstream job reported '$result'"
+              failed=1
+            fi
+          done
+          [ "$failed" -eq 0 ] || exit 1
+          echo "every upstream job succeeded"
