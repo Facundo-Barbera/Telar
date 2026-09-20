@@ -68,6 +68,7 @@ import { describeViewport, fitViewport, resizeByDrag, resizeByKey, sizeFromField
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { createOverlayFreezer, onNativeViewOverlay, useNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
 import { useCommandHandlers } from "@/lib/use-command-keys";
+import { claimChords } from "@/lib/commands";
 import { makeScopeGuard } from "@/lib/scope-guard";
 import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";
@@ -85,6 +86,20 @@ import { cn } from "@/lib/utils";
  * shell performed.
  */
 const BrowserAnnotateOverlay = dynamic(() => import("@/components/browser-annotate").then((mod) => mod.BrowserAnnotateOverlay));
+
+/**
+ * ⌘1..⌘9, WHICH THIS PANEL BINDS TO ITS OWN TABS (#660).
+ *
+ * The literal chords rather than command ids, exactly as the project palette
+ * does it: the panel wants ⌘-and-a-digit and has no opinion about which command
+ * is on that chord today. Move the rail's jumps to ⌥1..⌥9 and this suppresses
+ * nothing, while the tab keys keep working.
+ *
+ * The SAME NINE the shell claims for a focused page (`TAB_SELECT_CHORDS` in
+ * browser-manager.js). Two claims, because there are two focus states and only
+ * one of them is visible from here — see the effect that uses this.
+ */
+const TAB_SELECT_CHORDS = Array.from({ length: 9 }, (_, index) => `CommandOrControl+${index + 1}`);
 
 export type DesktopBrowserTab = {
   index: number;
@@ -1547,10 +1562,43 @@ export function DesktopBrowserSurface({
   };
 
   /**
+   * THIS PANEL OWNS ⌘1..⌘9 WHILE FOCUS IS INSIDE ITS OWN CHROME (#660).
+   *
+   * KEYED TO FOCUS, NOT TO MOUNT, and that is the whole of the difference from
+   * the palette's claim. A palette is up or it is not; this panel is mounted for
+   * as long as the panel shows a browser, so claiming on mount would suppress
+   * the rail's ⌘1..⌘9 the entire time the panel is open — a worse bug than the
+   * one it fixes. Focus enters and leaves many times inside that lifetime, and
+   * the claim follows it.
+   *
+   * THIS COVERS ONE OF THE TWO FOCUS STATES, deliberately. When the page itself
+   * has focus the cockpit renderer receives no keydown at all — native focus is
+   * in the `WebContentsView`, in another process — so neither this claim nor
+   * `onKeys` below can see it. That state is claimed and ANSWERED in the main
+   * process, where the fact is knowable (`bindTab` in browser-manager.js). The
+   * two are complementary and the shell unions them.
+   *
+   * WITHOUT THE CLAIM `onKeys` IS DEAD CODE ON THE DESKTOP: `jump-1`..`jump-9`
+   * carry `menu: "file"`, and macOS matches the File menu's key equivalent
+   * before the keydown reaches the page. The handler was never losing a race —
+   * it was never running.
+   */
+  const [chromeHasKeys, setChromeHasKeys] = useState(false);
+  useEffect(() => {
+    if (!chromeHasKeys) return undefined;
+    return claimChords(TAB_SELECT_CHORDS);
+  }, [chromeHasKeys]);
+
+  /**
    * Browser keys, panel-local: Cmd/Ctrl+T new, Cmd/Ctrl+W close, Cmd/Ctrl+1-9
-   * select, Ctrl+Tab cycle. Scoped to this container's focus — the app menu
-   * owns some of these chords globally (command-keys.js) and wins when focus
-   * is elsewhere, which is why the + button stays the reliable path.
+   * select, Ctrl+Tab cycle. Scoped to this container's focus.
+   *
+   * ⌘1..⌘9 REACH THIS AGAIN since #660 — see the claim above. ⌘T and ⌘W do not,
+   * and are left as they were: ⌘T is `new-tab` in the shared table and would be
+   * reachable by the same claim, but ⌘W is the Window ROLE menu's Close, and
+   * `buildApplicationMenu` strips accelerators only from keymap-table commands
+   * — role menus keep theirs by design, so no claim can take ⌘W back. The +
+   * button stays the reliable path for those two.
    */
   // A plain function: the compiler memoizes it, and a manual useCallback
   // here trips its preserve-memoization rule once `state` feeds a hook above.
@@ -1581,7 +1629,19 @@ export function DesktopBrowserSurface({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeys}>
+    <div
+      className="flex h-full min-h-0 flex-col"
+      onKeyDown={onKeys}
+      // React's onFocus/onBlur are focusin/focusout, so they fire for anything
+      // inside — the tab strip, the omnibox, the toolbar. The `contains` check
+      // is what keeps a move BETWEEN two of them from reading as a release.
+      // Focus leaving for the page gives `relatedTarget: null`, which correctly
+      // releases here and lets the shell's own claim take over.
+      onFocus={() => setChromeHasKeys(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setChromeHasKeys(false);
+      }}
+    >
       {/* ── tab strip ─────────────────────────────────────────────────── */}
       <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-2 py-1" role="tablist" aria-label="Browser tabs">
         {(state?.tabs ?? []).map((tab) => (

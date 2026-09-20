@@ -3,7 +3,7 @@ const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
-const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress, zoomStep, ZOOM_STEPS } = require("./browser-manager");
+const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress, zoomStep, ZOOM_STEPS, TAB_SELECT_CHORDS } = require("./browser-manager");
 
 class FakeDebugger extends EventEmitter {
   constructor() {
@@ -385,6 +385,7 @@ function makeHarness(options = {}) {
     ...(options.now ? { now: options.now } : {}),
     ...(options.onControlChanged ? { onControlChanged: options.onControlChanged } : {}),
     ...(options.onVisited ? { onVisited: options.onVisited } : {}),
+    ...(options.onChordScope ? { onChordScope: options.onChordScope } : {}),
     ...(options.onLoginEntryFinished ? { onLoginEntryFinished: options.onLoginEntryFinished } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
     ...(options.sessions ? { sessionFor } : {}),
@@ -3500,5 +3501,99 @@ describe("the browser's options menu", () => {
       await manager.createTab("session-a", "https://example.com");
       await expect(manager.clearBrowsingData("session-a", "cookies")).rejects.toThrow("no Chromium session");
     });
+  });
+});
+
+/**
+ * #660: ⌘1..⌘9 SELECT A TAB WHILE THE PAGE HAS THE KEYS.
+ *
+ * The half the cockpit renderer cannot do. A keydown on a focused
+ * `WebContentsView` never reaches that renderer — native focus is in another
+ * process — so both the claim that stands the menu down and the handler that
+ * answers the key live here. These drive the real `webContents` events.
+ */
+describe("a focused page owns ⌘1..⌘9 (#660)", () => {
+  /** A key headed for the page, shaped like Electron's `before-input-event`. */
+  function press(view, key, modifiers = { meta: true }) {
+    let prevented = false;
+    const event = { preventDefault: () => { prevented = true; } };
+    view.webContents.emit("before-input-event", event, { type: "keyDown", key, alt: false, shift: false, control: false, meta: false, ...modifiers });
+    return prevented;
+  }
+
+  async function withTabs(count) {
+    const scopes = [];
+    const harness = makeHarness({ onChordScope: (chords) => scopes.push(chords) });
+    harness.manager.declareProfile("s1", "none");
+    for (let n = 0; n < count; n += 1) await harness.manager.createTab("s1", `https://${n}.example/`, "human");
+    return { ...harness, scopes };
+  }
+
+  test("focus claims the nine and blur gives them back — the menu only stands down while a page holds them", async () => {
+    const { manager, views, scopes } = await withTabs(2);
+    expect(scopes).toEqual([]); // Merely having tabs claims nothing.
+
+    views[0].webContents.emit("focus");
+    expect(scopes.at(-1)).toEqual(TAB_SELECT_CHORDS);
+
+    views[0].webContents.emit("blur");
+    expect(scopes.at(-1)).toEqual([]);
+    // Claiming on MOUNT would have left the rail's ⌘1..⌘9 dead for as long as
+    // the panel was open, which is the bug this shape exists to avoid.
+    expect(manager.keyFocusedTabId).toBeNull();
+  });
+
+  test("⌘2 selects the second tab and the page never sees the key", async () => {
+    const { manager, views } = await withTabs(3);
+    await manager.selectTab("s1", 0);
+    views[0].webContents.emit("focus");
+
+    expect(press(views[0], "2")).toBe(true);
+    await Promise.resolve();
+    expect(manager.scopeTabs("s1").indexOf(manager.activeTab("s1"))).toBe(1);
+  });
+
+  test("⌃2 works too, and a digit past the last tab is left for the page", async () => {
+    const { manager, views } = await withTabs(2);
+    await manager.selectTab("s1", 0);
+
+    expect(press(views[0], "2", { control: true })).toBe(true);
+    await Promise.resolve();
+    expect(manager.scopeTabs("s1").indexOf(manager.activeTab("s1"))).toBe(1);
+
+    // ⌘7 with two tabs open must reach the page rather than vanish.
+    expect(press(views[0], "7")).toBe(false);
+  });
+
+  test("⌥⌘1, ⇧⌘1, a bare 1 and a keyUp are all somebody else's", async () => {
+    const { manager, views } = await withTabs(3);
+    await manager.selectTab("s1", 2);
+    for (const input of [{ meta: true, alt: true }, { meta: true, shift: true }, {}]) {
+      expect(press(views[0], "1", input)).toBe(false);
+    }
+    let prevented = false;
+    views[0].webContents.emit("before-input-event", { preventDefault: () => { prevented = true; } }, { type: "keyUp", key: "1", meta: true });
+    expect(prevented).toBe(false);
+    // Nothing moved the human's view.
+    expect(manager.scopeTabs("s1").indexOf(manager.activeTab("s1"))).toBe(2);
+  });
+
+  test("a second tab taking focus does not let the first one's late blur release the claim", async () => {
+    const { views, scopes } = await withTabs(2);
+    views[0].webContents.emit("focus");
+    // Chromium delivers focus to the new view before blurring the old one on
+    // some paths; the stale blur must not hand back keys the new page holds.
+    views[1].webContents.emit("focus");
+    views[0].webContents.emit("blur");
+    expect(scopes.at(-1)).toEqual(TAB_SELECT_CHORDS);
+  });
+
+  test("closing the focused tab releases the claim — a destroyed page emits no blur", async () => {
+    const { manager, views, scopes } = await withTabs(2);
+    views[1].webContents.emit("focus");
+    expect(scopes.at(-1)).toEqual(TAB_SELECT_CHORDS);
+    manager.closeTab("s1", 1, "human");
+    // A leak here leaves the rail's shortcut dead with no way back but a restart.
+    expect(scopes.at(-1)).toEqual([]);
   });
 });

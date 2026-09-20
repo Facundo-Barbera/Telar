@@ -635,6 +635,17 @@ function navigationFlag(webContents, method) {
   return Boolean(history && typeof history[method] === "function" && history[method]());
 }
 
+/**
+ * ⌘1..⌘9 WHILE A PAGE HAS THE KEYS (#660).
+ *
+ * The literal chords, not command ids, for the same reason the palette's
+ * `QUICK_PICK_CHORDS` is a list of chords: this surface wants ⌘-and-a-digit and
+ * has no opinion about which command is sitting on that chord today. Move the
+ * rail's jumps to ⌥1..⌥9 in Settings and this claim suppresses nothing, while
+ * the tab keys go on working.
+ */
+const TAB_SELECT_CHORDS = Array.from({ length: 9 }, (_, index) => `CommandOrControl+${index + 1}`);
+
 class DesktopBrowserManager {
   constructor(window, dependencies = {}) {
     this.window = window;
@@ -648,6 +659,21 @@ class DesktopBrowserManager {
      * that reads this file. A test hands in its own; nothing else does.
      */
     this.electron = dependencies.electron || (() => require("electron"));
+    /**
+     * THE HALF OF #660 THE RENDERER CANNOT DO: told which chords this browser's
+     * pages have taken, so the shell can strip those accelerators.
+     *
+     * A claim from the cockpit renderer (`claimChords`) covers the panel's own
+     * chrome, because that has DOM focus and a keydown to answer with. It cannot
+     * cover a focused `WebContentsView`: the renderer gets no keydown at all
+     * there, and the native focus is in another process. So this manager — which
+     * is where that fact lives — publishes its own scope, and main UNIONS the
+     * two rather than letting either overwrite the other.
+     */
+    this.onChordScope = dependencies.onChordScope || (() => {});
+    /** The tab whose page currently holds the keys, or null. Id, not object, so
+     *  a closed tab cannot keep a claim alive by being referenced. */
+    this.keyFocusedTabId = null;
     this.tabs = [];
     /**
      * THE TAB THE HUMAN IS LOOKING AT. This drives visibility and the panel's
@@ -2216,6 +2242,12 @@ class DesktopBrowserManager {
 
   hibernateTab(tab) {
     if (!tab.view) return;
+    // THE ONE TEARDOWN PATH, so it is where a key claim is given back (#660).
+    // Closing the tab, evicting it, and the window quitting all arrive here, and
+    // a destroyed web contents emits no `blur` — without this the shell would
+    // keep the rail's ⌘1..⌘9 stripped with no way back but a restart. A no-op
+    // for a tab that was not holding the keys.
+    this.noteTabKeyFocus(tab, false);
     this.cancelDeferredHibernate(tab);
     // A PREVIEW WINDOW IS THE TAB'S TOO, and this is the one teardown path —
     // so a window showing a page that is about to stop existing is closed
@@ -2616,6 +2648,35 @@ class DesktopBrowserManager {
     if (typeof wc.setWindowOpenHandler === "function") {
       wc.setWindowOpenHandler((details) => this.decidePopup(tab, details || {}));
     }
+    /**
+     * THE PAGE HAS THE KEYS, OR HAS GIVEN THEM BACK (#660).
+     *
+     * This is the focus condition the issue asked for, read where it is actually
+     * knowable. A claim keyed to the panel being MOUNTED would suppress the
+     * rail's ⌘1..⌘9 for as long as the panel is open, which is a worse bug than
+     * the one it fixes; a claim keyed to DOM focus cannot see this state at all,
+     * because focus here is native and in another process.
+     *
+     * BLUR RELEASES UNCONDITIONALLY, and `noteTabKeyFocus` ignores a blur from a
+     * tab that no longer holds the claim. A suppression that leaks leaves the
+     * rail's shortcut dead with no way back but a restart — so every edge that
+     * can end this (closing the tab, destroying the manager, another tab taking
+     * focus) releases through the same one place.
+     */
+    wc.on("focus", () => this.noteTabKeyFocus(tab, true));
+    wc.on("blur", () => this.noteTabKeyFocus(tab, false));
+    /**
+     * AND THE HALF THAT ANSWERS. Stripping the accelerator only stops the rail
+     * from jumping — without this, ⌘2 would fall through to the web page, which
+     * is a different bug rather than a fix. The cockpit's own `onKeys` cannot
+     * serve it: this keydown never reaches that renderer.
+     *
+     * `before-input-event` is the earliest point the main process can see a key
+     * headed for this page, and it only ever fires for these chords once the
+     * menu has stood down — macOS matches a key equivalent ahead of the focused
+     * view, so the claim above is what makes this handler reachable at all.
+     */
+    wc.on("before-input-event", (event, input) => this.handleTabKey(tab, event, input));
     /**
      * A hidden view is a background renderer and Chromium stops flushing its
      * input queue — a CDP click never resolves; unthrottled it lands in
@@ -3091,6 +3152,65 @@ class DesktopBrowserManager {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * A TAB'S PAGE TOOK OR GAVE BACK THE KEYS (#660).
+   *
+   * Last-writer-wins on a single id rather than a set: exactly one web contents
+   * has native focus at a time, and a stale blur — Chromium delivers focus to
+   * the new view before blurring the old one on some paths — must not release a
+   * claim the NEXT tab has already taken. Hence the id check on the way out.
+   */
+  noteTabKeyFocus(tab, focused) {
+    if (focused) {
+      if (this.keyFocusedTabId === tab.id) return;
+      this.keyFocusedTabId = tab.id;
+    } else {
+      if (this.keyFocusedTabId !== tab.id) return;
+      this.keyFocusedTabId = null;
+    }
+    this.publishChordScope();
+  }
+
+  /** Tell the shell what this browser's pages have taken — the nine while a page
+   *  holds the keys, nothing otherwise. Idempotent; main rebuilds its menu. */
+  publishChordScope() {
+    try {
+      this.onChordScope(this.keyFocusedTabId ? TAB_SELECT_CHORDS : []);
+    } catch {
+      // A shell that cannot take the scope is not a reason to break the tab.
+    }
+  }
+
+  /**
+   * ⌘1..⌘9 ON A FOCUSED PAGE: select the Nth tab of that page's own scope.
+   *
+   * The digit is a POSITION in the strip, which is what `tabAt` already means
+   * and what the cockpit's `onKeys` already did — so the key and the strip
+   * cannot come to disagree. A digit past the end does nothing and is NOT
+   * swallowed: ⌘7 with four tabs open should reach the page, not vanish.
+   *
+   * Bare ⌘/⌃ only. ⌥⌘1 and ⇧⌘1 are other things in other apps and this must not
+   * eat them.
+   */
+  handleTabKey(tab, event, input) {
+    if (!input || input.type !== "keyDown" || input.alt || input.shift) return;
+    if (!(input.meta || input.control)) return;
+    if (!/^[1-9]$/.test(String(input.key))) return;
+    let scoped;
+    try {
+      scoped = this.scopeTabs(tab.scopeKey);
+    } catch {
+      return; // A scope torn down under a still-live view.
+    }
+    // The position IS the index the panel's strip and `tabAt` both mean — the
+    // state a tab is serialized into numbers it the same way (`state`), so the
+    // key and the strip cannot come to disagree about which tab ⌘2 is.
+    const position = Number(input.key) - 1;
+    if (!scoped[position]) return;
+    event.preventDefault();
+    this.selectTab(tab.scopeKey, position).catch(() => {});
   }
 
   /** The HUMAN's view moves to a tab — the tab strip, the keyboard shortcuts,
@@ -4422,4 +4542,4 @@ function managerForScope(managers, scopeKey, fallback = null) {
   return best;
 }
 
-module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };
+module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };
