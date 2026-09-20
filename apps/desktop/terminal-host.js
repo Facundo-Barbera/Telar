@@ -36,6 +36,7 @@
  * lazy require, so these tests never load it and the real proof lives in
  * pty-host.electron-test.js instead.
  */
+const fs = require("node:fs");
 const path = require("node:path");
 
 /**
@@ -49,7 +50,9 @@ const path = require("node:path");
 const TerminalFate = Object.freeze({
   /** node-pty reported an exit and we have its code. The only clean claim. */
   EXITED: "exited",
-  /** The spawn itself threw; no process was ever created. */
+  /** No process was ever created — either the spawn threw, or Telar refused it
+   *  before spawning because the request could not have run (`unusableCwd`).
+   *  There is no exit code here, because nothing ever exited. */
   FAILED: "failed",
   /** We stopped being able to vouch. The slot stays held; nobody is signalled. */
   UNKNOWN: "unknown",
@@ -256,6 +259,65 @@ function nodePtySpawner() {
 }
 
 /**
+ * IS THIS A DIRECTORY THE SHELL WILL ACTUALLY BE ABLE TO ENTER? (#845)
+ *
+ * WHAT IT COSTS TO LEARN THIS THE OTHER WAY, on macOS, which is the platform
+ * this app ships to. node-pty does not `chdir` in our process — it hands the
+ * cwd to `spawn-helper`, and that helper's entire handling of a cwd it cannot
+ * enter is `_exit(1)` (node-pty 1.1.0, src/unix/spawn-helper.cc). No `perror`,
+ * no message, nothing written to the pty. So a person who opens a terminal on
+ * a project directory that has been moved, deleted or unmounted watches a
+ * terminal appear and vanish, with a blank window and no sentence anywhere.
+ * (The non-Apple branch in pty.cc:419 does at least `perror`; the branch that
+ * actually runs on a Mac does not.)
+ *
+ * SO WE LOOK FIRST, and refuse with a sentence that names the directory. A
+ * refusal is `failed` and not an exit, because it is the literal truth: no
+ * process was created, so there is nothing to be uncertain about and nothing
+ * whose exit code could mean anything.
+ *
+ * A DIAGNOSTIC, NOT A GATE, and the difference is worth being explicit about
+ * because "check with access(2), then act" is an antipattern when it is load
+ * bearing. It is not load bearing here: the kernel's `chdir` in the child is
+ * still the thing that enforces this, and a directory that disappears between
+ * this check and the spawn simply ends the way it always did — an ordinary
+ * nonzero exit. What this buys is the common case, where the directory was
+ * already gone before we were asked, and a person gets told which one.
+ *
+ * `X_OK` ON A DIRECTORY IS THE RIGHT QUESTION, and it is the one that holds
+ * for root too: POSIX grants a privileged process `X_OK` only when at least
+ * one execute bit is set, so a `chmod 000` directory is refused for everybody.
+ * `R_OK` would be the wrong question — a shell can sit in a directory it
+ * cannot list.
+ *
+ * @returns {string | null} a sentence when the cwd cannot be used, else null.
+ */
+function unusableCwd(cwd, deps = {}) {
+  if (cwd === undefined || cwd === null || cwd === "") return null;
+  if (typeof cwd !== "string") {
+    return `Telar was asked to start a terminal in ${JSON.stringify(cwd)}, which is not a path. No process was started.`;
+  }
+  const io = deps.fs ?? fs;
+  let stats;
+  try {
+    stats = io.statSync(cwd);
+  } catch (error) {
+    return `Telar cannot start a terminal in ${cwd}: ${messageOf(error)}. No process was started.`;
+  }
+  if (!stats.isDirectory()) {
+    return `Telar cannot start a terminal in ${cwd}: it exists but is not a directory. No process was started.`;
+  }
+  try {
+    // The constants come from the real module either way; they are numbers, not
+    // behaviour, so an injected `fs` does not have to carry a copy of them.
+    io.accessSync(cwd, fs.constants.X_OK);
+  } catch (error) {
+    return `Telar cannot start a terminal in ${cwd}: it is a directory this process may not enter (${messageOf(error)}). No process was started.`;
+  }
+  return null;
+}
+
+/**
  * THE LIVE PTYs, AND THE ONLY THING THAT OWNS THEM.
  *
  * One host per Electron main process. Terminals are addressed by an id minted
@@ -281,6 +343,9 @@ class TerminalHost {
     this.onExit = options.onExit ?? (() => {});
     this.killObserveMs = options.killObserveMs ?? KILL_OBSERVE_MS;
     this.killTree = options.killTree ?? ((pid, signal) => killTerminalTree(pid, signal, { platform: this.platform }));
+    // Injected only so `unusableCwd`'s refusals can be staged without making a
+    // real unreadable directory in a test. Production reads the real one.
+    this.fs = options.fs ?? fs;
     // Lazy on purpose: constructing a host must not load a native module, so a
     // window that never opens a terminal never pays for one.
     this._spawnPty = options.spawnPty ?? null;
@@ -317,6 +382,21 @@ class TerminalHost {
     const rows = size(request.rows, 24);
     const env = terminalEnv(baseEnv, this.version);
     const id = `term_${(this.sequence += 1).toString(36)}_${this.now().toString(36)}`;
+
+    /**
+     * A LAUNCH THAT CANNOT RUN IS REFUSED HERE, NOT DISCOVERED FROM ITS EXIT
+     * CODE (#845). On macOS the child's only reaction to a cwd it cannot enter
+     * is a silent `_exit(1)` — see `unusableCwd`. Refusing first is what turns
+     * that into a sentence a person can read, and it is the honest fate: the
+     * spawn did not happen, so this is `failed` for the same reason a spawn
+     * that threw is.
+     */
+    const refusal = unusableCwd(request.cwd, { fs: this.fs });
+    if (refusal) {
+      const ending = { id, fate: TerminalFate.FAILED, error: refusal, at: this.now() };
+      this.onExit(id, ending);
+      return { id, pid: undefined, ending };
+    }
 
     let pty;
     try {
@@ -568,5 +648,6 @@ module.exports = {
   killTerminalTree,
   ensureSpawnHelper,
   spawnHelperCandidates,
+  unusableCwd,
   defaultShell,
 };

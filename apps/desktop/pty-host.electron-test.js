@@ -45,7 +45,7 @@ app.on("window-all-closed", () => {});
 /** Every case that must pass before the marker may be printed. The number is
  *  repeated in .github/workflows/verify.yml on purpose: changing it is a
  *  deliberate act, and a run that produces a different one is not this test. */
-const CASES = 10;
+const CASES = 11;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const note = (line) => console.log(`PTY ${line}`);
 
@@ -53,31 +53,66 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-/** Run one shell to completion on a PTY and collect everything it wrote. */
+/**
+ * Run one shell to completion on a PTY and collect everything it wrote.
+ *
+ * IT MUST ONLY ANSWER FOR THE TERMINAL IT OPENED (#845). There is ONE host
+ * here and `onData`/`onExit` are single slots on it, so each call replaces the
+ * previous call's handlers — and an ending that has not arrived yet lands in
+ * whoever holds the slot when it does. That is not hypothetical: case 8 kills
+ * a shell and moves on as soon as the GRANDCHILD is reaped, which can happen
+ * before node-pty's reaping thread has called back for the shell itself. The
+ * stray ending is `{fate: exited, exitCode: 0, signal: 9}` — node-pty leaves
+ * `exit_code` at 0 for a SIGNALLED child (src/unix/pty.cc:110, :189-194) — so
+ * a helper that took it would see a launch that "exited 0". #845 is one hour
+ * of CI spent reading that as the product being wrong.
+ *
+ * The id is the fix and it was always available: the host has passed it to
+ * both callbacks since it was written, and this helper threw it away.
+ */
 function runOnPty(host, script, options = {}) {
   return new Promise((resolve, reject) => {
     let out = "";
+    // Assigned from `open()` below, which returns before any callback can fire
+    // — the host mints the id and spawns synchronously, so there is no window
+    // in which one of OUR frames could arrive while this is still null.
+    let ours = null;
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       reject(new Error(`a shell on a pty never ended: ${JSON.stringify(script)} (saw ${JSON.stringify(out)})`));
     }, 15_000);
-    host.onData = (_id, data) => {
-      out += data;
+    host.onData = (id, data) => {
+      if (id === ours) out += data;
     };
-    host.onExit = (_id, ending) => {
-      if (settled) return;
+    host.onExit = (id, ending) => {
+      if (settled || id !== ours) return;
       settled = true;
       clearTimeout(timer);
       resolve({ out, ending });
     };
     const opened = host.open({ shell: "/bin/sh", args: ["-c", script], ...options });
+    ours = opened.id;
     if (opened.ending) {
       settled = true;
       clearTimeout(timer);
       resolve({ out, ending: opened.ending });
     }
+  });
+}
+
+/** Wait for ONE named terminal's ending, whoever else is talking. Used where a
+ *  test must not leave an ending in flight for the next case to catch. */
+function endingOf(host, wanted, why) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${why}: ${wanted} never reported an ending`)), 15_000);
+    host.onData = () => {};
+    host.onExit = (id, ending) => {
+      if (id !== wanted) return;
+      clearTimeout(timer);
+      resolve(ending);
+    };
   });
 }
 
@@ -220,46 +255,106 @@ async function main() {
   const live = host.list()[0];
   assert(live && typeof live.pid === "number", "the terminal with a backgrounded child is not listed as live");
   assert(!isGone(grandchild.pid), `the backgrounded sleep (pid ${grandchild.pid}) was already gone before the kill`);
+  // ARM THE WAIT BEFORE THE SIGNAL, and wait for THIS terminal's own ending
+  // rather than for the grandchild alone (#845). The grandchild is reaped by
+  // launchd, which can beat node-pty's reaping thread — so a case that only
+  // polled the grandchild moved on with the shell's ending still in flight,
+  // and the next case caught it.
+  const killed = endingOf(host, live.id, "case 8");
   host.kill(live.id, "SIGKILL");
   for (let attempt = 0; attempt < 50 && !isGone(grandchild.pid); attempt += 1) await sleep(100);
-  report.groupKill = { grandchild: grandchild.pid, gone: isGone(grandchild.pid) };
+  const killEnding = await killed;
+  report.groupKill = { grandchild: grandchild.pid, gone: isGone(grandchild.pid), ending: killEnding };
   assert(isGone(grandchild.pid), `pid ${grandchild.pid} survived the kill — the signal reached the shell but not its process group`);
-  pass("kill reaches the process group", `the backgrounded pid ${grandchild.pid} is gone`);
+  // AND WHAT A KILLED TERMINAL ACTUALLY REPORTS, pinned as values because
+  // misreading it is what #845 was. node-pty only assigns `exit_code` under
+  // WIFEXITED, so a SIGNALLED shell comes back as code 0 WITH a signal — which
+  // on the code alone is indistinguishable from a command that succeeded.
+  assert(killEnding.fate === TerminalFate.EXITED, `the killed terminal reported ${JSON.stringify(killEnding)}`);
+  assert(killEnding.signal === "9", `SIGKILL came back as signal ${JSON.stringify(killEnding.signal)}, not "9"`);
+  assert(
+    killEnding.exitCode === 0,
+    `a SIGKILLed shell reported exitCode ${killEnding.exitCode} — the premise that a signalled child carries code 0 is what case 9 is read against`,
+  );
+  pass("kill reaches the process group", `the backgrounded pid ${grandchild.pid} is gone; the shell ended signal=9 exitCode=0`);
 
-  /* 9. WHAT A LAUNCH THAT CANNOT WORK ACTUALLY LOOKS LIKE — and it is not what
-   *    the obvious guess says, which is why it is pinned rather than assumed.
+  /* 9. WHAT A LAUNCH THAT CANNOT WORK ACTUALLY LOOKS LIKE — and the two halves
+   *    are DIFFERENT, which is the whole content of this case.
    *
-   *    Neither a MISSING BINARY nor an UNUSABLE CWD fails the spawn. node-pty
-   *    forks the pty successfully in both cases and the failure happens inside
-   *    the child, so each arrives as an ordinary NONZERO `exited` with a real
-   *    pid. `failed` is reachable only when `pty.fork` itself throws — an
-   *    unusable spawn-helper does it — which is not something a user's command
-   *    can cause. So W4 must read "the command was wrong" off an exit code,
-   *    never off this fate, and must not expect `failed` for a typo.
+   *    A MISSING BINARY is the child's problem. node-pty forks the pty fine and
+   *    `execvp` fails inside the child, so it arrives as an ordinary NONZERO
+   *    `exited` with a real pid. W4 must read "the command was wrong" off an
+   *    exit code, never off a fate, and must not expect `failed` for a typo.
    *
-   *    Measured, twice: the first version of this case asserted `failed` for a
-   *    missing binary, and the second asserted it for a missing cwd. Both were
-   *    wrong. The `failed` path is covered in terminal-host.test.js with a
-   *    spawner that throws, which is the only way to reach it on purpose. */
-  const badCwd = await runOnPty(host, "true", { cwd: path.join(os.tmpdir(), "telar-no-such-dir-198"), env: dirty });
+   *    AN UNUSABLE CWD IS OURS, and since #845 it is refused before anything is
+   *    spawned. It had to be: on macOS node-pty hands the cwd to `spawn-helper`,
+   *    whose entire handling of a `chdir` it cannot make is `_exit(1)` with
+   *    nothing written anywhere (1.1.0, src/unix/spawn-helper.cc) — a blank
+   *    terminal that closes. Now it is `failed`, with a sentence naming the
+   *    directory, and NO exit code, because nothing exited.
+   *
+   *    THE CWD IS UNDER A REGULAR FILE, not merely absent. A nonexistent path
+   *    can in principle be created underneath a test, and a `chmod 000`
+   *    directory is a different answer for a privileged user; `/etc/passwd/nope`
+   *    is ENOTDIR for everybody, including root on a hosted runner.
+   *
+   *    Measured, three times: the first version of this case asserted `failed`
+   *    for a missing binary and the second asserted it for a missing cwd — both
+   *    wrong against the node-pty of the day. The third read an exit code off a
+   *    racing ending that belonged to case 8's killed shell (#845). */
+  const unenterable = path.join("/etc/passwd", "telar-not-a-dir-845");
+  const badCwd = await runOnPty(host, "true", { cwd: unenterable, env: dirty });
   report.badCwd = badCwd.ending;
-  assert(badCwd.ending.fate === TerminalFate.EXITED, `an unusable cwd reported ${JSON.stringify(badCwd.ending)}`);
-  assert(badCwd.ending.exitCode !== 0, `an unusable cwd exited ${badCwd.ending.exitCode} — a launch that never ran must not look successful`);
+  assert(badCwd.ending.fate === TerminalFate.FAILED, `an unusable cwd reported ${JSON.stringify(badCwd.ending)}, not ${TerminalFate.FAILED}`);
+  assert(badCwd.ending.pid === undefined, `a refused launch carried pid ${badCwd.ending.pid} — nothing was spawned, so there is no pid to name`);
+  assert(
+    badCwd.ending.exitCode === undefined,
+    `a refused launch carried exitCode ${badCwd.ending.exitCode} — nothing exited, and a code here is how a launch that never ran comes to look successful`,
+  );
+  assert(String(badCwd.ending.error).includes(unenterable), `the refusal does not name the directory: ${JSON.stringify(badCwd.ending.error)}`);
   const missing = await runOnPty(host, "exec /var/empty/telar-no-such-binary-198", { env: dirty });
   report.missingBinary = missing.ending;
   assert(
     missing.ending.fate === TerminalFate.EXITED && missing.ending.exitCode !== 0,
     `a nonexistent command came back as ${JSON.stringify(missing.ending)} — expected a nonzero exit`,
   );
-  pass("a launch that cannot work", `bad cwd → exited ${badCwd.ending.exitCode}; missing command → exited ${missing.ending.exitCode}; neither is ${TerminalFate.FAILED}`);
+  pass(
+    "a launch that cannot work",
+    `bad cwd → ${badCwd.ending.fate}, no exit code; missing command → ${TerminalFate.EXITED} ${missing.ending.exitCode}`,
+  );
 
-  /* 10. THE ONE THE FATE MODEL EXISTS FOR. The host goes away with a terminal
+  /* 10. THE CONTROL ARM FOR THE REFUSAL, and it is not optional: case 9 is
+   *     satisfied by a host that refuses EVERY cwd, which would leave the
+   *     product unable to open a terminal anywhere. So a usable directory must
+   *     start a shell — and the shell's own `pwd`, read from inside it, must be
+   *     that directory. Asserting on what we passed in would prove we can read
+   *     our own variable. */
+  // `pwd -P` and `realpathSync` on purpose: os.tmpdir() is under /var, which is
+  // a symlink to /private/var on macOS, and the inherited $PWD is this
+  // process's. Both sides ask for the physical path so they are comparable.
+  const usable = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "telar-usable-cwd-845-")));
+  const entered = await runOnPty(host, "pwd -P", { cwd: usable, env: dirty });
+  report.usableCwd = { asked: usable, ending: entered.ending, pwd: entered.out.trim() };
+  // Removed BEFORE the asserts, so a failure here does not also leave a
+  // directory behind — this file's rule is that nothing survives it.
+  fs.rmSync(usable, { recursive: true, force: true });
+  assert(entered.ending.fate === TerminalFate.EXITED, `a usable cwd reported ${JSON.stringify(entered.ending)} — the refusal is refusing everything`);
+  assert(entered.ending.exitCode === 0, `a shell in a usable directory exited ${entered.ending.exitCode}`);
+  assert(entered.out.split(/\r?\n/)[0].trim() === usable, `the shell says it is in ${JSON.stringify(entered.out.trim())}, not ${JSON.stringify(usable)}`);
+  pass("a usable cwd is entered, not refused", `the shell's own pwd is ${usable}`);
+
+  /* 11. THE ONE THE FATE MODEL EXISTS FOR. The host goes away with a terminal
    *     still running: `unknown`, never `exited`, with the pid named — so
-   *     nothing downstream frees a slot for a process that is still alive. */
+   *     nothing downstream frees a slot for a process that is still alive.
+   *     Id-matched like `runOnPty`, and for the same reason (#845): `dispose`
+   *     settles EVERY live terminal, so a stray one would answer first. */
   const orphan = await new Promise((resolve) => {
+    let ours = null;
     host.onData = () => {};
-    host.onExit = (id, ending) => resolve({ id, ending });
-    host.open({ shell: "/bin/sh", args: ["-c", "sleep 20"], env: dirty });
+    host.onExit = (id, ending) => {
+      if (id === ours) resolve({ id, ending });
+    };
+    ours = host.open({ shell: "/bin/sh", args: ["-c", "sleep 20"], env: dirty }).id;
     setTimeout(() => host.dispose("Telar quit"), 300);
   });
   report.dispose = orphan.ending;

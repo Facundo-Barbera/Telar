@@ -534,7 +534,7 @@ jobs:
           # THE NUMBER IS MEANT TO BE EDITED. Adding a case changes it here too,
           # deliberately, so a suite that quietly stopped running half of itself
           # cannot keep reporting the same string.
-          run_case pty             "PTY_HOST_OK 10/10 pty=tty pipe=not-a-tty"
+          run_case pty             "PTY_HOST_OK 11/11 pty=tty pipe=not-a-tty"
 
           # THE THREE THAT ARE NOT HERE, AND WHY — all one reason: they need
           # 1Password's official extension package, which is proprietary, is not

@@ -21,6 +21,7 @@ const {
   killTerminalTree,
   ensureSpawnHelper,
   spawnHelperCandidates,
+  unusableCwd,
   defaultShell,
 } = require("./terminal-host");
 const { verifyPackagedPty, UNPACKED } = require("./after-pack");
@@ -54,6 +55,14 @@ function fakePty(pid = 4242) {
   };
 }
 
+/** A filesystem where every path is a directory this process may enter, so the
+ *  cwd refusal (#845) stays out of the way of cases about something else. The
+ *  cases that are ABOUT the refusal inject their own. */
+const anyCwdIsFine = {
+  statSync: () => ({ isDirectory: () => true }),
+  accessSync: () => {},
+};
+
 /** A host whose spawner hands back `pty` and records the options it got. */
 function hostWith(pty, options = {}) {
   const spawned = [];
@@ -62,6 +71,7 @@ function hostWith(pty, options = {}) {
   const host = new TerminalHost({
     platform: "darwin",
     version: "9.9.9",
+    fs: options.fs ?? anyCwdIsFine,
     killTree: options.killTree ?? (() => {}),
     spawnPty: (file, args, opts) => {
       spawned.push({ file, args, opts });
@@ -230,7 +240,18 @@ describe("what the host will say about a terminal that is no longer running", ()
       expect(endings[0][1].reason).toContain("may still be running");
     });
 
-    test("but a kill that DID land is an honest `exited`", async () => {
+    /**
+     * A KILLED TERMINAL REPORTS EXIT CODE 0, AND THAT IS NOT SUCCESS (#845).
+     *
+     * node-pty initialises `exit_code` to 0 and only assigns it under
+     * `WIFEXITED` (1.1.0, src/unix/pty.cc:110 and :189-194). A process that was
+     * SIGNALLED never satisfies that, so its ending is `{exitCode: 0, signal:
+     * 9}` — indistinguishable, on the exit code alone, from a command that
+     * succeeded. #845 was an hour of CI spent on exactly that confusion, so the
+     * pair is pinned here as VALUES rather than left implied: whoever reads an
+     * `exited` must look at `signal` before believing the 0.
+     */
+    test("a kill that DID land is an honest `exited` — code 0 WITH a signal", async () => {
       const pty = fakePty(81);
       const { host, endings } = hostWith(pty, { host: { killObserveMs: 10 } });
       const { id } = host.open({ shell: "/bin/zsh", env: {} });
@@ -242,6 +263,7 @@ describe("what the host will say about a terminal that is no longer running", ()
       expect(endings).toHaveLength(1);
       expect(endings[0][1].fate).toBe(TerminalFate.EXITED);
       expect(endings[0][1].signal).toBe("9");
+      expect(endings[0][1].exitCode).toBe(0);
     });
 
     test("a pty whose fd raised an error", () => {
@@ -301,6 +323,118 @@ describe("what the host will say about a terminal that is no longer running", ()
     pty.emitError(new Error("read EIO"));
     host.dispose();
     expect(endings).toHaveLength(1);
+  });
+});
+
+/**
+ * A CWD THE SHELL COULD NOT HAVE ENTERED (#845).
+ *
+ * On macOS node-pty hands the cwd to `spawn-helper`, whose whole reaction to a
+ * `chdir` it cannot make is `_exit(1)` with nothing written anywhere
+ * (1.1.0, src/unix/spawn-helper.cc) — so without this check a person opening a
+ * terminal on a project directory that has been moved gets a blank window that
+ * closes, and no sentence. Refusing first turns that into one.
+ *
+ * STAGED WITH AN INJECTED `fs`, for the same reason the spawner is injected:
+ * a directory that is not there, a path under a regular file and a directory
+ * this process may not enter are three DIFFERENT answers, and making the third
+ * one for real requires a mode this suite's CI user could not reliably produce.
+ */
+describe("a terminal asked to start somewhere it cannot", () => {
+  const missing = () => {
+    const error = new Error("ENOENT: no such file or directory, stat '/gone'");
+    error.code = "ENOENT";
+    throw error;
+  };
+
+  test("no cwd at all is not a refusal — most terminals name none", () => {
+    expect(unusableCwd(undefined)).toBeNull();
+    expect(unusableCwd(null)).toBeNull();
+    expect(unusableCwd("")).toBeNull();
+  });
+
+  test("a directory that is not there names itself and the errno", () => {
+    const refusal = unusableCwd("/gone", { fs: { statSync: missing, accessSync: () => {} } });
+    // A sentence, not a boolean and not a null: a guard that stopped refusing
+    // must say so here rather than in `toContain`'s type error.
+    expect(typeof refusal).toBe("string");
+    expect(refusal).toContain("/gone");
+    expect(refusal).toContain("ENOENT");
+    expect(refusal).toContain("No process was started.");
+  });
+
+  test("a path UNDER a regular file is not a directory for anybody, root included", () => {
+    // `/etc/passwd/nope` is the shape the Electron fixture uses precisely
+    // because no privilege makes a regular file into a directory.
+    const enotdir = () => {
+      const error = new Error("ENOTDIR: not a directory, stat '/etc/passwd/nope'");
+      error.code = "ENOTDIR";
+      throw error;
+    };
+    const nested = unusableCwd("/etc/passwd/nope", { fs: { statSync: enotdir, accessSync: () => {} } });
+    expect(typeof nested).toBe("string");
+    expect(nested).toContain("ENOTDIR");
+    // And the other shape of the same answer: stat SUCCEEDS on a plain file.
+    const refusal = unusableCwd("/etc/passwd", {
+      fs: { statSync: () => ({ isDirectory: () => false }), accessSync: () => {} },
+    });
+    expect(typeof refusal).toBe("string");
+    expect(refusal).toContain("is not a directory");
+  });
+
+  test("a directory this process may not enter is refused, not attempted", () => {
+    const refusal = unusableCwd("/private", {
+      fs: {
+        statSync: () => ({ isDirectory: () => true }),
+        accessSync: () => {
+          const error = new Error("EACCES: permission denied, access '/private'");
+          error.code = "EACCES";
+          throw error;
+        },
+      },
+    });
+    expect(typeof refusal).toBe("string");
+    expect(refusal).toContain("may not enter");
+    expect(refusal).toContain("EACCES");
+  });
+
+  test("a usable directory is NOT refused — the control arm", () => {
+    // Without this the three above are satisfied by a function that refuses
+    // everything, which would take every terminal in the product with it.
+    expect(unusableCwd("/work", { fs: { statSync: () => ({ isDirectory: () => true }), accessSync: () => {} } })).toBeNull();
+    // And against the REAL filesystem, on a directory that certainly exists.
+    expect(unusableCwd(path.dirname(__filename))).toBeNull();
+  });
+
+  test("the refusal is `failed`, carries no exit code, and never spawned", () => {
+    const { host, spawned, endings } = hostWith(fakePty(99), {
+      fs: { statSync: missing, accessSync: () => {} },
+    });
+    const opened = host.open({ shell: "/bin/zsh", cwd: "/gone", env: {} });
+    // NOTHING WAS SPAWNED. This is the half that makes the fate honest.
+    expect(spawned).toHaveLength(0);
+    expect(opened.pid).toBeUndefined();
+    expect(opened.ending.fate).toBe(TerminalFate.FAILED);
+    // A refusal cannot carry an exit code, because nothing exited. #845 failed
+    // on an ending that claimed `exited` with code 0; the whole point of
+    // refusing here is that this reading is impossible.
+    expect(opened.ending.exitCode).toBeUndefined();
+    expect(opened.ending.error).toContain("/gone");
+    // Reported once, through the same channel every other ending uses, and not
+    // tracked — there is no process to write to, resize or kill.
+    expect(endings).toHaveLength(1);
+    expect(endings[0][0]).toBe(opened.id);
+    expect(host.list()).toEqual([]);
+  });
+
+  test("a terminal with a usable cwd still starts, and gets it", () => {
+    const { host, spawned, endings } = hostWith(fakePty(100));
+    const opened = host.open({ shell: "/bin/zsh", cwd: "/work", env: {} });
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].opts.cwd).toBe("/work");
+    expect(opened.pid).toBe(100);
+    expect(opened.ending).toBeUndefined();
+    expect(endings).toEqual([]);
   });
 });
 
