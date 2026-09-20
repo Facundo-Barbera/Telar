@@ -118,7 +118,8 @@ test("tools/list IS the wall, and the server introduces itself under the key Cod
   // PARITY WITH THE WALL, structurally: both lists come from `sessionsTools`,
   // so a tool added to the toolkit appears here in the same change or this fails.
   expect(result.tools.map((tool) => tool.name)).toEqual(wallNames);
-  expect(result.tools.length).toBe(20);
+  // 21 since #543 added `sessions_schedule`.
+  expect(result.tools.length).toBe(21);
 });
 
 test("`self` rides the binding: a subscription made over this socket names the bound session as subscriber", async () => {

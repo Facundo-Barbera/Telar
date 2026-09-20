@@ -167,6 +167,8 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_steps",
     "sessions_step",
     "sessions_grep",
+    // #543, appended at the END so the wall GROWS rather than reorders.
+    "sessions_schedule",
     "warp",
   ]);
 

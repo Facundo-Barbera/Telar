@@ -78,10 +78,11 @@ const TOOL_EFFECT: Readonly<Record<string, "reads" | "lands">> = {
   sessions_subscribe: "lands",
   sessions_unsubscribe: "lands",
   sessions_resolve_request: "lands",
-  // NO `sessions_report_window`, and its absence is the table working rather
-  // than an omission: this table is held against the tools the AGENT is given,
-  // and that tool is deliberately not one of them — the Agent is a thread, not a
-  // session, so it has no mailbox to hold reports in. See `NOT_ON_THE_AGENTS_WALL`.
+  // NO `sessions_report_window` AND NO `sessions_schedule`, and their absence is
+  // the table working rather than an omission: this table is held against the
+  // tools the AGENT is given, and neither is one of them — the Agent is a
+  // thread, not a session, so it has no mailbox to hold reports in and no
+  // session id a schedule row could fire into. See `NOT_ON_THE_AGENTS_WALL`.
   // #516's six queries and the fleet read. Every one of them is a READ by
   // construction rather than by classification: the query capability has no
   // verb that writes, so there is nothing here for a future tool on it to be
