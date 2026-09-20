@@ -60,6 +60,7 @@ import { notifyBackdropCss, setBackdropCss, type BackdropCss } from "./backdrop"
 import { halfFor } from "./palette-from-image";
 import { forgetLegacyAppearance, migrateLegacyAppearance } from "./legacy-appearance";
 import { composeState, SCENE_PRESETS } from "./scene-composer";
+import { repairInk, STATE_INK, TINT_FLOOR, TINT_TONES, tintCost, type TintTone } from "./tint-separation";
 
 export const COMPOSITION_KEY = "telar-composition";
 export const COMPOSITION_IMAGES_KEY = "telar-composition-images";
@@ -100,17 +101,69 @@ function declarations(half: ThemeHalf, neutral: ThemeHalf): string {
 }
 
 /**
+ * THE STATE VOCABULARY, REPAIRED FOR THIS CARD — and USUALLY NOTHING (#705).
+ *
+ * `.tint-success` is `color-mix(in oklab, var(--success) 12%, var(--card))`, and
+ * `text-success` stands on it. Both ends of that mix are the same token, so a
+ * card that lands near the state ink strands the ink on its own fill. The card
+ * is the term somebody CHOSE; `--success` and friends are not in THEME_TOKENS
+ * and so cannot be chosen at all — which is why the repair moves the ink and
+ * leaves the card exactly as it was authored (lib/tint-separation.ts argues it
+ * at length).
+ *
+ * HERE RATHER THAN AT EACH ARRIVAL, because every path that can reach an
+ * arbitrary `--card` — a VS Code import, a hand override, a Look file somebody
+ * else made, the legacy read-forward — funnels through `halfFor` and this
+ * compiler. One rule instead of four, DERIVED on every compile and never
+ * stored, so it cannot go stale, cannot be exported into a Look file, and
+ * disappears the instant the card goes back.
+ *
+ * AND IT EMITS NOTHING FOR A LOOK THAT MERELY READS. `repairInk` is a fixed
+ * point on an ink that already clears both separations, which is every card
+ * this build can derive from a base — so the compiled stylesheet for Telar's
+ * own composition, and for every built-in Look, is byte-for-byte what it was.
+ */
+function inkDeclarations(half: ThemeHalf, mode: CompositionMode): string {
+  const shipped = STATE_INK[mode];
+  const moved: string[] = [];
+  for (const tone of TINT_TONES) {
+    const repair = repairInk(shipped[tone], half.card, TINT_FLOOR);
+    if (repair.outcome === "repaired") moved.push(`--${tone}: ${repair.ink};`);
+  }
+  return moved.join(" ");
+}
+
+/**
  * The composition's palette as a stylesheet. `html:root` outranks globals.css's
  * `:root` by one type selector, which is how the composition wins by
  * construction; the translucency overrides at two attributes still outrank both.
  */
 export function compileComposition(composition: Composition): string {
   const blocks: string[] = [];
-  const light = declarations(halfFor(composition.light, "light"), TELAR_LIGHT);
+  const lightHalf = halfFor(composition.light, "light");
+  const light = [declarations(lightHalf, TELAR_LIGHT), inkDeclarations(lightHalf, "light")].filter(Boolean).join(" ");
   if (light) blocks.push(`html:root { ${light} }`);
-  const dark = declarations(halfFor(composition.dark, "dark"), TELAR_DARK);
+  const darkHalf = halfFor(composition.dark, "dark");
+  const dark = [declarations(darkHalf, TELAR_DARK), inkDeclarations(darkHalf, "dark")].filter(Boolean).join(" ");
   if (dark) blocks.push(`html:root.dark { ${dark} }`);
   return blocks.join(" ");
+}
+
+/**
+ * THE TONES THIS COMPOSITION STRANDS — the repair's report arm, as a value.
+ *
+ * A card sitting on the ink's own lightness fails ELEVATION, and no ink
+ * lightness can answer that: the fill has nowhere to go. `repairInk` changes
+ * nothing in that case, so somebody has to be told instead — which is what this
+ * is for. Both states are asked, because a Look carries two cards and only one
+ * of them may be in trouble.
+ */
+export function strandedTones(composition: Composition): TintTone[] {
+  const found = new Set<TintTone>();
+  for (const mode of MODES) {
+    for (const tone of tintCost(compositionHalf(composition, mode).card, STATE_INK[mode], TINT_FLOOR).stranded) found.add(tone);
+  }
+  return TINT_TONES.filter((tone) => found.has(tone));
 }
 
 /**
