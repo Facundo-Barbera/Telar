@@ -59,9 +59,20 @@
  * which is why this is `append` rather than `set` — a comma-joined string would
  * be one long term nobody says.
  *
- * IT WORKS UNDER `language=multi`, confirmed on the headset, which is the one
- * thing worth writing down: keyterm prompting is documented per-model and the
- * combination is the one every Telar client actually opens.
+ * IT WORKS UNDER `language=multi` — probed against the real endpoint on
+ * 2026-09-19 rather than inherited from the headset (#707), because the claim
+ * was load-bearing and the headset may open a different model. `multi`, `es`
+ * and `en` all upgrade with keyterms on, and so do terms carrying accents, `·`,
+ * `—`, `§` and `#`. None of that was the bug.
+ *
+ * WHAT IS NOT SAFE IS THE SIZE OF THE LIST, and this builder does not bound it:
+ * the list arrives already inside Deepgram's budget and the bounding is the
+ * engine's (`dictation/keyterms.ts`, which explains why it is charged in bytes).
+ * Two limits are in play and both refuse the UPGRADE, which is the worst place
+ * for a browser to meet one — an over-budget list is `400 Bad Request — Keyterm
+ * limit exceeded`, and a query of a few kilobytes is a plain-HTML `400` from
+ * Deepgram's edge before it reads the credential. Either one arrives here as
+ * `onerror` with nothing in it. See `use-dictation.ts`.
  *
  * REQUIRED, LIKE `language`, and for exactly the reason this issue exists: the
  * parameter went missing on every surface at once because nothing made a caller

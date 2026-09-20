@@ -9,8 +9,16 @@
  *
  * THE COUNT OF FORTY IS NO LONGER A BOUND (owner, 2026-09-17): it was the
  * headset's habit, and the terms it hid were free — keyterm prompting is billed
- * per minute dictated, not per term. Deepgram's ~500-token budget is what is
+ * per minute dictated, not per term. Deepgram's 500-token budget is what is
  * left, and it always was the real one.
+ *
+ * AND THAT BUDGET IS NOW CHARGED IN BYTES (#707), which is the thing these
+ * tests exist for hardest. Spending it against an ESTIMATE — four characters to
+ * a token — took dictation down on every press: a Spanish glossary the builder
+ * called 313 tokens was refused by Deepgram with `400 Bad Request — Keyterm
+ * limit exceeded`, and a browser cannot report why, so the whole feature failed
+ * silently. A term's UTF-8 byte length is an upper bound on its token cost
+ * rather than a guess at it, so the list can be short but never illegal.
  *
  * What must not drift:
  *
@@ -18,8 +26,11 @@
  *     this and a branch name must never push them off the end;
  *   - the app's own words survive a Mac with forty open conversations, which is
  *     the failure mode the obvious ordering has;
- *   - both bounds cut FROM THE TAIL, so the list is always a prefix — never a
+ *   - the budget cuts FROM THE TAIL, so the list is always a prefix — never a
  *     set chosen by which strings happened to be short;
+ *   - and NOTHING a person can type or title can push the list over Deepgram's
+ *     limit, because being over it costs dictation entirely rather than costing
+ *     a term;
  *   - deduplication is case-insensitive, because a branch and the title it was
  *     cut from collide constantly;
  *   - and the whole thing rides the token answer, so a press of the mic button
@@ -39,6 +50,11 @@ const context = (parts: Partial<DictationContext>): DictationContext => ({ ...EM
 
 const built = (input: { vocabulary?: string[]; context?: Partial<DictationContext> }): string[] =>
   deepgramKeyterms({ vocabulary: input.vocabulary ?? [], context: context(input.context ?? {}) });
+
+/** WHAT THE LIST COSTS, in the unit the budget is charged in — see the header.
+ *  A token never covers fewer than one byte, so this is the ceiling on what
+ *  Deepgram will count. */
+const bytes = (terms: readonly string[]): number => new TextEncoder().encode(terms.join("")).length;
 
 test("the app's own name is in there, which is the whole point of the issue", () => {
   // Deepgram has no reason to guess "Telar", and every one of these is a word
@@ -85,10 +101,67 @@ test("the budget is the only ceiling, and short terms get far past the old forty
 test("the token budget bounds it, since a few dozen titles can be two thousand characters", () => {
   const long = Array.from({ length: 40 }, (_, index) => `${String(index).padStart(2, "0")}-${"x".repeat(57)}`);
   const terms = built({ vocabulary: long });
-  const spent = terms.join("").length;
-  expect(spent).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET * 4);
+  expect(bytes(terms)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
   expect(terms.length).toBeLessThan(long.length);
   expect(terms).toEqual(long.slice(0, terms.length));
+});
+
+test("a term is charged what it weighs on the wire, not what it looks like", () => {
+  // THE DEFECT THIS FILE EXISTS FOR (#707). `ó`, `·`, `—` and `§` are one
+  // character each and two or three BYTES each, and a budget that counted
+  // characters was undercharging every Spanish title on the list.
+  const accented = "revisión · Creatio — pgTAP §4";
+  const plain = "x".repeat(accented.length);
+  const withAccents = built({ vocabulary: Array.from({ length: 60 }, (_, index) => `${index}${accented}`) });
+  const withPlain = built({ vocabulary: Array.from({ length: 60 }, (_, index) => `${index}${plain}`) });
+  // Same character count, fewer terms — because they cost more.
+  expect(withAccents.length).toBeLessThan(withPlain.length);
+  expect(bytes(withAccents)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
+});
+
+test("nothing anybody can type pushes the list over Deepgram's limit", () => {
+  // OVER THE LIMIT IS NOT A DEGRADATION, IT IS AN OUTAGE: Deepgram refuses the
+  // upgrade, and a browser's WebSocket error event carries no reason, so the
+  // whole feature fails with a sentence nobody can act on. Four-byte emoji are
+  // the worst case a title can hold and they are not hypothetical — people name
+  // conversations with them.
+  for (const material of ["🎙️", "日本語", "é", "a", "§·—"]) {
+    const terms = built({
+      vocabulary: Array.from({ length: 200 }, (_, index) => `${index}${material.repeat(10)}`),
+      context: { sessionTitles: Array.from({ length: 200 }, (_, index) => `t${index}${material.repeat(8)}`) },
+    });
+    expect(bytes(terms)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
+  }
+});
+
+test("the glossary this Mac was failing on now fits, and keeps the words worth keeping", () => {
+  // THE REPORTED CASE, from the store the bug was filed against: 45 terms and
+  // 1250 characters, which the old estimator called 313 tokens and Deepgram
+  // called more than 500.
+  const terms = built({
+    context: {
+      sessionTitles: [
+        "BUG: el dictado falla el 100% de las veces en el cockpit",
+        "#671 · Worktree listing + reclaim",
+        "Coordinador · batch 2 (#49 — Issues, PRs y Diff)",
+        "#691 · Las tarjetas deben pintar (§4)",
+        "#690 · Diff miente en sesiones local (§3a)",
+        "#692 · El hilo de issue/PR no se lee (§1b)",
+        "Triage · PR #478 red + iOS nightly red",
+        "Agent lab: comparar #529 vs #530 y decidir rumbo (#528)",
+        "#974 revisión: Creatio sin ruta OData + pgTAP con datos reales",
+        "NuSkills Revamp · arreglos WhatsApp 18 sep",
+      ],
+      projectNames: ["Telar", "ozom-gv", "NuSkills-Coach-v2", "linear-regression-from-scratch"],
+      branches: ["telar/974-revision-creatio-sin-ruta-odata-pgta-f7bd33", "telar/690-diff-miente-en-sesiones-local-3a-89157c"],
+    },
+  });
+  expect(bytes(terms)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
+  // AND IT IS STILL A GLOSSARY. The app's own words survive the cut, which is
+  // what the priority order is for — a bound that kept the branch slugs and
+  // dropped "Telar" would be inside the budget and useless.
+  expect(terms).toContain("Telar");
+  expect(terms).toContain("BUG: el dictado falla el 100% de las veces en el cockpit");
 });
 
 test("a long term does not get skipped so a short one behind it can fit", () => {
