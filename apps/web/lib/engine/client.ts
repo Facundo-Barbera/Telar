@@ -193,18 +193,33 @@ function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undef
  * That was measured live: exactly six established connections to the packaged
  * server while a session worked, and no way to switch conversations.
  *
- * WHAT HOLDS THEM NOW IS NOT WHAT THE ISSUE DESCRIBED. The stacked SSE tails it
- * was filed against are gone — this cockpit opens no EventSource, no WebSocket
- * and no streaming fetch, and the engine serves no `text/event-stream` route to
- * it. Liveness is polling: the session tail once a second, the rail every three.
- * A poll RETURNS its socket to the keep-alive pool, where a navigation can take
- * it, so nothing is held indefinitely any more.
+ * WHAT HOLDS THEM NOW IS NOT WHAT THE ISSUE DESCRIBED — but two sentences of
+ * this note went stale and are corrected here rather than left to mislead the
+ * next person costing a connection budget (#586).
  *
- * What is left is the BURST. A single rail pass fans out — the live list, the
- * health probe and the inbox policy go out together, per host — and a poll tick
- * that lands across an open cockpit's own tail can put five or six reads on the
- * wire at one instant. The cap does not care that each is short-lived; a
- * navigation arriving during that instant still waits.
+ * THE COCKPIT DOES OPEN A STREAMING FETCH, AND THE ENGINE DOES SERVE ONE. The
+ * Agent screen holds `/api/agent/stream` for as long as it is open
+ * (`lib/agent/thread.ts`), proxied to the engine's `/v2/agent/stream`. #82 is
+ * not an argument against HAVING one — it is CLOSED, and its own slice 4 names
+ * "one multiplexed per-client events channel… 1–2 regardless of activity" as
+ * the durable answer. What it forbids is STACKING them.
+ *
+ * THE RAIL'S PASS IS ONE READ, NOT A FAN-OUT. #459 folded `daemonId` and the
+ * inbox policy onto the live list itself, and `sidebar-one-read.test.ts` pins
+ * that — no health probe, no inbox call, no `Promise.all` in `loadHost`.
+ *
+ * So the burst is smaller than this note claimed and the streams are realer.
+ * Liveness is still mostly polling: the session tail once a second — now
+ * conditional, answering 304 in no bytes when nothing moved (#586) — and the
+ * rail every ten seconds quiet, three when a row is live. A poll RETURNS its
+ * socket to the keep-alive pool, where a navigation can take it.
+ *
+ * THE BUDGET MUST BE SPENT DELIBERATELY, which is the live constraint. A
+ * streaming fetch is a BARE `fetch` and so bypasses the gate below while still
+ * holding one of the six: Agent screen open plus a sessions stream plus two
+ * gated reads is four of six, leaving two for navigation. Workable, and it has
+ * to be counted rather than discovered — an ungated stream nobody budgeted for
+ * is exactly the shape #82 was filed about.
  *
  * So the ceiling is enforced HERE, at the one chokepoint every call already
  * passes through, rather than at each of the twenty-eight call sites that would

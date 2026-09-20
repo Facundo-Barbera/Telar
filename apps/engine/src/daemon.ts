@@ -410,6 +410,31 @@ function liveSessionsETag(revision: number, all: boolean): string {
 }
 
 /**
+ * THE SESSION TAIL'S OWN TAG — issue #586, and the largest single loop in the
+ * cockpit.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * The rail's tick was made nearly free by #459/#462/#493. NOTHING EQUIVALENT
+ * WAS EVER DONE FOR THE TAIL, which runs at 1 s against the rail's 10 — so a
+ * cockpit sitting inside one conversation spends ~86,400 requests a day asking
+ * a question whose answer is almost always `events: []`, and pays a fold and a
+ * body for every one of them.
+ *
+ * THE TAG IS THE CURSOR AND THE WINDOW TOGETHER, and both halves are load
+ * bearing. `after` selects which rows an answer would contain, so two asks at
+ * one cursor with DIFFERENT `after` are two different answers — a tag carrying
+ * only the cursor would hand a client paging backwards a 304 for a page it has
+ * never seen. `limit` is in it for the same reason.
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * WEAK, like the live list's and for the same reason: the claim is that the
+ * rows are the same, never that the bytes are.
+ */
+function sessionEventsETag(cursor: number, after: number, limit: number): string {
+  return `W/"events-${cursor}-${after}-${limit}"`;
+}
+
+/**
  * Does `If-None-Match` name this tag?
  *
  * WEAK COMPARISON, which is what RFC 9110 requires of `If-None-Match`: `W/"x"`
@@ -4249,6 +4274,107 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * on a cold start, by a screen that then leaves. There is no timer behind
        * it to make cheap.
        */
+      /**
+       * EVERY SESSION'S EVENTS, ON ONE CONNECTION — issue #586.
+       *
+       * ────────────────────────────────────────────────────────────────────
+       * WHY A FEED AT ALL. Every liveness surface in this app polls, because
+       * there has never been anything to subscribe to: the mobile push worker
+       * asks `liveSessionsMatching` every ten seconds whether anything needs a
+       * notification, and the answer is almost always no. What a person feels
+       * is the LATENCY — a request parked for approval is up to ten seconds
+       * late — and what a relay would pay for is the request count.
+       *
+       * A FRAME IS NEVER THE RECORD. Each one names a fact the reader can
+       * re-derive from a cursor'd read of `/events`, which is what keeps this a
+       * latency optimisation over a poll rather than a second source of truth.
+       * A phone asleep when a frame went out loses nothing by asking. Any
+       * future frame must meet that bar or it does not belong here.
+       *
+       * SO THE FRAME IS THIN ON PURPOSE: which session, which event id, what
+       * kind. A reader that cares pages `/events` from the id — the same
+       * contract every other read here has. Putting the event's BODY on the
+       * wire would make this the record, and a client that missed a frame
+       * would have lost something.
+       * ────────────────────────────────────────────────────────────────────
+       *
+       * MIRRORS `/v2/agent/stream` FRAME FOR FRAME, and the mirroring is the
+       * point: one pattern in this daemon rather than two. The `: open` first,
+       * the replay inside the same response, the 25 s `: beat`, the
+       * `openStreams` registration — every one of those has its reason written
+       * out at that route and every one of them applies here verbatim.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/sessions/stream") {
+        response.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        });
+        const frame = (event: { sessionId: string; id: number; type: string }) => {
+          try {
+            response.write(`data: ${JSON.stringify({ sessionId: event.sessionId, id: event.id, type: event.type })}\n\n`);
+          } catch {
+            // The socket has gone; the close handler below unsubscribes.
+          }
+        };
+        /**
+         * THE FLUSH, AND IT IS NOT POLITENESS — see `/v2/agent/stream`, where
+         * this was measured: `writeHead` alone does not put headers on the
+         * wire, so the QUIETEST feed hangs longest. A machine with nothing
+         * happening is exactly when a client most needs to be told it is
+         * connected.
+         */
+        response.write(": open\n\n");
+        /**
+         * ── THERE IS NO `?after=` REPLAY HERE, AND THAT IS A FINDING ────────
+         *
+         * `/v2/agent/stream` replays from a cursor inside the same response,
+         * and #586 asked for the same shape. IT CANNOT HAVE IT: an event id in
+         * this engine is per session — `PRIMARY KEY(session_id, id)` in
+         * `execution-store.ts` — so there is no machine-wide cursor for a
+         * caller to hold or for this route to replay from. Accepting an
+         * `?after=` that silently meant nothing would be worse than not
+         * offering one, and synthesising a global ordering would mean a scan
+         * across every session's journal on every connect, which is precisely
+         * the whole-store pass this feed exists to remove.
+         *
+         * SO THE FEED IS LIVE-ONLY, AND ITS READERS ARE ALREADY BUILT FOR
+         * THAT. The rule this issue settles on is that a frame never IS the
+         * record: it names a fact re-derivable from a cursor'd read, so a
+         * reader that missed one loses latency and nothing else. The mobile
+         * worker keeps its ten-minute reconcile for exactly this, and that
+         * reconcile — not a replay — is what closes a gap after a disconnect.
+         */
+        const stop = store.watch(frame);
+        const beat = setInterval(() => {
+          try {
+            response.write(": beat\n\n");
+          } catch {
+            /* the close handler is what actually tidies up */
+          }
+        }, 25_000);
+        beat.unref();
+        const finish = () => {
+          clearInterval(beat);
+          stop();
+          openStreams.delete(finish);
+        };
+        // THE SHUTDOWN HAS TO BE ABLE TO END THIS, or `server.close()` waits
+        // for ever on a connection that by design never ends. Same reason and
+        // same machinery as the agent stream's.
+        openStreams.add(finish);
+        request.on("close", finish);
+        response.on("close", finish);
+        (finish as { end?: () => void }).end = () => {
+          finish();
+          try {
+            response.end();
+          } catch {
+            /* already gone */
+          }
+        };
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/sessions/activity") {
         writeJson(response, 200, { projects: store.projectActivity() });
         return;
@@ -4532,16 +4658,43 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         if (request.method === "GET" && session.tail === "/events") {
           const after = Number(url.searchParams.get("after") ?? "0");
           const limit = eventPageLimit(url.searchParams.get("limit"));
+          /**
+           * `If-None-Match` ON THE TAIL — issue #586, and the same conditional
+           * read the live list has had since #462.
+           *
+           * BEFORE `readEvents`, because the whole point is to answer without
+           * folding: a 304 here costs one indexed cursor read against a page
+           * this route would otherwise build in memory and serialise.
+           *
+           * A CLIENT THAT GETS 304 MUST KEEP WHAT IT HAS, which is the one way
+           * this design fails in a reader's face — the rule `liveSessionsSince`
+           * already states for `unchanged`. `tailSession` treats it that way,
+           * and the engine test asserts both directions on the same fixture.
+           */
+          const etag = sessionEventsETag(store.eventCursor(session.sessionId), Number.isSafeInteger(after) ? after : 0, limit);
+          if (matchesETag(request.headers["if-none-match"], etag)) {
+            response.writeHead(304, { etag, "cache-control": "no-store" });
+            response.end();
+            return;
+          }
           // One over, to tell a full page from a full page with more behind it.
           const read = store.readEvents(session.sessionId, after, limit + 1);
           const events = read.length > limit ? read.slice(0, limit) : read;
           const cursor = events.at(-1)?.id ?? (Number.isSafeInteger(after) ? after : 0);
-          writeJson(response, 200, {
-            events,
-            cursor,
-            more: read.length > limit,
-            ...(read.length > limit ? { next: cursor } : {}),
-          });
+          writeJson(
+            response,
+            200,
+            {
+              events,
+              cursor,
+              more: read.length > limit,
+              ...(read.length > limit ? { next: cursor } : {}),
+            },
+            // THE TAG A CLIENT SPENDS ON THE NEXT TICK. Minted from the same
+            // three values the 304 above compares, so an answer and the tag
+            // that would suppress its repeat cannot disagree.
+            { etag },
+          );
           return;
         }
         /**

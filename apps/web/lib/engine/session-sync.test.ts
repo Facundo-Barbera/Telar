@@ -295,6 +295,91 @@ describe("paging the journal", () => {
     expect(tail.cursor).toBe(42);
   });
 
+  /**
+   * THE CONDITIONAL TICK — issue #586, and the half that fails in a reader's
+   * face if it is got wrong.
+   *
+   * `unchanged` MEANS KEEP WHAT YOU HAVE. The tail runs once a second while a
+   * conversation is open, so a caller that folded "unchanged" as "no events,
+   * reset" would blank a transcript 86,400 times a day. The two arms are
+   * therefore different SHAPES, and these tests assert the shape rather than
+   * the emptiness.
+   */
+  describe("the conditional tick (#586)", () => {
+    test("an unchanged tail asks once, folds nothing, and keeps the cursor", async () => {
+      let conditional = 0;
+      let unconditional = 0;
+      const api = {
+        events: async () => {
+          unconditional += 1;
+          return { events: [], more: false };
+        },
+        eventsIfChanged: async () => {
+          conditional += 1;
+          return { unchanged: true as const, etag: 'W/"events-9-42-200"' };
+        },
+        session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+      };
+      const tail = await tailSession(api, session.id, 42, undefined, 'W/"events-9-42-200"');
+      // THE SAVING, COUNTED: the expensive read is not made at all.
+      expect(conditional).toBe(1);
+      expect(unconditional).toBe(0);
+      // ...and the answer says "nothing moved" rather than "there is nothing".
+      expect(tail.unchanged).toBe(true);
+      expect(tail.events).toEqual([]);
+      expect(tail.cursor).toBe(42);
+      expect(tail.etag).toBe('W/"events-9-42-200"');
+    });
+
+    test("with NO tag to spend it is the unconditional tail, unchanged from before", async () => {
+      // The first tick of a session, and every tick against an engine too old
+      // to mint a tag. `unchanged` must be absent, not false-y by accident.
+      let unconditional = 0;
+      const api = {
+        events: async () => {
+          unconditional += 1;
+          return { events: [event(7)], more: false };
+        },
+        eventsIfChanged: async () => {
+          throw new Error("must not be asked without a tag");
+        },
+        session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+      };
+      const tail = await tailSession(api, session.id, 6);
+      expect(unconditional).toBe(1);
+      expect(tail.events.map((each) => each.id)).toEqual([7]);
+      expect(tail.unchanged).toBeUndefined();
+    });
+
+    test("a conditional page that is FULL still pages the rest", async () => {
+      /**
+       * THE CASE THE SAVING MUST NOT BREAK. A tab that slept through a long
+       * turn comes back with a tag AND a backlog: the conditional ask answers
+       * a page with `more`, and the walk has to continue from where it reached
+       * or the transcript is silently short — #494's whole argument.
+       */
+      const asked: number[] = [];
+      const api = {
+        events: async (_sessionId: string, after: number) => {
+          asked.push(after);
+          return { events: [event(13), event(14)], more: false };
+        },
+        eventsIfChanged: async () => ({
+          unchanged: false as const,
+          payload: { events: [event(11), event(12)], more: true },
+          etag: 'W/"events-14-10-200"',
+        }),
+        session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+      };
+      const tail = await tailSession(api, session.id, 10, undefined, 'W/"events-10-10-200"');
+      // The drain resumed from the conditional page's last id, not from `after`.
+      expect(asked).toEqual([12]);
+      expect(tail.events.map((each) => each.id)).toEqual([11, 12, 13, 14]);
+      expect(tail.cursor).toBe(14);
+      expect(tail.unchanged).toBeUndefined();
+    });
+  });
+
   test("an engine that never sends `more` is read exactly as it always was", async () => {
     // A REMOTE host may predate the paged route. Absent must mean "that was
     // everything" — the meaning it had before the field existed.

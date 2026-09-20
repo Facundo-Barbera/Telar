@@ -11,6 +11,23 @@ export type SessionSyncApi = {
    *  everything" — which is exactly what it meant before. */
   events(sessionId: string, after: number): Promise<{ events: EngineEvent[]; more?: boolean }>;
   /**
+   * The same page, asked CONDITIONALLY — issue #586.
+   *
+   * OPTIONAL for `sessionBootstrap`'s reason: a remote host may be running an
+   * engine older than the tag, and the unconditional `events` above is the
+   * honest fallback rather than a broken tail on every switch.
+   *
+   * `unchanged: true` MEANS KEEP WHAT YOU HAVE. It is not an empty page, and a
+   * caller that folded it as one would blank a transcript once a second — which
+   * is why the two arms are different shapes rather than one shape with an
+   * empty list.
+   */
+  eventsIfChanged?(
+    sessionId: string,
+    after: number,
+    etag?: string,
+  ): Promise<{ unchanged: true; etag?: string } | { unchanged: false; payload: { events: EngineEvent[]; more?: boolean }; etag?: string }>;
+  /**
    * The one-read opening (#407). OPTIONAL, and that is not politeness: a
    * REMOTE host may be running an engine older than the route, and the two-call
    * path below is the honest fallback rather than a 404 on every switch.
@@ -219,11 +236,44 @@ export async function tailSession(
   sessionId: string,
   after: number,
   window?: SnapshotWindow,
+  etag?: string,
 ): Promise<{
   events: EngineEvent[];
   cursor: number;
   snapshot?: SessionSnapshot;
+  /** The tag to spend on the next tick. Absent from an engine that does not
+   *  mint one, which simply keeps the unconditional behaviour. */
+  etag?: string;
+  /** THE ENGINE SAID NOTHING MOVED. `events` is empty because there is nothing
+   *  to add, NOT because the journal is empty — the caller keeps what it has
+   *  and must not treat this as a reset. */
+  unchanged?: true;
 }> {
+  /**
+   * THE CHEAP TICK FIRST — issue #586. This is the cockpit's largest loop at
+   * 1 s, and almost every pass answers "nothing new"; with a tag that pass
+   * costs a status line and no body at all.
+   *
+   * ONLY WHEN THERE IS A TAG TO SPEND, and only for the FIRST page. A drain
+   * that is paging through a backlog is not the case this saves — it has real
+   * rows to carry on every request — so the condition is asked once and the
+   * walk below is unchanged.
+   */
+  if (api.eventsIfChanged && etag) {
+    const asked = await api.eventsIfChanged(sessionId, after, etag);
+    if (asked.unchanged) return { events: [], cursor: after, unchanged: true, ...(asked.etag ? { etag: asked.etag } : {}) };
+    // A page came back. It may be the first of several, so the drain below
+    // still runs from wherever this one reached.
+    const reached = Math.max(after, journalCursor(asked.payload.events));
+    const rest = asked.payload.more ? await drainEvents(api, sessionId, reached) : { events: [], cursor: reached };
+    const events = rest.events.length ? [...asked.payload.events, ...rest.events] : asked.payload.events;
+    return {
+      events,
+      cursor: Math.max(reached, rest.cursor),
+      ...(asked.etag ? { etag: asked.etag } : {}),
+      ...(needsSessionSnapshot(events) ? { snapshot: await api.session(sessionId, window) } : {}),
+    };
+  }
   // DRAINED (#494): a quiet tick is one page and stops on the first answer, so
   // the ordinary second costs exactly what it did. A tick that comes back to a
   // session which ran while the tab slept keeps paging — each request bounded,
