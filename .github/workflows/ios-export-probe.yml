@@ -19,8 +19,12 @@ name: iOS export probe
 # what has to be green; this is what you reach for when it is not.
 on:
   workflow_dispatch:
+  # OPT IN BY BRANCH NAME. An earlier version fired on every `telar/757-*`
+  # push that touched these paths, which spent a 15-minute hosted macOS job on
+  # commits that were only editing a comment. Push to a `telar/*-probe-*`
+  # branch when the answer is wanted; otherwise dispatch it by hand.
   push:
-    branches: ['telar/757-*']
+    branches: ['telar/*-probe-*']
     paths:
       - '.github/workflows/ios-export-probe.yml'
       - 'apps/ios/nightly.sh'
@@ -110,7 +114,9 @@ jobs:
       # of nightly.sh is altered to get the answer.
       #
       # Do not read a green probe as #758 being fixed, and do not copy this into
-      # nightly-ios.yml: it hides the very threshold #758 is about.
+      # nightly-ios.yml: it hides the very threshold #758 is about. DELETE THIS
+      # STEP once #758 lands — a raised budget left lying around is how the next
+      # expression over the line gets to stay there unnoticed.
       #
       # ALL FOUR LIMITS, because the solver has four and the error names none
       # of them. Run 35491585777 raised the scope and time thresholds alone and
