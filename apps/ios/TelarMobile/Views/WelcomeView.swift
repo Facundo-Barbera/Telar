@@ -94,7 +94,7 @@ struct WelcomeView: View {
                         .font(.system(Theme.subhead, weight: .medium))
                         .foregroundStyle(Theme.textMuted)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 44)
+                        .scaledHeight(44, relativeTo: .subheadline)
                 }
             }
 

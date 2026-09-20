@@ -160,7 +160,7 @@ struct GhostButton: View {
                 .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(tint)
                 .padding(.horizontal, 10)
-                .frame(height: 30)
+                .scaledHeight(30, relativeTo: .footnote)
                 .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())

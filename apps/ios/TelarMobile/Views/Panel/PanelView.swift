@@ -53,7 +53,7 @@ struct PanelView: View {
                     }
                     .foregroundStyle(panel.active == tab ? Theme.text : Theme.textMuted)
                     .padding(.horizontal, 10)
-                    .frame(height: 30)
+                    .scaledHeight(30, relativeTo: .footnote)
                     .background(panel.active == tab ? Theme.subtleStrong : .clear, in: RoundedRectangle(cornerRadius: Theme.radiusControl))
                 }
                 .buttonStyle(.plain)

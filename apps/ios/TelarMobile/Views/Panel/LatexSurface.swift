@@ -58,7 +58,7 @@ struct LatexSurface: View {
                 .font(.system(Theme.caption, design: .monospaced))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .padding(.horizontal, 8).frame(height: 26)
+                .padding(.horizontal, 8).scaledHeight(26, relativeTo: .caption)
                 .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 6))
                 .accessibilityLabel("LaTeX document to compile")
             Button { Task { await compile() } } label: {
@@ -67,7 +67,7 @@ struct LatexSurface: View {
                     Text(compiling ? "Compiling…" : "Compile").font(.system(Theme.footnote, weight: .medium))
                 }
                 .foregroundStyle(Theme.text)
-                .padding(.horizontal, 10).frame(height: 26)
+                .padding(.horizontal, 10).scaledHeight(26, relativeTo: .footnote)
                 .background(Theme.subtleStrong, in: RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)
@@ -87,7 +87,7 @@ struct LatexSurface: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(height: 38)
+        .scaledHeight(38, relativeTo: .footnote)
         .background(Theme.sheet)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
     }

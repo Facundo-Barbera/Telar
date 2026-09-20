@@ -39,7 +39,7 @@ struct DataSurface: View {
                             Text(tab.label).font(.system(Theme.footnote, weight: .medium))
                         }
                         .foregroundStyle(sub == tab ? Theme.text : Theme.textMuted)
-                        .padding(.horizontal, 8).frame(height: 26)
+                        .padding(.horizontal, 8).scaledHeight(26, relativeTo: .footnote)
                         .background(sub == tab ? Theme.subtleStrong : .clear, in: RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
@@ -57,7 +57,7 @@ struct DataSurface: View {
                 }
             }
             .padding(.horizontal, 8)
-            .frame(height: 34)
+            .scaledHeight(34, relativeTo: .caption)
             .background(Theme.sheet)
             .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
             switch sub {
@@ -172,6 +172,8 @@ private struct PlotCard: View {
                 if let image {
                     Image(uiImage: image).resizable().scaledToFit()
                 } else {
+                    // Left fixed on purpose (#717), like CellOutputView's: the
+                    // height stands in for a chart, not for text.
                     ProgressView().frame(height: 120)
                 }
             }

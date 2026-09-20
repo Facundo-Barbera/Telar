@@ -101,7 +101,7 @@ struct FilesSurface: View {
                             }
                         }
                         .padding(.horizontal, 8)
-                        .frame(height: 26)
+                        .scaledHeight(26, relativeTo: .footnote)
                         .background(isActive ? Theme.subtleStrong : .clear, in: RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
                         .onTapGesture { panel.activateFile(file.path) }
@@ -113,7 +113,7 @@ struct FilesSurface: View {
             }
         }
         .padding(.horizontal, 4)
-        .frame(height: 34)
+        .scaledHeight(34, relativeTo: .footnote)
         .background(Theme.sheet)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
     }
@@ -170,7 +170,7 @@ struct FilesSurface: View {
                 .accessibilityLabel("Refresh files")
             }
             .padding(.horizontal, 10)
-            .frame(height: 32)
+            .scaledHeight(32, relativeTo: .footnote)
             .contentShape(Rectangle())
             // The desktop puts Refresh and Collapse all on the header and on
             // the tree's empty space; the header is the part of that a phone
@@ -262,7 +262,7 @@ struct FilesSurface: View {
             }
             .padding(.leading, CGFloat(row.depth) * 12 + 8)
             .padding(.trailing, 10)
-            .frame(height: 26)
+            .scaledHeight(26, relativeTo: .footnote)
             .background(panel.editor.activePath == node.path ? Theme.subtleStrong : .clear)
             .contentShape(Rectangle())
         }
