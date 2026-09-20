@@ -186,11 +186,12 @@ enum Theme {
     /// the point: a 10 and an 11 on the same row were never a deliberate two
     /// points apart, they were two people picking a small number.
     ///
-    /// ONE KIND OF SITE KEEPS ITS ABSOLUTE SIZE: a glyph locked inside a fixed
+    /// ONE KIND OF SITE DOES NOT TAKE A TOKEN: a glyph locked inside a fixed
     /// hit target — the composer's 44pt circles, the jump-to-bottom button.
-    /// The frame cannot grow with the reader's text, and it clips, so a glyph
-    /// that scaled inside it would only outgrow its own circle. Those need a
-    /// `@ScaledMetric` frame, which is a layout change rather than a swap.
+    /// Not because it cannot scale, but because a tap target is not sub-body
+    /// text and this ramp does not describe it. #674 gave those their frames:
+    /// box and glyph off one `@ScaledMetric`, so the proportion is exact at
+    /// every size. Reach for `scaledGlyphBox` there, and for a token here.
     /// `.caption2` IS THE FLOOR — Apple's ramp has nothing below it — so an 8
     /// has exactly one place to go, and it is the same rung as the 9.
     static let captionTiny: Font.TextStyle = .caption2   // was 8, 9
