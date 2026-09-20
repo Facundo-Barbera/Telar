@@ -14,6 +14,8 @@ struct DiffView: View {
     /// is how a diff is read there: several files at once, in place. A tap
     /// still pushes the full-page patch; this is the menu's half.
     @State private var expanded: Set<String> = []
+    /// The status letter's column, off the letter's own style (#674).
+    @ScaledMetric(relativeTo: .footnote) private var statusColumn: CGFloat = 14
     @Environment(\.panel) private var panel
 
     var body: some View {
@@ -192,10 +194,15 @@ struct DiffView: View {
 
     private func fileRow(_ file: GitFileChange) -> some View {
         HStack(spacing: 10) {
+            // THE STATUS LETTER'S COLUMN SCALES WITH THE LETTER (#674). The
+            // frame is width-only, so the sweep converted the font under the
+            // both-dimensions rule and was right to — but one dimension is
+            // still a dimension, and at the accessibility sizes a bold M in
+            // 14 points of column clips sideways. Same style as the letter.
             Text(statusLetter(file.status))
                 .font(.system(Theme.footnote, design: .monospaced, weight: .bold))
                 .foregroundStyle(statusColor(file.status))
-                .frame(width: 14)
+                .frame(width: statusColumn)
             Text(file.path)
                 .font(.system(Theme.footnote, design: .monospaced))
                 .foregroundStyle(Theme.text)

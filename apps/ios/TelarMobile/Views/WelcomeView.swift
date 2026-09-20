@@ -27,6 +27,14 @@ struct WelcomeView: View {
     /// are "finishing the sweep", this site is finished. Do not turn it into
     /// `.largeTitle`.
     @ScaledMetric(relativeTo: .largeTitle) private var wordmark: CGFloat = 40
+    /// THE MARK SCALES WITH THE WORD UNDER IT (#674). Giving the wordmark a
+    /// `@ScaledMetric` and leaving the logo on a hard 112 made a composition
+    /// that came apart at the reader's setting: at the largest sizes the word
+    /// "Telar" grew past the mark it is supposed to sit under. Same reference
+    /// style as the wordmark, so the ratio between them is fixed and the hero
+    /// stays one object — which is the only thing a logo and its word have to
+    /// do together.
+    @ScaledMetric(relativeTo: .largeTitle) private var mark: CGFloat = 112
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,7 +42,7 @@ struct WelcomeView: View {
 
             // The hero: your Mac and this phone, one pair.
             TelarMark(color: Theme.accent)
-                .frame(width: 112, height: 112)
+                .frame(width: mark, height: mark)
                 .padding(.bottom, 28)
 
             Text("Telar")

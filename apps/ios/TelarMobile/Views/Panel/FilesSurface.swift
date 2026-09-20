@@ -26,6 +26,10 @@ struct FilesSurface: View {
     /// inspector wide enough for both would have been split anyway. 220 for
     /// the tree plus a body still worth reading is the line.
     @State private var width: CGFloat = 0
+    /// The tree's disclosure column, off the chevron's own style (#674). One
+    /// metric for the chevron and for the blank a file row puts in its place,
+    /// so the two cannot drift apart.
+    @ScaledMetric(relativeTo: .caption2) private var chevronColumn: CGFloat = 10
 
     enum SaveState { case saving, problem }
 
@@ -232,10 +236,14 @@ struct FilesSurface: View {
                         .font(.system(Theme.captionTiny, weight: .semibold))
                         .rotationEffect(.degrees(isOpen ? 90 : 0))
                         .foregroundStyle(Theme.textMuted.opacity(0.7))
-                        .frame(width: 10)
+                        .frame(width: chevronColumn)
                     Image(systemName: isOpen ? "folder.fill" : "folder").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 } else {
-                    Spacer().frame(width: 10)
+                    // The blank that stands in for a missing chevron takes the
+                    // SAME metric, not a matching literal — a file indented by
+                    // 10 under a folder indented by more is the alignment bug
+                    // this column exists to prevent.
+                    Spacer().frame(width: chevronColumn)
                     Image(systemName: fileGlyph(node.path)).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 }
                 Text(node.name)
