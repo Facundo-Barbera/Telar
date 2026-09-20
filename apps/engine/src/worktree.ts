@@ -161,8 +161,30 @@ export const defaultGitRunner: GitRunner = createGitRunner();
 
 export type AsyncGitRunner = (cwd: string, args: string[], options?: GitRunOptions) => Promise<GitResult>;
 
-/** Read paths share a small process pool so polling cannot flood the machine.
- * The deadline includes queue time, and completion never waits on a stuck child.
+/**
+ * Read paths share a small process pool so polling cannot flood the machine.
+ * The deadline includes queue time, and NEITHER THE CALLER NOR THE POOL waits on
+ * a stuck child: a read that expires frees its slot at its own deadline.
+ *
+ * THE SLOT IS FREED AT THE DEADLINE, NOT AT THE REAP — issue #743.
+ *
+ * `SIGKILL` reaps git. It does not reap what git spawned: a clean/smudge filter,
+ * a `textconv` driver, an fsmonitor hook. Those inherit git's stderr, and
+ * `execFile`'s callback fires on stdio EOF rather than on process exit — so the
+ * callback, which is where `release` used to live, waits for the HELPER, not for
+ * git. Measured on a real `git diff` whose clean filter left a six-second helper
+ * behind: the caller was freed at its 400 ms deadline and the slot stayed held a
+ * further 5.6 s. A helper that never exits holds the slot forever, which makes
+ * this a leak rather than the delay it looks like.
+ *
+ * THE TRADE, because it changes what `concurrency` means. Until #743 a slot was
+ * held until the process tree was gone, so `limit` bounded live git processes as
+ * well as in-flight reads. Now it bounds only the reads: a slot can be handed out
+ * while an expired read's orphaned helper is still alive, so more than `limit`
+ * git-spawned processes can briefly exist. That is the deliberate half of the
+ * exchange — capacity is the thing polling needs back, and an orphan that
+ * survived `SIGKILL` was never going to be freed by making the next reader wait
+ * for it.
  */
 export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: number } = {}): AsyncGitRunner {
   const requestedLimit = deps.concurrency ?? 4;
@@ -180,19 +202,32 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
       clearTimeout(timer);
       resolve(result);
     };
+    /**
+     * ACQUIRED, not "started": a read that expires while still QUEUED never
+     * incremented `active`, and releasing on its behalf would hand out a slot
+     * that was never taken. `released` makes the call idempotent, because both
+     * the timeout path and the eventual `execFile` callback now reach it — the
+     * callback still arrives, whenever the orphaned helper finally lets go.
+     */
+    let acquired = false;
+    let released = false;
+    const release = () => {
+      if (!acquired || released) return;
+      released = true;
+      active--;
+      queue.shift()?.();
+    };
     const timer = setTimeout(() => {
       const index = queue.indexOf(start);
       if (index !== -1) queue.splice(index, 1);
       child?.kill("SIGKILL");
+      release();
       finish({ status: GIT_TIMEOUT_STATUS, stdout: "", stderr: `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed`, timedOut: true });
     }, timeout);
     const start = () => {
       if (settled) return;
       active++;
-      const release = () => {
-        active--;
-        queue.shift()?.();
-      };
+      acquired = true;
       try {
         child = execFile(deps.gitBin ?? "git", args, {
           cwd, encoding: "utf8", maxBuffer: 1024 * 1024, killSignal: "SIGKILL",
