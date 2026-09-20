@@ -144,7 +144,18 @@ describe("a candidate is re-checked off disk before anything is swapped", () => 
   });
 });
 
-describe("the swap helper, run for real against fake bundles", () => {
+// GENUINELY macOS-ONLY, and the only such block in this suite (issue #752).
+//
+// `core.helperScript()` is a real bash script that calls `ditto`, which does
+// not exist on Linux — so this runs the swap for real on a Mac and is skipped
+// elsewhere. Everything else in this file is platform-independent and keeps
+// running everywhere.
+//
+// IT MUST STILL RUN SOMEWHERE. `Verify`'s macOS leg exists for this block; if
+// that leg is ever dropped, this stops executing at all rather than failing,
+// which is the quiet kind of coverage loss. Do not skip it without checking
+// what is left running it.
+describe.skipIf(process.platform !== "darwin")("the swap helper, run for real against fake bundles", () => {
   // The launcher is a recording stub; "open" never runs in tests.
   const runSwap = ({ staged, target }) => {
     const work = tmp("telar-swapwork-");

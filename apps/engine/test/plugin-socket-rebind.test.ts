@@ -33,13 +33,15 @@ import { setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";
 import type { PluginToolModule } from "../src/plugins/tool-module";
 import { stubModels } from "./stub-models";
-import { allowCliInThisFile } from "./allow-cli";
+import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";
 
 /** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
  *  its daemon's Claude driver resolves one before every claim, against stubbed models.
  *  So this file opts past issue #532’s no-spawn gate, for its own scope only.
  *  See ./allow-cli.ts. */
 allowCliInThisFile();
+/** And pin WHICH claude, so the resolve cannot depend on this machine (#752). */
+pinFakeClaudeInThisFile();
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
