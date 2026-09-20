@@ -49,22 +49,61 @@ permissions:
 # runs in a row — which is what this expression makes automatic rather than
 # something a person has to remember.
 #
-# NOT A RUNNER-LOAD PROBLEM, and the intuitive reading is wrong. `group` is
-# keyed on the ref, so a branch push (`refs/heads/telar/…`) and main's run
-# (`refs/heads/main`) are in DIFFERENT groups and cannot reach each other.
-# Only a merge pushes `refs/heads/main`, so only a merge can cancel a main run.
-# Throttling PR pushes buys nothing here; it was verified live that a branch
-# push queues behind an in-progress main run rather than killing it.
+# NOT A RUNNER-LOAD PROBLEM, and the intuitive reading is wrong. Groups never
+# span a pull request and main — under the expression below a PR's group is its
+# ref and main's is a commit sha, and before it they were two different refs.
+# Either way a branch push cannot reach main's run: only a push to
+# `refs/heads/main` shares main's group, and only a merge does that. Throttling
+# PR pushes buys nothing here; it was verified live that a branch push queues
+# behind an in-progress main run rather than killing it.
 #
-# THE COST, accepted knowingly: on one self-hosted runner main's runs stop
-# being discardable, so a burst of merges builds a queue competing with PR
-# verification. That is the trade — a slower runner against a main that has
-# actually been checked. If the queue ever proves too expensive the fallback is
-# in #687: go back to cancelling, but verify main's TIP on a schedule, so the
-# current state of main is always proven even when intermediate commits are not.
+# `cancel-in-progress: false` WAS NOT ENOUGH, and the reason is the whole of
+# why this expression looks the way it does. That setting protects a run that
+# has STARTED. GitHub separately keeps ONE PENDING RUN PER GROUP, and a newly
+# queued run evicts an older QUEUED one no matter what the setting says. On a
+# single serial runner "queued" is the common case, not the rare one.
+#
+# MEASURED after the first fix shipped:
+#
+#   02cb9c2b  main  00:50:44  in_progress   ← holding the runner
+#   e104cf61  main  01:10:35  CANCELLED 01:10:48 — ZERO JOBS, never started
+#   fd1662f7  main  01:10:46  pending       ← took the slot
+#
+# `e104cf61` carried the first fix and was evicted from the pending slot
+# thirteen seconds after it was created, with no job ever run. The three main
+# runs that DID survive a merge landing on them had all already started, which
+# is why the first fix looked complete and was not.
+#
+# SO EVERY MAIN COMMIT GETS ITS OWN GROUP. A group of one cannot be superseded
+# — not in progress, not pending — so every merged commit is verified as
+# itself. A green commit means THAT commit, which is the only version of this
+# worth having: "which commit broke it" is the question people actually ask.
+#
+# Pull requests keep the ref as their group and keep cancelling, which is right
+# there and unchanged: a new push supersedes the commit under test, and a
+# serial runner should not spend minutes proving something nobody waits on.
+# A sha can never collide with a ref-shaped group — one is 40 hex, the other
+# begins `refs/`.
+#
+# `A && B || C` IS NOT A TERNARY, and the difference bites here. It yields B
+# only when B is TRUTHY; a falsy B falls through to C. So if the middle operand
+# could ever be empty, a push would silently land back on the ref group — this
+# exact defect, reintroduced invisibly. It cannot: `format('verify-{0}', …)`
+# always returns a non-empty string. Verified by evaluating this file's own
+# expressions with GitHub's engine (`@actions/expressions`), including that
+# substituting an empty middle operand reproduces `verify-refs/heads/main`.
+#
+# THE COST, stated so nobody trims it back by accident: every main commit now
+# queues a run on one serial runner, competing with PR verification — roughly
+# 90 minutes at the 22 merges this repo did on 2026-09-19. IF THAT QUEUE
+# BECOMES THE BINDING CONSTRAINT, THE ANSWER IS RUNNER CAPACITY OR A CHEAPER
+# MAIN JOB — NOT re-introducing a setting that throws the evidence away.
+# Reverting this to shorten the queue restores the exact defect #687 records.
+# A scheduled verify of main's tip was considered and rejected: it proves the
+# tip and leaves every intermediate commit unproven.
 concurrency:
-  group: verify-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ${{ github.event_name == 'push' && format('verify-{0}', github.sha) || format('verify-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   verify:
