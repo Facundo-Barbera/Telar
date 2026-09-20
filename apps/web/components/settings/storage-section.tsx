@@ -176,7 +176,9 @@ export function measuredLabel(measuredAt: number, now = Date.now()): string {
  * and reassuring, and it is true because of the guard in `compactJournal`.
  */
 export function reclaimLabel(reclaimed: JournalReclaim): string {
-  const rows = reclaimed.deltas + reclaimed.starts;
+  // The usage fold's rows count as superseded on the same terms as the other
+  // two (#697); an engine from before it sends no field, which is zero rows.
+  const rows = reclaimed.deltas + reclaimed.starts + (reclaimed.usage ?? 0);
   const freed = reclaimed.before - reclaimed.after;
   if (freed <= 0 && rows === 0) return "Already compact — nothing left to reclaim.";
   const went = rows > 0 ? `${rows.toLocaleString()} superseded rows, ` : "";

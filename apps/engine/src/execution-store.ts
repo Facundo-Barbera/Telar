@@ -75,6 +75,22 @@ const TERMINAL_TURN_TYPES = ["turn.completed", "turn.failed", "turn.stopped", "t
  */
 const COMPACT_WATERMARK_PREFIX = "journal-compacted/";
 
+/**
+ * WHERE THE USAGE FOLD OF ONE SESSION GOT TO — issue #697, and ITS OWN KEY.
+ *
+ * This constant exists because reusing the one above would be silent and fatal.
+ * `low` is read as `Number(stored?.value ?? 0)`, so a fold that shared
+ * `journal-compacted/` would start every already-compacted session at the last
+ * terminal turn the COMPACTION reached — past every usage row in the backlog
+ * this is for. The sweep would then delete nothing, record nothing, and report
+ * success. A separate key starts at 0 on a store that has been compacted for
+ * months, which is the only starting point that can see the rows.
+ *
+ * `usage-fold.test.ts` compacts a fixture first and folds it second for exactly
+ * this reason: on a shared key that test finds zero rows.
+ */
+const USAGE_WATERMARK_PREFIX = "journal-usage-folded/";
+
 /** How long after opening the first compaction starts. Long enough that the
  *  daemon is answering before housekeeping touches the database, short enough
  *  that a person who launches Telar to reclaim space does not wait on it. */
@@ -228,6 +244,50 @@ function escapeLike(text: string): string {
   return text.replace(/[\\%_]/g, (character) => `\\${character}`);
 }
 
+/**
+ * WHAT ONE TURN'S `usage.updated` ROWS ADDED UP TO — issue #697.
+ *
+ * `rows` is how many there were, and it is not decoration: it is what tells a
+ * later reader whether the sum is a turn's spend (Codex, one row per call) or
+ * the same figure restated (Claude, whose last row is the total). See the
+ * columns on `turn_summaries` for why the fold records both rather than
+ * choosing between them.
+ */
+export type TurnUsageAggregate = {
+  tokens: { input: number; output: number; cacheRead: number; cacheCreate: number; reasoning: number };
+  rows: number;
+};
+
+/**
+ * THE TOKENS OFF ONE `usage.updated` ROW, parsed rather than `json_extract`ed.
+ *
+ * The point of doing it this way is that it is NOT how the fold's other half
+ * reads the same rows. sqlite sums them with `SUM(json_extract(...))`; this
+ * walks the parsed object. Two computations that could fail differently are
+ * what makes the conservation check in `foldUsage` a check and not a restated
+ * assumption. A row whose tokens are missing or malformed contributes zero
+ * here, and sqlite's `COALESCE(...,0)` says the same — a row that says nothing
+ * about tokens has nothing to conserve.
+ */
+function usageTokensOf(value: string): { input: number; output: number; cacheRead: number; cacheCreate: number; reasoning: number } {
+  const zero = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, reasoning: 0 };
+  let tokens: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    const usage = (parsed as { usage?: { tokens?: unknown } } | null)?.usage?.tokens;
+    if (typeof usage !== "object" || usage === null) return zero;
+    tokens = usage as Record<string, unknown>;
+  } catch { return zero; }
+  const n = (candidate: unknown): number => (typeof candidate === "number" && Number.isFinite(candidate) ? candidate : 0);
+  return {
+    input: n(tokens.input),
+    output: n(tokens.output),
+    cacheRead: n(tokens.cacheRead),
+    cacheCreate: n(tokens.cacheCreate),
+    reasoning: n(tokens.reasoning),
+  };
+}
+
 /** What the housekeeping on open actually removed, so the daemon can say so and
  *  a test can hold it to it. Nothing here is otherwise observable. */
 export type ExecutionHousekeeping = {
@@ -239,6 +299,10 @@ export type ExecutionHousekeeping = {
   /** Superseded journal rows dropped by `compactJournal` — issue #646. Zero on
    *  every open after the first unless turns have ended since. */
   journal?: { deltas: number; starts: number; sessions: number };
+  /** `usage.updated` rows folded into a per-turn aggregate — issue #697.
+   *  `refused` is sessions whose fold rolled back on the conservation check;
+   *  it is zero unless something is wrong, which is why it is counted. */
+  usage?: { rows: number; turns: number; sessions: number; refused: number };
 };
 
 /** What a directory holds, in bytes and files — so a deletion can say what it
@@ -552,6 +616,51 @@ export class ExecutionStore {
         PRIMARY KEY(session_id, run_id)
       );
       CREATE INDEX IF NOT EXISTS turn_summaries_outline ON turn_summaries(session_id, sequence);`);
+    /**
+     * WHAT THE TURN'S `usage.updated` ROWS ADDED UP TO — issue #697.
+     *
+     * ADDITIVE AND NULLABLE, on the terms the two blocks above already argue:
+     * an older binary names the columns it knows in its INSERT, these default to
+     * NULL, and NULL is the honest answer — "this turn has not been folded",
+     * which is also what the fold itself seeks on.
+     *
+     * ══ WHY A SUM IS STORED AND THE LAST ROW IS STILL KEPT ══
+     *
+     * The two shipped drivers do not mean the same thing by a `usage.updated`.
+     *
+     *   - Claude restates: every assistant envelope emits one, every closing
+     *     `message_delta` CORRECTS the envelope before it, and the `result`
+     *     message carries what `driver.ts` calls "the authoritative total plus
+     *     the price". The last row of a Claude turn IS the turn.
+     *   - Codex does not: `codexUsage` reads `tokenUsage.last` — one call's
+     *     tokens, "`last`, NEVER `total`" — so a Codex turn emits no total at
+     *     all and the only way to recover one is to add the rows up. Keeping
+     *     the last row there would replace the turn's spend with the last
+     *     call's, permanently, and the journal is the only copy.
+     *
+     * SO THE FOLD RECORDS THE ARITHMETIC RATHER THAN PICKING A WINNER: the SUM
+     * over the turn's rows and HOW MANY there were, beside a journal that still
+     * holds the last row. On Codex the sum is the turn's spend. On Claude the
+     * last row is, and the sum is the restatements added together — which is
+     * why `usage_rows` is stored next to it rather than left to be guessed, and
+     * why nothing here is called `total`. A reader that needs one number must
+     * know which driver wrote the turn; the fold does not, and does not pretend
+     * to. Issue #697 part B is where that gets an answer.
+     *
+     * NOT SUMMED, DELIBERATELY: `costUsd` (Claude carries the turn's price
+     * forward onto several rows, so adding them repeats it, and Codex quotes no
+     * price at all) and `contextUsed`/`contextMax` (occupancy, not a counter —
+     * a window that fills and is compacted goes DOWN). All three stay on the
+     * surviving row, where they already were and still mean what they say.
+     */
+    for (const column of [
+      "usage_input INTEGER", "usage_output INTEGER", "usage_cache_read INTEGER",
+      "usage_cache_create INTEGER", "usage_reasoning INTEGER", "usage_rows INTEGER",
+    ]) {
+      const name = column.split(" ")[0]!;
+      if (!this.db.prepare("PRAGMA table_info(turn_summaries)").all().some((existing) => String(existing.name) === name))
+        this.db.exec(`ALTER TABLE turn_summaries ADD COLUMN ${column}`);
+    }
     this.searchIndex = this.openSearchIndex();
     /**
      * ADDITIVE, AND `user_version` STAYS AT 1 ON PURPOSE — a column with a
@@ -611,10 +720,18 @@ export class ExecutionStore {
     if (this.closed) return;
     try {
       const swept = this.compactJournal();
-      if (swept.deltas === 0 && swept.starts === 0) return;
-      this.housekeeping.journal = swept;
-      this.onJournalCompacted?.(swept);
+      if (swept.deltas > 0 || swept.starts > 0) {
+        this.housekeeping.journal = swept;
+        this.onJournalCompacted?.(swept);
+      }
     } catch { /* the next sweep covers whatever this one missed */ }
+    // A SECOND `try`, NOT A SECOND STATEMENT IN THE FIRST — issue #697. The two
+    // sweeps are independent (own watermark, own rows, own guard), and a
+    // compaction that threw must not be the reason the fold never ran.
+    try {
+      const folded = this.foldJournalUsage();
+      if (folded.turns > 0 || folded.refused > 0) this.housekeeping.usage = folded;
+    } catch { /* as above */ }
   }
 
   /**
@@ -763,6 +880,202 @@ export class ExecutionStore {
     return swept;
   }
 
+  /**
+   * FOLD A SETTLED TURN'S `usage.updated` ROWS INTO ONE AGGREGATE — issue #697.
+   *
+   * A token count is restated after every item, so a turn leaves behind as many
+   * of these as it had envelopes. Measured on the owner's store (#646): 281k
+   * rows across `usage.updated` and its neighbour, ~106 MB of a journal that is
+   * 68% of the database. Unlike a delta, none of it is text a reader will ever
+   * scroll past — the transcript takes the last one and the meter reads the
+   * tail, so every row but the last is superseded the instant the next arrives.
+   *
+   * ══ WHY THE ROWS CANNOT SIMPLY GO ══
+   *
+   * See the columns this writes into for the long version. Short: on Codex each
+   * row is ONE CALL's tokens and no turn total is ever emitted, so keeping the
+   * last row and dropping the rest would destroy the turn's spend and leave the
+   * last call's in its place. So the sum is written down BEFORE anything is
+   * deleted, and the delete is refused for any turn that cannot hold it.
+   *
+   * ══ THE TWO THINGS THAT WOULD REFUSE THE DELETION ══
+   *
+   * 1. SUM CONSERVATION, checked inside the transaction and against a second,
+   *    independent computation: the aggregate is folded in TypeScript over the
+   *    parsed rows, sqlite sums the same range with `SUM(json_extract(...))`,
+   *    and the two must agree field by field and on the row count. An
+   *    implementation that recorded the SURVIVOR instead of the total fails
+   *    this on any turn whose rows are not monotonic — which is every
+   *    multi-call Codex turn. A disagreement throws, so `alone` rolls the whole
+   *    session's fold back and the rows are still there.
+   * 2. A PLACE TO PUT IT. A turn with no `turn_summaries` row has nowhere to
+   *    record the sum, so its rows stay and it is counted as `refused` rather
+   *    than quietly skipped.
+   *
+   * IDEMPOTENT BY SEEKING ON `usage_rows IS NULL` as well as by watermark. The
+   * watermark is the cheap half — it keeps the daily sweep off a settled
+   * journal — but a turn folded twice would sum a set of rows one delete had
+   * already shrunk and overwrite a right answer with a wrong one, and a
+   * watermark is not a strong enough thing to hang that on.
+   *
+   * SAME BOUNDS AS `compactSession`, for its reasons: one transaction per
+   * session, and nothing above the session's last terminal turn event, so a
+   * turn in flight is untouched without the sweep needing to know what is
+   * running. Its own watermark, for the reason `USAGE_WATERMARK_PREFIX` gives.
+   */
+  foldJournalUsage(): { rows: number; turns: number; sessions: number; refused: number } {
+    const total = { rows: 0, turns: 0, sessions: 0, refused: 0 };
+    for (const sessionId of this.sessionIds()) {
+      let folded: { rows: number; turns: number; refused: number };
+      try {
+        folded = this.foldUsage(sessionId);
+      } catch {
+        // The conservation check rolled this session back. One session's
+        // refusal must not stop the rest from folding; it is counted instead.
+        total.refused += 1;
+        continue;
+      }
+      total.refused += folded.refused;
+      if (folded.turns === 0) continue;
+      total.rows += folded.rows;
+      total.turns += folded.turns;
+      total.sessions += 1;
+    }
+    return total;
+  }
+
+  /** One session's share of `foldJournalUsage`, in a transaction of its own.
+   *  `rows` is what went; `turns` is what now has an aggregate. */
+  foldUsage(sessionId: string): { rows: number; turns: number; refused: number } {
+    const folded = { rows: 0, turns: 0, refused: 0 };
+    this.alone(() => {
+      // A held usage row belongs in the database before anything sums it, for
+      // the reason `compactSession` drains: a row still in the buffer would be
+      // absent from the sum and present in the journal afterwards.
+      this.drain(this.depth > 0);
+      const key = `${USAGE_WATERMARK_PREFIX}${sessionId}`;
+      const low = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(key)?.value ?? 0);
+      const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
+      const high = Number(
+        this.statement(
+          `SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=? AND json_extract(value,'$.type') IN (${placeholders})`,
+        ).get(sessionId, ...TERMINAL_TURN_TYPES)?.id ?? 0,
+      );
+      if (high <= low) return;
+      /**
+       * SQLITE'S OWN SUM over the range, per run — one half of the guard. The
+       * other half is folded in TypeScript below from the parsed rows, and the
+       * check is that two different computations of the same quantity agree.
+       * Reading the same number twice the same way would prove nothing.
+       */
+      const runs = this.statement(
+        `SELECT json_extract(value,'$.runId') AS run_id,
+                COUNT(*) AS row_count,
+                MAX(id) AS survivor,
+                SUM(COALESCE(json_extract(value,'$.usage.tokens.input'),0)) AS input,
+                SUM(COALESCE(json_extract(value,'$.usage.tokens.output'),0)) AS output,
+                SUM(COALESCE(json_extract(value,'$.usage.tokens.cacheRead'),0)) AS cache_read,
+                SUM(COALESCE(json_extract(value,'$.usage.tokens.cacheCreate'),0)) AS cache_create,
+                SUM(COALESCE(json_extract(value,'$.usage.tokens.reasoning'),0)) AS reasoning
+           FROM events
+          WHERE session_id=? AND id>? AND id<=?
+            AND json_extract(value,'$.type')='usage.updated'
+            AND json_extract(value,'$.runId') IS NOT NULL
+          GROUP BY 1`,
+      ).all(sessionId, low, high);
+      for (const run of runs) {
+        const runId = String(run.run_id);
+        /**
+         * THE TURN HAS TO HAVE ENDED, and "below the session's last terminal
+         * event" is not the same claim. A turn the daemon was killed in the
+         * middle of leaves rows with no terminal event of their own; those are
+         * the only account that turn has and they stay, exactly as an item that
+         * never completed keeps its deltas.
+         */
+        const settled = this.statement(
+          `SELECT 1 AS ok FROM events WHERE session_id=? AND id<=?
+             AND json_extract(value,'$.runId')=? AND json_extract(value,'$.type') IN (${placeholders}) LIMIT 1`,
+        ).get(sessionId, high, runId, ...TERMINAL_TURN_TYPES);
+        if (!settled) continue;
+        const summary = this.statement("SELECT usage_rows FROM turn_summaries WHERE session_id=? AND run_id=?")
+          .get(sessionId, runId);
+        // Already folded: leave it exactly alone. Summing again would add up a
+        // set of rows the first fold has already shrunk.
+        if (summary && summary.usage_rows !== null && summary.usage_rows !== undefined) continue;
+        // Nowhere to record the sum, so nothing may be deleted. Counted rather
+        // than skipped, because a store full of these is a store where the
+        // projection needs backfilling, not one where the fold is done.
+        if (!summary) { folded.refused += 1; continue; }
+
+        const rows = this.statement(
+          `SELECT id, value FROM events WHERE session_id=? AND id>? AND id<=?
+             AND json_extract(value,'$.type')='usage.updated' AND json_extract(value,'$.runId')=? ORDER BY id`,
+        ).all(sessionId, low, high, runId);
+        const totals = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, reasoning: 0 };
+        for (const row of rows) {
+          const tokens = usageTokensOf(String(row.value));
+          totals.input += tokens.input;
+          totals.output += tokens.output;
+          totals.cacheRead += tokens.cacheRead;
+          totals.cacheCreate += tokens.cacheCreate;
+          totals.reasoning += tokens.reasoning;
+        }
+        const survivor = Number(run.survivor);
+        // ══ THE CONSERVATION CHECK ══ Nothing is deleted until this holds.
+        if (
+          rows.length !== Number(run.row_count) ||
+          totals.input !== Number(run.input) ||
+          totals.output !== Number(run.output) ||
+          totals.cacheRead !== Number(run.cache_read) ||
+          totals.cacheCreate !== Number(run.cache_create) ||
+          totals.reasoning !== Number(run.reasoning) ||
+          survivor !== Number(rows[rows.length - 1]?.id)
+        ) {
+          throw new Error(`usage fold: the aggregate does not account for every row of ${sessionId}/${runId}`);
+        }
+        this.statement(
+          `DELETE FROM events WHERE session_id=? AND id>? AND id<=? AND id<>?
+             AND json_extract(value,'$.type')='usage.updated' AND json_extract(value,'$.runId')=?`,
+        ).run(sessionId, low, high, survivor, runId);
+        const went = Number(this.statement("SELECT changes() AS count").get()?.count ?? 0);
+        // The rows the arithmetic described are the rows that went, or the sum
+        // above describes a journal that no longer exists.
+        if (went !== rows.length - 1) throw new Error(`usage fold: ${went} rows went where ${rows.length - 1} were accounted for`);
+        this.statement(
+          `UPDATE turn_summaries SET usage_input=?, usage_output=?, usage_cache_read=?,
+             usage_cache_create=?, usage_reasoning=?, usage_rows=? WHERE session_id=? AND run_id=?`,
+        ).run(totals.input, totals.output, totals.cacheRead, totals.cacheCreate, totals.reasoning, rows.length, sessionId, runId);
+        if (Number(this.statement("SELECT changes() AS count").get()?.count ?? 0) !== 1)
+          throw new Error(`usage fold: the aggregate for ${sessionId}/${runId} was not recorded`);
+        folded.rows += went;
+        folded.turns += 1;
+      }
+      this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .run(key, String(high));
+    });
+    return folded;
+  }
+
+  /** What one turn's `usage.updated` rows added up to, for a caller that wants
+   *  the number without the rows. `undefined` until the fold has been here. */
+  turnUsage(sessionId: string, runId: string): TurnUsageAggregate | undefined {
+    const columns = this.statement(
+      `SELECT usage_input, usage_output, usage_cache_read, usage_cache_create, usage_reasoning, usage_rows
+         FROM turn_summaries WHERE session_id=? AND run_id=?`,
+    ).get(sessionId, runId);
+    if (!columns || columns.usage_rows === null || columns.usage_rows === undefined) return undefined;
+    return {
+      tokens: {
+        input: Number(columns.usage_input ?? 0),
+        output: Number(columns.usage_output ?? 0),
+        cacheRead: Number(columns.usage_cache_read ?? 0),
+        cacheCreate: Number(columns.usage_cache_create ?? 0),
+        reasoning: Number(columns.usage_reasoning ?? 0),
+      },
+      rows: Number(columns.usage_rows),
+    };
+  }
+
   /** The database and the files sqlite keeps beside it, as they are right now. */
   private journalBytes(): number {
     const file = path.join(this.root, "execution.sqlite");
@@ -804,9 +1117,13 @@ export class ExecutionStore {
    * whole point of the button — and because it is also how a person learns that
    * pressing it again tomorrow will do nothing.
    */
-  reclaim(): { before: number; after: number; deltas: number; starts: number; sessions: number } {
+  reclaim(): { before: number; after: number; deltas: number; starts: number; sessions: number; usage: number } {
     const before = this.journalBytes();
     const journal = this.compactJournal();
+    // The usage fold rides the same press for the reason the compaction does:
+    // its DELETEs return no bytes either, and the VACUUM below is the only
+    // thing that turns either sweep into a smaller file.
+    const usage = this.foldJournalUsage();
     // Everything held must be on disk before the rewrite: VACUUM cannot run
     // inside a transaction, so there is no scope here to carry them into.
     this.flush();
@@ -822,7 +1139,7 @@ export class ExecutionStore {
     this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     this.db.exec("VACUUM");
     this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-    return { before, after: this.journalBytes(), ...journal };
+    return { before, after: this.journalBytes(), ...journal, usage: usage.rows };
   }
 
   /**
@@ -1338,6 +1655,7 @@ export class ExecutionStore {
       // behind would outlive its session forever and, on a session id that
       // somehow came back, would skip the whole journal below it.
       this.statement("DELETE FROM metadata WHERE key=?").run(`${COMPACT_WATERMARK_PREFIX}${sessionId}`);
+      this.statement("DELETE FROM metadata WHERE key=?").run(`${USAGE_WATERMARK_PREFIX}${sessionId}`);
       this.cursors.delete(sessionId);
     });
   }

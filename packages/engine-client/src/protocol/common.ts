@@ -569,6 +569,13 @@ export type StorageReport = z.infer<typeof StorageReport>;
  * can name what went. Both kinds are superseded by the `item.completed` of
  * their own turn — no turn, item or answer is ever dropped — and saying
  * "570,951 rows" without saying which would read like history going away.
+ *
+ * `usage` IS THE THIRD KIND AND IT IS OPTIONAL — issue #697. Superseded on the
+ * same terms: a turn's token count is restated after every item, the fold keeps
+ * the last row and writes the sum onto the turn, and the restatements go.
+ * Optional because an engine from before the fold answers without it, and a
+ * cockpit that demanded the field would refuse that engine's perfectly good
+ * before-and-after.
  */
 export const JournalReclaim = z.object({
   before: z.number().min(0),
@@ -576,6 +583,7 @@ export const JournalReclaim = z.object({
   deltas: z.number().min(0),
   starts: z.number().min(0),
   sessions: z.number().min(0),
+  usage: z.number().min(0).optional(),
 });
 export type JournalReclaim = z.infer<typeof JournalReclaim>;
 
