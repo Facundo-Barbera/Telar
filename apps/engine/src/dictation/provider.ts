@@ -50,6 +50,7 @@
  */
 
 import { DEEPGRAM_LANGUAGES, DICTATION_LANGUAGE_DEFAULT, deepgramLanguage } from "./deepgram-languages";
+import { diagnoseDictation, type DictationDiagnosis } from "./diagnose";
 import { fitDeepgramKeyterms } from "./fit";
 import { deepgramKeyterms, type DictationContext } from "./keyterms";
 import { grantDictationToken, type DictationToken } from "./token";
@@ -105,6 +106,27 @@ export type DictationProvider = {
     context: DictationContext;
     fetchImpl?: typeof fetch;
   }) => Promise<DictationToken>;
+  /**
+   * WHY THE LAST DICTATION FAILED, ASKED OF THE PROVIDER ITSELF (#711).
+   *
+   * Present for the same reason `mintToken` is and absent for the same reason:
+   * a provider that transcribes nothing has no refusal to explain, and a route
+   * that called this on `off` would be asking the wrong question rather than
+   * getting a null answer. An on-device model would answer this off its own
+   * state and never open a socket at all.
+   *
+   * IT TAKES THE RAW NAMES, like `mintToken`, because the question has to be
+   * the one the client's socket asked — and the glossary is the part of it that
+   * can be refused. Turning them into `keyterm` parameters is this provider's
+   * job and nobody else's.
+   */
+  diagnose?: (input: {
+    key: string | undefined;
+    language: string;
+    vocabulary: readonly string[];
+    context: DictationContext;
+    fetchImpl?: typeof fetch;
+  }) => Promise<DictationDiagnosis>;
   /** Whether this provider needs a key pasted on this Mac. `off` does not, and
    *  neither will an on-device model — the settings pane draws the key row off
    *  this rather than off the provider's name. */
@@ -150,6 +172,18 @@ const DEEPGRAM: DictationProvider = {
       fitDeepgramKeyterms({ ...rest, language: wire, keyterms: built }),
     ]);
     return { ...minted, keyterms };
+  },
+  // ── AND WHEN IT FAILS ANYWAY, ASK WHY (#711) ──────────────────────────────
+  // THE SAME QUESTION THE CLIENT'S SOCKET ASKED, which is why this rebuilds the
+  // glossary and puts it through the same fit rather than diagnosing the raw
+  // list: a client is handed the FITTED one, so asking about the built one
+  // would report a keyterm refusal for a request nobody made. The fit memoizes
+  // its accepted answer against the exact list, and the press that just failed
+  // will have warmed it — so the usual cost of being faithful here is nothing.
+  diagnose: async ({ language, vocabulary, context, ...rest }) => {
+    const wire = deepgramLanguage(language);
+    const keyterms = await fitDeepgramKeyterms({ ...rest, language: wire, keyterms: deepgramKeyterms({ vocabulary, context }) });
+    return diagnoseDictation({ ...rest, language: wire, keyterms });
   },
 };
 
