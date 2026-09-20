@@ -14,13 +14,15 @@ import { afterEach, expect, test } from "bun:test";
 import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import { createClaudeDriver } from "../src/driver";
 import { TelarToolSocket } from "../src/telar-socket";
-import { allowCliInThisFile } from "./allow-cli";
+import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";
 
 /** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
  *  the Claude driver resolves one before handing the turn to a fake SDK.
  *  So this file opts past issue #532’s no-spawn gate, for its own scope only.
  *  See ./allow-cli.ts. */
 allowCliInThisFile();
+/** And pin WHICH claude, so the resolve cannot depend on this machine (#752). */
+pinFakeClaudeInThisFile();
 
 const sockets: TelarToolSocket[] = [];
 afterEach(async () => {
