@@ -91,6 +91,7 @@ import type {
   ProviderUpdateRun,
   PublishedAppearance,
   EngineRequest,
+  ReportWindowStatus,
   RequestDecision,
   RuntimeMode,
   LiveSessionRow,
@@ -1048,8 +1049,22 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         /** Sit out a usage limit and carry on. `null` returns the session to the
          *  driver's default — see `Session.resumeAfterRateLimit`. */
         resumeAfterRateLimit?: boolean | null;
+        /** Hold routine peer reports and deliver them together on this cadence.
+         *  `null` returns the session to arrival delivery — see
+         *  `Session.reportWindowMinutes`. */
+        reportWindowMinutes?: number | null;
       },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    /**
+     * THE CADENCE, AND WHAT IT IS HOLDING — the Agents panel's own read (#723).
+     *
+     * NOT ON `liveSessions`. `LiveSessionRow` omits `reportWindowMinutes` by
+     * contract and the rail is measured against a per-row ceiling; the held
+     * count is not on the session record at all. Two numbers, read only by the
+     * surface that shows them, and only while it is open.
+     */
+    sessionReportWindow: (sessionId: string) =>
+      request<ReportWindowStatus>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/report-window`),
     /**
      * A HUMAN WAS SHOWN THIS TURN'S RESULT. Names the turn rather than a time,
      * so a receipt that lands after newer work cannot mark that work read —
