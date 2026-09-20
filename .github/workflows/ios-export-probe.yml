@@ -117,8 +117,26 @@ jobs:
           security unlock-keychain -p ci "$KEYCHAIN"
           security import "$RUNNER_TEMP/dist.p12" -k "$KEYCHAIN" -P "$IOS_DIST_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -k ci "$KEYCHAIN" >/dev/null
-          IFS=$'\n' read -rd '' -a EXISTING < <(security list-keychains -d user | sed 's/[" ]//g') || true
-          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
+          # ON A PERSISTENT MAC the search list outlives the job, so save it for
+          # the cleanup step to put back. Same rule as release-desktop.yml.
+          security list-keychains -d user > "$RUNNER_TEMP/keychain-search-list.txt"
+          # Trim the wrapping quotes and the indentation, and NOTHING else. The
+          # `s/[" ]//g` this replaces could not tell those spaces from a space
+          # inside a path, so `/Users/Ada Lovelace/…` came back as a path that
+          # does not exist and was dropped from the search list without a word.
+          IFS=$'\n' read -rd '' -a EXISTING < <(sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//' "$RUNNER_TEMP/keychain-search-list.txt") || true
+          # A COUNT is never unbound, so this line is safe on the very empty
+          # array the next one is guarded against. `warning` and not `error`:
+          # searching only the signing keychain is what this step wants anyway,
+          # so aborting would turn a survivable state into a dead probe — but
+          # "the login keychain is gone" is worth saying out loud.
+          if [ "${#EXISTING[@]}" -eq 0 ]; then echo "::warning::the user keychain search list came back empty; setting it to the signing keychain alone"; fi
+          # `${EXISTING[@]+…}` because bash 3.2 — which is what the macOS runner
+          # images report as their `bash`, and a `run:` block takes its shell
+          # from PATH — treats an expansion of an EMPTY array under `set -u` as
+          # an unbound variable and kills the step (#808, #829). With the array
+          # filled the guard passes byte-identical arguments.
+          security list-keychains -d user -s "$KEYCHAIN" ${EXISTING[@]+"${EXISTING[@]}"}
           rm -f "$RUNNER_TEMP/dist.p12"
 
       # THIS NEEDS #758 FIXED TO REACH THE EXPORT AT ALL. SessionView.body
@@ -180,5 +198,18 @@ jobs:
       - name: Clean up the API key and keychain
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/apple_api_key.p8"
+          # PUT THE SEARCH LIST BACK BEFORE THE KEYCHAIN GOES. Deleting the
+          # keychain without restoring the list leaves it naming a keychain that
+          # no longer exists — harmless on an ephemeral VM, one more dead entry
+          # per run on a persistent Mac. `shlex.split` reads the saved lines as
+          # `security` wrote them, quotes and spaces intact. Same restore as
+          # release-desktop.yml and nightly-desktop.yml.
+          if [ -f "$RUNNER_TEMP/keychain-search-list.txt" ]; then
+            python3 - <<'PYTHON'
+          import os, pathlib, shlex, subprocess
+          saved = pathlib.Path(os.environ["RUNNER_TEMP"]) / "keychain-search-list.txt"
+          subprocess.run(["security", "list-keychains", "-d", "user", "-s", *shlex.split(saved.read_text())], check=True)
+          PYTHON
+          fi
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/apple_api_key.p8" "$RUNNER_TEMP/keychain-search-list.txt" 2>/dev/null || true
