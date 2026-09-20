@@ -5,6 +5,27 @@ is executed, because one of these steps destroys state that cannot be recreated
 without a new token from GitHub, and a half-removal is worse than either end
 state.
 
+## What is left on the Mac once the PRs merge
+
+**Nothing.** Every workflow has been repointed:
+
+| workflow | where it runs now |
+| --- | --- |
+| `Verify` | `ubuntu-latest` matrix + one hosted `macos-latest` job |
+| `APNs free Worker probe` | `ubuntu-latest` |
+| `Deploy personal push relay` | `ubuntu-latest` |
+| `Nightly channel build` | `macos-latest` |
+| `Release desktop app` | `macos-latest` |
+| `Nightly iOS build` | `macos-latest` (known red — #757, #758) |
+| `Nightly iOS tests (device)` | **disabled** — needs a phone (#755) |
+
+The Mac's remaining role in this repository is the `lintel-nightly` runner,
+which belongs to **another project** and is out of scope.
+
+**THE IRREVERSIBLE STEP IS STEP 4**, `config.sh remove`. Steps 1–3 are all
+reversible; step 5 is deliberately not performed. Everything before step 4 can
+be undone with `./svc.sh install && ./svc.sh start`.
+
 **Do not start until every workflow is green on hosted runners.** A
 deregistered runner plus a workflow still asking for `[self-hosted, macOS,
 ARM64, telar-nightly]` is a job that queues for ever against a runner that no
@@ -56,19 +77,23 @@ Service definition:
    following #675. Disabled rather than deleted; it is the one job that cannot
    move, because it needs a Mac with a phone attached.
 
-3. **The three build-and-sign workflows proven green on `macos-latest`.**
-   ❌ **NOT DONE — this is the blocking one.** `nightly-desktop`,
-   `release-desktop` and `nightly-ios` have been repointed but never run there.
-   Their signing is already portable (certificates come from repository secrets
-   into a temporary per-run keychain), which is good evidence and is not proof.
-   Proving it is awkward on purpose: these build, sign, notarise and publish, so
-   a test run uploads a real nightly to R2 or a build to TestFlight. Either
-   accept a deliberate real run, or probe checkout → build → sign and stop
-   before publishing. **Do not deregister the runner on the strength of the
-   secrets being portable.** If they fail on hosted and the runner is already
-   gone, there is nothing to fall back to.
+3. **The macOS build-and-sign path proven on `macos-latest`.** ✅ Done — probe
+   run `35490217749`. The certificate imported, a `Developer ID Application`
+   identity was present, the app built and signed in 166s, and the result was
+   asserted rather than assumed: the bundle verifies `--deep --strict`, the
+   signature is **not** ad-hoc, and the authority **is** Developer ID. That
+   covers `nightly-desktop` and `release-desktop`, which share
+   `scripts/build-desktop.sh` and the same keychain import.
 
-4. **No job in flight.** `_work/_temp` was modified minutes before this was
+4. **`nightly-ios` understood.** ✅ Done, in the sense that matters: it does
+   **not** work on hosted — the archive fails on a Swift type-check timeout
+   (#758) — but it **was already failing on the Mac**, four consecutive runs
+   from 2026-09-19T03:45Z with a different fault at the export step (#757).
+   Moving it lost nothing that worked, and the workflow's own header says so.
+   **This is not a reason to keep the runner**: keeping it would preserve a
+   pipeline that is red there too.
+
+5. **No job in flight.** `_work/_temp` was modified minutes before this was
    written, so check rather than assume.
 
 ---

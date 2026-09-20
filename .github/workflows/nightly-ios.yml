@@ -41,10 +41,26 @@ jobs:
   testflight:
     # Only trusted release triggers use the personal Mac.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
-    # NEEDS macOS, NOT THIS PARTICULAR MAC. The signing setup was already
-    # written for a hosted runner — certificates come from repository secrets
-    # into a temporary per-run keychain that is torn down afterwards — and has
-    # simply been running on a self-hosted one since 2026-09-11.
+    # NEEDS macOS, NOT THIS PARTICULAR MAC — moved to hosted 2026-09-20 with
+    # the rest of CI. Signing here is cloud-managed (no .p12 to import), so
+    # nothing about credentials had to change.
+    #
+    # ⚠ KNOWN RED ON ARRIVAL, and moving it is not what broke it. Two separate
+    # faults, both pre-dating the move:
+    #
+    #   #757 — `exportArchive Copy failed`. The archive succeeds and the
+    #          EXPORT fails. Four consecutive failures ON THE MAC from
+    #          2026-09-19T03:45Z; last green 2026-09-18T21:35Z. Nobody was
+    #          told, because nothing notified on failure.
+    #   #758 — the ARCHIVE fails on a hosted runner: SessionView.swift's body
+    #          exceeds the Swift type checker's time budget. A THRESHOLD, not
+    #          a clean break — the maintainer's Mac finishes inside it and a
+    #          hosted runner does not, so a re-run may pass. Do not read a
+    #          green retry as a fix.
+    #
+    # So this was already failing before it moved, and it lost nothing that
+    # worked. #758 is what gets it BUILDING here; #757 is what gets it
+    # PUBLISHING. Fixing either alone does not produce a nightly.
     runs-on: macos-latest
     timeout-minutes: 45
     env:
