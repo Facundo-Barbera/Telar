@@ -195,6 +195,15 @@ export type EngineDaemonOptions = {
    */
   reportWindowSweepIntervalMs?: number;
   /**
+   * Testable cadence for the snooze-wake sweep — issues #490, #586.
+   *
+   * Between the two above at 60 s, and the reasoning is at the `setInterval`:
+   * the shortest snooze the cockpit offers is an hour, so this is finer than it
+   * strictly needs to be because the query seeks rather than scans and a wake on
+   * a coarse grid is visible.
+   */
+  snoozeWakeSweepIntervalMs?: number;
+  /**
    * Told when a worker registration retires. AN OBSERVER, NOT THE CLEANUP:
    * ending that worker's claims happens on the default path inside
    * `retireWorker` whether or not this is passed, because a deployment that
@@ -1283,6 +1292,34 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
   }, options.reportWindowSweepIntervalMs ?? 30_000);
   reportWindowSweeper.unref();
+  /**
+   * AND A SNOOZE NEEDS ONE — issues #490, #586.
+   *
+   * The third instance of the gap the two above describe, and the plainest:
+   * a snooze ends because a DEADLINE PASSES, and nothing writes at a deadline.
+   * See `sweepSnoozeWakes` for why this belongs to the engine rather than to
+   * each cockpit — in short, it is one tick here instead of one per row per
+   * connected client, which is the direction #490 is pushing.
+   *
+   * 60 s, AND THE FLOOR IS DELIBERATE. The shortest snooze the cockpit offers is
+   * an hour (`snoozePresets` — hour, three hours, evening, tomorrow, next week),
+   * so even the delegation sweep's five minutes would serve. It is finer because
+   * `snoozedUntil` is a free timestamp on the PATCH route and not only a preset,
+   * and because `dueSnoozeWakes` seeks rather than scans — so the cost of being
+   * finer is near zero and the benefit is that a wake does not land on a
+   * visibly coarse grid. There is nothing below this worth having.
+   *
+   * A THROW HERE MUST NOT TAKE THE DAEMON DOWN, as above. The sweep already
+   * skips a session it cannot read; this is the backstop for anything else.
+   */
+  const snoozeWakeSweeper = setInterval(() => {
+    try {
+      store.sweepSnoozeWakes();
+    } catch {
+      /* the next tick tries again */
+    }
+  }, options.snoozeWakeSweepIntervalMs ?? 60_000);
+  snoozeWakeSweeper.unref();
 
   // Read once: it names the Mac to another cockpit (`.local` dropped — it is
   // mDNS's suffix, not the name), and a name that flickered per request
