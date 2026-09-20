@@ -80,11 +80,23 @@ concurrency:
 jobs:
   device-tests:
     name: TelarMobileTests on the connected iPhone
-    # Only trusted triggers use the personal Mac — the same rule the other
-    # workflows on this runner state. A schedule always carries the default
-    # branch's ref, so this admits the cron and a dispatch from main, and
-    # nothing aimed off a branch.
-    if: github.ref == 'refs/heads/main'
+    # PARKED — THIS JOB CANNOT RUN, AND THAT IS THE POINT (#755).
+    #
+    # `runs-on` below still names `telar-nightly`, a self-hosted runner that is
+    # being removed from the maintainer's Mac. Without this guard a
+    # `workflow_dispatch` would not fail — it would sit QUEUED FOR EVER against
+    # a runner that does not exist, which is the same silent-hang shape
+    # verify.yml's header warns about for path filtering. `if: false` turns
+    # that into an immediate, legible skip.
+    #
+    # Restoring the job is two edits, not one: put back the `schedule:` block
+    # quoted in the header AND delete this `false &&`. Both, or it stays parked.
+    #
+    # The real condition is kept to the right of `false &&` rather than
+    # deleted, so the restore does not have to reconstruct it: a schedule always
+    # carries the default branch's ref, so it admits the cron and a dispatch
+    # from main, and nothing aimed off a branch.
+    if: false && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS, ARM64, telar-nightly]
     # The runner takes one job at a time, so a hang here holds every release
     # behind it. A cold run (no DerivedData) builds the app, the extension and
