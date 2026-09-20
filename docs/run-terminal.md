@@ -149,6 +149,82 @@ paid on every line — or refusing to echo, which is refusing to be a terminal.
 Both are product decisions rather than bugs, which is why this is a paragraph
 and not a TODO.
 
+### The Run tab is writable, and read-only would not have narrowed this
+
+**Decided by the owner, 2026-09-20.** A person can type into a run's terminal.
+
+The question read as *"is there a shell in the Run tab"*, and there is not:
+`resolveShell` spawns `/bin/sh -c "<command>"` — non-login, non-interactive, no
+dotfiles, no prompt, no history. Keystrokes reach **the program the recipe
+named**. But that does not make a Run tab non-interactive, for two reasons:
+
+- **A recipe can pin its shell.** `resolveShell` takes `config.shell` literally,
+  so `{ program: "/bin/zsh", args: ["-lc"] }` is a legitimate saved recipe — and
+  then it *is* a login shell.
+- **Ordinary recipes are interactive anyway.** `psql`, `node`, an installer
+  asking `Proceed (Y/n)`, a dev server waiting on `r`, a migration asking for a
+  passphrase. Read-only makes every one of those a screen that watches you and
+  cannot be answered.
+
+The escape hatch read-only would have left — stop the run, open a Terminal tab,
+do it by hand — takes the process **outside the slot, the journal and the
+singleton** this issue's first milestone is made of. That is what settled it.
+
+**And read-only would not have bought what it looks like it buys.** Everything
+above this heading is true in both branches: redaction covers what the *process
+writes* and never covered what a person types. Read-only narrows who can reach
+the keyboard; it does not close this section.
+
+**The cost that is not about secrets, and it is the sharper one: a run is a
+project singleton that every session sees.** Two sessions with the Run tab open
+are two keyboards on one process, with no ownership model and no indication to
+either that the other is there. The panel already says the run belongs to the
+project and already warns when it came from another worktree; nothing pretends
+the second keyboard is not there.
+
+### What the cockpit reads, and why not the obvious channel
+
+The Run panel's emulator is fed by **`GET /run/bytes`, over the engine's HTTP
+surface** — never by `telar:terminal:data`. Two independent reasons, one answer:
+
+- `main.js` fans **raw node-pty bytes** to the IPC bridge. Redaction is
+  engine-side, with one non-test call site in `manager.ts`. An xterm attached to
+  the bridge would draw a run's secrets **unredacted**, silently undoing the
+  work above.
+- `terminalBridge()` returns `undefined` unless the host is local, deliberately
+  — *a terminal that lies about which computer it is on is worse than no
+  terminal*. A session on a **paired Mac** has no bridge, and its run is on the
+  other machine anyway. The HTTP path is the only one that works there.
+
+**`GET /run/output` is not retired by this**, and retiring it would cost two
+readers: `run_output` is an agent tool, and an agent wants lines rather than a
+stream with `CSI H` in it. The two windows share one cursor contract; `dropped`
+counts lines in one and chunks in the other.
+
+**The byte ring is kept as chunks rather than one buffer**, because eviction has
+to be escape-safe: half a `CSI 1;31 m` is not a shorter escape, it is a parser
+desync that eats whatever text follows. Every chunk left `createPtyRedactor`
+whole, so dropping whole chunks cannot produce one.
+
+### Who may reach a terminal, now that it matters
+
+`TerminalHost.open` records an **owner** — `renderer` or `engine` — and
+`write`, `resize` and `kill` refuse an id whose owner is not the caller, while
+`list` does not mention one. Before this, `telar:terminal:list` handed the
+cockpit every id in the process and `telar:terminal:write` checked only that the
+sender was the cockpit's top frame.
+
+That was latent rather than exploitable, because nothing surfaced a run's id.
+Drawing a run's terminal in the panel is exactly the change that would have
+stopped it being latent, so the guard is part of the same work rather than a
+follow-up. It is also what makes the paragraph above a property rather than a
+convention: the cockpit reaches a run's terminal through the engine, where the
+bytes have been redacted, because there is no other way to reach it.
+
+The default is `renderer`, which is the fail-closed direction — a caller that
+forgets is refused an engine terminal rather than handed one — and an owner that
+is neither **throws** rather than being rounded to one.
+
 ## 6. How it is proven
 
 `apps/engine/test/run-terminal-channel.test.ts` drives the **real** desktop
