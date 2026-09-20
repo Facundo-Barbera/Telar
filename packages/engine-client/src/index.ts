@@ -282,6 +282,21 @@ export type SessionSnapshot = {
   tasks: Task[];
 };
 
+/** What `GET /v2/sessions/:id/report-window` answers with — the cadence a
+ *  session asked for, and how much mail is waiting on it (#723). */
+export type ReportWindowStatus = {
+  /** Minutes, or `null` while routine reports reach the session as they arrive
+   *  — see `Session.reportWindowMinutes`. */
+  reportWindowMinutes: number | null;
+  /**
+   * HOW MANY NOTIFICATIONS ARE WAITING, whatever is holding them. A session
+   * with a turn in flight holds its mail too, so this is "what has not been
+   * delivered" rather than "what the window is holding" — the mailbox keeps one
+   * box and does not file the two apart.
+   */
+  held: number;
+};
+
 /**
  * What `GET /v2/sessions/:id/bootstrap` answers with — everything a cockpit
  * needs to OPEN a conversation, from one read (#407).
@@ -2389,6 +2404,23 @@ export class EngineClient {
    */
   setSessionReportWindow(sessionId: string, minutes: number | null): Promise<{ session: Session }> {
     return this.updateSession(sessionId, { reportWindowMinutes: minutes });
+  }
+
+  /**
+   * THE CADENCE AND WHAT IT IS HOLDING — the read behind the human's control
+   * (#723).
+   *
+   * BOTH, OR NEITHER IS LEGIBLE. The setting alone cannot tell a held report
+   * from a lost one, which is the failure this feature exists to avoid rather
+   * than to cause; the count alone cannot say when it will go out.
+   *
+   * SMALL ON PURPOSE. A surface that shows a cadence POLLS — a peer's report
+   * arriving writes nothing to this session's journal — so this answers two
+   * numbers rather than riding the snapshot, whose `turns` and `items` a poll
+   * has no use for.
+   */
+  sessionReportWindow(sessionId: string): Promise<ReportWindowStatus> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/report-window`);
   }
 
   session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot> {

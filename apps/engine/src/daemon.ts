@@ -4682,6 +4682,34 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         /**
+         * THE CADENCE, AND WHAT IT IS HOLDING — issue #723.
+         *
+         * TWO FACTS, ONE READ, because neither is legible alone. A window with
+         * nothing waiting and a window with five reports waiting are different
+         * situations to the person who set it, and a surface that could only
+         * show the setting would make a held report look exactly like a lost
+         * one — the bug #631 part 2 fixed, reintroduced by the cure's own UI.
+         *
+         * ITS OWN ROUTE RATHER THAN A FIELD ON A LIST. `LiveSessionRow` omits
+         * `reportWindowMinutes` deliberately (see the contract) and the rail is
+         * measured against a per-row ceiling; the count is not on the session
+         * record at all — it is the mailbox's length, which only a read of the
+         * box can answer. A surface that configures a cadence reads this; a
+         * list never does.
+         *
+         * `held` IS THE WHOLE BOX, not the windowed part of it. A busy session
+         * holds mail for its running turn whatever its cadence says, and the
+         * mailbox does not file the two apart — so this reports what is waiting
+         * and lets the reader, who can see the window beside it, say why.
+         */
+        if (request.method === "GET" && session.tail === "/report-window") {
+          writeJson(response, 200, {
+            reportWindowMinutes: store.getSession(session.sessionId).reportWindowMinutes ?? null,
+            held: store.pendingNotifications(session.sessionId).length,
+          });
+          return;
+        }
+        /**
          * A MESSAGE FROM AN AGENT — the worker's `sessions_send`. Separate
          * route rather than a body flag on `/turns`, because the difference is
          * WHO IS SPEAKING and that must not be a field a cockpit can set.
