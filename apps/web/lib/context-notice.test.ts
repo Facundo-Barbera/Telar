@@ -8,6 +8,7 @@
  * that started nagging short conversations would be a worse bug than the one
  * being fixed.
  */
+// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 
 import {
