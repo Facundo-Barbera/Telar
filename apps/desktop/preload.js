@@ -119,6 +119,29 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     offerLoginMemory: (scopeKey) => ipcRenderer.invoke("telar:login-offer:open", scopeKey),
   },
   /**
+   * A REAL TERMINAL (#198). The PTY lives in the main process — see
+   * terminal-host.js for why there and not in the engine — and the emulator
+   * (xterm.js) lives in the cockpit's own DOM, so these are the bytes between
+   * them. No loopback port and no new thing to authenticate: the main process
+   * already refuses anyone but this window's top frame.
+   *
+   * `exit` IS NOT ALWAYS AN EXIT, and a caller must not read it as one. Its
+   * `fate` is `exited` (observed, with a code), `failed` (never started) or
+   * `unknown` — the last meaning Telar stopped being able to vouch for the
+   * process, which is NOT permission to treat it as gone. The engine's
+   * `RunStatus` has the same three-way split for the same reason.
+   */
+  terminal: {
+    open: (options) => ipcRenderer.invoke("telar:terminal:open", options ?? {}),
+    write: (id, data) => ipcRenderer.invoke("telar:terminal:write", { id, data }),
+    resize: (id, cols, rows) => ipcRenderer.invoke("telar:terminal:resize", { id, cols, rows }),
+    kill: (id, signal) => ipcRenderer.invoke("telar:terminal:kill", { id, signal }),
+    // How a remounted panel finds the terminals its previous render left running.
+    list: () => ipcRenderer.invoke("telar:terminal:list"),
+    onData: (listener) => on("telar:terminal:data", listener),
+    onExit: (listener) => on("telar:terminal:exit", listener),
+  },
+  /**
    * The native folder picker.
    *
    * The renderer cannot open one — a browser sandbox will never hand back an
