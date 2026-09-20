@@ -161,6 +161,48 @@ describe("a reply's author bar", () => {
     expect(markup).toContain(">R<");
   });
 
+  /**
+   * THE FACE AND THE SESSION LINK SHARE THIS BAR — #790 landing on top of #791.
+   *
+   * They are complementary halves of one attribution and neither is sufficient: the
+   * face says WHICH ACCOUNT, and in this repository that is the same account on every
+   * comment, which is exactly why #791 added WHICH CONVERSATION. A reader scanning a
+   * thread uses the face to find the boundary between voices and the link to go and
+   * read the reasoning behind one.
+   *
+   * SO THE FAILURE THIS GUARDS IS A LATER EDIT PICKING A SIDE. The two features were
+   * built in parallel against the same six lines of markup, and the merge that put
+   * them together was automatic — nothing in either file would have noticed one being
+   * dropped for the other's room.
+   */
+  test("carries the face AND the session link together, in the reading order who → when → whence", () => {
+    const markup = bar({
+      avatar: "https://github.com/Facundo-Barbera.png",
+      sessionId: "session_a957243f19c8423db79774b49ea2134c",
+      url: "https://github.com/o/r/issues/692#issuecomment-1",
+    });
+    expect(markup).toContain("size=48");
+    expect(markup).toContain("session_a957243f19c8423db79774b49ea2134c");
+    // The face leads the bar; the session comes after the time, which is where #791
+    // put it and why — "who said this, and when, and out of which thread".
+    expect(markup.indexOf("size=48")).toBeLessThan(markup.indexOf("Facundo-Barbera<"));
+    expect(markup.indexOf("tabular-nums")).toBeLessThan(markup.indexOf("session_a957243f"));
+    // And the link out is still the only thing on the far right — a face and a
+    // session id both riding this bar must not have cost it its right edge.
+    expect(markup.split("ml-auto").length - 1).toBe(1);
+    expect(markup.slice(markup.indexOf("Open this comment on GitHub"))).toContain("ml-auto");
+  });
+
+  test("a face with no session, and a session with no face, each still draw", () => {
+    // Neither feature may depend on the other having arrived: an agent comment
+    // written before #791 has no marker, and a bot's comment has no face.
+    expect(bar({ avatar: "https://github.com/ada.png" })).not.toContain("/sessions/");
+    const noFace = bar({ author: "app/renovate", sessionId: "session_1" });
+    expect(noFace).not.toContain("<img");
+    expect(noFace).toContain("/sessions/session_1");
+    expect(noFace).toContain(">R<");
+  });
+
   test("the face is decorative, so a screen reader hears the name once", () => {
     // The login is right beside it in text. An `alt` naming the author again would
     // make every card in the thread say who wrote it twice.
