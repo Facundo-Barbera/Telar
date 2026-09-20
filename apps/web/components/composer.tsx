@@ -24,6 +24,9 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
+  // The rail's snoozed rows wear this one; the cockpit's banner says the same
+  // state and must not invent a second mark for it.
+  AlarmClockIcon,
   CircleCheckIcon,
   CornerDownLeftIcon,
   EraserIcon,
@@ -431,6 +434,8 @@ export function Composer({
   backgroundTasks,
   settled,
   onUnsettle,
+  snoozeWakeIn,
+  onWake,
   onDraftChange,
   onSubmit,
   onStop,
@@ -526,6 +531,20 @@ export function Composer({
   settled?: boolean;
   /** Return it to the list. Absent hides the button, never the banner. */
   onUnsettle?: () => void;
+  /**
+   * HOW LONG THIS CONVERSATION IS ASLEEP FOR — `wakeLabel`'s "40m", "3h", "2d",
+   * and present ONLY while the snooze is live (#490).
+   *
+   * A RESOLVED STRING RATHER THAN THE TIMESTAMP, because the label is a
+   * countdown and the composer has no clock of its own to measure it against.
+   * The cockpit reads it off the same 30 s stamp the settled banner beside it
+   * uses, so the two banners and the title menu's own countdown cannot disagree
+   * by a render.
+   */
+  snoozeWakeIn?: string;
+  /** Wake it now. The banner's undo, and the reason the row stays on screen
+   *  while you are reading it: hiding it would take this button with it. */
+  onWake?: () => void;
   /** Submit a `/compact` turn. The cockpit passes it on Claude sessions only —
    *  the slash command is that provider's. */
   onCompact?: () => void;
@@ -602,6 +621,10 @@ export function Composer({
     !fresh && session && onCompact && !compacting && contextShare >= 0.75 && contextNoticeDismissedFor !== session.id,
   );
   const settledNotice = Boolean(!fresh && session && settled);
+  /** A LIVE SNOOZE ONLY. `snoozeWakeIn` is absent once it has expired — the
+   *  cockpit asks `isSnoozed`, not "is there a timestamp" — so this banner
+   *  cannot outlive the state it describes. */
+  const snoozeNotice = Boolean(!fresh && session && snoozeWakeIn);
 
   /* ---------------------------------------------------------------- *
    * QUESTION MODE — the drawer above, the editor as the custom answer.
@@ -1469,6 +1492,27 @@ export function Composer({
           title="This conversation is settled"
           detail="Sending a message returns it to the list in the sidebar."
           {...(onUnsettle ? { action: onUnsettle, actionLabel: "Un-settle" } : {})}
+        />
+      )}
+      {/* THE SNOOZE SAYS SO ON THIS SCREEN — #490. Beside the settled banner
+          rather than instead of it, and the two cannot both appear: `isSettled`
+          returns false for a live snooze on purpose, so a sleeping conversation
+          is never also on the shelf.
+          "Wake now" IS THE UNDO, and it is here rather than only in the title
+          menu because this is the surface that just changed — a state you can
+          see and cannot reverse in the same place is how a mis-click becomes a
+          hunt through a dropdown.
+          "OR AS SOON AS IT ANSWERS YOU" IS THE RAISED-HAND RULE, not a
+          flourish: a turn that ends after the snooze was set wakes the session
+          early, and so does a fresh failure (`raisedHandWhileSnoozed`). Saying
+          only "in 3h" would make a row that came back in ten minutes read as a
+          bug. */}
+      {snoozeNotice && (
+        <ComposerBanner
+          icon={<AlarmClockIcon className="size-4 shrink-0 text-muted-foreground" />}
+          title="This conversation is snoozed"
+          detail={`It comes back to the list in ${snoozeWakeIn}, or as soon as it answers you.`}
+          {...(onWake ? { action: onWake, actionLabel: "Wake now" } : {})}
         />
       )}
       {contextNotice && session && onCompact && (

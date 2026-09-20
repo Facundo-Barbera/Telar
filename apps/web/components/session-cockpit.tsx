@@ -32,12 +32,12 @@ import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { actionableRequests } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
-import { newSessionId } from "@/lib/session-mutations";
+import { newSessionId, withSnooze } from "@/lib/session-mutations";
 import { sessionLink } from "@/lib/session-link";
 import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { projectLabel } from "@/lib/hosts/host-projects";
-import { isSettled } from "@/lib/session-settling";
+import { isSettled, isSnoozed, settlingActivityOf, wakeLabel, type SettleableSession, type SettlingActivity } from "@/lib/session-settling";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "@/lib/session-read-receipt";
 import { ReadReceiptMarker, useReadReceipt } from "./session/read-receipt";
 import { useInboxPolicy } from "@/lib/inbox-policy";
@@ -3426,6 +3426,44 @@ export function SessionCockpit({
   };
 
   /**
+   * THIS SCREEN'S RECORD, FOLDED INTO WHAT THE SETTLING RULES READ — once, for
+   * every question asked of it.
+   *
+   * It used to be spelled inline inside `settled`, which was fine while there
+   * was one question. There are two now (`isSnoozed` below asks the same
+   * record), and two copies of this fold is exactly how the banner over the
+   * composer and the row in the rail start disagreeing about the same session.
+   * `SettleableSession` exists to be satisfied without a conversion; this is
+   * the cockpit satisfying it.
+   */
+  const { policy: inboxPolicy } = useInboxPolicy();
+  const settleable: SettleableSession | undefined = session && {
+    archived: false,
+    updatedAt: session.updatedAt,
+    ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
+    ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
+    ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
+    ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+    // The unread pair and the read stamp, so this banner and the rail
+    // fold the SAME fields. Without them the cockpit would call a
+    // session with an unread answer settled while the row it came from
+    // says otherwise — and the banner is the thing claiming to explain
+    // the row.
+    ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
+    ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
+    ...(session.readAt === undefined ? {} : { readAt: session.readAt }),
+  };
+  /**
+   * THE RAIL'S FOLD, NOT A HAND-ROLLED PAIR. This was `{ working, waitingOnYou }`
+   * spelled out here, which is every field `isSettled` reads and two short of
+   * what `isSnoozed` reads: the EARLY WAKE is decided on `lastTurnEndedAt` and
+   * `lastTurnFailed`, so a cockpit that dropped them would go on calling a
+   * conversation asleep after the answer that woke it on the rail. Adding them
+   * cannot move `settled` — `isSettled` never asks `isSnoozed` — and it is what
+   * makes the new banner below agree with the row.
+   */
+  const settlingActivity: SettlingActivity = settlingActivityOf(session ?? {});
+  /**
    * IS THIS CONVERSATION ON THE SETTLED SHELF RIGHT NOW? Same rule, same
    * inputs as the sidebar (`bandOf` folds the identical fields), so the
    * banner over the composer and the shelf in the rail can never disagree.
@@ -3435,34 +3473,33 @@ export function SessionCockpit({
    * Archived is excluded: it reports settled too, but there is no un-settle
    * for it, and a banner whose one button cannot work is worse than none.
    */
-  const { policy: inboxPolicy } = useInboxPolicy();
   const settled = Boolean(
     session &&
+      settleable &&
       session.state !== "archived" &&
-      isSettled(
-        {
-          archived: false,
-          updatedAt: session.updatedAt,
-          ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
-          ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
-          ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
-          ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
-          // The unread pair and the read stamp, so this banner and the rail
-          // fold the SAME fields. Without them the cockpit would call a
-          // session with an unread answer settled while the row it came from
-          // says otherwise — and the banner is the thing claiming to explain
-          // the row.
-          ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
-          ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
-          ...(session.readAt === undefined ? {} : { readAt: session.readAt }),
-        },
-        {
-          working: session.activity === "working" || session.activity === "queued",
-          waitingOnYou: session.activity === "blocked",
-        },
-        { now: settlingNow, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours },
-      ),
+      isSettled(settleable, settlingActivity, { now: settlingNow, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours }),
   );
+  /**
+   * AND IS IT ASLEEP? — issue #490.
+   *
+   * THE SCREEN HAD NO ANSWER TO THIS AT ALL. Snooze was reachable from the
+   * title menu and from the rail, and the only thing either one changed on THIS
+   * surface was a menu item nobody had open: `isSettled` returns false for a
+   * live snooze on purpose (the row must land in the list when it wakes, not on
+   * the settled shelf), so the settled banner above cannot speak for it either.
+   * Snoozing the conversation you were reading looked exactly like doing
+   * nothing, which is the owner's report word for word — "no cambia hasta que
+   * te sales de la conversación".
+   *
+   * SO IT IS A VIEW, NOT A PUSH. Nothing new fires and nothing new ticks: this
+   * reads the record the screen already holds, on the clock it already keeps,
+   * and the record changes the instant the button is pressed (see
+   * `snoozeFromMenu`). The WAKE edge — the dot that says a conversation came
+   * back — is the server-side half and is not here; `wokeAt` in the protocol
+   * already computes the moment and still has no consumer outside its tests.
+   */
+  const snoozedUntil =
+    settleable && isSnoozed(settleable, settlingActivity, { now: settlingNow }) ? settleable.snoozedUntil : undefined;
   const unsettle = async () => {
     if (!sessionId) return;
     try {
@@ -3498,10 +3535,11 @@ export function SessionCockpit({
    *  title menu carries "Open in a new window". */
   const shell = desktopApp();
   const menuApi = createEngineApi(hostFetcher(hostId));
-  const patchFromMenu = async (
-    patch: { settledOverride?: "settled" | "active" | null; snoozedUntil?: number | null },
-    failure: string,
-  ) => {
+  /** `snoozedUntil` IS NO LONGER SPELLABLE HERE. Snooze has one path on this
+   *  screen now (`snoozeFromMenu` below) and it is the optimistic one; leaving
+   *  the field in this signature would leave the slow path reachable by
+   *  autocomplete, which is how the two surfaces came apart in the first place. */
+  const patchFromMenu = async (patch: { settledOverride?: "settled" | "active" | null }, failure: string) => {
     if (!sessionId) return;
     try {
       const next = await menuApi.updateSession(sessionId, patch);
@@ -3509,6 +3547,44 @@ export function SessionCockpit({
       setError(undefined);
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", failure));
+    }
+  };
+  /**
+   * SNOOZE AND WAKE, APPLIED BEFORE THE ROUND TRIP — issue #490, and the second
+   * half of why snoozing the conversation you are reading looked inert.
+   *
+   * THE RAIL ALREADY DID THIS AND THE COCKPIT DID NOT. A row's snooze is
+   * `mutate(withSnooze(…))` — the guess first, the engine's record folded in
+   * after, the row put back if it refuses (`mutateRow`, lib/session-mutations.ts)
+   * — while `patchFromMenu` above awaits the PATCH before anything moves. Two
+   * surfaces, two speeds, and the slower one is the surface you are looking at.
+   *
+   * SO IT REUSES THE RAIL'S BUILDER rather than restating the shape. `withSnooze`
+   * is generic over the three fields a snooze writes precisely so this record and
+   * the rail's projection cannot drift about what "snoozed" means — which they
+   * would, silently, the first time either one learned a field.
+   *
+   * WHAT IT DOES NOT REUSE is `mutateRow` itself: that reconciles through
+   * `patchedRow`, whose job is to rebuild a RAIL row out of a `LiveSessionRow`
+   * plus everything the rail resolved once for the whole list. This screen holds
+   * the engine's `Session` and gets one back, so the reconcile here is
+   * `setSession(next.session)` — the same three states, one projection shorter.
+   */
+  const snoozeFromMenu = async (until: number | null) => {
+    if (!sessionId || !session) return;
+    const before = session;
+    setSession(withSnooze(before, until));
+    try {
+      const next = await menuApi.updateSession(sessionId, { snoozedUntil: until });
+      setSession(next.session);
+      setError(undefined);
+    } catch (cause) {
+      // The record as it was, not as the guess left it — the rail's argument,
+      // and the reason the banner springs back instead of lying.
+      setSession(before);
+      setError(
+        cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not change the session's snooze."),
+      );
     }
   };
   const headerMenu: React.ComponentProps<typeof SessionMasthead>["menu"] =
@@ -3565,7 +3641,7 @@ export function SessionCockpit({
             // nothing would not stamp `updatedAt` or restart the clock.
             settle: (next) =>
               void (next ? patchFromMenu({ settledOverride: "settled" }, "Could not settle the session.") : unsettle()),
-            snooze: (until) => void patchFromMenu({ snoozedUntil: until }, "Could not change the session's snooze."),
+            snooze: (until) => void snoozeFromMenu(until),
             copy: (text) => void navigator.clipboard.writeText(text).catch(() => window.alert("The browser refused to copy that.")),
             projectSettings: ({ projectId: target }) => router.push(projectSettingsHref(target)),
             remove: () => {
@@ -3936,6 +4012,15 @@ export function SessionCockpit({
           backgroundTasks={backgroundTasks}
           settled={settled}
           onUnsettle={() => void unsettle()}
+          {...(snoozedUntil === undefined
+            ? {}
+            : // THE LABEL IS RESOLVED HERE, not in the composer. `wakeLabel`
+              // reads a clock, and the only clock this screen agrees with is
+              // `settlingNow` — the same 30 s stamp the settled banner and the
+              // menu's own countdown are drawn from. A composer reading
+              // `Date.now()` mid-render would be a third opinion.
+              { snoozeWakeIn: wakeLabel(snoozedUntil, settlingNow) })}
+          onWake={() => void snoozeFromMenu(null)}
           {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
           compacting={compacting}
           {...(composerQuestion
