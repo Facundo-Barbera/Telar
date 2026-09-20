@@ -387,6 +387,118 @@ describe("driving a live terminal", () => {
   });
 });
 
+/**
+ * WHO MAY REACH WHICH TERMINAL (#198).
+ *
+ * EVERY CASE HERE IS A PAIR, and that is the whole design of this block. An
+ * assertion that an engine-owned id is refused passes just as well when `write`
+ * is broken for everybody, and an assertion that a run's terminal is absent
+ * from `list` passes against a `list` that returns nothing at all. So each test
+ * carries its own positive control in the same call: the other owner's terminal
+ * still works, and is still listed, in the same host, in the same test.
+ */
+describe("a terminal has an owner, and only its owner may reach it", () => {
+  /** A host whose spawner mints a FRESH fake per open — two terminals here are
+   *  two handles, which is what an ownership test is about. */
+  function twoOwnerHost() {
+    const ptys = [];
+    const host = new TerminalHost({
+      platform: "darwin",
+      version: "9.9.9",
+      killTree: () => {},
+      spawnPty: () => {
+        const pty = fakePty(500 + ptys.length);
+        ptys.push(pty);
+        return pty;
+      },
+    });
+    const mine = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
+    const theirs = host.open({ shell: "/bin/sh", args: ["-c", "bun run dev"], env: {}, owner: "engine" });
+    return { host, mine, theirs, ptys };
+  }
+
+  test("write refuses the other owner's id and still delivers to its own", () => {
+    const { host, mine, theirs, ptys } = twoOwnerHost();
+    // The refusal…
+    expect(host.write(theirs.id, "rm -rf /\r", "renderer")).toBe(false);
+    // …and the permit, which is what makes the refusal mean something. Delete
+    // the owner check in `_owned` and this line still passes while the one
+    // above fails.
+    expect(host.write(mine.id, "ls\r", "renderer")).toBe(true);
+    // The bytes, not the booleans: a guard that returned the right answers and
+    // wrote to the wrong pty would satisfy both lines above.
+    expect(ptys[0].calls.writes).toEqual(["ls\r"]);
+    expect(ptys[1].calls.writes).toEqual([]);
+  });
+
+  test("resize and kill are scoped the same way, in both directions", () => {
+    const { host, mine, theirs, ptys } = twoOwnerHost();
+    expect(host.resize(theirs.id, 10, 10, "renderer")).toBe(false);
+    expect(host.resize(mine.id, 100, 40, "renderer")).toBe(true);
+    expect(ptys[1].calls.resizes).toEqual([]);
+    expect(ptys[0].calls.resizes).toEqual([[100, 40]]);
+
+    // A renderer must not be able to stop a run's dev server by id, and the
+    // engine must still be able to stop its own.
+    expect(host.kill(theirs.id, "SIGTERM", "renderer")).toBe(false);
+    expect(host.kill(theirs.id, "SIGTERM", "engine")).toBe(true);
+  });
+
+  test("the engine reaches its own terminal, which is the other direction of the same guard", () => {
+    const { host, mine, theirs, ptys } = twoOwnerHost();
+    expect(host.write(theirs.id, "y\r", "engine")).toBe(true);
+    expect(host.write(mine.id, "y\r", "engine")).toBe(false);
+    expect(ptys[1].calls.writes).toEqual(["y\r"]);
+    expect(ptys[0].calls.writes).toEqual([]);
+  });
+
+  test("list omits the other owner's terminals and keeps its own", () => {
+    const { host, mine, theirs } = twoOwnerHost();
+    const rendererIds = host.list("renderer").map((entry) => entry.id);
+    const engineIds = host.list("engine").map((entry) => entry.id);
+    // The absence…
+    expect(rendererIds).not.toContain(theirs.id);
+    expect(engineIds).not.toContain(mine.id);
+    // …and the presence. An absence assertion alone is satisfied by a `list`
+    // that answers an empty array for everyone.
+    expect(rendererIds).toEqual([mine.id]);
+    expect(engineIds).toEqual([theirs.id]);
+  });
+
+  test("the default scope is the renderer's, so a caller that forgets is refused rather than trusted", () => {
+    const { host, mine, theirs } = twoOwnerHost();
+    expect(host.write(theirs.id, "x", undefined)).toBe(false);
+    expect(host.write(mine.id, "x", undefined)).toBe(true);
+    expect(host.list().map((entry) => entry.id)).toEqual([mine.id]);
+  });
+
+  test("an owner that is neither throws rather than being rounded to one", () => {
+    // Rounding an unrecognised owner to `renderer` would be the guard failing
+    // open on a typo, which is the failure mode a guard exists to not have.
+    const { host, mine } = twoOwnerHost();
+    expect(() => host.open({ shell: "/bin/zsh", env: {}, owner: "engine " })).toThrow(/owner/);
+    expect(() => host.write(mine.id, "x", "ENGINE")).toThrow(/owner/);
+    expect(() => host.list("agent")).toThrow(/owner/);
+  });
+
+  test("dispose settles every terminal, whoever opened it", () => {
+    // The one place ownership deliberately does not apply: the host going away
+    // is about every handle it holds. A run left un-settled here would free its
+    // project's slot for a dev server that is still listening.
+    const endings = [];
+    const host = new TerminalHost({
+      platform: "darwin",
+      version: "9.9.9",
+      spawnPty: () => fakePty(700),
+      onExit: (id, ending) => endings.push(ending.fate),
+    });
+    host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
+    host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
+    host.dispose();
+    expect(endings).toEqual(["unknown", "unknown"]);
+  });
+});
+
 describe("the shell we fall back to", () => {
   test("$SHELL is the person's own choice and wins", () => {
     expect(defaultShell("darwin", { SHELL: "/opt/homebrew/bin/fish" })).toBe("/opt/homebrew/bin/fish");

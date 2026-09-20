@@ -1828,6 +1828,14 @@ function reportVolumesChanged() {
 // A browser tab's preload, a subframe, or anything an agent can reach must
 // never be able to open a shell.
 let terminalHost = null;
+/**
+ * The two scopes a terminal can belong to. Required at load rather than beside
+ * the host: `terminal-host.js` pulls in only `node:path` at module level — the
+ * native module is lazy behind its own getter — so naming the vocabulary costs
+ * nothing, and spelling `"renderer"` by hand in two files is how two files stop
+ * agreeing about it.
+ */
+const { TerminalOwner } = require("./terminal-host");
 /** Which renderer is reading each terminal. A terminal outlives a reload, so
  *  this is looked up per delivery rather than held on the record. */
 const terminalReaders = new Map();
@@ -1867,6 +1875,19 @@ function requireTerminalHost() {
   return terminalHost;
 }
 
+/**
+ * AND EVERY ONE OF THESE IS THE RENDERER'S SCOPE, BY NAME (#198).
+ *
+ * `requireCockpitSender` answers "is this the cockpit's top frame". It does
+ * not answer "is this terminal yours", and until the ownership guard in
+ * terminal-host.js there was nothing that did: `list` handed the cockpit every
+ * id in the process — the engine's run terminals included — and `write` took
+ * any of them. Passing the scope here is the other half of that guard, and it
+ * is spelled out at each call rather than defaulted so that a handler added
+ * later has to say which side it is on.
+ */
+const RENDERER = TerminalOwner.RENDERER;
+
 ipcMain.handle("telar:terminal:open", (event, input) => {
   requireCockpitSender(event, "open a terminal");
   const host = requireTerminalHost();
@@ -1879,27 +1900,29 @@ ipcMain.handle("telar:terminal:open", (event, input) => {
     // The SHELL's environment, not the renderer's idea of one. A renderer that
     // could name arbitrary variables could set DYLD_INSERT_LIBRARIES.
     env: process.env,
+    owner: RENDERER,
   });
   if (opened.pid !== undefined) terminalReaders.set(opened.id, event.sender);
   return opened;
 });
 ipcMain.handle("telar:terminal:write", (event, input) => {
   requireCockpitSender(event, "type into a terminal");
-  return { ok: requireTerminalHost().write(input?.id, input?.data) };
+  return { ok: requireTerminalHost().write(input?.id, input?.data, RENDERER) };
 });
 ipcMain.handle("telar:terminal:resize", (event, input) => {
   requireCockpitSender(event, "resize a terminal");
-  return { ok: requireTerminalHost().resize(input?.id, input?.cols, input?.rows) };
+  return { ok: requireTerminalHost().resize(input?.id, input?.cols, input?.rows, RENDERER) };
 });
 ipcMain.handle("telar:terminal:kill", (event, input) => {
   requireCockpitSender(event, "stop a terminal");
-  return { ok: requireTerminalHost().kill(input?.id, input?.signal || "SIGTERM") };
+  return { ok: requireTerminalHost().kill(input?.id, input?.signal || "SIGTERM", RENDERER) };
 });
 /** What is live right now — how a remounted panel finds the terminals its
- *  previous render left running. Facts only; no handles cross this. */
+ *  previous render left running. Facts only; no handles cross this, and no ids
+ *  belonging to a run: a run's terminal is reached through the engine. */
 ipcMain.handle("telar:terminal:list", (event) => {
   requireCockpitSender(event, "list terminals");
-  return { terminals: requireTerminalHost().list() };
+  return { terminals: requireTerminalHost().list(RENDERER) };
 });
 
 // --- Native folder picker -----------------------------------------------------

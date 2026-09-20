@@ -55,6 +55,42 @@ const TerminalFate = Object.freeze({
   UNKNOWN: "unknown",
 });
 
+/**
+ * WHO OPENED A TERMINAL, AND THEREFORE WHO MAY REACH IT (#198).
+ *
+ * There are two callers in this process and they are not peers. The RENDERER
+ * opens the terminals a person asked for in a Terminal tab; the ENGINE opens
+ * the one behind a run, over `run-terminal-server.js`. Before this existed,
+ * `telar:terminal:list` handed the cockpit EVERY id in the process — a run's
+ * included — and `telar:terminal:write` checked only that the sender was the
+ * cockpit's top frame. Nothing surfaced a run's id, so it was latent rather
+ * than exploitable; it was still a renderer able to type into, resize and kill
+ * a process it did not start and cannot see.
+ *
+ * SO OWNERSHIP IS RECORDED AT `open` AND CHECKED AT EVERY VERB. It is not a UI
+ * convention: `write`, `resize` and `kill` refuse an id whose owner is not the
+ * caller, and `list` does not mention one. Run's terminal is reachable from the
+ * cockpit exactly one way — through the engine, over HTTP, where the bytes have
+ * been through `pty-stream.ts` — and that is the point of the guard rather than
+ * a side effect of it.
+ *
+ * THE DEFAULT IS `renderer`, WHICH IS THE FAIL-CLOSED DIRECTION. A caller that
+ * forgets to say gets the less privileged of the two and is refused an engine
+ * terminal; the engine has to name itself to reach its own. An owner that is
+ * neither throws rather than being rounded to one, because a typo that quietly
+ * became `renderer` would be the guard failing open.
+ */
+const TerminalOwner = Object.freeze({
+  RENDERER: "renderer",
+  ENGINE: "engine",
+});
+
+function terminalOwner(value) {
+  if (value === undefined || value === null) return TerminalOwner.RENDERER;
+  if (value === TerminalOwner.RENDERER || value === TerminalOwner.ENGINE) return value;
+  throw new Error(`Telar does not know the terminal owner ${JSON.stringify(value)}.`);
+}
+
 /** The terminal type we claim to be, and the one xterm.js is configured for. */
 const TERM = "xterm-256color";
 
@@ -265,9 +301,12 @@ class TerminalHost {
    * `shell` and `args` are the caller's — a terminal emulator runs what it is
    * asked to run. What this adds is the environment above and a size, because
    * a PTY without one reports 0×0 and every full-screen program draws nothing.
+   *
+   * `owner` is recorded here and nowhere else: a terminal cannot change hands.
    */
   open(request = {}) {
     if (this.disposed) throw new Error("Telar's terminal host is shutting down and will not start another shell.");
+    const owner = terminalOwner(request.owner);
     // ONE base environment, read once: the fallback shell comes from `$SHELL`,
     // so resolving it against a different environment than the one the child
     // gets would answer /bin/sh for a person whose shell is fish.
@@ -296,7 +335,7 @@ class TerminalHost {
       return { id, pid: undefined, ending };
     }
 
-    const record = { id, pty, pid: pty.pid, shell, args, cwd: request.cwd, cols, rows, startedAt: this.now(), killTimer: null };
+    const record = { id, owner, pty, pid: pty.pid, shell, args, cwd: request.cwd, cols, rows, startedAt: this.now(), killTimer: null };
     this.terminals.set(id, record);
     /**
      * A PTY'S FD ERRORING MUST NOT ABORT THE WHOLE SHELL.
@@ -346,17 +385,22 @@ class TerminalHost {
 
   /** Bytes from the keyboard. A write to a terminal that has ended is dropped
    *  rather than thrown: the renderer learns of the exit asynchronously, so a
-   *  keystroke in flight across that gap is normal and is not an error. */
-  write(id, data) {
-    const record = this.terminals.get(id);
+   *  keystroke in flight across that gap is normal and is not an error.
+   *
+   *  A write to SOMEBODY ELSE'S terminal is dropped by the same `false`, which
+   *  is deliberate: an id the caller does not own must be indistinguishable
+   *  from an id that does not exist, or the refusal is itself a way to ask
+   *  which ids are live. */
+  write(id, data, owner) {
+    const record = this._owned(id, owner);
     if (!record || typeof data !== "string") return false;
     record.pty.write(data);
     return true;
   }
 
   /** The window was resized. SIGWINCH is the PTY's job, not ours. */
-  resize(id, cols, rows) {
-    const record = this.terminals.get(id);
+  resize(id, cols, rows, owner) {
+    const record = this._owned(id, owner);
     if (!record) return false;
     record.cols = size(cols, record.cols);
     record.rows = size(rows, record.rows);
@@ -373,8 +417,8 @@ class TerminalHost {
    * settles `unknown` rather than letting the record sit open forever or
    * reporting an exit nobody observed.
    */
-  kill(id, signal = "SIGTERM") {
-    const record = this.terminals.get(id);
+  kill(id, signal = "SIGTERM", owner) {
+    const record = this._owned(id, owner);
     if (!record) return false;
     try {
       this.killTree(record.pid, signal);
@@ -398,17 +442,27 @@ class TerminalHost {
     return true;
   }
 
-  /** What is live right now — facts only, no handles. */
-  list() {
-    return [...this.terminals.values()].map((record) => ({
-      id: record.id,
-      pid: record.pid,
-      shell: record.shell,
-      cwd: record.cwd,
-      cols: record.cols,
-      rows: record.rows,
-      startedAt: record.startedAt,
-    }));
+  /**
+   * What is live right now FOR ONE OWNER — facts only, no handles.
+   *
+   * SCOPED, NOT FILTERED BY THE CALLER. The renderer asks this to re-adopt the
+   * shells its previous render left running; answering with the engine's run
+   * terminals too would hand it ids it has no business holding, and an id is
+   * the whole of the address.
+   */
+  list(owner) {
+    const scope = terminalOwner(owner);
+    return [...this.terminals.values()]
+      .filter((record) => record.owner === scope)
+      .map((record) => ({
+        id: record.id,
+        pid: record.pid,
+        shell: record.shell,
+        cwd: record.cwd,
+        cols: record.cols,
+        rows: record.rows,
+        startedAt: record.startedAt,
+      }));
   }
 
   /**
@@ -457,6 +511,20 @@ class TerminalHost {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  /**
+   * The record `owner` is entitled to address, or nothing.
+   *
+   * ONE PLACE, so "who may reach this terminal" cannot be answered differently
+   * by `write` than by `kill`. `dispose` deliberately does not come through
+   * here: the host going away is about every handle it holds, whoever asked
+   * for it.
+   */
+  _owned(id, owner) {
+    const scope = terminalOwner(owner);
+    const record = this.terminals.get(id);
+    return record && record.owner === scope ? record : undefined;
+  }
+
   /** One ending per terminal, ever. */
   _settle(record, ending) {
     if (!this.terminals.has(record.id) || this.terminals.get(record.id) !== record) return;
@@ -493,6 +561,7 @@ function messageOf(error) {
 module.exports = {
   TerminalHost,
   TerminalFate,
+  TerminalOwner,
   TERM,
   TERM_PROGRAM,
   terminalEnv,
