@@ -66,6 +66,7 @@ import {
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "@/lib/right-panel-layout";
 import { RelatedConversations } from "@/components/session/related-conversations";
+import { ReportCadence } from "@/components/session/report-cadence";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
@@ -1297,12 +1298,29 @@ function AgentsSurface({
   visible?: boolean;
 }) {
   const { groups, agents: loose } = useMemo(() => splitRoster(tasks), [tasks]);
+  /**
+   * THE CADENCE INTRODUCES THE RELATIONSHIP REGION — issue #723, and the owner's
+   * own choice of home for it. How often this conversation is told about its
+   * peers is a property of the relationships listed underneath, so it sits
+   * directly above them rather than in the composer or the header.
+   *
+   * ALWAYS, NOT ONLY WHEN A PEER EXISTS. A window is what you set BEFORE
+   * dispatching several peers — a control that appeared once they were already
+   * talking would arrive exactly one decision too late.
+   */
   const related = (
-    <RelatedConversations
-      {...(sessionId ? { sessionId } : {})}
-      {...(hostId ? { hostId } : {})}
-      visible={visible}
-    />
+    <>
+      <ReportCadence
+        {...(sessionId ? { sessionId } : {})}
+        {...(hostId ? { hostId } : {})}
+        visible={visible}
+      />
+      <RelatedConversations
+        {...(sessionId ? { sessionId } : {})}
+        {...(hostId ? { hostId } : {})}
+        visible={visible}
+      />
+    </>
   );
   if (groups.length === 0 && loose.length === 0) {
     // NO EMPTY STATE OF ITS OWN WHEN SOMETHING IS RELATED. "Sub-agents appear
