@@ -26,7 +26,7 @@ Scope: sessions, project navigation, browser, 1Password and release reliability.
 
 Run `bun run verify`, package smoke and deep strict signature verification. Then inspect the actual signed app through computer use. Unit tests alone are not visual acceptance.
 
-Electron harnesses: browser regression, persistence, credential frames, popup geometry, and `browser-fit-zoom.electron-test.js`. The Fit harness reads without repairing geometry and checks actual rendered pixels, native zoom, visual scale, fixed-to-fit changes, repeated resizing, click coordinates and hidden retention.
+Electron harnesses: browser regression, persistence, popup geometry, and `browser-fit-zoom.electron-test.js`. (The credential-frames harness listed here until 2026-09-20 was deleted in `87527fbd`; the eight that CI runs per PR are named in `verify.yml`'s `electron` job, and three more need 1Password's proprietary CRX and run only locally.) The Fit harness reads without repairing geometry and checks actual rendered pixels, native zoom, visual scale, fixed-to-fit changes, repeated resizing, click coordinates and hidden retention.
 
 Native checks: blank tabs, fitted/fixed resizing, session switching, drafts, restoration, Usage and sidebar controls. The unsigned shell and signed installed app are different acceptance surfaces.
 
