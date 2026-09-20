@@ -1855,8 +1855,12 @@ export function SessionCockpit({
     },
     [enqueueSync, sessionId, remember, hostId, syncKey, setEvents, setItems, setRequests, setSession, setTasks, setTurns],
   );
-  /** One page of settled turns above the transcript, on an explicit click —
-   *  never on scroll, so reading the top of the window stays free. */
+  /** One page of settled turns above the transcript. Reached two ways, and the
+   *  comment here used to claim only one: `ConversationTopEdge` watches the top
+   *  of the viewport with an IntersectionObserver and calls this 400px before
+   *  the reader arrives (ui/conversation.tsx), and the button below it is the
+   *  same gesture for the keyboard. Guarded on `loadingOlder` so an arrival at
+   *  the edge is one request, not four. */
   const loadOlder = useCallback(() => {
     const before = page?.before;
     if (!sessionId || !before || loadingOlder) return;
