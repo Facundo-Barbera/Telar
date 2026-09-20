@@ -61,7 +61,7 @@ import { createEngineApi } from "@/lib/engine/client";
 import { CHUNK_MS, listenProtocols, listenUrl, recordingType } from "./deepgram";
 import { audioConstraints, readMicrophone } from "./devices";
 import { createDictationWriter, type DictationBox } from "./interim";
-import { microphoneRefusal } from "./refusal";
+import { microphoneRefusal, microphoneUnavailable } from "./refusal";
 import { parseFrame, readFrame } from "./transcript";
 
 export type DictationPhase =
@@ -126,6 +126,36 @@ const neverChanges = () => () => {};
  *  expression: a second copy is how the button and the pane come to disagree
  *  about whether this browser can dictate. */
 export const canRecord = (): boolean => typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia !== undefined;
+
+/**
+ * WHY THIS PAGE CANNOT RECORD, AS A SENTENCE, OR NOTHING (#639).
+ *
+ * `canRecord` is the fact and this is the words for it. It lives here, beside
+ * the fact, because there are now two readers — the Settings pane (#643) and
+ * the composer's own mic button — and a second copy is how a button that draws
+ * nothing and a pane that explains why come to disagree about this browser.
+ *
+ * `useSyncExternalStore` RATHER THAN A READ DURING RENDER: this is a question
+ * about `window`, and both callers are server-rendered first. Reading it inline
+ * would answer one thing on the server and another in the browser — a hydration
+ * mismatch on every screen with a composer. `undefined` is the server answer,
+ * which is also the optimistic one: nothing is said until the browser has been
+ * asked, rather than flashing a refusal at somebody whose page is fine.
+ *
+ * THE CARVE-OUT THIS RELIES ON IS MARKED "AT RISK". W3C Secure Contexts treats
+ * `127.0.0.0/8` and `::1/128` as Potentially Trustworthy with no certificate —
+ * which is the whole reason dictation works on this Mac and why a tunnel is the
+ * cheap fix. The spec flags it as at risk. Unlikely to move, since much of the
+ * web's tooling stands on it, but it is not a permanent guarantee, and the
+ * sentence below and `docs/dictation-secure-context.md` both rest on it.
+ */
+export function useMicrophoneUnavailable(): string | undefined {
+  return useSyncExternalStore(
+    neverChanges,
+    () => microphoneUnavailable({ secure: window.isSecureContext, canRecord: canRecord() }),
+    () => undefined,
+  );
+}
 
 export function useDictation(input: {
   /** THE BOX BEING SPOKEN INTO, resolved per dictation rather than held: the

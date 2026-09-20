@@ -48,31 +48,19 @@ import {
 } from "./devices";
 import type { DictationBox } from "./interim";
 import { createLevelMeter, type LevelMeter } from "./level";
-import { microphoneRefusal, microphoneUnavailable } from "./refusal";
-import { canRecord, useDictation, type DictationState } from "./use-dictation";
-
-/** Module-level so `useSyncExternalStore` does not resubscribe every render —
- *  the same reason `use-dictation.ts` keeps one. */
-const neverChanges = () => () => {};
+import { microphoneRefusal } from "./refusal";
+import { useDictation, type DictationState } from "./use-dictation";
 
 /**
  * WHY THIS PAGE CANNOT RECORD AT ALL, as a sentence, or nothing.
  *
- * `useSyncExternalStore` RATHER THAN A READ DURING RENDER: this is a question
- * about `window`, and settings is server-rendered first. Reading it inline would
- * answer one thing on the server and another in the browser — a hydration
- * mismatch on a pane that is otherwise entirely static. `undefined` is the server
- * answer, which is also the optimistic one: the pane draws its controls and then
- * replaces them with the reason on the first client render, rather than flashing
- * a refusal at somebody whose browser is fine.
+ * MOVED DOWN BESIDE `canRecord` (#639), because the composer's mic button asks
+ * the same question now and a second copy is how the two surfaces come to
+ * disagree. Re-exported rather than re-imported at the call sites: this module
+ * is still where the Settings pane's microphone machinery lives, and the pane
+ * should not have to know which file the fact is kept in.
  */
-export function useMicrophoneUnavailable(): string | undefined {
-  return useSyncExternalStore(
-    neverChanges,
-    () => microphoneUnavailable({ secure: window.isSecureContext, canRecord: canRecord() }),
-    () => undefined,
-  );
-}
+export { useMicrophoneUnavailable } from "./use-dictation";
 
 export type AudioInputsHandle = {
   /** The inputs the browser is willing to name. Empty before the first grant. */
