@@ -124,6 +124,7 @@ import {
   DEFAULT_MODEL_OVERLAY,
   ModelOverlay as ModelOverlaySchema,
   type GitFilePatch,
+  type GitReadFailure,
   type SessionDiff,
   type EngineEvent,
   type ConversationImportDetail,
@@ -227,7 +228,7 @@ import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeMod
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
-import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, type GitResult, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
 import { measureDirectory } from "./storage";
@@ -468,6 +469,20 @@ function definedOnly<T extends object>(value: T): Partial<T> {
 
 const ID = /^[A-Za-z0-9_-]+$/;
 const MAX_TEXT_LENGTH = 200_000;
+
+/**
+ * How long a turn's anchor probe may take — issue #741.
+ *
+ * MUCH SHORTER THAN `DEFAULT_GIT_TIMEOUT_MS`, and the difference is the point.
+ * `rev-parse --verify HEAD` reads one file; thirty seconds of a shared pool
+ * slot for it would be thirty seconds every other read waits behind, on a
+ * command that runs at the start and end of every turn of every session. A
+ * probe that does not answer in five seconds is a machine under load, and the
+ * honest record of that is `read`, not a longer wait.
+ *
+ * The same five seconds `projectGitAsync`'s own HEAD read already uses.
+ */
+const ANCHOR_PROBE_MS = 5_000;
 /**
  * A turn that is not yet history: waiting, running, or mid-promotion. The
  * snapshot window keeps every one of these on the first page whatever the
@@ -6164,6 +6179,120 @@ export class EngineStore {
     }
   }
 
+  /**
+   * WHERE A TURN'S ANCHOR IS READ — issue #741.
+   *
+   * THE SESSION'S OWN CHECKOUT, OR THE PROJECT ROOT WHEN IT IS GONE. A commit
+   * made inside a worktree stays readable from the project root after
+   * `git worktree remove --force` and even after `git branch -D` — worktrees
+   * share one object database — so an anchored turn OUTLIVES its checkout,
+   * which the working-tree comparison it replaces never could. The one thing
+   * that has to be true is that the read runs somewhere that still exists.
+   *
+   * Absent when there is neither: a session with no workspace and no project
+   * has nothing to anchor to, which is a fact rather than a failure.
+   */
+  private anchorReadRoot(session: Session): string | undefined {
+    const workspace = workspacePath(session.workspace);
+    if (workspace !== undefined && fs.existsSync(workspace)) return workspace;
+    return this.projectOfSession(session)?.root;
+  }
+
+  /**
+   * Stamp where the repository stands, OFF THE LOCK — issue #741.
+   *
+   * ────────────────────────────────────────────────────────────────────────
+   * NEVER THE SYNCHRONOUS RUNNER, AND NEVER INLINE. `worktree.ts`'s header
+   * records what that costs: `listProjects` calling sync git in the daemon loop
+   * froze every request, and a `rev-parse --abbrev-ref HEAD` on a project under
+   * `~/Documents` blocked FOR MINUTES in the kernel. `markRunning` runs for
+   * every turn of every session, under the store lock. So the probe is
+   * dispatched and the answer written back when it arrives; a turn is never
+   * held waiting for git, and the worst case is an anchor that lands a moment
+   * after the event that named it.
+   * ────────────────────────────────────────────────────────────────────────
+   *
+   * A PROBE THAT DID NOT ANSWER SETS `read` RATHER THAN LEAVING A PLAUSIBLE
+   * ABSENT. Absent with no `read` means "there was nothing to see" — a
+   * repository with no commits yet, which `rev-parse --verify` reports by
+   * exiting non-zero. The two are different claims and #654 is the precedent
+   * for keeping them apart.
+   */
+  private anchorTurn(sessionId: string, runId: string, side: "before" | "after"): void {
+    let cwd: string | undefined;
+    try {
+      cwd = this.anchorReadRoot(this.getSession(sessionId));
+    } catch {
+      // A session that vanished between the transition and this line has
+      // nothing to anchor; the turn's own record is already written.
+      return;
+    }
+    if (cwd === undefined) return;
+    void this.asyncGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], { timeoutMs: ANCHOR_PROBE_MS })
+      .then((result) => this.stampAnchor(sessionId, runId, side, result))
+      .catch(() => {
+        // The runner reports every failure as a result; a throw here would be
+        // the store itself, and it must not take the daemon with it.
+      });
+  }
+
+  /**
+   * Write one side of an anchor onto whatever the turn says NOW.
+   *
+   * RE-READ RATHER THAN CLOSED OVER, exactly as `settleWorktree` is: git ran
+   * while the world moved, and writing a turn captured before the probe would
+   * silently undo whatever happened during it. A turn that no longer exists is
+   * not an error — there is simply nothing left to stamp.
+   *
+   * THROUGH `executeCommand`, because this arrives on a promise rather than
+   * through the wrapped command surface, and a queue write outside the
+   * transaction is a queue write nothing serialises.
+   */
+  private stampAnchor(sessionId: string, runId: string, side: "before" | "after", result: GitResult): void {
+    /**
+     * FOUR ANSWERS FROM ONE COMMAND, and the third is the one worth naming.
+     *
+     *   status 0   a sha. Write it.
+     *   timedOut   nobody looked. `read: "timeout"`, and the sha stays absent
+     *              rather than becoming a plausible wrong one.
+     *   status 1   `--verify --quiet` reporting that HEAD does not resolve — a
+     *              repository with NO COMMITS YET. Nothing to write, and
+     *              nothing wrong: absent with no `read` is the honest record,
+     *              and the empty-tree sha would be a sentinel a reader could
+     *              also have named deliberately.
+     *   anything   git did not answer at all (128 on a path that is not a
+     *   else       repository). `read: "failed"`.
+     */
+    if (result.timedOut) return this.writeAnchor(sessionId, runId, { read: "timeout" });
+    if (result.status === 0) {
+      const sha = result.stdout.trim();
+      return this.writeAnchor(sessionId, runId, sha ? { [side]: sha } : { read: "failed" });
+    }
+    if (result.status === 1) return;
+    this.writeAnchor(sessionId, runId, { read: "failed" });
+  }
+
+  private writeAnchor(sessionId: string, runId: string, patch: { before?: string; after?: string; read?: GitReadFailure }): void {
+    if (Object.keys(patch).length === 0) return;
+    try {
+      this.executeCommand("stampTurnAnchor", () => {
+        const queue = this.readQueue(sessionId);
+        const turn = queue.turns.find((candidate) => candidate.runId === runId);
+        if (!turn) return;
+        const merged = { ...(turn.anchor ?? {}), ...patch };
+        // A LATER GOOD READ CLEARS AN EARLIER DOUBT, but a doubt never erases a
+        // sha somebody already observed: `before` and `after` are separate
+        // observations and only the failing one is in doubt.
+        if (patch.read === undefined) delete merged.read;
+        turn.anchor = merged;
+        turn.updatedAt = this.now();
+        this.writeQueue(sessionId, queue);
+      });
+    } catch {
+      // A session deleted while the probe ran leaves nothing to write to.
+    }
+  }
+
   projectGitAsync(projectId: string): Promise<GitOverview> {
     const project = this.getProject(projectId);
     return this.withAvailability(this.cachedGitRead(`git:${project.root}`, () => gitOverviewAsync(this.asyncGit, project.root)), project);
@@ -10351,6 +10480,9 @@ export class EngineStore {
     const promoted = this.promoteClaimWindow(sessionId, queue, turn, at);
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
+    // WHERE THE REPOSITORY STANDS AS THIS TURN BEGINS (#741). Dispatched, never
+    // awaited — see `anchorTurn` for why this one line may not be a git call.
+    this.anchorTurn(sessionId, turn.runId, "before");
     this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
     // AFTER `turn.started`, so a client reading the journal in order never sees
     // a message steered into a turn it has not yet been told began.
@@ -10489,6 +10621,9 @@ export class EngineStore {
     }
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
+    // ...and where it stands now it has ended (#741). The pair is what makes
+    // `before..after` a range git can be asked about.
+    this.anchorTurn(sessionId, turn.runId, "after");
     this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn ended before this agent reported back");
     this.touchSession(sessionId, at, input.providerSessionId);
     this.appendEvent(
@@ -10605,6 +10740,11 @@ export class EngineStore {
       ...(failure.code === "rate_limited" && failure.limitType ? { limitType: failure.limitType } : {}),
     };
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
+    // Where the repository stands now this turn has ended (#741). A FAILED turn
+    // is anchored like a completed one: it may well have committed before it
+    // failed, and "what did this turn do" is asked of a failure more often than
+    // of a success.
+    this.anchorTurn(sessionId, turn.runId, "after");
     /**
      * A SHUTDOWN'S UNDELIVERED MESSAGES ARE HELD, like any other pre-crash
      * backlog — and they were the one route around that rule.
@@ -10754,6 +10894,10 @@ export class EngineStore {
     turn.updatedAt = at;
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
+    // Where the repository stands now this turn has ended (#741). A STOPPED
+    // turn is the case the anchor is worth most for: the work ended where it
+    // stood, and the range is the only account of it that is not the agent's.
+    this.anchorTurn(sessionId, turn.runId, "after");
     // STOPPING A TURN SPARES BACKGROUND WORK. Since the session runtime
     // landed (#126) a turn Stop is the provider's own `interrupt()`, declared
     // with `perTaskStopAffordance` so the live process — and every background

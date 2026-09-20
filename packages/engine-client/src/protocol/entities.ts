@@ -2019,6 +2019,25 @@ export const NotificationDetail = z.object({
 });
 export type NotificationDetail = z.infer<typeof NotificationDetail>;
 
+/**
+ * WHY A GIT READ IS NOT AN ANSWER — issue #650, and the vocabulary #654 reuses.
+ *
+ * `timeout` is a child the engine killed at its bound, and it is the case this
+ * exists for: on a loaded machine git exits non-zero without having looked, and
+ * every field it feeds used to become a FACT — no branches, a clean tree, no
+ * worktrees, no changes. Retrying is the honest offer. `failed` is everything
+ * else, where it usually is not.
+ *
+ * DECLARED HERE, ABOVE EVERY READER THAT NEEDS IT. It arrived beside the ref
+ * listing because that is where the bug was found, but the distinction is not
+ * the picker's — `SessionDiff` says the same thing about its own sub-reads,
+ * and `Turn.anchor` (#741) says it about a probe that never answered. It sits
+ * above `Turn` because a `const` referenced before its line is a temporal dead
+ * zone at module load, not a hoist.
+ */
+export const GitReadFailure = z.enum(["timeout", "failed"]);
+export type GitReadFailure = z.infer<typeof GitReadFailure>;
+
 export const Turn = z.object({
   /**
    * CLIENT-SUPPLIED IDEMPOTENCY KEY, kept from v1. Submitting the same runId
@@ -2299,6 +2318,56 @@ export const Turn = z.object({
       reason: z.enum(["engine_restart", "worker_unavailable", "session_paused"]),
     })
     .optional(),
+
+  /**
+   * WHERE THE REPOSITORY STOOD WHEN THIS TURN STARTED AND WHEN IT ENDED —
+   * issue #741.
+   *
+   * ────────────────────────────────────────────────────────────────────────
+   * WHY A SHA AND NOT THE AGENT'S OWN ACCOUNT. #694's third Diff scope renders
+   * `FileChangeDetail.unifiedDiff`: the patch the agent's tool reported. That
+   * witness cannot see a write that did not come from a file tool — a
+   * formatter, a codemod, `sed -i`, `bun install` — cannot see a later
+   * overwrite, and is a Claude-only answer, because Codex emits `file_change`
+   * without a patch and OpenCode emits none at all. A commit id is not
+   * authored by the thing being reviewed and is not reused, so a turn anchored
+   * to one can be asked of GIT instead of taken on trust.
+   * ────────────────────────────────────────────────────────────────────────
+   *
+   * STAMPED BY THE ENGINE, NEVER SUPPLIED BY A WORKER. The precedent is
+   * `createSession`, which resolves `rev-parse HEAD` once for a `local` session
+   * and stores it, with the note *"resolved at creation and stored, because
+   * HEAD moves — reading it later would answer a different question every
+   * time."* This is that sentence one level down.
+   *
+   * ABSENT ON EVERY TURN THAT RAN BEFORE THIS EXISTED, and a client must draw
+   * absent as "not anchored" rather than as "no commits": nothing observed a
+   * sha for a turn that ran last week, and inventing one would be a claim about
+   * a comparison nobody made.
+   *
+   * `before === after` IS THE ORDINARY CASE and is not a failure — it says the
+   * turn committed nothing, which is true of most turns. What the anchor is
+   * worth there is the comparison it still licenses: the journal says the turn
+   * wrote these lines, and `git diff <before> -- <path>` says how the file
+   * differs from where the turn started.
+   */
+  anchor: z
+    .object({
+      /** HEAD when the turn began. Absent in a repository with no commits yet,
+       *  which `rev-parse --verify HEAD` reports by exiting non-zero — a real
+       *  state, and not one to paper over with the empty-tree sha. */
+      before: z.string().min(1).optional(),
+      /** HEAD when the turn reached a terminal state. */
+      after: z.string().min(1).optional(),
+      /**
+       * THE PROBE DID NOT ANSWER, so the sha above it is absent rather than
+       * wrong. Set means "nobody looked"; absent with no sha means "there was
+       * nothing to see". #654's distinction, on a field small enough that the
+       * two would otherwise be indistinguishable.
+       */
+      read: GitReadFailure.optional(),
+    })
+    .optional(),
 });
 export type Turn = z.infer<typeof Turn>;
 
@@ -2332,23 +2401,6 @@ export type GitWorktreeEntry = z.infer<typeof GitWorktreeEntry>;
  */
 export const GitChangeStatus = z.enum(["added", "modified", "deleted", "renamed", "untracked"]);
 export type GitChangeStatus = z.infer<typeof GitChangeStatus>;
-
-/**
- * WHY A GIT READ IS NOT AN ANSWER — issue #650, and the vocabulary #654 reuses.
- *
- * `timeout` is a child the engine killed at its bound, and it is the case this
- * exists for: on a loaded machine git exits non-zero without having looked, and
- * every field it feeds used to become a FACT — no branches, a clean tree, no
- * worktrees, no changes. Retrying is the honest offer. `failed` is everything
- * else, where it usually is not.
- *
- * DECLARED HERE, ABOVE BOTH READERS THAT NEED IT. It arrived beside the ref
- * listing because that is where the bug was found, but the distinction is not
- * the picker's — `SessionDiff` below says the same thing about its own
- * sub-reads.
- */
-export const GitReadFailure = z.enum(["timeout", "failed"]);
-export type GitReadFailure = z.infer<typeof GitReadFailure>;
 
 export const GitFileChange = z.object({
   path: z.string().min(1),
