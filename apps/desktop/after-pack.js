@@ -41,25 +41,43 @@ function verifyPackagedPty(appPath, deps = {}) {
   const io = deps.fs ?? fs;
   const platform = deps.platform ?? process.platform;
   const arch = deps.arch ?? process.arch;
-  const prebuild = path.join(appPath, UNPACKED, "node_modules", "node-pty", "prebuilds", `${platform}-${arch}`);
-  const addon = path.join(prebuild, "pty.node");
+  const root = path.join(appPath, UNPACKED, "node_modules", "node-pty");
 
-  if (!io.existsSync(addon)) {
-    throw new Error(
-      `packaged app has no PTY addon at ${addon} — node-pty was packed INSIDE app.asar, where a .node cannot be loaded. ` +
-        "Check build.asarUnpack in apps/desktop/package.json.",
-    );
-  }
-  if (platform === "win32") return { addon, helper: null, chmodded: false };
+  /**
+   * THE DIRECTORY THE LOADER WILL ACTUALLY PICK, IN ITS ORDER — not the one we
+   * expect it to use. node-pty's `loadNativeModule` (lib/utils.js) tries
+   * `build/Release`, then `build/Debug`, then `prebuilds/<platform>-<arch>`,
+   * and reads `spawn-helper` as a sibling of whichever answered.
+   *
+   * THIS MATTERS BECAUSE ELECTRON-BUILDER REBUILDS. Its "installing native
+   * dependencies" step compiles node-pty against Electron's headers and writes
+   * `build/Release/` into the packaged tree — so a packaged app has BOTH that
+   * and the shipped `prebuilds/`, and the loader takes `build/Release`. A check
+   * pinned to `prebuilds/` would inspect a directory the app never opens and
+   * pass while the one it does open was broken. Measured on a real package.
+   */
+  const searched = [];
+  for (const build of ["build/Release", "build/Debug", `prebuilds/${platform}-${arch}`]) {
+    const dir = path.join(root, build);
+    searched.push(dir);
+    if (!io.existsSync(path.join(dir, "pty.node"))) continue;
+    const addon = path.join(dir, "pty.node");
+    if (platform === "win32") return { addon, helper: null, chmodded: false, from: build };
 
-  const helper = path.join(prebuild, "spawn-helper");
-  if (!io.existsSync(helper)) {
-    throw new Error(`packaged app has node-pty's addon but not its spawn-helper at ${helper} — every terminal would fail with posix_spawnp.`);
+    const helper = path.join(dir, "spawn-helper");
+    if (!io.existsSync(helper)) {
+      throw new Error(`packaged app has node-pty's addon at ${addon} but no spawn-helper beside it — every terminal would fail with posix_spawnp.`);
+    }
+    const mode = io.statSync(helper).mode;
+    if ((mode & 0o111) !== 0) return { addon, helper, chmodded: false, from: build };
+    io.chmodSync(helper, (mode & 0o7777) | 0o755);
+    return { addon, helper, chmodded: true, from: build };
   }
-  const mode = io.statSync(helper).mode;
-  if ((mode & 0o111) !== 0) return { addon, helper, chmodded: false };
-  io.chmodSync(helper, (mode & 0o7777) | 0o755);
-  return { addon, helper, chmodded: true };
+
+  throw new Error(
+    `packaged app has no loadable PTY addon. Looked in: ${searched.join(", ")}. ` +
+      "node-pty was packed INSIDE app.asar, where a .node cannot be loaded — check build.asarUnpack in apps/desktop/package.json.",
+  );
 }
 
 /**
@@ -77,7 +95,7 @@ exports.default = async function afterPack(context) {
   const appPath = path.join(context.appOutDir, appName);
   const arch = ARCH_NAMES[context.arch] ?? process.arch;
   const found = verifyPackagedPty(appPath, { arch });
-  console.log(`  • node-pty unpacked and runnable${found.chmodded ? " (spawn-helper made executable)" : ""}`);
+  console.log(`  • node-pty unpacked and runnable from ${found.from}${found.chmodded ? " (spawn-helper made executable)" : ""}`);
 };
 
 exports.verifyPackagedPty = verifyPackagedPty;

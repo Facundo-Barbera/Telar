@@ -510,7 +510,10 @@ describe("what a packaged .app has to contain before a terminal can run", () => 
    * artefact and a failure stops a package instead of shipping one.
    */
   const app = "/out/Telar.app";
-  const prebuilds = path.join(app, UNPACKED, "node_modules", "node-pty", "prebuilds", "darwin-arm64");
+  const root = path.join(app, UNPACKED, "node_modules", "node-pty");
+  const prebuilds = path.join(root, "prebuilds", "darwin-arm64");
+  const release = path.join(root, "build", "Release");
+  const both = (dir) => [path.join(dir, "pty.node"), path.join(dir, "spawn-helper")];
 
   const fakeFs = (present, mode = 0o100755, chmods = []) => ({
     existsSync: (target) => present.includes(target),
@@ -522,14 +525,14 @@ describe("what a packaged .app has to contain before a terminal can run", () => 
     expect(() => verifyPackagedPty(app, { platform: "darwin", arch: "arm64", fs: fakeFs([]) })).toThrow(/asarUnpack/);
   });
 
-  test("refuses an app with the addon but no spawn-helper", () => {
+  test("refuses an app with the addon but no spawn-helper beside it", () => {
     const fs = fakeFs([path.join(prebuilds, "pty.node")]);
     expect(() => verifyPackagedPty(app, { platform: "darwin", arch: "arm64", fs })).toThrow(/spawn-helper/);
   });
 
   test("sets the executable bit on the packaged helper", () => {
     const chmods = [];
-    const fs = fakeFs([path.join(prebuilds, "pty.node"), path.join(prebuilds, "spawn-helper")], 0o100644, chmods);
+    const fs = fakeFs(both(prebuilds), 0o100644, chmods);
     const found = verifyPackagedPty(app, { platform: "darwin", arch: "arm64", fs });
     expect(found.chmodded).toBe(true);
     expect(chmods[0][0]).toBe(path.join(prebuilds, "spawn-helper"));
@@ -538,9 +541,35 @@ describe("what a packaged .app has to contain before a terminal can run", () => 
 
   test("passes a well-formed app without touching it", () => {
     const chmods = [];
-    const fs = fakeFs([path.join(prebuilds, "pty.node"), path.join(prebuilds, "spawn-helper")], 0o100755, chmods);
+    const fs = fakeFs(both(prebuilds), 0o100755, chmods);
     expect(verifyPackagedPty(app, { platform: "darwin", arch: "arm64", fs }).chmodded).toBe(false);
     expect(chmods).toEqual([]);
+  });
+
+  /**
+   * THE DIRECTORY THE LOADER PICKS, NOT THE ONE WE EXPECT.
+   *
+   * electron-builder's "installing native dependencies" step REBUILDS node-pty
+   * against Electron's headers and writes `build/Release/` into the packaged
+   * tree, so a real package has both that and the shipped `prebuilds/`. node-pty
+   * tries `build/Release` FIRST. Measured on a real `.app`: the first version of
+   * this check looked only at `prebuilds/` — a directory the packaged app never
+   * opens — so it would have passed while the one actually loaded was broken.
+   */
+  test("checks build/Release first, because that is what node-pty loads first", () => {
+    const chmods = [];
+    const fs = fakeFs([...both(release), ...both(prebuilds)], 0o100644, chmods);
+    const found = verifyPackagedPty(app, { platform: "darwin", arch: "arm64", fs });
+    expect(found.from).toBe("build/Release");
+    expect(found.addon).toBe(path.join(release, "pty.node"));
+    // The one it repaired is the one that will be loaded, not the other.
+    expect(chmods).toHaveLength(1);
+    expect(chmods[0][0]).toBe(path.join(release, "spawn-helper"));
+  });
+
+  test("falls back to the shipped prebuild when nothing was rebuilt", () => {
+    const found = verifyPackagedPty(app, { platform: "darwin", arch: "arm64", fs: fakeFs(both(prebuilds)) });
+    expect(found.from).toBe("prebuilds/darwin-arm64");
   });
 });
 
