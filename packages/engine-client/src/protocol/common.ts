@@ -50,6 +50,20 @@ export const ENGINE_PROTOCOL_VERSION = 2 as const;
 export const Id = z.string().min(1);
 export type Id = z.infer<typeof Id>;
 
+/**
+ * THE ONE ID IN THIS NAMESPACE THAT IS NOT A SESSION — issue #784.
+ *
+ * `sessions_send` takes it as a target and nothing else does: it addresses the
+ * built-in Agent, the person's own conversation, which is a LangGraph thread
+ * with no session document, no queue and no transcript to read. The engine's
+ * `apps/engine/src/agent/identity.ts` is where it is used and explained; the
+ * VALUE lives here because two things outside that file have to recognise it
+ * without importing the engine — this contract, and the assignment fold in
+ * `./assignments.ts`, which must never turn a row naming it into work somebody
+ * was handed.
+ */
+export const AGENT_SELF_ID = "agent";
+
 /** Epoch milliseconds, as v1 used. Not ISO strings — they sort and diff wrong
  *  as often as they read nicely, and every consumer here does arithmetic. */
 export const Timestamp = z.number().int().nonnegative();

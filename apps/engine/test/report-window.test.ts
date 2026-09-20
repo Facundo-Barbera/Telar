@@ -17,6 +17,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { HOLD_REPORTS } from "@telar/engine-client";
 import { EngineStateError, EngineStore } from "../src/state";
 
 const homes: string[] = [];
@@ -257,4 +258,135 @@ test("the tick does not deliver to a shelved or snoozed session, or un-shelve it
     expect(store.pendingNotifications("session_host")).toHaveLength(1);
     expect(queued(store)).toHaveLength(0);
   }
+});
+
+/* ══════════════════════════════════════════════════════════════════════════ *
+ * THE WINDOW THAT NEVER CLOSES — issue #784, step 2.
+ *
+ * A window ends in a FLUSH and a flush is a TURN. For a peer that is exactly
+ * right: the recipient is a model and being told IS the point. For a PERSON'S
+ * session it means the cadence changes the count and not the kind — the
+ * conversation still gains a row, a provider call is still paid against context
+ * they will re-read cold, and whatever they were reading still moves. Forty
+ * wakes becoming eight is a smaller version of the thing that was asked to stop,
+ * and set overnight it delivers at 3:14am, 3:41am and 4:09am.
+ *
+ * SO `HOLD_REPORTS` IS A CADENCE WITH NO FLUSH IN IT. The mailbox is the
+ * delivery, and the count the Agents panel already draws is how a person sees
+ * it.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * THE NEGATIVE AND THE POSITIVE ON ONE FIXTURE, and that is the point of the
+ * test rather than a convenience. A suite that only asserted "no turn" would
+ * pass if the sweep never ran at all — so the same store, the same mailbox and
+ * the same elapsed clock are swept twice, and the only thing that changes
+ * between them is the cadence.
+ */
+test("a held cadence is never flushed by the tick, and the same fixture flushes the moment it is a window", () => {
+  const { store, clock, proof } = setup();
+  store.updateSession("session_host", { reportWindowMinutes: HOLD_REPORTS });
+  const turnsBefore = store.turns("session_host").length;
+  for (const n of [1, 2, 3]) report(store, proof, `run_report_${n}`, `progress ${n}`);
+  expect(store.pendingNotifications("session_host")).toHaveLength(3);
+
+  // A DAY PAST ANY WINDOW THE ENGINE WILL TAKE. Nothing is due, because nothing
+  // is ever due: there is no clause to satisfy.
+  clock.now = START + 25 * 60 * MINUTE;
+  expect(store.sweepReportWindows()).toEqual([]);
+  // THE TURN COUNT, NOT THE DELIVERY FIELD. No turn was created — which is the
+  // whole claim — and no provider call could have been paid for one.
+  expect(store.turns("session_host")).toHaveLength(turnsBefore + 3);
+  expect(queued(store)).toHaveLength(0);
+  // AND NOTHING WAS LOST. This is the count the Agents panel draws and
+  // `sessions_status` reports; "held" and "lost" look identical without it.
+  expect(store.pendingNotifications("session_host")).toHaveLength(3);
+
+  /**
+   * NOW THE POSITIVE, ON THE SAME BOX. One field changes and the same sweep at
+   * the same instant delivers all three as one merged turn — so the `[]` above
+   * was a decision about this session and not a sweep that was asleep.
+   */
+  store.updateSession("session_host", { reportWindowMinutes: 25 });
+  expect(store.sweepReportWindows()).toEqual(["session_host"]);
+  const delivered = queued(store);
+  expect(delivered).toHaveLength(1);
+  expect(delivered[0]!.notification!.entries!.map((entry) => entry.kind)).toEqual(["peer_message", "peer_message", "peer_message"]);
+  expect(store.pendingNotifications("session_host")).toHaveLength(0);
+});
+
+test("a task, a blocker and an awaited result still arrive at once under a hold", () => {
+  // THE ONE WAY THIS COULD MAKE THINGS WORSE. A cadence that swallowed a
+  // blocker would turn the single message that should interrupt into the one
+  // that waits for somebody to open the app.
+  const { store, proof } = setup();
+  store.updateSession("session_host", { reportWindowMinutes: HOLD_REPORTS });
+  store.subscribe("session_host", { targetSessionId: "session_worker", once: true });
+  report(store, proof, "run_held");
+
+  for (const [runId, intent] of [["run_task", "task"], ["run_blocker", "blocker"], ["run_result", "result"]] as const) {
+    store.submitAgentTurn("session_host", { runId, input: intent, intent }, proof);
+  }
+  // Three arrived and the routine report did not — counted on the queue rather
+  // than read off `agentDelivery`.
+  expect(queued(store).map((turn) => turn.runId)).toEqual(["run_task", "run_blocker", "run_result"]);
+  expect(store.pendingNotifications("session_host")).toHaveLength(1);
+});
+
+test("a held session that takes a turn of its own still drains its box at the end of it", () => {
+  /**
+   * THE HOLD IS ON THE TICK, NOT ON THE FLUSH — the same split the shelf has.
+   * A session that ENDS A TURN is awake by demonstration, and the four
+   * turn-boundary drains are untouched: a person who actually speaks to this
+   * session gets their mail, merged, at a moment they were already paying for.
+   * Without this, "held" would mean "held for ever even while you are reading",
+   * which is a different and worse feature.
+   */
+  const { store, proof } = setup();
+  store.updateSession("session_host", { reportWindowMinutes: HOLD_REPORTS });
+  report(store, proof, "run_report");
+  expect(store.pendingNotifications("session_host")).toHaveLength(1);
+
+  store.submitTurn("session_host", { runId: "run_host", input: "what is going on?" });
+  const token = store.claimTurn("session_host", "worker_two")!.claim!.token;
+  store.markRunning("session_host", "run_host", token);
+  store.completeTurn("session_host", "run_host", token, { text: "done" });
+  expect(store.pendingNotifications("session_host")).toHaveLength(0);
+  expect(queued(store)).toHaveLength(1);
+});
+
+test("the cadence takes the hold value, refuses anything else, and null still turns it off", () => {
+  const { store } = setup();
+  expect(store.updateSession("session_host", { reportWindowMinutes: HOLD_REPORTS }).reportWindowMinutes).toBe(HOLD_REPORTS);
+  // The number range is unchanged beside it, in both directions.
+  expect(store.updateSession("session_host", { reportWindowMinutes: 1440 }).reportWindowMinutes).toBe(1440);
+  for (const bad of ["never", "HOLD", "0", "", 0, 1441]) {
+    expect(() => store.updateSession("session_host", { reportWindowMinutes: bad as never })).toThrow(EngineStateError);
+  }
+  // Still 1440 — a refused patch changes nothing.
+  expect(store.getSession("session_host").reportWindowMinutes).toBe(1440);
+  expect(store.updateSession("session_host", { reportWindowMinutes: null }).reportWindowMinutes).toBeUndefined();
+});
+
+test("turning a hold off does not itself deliver, and it survives a restart holding its mail", () => {
+  const { store, home, clock, proof } = setup();
+  store.updateSession("session_host", { reportWindowMinutes: HOLD_REPORTS });
+  report(store, proof, "run_report");
+  // A person adjusting a cadence must not thereby hand the session a turn —
+  // #723's rule, which this value inherits rather than re-decides.
+  store.updateSession("session_host", { reportWindowMinutes: null });
+  expect(store.pendingNotifications("session_host")).toHaveLength(1);
+  expect(queued(store)).toHaveLength(0);
+
+  store.updateSession("session_host", { reportWindowMinutes: HOLD_REPORTS });
+  store.closeExecutionStore();
+  stores.splice(stores.indexOf(store), 1);
+
+  clock.now = START + 25 * 60 * MINUTE;
+  const reopened = new EngineStore(home, () => clock.now);
+  stores.push(reopened);
+  expect(reopened.getSession("session_host").reportWindowMinutes).toBe(HOLD_REPORTS);
+  expect(reopened.pendingNotifications("session_host")).toHaveLength(1);
+  expect(reopened.sweepReportWindows()).toEqual([]);
+  expect(queued(reopened)).toHaveLength(0);
 });

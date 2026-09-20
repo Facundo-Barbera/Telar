@@ -80,8 +80,8 @@
  */
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
-import { MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, STALLED_AFTER_MS } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
+import { HOLD_REPORTS, MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, STALLED_AFTER_MS } from "@telar/engine-client";
 
 /**
  * What the toolkit may do.
@@ -148,6 +148,30 @@ export type SessionsCapability = {
     replayed: boolean;
     stoppedByUser?: { at?: number };
   }>;
+  /**
+   * THE SAME VERB, ADDRESSED TO THE BUILT-IN AGENT — issue #784.
+   *
+   * ITS OWN MEMBER RATHER THAN A RESERVED ID ON `send`, because there is no
+   * `Turn` to answer with. A message to the Agent leaves ONE INBOX ROW and
+   * starts nothing: no run, no queue, no delivery decision, no model call. A
+   * union return on `send` would have every caller of the ordinary path
+   * narrowing a shape it can never receive.
+   *
+   * NO `runId` ARGUMENT, and that is not an omission. The row's fetch call names
+   * the SENDER's session and the SENDER's live run — the only place the words
+   * are kept — and both come off the proof the implementation already holds. A
+   * wall-minted run id would name a turn nothing created.
+   *
+   * OPTIONAL AT THIS SEAM so a capability that cannot reach an Agent stays
+   * type-correct; `sessions_send` says so in words rather than failing.
+   */
+  sendToAgent?(input: { input: string; intent?: Turn["agentIntent"] }): Promise<{
+    /** Absent when the Agent is switched off or has no thread yet — nothing
+     *  kept the message, and the sender is told that rather than "sent". */
+    row?: { id: number; at: number };
+    /** What the Agent will actually see, quoted back to the sender. */
+    notice: string;
+  }>;
   /** The journal after a cursor, at most `limit` rows of it. The STORE returns
    *  the whole tail when no limit is given; the bound is this wall's, because
    *  the wall is what lands in a model's context.
@@ -194,7 +218,7 @@ export type SessionsCapability = {
    * allowed to be interrupted, which is a relationship conferring behaviour —
    * exactly what #199 spent a milestone refusing.
    */
-  setReportWindow(sessionId: string, minutes: number | null): Promise<Session>;
+  setReportWindow(sessionId: string, minutes: ReportCadence | null): Promise<Session>;
   diff(sessionId: string): Promise<SessionDiff>;
   /**
    * WHO IS ASKING — present inside a turn, ABSENT on the outward socket. A
@@ -237,6 +261,7 @@ export type SessionsCapability = {
   query: SessionsQueryCapability;
 };
 
+import { AGENT_SELF_ID, isAgentSelf } from "../agent/identity";
 import { err, failure, fillWithin, json, ok, type ToolFactory } from "../tool-kit";
 import { deferredQuery, sessionQueryTools, type SessionsQueryCapability } from "./query";
 export type { ToolFactory };
@@ -273,10 +298,44 @@ const LIST = `Live sessions, and the projects one can be created in. Unsettled o
 
 const CREATE = `Start a NEW session on a project. It is a PEER: it does not report back, and creating it starts no work — sessions_send with intent task does. ${NOT_A_BYPASS}`;
 
-const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text — lead with the point. ${NOT_A_BYPASS}`;
+/**
+ * THE AGENT TARGET IS ONE CLAUSE HERE, AND THE REST IS ELSEWHERE — #784.
+ *
+ * This string is resent WHOLE on every lap of every turn (`agent-tools.test.ts`
+ * holds the ceiling), so the rule is that a clause buys its space out of
+ * another clause. The address itself cannot live anywhere else — a model that
+ * never reads it never learns the person is reachable — but the reasoning can,
+ * and does: `orientation.ts` carries it once per session, and the answer's own
+ * `note` carries it at the moment it matters, both free per lap.
+ */
+const SEND = `Message another session, or the person — sessionId "${AGENT_SELF_ID}" is their Agent: one inbox row, no turn, read when they next speak. It is handed a NOTICE naming sessions_read, not your text — lead with the point. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
+
+/** The other half of `NO_SELF`, for the target rather than the sender: this door
+ *  has no session to send FROM, so there is no sender to put on the row and no
+ *  turn for its fetch call to name. The one caller this is — the outward
+ *  sessions socket — is a client the person is typing at, and they have the
+ *  Agent in front of them already. */
+/**
+ * WHEN THE WAITING MAIL WILL MOVE, in one clause — the three cadences (#723,
+ * #784), spelled once because `sessions_status` and `sessions_report_window`
+ * both say it and a reader must not get two accounts of one setting.
+ *
+ * THE HOLD CLAUSE SAYS WHERE THE MAIL IS AND HOW TO SEE IT. "Never delivered"
+ * on its own is the sentence that makes a held report read as a lost one.
+ */
+function cadencePhrase(cadence: Session["reportWindowMinutes"]): string {
+  if (cadence === undefined) return "";
+  if (cadence === HOLD_REPORTS) {
+    return ", and they are being HELD — this session asked to keep routine reports as mail rather than take them as turns, so they stay here until somebody reads them and no turn is ever started for them";
+  }
+  return `, at most every ${cadence} minute${cadence === 1 ? "" : "s"}`;
+}
+
+const NO_AGENT =
+  "This door cannot address the Agent: a row in its inbox names the session that wrote it and the turn it spoke from, and this client is not a session. You are talking to a person who can reach their own Agent.";
 
 const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request — a notification in YOUR session, so you can end this turn rather than poll. It is a PING; sessions_read fetches the outcome.`;
 
@@ -987,6 +1046,38 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       async (args, context) => {
         const sessionId = String(args.sessionId ?? "");
         const text = String(args.input ?? "");
+        const intent = args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report";
+        /**
+         * THE RESERVED TARGET, BRANCHED BEFORE ANY OF THE TURN MACHINERY — #784.
+         *
+         * AHEAD OF THE RUN ID, deliberately. Everything below this exists to
+         * make a TURN idempotent on a wall-minted id; a message to the Agent
+         * creates no turn, and minting an id for it would name a run nothing
+         * ever ran and hand it to a model as something to read.
+         *
+         * A CAPABILITY THAT CANNOT REACH AN AGENT SAYS SO. The out-of-process
+         * worker and the daemon's own build both can; a door that does not —
+         * the outward sessions socket, whose caller is a person already talking
+         * to their Agent — refuses in words rather than by 404-ing an id the
+         * description just offered.
+         */
+        if (isAgentSelf(sessionId)) {
+          if (!capability.sendToAgent) return err(NO_AGENT);
+          try {
+            const { row, notice } = await capability.sendToAgent({ input: text, intent });
+            return json({
+              sessionId: AGENT_SELF_ID,
+              ...(row ? { inboxRowId: row.id } : {}),
+              delivered: row !== undefined,
+              recipientSees: notice,
+              note: row
+                ? "One row in the Agent's inbox. NO turn was started and nobody was interrupted — the person sees this the next time they speak, ranked against whatever else arrived. Do not wait for an acknowledgement: there is no turn to answer you."
+                : "NOT DELIVERED. The Agent is switched off on this machine, so there was no inbox to write to and nothing kept your message. Say it to a session instead, or say it again after somebody turns the Agent on.",
+            });
+          } catch (error) {
+            return err(`Could not reach the Agent: ${failure(error)}`);
+          }
+        }
         /**
          * THE RUN ID BELONGS TO THE CALL, not to the model and not to this
          * invocation of the handler.
@@ -1022,7 +1113,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           ? `run_${crypto.createHash("sha256").update(`sessions_send:${context.toolCallId}`).digest("hex").slice(0, 32)}`
           : `run_${crypto.randomUUID().replaceAll("-", "")}`;
         try {
-          const { turn, stoppedByUser } = await capability.send(sessionId, { runId, input: text, intent: args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report" });
+          const { turn, stoppedByUser } = await capability.send(sessionId, { runId, input: text, intent });
           return json({
             sessionId,
             runId: turn.runId,
@@ -1495,9 +1586,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               : live.length > 0
                 ? `A turn is in flight. Read it with sessions_read, or stop it with sessions_stop.${pending.length > 0 ? ` ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting for it to finish.` : ""}`
                 : pending.length > 0
-                  ? `Nothing is running, and ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting to be delivered${
-                      session.reportWindowMinutes === undefined ? "" : `, at most every ${session.reportWindowMinutes} minute${session.reportWindowMinutes === 1 ? "" : "s"}`
-                    }.`
+                  ? `Nothing is running, and ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting to be delivered${cadencePhrase(session.reportWindowMinutes)}.`
                   : "Nothing is running.",
         });
       },
@@ -1853,16 +1942,18 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       REPORT_WINDOW,
       {
         minutes: z
-          .number()
-          .int()
-          .min(MIN_REPORT_WINDOW_MINUTES)
-          .max(MAX_REPORT_WINDOW_MINUTES)
+          .union([
+            z.number().int().min(MIN_REPORT_WINDOW_MINUTES).max(MAX_REPORT_WINDOW_MINUTES),
+            z.literal(HOLD_REPORTS),
+          ])
           .nullable()
-          .describe("Minutes to hold routine reports for, or null to be told as each one arrives."),
+          .describe(
+            `Minutes to hold routine reports for, "${HOLD_REPORTS}" to keep them as mail and never take them as turns, or null to be told as each one arrives.`,
+          ),
       },
       async (args) => {
         if (!capability.self) return err(NO_SELF);
-        const minutes = args.minutes === null ? null : Number(args.minutes);
+        const minutes = args.minutes === null ? null : args.minutes === HOLD_REPORTS ? HOLD_REPORTS : Number(args.minutes);
         try {
           const session = await capability.setReportWindow(capability.self.sessionId, minutes);
           const set = session.reportWindowMinutes;
@@ -1872,7 +1963,9 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             note:
               set === undefined
                 ? "Routine reports now reach you as they arrive, each as its own turn."
-                : `Routine reports — a report, and a result nobody is waiting on — are now held and delivered together at most every ${set} minute${set === 1 ? "" : "s"}. Nothing is lost while they wait: sessions_status lists what is held. A task, a blocker and a result you subscribed to still reach you at once, and a window that closes with nothing in it delivers nothing.`,
+                : set === HOLD_REPORTS
+                  ? "Routine reports — a report, and a result nobody is waiting on — are now HELD as mail and never turned into a turn. No window closes and no tick delivers them; sessions_status lists what is waiting and it stays there until you read it. A task, a blocker and a result you subscribed to still reach you at once, unchanged. Your own next turn still drains the box, because a session that is taking a turn is awake by demonstration."
+                  : `Routine reports — a report, and a result nobody is waiting on — are now held and delivered together at most every ${set} minute${set === 1 ? "" : "s"}. Nothing is lost while they wait: sessions_status lists what is held. A task, a blocker and a result you subscribed to still reach you at once, and a window that closes with nothing in it delivers nothing.`,
           });
         } catch (error) {
           return err(`Could not set this session's report window: ${failure(error)}`);

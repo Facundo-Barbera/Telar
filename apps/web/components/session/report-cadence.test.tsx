@@ -15,6 +15,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { HOLD_REPORTS } from "@telar/engine-client";
 import { CADENCES, cadenceDetail, cadenceFromValue, cadenceLabel, cadenceOptions, cadenceValue, heldLabel, ReportCadenceView } from "./report-cadence";
 
 const view = (props: Partial<React.ComponentProps<typeof ReportCadenceView>> = {}) =>
@@ -45,8 +46,11 @@ describe("cadenceOptions", () => {
     // `sessions_report_window` accepts any whole minute up to a day, so a menu
     // that could not show 7 would open with nothing selected — the control
     // disagreeing with the row it sits on.
-    expect(cadenceOptions(7)).toEqual([null, 5, 7, 10, 15, 25, 30, 60]);
-    expect(cadenceOptions(240)).toEqual([null, 5, 10, 15, 25, 30, 60, 240]);
+    // `hold` stays last whatever number joins: the numbers are one axis and it
+    // is the end of that axis, so the quietest option is never reached by
+    // overshooting (#784).
+    expect(cadenceOptions(7)).toEqual([null, 5, 7, 10, 15, 25, 30, 60, HOLD_REPORTS]);
+    expect(cadenceOptions(240)).toEqual([null, 5, 10, 15, 25, 30, 60, 240, HOLD_REPORTS]);
   });
 });
 
@@ -129,5 +133,47 @@ describe("the row", () => {
 
   test("the region is named in the panel's own register", () => {
     expect(view()).toContain("Reports from peers");
+  });
+});
+
+/**
+ * THE WINDOW THAT NEVER CLOSES — issue #784, on the control.
+ *
+ * Every other cadence ends in a flush and a flush is a TURN: a row in the
+ * conversation, a provider call, the thing the person was reading moving under
+ * them. This one holds and never delivers, so the count on the row IS the
+ * delivery — which makes the two sentences beside it load-bearing rather than
+ * decorative, and that is what these read for.
+ */
+describe("the hold cadence", () => {
+  test("it is offered, and it is offered LAST", () => {
+    expect(CADENCES.at(-1)).toBe(HOLD_REPORTS);
+    expect(CADENCES[0]).toBe(null);
+  });
+
+  test("it is named as a hold, never as a silence", () => {
+    // "Never" would be the "held and lost look identical" failure written onto
+    // the control itself. The reports are kept, and the row says how many.
+    expect(cadenceLabel(HOLD_REPORTS)).toBe("Hold for me");
+  });
+
+  test("its line says where the reports are, and still names the three that are not held", () => {
+    expect(cadenceDetail(HOLD_REPORTS, false)).toContain("never open a turn");
+    expect(cadenceDetail(HOLD_REPORTS, false)).toContain("the count is what is waiting");
+    expect(cadenceDetail(HOLD_REPORTS, false)).toContain("blocker");
+  });
+
+  test("it survives the round trip, and no near miss becomes it", () => {
+    expect(cadenceFromValue(cadenceValue(HOLD_REPORTS))).toBe(HOLD_REPORTS);
+    // A value this build does not know must read as the DEFAULT rather than
+    // silently start holding a person's reports.
+    for (const near of ["Hold", "HOLD", "held", "holding", "never"]) expect(cadenceFromValue(near)).toBe(null);
+  });
+
+  test("the row counts what it is holding, exactly as a window does", () => {
+    expect(heldLabel(HOLD_REPORTS, 3)).toBe("3 held");
+    expect(heldLabel(HOLD_REPORTS, 0)).toBeUndefined();
+    expect(view({ minutes: HOLD_REPORTS, held: 3 })).toContain(">3 held<");
+    expect(view({ minutes: HOLD_REPORTS, held: 3 })).toContain('data-tone="info"');
   });
 });

@@ -85,6 +85,13 @@ type WorkerClient = Pick<
   // An AGENT's message, never `submitTurn`: the worker speaks for a turn, and
   // the route it reaches stamps who — see `EngineStore.submitAgentTurn`.
   | "submitAgentTurn"
+  // The same message addressed to the PERSON's own conversation (#784). It
+  // writes one inbox row and starts no turn, which is the whole reason it is a
+  // separate verb: there is no `Turn` on the far side to answer with. Nothing
+  // here READS the Agent's thread — `agentInbox` and `agentThread` are absent
+  // from this Pick, and that absence is what keeps "a session may speak to the
+  // person, never listen in on them" true of the worker's reach.
+  | "sendToAgent"
   | "events"
   | "session"
   // Pause only — no `resumeSession`, so an agent cannot lift a pause.
@@ -1389,6 +1396,22 @@ export class EngineWorker {
           const proof = this.liveClaims.get(sessionId) ?? { runId, claimToken };
           const accepted = await this.options.client.submitAgentTurn(id, { ...input, proof: { sessionId, ...proof } });
           return { turn: accepted.turn, replayed: accepted.replayed };
+        },
+        /**
+         * AND THE SAME PROOF REACHES THE PERSON — issue #784.
+         *
+         * READ FROM `liveClaims` FOR `send`'s OWN REASON: this object outlives
+         * the turn that built it, so a captured claim is one that stops working
+         * the moment the session's first turn settles.
+         *
+         * NO `runId` ARGUMENT AND NO MINTED ONE. The row's fetch call names this
+         * session and the run it is speaking from — which is where the words
+         * actually are, since nothing on the far side stores a body — and both
+         * come off the proof rather than off the wall.
+         */
+        sendToAgent: async (input) => {
+          const proof = this.liveClaims.get(sessionId) ?? { runId, claimToken };
+          return await this.options.client.sendToAgent({ ...input, proof: { sessionId, ...proof } });
         },
         read: async (id, after, options) => (await this.options.client.events(id, after, options?.limit)).events,
         /**

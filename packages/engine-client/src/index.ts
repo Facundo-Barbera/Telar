@@ -146,6 +146,7 @@ import {
   type SessionAssignment,
   type PluginStatus,
   type ProjectPlugins,
+  type ReportCadence,
 } from "./protocol";
 
 export * from "./protocol";
@@ -309,9 +310,10 @@ export type SessionSnapshot = {
 /** What `GET /v2/sessions/:id/report-window` answers with — the cadence a
  *  session asked for, and how much mail is waiting on it (#723). */
 export type ReportWindowStatus = {
-  /** Minutes, or `null` while routine reports reach the session as they arrive
-   *  — see `Session.reportWindowMinutes`. */
-  reportWindowMinutes: number | null;
+  /** Minutes, `HOLD_REPORTS` for the window that never closes (#784), or `null`
+   *  while routine reports reach the session as they arrive — see
+   *  `Session.reportWindowMinutes`. */
+  reportWindowMinutes: ReportCadence | null;
   /**
    * HOW MANY NOTIFICATIONS ARE WAITING, whatever is holding them. A session
    * with a turn in flight holds its mail too, so this is "what has not been
@@ -1575,6 +1577,29 @@ export class EngineClient {
     return this.request("POST", "/v2/agent/inbox/read", { ids: [...ids] });
   }
 
+  /**
+   * A SESSION ADDRESSES THE AGENT — issue #784. One inbox row, and no turn
+   * anywhere.
+   *
+   * `proof` IS THE SENDING TURN'S OWN CLAIM, the same one `submitAgentTurn`
+   * carries: the engine checks it is live and reads the sender off it, so a
+   * model cannot name a session it is not. There is no unproven arm — the row's
+   * only retrieval is `sessions_read(sender, senderRun)`, and a row with no
+   * sender would be a summary with no way back to what was said.
+   *
+   * `row` ABSENT MEANS NOTHING KEPT IT: the Agent is switched off on this
+   * machine, or has no thread yet. The caller is told, because a sender that has
+   * just reported a finding and is told "sent" about a message that went nowhere
+   * is the exact failure the cadence work exists to stop.
+   */
+  sendToAgent(input: {
+    input: string;
+    intent?: "task" | "report" | "result" | "blocker";
+    proof: { sessionId: string; runId: string; claimToken: string };
+  }): Promise<{ row?: AgentInboxRow; notice: string }> {
+    return this.request("POST", "/v2/agent/inbox/message", input);
+  }
+
   /** Answer the parked approval. BY ID, so a client holding a stale question
    *  cannot approve the one that replaced it; `resolved: false` means it had
    *  already been answered. */
@@ -2692,10 +2717,11 @@ export class EngineClient {
       /** Sit out a usage limit and carry on. `null` returns the session to the
        *  driver's default — see `Session.resumeAfterRateLimit`. */
       resumeAfterRateLimit?: boolean | null;
-      /** Hold routine peer reports and deliver them together on this cadence.
-       *  `null` returns the session to arrival delivery — see
+      /** Hold routine peer reports and deliver them together on this cadence,
+       *  or `HOLD_REPORTS` to hold them and never deliver them as a turn at all
+       *  (#784). `null` returns the session to arrival delivery — see
        *  `Session.reportWindowMinutes`. */
-      reportWindowMinutes?: number | null;
+      reportWindowMinutes?: ReportCadence | null;
     },
   ): Promise<{ session: Session }> {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
@@ -2720,7 +2746,7 @@ export class EngineClient {
    * the runtime mode along with it. `null` returns the session to arrival
    * delivery.
    */
-  setSessionReportWindow(sessionId: string, minutes: number | null): Promise<{ session: Session }> {
+  setSessionReportWindow(sessionId: string, minutes: ReportCadence | null): Promise<{ session: Session }> {
     return this.updateSession(sessionId, { reportWindowMinutes: minutes });
   }
 

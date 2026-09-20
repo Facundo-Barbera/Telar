@@ -286,6 +286,15 @@ test("the spoken wall is the saving, and it is paid on every lap", () => {
    * and broke this test, which is the test working: everything except the
    * warning itself moved to the answer's own `note`, which is free per lap.
    * THE NEXT CLAUSE HERE HAS TO BUY ITS SPACE. Two characters is not headroom.
+   *
+   * #784 SPENT 95 AND DID NOT RAISE THE CEILING — 16,078 to 16,173, leaving 27.
+   * `sessions_send` gained an ADDRESS (`sessionId: "agent"`, the person's own
+   * conversation), which is the one thing that cannot live anywhere else: a
+   * model that never reads this description never learns the person is
+   * reachable at all. Everything else about it did move — the reasoning to
+   * `orientation.ts`, read once per session, and the consequences to the
+   * answer's own `note` — and the first draft, which explained the trade here,
+   * cost 331 and broke this test. That is the test working.
    */
   expect(wide).toBeLessThan(16_200);
   /**

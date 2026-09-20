@@ -352,9 +352,16 @@ test("the worker cannot archive, delete or accept anything — the client it hol
     // the projection and the query routes rather than by a store verb each.
     // Read-only by construction — see `SessionsQueryCapability`, which has no
     // member that writes for one to be misfiled as.
+    // `sendToAgent` joined with #784: the same verb as `send`, addressed to the
+    // person's own conversation. It is a WRITE and it is the narrowest one on
+    // this wall — one inbox row, no turn, no session named and nothing read
+    // back. Note what did NOT join beside it: there is no `agentInbox` and no
+    // `agentThread`, so a session may speak to the person and can never listen
+    // in on them.
     expect(surface).toEqual([
-      "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "sendToAgent", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
+    for (const listening of ["agentInbox", "agentThread", "agent"]) expect(surface).not.toContain(listening);
     expect(Object.keys(sessions.query).sort()).toEqual(["answer", "find", "grep", "outline", "step", "steps"]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
       expect(surface).not.toContain(forbidden);
