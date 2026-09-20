@@ -22,6 +22,26 @@
  * stated directly than mounted six times — but it is no longer standing in for
  * the wiring.
  *
+ * ── IF THIS FILE IS HANGING, READ THIS FIRST ────────────────────────────────
+ * The typing tests below depend on that preload import, and they do not fail
+ * without it — THEY HANG. A process at 96% of a core, no output, no test name,
+ * nothing naming this file or that import. Measured once at about eight
+ * minutes before it was killed, on a machine also running the cockpit.
+ *
+ * So if the suite is spinning and you are bisecting to find out where: check
+ * whether `await import("react-dom/client")` is still in
+ * `scripts/test-dom.mjs` before you suspect anything here. That is the only
+ * condition in which this has been seen, and it is not a state the repo ships
+ * in — it happens when somebody removes that line to find out what it was for.
+ *
+ * The honest limit of this note: the hang was observed once and deliberately
+ * not reproduced, because re-running it costs another eight minutes of a
+ * pegged core to confirm something already written down. The cause is unknown.
+ * What IS known is that it is specific to this file — `lib/testing/
+ * type-into.test.tsx` depends on the same import and fails cleanly in under a
+ * second — so a hang here is not evidence that the #732 fix is wrong, and not
+ * something every test built on it inherits.
+ *
  * ── THE REAL COMPONENT AGAINST A STUBBED `fetch` ────────────────────────────
  * `mock.module` would replace `lib/model-catalogue-cache` for the whole run,
  * and the composer, the settings Models tab and the `/` menu all reach through
