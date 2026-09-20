@@ -25,7 +25,7 @@
  * the same one `.diff-code-view` in globals.css styles against.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -74,6 +74,21 @@ afterEach(async () => {
     for (const root of roots.splice(0)) root.unmount();
   });
   document.body.innerHTML = "";
+});
+
+/**
+ * HAND THE DOM BACK, because the registration is PROCESS-WIDE and this suite
+ * shares its process with every other `.test.tsx` under apps/web.
+ *
+ * `GlobalRegistrator.register` throws on a second call — "Happy DOM has already
+ * been globally registered" — and it is the NEXT file to register that dies, not
+ * this one. So a missing unregister here is not a leak that costs this suite
+ * anything; it is a landmine for whichever file bun happens to load afterwards,
+ * and it reads as that file's failure. Every other registering file in this app
+ * pairs the two for exactly this reason.
+ */
+afterAll(async () => {
+  await GlobalRegistrator.unregister();
 });
 
 /**
