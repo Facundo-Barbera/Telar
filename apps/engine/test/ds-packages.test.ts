@@ -207,6 +207,45 @@ test("A BAD DEFAULT IS REFUSED BEFORE ANY STEP RUNS, never passed to pip or uv",
   expect(fine.steps[1]!.args).toEqual(["pip", "install", "--python", fine.python, "polars"]);
 });
 
+/**
+ * WHICH CHECK REFUSES FIRST, ON A TOOLCHAIN THAT HAS NEITHER — #792.
+ *
+ * The issue read a CI failure as proof that `planEnvironment` probes for uv
+ * before it validates the machine's default packages, and no other test in this
+ * file can tell: every one of them passes `UV`, so the uv check is satisfied
+ * whichever side of the package check it sits on and the order leaves no trace.
+ * A uv-less toolchain is the only arrangement in which the two refusals are
+ * distinguishable — put the uv check first and the bad list below stops being
+ * mentioned at all.
+ *
+ * INJECTED, NOT OBSERVED, AND THAT IS THE WHOLE POINT. The runner's own
+ * environment cannot produce this state on demand: `findBinary` falls back to
+ * ~/.local/bin, ~/.cargo/bin and both Homebrew prefixes, so a PATH stripped of
+ * uv still finds the one a developer Mac has and the test would pass for the
+ * wrong reason — green on the machine that cannot fail it, and silent on the
+ * one that can. `{ pythons: [] }` is uv-less on every runner, with or without
+ * uv installed, which is what makes this a guard rather than a coincidence.
+ */
+test("the PACKAGE check refuses before the uv check, so the refusal names what is actually wrong", () => {
+  const project = root();
+  const telar = path.join(root(), "python", "p");
+  const neither: Toolchain = { pythons: [] };
+  const refusalFor = (defaultPackages?: string[]) => () =>
+    planEnvironment({ manager: "venv", location: "telar", python: "3.13" }, neither, {
+      projectRoot: project,
+      telarVenv: telar,
+      ...(defaultPackages ? { defaultPackages } : {}),
+    });
+
+  // Both refusals are reachable from this one call; only the order decides
+  // which one the person reads.
+  expect(refusalFor(["--index-url=https://evil.example"])).toThrow(/not a package requirement/);
+  // …and the uv refusal is still what a GOOD list gets here, so the line above
+  // is evidence about the ORDER rather than about the uv check having gone.
+  expect(refusalFor(["polars"])).toThrow(/uv is not installed/);
+  expect(refusalFor()).toThrow(/uv is not installed/);
+});
+
 test("no machine defaults leaves the plan exactly as it was", () => {
   const project = root();
   const telar = path.join(root(), "python", "p");
