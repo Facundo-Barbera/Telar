@@ -759,17 +759,19 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
             : undefined;
         const mcpServers = userTable || telarTable ? { ...(userTable ?? {}), ...(telarTable ?? {}) } : undefined;
         /**
-         * ONE DESKTOP PER THREAD. Telar no longer injects its own computer use
-         * into a Codex claim at all — Codex ships its own provider, so it keeps
-         * it (#368, and `COMPUTER_USE_DRIVERS`). What survives here is the case
-         * that injection never covered: a `mac` server the USER registered and
-         * pointed at a Codex session by hand. When the claim carries one,
-         * Codex's bundled computer use is turned off FOR THIS THREAD ONLY — a
-         * `features` overlay on `thread/start`'s config, never written to
-         * `~/.codex/config.toml`, so the user's ChatGPT/Codex desktop and their
-         * `codex` CLI keep their native computer use untouched. Without it the
-         * model would see two desktops (`mac` and Codex's native
-         * `computer_use`) under two names.
+         * ONE DESKTOP PER THREAD. The claim carries a `mac` server two ways
+         * now: Telar's own injection, which #521 restored to Codex after #368
+         * had withheld it, and a `mac` server the USER registered by hand. This
+         * reads the claim and so covers both without knowing which — the check
+         * was written for the hand-registered case and needed no change when
+         * injection came back, which is the sign it was the right shape.
+         *
+         * When the claim carries one, Codex's bundled computer use is turned
+         * off FOR THIS THREAD ONLY — a `features` overlay on `thread/start`'s
+         * config, never written to `~/.codex/config.toml`, so the user's
+         * ChatGPT/Codex desktop and their `codex` CLI keep their native
+         * computer use untouched. Without it the model could see two desktops
+         * (`mac` and Codex's native `computer_use`) under two names.
          */
         const disableNativeComputerUse = claimHasComputerUse(userMcpServers);
         const configOverlay =
