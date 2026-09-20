@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Archive and upload a Telar Mobile nightly to TestFlight. CI is the caller
 # (.github/workflows/nightly-ios.yml, on an ios-nightly-* tag) — pushing the
-# tag is how a nightly is cut. The runner is the Mac mini itself, with its
-# one release Xcode (a BETA's build is refused by App Store Connect).
+# tag is how a nightly is cut. The runner is GitHub-hosted (macos-latest)
+# since 2026-09-20; before that it was the maintainer's Mac mini. Either way
+# the Xcode must be a RELEASE build — App Store Connect refuses a beta's
+# uploads — which is why DEVELOPER_DIR is named rather than inherited.
 #
 # Three modes, and the middle one exists because of #757:
 #   (no argument)   archive → export → upload to TestFlight.
