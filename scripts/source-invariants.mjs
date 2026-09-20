@@ -472,10 +472,14 @@ const enablesNounset = (source) => /^\s*set\s+(-[a-zA-Z]*u|-o\s+nounset)/m.test(
  * contains a second copy of the bare expansion inside itself — counting that
  * copy would flag every correctly-written line in the repo.
  *
- * Deliberately NOT extended to `.github/workflows/*.yml`: a `run:` block gets
- * the runner's bash, GitHub's default shell is `bash -e {0}` rather than
- * `-euo`, and the three blocks there that do set `-u` expand only arrays a
- * preceding count has already proven non-empty. That was checked, not skipped.
+ * A `run:` block in `.github/workflows/*.yml` is scanned by the same two
+ * questions, via `workflowRunBlocks` below. It used to be excluded, with a
+ * comment here saying the blocks that set `-u` had been checked and expanded
+ * only arrays a count had proven non-empty. That was not true when it was
+ * written: `nightly-ios.yml` and `ios-export-probe.yml` each set `-euo` and
+ * then expanded a bare `"${EXISTING[@]}"` read from `security list-keychains`
+ * (#829). The comment is the reason nobody looked again, so the scan now looks
+ * instead of the comment claiming it did.
  */
 function unguardedArrayExpansions(source) {
   const hits = [];
@@ -514,6 +518,108 @@ function unguardedArrayExpansions(source) {
   return hits;
 }
 
+const WORKFLOWS = ".github/workflows";
+
+/** Every workflow definition, repo-relative. */
+async function workflowFiles() {
+  let entries;
+  try {
+    entries = await readdir(join(ROOT, WORKFLOWS), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isFile() && (entry.name.endsWith(".yml") || entry.name.endsWith(".yaml")))
+    .map((entry) => `${WORKFLOWS}/${entry.name}`)
+    .sort();
+}
+
+const indentOf = (line) => line.length - line.trimStart().length;
+
+/**
+ * Which interpreter a `run:` block gets, as GitHub resolves it.
+ *
+ * Absent `shell:` means `bash -e {0}` — `-e`, NOT `-u`, so a block only has
+ * nounset if it says so itself. A block that names some other interpreter has
+ * no bash arrays to get wrong, so it is not this check's business.
+ */
+const runsBash = (shell) => {
+  if (shell === null) return true; // GitHub's default for a `run:` step
+  const named = shell.trim().replace(/^["']|["']$/g, "").split(/\s+/)[0];
+  return named === "bash" || named === "sh";
+};
+
+/**
+ * The `run:` blocks of a workflow, each body line carrying the line number it
+ * really has in the file so a failure names somewhere a person can open.
+ *
+ * `shell:` is a sibling key of `run:` in the same step mapping, so it is looked
+ * for at EXACTLY the `run:` indent and only within the step — bounded by the
+ * next or previous line that is shallower, or by the `- ` that starts a step.
+ * Requiring the exact indent is also what stops `echo "shell: pwsh"` inside a
+ * body, which is necessarily deeper, from being read as the step's shell.
+ */
+function workflowRunBlocks(source) {
+  const lines = source.split("\n");
+  const blocks = [];
+
+  const shellFor = (at, keyIndent) => {
+    const leavesStep = (j) => {
+      const raw = lines[j];
+      if (raw.trim() === "") return false;
+      return indentOf(raw) < keyIndent || raw.trimStart().startsWith("- ");
+    };
+    const declared = (j) => {
+      const found = /^(\s*)shell:\s*(.+?)\s*$/.exec(lines[j]);
+      return found && found[1].length === keyIndent ? found[2] : null;
+    };
+    for (let j = at - 1; j >= 0 && !leavesStep(j); j -= 1) {
+      const found = declared(j);
+      if (found !== null) return found;
+    }
+    for (let j = at + 1; j < lines.length && !leavesStep(j); j += 1) {
+      const found = declared(j);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const opened = /^(\s*)run:[ \t]*(?:[|>][-+]?\d*)?[ \t]*(.*)$/.exec(lines[i]);
+    if (!opened) continue;
+    const keyIndent = opened[1].length;
+    const body = [];
+    if (opened[2].trim() !== "") {
+      body.push({ line: i + 1, text: opened[2] });
+    } else {
+      for (let j = i + 1; j < lines.length; j += 1) {
+        if (lines[j].trim() === "") {
+          body.push({ line: j + 1, text: "" });
+          continue;
+        }
+        if (indentOf(lines[j]) <= keyIndent) break;
+        body.push({ line: j + 1, text: lines[j] });
+      }
+    }
+    blocks.push({ line: i + 1, shell: shellFor(i, keyIndent), body });
+  }
+  return blocks;
+}
+
+/**
+ * The unguarded expansions in a `run:` block, reported at their file line.
+ *
+ * A block with no nounset is not scanned at all, and says so by returning null
+ * rather than an empty list — the caller counts what it actually looked at, so
+ * that "found nothing" and "looked at nothing" cannot be confused.
+ */
+function workflowBlockHits(block) {
+  if (!runsBash(block.shell)) return null;
+  const text = block.body.map((entry) => entry.text).join("\n");
+  if (!enablesNounset(text)) return null;
+  return unguardedArrayExpansions(text).map((hit) => ({ ...hit, line: block.body[hit.line - 1].line }));
+}
+
 const ARRAY_GUARD_SAMPLES = [
   { flags: true, why: "the #808 line as it was", code: 'bunx electron-builder --dir "${CONFIG_OVERRIDES[@]}"' },
   { flags: true, why: "a `[*]` in a message string is unbound on 3.2 too", code: 'log "--mac ${TARGET_ARGS[*]}"' },
@@ -526,12 +632,159 @@ const ARRAY_GUARD_SAMPLES = [
   { flags: false, why: "prose in a comment", code: '# `"${A[@]}"` is what broke; see #808' },
 ];
 
+/**
+ * THE WORKFLOW READER, ON WORKFLOWS SMALL ENOUGH TO COUNT BY EYE.
+ *
+ * `hits` is `line:NAME` at the line number of the SAMPLE, so a reader that
+ * reports the right variable at the wrong line fails here rather than sending
+ * somebody to a line that says nothing. `scanned` is how many blocks the reader
+ * should have looked at at all — the number the real check's non-vacuity rule
+ * rests on, and the one a mishandled `shell:` would quietly change.
+ */
+const WORKFLOW_BLOCK_SAMPLES = [
+  {
+    why: "the #829 shape: a `run:` block that opts into -u and then expands a bare array",
+    hits: ["7:EXISTING"],
+    scanned: 1,
+    yaml: [
+      "jobs:",
+      "  sign:",
+      "    steps:",
+      "      - name: Import",
+      "        run: |",
+      "          set -euo pipefail",
+      '          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"',
+    ],
+  },
+  {
+    why: "the same block once guarded",
+    hits: [],
+    scanned: 1,
+    yaml: [
+      "jobs:",
+      "  sign:",
+      "    steps:",
+      "      - name: Import",
+      "        run: |",
+      "          set -euo pipefail",
+      '          security list-keychains -d user -s "$KEYCHAIN" ${EXISTING[@]+"${EXISTING[@]}"}',
+    ],
+  },
+  {
+    why: "GitHub's default shell is `bash -e {0}` — -e, not -u — so a block that never says `set -u` is not this check's business",
+    hits: [],
+    scanned: 0,
+    yaml: [
+      "jobs:",
+      "  sign:",
+      "    steps:",
+      "      - name: Import",
+      "        run: |",
+      '          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"',
+    ],
+  },
+  {
+    why: "another interpreter has no bash arrays to get wrong",
+    hits: [],
+    scanned: 0,
+    yaml: [
+      "jobs:",
+      "  sign:",
+      "    steps:",
+      "      - name: Import",
+      "        shell: pwsh",
+      "        run: |",
+      "          set -euo pipefail",
+      '          echo "${EXISTING[@]}"',
+    ],
+  },
+  {
+    why: "`shell:` governs its step from either side of the `run:` it belongs to",
+    hits: [],
+    scanned: 0,
+    yaml: [
+      "jobs:",
+      "  sign:",
+      "    steps:",
+      "      - name: Import",
+      "        run: |",
+      "          set -euo pipefail",
+      '          echo "${EXISTING[@]}"',
+      "        shell: python",
+    ],
+  },
+  {
+    why: "a body line TALKING about a shell is not the step's shell",
+    hits: ["8:EXISTING"],
+    scanned: 1,
+    yaml: [
+      "jobs:",
+      "  sign:",
+      "    steps:",
+      "      - name: Import",
+      "        run: |",
+      "          set -euo pipefail",
+      '          echo "shell: pwsh"',
+      '          echo "${EXISTING[@]}"',
+    ],
+  },
+  {
+    why: "the next step's `shell:` does not reach back over the step boundary",
+    hits: ["7:EXISTING"],
+    scanned: 1,
+    yaml: [
+      "jobs:",
+      "  sign:",
+      "    steps:",
+      "      - name: One",
+      "        run: |",
+      "          set -euo pipefail",
+      '          echo "${EXISTING[@]}"',
+      "      - name: Two",
+      "        shell: pwsh",
+      "        run: echo hi",
+    ],
+  },
+  {
+    why: "a one-line `run:` is a block too, and is read without crashing on its missing body",
+    hits: [],
+    scanned: 0,
+    yaml: ["jobs:", "  sign:", "    steps:", "      - name: One", "        run: apps/ios/nightly.sh"],
+  },
+];
+
 const CHECKS = [
   {
     name: "shell-empty-array-self-test",
-    protects: "#808: the scan below still fires on the shape that broke, and stays quiet on the fix",
+    protects:
+      "#808/#829: the scan below still fires on the shape that broke, stays quiet on the fix, and reads a workflow `run:` block at the line it really has",
     async run() {
       const failures = [];
+      for (const { why, hits: expected, scanned: expectedScanned, yaml } of WORKFLOW_BLOCK_SAMPLES) {
+        const blocks = workflowRunBlocks(yaml.join("\n"));
+        const found = [];
+        let scanned = 0;
+        for (const block of blocks) {
+          const hits = workflowBlockHits(block);
+          if (hits === null) continue;
+          scanned += 1;
+          found.push(...hits.map((hit) => `${hit.line}:${hit.name}`));
+        }
+        if (found.join(", ") !== expected.join(", ")) {
+          failures.push(
+            `the workflow reader saw [${found.join(", ")}] where it must see [${expected.join(", ")}] (${why}). ` +
+              "A reader that reports the wrong line sends the next person to text that says nothing about the failure, " +
+              "and one that reports nothing makes shell-empty-array green over `.github/workflows` for free.",
+          );
+        }
+        if (scanned !== expectedScanned) {
+          failures.push(
+            `the workflow reader scanned ${scanned} block(s) where it must scan ${expectedScanned} (${why}). ` +
+              "Blocks scanned is what shell-empty-array's non-vacuity rule counts, so this number moving silently is " +
+              "how that rule stops meaning anything.",
+          );
+        }
+      }
       for (const { flags, why, code } of ARRAY_GUARD_SAMPLES) {
         const hits = unguardedArrayExpansions(code);
         if (flags && hits.length === 0) {
@@ -553,33 +806,69 @@ const CHECKS = [
   },
   {
     name: "shell-empty-array",
-    protects: "#808: no `set -u` shell script expands an array that could be empty, which aborts on the bash macOS ships",
+    protects:
+      "#808/#829: no `set -u` shell script or workflow `run:` block expands an array that could be empty, which aborts on the bash macOS ships",
     async run() {
       const failures = [];
+      const report = (where, hit, closing) =>
+        failures.push(
+          `${where}: \`${hit.name}\` is expanded without a guard — ${hit.text}\n` +
+            `        Write it as \${${hit.name}[@]+"\${${hit.name}[@]}"} (or \${${hit.name}[*]-} inside a message ` +
+            "string). Under `set -u` bash 3.2 treats an expansion of an EMPTY array as an unbound variable and " +
+            `kills the ${closing} Bash 4.4 stopped doing this, which is why it will very likely ` +
+            "work when you try it. Do not reach for `set +u` (it drops the check for every variable on the line) " +
+            "or for seeding the array (the seed becomes a real argument to the command).",
+        );
+
       let scanned = 0;
       for (const path of await shellFiles()) {
         const source = await read(path);
         if (!enablesNounset(source)) continue;
         scanned += 1;
         for (const hit of unguardedArrayExpansions(source)) {
-          failures.push(
-            `${path}:${hit.line}: \`${hit.name}\` is expanded without a guard — ${hit.text}\n` +
-              `        Write it as \${${hit.name}[@]+"\${${hit.name}[@]}"} (or \${${hit.name}[*]-} inside a message ` +
-              "string). Under `set -u` bash 3.2 treats an expansion of an EMPTY array as an unbound variable and " +
-              "kills the script; macOS ships 3.2.57 as /bin/bash, so `#!/usr/bin/env bash` gets it on any machine " +
-              "without a newer bash earlier on PATH. Bash 4.4 stopped doing this, which is why it will very likely " +
-              "work when you try it. Do not reach for `set +u` (it drops the check for every variable on the line) " +
-              "or for seeding the array (the seed becomes a real argument to the command).",
+          report(
+            `${path}:${hit.line}`,
+            hit,
+            "script; macOS ships 3.2.57 as /bin/bash, so `#!/usr/bin/env bash` gets it on any machine " +
+              "without a newer bash earlier on PATH.",
           );
         }
       }
+
+      let blocksScanned = 0;
+      for (const path of await workflowFiles()) {
+        const source = await read(path);
+        for (const block of workflowRunBlocks(source)) {
+          const hits = workflowBlockHits(block);
+          if (hits === null) continue;
+          blocksScanned += 1;
+          for (const hit of hits) {
+            report(
+              `${path}:${hit.line}`,
+              hit,
+              "step; the `macos-*` runner images report bash 3.2.57 as their `bash`, and a `run:` block takes " +
+                "its shell from PATH, so this is the bash the step gets.",
+            );
+          }
+        }
+      }
+
       // An empty result from a scan is a claim about the scan. If the walker
       // stopped finding shell scripts, this check would pass by finding nothing
-      // to check — the failure mode that looks exactly like success.
+      // to check — the failure mode that looks exactly like success. The same
+      // holds a second time for workflows, where the reader has a YAML shape to
+      // get wrong as well as a directory to find.
       if (scanned === 0) {
         failures.push(
           "no `set -u` shell script was found anywhere in the tree, which cannot be right — " +
             "shellFiles() has stopped walking, so this check is green because it read nothing.",
+        );
+      }
+      if (blocksScanned === 0) {
+        failures.push(
+          "no `set -u` `run:` block was found in .github/workflows, which cannot be right — " +
+            "workflowRunBlocks() has stopped reading the YAML, so the workflow half of this check is green " +
+            "because it read nothing.",
         );
       }
       return failures;
