@@ -82,6 +82,23 @@ async function cutWorktree(input: {
  */
 const settled = worktreeReady;
 
+/**
+ * Poll `done` until it holds or `boundMs` elapses; report which.
+ *
+ * A FIXTURE'S STARTUP MUST NOT SHARE THE DEADLINE BEING MEASURED — #748's
+ * lesson, applied to the process-tree tests below. A child that writes its pid
+ * before a runner's 500 ms timeout fires leaves the test measuring the runner;
+ * a child that does not leaves it measuring `bun`'s cold start, and the failure
+ * arrives as `ENOENT` on a pid file rather than as anything about the bound.
+ * Observed exactly once, on the first run after a source change — which is the
+ * run a cold transpile makes slowest.
+ */
+const until = async (done: () => boolean, boundMs: number): Promise<boolean> => {
+  const deadline = Date.now() + boundMs;
+  while (Date.now() < deadline && !done()) await new Promise(resolve => setTimeout(resolve, 25));
+  return done();
+};
+
 /** A throwaway repository with one commit, so `HEAD` resolves. */
 function repo(): string {
   const root = tmp("telar-wt-repo-");
@@ -813,7 +830,10 @@ test("a timed-out read frees its slot while its child's helper still holds the p
     setTimeout(() => {}, 30000);
   `;
   const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
-  const stalled = run(root, ["-e", script], { timeoutMs: 500 });
+  const stalled = run(root, ["-e", script], { timeoutMs: 2_000 });
+  // The helper has to be up BEFORE the deadline is allowed to mean anything —
+  // see `until`. Its own bound, and a loud failure rather than an `ENOENT`.
+  expect(await until(() => fs.existsSync(pidFile), 1_500)).toBe(true);
   expect((await stalled).timedOut).toBe(true);
 
   const helper = Number(fs.readFileSync(pidFile, "utf8"));
