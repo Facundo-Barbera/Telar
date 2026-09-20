@@ -43,6 +43,8 @@ import {
   type JournalRetirement,
   type RetentionBucket,
   type RetentionPolicy,
+  type Schedule,
+  type ScheduleRule,
   type StoreCopy,
   type TextGenPolicy,
   type WorktreeMoveResult,
@@ -1903,6 +1905,37 @@ export class EngineClient {
    */
   sweepRetention(): Promise<{ swept: JournalRetirement }> {
     return this.request("POST", "/v2/storage/retention/sweep");
+  }
+
+  /**
+   * THE STANDING INSTRUCTIONS ON THIS INSTALL — issue #543, or one session's
+   * with `sessionId`.
+   *
+   * READ ONCE, NOT ON A TIMER. A row changes when a sweep touches it, which is
+   * at most every thirty seconds and usually never; polling it would be #629
+   * again at a worse price per tick, and the pane is looked at rather than
+   * watched.
+   */
+  schedules(sessionId?: string): Promise<{ schedules: Schedule[] }> {
+    return this.request("GET", `/v2/schedules${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`);
+  }
+
+  /**
+   * Create a row, or replace one by `id`.
+   *
+   * `nextRunAt` IS NOT A PARAMETER and cannot be: the engine computes the first
+   * one from the rule and the zone. A caller that could name it could aim a row
+   * at the past, where the grace rule would then skip it for ever.
+   */
+  putSchedule(input: { id?: string; sessionId: string; prompt: string; rule: ScheduleRule; zone: string; enabled?: boolean }): Promise<{ schedule: Schedule }> {
+    return this.request("POST", "/v2/schedules", input);
+  }
+
+  /** Forget a row. There is deliberately no "run now": it would be a second way
+   *  to start a turn with none of the sweep's re-aiming, and pressing it twice
+   *  would give two turns and a `nextRunAt` that meant nothing. */
+  deleteSchedule(id: string): Promise<{ deleted: boolean }> {
+    return this.request("DELETE", `/v2/schedules/${encodeURIComponent(id)}`);
   }
 
   /** Where session checkouts go on this install — see `WorktreesRoot`. */

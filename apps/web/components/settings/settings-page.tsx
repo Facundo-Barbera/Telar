@@ -60,6 +60,7 @@ const AppearanceSection = dynamic(() => import("./appearance-section").then((mod
 const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
 const AgentSection = dynamic(() => import("./agent-section").then((mod) => mod.AgentSection));
+const SchedulesSection = dynamic(() => import("./schedules-section").then((mod) => mod.SchedulesSection));
 const DictationSection = dynamic(() => import("./dictation-section").then((mod) => mod.DictationSection));
 const McpSection = dynamic(() => import("./mcp-section").then((mod) => mod.McpSection));
 const OrientationSection = dynamic(() => import("./orientation-section").then((mod) => mod.OrientationSection));
@@ -421,11 +422,20 @@ export function SettingsPage() {
         </>
       )}
 
-      {/* ONE GROUP, ALONE ON ITS PANE — deliberately, rather than padded out
-          with a neighbour. Nothing else in Settings is about the Agent, and a
-          tab that held the Agent plus something adjacent would be General
-          again, one size down. */}
-      {active === "agent" && <AgentSection />}
+      {/* THE AGENT, AND THE ONE OTHER THING THAT STARTS IT (#543).
+          This pane held a single group on purpose — "nothing else in Settings
+          is about the Agent, and a tab that held the Agent plus something
+          adjacent would be General again, one size down". Scheduled work is
+          the exception that proves it rather than an erosion of it: a schedule
+          is an agent turn with a clock in front of it, so it belongs beside
+          the Agent and nowhere else. It reads SECOND because the Agent is the
+          thing that runs and this is only when. */}
+      {active === "agent" && (
+        <>
+          <AgentSection />
+          <SchedulesSection />
+        </>
+      )}
 
       {/* AND THE SAME FOR DICTATION (#544), which left General by the same
           door and for a sharper reason: it ships OFF, so the row a reader

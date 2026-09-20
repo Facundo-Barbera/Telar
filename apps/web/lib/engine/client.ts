@@ -23,6 +23,8 @@ import type {
   ComputerUseBackend,
   ComputerUseStatus,
   RememberedLogin,
+  Schedule,
+  ScheduleRule,
   DataScienceBootstrap,
   DataScienceConfig,
   DataScienceCreateEnvironment,
@@ -704,6 +706,19 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  SLOW on a backlog, and it returns COUNTS: a delete moves pages to the
      *  freelist, so the store weighs the same until Reclaim rewrites it. */
     sweepRetention: () => request<{ swept: JournalRetirement }>(fetcher, "POST", "/api/storage/retention/sweep", {}),
+    /** The standing instructions on this install — issue #543 — or one
+     *  session's. READ ONCE, NEVER ON A TIMER: a row changes only when a sweep
+     *  touches it, and this pane is looked at rather than watched (#629). */
+    schedules: (sessionId?: string) =>
+      request<{ schedules: Schedule[] }>(fetcher, "GET", `/api/schedules${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`),
+    /** Create a row, or replace one by `id`. `nextRunAt` is the ENGINE's to
+     *  compute: a caller that could name it could aim a row at the past, where
+     *  the grace rule would skip it for ever. */
+    putSchedule: (input: { id?: string; sessionId: string; prompt: string; rule: ScheduleRule; zone: string; enabled?: boolean }) =>
+      request<{ schedule: Schedule }>(fetcher, "POST", "/api/schedules", input),
+    /** Forget a row. There is no "run now" — it would start a turn with none of
+     *  the sweep's re-aiming, so twice pressed means two turns. */
+    deleteSchedule: (id: string) => request<{ deleted: boolean }>(fetcher, "DELETE", `/api/schedules/${encodeURIComponent(id)}`),
     /** Where session checkouts go on this install — see `WorktreesRoot`. */
     worktreesRoot: () => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "GET", "/api/worktrees-root"),
     /** Put them somewhere else from the next cut on; `null` restores the
