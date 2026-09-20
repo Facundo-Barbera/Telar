@@ -61,20 +61,24 @@ const api = createEngineApi();
 export type GhState =
   | { status: "checking" }
   | { status: "ready"; repository?: string }
-  | { status: "unavailable"; reason: Exclude<GitHubUnavailable, "no_repository">; message?: string }
+  | { status: "unavailable"; reason: Exclude<GitHubUnavailable, "no_repository" | "not_github">; message?: string }
   | { status: "no_projects" };
 
 /**
  * The engine's per-project answer, read as a fact about this machine.
  *
  * Pure and exported so every branch is testable without a network — the
- * interesting one being that `no_repository` is a SUCCESS here: it is `gh`
- * running fine and reporting that this particular checkout has no GitHub
- * remote, which says nothing about whether the CLI works.
+ * interesting ones being that `no_repository` and `not_github` are both
+ * SUCCESSES here: each is `gh` running fine and reporting something about this
+ * particular checkout, which says nothing about whether the CLI works. They were
+ * one value until #670 split them; this pane's answer is the same for both, and
+ * that is not an accident — the split exists for the surfaces that OFFER
+ * something, where "there is no repository" and "this repository is on GitLab"
+ * lead to different sentences.
  */
 export function readGhState(snapshot: { unavailable?: GitHubUnavailable; message?: string; repository?: string }): GhState {
   const reason = snapshot.unavailable;
-  if (reason === undefined || reason === "no_repository") {
+  if (reason === undefined || reason === "no_repository" || reason === "not_github") {
     return { status: "ready", ...(snapshot.repository ? { repository: snapshot.repository } : {}) };
   }
   return { status: "unavailable", reason, ...(snapshot.message ? { message: snapshot.message } : {}) };
@@ -88,7 +92,7 @@ export function readGhState(snapshot: { unavailable?: GitHubUnavailable; message
  * rather than written twice. What this pane adds is the instruction, which the
  * panel has no room for.
  */
-const FIX: Record<Exclude<GitHubUnavailable, "no_repository">, string> = {
+const FIX: Record<Exclude<GitHubUnavailable, "no_repository" | "not_github">, string> = {
   not_installed: "Install the GitHub CLI — `brew install gh` on macOS, or your own package manager — then run `gh auth login`.",
   not_authenticated: "Run `gh auth login` in a terminal on this machine. Sign-in lives outside Telar, the same as it does for Claude and Codex.",
   failed: "Run `gh auth status` in a terminal on this machine to see what it says.",

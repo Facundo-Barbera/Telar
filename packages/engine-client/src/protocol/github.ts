@@ -20,19 +20,33 @@ import { Id, Timestamp } from "./common";
 /**
  * Why there is nothing to show, when there is nothing to show.
  *
- * FOUR DISTINCT ANSWERS, because they need four different responses from a
+ * FIVE DISTINCT ANSWERS, because they need five different responses from a
  * human and a single "unavailable" would send them to the wrong one. Collapsing
  * these was the failure mode of the frozen app's git pane, which reported every
  * shape of nothing as an empty list.
+ *
+ * `not_github` IS THE FIFTH, AND IT WAS SPLIT OUT OF `no_repository` — #670.
+ * The two were one value, so a GitLab or Gitea checkout was told "this is not a
+ * git repository", which is a confident and wrong claim about a repository the
+ * person is standing in. It cost nothing while the panel only READ; the moment a
+ * button offers to open a pull request, the difference between "there is no repo
+ * here" and "this repo lives somewhere gh cannot reach" is the whole of what the
+ * reader needs to know.
  */
 export const GitHubUnavailable = z.enum([
   /** `gh` is not on PATH. Install it. */
   "not_installed",
   /** `gh` is there and nobody has logged in. `gh auth login`. */
   "not_authenticated",
-  /** The project is not a git repository, or its remote is not GitHub. Nothing
-   *  to fix — plenty of projects are neither. */
+  /** There is no git repository here — or one with no remotes at all. */
   "no_repository",
+  /**
+   * There IS a repository and it is not on a GitHub host `gh` knows: GitLab,
+   * Gitea, a bare remote on a NAS, an unconfigured enterprise host. Nothing to
+   * fix — plenty of projects are like this, and everything that is not
+   * GitHub-specific (committing, pushing) still works.
+   */
+  "not_github",
   /** `gh` answered with something this engine could not read: a version skew, a
    *  rate limit, an enterprise host behaving differently. The message is
    *  passed through rather than replaced. */
@@ -695,6 +709,73 @@ export const GitHubCommentResult = z.union([
   z.object({ posted: z.literal(false), refusal: GitHubCommentRefusal, message: z.string().min(1).optional() }),
 ]);
 export type GitHubCommentResult = z.infer<typeof GitHubCommentResult>;
+
+// ── opening one pull request ────────────────────────────────────────────────
+
+/** How long a pull request's title may be. GitHub's own ceiling is 256; held
+ *  here because the title travels as an argv string to `gh`. */
+export const MAX_PULL_TITLE = 256;
+
+/**
+ * Why a pull request was not opened — issue #670.
+ *
+ * `not_pushed` IS THE ONE WITH A BUTTON BEHIND IT, and it is decided from data:
+ * a pull request on a branch the remote has never seen is not a thing, so the
+ * engine checks for the remote-tracking ref and refuses before `gh` is asked.
+ * The other arm on the Diff surface is exactly the remedy.
+ *
+ * `exists` IS NOT A FAILURE in the way the rest are. `gh` refuses a second pull
+ * request for a head branch that already has one, and the honest response is to
+ * show the reader the one that is already open.
+ */
+export const GitHubPullCreateRefusal = z.enum([
+  /** This branch is not on the remote yet. Push it first. */
+  "not_pushed",
+  /** A pull request for this branch is already open. `url` carries it. */
+  "exists",
+  /** The head branch and the base branch are the same, or the head has no
+   *  commits the base does not — there would be nothing to review. */
+  "nothing_to_compare",
+  /** The title was empty, or past `MAX_PULL_TITLE`. */
+  "invalid_title",
+  /** This account cannot open a pull request here. */
+  "not_permitted",
+  /** Anything else. `message` is `gh`'s own words, never invented. */
+  "failed",
+]);
+export type GitHubPullCreateRefusal = z.infer<typeof GitHubPullCreateRefusal>;
+
+/**
+ * What opening a pull request answers.
+ *
+ * SUCCESS CARRIES THE URL AND NOTHING ELSE, deliberately. `gh pr create` prints
+ * one line and a full detail read would be a second round trip for a page this
+ * surface does not draw — the forge panel already knows how to open the number,
+ * and the link is what a person reaches for next.
+ *
+ * THE ATTRIBUTION IS THE SAME CLAIM #791's COMMENTS CARRY, with the same
+ * caveat: the marker says this body claims that session, not that the session
+ * signed it. Nothing authorises on it.
+ */
+export const GitHubPullCreateResult = z.union([
+  z.object({
+    opened: z.literal(true),
+    url: z.string().min(1),
+    /** Absent when `gh` printed something this engine could not read as a
+     *  number — the pull request IS open at that point, so the caller is told
+     *  so and loses only the number. */
+    number: z.number().int().positive().optional(),
+    attribution: z.object({ sessionId: Id }),
+  }),
+  z.object({
+    opened: z.literal(false),
+    refusal: GitHubPullCreateRefusal,
+    message: z.string().min(1).optional(),
+    /** The pull request that already exists, when `gh` named it. */
+    url: z.string().min(1).optional(),
+  }),
+]);
+export type GitHubPullCreateResult = z.infer<typeof GitHubPullCreateResult>;
 
 // ── the wire encoding of a filter ───────────────────────────────────────────
 

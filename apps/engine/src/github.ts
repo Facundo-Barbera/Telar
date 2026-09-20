@@ -42,6 +42,8 @@ import type {
   GitHubMergeRefusal,
   GitHubMergeResult,
   GitHubMilestone,
+  GitHubPullCreateRefusal,
+  GitHubPullCreateResult,
   GitHubPullDetail,
   GitHubPullFilter,
   GitHubPullRead,
@@ -51,7 +53,7 @@ import type {
   GitHubSnapshot,
   GitHubUnavailable,
 } from "@telar/engine-client";
-import { MAX_COMMENT_BODY } from "@telar/engine-client";
+import { MAX_COMMENT_BODY, MAX_PULL_TITLE } from "@telar/engine-client";
 
 export type GhResult = { status: number; stdout: string; stderr: string };
 /** Injectable so tests never touch the network. */
@@ -95,10 +97,34 @@ export const defaultGhRunner: GhRunner = (cwd, args) =>
  * them apart. The fallback is `failed` with the message passed through, so a
  * phrasing change upstream degrades to "here is what gh said" rather than to a
  * wrong diagnosis.
+ *
+ * ── `not_github` IS SPLIT OUT OF `no_repository` — issue #670 ───────────────
+ *
+ * The two used to be one answer, and one of them was a lie. `gh`'s message for
+ * a GitLab or Gitea checkout is its own sentence:
+ *
+ *     none of the git remotes configured for this repository point to a known
+ *     GitHub host. To tell gh about a new GitHub host, please use `gh auth login`
+ *
+ * — a repository that very much exists, on a host `gh` does not serve. Folding
+ * that into "this is not a git repository" was harmless while the panel only
+ * read; with a button offering to open a pull request it becomes the difference
+ * between "there is nothing here" and "everything except this one arm works".
+ *
+ * AND IT IS TESTED FIRST OF THE THREE, which is not tidiness. That sentence ends
+ * "please use `gh auth login`" — so the `not_authenticated` test below matches it
+ * outright, and it contains "repository", so `no_repository` would have taken
+ * whatever was left. Read in the old order, a GitLab checkout was diagnosed as a
+ * machine nobody had signed in on, and the remedy on screen was a command that
+ * would have changed nothing. Specific first, exactly as `classifyMergeFailure`
+ * learnt the same lesson from a real blocked pull request.
  */
 export function classifyGhFailure(result: GhResult): { unavailable: GitHubUnavailable; message?: string } {
   if (result.status === 127) return { unavailable: "not_installed" };
   const text = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  if (text.includes("known github host") || text.includes("none of the git remotes")) {
+    return { unavailable: "not_github" };
+  }
   if (text.includes("not logged in") || text.includes("authentication") || text.includes("gh auth login")) {
     return { unavailable: "not_authenticated" };
   }
@@ -1116,7 +1142,7 @@ const PULL_DETAIL_FIELDS =
 /**
  * Which kind of nothing a DETAIL read is.
  *
- * The list's four, plus the one only this read can produce: `gh` answers
+ * The list's five, plus the one only this read can produce: `gh` answers
  * "GraphQL: Could not resolve to a PullRequest with the number of 999999"
  * — measured — and that is a typo, not a broken machine.
  */
@@ -1469,4 +1495,146 @@ export async function commentOn(
    * merge does not.
    */
   return { posted: true, url: url ?? `#${input.number}`, attribution: { sessionId: input.sessionId } };
+}
+
+// ── opening one pull request ────────────────────────────────────────────────
+
+/**
+ * Why `gh pr create` refused.
+ *
+ * `exists` FIRST, because `gh`'s sentence for it names both branches and the
+ * word "branch", and because it is the only refusal here that comes with
+ * somewhere to go. Measured wording:
+ *
+ *     a pull request for branch "telar/670-push" into branch "main" already
+ *     exists:
+ *     https://github.com/owner/repo/pull/812
+ *
+ * The URL on the second line is the answer the reader actually wants, so it is
+ * lifted out rather than left inside a message nobody can click.
+ *
+ * `nothing_to_compare` IS GITHUB'S OWN PHRASE — "No commits between main and
+ * main" — and it is the case a cockpit can produce by accident: a branch whose
+ * commits have all already landed on the base.
+ */
+export function classifyPullCreateFailure(result: GhResult): { refusal: GitHubPullCreateRefusal; message?: string; url?: string } {
+  const text = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  const message = result.stderr.trim() || result.stdout.trim();
+  const carry = message ? { message } : {};
+  if (text.includes("already exists")) {
+    const url = firstUrl(`${result.stderr}\n${result.stdout}`);
+    return { refusal: "exists", ...carry, ...(url ? { url } : {}) };
+  }
+  if (text.includes("no commits between") || text.includes("must be different")) {
+    return { refusal: "nothing_to_compare", ...carry };
+  }
+  if (
+    text.includes("http 403") ||
+    text.includes("write access") ||
+    text.includes("permission") ||
+    text.includes("not accessible") ||
+    text.includes("must have")
+  ) {
+    return { refusal: "not_permitted", ...carry };
+  }
+  return { refusal: "failed", ...carry };
+}
+
+/** The first http(s) URL in some output. `gh` puts the existing pull request's
+ *  link on its own line inside an error, where `parseCommentUrl`'s last-line
+ *  rule would not find it. */
+function firstUrl(output: string): string | undefined {
+  for (const line of output.split(/\r?\n/)) {
+    const candidate = line.trim();
+    if (/^https?:\/\/\S+$/.test(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/** `…/pull/812` → 812. Absent rather than guessed: the pull request IS open at
+ *  the point this is read, and inventing a number would be worse than having
+ *  none. */
+export function parsePullNumber(url: string): number | undefined {
+  const match = /\/pull\/(\d+)(?:[/?#].*)?$/.exec(url.trim());
+  const parsed = match?.[1] ? Number.parseInt(match[1], 10) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * Open one pull request for a session's branch — issue #670.
+ *
+ * THE BRANCH MUST ALREADY BE ON THE REMOTE, and that is not this function's
+ * check to make: the store reads `sessionBranchFacts` first and refuses with
+ * `not_pushed` before `gh` is asked. A pull request on an unpushed branch is not
+ * a thing, and asking GitHub to confirm it would be a round trip to be told
+ * something the checkout already knew.
+ *
+ * `--head` AND `--base` ARE BOTH EXPLICIT. `gh pr create` will otherwise infer
+ * the head from the current checkout, which in a worktree beside three other
+ * sessions is exactly the inference nobody wants it making.
+ *
+ * NO `--draft`, NO `--fill`, NO `--web`. A draft is a second decision the Diff
+ * surface does not ask for; `--fill` would compose a title and body out of the
+ * branch's commits, which is the agent's prose presented as the human's; and
+ * `--web` would open a browser from a daemon.
+ *
+ * THE MARKER IS THE SAME ONE #802's COMMENTS CARRY, appended here rather than by
+ * the caller so there is exactly one place a body can acquire one — and it is
+ * the other half of #791's intent, with the same caveat: it is a claim that is
+ * ordinarily true, never a signature, and nothing may authorise on it.
+ */
+export async function openPullRequest(
+  gh: GhRunner,
+  cwd: string,
+  input: { head: string; base: string; title: string; body: string; sessionId: string },
+): Promise<GitHubPullCreateResult> {
+  const title = input.title.trim();
+  if (!title) return { opened: false, refusal: "invalid_title", message: "A pull request needs a title." };
+  if (title.length > MAX_PULL_TITLE) {
+    return {
+      opened: false,
+      refusal: "invalid_title",
+      message: `That title is ${title.length} characters; GitHub takes at most ${MAX_PULL_TITLE}.`,
+    };
+  }
+  if (input.head === input.base) {
+    // Decided here rather than by GitHub, for `mergePull`'s reason: a refusal
+    // that costs nothing on the far side is worth the one comparison.
+    return { opened: false, refusal: "nothing_to_compare", message: `${input.head} is the base branch — there would be nothing to review.` };
+  }
+  if (input.body.length > MAX_COMMENT_BODY) {
+    return {
+      opened: false,
+      refusal: "failed",
+      message: `That description is ${input.body.length} characters; GitHub takes at most ${MAX_COMMENT_BODY}.`,
+    };
+  }
+  /**
+   * THE STAMP CAN REFUSE, AND IT REFUSES BEFORE GITHUB IS ASKED — see
+   * `commentOn`, which catches the same throw for the same reason: a bad id
+   * should be a typed refusal like every other failure in this file rather than
+   * an exception crossing the store.
+   */
+  let stamped: string;
+  try {
+    stamped = withSessionMarker(input.body, input.sessionId);
+  } catch (error) {
+    return { opened: false, refusal: "failed", message: error instanceof Error ? error.message : String(error) };
+  }
+
+  const created = await gh(cwd, ["pr", "create", "--head", input.head, "--base", input.base, "--title", title, "--body", stamped]);
+  if (created.status !== 0) return { opened: false, ...classifyPullCreateFailure(created) };
+  const url = parseCommentUrl(created.stdout) ?? firstUrl(created.stdout);
+  /**
+   * A PULL REQUEST WITH NO READABLE URL IS STILL OPEN. Reporting a refusal
+   * because this engine could not read `gh`'s output would send a person to
+   * press the button again and open a second one — the same failure mode
+   * `commentOn` refuses, and worse here, because a duplicate pull request has to
+   * be closed by hand.
+   */
+  if (!url) {
+    return { opened: true, url: `${input.head} → ${input.base}`, attribution: { sessionId: input.sessionId } };
+  }
+  const number = parsePullNumber(url);
+  return { opened: true, url, ...(number ? { number } : {}), attribution: { sessionId: input.sessionId } };
 }

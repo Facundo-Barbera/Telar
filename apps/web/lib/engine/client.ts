@@ -12,6 +12,8 @@ import type {
   GitHubIssueRead,
   GitHubMergeMethod,
   GitHubMergeResult,
+  GitHubPullCreateResult,
+  GitPushResult,
   GitHubPullFilter,
   GitHubPullRead,
   GitHubSnapshot,
@@ -1398,6 +1400,16 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         `/api/sessions/${encodeURIComponent(sessionId)}/git/commit`,
         { message },
       ),
+    /** Publish this session's own branch (#670). A refusal — no origin, nothing
+     *  to push, the remote said no — comes back as `pushed: false` with a named
+     *  reason, not as a thrown error. Takes no body: the branch is the engine's
+     *  to know, never the browser's to name. */
+    pushSessionBranch: (sessionId: string) =>
+      request<GitPushResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/git/push`, {}),
+    /** Open a pull request for this session's branch (#670) — the second arm,
+     *  which needs `gh` and a GitHub remote where the push arm needs neither. */
+    openSessionPullRequest: (sessionId: string, input: { title: string; body?: string; base?: string }) =>
+      request<GitHubPullCreateResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/github/pull`, input),
     /** What the session's browser is looking at. `screenshot` costs a round trip
      *  through Chromium and `start` would LAUNCH one, so both are opt-in. */
     browserState: (sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}) => {

@@ -23,8 +23,10 @@ import {
   type GitHubIssueRead,
   type GitHubMergeMethod,
   type GitHubMergeResult,
+  type GitHubPullCreateResult,
   type GitHubPullFilter,
   type GitHubPullRead,
+  type GitPushResult,
   type GitHubSnapshot,
   type GitignoreRemoval,
   type GitignoreResult,
@@ -3032,6 +3034,30 @@ export class EngineClient {
    *  additive, reversible, and never automatic. */
   commitSessionWork(sessionId: string, message: string): Promise<{ committed: boolean; commit?: GitCommitEntry; reason?: string }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/git/commit`, { message });
+  }
+
+  /**
+   * Publish this session's own branch — issue #670. The engine's only networked
+   * git call, and the only one a person has to press for.
+   *
+   * NO BODY. The branch, the checkout and the remote are read off the session
+   * record by the engine: a client that could name the branch could ask this
+   * engine to push anything on the machine.
+   */
+  pushSessionBranch(sessionId: string): Promise<GitPushResult> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/git/push`, {});
+  }
+
+  /**
+   * Open a pull request for this session's branch — issue #670.
+   *
+   * A SECOND ARM, NOT A SECOND HALF OF THE PUSH. Pushing needs git and a remote;
+   * this needs `gh` and a GitHub one, and a cockpit that made the portable half
+   * hostage to the unportable one would give a GitLab user one button that
+   * cannot work instead of one that can.
+   */
+  openSessionPullRequest(sessionId: string, input: { title: string; body?: string; base?: string }): Promise<GitHubPullCreateResult> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull`, input);
   }
 
   /**

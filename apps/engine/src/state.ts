@@ -108,6 +108,8 @@ import {
   type GitHubIssueRead,
   type GitHubMergeMethod,
   type GitHubMergeResult,
+  type GitHubPullCreateResult,
+  type GitPushResult,
   type GitHubPullFilter,
   type GitHubPullRead,
   type GitHubSnapshot,
@@ -201,7 +203,22 @@ import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFiles, listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
-import { commitSessionWork, gitOverview, gitOverviewAsync, projectRemoteAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
+import {
+  commitSessionWork,
+  defaultRemoteBaseAsync,
+  gitOverview,
+  gitOverviewAsync,
+  listGitRefsAsync,
+  projectRemoteAsync,
+  pullRequestBlockedBy,
+  pushSessionBranch,
+  sessionBranchFacts,
+  sessionDiff,
+  sessionDiffAsync,
+  sessionFilePatch,
+  sessionFilePatchAsync,
+  type GitOverview,
+} from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
 import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, timeoutNotification, wakeNotification } from "./notification";
@@ -212,6 +229,7 @@ import {
   DEFAULT_PULL_FILTER,
   defaultGhRunner,
   mergePull,
+  openPullRequest,
   readCheckLog,
   readForgeFacets,
   readGitHub,
@@ -1072,6 +1090,19 @@ const newestFirst = (left: Session, right: Session): number =>
  * `invalid_request` RATHER THAN `not_found`: the session exists and the caller
  * is fine; what was asked of it does not apply to this kind of session.
  */
+/**
+ * A branch name this engine is willing to put in an argv — issue #670.
+ *
+ * NOT A VALIDATION OF GIT'S RULES, which are longer than this and are git's to
+ * enforce. This is the narrower question: can this string be mistaken for
+ * something other than a ref by the program it is handed to. A leading `-`
+ * makes it a flag, and the charset has no space, no `$` and no quote, so a value
+ * that passes cannot be a second argument or a shell fragment. `gh` is spawned
+ * without a shell, so this is belt and braces — and the braces are what keep a
+ * text field from becoming a command the day somebody adds one.
+ */
+const REF_NAME = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+
 function workspaceRootOf(session: Pick<Session, "workspace">): string {
   const root = workspacePath(session.workspace);
   if (root === undefined) throw new EngineStateError("invalid_request", "this session has no working directory");
@@ -6910,6 +6941,112 @@ export class EngineStore {
     if (!text) throw new EngineStateError("invalid_request", "a commit message is required");
     if (text.length > 2_000) throw new EngineStateError("invalid_request", "commit message is too long");
     return commitSessionWork(this.git, { cwd: workspaceRootOf(session), message: text });
+  }
+
+  /**
+   * Publish this session's branch — issue #670.
+   *
+   * ── THE BINDING IS THE STORE'S, NEVER THE CALLER'S ──────────────────────────
+   * The checkout, the mode and the branch all come off the session record. A
+   * request body that could name a branch could ask this engine to push any ref
+   * in any repository on the machine, which is the same reason `sessionDiff`
+   * takes no directory and `projectGitHubComment` takes no session id.
+   *
+   * ── ON THE MUTATION POOL, NOT THE READ POOL ─────────────────────────────────
+   * `worktreeGit` has two slots against the read pool's four and is already the
+   * home of the engine's other slow git children. A push is the slowest of them
+   * and the only one whose clock is somebody's upload; putting it in the read
+   * pool would let one person's first push of a large branch hold a quarter of
+   * the capacity every rail poll draws from. It is bounded at
+   * `PUSH_TIMEOUT_MS` so a slot cannot be held indefinitely.
+   */
+  async pushSessionBranch(sessionId: string): Promise<GitPushResult> {
+    const session = this.getSession(sessionId);
+    const workspace = session.workspace;
+    if (workspace.mode === "none") throw new EngineStateError("invalid_request", "this session has no working directory");
+    return structuredClone(
+      await pushSessionBranch(this.worktreeGit, {
+        cwd: workspaceRootOf(session),
+        mode: workspace.mode,
+        ...(workspace.mode === "worktree" ? { branch: workspace.branch } : {}),
+      }),
+    );
+  }
+
+  /**
+   * Open a pull request for this session's branch — issue #670.
+   *
+   * ── IT REFUSES BEFORE `gh` IS ASKED, AND THAT IS THE POINT ──────────────────
+   * The same local reads the push arm uses answer every question that can make
+   * this impossible: not a repository, no origin, the wrong branch checked out,
+   * and — the one only this arm cares about — a branch the remote has never
+   * seen. Every one of those is a fact, so `gh` is not asked at all, which is
+   * what makes a refusal here free and certain rather than a round trip and a
+   * guess. `mergePull` decides four of its seven the same way.
+   *
+   * ── THE BASE IS A CHOICE AND THE HEAD IS NOT ────────────────────────────────
+   * The head branch is the session's, read off the record. The base is genuinely
+   * the reader's — "which branch should this merge into" has no answer the
+   * engine can derive — so it is accepted, defaulted to the remote's own default
+   * branch, and validated as a ref name. The validation is not decoration: this
+   * value becomes an argv element, and a `--flag` arriving where `gh` expects a
+   * branch is how a text field turns into a command.
+   */
+  async openSessionPullRequest(
+    sessionId: string,
+    input: { title: string; body?: string; base?: string },
+  ): Promise<GitHubPullCreateResult> {
+    const session = this.getSession(sessionId);
+    const workspace = session.workspace;
+    if (workspace.mode !== "worktree") {
+      return {
+        opened: false,
+        refusal: "not_pushed",
+        message: "This session works in the project's own checkout, so it has no branch of its own to open a pull request for.",
+      };
+    }
+    if (session.projectId === undefined) throw new EngineStateError("invalid_request", "this session has no project");
+    const project = this.getProject(session.projectId);
+    const cwd = workspaceRootOf(session);
+    const branch = workspace.branch;
+
+    const facts = await sessionBranchFacts(this.worktreeGit, cwd);
+    const blocked = pullRequestBlockedBy(facts, branch);
+    if (blocked) return { opened: false, refusal: "failed", message: blocked.message };
+    if (facts.upstream !== true) {
+      return {
+        opened: false,
+        refusal: "not_pushed",
+        message: `origin has never seen ${branch}. Push it first, and this becomes available.`,
+      };
+    }
+
+    const base = input.base?.trim() || (await this.defaultPullBase(project.root));
+    if (!base) {
+      return { opened: false, refusal: "failed", message: "This engine could not work out which branch to open the pull request against." };
+    }
+    if (!REF_NAME.test(base)) throw new EngineStateError("invalid_request", "that is not a branch name");
+
+    const result = await openPullRequest(this.gh, cwd, {
+      head: branch,
+      base,
+      title: input.title,
+      body: input.body ?? "",
+      sessionId: session.id,
+    });
+    // A new pull request belongs in the project's next forge read; the cached
+    // list would otherwise not have it for the rest of its window — the same
+    // staleness `projectPullMerge` refuses.
+    if (result.opened) this.forgetGitHub(project.id);
+    return structuredClone(result);
+  }
+
+  /** The remote's own default branch, unqualified — `origin/main` is what a
+   *  worktree is cut from and `main` is what `gh pr create --base` takes. */
+  private async defaultPullBase(projectRoot: string): Promise<string | undefined> {
+    const listing = await listGitRefsAsync(this.worktreeGit, projectRoot);
+    const qualified = await defaultRemoteBaseAsync(this.worktreeGit, projectRoot, listing);
+    return qualified?.replace(/^origin\//, "");
   }
 
   /**

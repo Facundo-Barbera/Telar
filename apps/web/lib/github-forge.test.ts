@@ -20,6 +20,8 @@ import {
   issueStatus,
   mergeReadiness,
   MERGE_REFUSAL,
+  PULL_CREATE_REFUSAL,
+  PUSH_REFUSAL,
   offersMerge,
   pullStatus,
   reviewLabel,
@@ -367,12 +369,58 @@ describe("the sentences", () => {
   test("every way a read can be unavailable has one, and every refusal too", () => {
     // A missing key here is a surface that renders `undefined` at the moment it
     // most needs to explain itself.
-    for (const reason of ["not_installed", "not_authenticated", "no_repository", "not_found", "failed"] as const) {
+    for (const reason of ["not_installed", "not_authenticated", "no_repository", "not_github", "not_found", "failed"] as const) {
       expect(UNAVAILABLE[reason].title.length).toBeGreaterThan(0);
     }
     for (const refusal of ["not_open", "conflicted", "blocked", "head_moved", "method_not_allowed", "not_permitted", "failed"] as const) {
       expect(MERGE_REFUSAL[refusal].length).toBeGreaterThan(0);
     }
+    for (const refusal of [
+      "not_repository",
+      "local_checkout",
+      "no_remote",
+      "not_session_branch",
+      "nothing_to_push",
+      "not_permitted",
+      "rejected",
+      "auth",
+      "timeout",
+      "failed",
+    ] as const) {
+      expect(PUSH_REFUSAL[refusal].length).toBeGreaterThan(0);
+    }
+    for (const refusal of ["not_pushed", "exists", "nothing_to_compare", "invalid_title", "not_permitted", "failed"] as const) {
+      expect(PULL_CREATE_REFUSAL[refusal].length).toBeGreaterThan(0);
+    }
+  });
+
+  test("A REPOSITORY THAT IS NOT ON GITHUB IS NOT A MISSING ONE, and the two now say so — #670", () => {
+    // They were one sentence, and for a GitLab or Gitea checkout that sentence
+    // was false about a repository the reader is standing in. The split is only
+    // worth having if the words actually differ.
+    expect(UNAVAILABLE.not_github.title).not.toBe(UNAVAILABLE.no_repository.title);
+    expect(UNAVAILABLE.not_github.detail).toContain("not a GitHub host");
+    // And it says what still works, because almost everything does.
+    expect(UNAVAILABLE.not_github.detail).toContain("pushing");
+  });
+
+  test("NO PUSH SENTENCE OFFERS A FORCE, least of all the one where it is tempting", () => {
+    // The engine cannot force-push and `scripts/source-invariants.mjs` fails
+    // the build on a second push argv, so a sentence naming it would be
+    // advertising something that does not exist.
+    for (const sentence of Object.values(PUSH_REFUSAL)) {
+      expect(sentence.toLowerCase()).not.toContain("--force");
+    }
+    expect(PUSH_REFUSAL.rejected).toContain("Pull or rebase");
+    expect(PUSH_REFUSAL.rejected).toContain("will not force");
+  });
+
+  test("the refusals that are ordinary states do not read as failures", () => {
+    // Three of the ten are what a perfectly healthy project looks like, and a
+    // red banner for all ten is how a reader learns to stop reading them.
+    expect(PUSH_REFUSAL.nothing_to_push).toContain("Nothing to push");
+    expect(PUSH_REFUSAL.local_checkout).toContain("shares with your editor");
+    expect(PULL_CREATE_REFUSAL.exists).toContain("already open");
   });
 
   test("an unfamiliar review state is shown as GitHub sent it, not dropped", () => {
