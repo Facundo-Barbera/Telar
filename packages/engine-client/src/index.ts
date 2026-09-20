@@ -771,6 +771,33 @@ function runBase(sessionId: string): string {
   return `/v2/sessions/${encodeURIComponent(sessionId)}/run`;
 }
 
+/**
+ * How ONE file's patch is read — the questions that change what git prints
+ * rather than which file it prints it for.
+ *
+ * `ignoreWhitespace` IS NOT A RENDER OPTION (#694). A hunk that exists only
+ * because a line was re-indented is a hunk before any of it reaches a client,
+ * so the toolbar's toggle has to reach the command; hiding those rows in the
+ * browser would leave the file's own header counting them.
+ */
+export type FilePatchOptions = {
+  /** Untracked files are in no diff at all, so they are diffed against
+   *  `/dev/null` — see the engine's `sessionFilePatch`. */
+  untracked?: boolean;
+  /** Re-indentation and inserted blank lines are not changes worth reading. */
+  ignoreWhitespace?: boolean;
+};
+
+/** Built once for both the session and project reads: they serve the same
+ *  surface, so an option one sent and the other dropped would be a control
+ *  that worked in a conversation and did nothing on a canvas. */
+function filePatchQuery(path: string, options: FilePatchOptions): string {
+  const query = new URLSearchParams({ path });
+  if (options.untracked) query.set("untracked", "1");
+  if (options.ignoreWhitespace) query.set("ignoreWhitespace", "1");
+  return query.toString();
+}
+
 export class EngineClient {
   constructor(
     readonly discovery: EngineDiscovery,
@@ -1856,10 +1883,8 @@ export class EngineClient {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff`);
   }
 
-  projectFilePatch(projectId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: GitFilePatch }> {
-    const query = new URLSearchParams({ path });
-    if (options.untracked) query.set("untracked", "1");
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`);
+  projectFilePatch(projectId: string, path: string, options: FilePatchOptions = {}): Promise<{ file: GitFilePatch }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff?${filePatchQuery(path, options)}`);
   }
 
   /**
@@ -2514,10 +2539,8 @@ export class EngineClient {
 
   /** One file's patch. Separate from the review for the same reason a screenshot
    *  is separate from the browser's tab list: size, and nobody reads all of it. */
-  sessionFilePatch(sessionId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: GitFilePatch }> {
-    const query = new URLSearchParams({ path });
-    if (options.untracked) query.set("untracked", "1");
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`);
+  sessionFilePatch(sessionId: string, path: string, options: FilePatchOptions = {}): Promise<{ file: GitFilePatch }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff?${filePatchQuery(path, options)}`);
   }
 
   /** Snapshot the session's work as one commit. The engine's only git mutation —

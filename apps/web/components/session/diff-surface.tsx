@@ -62,20 +62,26 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
   GitBranchIcon,
   HardDriveIcon,
   GitCommitHorizontalIcon,
   ListFilterIcon,
+  PilcrowIcon,
   RefreshCwIcon,
   RotateCwIcon,
   TriangleAlertIcon,
+  WrapTextIcon,
   XIcon,
 } from "lucide-react";
 import type { GitFilePatch, GitFileChange, SessionDiff, TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
+import { useDiffView, type DiffView } from "@/lib/diff-view";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
+import { DiffCodeView } from "@/components/session/diff-code-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -158,49 +164,6 @@ export function reviewUnderFilter(review: SessionReview, filter?: string): Sessi
 }
 
 /**
- * A unified diff, tinted by line. Third copy of this in the app; the next one
- * should extract it.
- *
- * THE HUNK PAINTS AND THE TINTS SIT ON IT (#691). Both halves were the same
- * defect. `bg-muted/40` put 40% of a fill over whatever was behind the surface,
- * which was the panel's `bg-sidebar` until translucency thins it to
- * --sidebar-wash; `bg-success/10` put 10% of the theme's green over the same
- * thing, so an added line was a tenth of a hue and nine tenths of the desktop,
- * with no legibility floor anywhere. A diff hunk is read line by line — a
- * reading surface, opaque at every slider setting — so it carries --card, and
- * the two tints mix their colour INTO that card at the floor globals.css sets.
- * Opaque, themed, and it cannot compound. (Same discipline the reference reaches
- * for: T3 Code derives every diff colour from its --code-background rather than
- * stacking alpha on an unknown.)
- */
-function Patch({ patch }: { patch: string }) {
-  return (
-    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-card p-2 font-mono text-3xs leading-relaxed">
-      {patch.split("\n").map((line, index) => {
-        const header = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@") || line.startsWith("diff ");
-        return (
-          <span
-            key={index}
-            className={cn(
-              "block whitespace-pre-wrap break-words",
-              header
-                ? "text-muted-foreground/70"
-                : line.startsWith("+")
-                  ? "tint-success text-success"
-                  : line.startsWith("-")
-                    ? "tint-destructive text-destructive"
-                    : "text-muted-foreground",
-            )}
-          >
-            {line || " "}
-          </span>
-        );
-      })}
-    </pre>
-  );
-}
-
-/**
  * One changed file. The patch is fetched WHEN OPENED rather than carried on the
  * review, because a two-hundred-file review with every patch is a megabyte on a
  * timer for content nobody asked to see.
@@ -211,6 +174,9 @@ function ReviewFileRow({
   reported,
   edits,
   registration,
+  view,
+  open,
+  onToggle,
   onOpenFile,
   onOpenInNewPanelTab,
   onInsertReference,
@@ -220,6 +186,19 @@ function ReviewFileRow({
   readPatch: (path: string, untracked: boolean) => Promise<{ file: GitFilePatch }>;
   file: GitFileChange;
   reported: boolean;
+  /** How this reader likes a diff laid out. Passed down rather than read here
+   *  so every open row in the list answers one toolbar, not its own. */
+  view: DiffView;
+  /**
+   * WHETHER THIS ROW IS OPEN LIVES ON THE SURFACE (#694), not in the row.
+   *
+   * It was local state until the toolbar grew "collapse all" / "expand all" —
+   * and a button that has to reach into forty children to close them is the
+   * signal that the children were holding somebody else's state. The surface
+   * owns the set; a row is told.
+   */
+  open: boolean;
+  onToggle: () => void;
   /** How many times the journal saw this path written, when that is more than
    *  once — the one thing the old Changes tab knew that git does not. */
   edits?: number;
@@ -241,11 +220,22 @@ function ReviewFileRow({
    *  and the same `fileReference` the row's own DRAG already carries. */
   onInsertReference?: (text: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  /** THE WHOLE ANSWER, not just its text — `patch: ""` alone could not say
-   *  whether this file is binary, identical, or unread (#654). */
-  const [patch, setPatch] = useState<GitFilePatch>();
-  const [failed, setFailed] = useState(false);
+  /**
+   * THE WHOLE ANSWER, not just its text — `patch: ""` alone could not say
+   * whether this file is binary, identical, or unread (#654).
+   *
+   * STAMPED WITH THE READER THAT PRODUCED IT, because `readPatch` changes
+   * identity when the whitespace toggle does: the flag is on the git command
+   * (#694), so a patch in hand is an answer to the old question the moment it
+   * flips. Holding the two together means the stale answer is DISCARDED IN THE
+   * SAME EXPRESSION that notices it is stale — the "adjust state while
+   * rendering" shape React documents for exactly this, rather than an effect
+   * that repaints once with hunks nobody asked for any more.
+   */
+  const [answer, setAnswer] = useState<{ reader: typeof readPatch; patch?: GitFilePatch; failed: boolean }>({ reader: readPatch, failed: false });
+  const current = answer.reader === readPatch ? answer : { reader: readPatch, failed: false };
+  if (current !== answer) setAnswer(current);
+  const { patch, failed } = current;
   const cut = file.path.lastIndexOf("/");
 
   useEffect(() => {
@@ -253,10 +243,10 @@ function ReviewFileRow({
     let cancelled = false;
     void readPatch(file.path, file.status === "untracked")
       .then((result) => {
-        if (!cancelled) setPatch(result.file);
+        if (!cancelled) setAnswer({ reader: readPatch, patch: result.file, failed: false });
       })
       .catch(() => {
-        if (!cancelled) setFailed(true);
+        if (!cancelled) setAnswer({ reader: readPatch, failed: true });
       });
     return () => {
       cancelled = true;
@@ -283,7 +273,7 @@ function ReviewFileRow({
           type="button"
           className="flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs hover:bg-muted/60"
           aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
+          onClick={onToggle}
           title={file.renamedFrom ? `${file.renamedFrom} → ${file.path}` : file.path}
         >
           {/* Git's own letter, so anyone who has run `git status` needs no
@@ -340,7 +330,7 @@ function ReviewFileRow({
             <ContextMenuItem onClick={() => onInsertReference(fileReference(file.path).text)}>Insert as reference</ContextMenuItem>
           )}
           <ContextMenuSeparator />
-          <ContextMenuItem onClick={() => setOpen((current) => !current)}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>
+          <ContextMenuItem onClick={onToggle}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
       {open &&
@@ -365,10 +355,132 @@ function ReviewFileRow({
           // its answer is that nothing in this file differs.
           <p className="px-4 pb-2 text-2xs text-muted-foreground">No textual difference.</p>
         ) : (
-          <Patch patch={patch.patch} />
+          /* THE RENDERER IS NOT OURS ANY MORE (#694) — see diff-code-view.tsx.
+             The row above is still the file header, so the viewer is told not
+             to draw its own; everything inside it is Pierre's, wearing this
+             app's tokens through `.diff-code-view` in globals.css. */
+          <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
+            <DiffCodeView patch={patch.patch} layout={view.layout} wrap={view.wrap} />
+          </div>
         ))}
       {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-2xs text-muted-foreground">Renamed from {file.renamedFrom}</p>}
     </div>
+  );
+}
+
+/**
+ * HOW THE PATCHES BELOW ARE DRAWN — issue #694.
+ *
+ * SEPARATE FROM THE FILTER FIELD ABOVE IT, and the split is the point. The
+ * filter says WHICH review this tab is; these say how this person reads one.
+ * The first belongs to the tab and is persisted with the panel's arrangement;
+ * the second belongs to the reader and is persisted once for the app (see
+ * lib/diff-view.ts). Putting them in one strip would be two contracts in one
+ * row, which is the mistake this issue's design refuses elsewhere.
+ *
+ * STACKED | SPLIT IS NOT GATED ON WIDTH. The instinct was to hide split below
+ * some number of pixels; the reference does not, and is right. Wrapping is off
+ * by default so a long line scrolls, and the measured line lengths in this
+ * repository (p50 49, p90 82, p99 136) are documentation of what you will see
+ * at a given width rather than a threshold that refuses you a layout you asked
+ * for.
+ *
+ * COLLAPSE / EXPAND ALL IS ONE BUTTON, not two, because the two are never both
+ * useful: with anything open the thing you want is to close it, and with
+ * nothing open the only move left is to open. A pair would spend half its width
+ * on a disabled control.
+ */
+export function DiffToolbar({
+  view,
+  setView,
+  anyOpen,
+  onToggleAll,
+  expandable,
+}: {
+  view: DiffView;
+  setView: (patch: Partial<DiffView>) => void;
+  anyOpen: boolean;
+  onToggleAll: () => void;
+  /** No rows, nothing to collapse — the control goes rather than greys out. */
+  expandable: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1 border-b border-border px-3 py-1.5">
+      {/* A SEGMENTED CONTROL, which is what two exclusive layouts are. Written
+          as a radiogroup rather than two buttons so the pair is one stop in the
+          tab order and arrow keys move between them. */}
+      <div role="radiogroup" aria-label="Diff layout" className="flex items-center rounded-md border border-input p-0.5">
+        {(["stacked", "split"] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            role="radio"
+            aria-checked={view.layout === option}
+            onClick={() => setView({ layout: option })}
+            className={cn(
+              "rounded-[0.25rem] px-2 py-0.5 text-2xs capitalize transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              view.layout === option ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+      <DiffToolbarToggle
+        label="Word wrap"
+        icon={<WrapTextIcon className="size-3.5" />}
+        pressed={view.wrap}
+        onPressedChange={(next) => setView({ wrap: next })}
+      />
+      <DiffToolbarToggle
+        label="Ignore whitespace"
+        // `¶` is the mark for the thing being ignored, and it is the same glyph
+        // every editor puts on this control.
+        icon={<PilcrowIcon className="size-3.5" />}
+        pressed={view.ignoreWhitespace}
+        onPressedChange={(next) => setView({ ignoreWhitespace: next })}
+      />
+      {expandable && (
+        <button
+          type="button"
+          onClick={onToggleAll}
+          className="ml-auto flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-2xs text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {anyOpen ? <ChevronsDownUpIcon className="size-3.5" /> : <ChevronsUpDownIcon className="size-3.5" />}
+          {anyOpen ? "Collapse all" : "Expand all"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** One of the toolbar's two on/off marks. `aria-pressed` rather than a checkbox
+ *  because these change how the page is drawn, not what will be submitted. */
+function DiffToolbarToggle({
+  label,
+  icon,
+  pressed,
+  onPressedChange,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  pressed: boolean;
+  onPressedChange: (next: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={pressed}
+      title={label}
+      onClick={() => onPressedChange(!pressed)}
+      className={cn(
+        "flex shrink-0 items-center rounded-md p-1 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        pressed ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {icon}
+    </button>
   );
 }
 
@@ -758,6 +870,23 @@ export function DiffSurface({
   const [diff, setDiff] = useState<SessionDiff>();
   const [error, setError] = useState<string>();
   const [refreshing, setRefreshing] = useState(false);
+  const { view, setView } = useDiffView();
+  /**
+   * WHICH ROWS ARE OPEN, held here rather than in the rows (#694) — "collapse
+   * all" is a button that has to close forty children, and a button that reaches
+   * into its children is the signal the children were holding the wrong state.
+   *
+   * BY PATH RATHER THAN BY INDEX, so a refresh that adds a file above an open
+   * one does not silently move the open patch to a different row.
+   */
+  const [openPaths, setOpenPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleRow = useCallback((path: string) => {
+    setOpenPaths((current) => {
+      const next = new Set(current);
+      if (!next.delete(path)) next.add(path);
+      return next;
+    });
+  }, []);
 
   /**
    * A CANVAS REVIEWS ITS PROJECT.
@@ -779,12 +908,18 @@ export function DiffSurface({
     }
   }, [sessionId, projectId]);
 
+  /**
+   * IGNORING WHITESPACE IS PART OF THE REQUEST, not part of the rendering
+   * (#694) — git decides which hunks exist. So the toggle is in this callback's
+   * dependencies, and an open row re-reads when it flips: see the effect in
+   * `ReviewFileRow` that watches this function's identity.
+   */
   const readPatch = useCallback(
-    (path: string, untracked: boolean) =>
-      sessionId
-        ? api.sessionFilePatch(sessionId, path, untracked ? { untracked: true } : {})
-        : api.projectFilePatch(projectId!, path, untracked ? { untracked: true } : {}),
-    [sessionId, projectId],
+    (path: string, untracked: boolean) => {
+      const options = { ...(untracked ? { untracked: true } : {}), ...(view.ignoreWhitespace ? { ignoreWhitespace: true } : {}) };
+      return sessionId ? api.sessionFilePatch(sessionId, path, options) : api.projectFilePatch(projectId!, path, options);
+    },
+    [sessionId, projectId, view.ignoreWhitespace],
   );
 
   useEffect(() => {
@@ -821,6 +956,21 @@ export function DiffSurface({
   /** Built once and spread onto both row lists, so the two can never drift
    *  into offering different menus for the same kind of row. */
   const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}), ...(onInsertReference ? { onInsertReference } : {}) };
+
+  /**
+   * "ANY" RATHER THAN "ALL", so the button's two states cover the three real
+   * ones. With some rows open, what you want is to close them; only a list
+   * where nothing is open has "expand" as its obvious next move.
+   *
+   * COUNTED OVER THE ROWS THIS TAB SHOWS, so "expand all" in a tab filtered to
+   * `apps/web` does not quietly open forty files in `apps/engine` that this
+   * reader cannot see and will not close.
+   */
+  const shownPaths = shown?.rows.map((row) => row.file.path) ?? [];
+  const anyOpen = shownPaths.some((path) => openPaths.has(path));
+  /** Plain, not memoised: it is handed to the toolbar's one button, never to
+   *  the forty rows, so a fresh identity each render costs nothing. */
+  const toggleAll = () => setOpenPaths((current) => (shownPaths.some((path) => current.has(path)) ? new Set() : new Set(shownPaths)));
 
   if (!sessionId && !projectId) {
     return (
@@ -970,6 +1120,10 @@ export function DiffSurface({
         )}
       </div>
 
+      {/* HOW THE PATCHES ARE DRAWN, under the header that says WHICH review this
+          is and above the bands that say how much to trust it. */}
+      <DiffToolbar view={view} setView={setView} anyOpen={anyOpen} onToggleAll={toggleAll} expandable={shownPaths.length > 0} />
+
       {/* FIRST OF THE BANDS, because it is the only one that can make everything
           under it untrustworthy — including the other band's own figures. */}
       <DiffUnknownBand diff={diff} onRetry={load} />
@@ -1003,6 +1157,9 @@ export function DiffSurface({
                 readPatch={readPatch}
                 file={row.file}
                 reported={!framing.journal}
+                view={view}
+                open={openPaths.has(row.file.path)}
+                onToggle={() => toggleRow(row.file.path)}
                 {...(row.registration ? { registration: row.registration } : {})}
                 {...rowMenu}
               />
@@ -1013,7 +1170,17 @@ export function DiffSurface({
           {shown.rows
             .filter((row) => row.reported)
             .map((row) => (
-              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported {...(row.edits ? { edits: row.edits } : {})} {...rowMenu} />
+              <ReviewFileRow
+                key={row.file.path}
+                readPatch={readPatch}
+                file={row.file}
+                reported
+                view={view}
+                open={openPaths.has(row.file.path)}
+                onToggle={() => toggleRow(row.file.path)}
+                {...(row.edits ? { edits: row.edits } : {})}
+                {...rowMenu}
+              />
             ))}
         </div>
       )}

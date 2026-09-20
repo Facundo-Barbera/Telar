@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
+    "@pierre/diffs": "1.4.3",
     "@streamdown/math": "^1.0.2",
     "@telar/engine-client": "workspace:*",
     "class-variance-authority": "^0.7.1",
