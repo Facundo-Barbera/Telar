@@ -43,10 +43,25 @@ const timedOut = (what = "for-each-ref"): GitResult => ({
   timedOut: true,
 });
 
+/**
+ * THE SUBCOMMAND, WITH GIT'S OWN GLOBAL OPTIONS STRIPPED OFF THE FRONT.
+ *
+ * `git -c core.quotePath=false diff …` is a `diff` call, and a fake that keyed
+ * on the raw argv would answer `fail()` to every one of them the moment a
+ * caller set a config — which is the fake disagreeing with git about what a
+ * command IS, and would have made #694's `core.quotePath` fix look like a
+ * hundred broken tests instead of one changed argument list.
+ */
+function subcommand(args: string[]): string[] {
+  let index = 0;
+  while (args[index] === "-c") index += 2;
+  return args.slice(index);
+}
+
 /** A runner keyed by the first two argv words, so a test states only the
  *  commands it cares about and every other call fails like a real git would. */
 function runner(replies: Record<string, GitResult>): GitRunner {
-  return (_cwd, args) => replies[args.slice(0, 2).join(" ")] ?? fail();
+  return (_cwd, args) => replies[subcommand(args).slice(0, 2).join(" ")] ?? fail();
 }
 
 /**
@@ -78,7 +93,8 @@ const BOTH_HALVES: Record<string, GitResult> = {
 function reviewRunner(replies: Record<string, GitResult>, seen?: string[][]): GitRunner {
   return (_cwd, args) => {
     seen?.push(args);
-    return replies[args.slice(0, 3).join(" ")] ?? replies[args.slice(0, 2).join(" ")] ?? fail();
+    const verb = subcommand(args);
+    return replies[verb.slice(0, 3).join(" ")] ?? replies[verb.slice(0, 2).join(" ")] ?? fail();
   };
 }
 
@@ -626,8 +642,8 @@ describe("sessionFilePatch, ignoring whitespace", () => {
   function recording(): { runner: GitRunner; calls: string[][] } {
     const calls: string[][] = [];
     const runner: GitRunner = (_cwd, args) => {
-      calls.push(args);
-      if (args[0] === "rev-parse") return ok("");
+      calls.push(subcommand(args));
+      if (subcommand(args)[0] === "rev-parse") return ok("");
       return ok("@@ -1 +1 @@\n-a\n+b\n");
     };
     return { runner, calls };
@@ -636,7 +652,7 @@ describe("sessionFilePatch, ignoring whitespace", () => {
   test("off by default — the ordinary read is unchanged", () => {
     const { runner, calls } = recording();
     sessionFilePatch(runner, { cwd: "/repo", path: "src/a.ts" });
-    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "HEAD", "--", "src/a.ts"]);
+    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "HEAD", "--", ":(literal)src/a.ts"]);
   });
 
   test("on, the command carries -w AND --ignore-blank-lines", () => {
@@ -645,15 +661,37 @@ describe("sessionFilePatch, ignoring whitespace", () => {
     // who asked for the noise to go.
     const { runner, calls } = recording();
     sessionFilePatch(runner, { cwd: "/repo", path: "src/a.ts", ignoreWhitespace: true });
-    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "-w", "--ignore-blank-lines", "HEAD", "--", "src/a.ts"]);
+    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "-w", "--ignore-blank-lines", "HEAD", "--", ":(literal)src/a.ts"]);
   });
 
   test("an untracked file ignores whitespace too, against /dev/null", () => {
     // The `--no-index` branch is a whole separate command line, so it is the
     // one that quietly keeps working while doing nothing.
+    //
+    // NO `:(literal)` HERE, and that asymmetry is deliberate (#694): the
+    // operands of `--no-index` are filesystem paths rather than pathspecs, and
+    // git answers the magic prefix with `error: Could not access`.
     const { runner, calls } = recording();
     sessionFilePatch(runner, { cwd: "/repo", path: "dist/app.js", untracked: true, ignoreWhitespace: true });
     expect(calls.at(-1)).toEqual(["diff", "--no-index", "--unified=3", "-w", "--ignore-blank-lines", "--", "/dev/null", "dist/app.js"]);
+  });
+
+  test("both arms read paths raw, so a non-ASCII name is a name — issue #694", () => {
+    // `core.quotePath` defaults to true, so the patch header for `café.ts` is
+    // `diff --git "a/caf\303\251.ts" …` and a renderer reads the escapes as the
+    // filename. The `-z` reads that build the LIST were never affected, which
+    // is why only the expanded row was wrong — and why BOTH arms are asserted:
+    // an untracked file gets its header from the other command line.
+    const raw: string[][] = [];
+    const watching: GitRunner = (_cwd, args) => {
+      raw.push(args);
+      return subcommand(args)[0] === "rev-parse" ? ok("") : ok("@@ -1 +1 @@\n-a\n+b\n");
+    };
+    sessionFilePatch(watching, { cwd: "/repo", path: "café.ts" });
+    sessionFilePatch(watching, { cwd: "/repo", path: "café.ts", untracked: true });
+    const patches = raw.filter((args) => subcommand(args)[0] === "diff");
+    expect(patches).toHaveLength(2);
+    for (const args of patches) expect(args.slice(0, 2)).toEqual(["-c", "core.quotePath=false"]);
   });
 
   test("the flag goes AFTER --unified=3 and BEFORE the base, so the base is still a base", () => {

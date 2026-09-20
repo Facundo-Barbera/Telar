@@ -587,9 +587,43 @@ export function sessionFilePatch(
   const against = base ?? "HEAD";
   const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
   return input.untracked
-    ? assemblePatch(git(cwd, ["diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
-    : assemblePatch(git(cwd, ["diff", "--unified=3", ...ignoring, against, "--", target]), { noIndex: false });
+    ? assemblePatch(git(cwd, [...RAW_PATHS, "diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
+    : assemblePatch(git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, against, "--", literal(target)]), { noIndex: false });
 }
+
+/**
+ * A PATH IS NOT A PATHSPEC — issue #694, §2.6.
+ *
+ * `git diff -- <path>` reads its operand as a PATTERN. A file called
+ * `brack[1].ts` next to `brack1.ts` therefore matched both, git printed two
+ * files, the renderer parsed two files, and the row for one of them drew the
+ * other one's changes inside it. `*`, `?` and a leading `!` have the same
+ * exposure, and a leading `:` is pathspec magic that errors outright.
+ *
+ * The row's LIST is unaffected — `-z --numstat` emits literal paths — so this
+ * is a disagreement between a row's label and the hunks underneath it, which is
+ * the hardest kind of wrong answer to notice.
+ *
+ * NOT APPLIED TO THE `--no-index` ARM, and that is measured rather than
+ * assumed: `--no-index` takes two FILESYSTEM PATHS, reads them literally
+ * already, and answers `:(literal)brack[1].ts` with `error: Could not access`.
+ * The magic prefix would turn a working read into a failing one.
+ */
+function literal(target: string): string {
+  return `:(literal)${target}`;
+}
+
+/**
+ * `core.quotePath` DEFAULTS TO TRUE, so a patch for `café.ts` is headed
+ * `diff --git "a/caf\303\251.ts" …` and the renderer reads the escapes as the
+ * name — issue #694, §2.7. Harmless while the file header is hidden; mojibake
+ * the moment anything draws it, and wrong grammar selection for any name whose
+ * quoting reaches the extension.
+ *
+ * ON BOTH ARMS, because both print that header. The `-z` reads that build the
+ * file LIST are already immune: `-z` NUL-terminates and never quotes.
+ */
+const RAW_PATHS = ["-c", "core.quotePath=false"] as const;
 
 /**
  * `-w` AND `--ignore-blank-lines` TOGETHER, because either alone leaves the
@@ -935,8 +969,8 @@ export async function sessionFilePatchAsync(
   const against = base ?? "HEAD";
   const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
   return input.untracked
-    ? assemblePatch(await git(cwd, ["diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
-    : assemblePatch(await git(cwd, ["diff", "--unified=3", ...ignoring, against, "--", target]), { noIndex: false });
+    ? assemblePatch(await git(cwd, [...RAW_PATHS, "diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
+    : assemblePatch(await git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, against, "--", literal(target)]), { noIndex: false });
 }
 
 export async function listGitRefsAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitRefListing> {
