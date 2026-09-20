@@ -53,6 +53,7 @@ import {
   CONTROL_SESSION,
   JOURNAL_GROWTH,
   MEASURED_TURNS,
+  OUTLINE_BATCH,
   PROJECT,
   SESSIONS,
   SMALL_JOURNAL,
@@ -355,8 +356,8 @@ describe("outline does not fold the journal", () => {
     const store = daemon.store;
     return {
       outline: {
-        smallMs: measure(() => store.turnOutline(CONTROL_SESSION, { limit: OUTLINE_LIMIT })),
-        bigMs: measure(() => store.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT })),
+        smallMs: measure(() => store.turnOutline(CONTROL_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
+        bigMs: measure(() => store.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
       },
       fold: {
         smallMs: measure(() => foldOutline(store.readEvents(CONTROL_SESSION, 0), OUTLINE_LIMIT)),
@@ -447,8 +448,8 @@ describe("the instrument can report a bad result", () => {
   test("the check rejects a reader that does fold — outline, made slow on purpose", () => {
     const store = daemon.store;
     const honest: Shape = {
-      smallMs: measure(() => store.turnOutline(CONTROL_SESSION, { limit: OUTLINE_LIMIT })),
-      bigMs: measure(() => store.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT })),
+      smallMs: measure(() => store.turnOutline(CONTROL_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
+      bigMs: measure(() => store.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
     };
     const slowed = (sessionId: string) => {
       const answer = store.turnOutline(sessionId, { limit: OUTLINE_LIMIT });

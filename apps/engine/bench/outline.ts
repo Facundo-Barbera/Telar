@@ -35,6 +35,7 @@ import path from "node:path";
 import { EngineStore } from "../src/state";
 import {
   MEASURED_TURNS,
+  OUTLINE_BATCH,
   PROJECT,
   foldOutline,
   measure,
@@ -61,7 +62,7 @@ for (const events of SIZES) {
   seedMeasuredSession(store, sessionId, events);
   rows.push({
     events,
-    outlineMs: measure(() => store.turnOutline(sessionId, { limit: OUTLINE_LIMIT })),
+    outlineMs: measure(() => store.turnOutline(sessionId, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
     foldMs: measure(() => foldOutline(store.readEvents(sessionId, 0), OUTLINE_LIMIT)),
   });
 }

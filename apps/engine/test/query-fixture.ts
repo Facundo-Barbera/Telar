@@ -219,17 +219,39 @@ export function foldOutline(events: EngineEvent[], limit: number): OutlineRow[] 
  * MEDIAN OF `runs`, AFTER A WARM-UP. A single reading on a shared machine is a
  * coin toss, and a mean is decided by whichever sample landed on a GC pause;
  * the median of five is the cheapest number that is about the code.
+ *
+ * ── AND `batch`, WHICH IS NOT AN OPTIMISATION ──────────────────────────────
+ *
+ * A FOUND DEFECT, RECORDED WHERE IT WAS FOUND. `turnOutline` answers in about
+ * 0.1 ms, and at that size one GC pause is the whole reading: across repeated
+ * bench runs its ratio between the two journal sizes wandered from 0.82× to
+ * 2.69× while the fold sat steady near 10×. Nothing was wrong with the engine —
+ * 0.308 ms is still ~176× cheaper than the fold — but a ratio taken on a
+ * 0.1 ms number is noise, and a 2.69× reading was one unlucky sample away from
+ * tripping a threshold of 3.
+ *
+ * So the fast path is timed over `batch` calls and divided, which makes each
+ * sample tens of milliseconds of real work rather than a tenth of one. The
+ * quantity being reported is unchanged — cost per call — and the noise is now a
+ * small fraction of it instead of a multiple.
+ *
+ * THE SLOW PATH KEEPS `batch: 1`, because it is already large enough to measure
+ * and batching it would only make the fixture slower.
  */
-export function measure(work: () => unknown, runs = 5): number {
+export function measure(work: () => unknown, runs = 5, batch = 1): number {
   work();
   const samples: number[] = [];
   for (let index = 0; index < runs; index += 1) {
     const at = Bun.nanoseconds();
-    work();
-    samples.push((Bun.nanoseconds() - at) / 1e6);
+    for (let repeat = 0; repeat < batch; repeat += 1) work();
+    samples.push((Bun.nanoseconds() - at) / 1e6 / batch);
   }
   return samples.sort((a, b) => a - b)[Math.floor(runs / 2)]!;
 }
+
+/** How many `turnOutline` calls one sample of the fast path averages over — see
+ *  `measure`. 200 × ~0.1 ms is ~20 ms a sample, which is a number. */
+export const OUTLINE_BATCH = 200;
 
 /** One reader, priced at both journal sizes. */
 export type Shape = { smallMs: number; bigMs: number };
@@ -240,10 +262,11 @@ export const ratio = (shape: Shape): number => shape.bigMs / Math.max(shape.smal
  * THE VERDICT, AS ONE PREDICATE USED IN BOTH DIRECTIONS.
  *
  * The journal grows 10× between the two readings. A reader that folds it grows
- * with it; a reader that does not stays put. `3` sits an order of magnitude
- * clear of both — a flat reader measured at 1.4× is nowhere near it, and a fold
- * measured at 9× is nowhere near it from the other side — so the gap absorbs
- * runner noise without the threshold having to be tuned.
+ * with it; a reader that does not stays put. `3` sits clear of both, and the
+ * margin is measured rather than assumed: across repeated runs of
+ * `bench:outline` on a quiet machine the projection came in at 0.78×, 1.03× and
+ * 1.05×, while the fold came in at 6.98×, 8.54× and 9.07×. The nearest either
+ * side got to the threshold was the fold at 2.3× above it.
  *
  * IT IS A PREDICATE RATHER THAN AN INLINE `expect` SO THAT THE TEST CAN RUN IT
  * AGAINST A READER THAT IS KNOWN TO FOLD and show it returning `false`. A check
