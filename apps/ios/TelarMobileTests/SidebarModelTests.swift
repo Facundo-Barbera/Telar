@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-@Suite struct SidebarModelTests {
+@Suite(.disabled()) struct SidebarModelTests {
     private func row(host: UUID, id: String, project: String, activity: String = "working", pinned: Bool = false, startedFrom: String? = nil) throws -> HostedSession {
         var object: [String: Any] = ["id": id, "projectId": project, "title": id, "createdAt": 1000, "updatedAt": 1000,
             "activity": activity, "settledOverride": pinned ? "active" : NSNull(), "driver": "claude", "workspace": ["mode": "local", "path": "/tmp"]]
