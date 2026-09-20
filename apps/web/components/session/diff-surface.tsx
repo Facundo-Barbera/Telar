@@ -1330,8 +1330,16 @@ export function DiffSurface({
   const readPatch = useCallback(
     (file: GitFileChange): Promise<{ file: GitFilePatch }> => {
       if (tab.kind === "turn") {
-        const patch = turn?.patches.get(file.path);
-        return Promise.resolve({ file: patch ? { patch, binary: false } : { patch: "", binary: false, incomplete: "failed" } });
+        const reported = turn?.patches.get(file.path);
+        return Promise.resolve({
+          file: reported
+            ? // A JOURNAL PATCH CUT AT ITS BOUND USES THE SAME CHANNEL a git
+              // one does (#694, §2.5). "This is not the whole patch" is one
+              // fact about a read, however the read was made — and it used to
+              // be a sentence INSIDE the patch, which the renderer drops.
+              { patch: reported.patch, binary: false, ...(reported.truncated ? { incomplete: "truncated" as const } : {}) }
+            : { patch: "", binary: false, incomplete: "failed" as const },
+        });
       }
       const options = patchRequestFor(file, view, base);
       return sessionId ? api.sessionFilePatch(sessionId, file.path, options) : api.projectFilePatch(projectId!, file.path, options);

@@ -112,7 +112,7 @@ export function patchHunksOf(value: unknown): PatchHunk[] | undefined {
  * `name="/tmp/x.ts" type="change"`. The arm this module treats as the awkward
  * exception is the one that was always right.
  */
-export function unifiedDiff(path: string, hunks: readonly PatchHunk[], max = MAX_DIFF_CHARS): string {
+export function unifiedDiff(path: string, hunks: readonly PatchHunk[], max = MAX_DIFF_CHARS): { diff: string; truncated: boolean } {
   const absolute = path.startsWith("/");
   const [from, to] = absolute ? [path, path] : [`a/${path}`, `b/${path}`];
   const body: string[] = absolute ? [] : [`diff --git ${from} ${to}`];
@@ -126,11 +126,28 @@ export function unifiedDiff(path: string, hunks: readonly PatchHunk[], max = MAX
     body.push(...hunk.lines);
   }
   const text = body.join("\n");
-  if (text.length <= max) return text;
-  // Truncation is ANNOUNCED IN THE DIFF ITSELF rather than left to a flag
-  // nobody renders. A silently clipped patch looks like a complete one and
-  // would be applied as such.
-  return `${text.slice(0, max)}\n… diff truncated at ${max} characters …`;
+  if (text.length <= max) return { diff: text, truncated: false };
+  /**
+   * TRUNCATION IS A FIELD, NOT A SENTENCE INSIDE THE PATCH — issue #694, §2.5.
+   *
+   * This used to append `… diff truncated at 12000 characters …` and the
+   * comment here said, correctly, that "a silently clipped patch looks like a
+   * complete one and would be applied as such". That was true of the `<pre>`
+   * that printed every line it was given. Since the renderer became a PARSER it
+   * has been false: the marker is not a diff line, so it is dropped as
+   * unreadable and the reader sees a complete-looking patch. Measured —
+   *
+   *   parseLineType: Invalid firstChar: "…"
+   *   processFile: invalid rawLine: … diff truncated at 12000 characters …
+   *   marker present in input: true    marker present in rendered output: NO
+   *
+   * THE FIX IS NOT TO MAKE THE MARKER PARSEABLE. A marker inside the patch was
+   * always a channel the renderer could drop, and the next renderer would drop
+   * it again. It becomes `FileChangeDetail.diffTruncated`, which is the same
+   * argument `assemblePatch` makes for `incomplete` over `patch: ""`: a fact
+   * about the READ does not belong in the CONTENT of the answer.
+   */
+  return { diff: text.slice(0, max), truncated: true };
 }
 
 /**

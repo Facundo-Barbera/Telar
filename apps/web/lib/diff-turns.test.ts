@@ -55,7 +55,28 @@ describe("the turns a diff can be scoped to", () => {
       wrote("run_a", "a.ts", { unifiedDiff: "second" }, 2_000),
     ]);
     expect(turns[0]!.files).toHaveLength(1);
-    expect(turns[0]!.patches.get("a.ts")).toBe("second");
+    expect(turns[0]!.patches.get("a.ts")).toEqual({ patch: "second", truncated: false });
+  });
+
+  test("a patch cut at its bound carries the FLAG, not a marker in the text (#694)", () => {
+    /**
+     * §2.5. The bound used to announce itself as `… diff truncated at 12000
+     * characters …` INSIDE the string, which the renderer drops as an
+     * unparseable line — so a clipped patch drew as a complete one. The fold
+     * carries the fact beside the text, and the row reports it through the same
+     * `incomplete` channel a git failure uses.
+     *
+     * BOTH DIRECTIONS: an untruncated patch must say `false`, or the flag is a
+     * constant rather than a claim.
+     */
+    const turns = diffTurns([
+      wrote("run_a", "big.ts", { unifiedDiff: "diff --git a/big.ts b/big.ts\n--- a/big.ts", diffTruncated: true }),
+      wrote("run_a", "small.ts", { unifiedDiff: "diff --git a/small.ts b/small.ts" }),
+    ]);
+    expect(turns[0]!.patches.get("big.ts")!.truncated).toBe(true);
+    expect(turns[0]!.patches.get("small.ts")!.truncated).toBe(false);
+    // The text itself never carries the claim any more.
+    expect(turns[0]!.patches.get("big.ts")!.patch).not.toContain("truncated");
   });
 
   test("the journal's kinds arrive in git's vocabulary", () => {
