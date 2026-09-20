@@ -51,7 +51,7 @@ import { DictationNotice } from "./dictation-notice";
 import { cn } from "@/lib/utils";
 
 export function DictationButton({ dictation, className }: { dictation: ComposerDictation; className?: string }) {
-  const { phase, error, toggle, available, caret } = dictation;
+  const { phase, error, toggle, available, unavailable, caret } = dictation;
   /**
    * THE CHORD THE TOOLTIP NAMES, READ FROM THE LIVE KEYMAP (#588) — never the
    * literal "⌘D". A person who moved Dictate onto another key in Settings ›
@@ -68,10 +68,16 @@ export function DictationButton({ dictation, className }: { dictation: ComposerD
    *  before this button had a chord at all, rather than an empty bracket. */
   const chordSuffix = chord === "" ? "" : ` (${chord})`;
 
-  // NO BUTTON WHERE NOBODY ASKED FOR ONE, and none where the browser cannot
-  // record. `available` is both facts, answered once for the button and the
-  // chord — see `useComposerDictation` for why each of them is a refusal.
-  if (!available) return null;
+  // NO BUTTON WHERE NOBODY ASKED FOR ONE — `dictation.provider` is `off` and
+  // there is nothing to say about a feature that was never turned on.
+  //
+  // BUT A BUTTON THAT EXPLAINS ITSELF WHERE SOMEBODY DID (#639). `unavailable`
+  // is the case where the provider is configured and THIS PAGE is what stops
+  // the recording — the cockpit opened over a tailnet IP rather than on this
+  // Mac. That used to draw nothing too, which is how a working feature came to
+  // vanish without a word on every device that is not the Mac. It is drawn
+  // unavailable, and the press says why.
+  if (!available && unavailable === undefined) return null;
 
   const listening = phase === "listening";
   const busy = phase === "starting";
@@ -83,14 +89,24 @@ export function DictationButton({ dictation, className }: { dictation: ComposerD
     <div className={cn("relative flex min-w-0 items-center gap-1.5", className)}>
       <button
         type="button"
-        aria-label={listening ? "Stop dictating" : "Dictate"}
+        aria-label={unavailable ? "Dictation unavailable here" : listening ? "Stop dictating" : "Dictate"}
         aria-pressed={listening}
+        // `aria-disabled`, NOT `disabled`. A disabled button does not fire a
+        // click, so pressing it would be the silence this change exists to
+        // remove — and the press is the only way the sentence gets read. The
+        // control announces that it cannot record and remains pressable in
+        // order to say why.
+        {...(unavailable ? { "aria-disabled": true } : {})}
         // THE NAME STAYS THE NAME, the chord is an aside. `aria-label` is
         // deliberately left alone: a screen reader gets the chord from the
         // application's own keybindings, and a button whose NAME changed when
         // somebody rebound a key would be a button nothing could be told to
         // press by name.
-        title={listening ? `Stop dictating${chordSuffix}` : `Dictate${chordSuffix} — speak into the message box`}
+        // THE WHOLE SENTENCE IN THE TOOLTIP where there is one, rather than a
+        // summary of it: a pointer resting on the control is the cheapest way
+        // to read it, and the notice below says the same words on the press
+        // for everyone with no pointer at all.
+        title={unavailable ?? (listening ? `Stop dictating${chordSuffix}` : `Dictate${chordSuffix} — speak into the message box`)}
         // THE BOX KEEPS THE CARET. Without this the press blurs the composer,
         // and the first words land at a caret that is no longer anywhere — the
         // same reason every other control in this row does it.
@@ -102,6 +118,11 @@ export function DictationButton({ dictation, className }: { dictation: ComposerD
             ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
           busy && "bg-accent text-foreground",
+          // DIMMED, NOT ALARMED. This is a fact about where the page was
+          // opened from, not a failure — the popover colours of the notice
+          // make the same choice, and `text-destructive` is reserved for
+          // things that went wrong.
+          unavailable && "opacity-50",
         )}
       >
         <MicIcon className={cn("size-4", listening && "animate-pulse")} />

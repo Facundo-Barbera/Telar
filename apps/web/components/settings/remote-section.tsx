@@ -427,7 +427,33 @@ export function RemoteSection() {
               ) : status.tailscaleServe ? (
                 "Publishes at the next launch. Needs Tailscale running, with HTTPS certificates on for your tailnet."
               ) : (
-                "Use Tailscale Serve to expose this cockpit through a MagicDNS HTTPS URL."
+                /**
+                 * THE COST IS NAMED BEFORE THE CLICK, NOT AFTER IT (#639).
+                 *
+                 * Turning this on leads to Tailscale issuing a certificate,
+                 * and issuing one writes this machine's DNS name into a public
+                 * Certificate Transparency log — append-only, globally
+                 * searchable, no delete, for ever. The tailnet portion is
+                 * randomised; the MACHINE NAME IS NOT, and a default macOS
+                 * machine name is built from the account holder's full name.
+                 *
+                 * Tailscale's own dialog does say this — at the moment of
+                 * confirming, which is too late for anyone who clicks through,
+                 * and is exactly how it was discovered here. A row that offers
+                 * the thing is the right place for the sentence.
+                 *
+                 * AND THE RENAME IS THE ACTIONABLE HALF. It has to happen
+                 * before the first certificate, so it belongs in the same
+                 * breath as the warning rather than in a doc nobody opens.
+                 */
+                <>
+                  Expose this cockpit through a MagicDNS HTTPS URL — a real certificate, so phone browsers get a secure context.{" "}
+                  <span className="text-foreground">
+                    Issuing it publishes this machine&rsquo;s name to a public Certificate Transparency log, permanently. Rename the machine in
+                    Tailscale first if it carries yours.
+                  </span>{" "}
+                  Dictation also works over an <span className="font-mono text-foreground">ssh -L</span> tunnel, which needs neither.
+                </>
               )
             }
             checked={status.tailscaleServe === true}

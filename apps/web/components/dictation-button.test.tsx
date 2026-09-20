@@ -81,6 +81,19 @@ let keyterms: string[] | undefined = ["Telar", "Zarigüeya"];
  * test slides to prove the pill follows it.
  */
 let caretAt = { x: 120, y: 400 };
+/**
+ * WHETHER THE PAGE IS A SECURE CONTEXT (#639).
+ *
+ * A knob, and one that has to be SET rather than read: happy-dom does not
+ * implement `window.isSecureContext` at all — it is `undefined` there, which
+ * `microphoneUnavailable` correctly reads as "not secure". Leaving it alone
+ * would make every test in this file an insecure-origin test by accident.
+ *
+ * `true` is the Mac this cockpit normally runs on, at `127.0.0.1`. `false` is
+ * the same cockpit opened from a phone over a tailnet IP, which is the case
+ * this file now holds claims about.
+ */
+let secure = true;
 
 class FakeSocket {
   static OPEN = 1;
@@ -144,6 +157,8 @@ beforeEach(() => {
   language = "multi";
   keyterms = ["Telar", "Zarigüeya"];
   caretAt = { x: 120, y: 400 };
+  secure = true;
+  Object.defineProperty(window, "isSecureContext", { configurable: true, get: () => secure });
   // NOBODY'S REBINDING SURVIVES INTO THE NEXT TEST. The keymap is a module-level
   // store backed by localStorage, so a test that moves Dictate onto another key
   // would move it for every test after it.
@@ -329,6 +344,127 @@ describe("whether there is a mic button at all", () => {
   test("it appears once a provider is chosen", async () => {
     const host = await mounted(<Box kind="session" />);
     expect(host.querySelector('button[aria-label="Dictate"]')).not.toBeNull();
+  });
+});
+
+/**
+ * THE COCKPIT OPENED FROM SOMEWHERE THAT IS NOT THIS MAC (#639).
+ *
+ * `getUserMedia` does not exist off a secure context, so `navigator.mediaDevices`
+ * is simply absent on `http://100.x.x.x:3000` — and until now the button and the
+ * chord answered that by drawing nothing and binding nothing. A feature that
+ * works at the desk and vanishes without a word on the phone is the symptom this
+ * file now holds a claim about: it is offered, it does not record, and it says
+ * why.
+ *
+ * THE UNAVAILABLE CONTROL IS FOUND BY ITS OWN LABEL, not by `micIn`. Its
+ * `aria-label` is deliberately not "Dictate": a screen reader reaching a control
+ * that announces itself as the thing it cannot do would be the missing button
+ * again, in a different modality.
+ */
+const unavailableMicIn = (host: HTMLElement): HTMLButtonElement => {
+  const button = host.querySelector<HTMLButtonElement>('button[aria-label="Dictation unavailable here"]');
+  if (!button) throw new Error("no unavailable mic button rendered");
+  return button;
+};
+const noticeTextIn = (host: HTMLElement): string => host.querySelector('[data-slot="dictation-notice"]')?.textContent ?? "";
+
+describe("a page that cannot be granted a microphone says so", () => {
+  beforeEach(() => {
+    // The tailnet IP, the LAN IP, any plain-HTTP origin that is not loopback.
+    secure = false;
+    // WHAT THE BROWSER ACTUALLY DOES THERE, rather than a flag: `mediaDevices`
+    // is not present at all off a secure context, which is the fact `canRecord`
+    // reads. Deleting it is the honest fake.
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
+  });
+
+  test("the button is drawn, and drawn unavailable", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = unavailableMicIn(host);
+    // `aria-disabled`, NOT `disabled` — a disabled button swallows the click,
+    // and the click is the only way the sentence gets read.
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect(button.hasAttribute("disabled")).toBe(false);
+  });
+
+  test("the tooltip carries the whole sentence, including the way out", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const title = unavailableMicIn(host).getAttribute("title") ?? "";
+    expect(title).toContain("not a secure context");
+    // THE ROUTE OUT IS THE HALF A PERSON CAN ACT ON. "Not secure" alone reads
+    // as "go and buy a certificate", which is the misconception #639 exists to
+    // correct: loopback is a secure context with no certificate at all.
+    expect(title).toContain("127.0.0.1");
+    expect(title).toContain("tunnel");
+  });
+
+  test("pressing it says why, where the refusal is already drawn", async () => {
+    const host = await mounted(<Box kind="session" />);
+    await press(unavailableMicIn(host));
+    expect(noticeTextIn(host)).toContain("not a secure context");
+  });
+
+  test("and the chord says the same thing, rather than doing nothing", async () => {
+    // A person who pressed ⌘D and got silence has no way at all to find out
+    // why — this is the one place that answer can reach them.
+    const host = await mounted(<Box kind="session" />);
+    expect(await chord()).toBe(true);
+    expect(noticeTextIn(host)).toContain("not a secure context");
+  });
+
+  test("saying why costs no token and opens no socket", async () => {
+    const host = await mounted(<Box kind="session" />);
+    await press(unavailableMicIn(host));
+    await chord();
+    expect(tokenCalls).toBe(0);
+    expect(live).toBeUndefined();
+    expect(tracks).toHaveLength(0);
+  });
+
+  test("a second press is a second refusal, not a repeat of the first", async () => {
+    // WHY THIS MATTERS RATHER THAN BEING PEDANTRY: `DictationNotice` hides
+    // itself on a `seq` it has already shown, so an identical sentence handed
+    // back with the SAME seq would stay hidden once the first had faded —
+    // pressing again would look like nothing happened. `seq` is what makes two
+    // identical sentences two pieces of news; `dictation-notice.test.tsx` holds
+    // the fading half of that claim, and this holds the counting half.
+    const host = await mounted(<Box kind="session" />);
+    const button = unavailableMicIn(host);
+    await press(button);
+    const first = noticeTextIn(host);
+    expect(first).toContain("not a secure context");
+    await press(button);
+    expect(noticeTextIn(host)).toBe(first);
+    // WHAT THIS DOES NOT PROVE, said rather than implied: the counter is not
+    // observable from here, and the caption's six seconds are not worth
+    // spending in a test. This holds that a repeat press still produces the
+    // sentence; `dictation-notice.test.tsx` holds that a fresh `seq` is what
+    // brings a faded caption back.
+  });
+
+  test("still nothing at all where nobody asked for dictation", async () => {
+    // THE SILENCE THAT WAS RIGHT STAYS. `provider === "off"` is not a broken
+    // feature, it is a feature nobody turned on, and explaining its absence
+    // would be an advertisement.
+    provider = "off";
+    const host = await mounted(<Box kind="session" />);
+    expect(host.querySelector('button[aria-label="Dictation unavailable here"]')).toBeNull();
+    expect(host.querySelector('button[aria-label="Dictate"]')).toBeNull();
+    expect(await chord()).toBe(false);
+  });
+});
+
+describe("a secure page whose browser still cannot record", () => {
+  test("it is told about its browser, not sent to fix a connection that is fine", async () => {
+    // THE ORDER IN `microphoneUnavailable` IS THE POINT. An old browser on
+    // loopback must not be told its connection is insecure, and a modern
+    // browser on a tailnet IP must not be told it is too old.
+    delete (globalThis as unknown as Record<string, unknown>).MediaRecorder;
+    const host = await mounted(<Box kind="session" />);
+    const title = unavailableMicIn(host).getAttribute("title") ?? "";
+    expect(title).toContain("cannot record audio");
+    expect(title).not.toContain("secure context");
   });
 });
 
@@ -734,14 +870,14 @@ describe("the chord refuses wherever the button does", () => {
     expect(host.querySelector('button[aria-label="Dictate"]')).toBeNull();
   });
 
-  test("nothing where the browser cannot record", async () => {
-    // An insecure origin, or an embed with no microphone permission. There is
-    // no button either, and for the same reason.
+  test("it never opens a microphone where the browser cannot record", async () => {
+    // BOUND, BUT IT DOES NOT DICTATE (#639). The chord used to be unbound here
+    // too; what must stay true either way is that nothing reaches the network.
     delete (globalThis as unknown as Record<string, unknown>).MediaRecorder;
-    const host = await mounted(<Box kind="session" />);
-    expect(await chord()).toBe(false);
+    await mounted(<Box kind="session" />);
+    await chord();
     expect(tokenCalls).toBe(0);
-    expect(host.querySelector('button[aria-label="Dictate"]')).toBeNull();
+    expect(live).toBeUndefined();
   });
 
   test("nothing on a screen with no message box on it", async () => {
