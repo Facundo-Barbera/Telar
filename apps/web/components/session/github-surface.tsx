@@ -22,6 +22,15 @@
  *   - LABELS, MILESTONE AND BOARDS, in that order, each absent when empty rather
  *     than drawn as a placeholder.
  *
+ * AND AN ISSUE ROW CAN START A SESSION ON ITSELF (#695) — the one thing on this
+ * surface that github.com structurally cannot do. Everything else here is an
+ * attempt to be less bad than its lists at reading; this is the panel's only
+ * durable advantage, which is that it knows about sessions. One press arms a
+ * worktree, defaults its base and puts the issue in the composer; it does NOT
+ * create anything, because in Telar the first message is what creates a session
+ * and a row action that minted one on sight would litter the rail. When a
+ * worktree cannot be cut, it says why and opens nothing — see `lib/issue-session.ts`.
+ *
  * CLOSED ROWS ARE AVAILABLE, WHICH IS THE OTHER HALF. The list used to be open-only
  * and called that a working set; that is defensible for issues and wrong for pull
  * requests, where the merged ones are the record of what shipped. Each surface has
@@ -44,11 +53,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { usePathname, useRouter } from "next/navigation";
 import {
   CircleCheckIcon,
   CircleDotIcon,
   CircleSlashIcon,
   ExternalLinkIcon,
+  GitBranchPlusIcon,
   GitMergeIcon,
   GitPullRequestClosedIcon,
   GitPullRequestDraftIcon,
@@ -65,7 +76,10 @@ import type { GitHubFacets, GitHubIssue, GitHubIssueFilter, GitHubPullFilter, Gi
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { filterChips, issueStatus, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeFilterChip, type ForgeStatus } from "@/lib/github-forge";
-import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
+import { insertReference, issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
+import { readDraft, writeDraft } from "@/lib/composer-draft";
+import { issueSessionStart } from "@/lib/issue-session";
+import { canvasHref } from "@/lib/session-list";
 import {
   activateForge,
   closeForge,
@@ -208,12 +222,13 @@ function statusTone(status: ForgeStatus) {
 }
 
 /**
- * One row: three gestures, three targets.
+ * One row: four gestures, four targets.
  *
  * CLICKING OPENS IT IN THE PANEL — the row is a button, exactly as a row in the
  * file tree is. DRAGGING references it in the message. The link icon goes to
- * GitHub. The three mean different things ("read this here", "talk about this
- * here", "take me to the website") and each has its own pixel, because a row that
+ * GitHub. AND, ON AN ISSUE, `action` STARTS A SESSION ON IT (#695). The four mean
+ * different things ("read this here", "talk about this here", "take me to the
+ * website", "go and work on this") and each has its own pixel, because a row that
  * did two of them from the same one would make one of them an accident.
  *
  * A `<button>` THAT IS ALSO `draggable` is the same arrangement the file tree
@@ -232,6 +247,7 @@ function ForgeRow({
   milestone,
   projects,
   extra,
+  action,
   open,
   onOpen,
   onDrag,
@@ -249,6 +265,9 @@ function ForgeRow({
   projects: readonly string[];
   /** Row-specific badges — a pull request's review decision, its branch. */
   extra?: React.ReactNode;
+  /** A control in the row's trailing gutter, beside the GitHub link — the issue
+   *  row's "start a session on this" (#695). Absent draws nothing. */
+  action?: React.ReactNode;
   /** Already open as a tab. Marked rather than prevented — clicking still brings
    *  that tab forward, which is what a person expects. */
   open?: boolean;
@@ -321,6 +340,7 @@ function ForgeRow({
             </span>
           )}
         </span>
+        {action}
         <a
           href={url}
           target="_blank"
@@ -340,7 +360,49 @@ function ForgeRow({
   );
 }
 
-function IssueRow({ issue, open, onOpen }: { issue: GitHubIssue; open: boolean; onOpen: () => void }) {
+/**
+ * START A SESSION ON THIS ISSUE — the row's fourth gesture (#695).
+ *
+ * A `<span role="button">` RATHER THAN A `<button>`, and the reason is the row it
+ * sits in: the whole row is already a `<button>`, and a nested one is not
+ * parseable — the HTML parser closes the outer button at the inner tag, so the
+ * server-rendered markup and the hydrated DOM would disagree about the shape of
+ * every row. The GitHub link beside it is an `<a>` for the same reason and has
+ * been all along. Keyboard-reachable on the same terms a real button would be:
+ * `tabIndex`, Enter and Space, an `aria-label` that says the verb.
+ *
+ * `stopPropagation` ON BOTH, because the row's own click opens the issue as a tab
+ * and starting a session is not that. Same guard the link already carries.
+ */
+function StartSessionAction({ number, busy, onStart }: { number: number; busy: boolean; onStart: () => void }) {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      aria-label={`Start a worktree session on #${number}`}
+      // The tooltip says what will happen, not what the icon is: the gesture
+      // ends on a canvas with a message half-written, not in a running session,
+      // and a reader who expected the latter would think it had failed.
+      title={`Start a session on #${number} — a worktree of its own, with this issue in the message`}
+      aria-busy={busy || undefined}
+      onClick={(event) => {
+        event.stopPropagation();
+        onStart();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onStart();
+      }}
+      className="mt-0.5 shrink-0 cursor-pointer rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+    >
+      {busy ? <Spinner className="size-3" /> : <GitBranchPlusIcon className="size-3" />}
+    </span>
+  );
+}
+
+function IssueRow({ issue, open, onOpen, busy, onStart }: { issue: GitHubIssue; open: boolean; onOpen: () => void; busy?: boolean; onStart?: () => void }) {
   const status = issueStatus(issue);
   return (
     <ForgeRow
@@ -357,6 +419,9 @@ function IssueRow({ issue, open, onOpen }: { issue: GitHubIssue; open: boolean; 
       projects={issue.projects}
       open={open}
       onOpen={onOpen}
+      // Absent without a project to cut in — see `GitHubSurface`. A control that
+      // could not work is worse than no control.
+      {...(onStart ? { action: <StartSessionAction number={issue.number} busy={busy === true} onStart={onStart} /> } : {})}
       onDrag={(transfer) => startReferenceDrag(transfer, issueReference(issue))}
     />
   );
@@ -423,12 +488,25 @@ export function GitHubSurface({
    */
   open,
   onOpenChange,
+  /** WHICH MAC this panel is about, so "start a session on this issue" opens a
+   *  canvas on the same machine the project is on (#695). */
+  hostId,
+  /**
+   * Put text into the message being written. Used by the issue row's session
+   * action for the ONE case where the composer it needs already exists: this
+   * panel is open on the very canvas the action is about to arm. Every other
+   * case has no composer yet and goes through the canvas draft — see
+   * `startSession`.
+   */
+  onInsertReference,
 }: {
   kind: "issues" | "pulls";
   projectId?: string;
   branch?: string;
   open?: ForgeOpen;
   onOpenChange?: (next: ForgeOpen) => void;
+  hostId?: string;
+  onInsertReference?: (text: string) => void;
 }) {
   const [snapshot, setSnapshot] = useState<GitHubSnapshot>();
   const [error, setError] = useState<string>();
@@ -452,6 +530,78 @@ export function GitHubSurface({
    */
   const [facets, setFacets] = useState<GitHubFacets>();
   const [loadingFacets, setLoadingFacets] = useState(false);
+  /**
+   * WHY A SESSION WAS NOT STARTED, and which row is asking (#695).
+   *
+   * A SENTENCE IN THE SURFACE RATHER THAN A TOAST. The refusal is about this
+   * project's checkout — an unplugged drive, a folder that moved — so it belongs
+   * beside the list it refused for, where it stays put long enough to be read and
+   * acted on. Cleared by the next attempt; a successful one navigates away.
+   */
+  const [refusal, setRefusal] = useState<string>();
+  /** The issue whose checkout read is in flight, so its own control can spin and
+   *  a second press cannot start two. */
+  const [starting, setStarting] = useState<number>();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  /**
+   * ISSUE → SESSION (#695). Read the checkout, decide, then either refuse with
+   * the reason or hand the canvas a first message and open it.
+   *
+   * THE READ IS ON THE PRESS, not on mount. It costs nothing for the reader who
+   * never uses this, and it is the freshest possible answer about a cable at the
+   * moment somebody is relying on it — `assertProjectAvailable`'s own argument
+   * for probing rather than trusting the last listing.
+   *
+   * WHERE THE FIRST MESSAGE GOES, and why there are two answers. A canvas mints
+   * no session, so ordinarily there is no composer to write into and the message
+   * travels as the project's CANVAS DRAFT — the same key the composer restores
+   * from on arrival (`lib/composer-draft.ts`). The exception is this panel being
+   * open on that very canvas already: its composer exists, holds the authority
+   * over that key, and would overwrite anything written underneath it on its next
+   * keystroke — so there the reference goes through `onInsertReference`, live.
+   *
+   * NOTHING TYPED IS EVER EATEN, on either path: an existing draft is appended
+   * to with `insertReference`'s spacing, which is the rule `insertIntoComposer`
+   * follows for the same gesture from the other side.
+   */
+  const startSession = useCallback(
+    async (issue: GitHubIssue) => {
+      if (!projectId) return;
+      setRefusal(undefined);
+      setStarting(issue.number);
+      let git;
+      let unreadable: string | undefined;
+      try {
+        git = (await api.projectGit(projectId)).git;
+      } catch (cause) {
+        unreadable = cause instanceof EngineApiError ? cause.message : undefined;
+      } finally {
+        setStarting(undefined);
+      }
+      const start = issueSessionStart({
+        issue,
+        projectId,
+        ...(hostId ? { hostId } : {}),
+        ...(git ? { git } : {}),
+        ...(unreadable ? { unreadable } : {}),
+      });
+      if (!start.ok) {
+        setRefusal(start.reason);
+        return;
+      }
+      if (onInsertReference && pathname === canvasHref(projectId, hostId)) onInsertReference(start.text);
+      else {
+        const existing = readDraft(undefined, projectId);
+        writeDraft(undefined, projectId, existing.trim() ? insertReference(existing, start.text, existing.length).draft : start.text);
+      }
+      // `push`, not `replace`: the issue list the reader came from is somewhere
+      // they may well want Back to return to.
+      router.push(start.href);
+    },
+    [projectId, hostId, onInsertReference, pathname, router],
+  );
 
   const load = useCallback(
     async (force = false) => {
@@ -771,6 +921,36 @@ export function GitHubSurface({
           </div>
         )}
 
+        {/**
+         * WHY NO SESSION WAS STARTED (#695).
+         *
+         * ABOVE THE LIST, NOT IN A TOAST AND NOT IN PLACE OF IT. The rows are
+         * still true and still worth reading; what failed is one gesture, and the
+         * reason is a fact about this project's disk that the reader has to act on
+         * somewhere else — plug a drive in, find a folder. A notice that dismissed
+         * itself after four seconds would be the wrong shape for both.
+         *
+         * INSIDE `list()` RATHER THAN OVER THE WHOLE SURFACE, because the sub-strip
+         * above it belongs to the open details (#693): a refusal about cutting a
+         * worktree has nothing to do with an issue somebody has open in a chip, and
+         * spanning both would make it read as the thread's problem rather than the
+         * action's.
+         *
+         * `attention`, not `danger`: nothing broke and nothing was lost. The cut
+         * did not happen, and the sentence says what would make it happen.
+         *
+         * `tint-warning` RATHER THAN `bg-warning/10`, which is #691's contract and
+         * not a style preference: an alpha here would be a tenth of the theme's
+         * amber over nine tenths of whatever the wash left behind, so the band
+         * would dissolve into the backdrop on a translucent Look and take the
+         * sentence with it. The class mixes the same colour INTO the card.
+         */}
+        {refusal && (
+          <p className="tint-warning border-b border-border px-4 py-2 text-2xs leading-snug text-foreground" role="status">
+            {refusal}
+          </p>
+        )}
+
         {rows.length === 0 ? (
           <p className="px-4 py-6 text-center text-2xs leading-snug text-muted-foreground">
             {shownChips.length > 0
@@ -789,6 +969,12 @@ export function GitHubSurface({
                       issue={issue}
                       open={alreadyOpen.has(issue.number)}
                       onOpen={() => onOpenChange?.(openForge(forge, issue.number))}
+                      busy={starting === issue.number}
+                      // WITHOUT A PROJECT THERE IS NOWHERE TO CUT, and the surface
+                      // itself is empty in that case anyway — but the control is
+                      // withheld rather than left to fail, which is the same rule
+                      // the base picker follows on a project checkout.
+                      {...(projectId ? { onStart: () => void startSession(issue) } : {})}
                     />
                   ))
                 : snapshot.pulls.map((pull) => (

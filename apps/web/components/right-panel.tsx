@@ -1638,6 +1638,11 @@ export function PanelSurface({
         // and what keeps two windows on one session independent of each other.
         open={readForgeOpen(tab.params)}
         {...(onTabParams ? { onOpenChange: (next: ForgeOpen) => onTabParams(forgeParams(next)) } : {})}
+        // The two an issue row's session action needs (#695): which Mac the
+        // canvas it opens belongs to, and the live composer for the one case
+        // where this panel is already on that canvas.
+        {...(hostId ? { hostId } : {})}
+        {...(onInsertReference ? { onInsertReference } : {})}
       />
     );
   if (kind === "agents")

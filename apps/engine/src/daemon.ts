@@ -118,7 +118,7 @@ import { PreparedPromptsError } from "./prompts";
 import type { GhRunner } from "./github";
 import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
-import type { AsyncGitRunner, GitRunner } from "./worktree";
+import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
 import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
 import { measureStorage } from "./storage";
 import { describeOutcome } from "./worktrees-move";
@@ -320,6 +320,25 @@ function errorFor(error: unknown): HttpError {
   // The prompt shelf's, for the same reason and in the same shape.
   if (error instanceof PreparedPromptsError) {
     return new HttpError(error.code === "not_found" ? 404 : 400, error.code, error.message);
+  }
+  /**
+   * AND THE CUT'S REFUSALS, for the identical reason — issue #695.
+   *
+   * `prepareSessionWorktree` raises every reason a worktree cannot be cut ON THE
+   * REQUEST rather than on the row, on the stated grounds that the caller is
+   * still there to be told (worktree.ts's header, the #496 seam). Falling through
+   * to the 500 below spent that argument for nothing: "worktree sessions need a
+   * git repository; /Volumes/X/thing is not one" reached the client as "engine
+   * encountered an internal error", which is not a reason and not even true.
+   *
+   * `invalid_request`, NEVER `internal_error`: each of these is the caller having
+   * asked for something this engine will not do — an unversioned directory, a
+   * branch inside `telar/`, a ref that does not resolve — so the status is a 400
+   * and the sentence is the engine's own, whole. The drive-away arm never arrives
+   * here: `assertProjectAvailable` refuses it first as a `conflict`.
+   */
+  if (error instanceof WorktreeError) {
+    return new HttpError(400, "invalid_request", error.message);
   }
   return new HttpError(500, "internal_error", "engine encountered an internal error");
 }
