@@ -2,7 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineClient, EngineClientError, TELAR_DARK, TELAR_LIGHT, type PublishedAppearance } from "@telar/engine-client";
+import {
+  DEFAULT_BASE_DARK,
+  DEFAULT_BASE_LIGHT,
+  EngineClient,
+  EngineClientError,
+  type PublishedAppearance,
+} from "@telar/engine-client";
 import { connectEngine } from "@telar/engine-client/node";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { stubModels } from "./stub-models";
@@ -306,7 +312,14 @@ test("configuring a login reports what it stopped inheriting, and can be told to
 /** A minimal but REAL published look — the client parses what it reads, so a
  *  hand-waved blob would come back as `null` and prove nothing. Only the
  *  members the parser treats as load-bearing are spelt out; the rest of a Look
- *  falls back on its own, which is itself part of the contract. */
+ *  falls back on its own, which is itself part of the contract.
+ *
+ *  A VERSION 2 LOOK, because this test asserts a ROUND TRIP. The parser
+ *  migrates a version 1 look into a composition on the way through (#471), so a
+ *  v1 fixture here would come back legitimately different from what went in and
+ *  the equality would be measuring the migration rather than the mailbox. That
+ *  migration has its own tests, over both the theme pair and every old backdrop
+ *  kind — packages/engine-client/test/look.test.ts. */
 function publishedLook(label: string): PublishedAppearance {
   return {
     version: 2,
@@ -323,11 +336,14 @@ function publishedLook(label: string): PublishedAppearance {
       fontStacks: { sans: '"Geist", sans-serif', mono: '"Geist Mono", monospace' },
     },
     look: {
-      version: 1,
+      version: 2,
       id: "published",
       label,
-      theme: { light: TELAR_LIGHT, dark: TELAR_DARK },
-      backdrop: { kind: "none" },
+      composition: {
+        light: { base: DEFAULT_BASE_LIGHT, layers: [], overrides: {} },
+        dark: { base: DEFAULT_BASE_DARK, layers: [], overrides: {} },
+      },
+      images: {},
       accent: "sea",
       fontSans: "geist",
       fontMono: "geist",
@@ -364,7 +380,7 @@ test("the appearance mailbox round-trips a published look, caches it, and answer
   expect(read.appearance).toEqual(blob);
   expect(read.updatedAt).toBe(written.updatedAt);
 
-  // THE ETAG AND ITS 304. A published look carries its backdrop's pixels, so a
+  // THE ETAG AND ITS 304. A published look carries its layer images, so a
   // client that polls this must be able to ask "still the same?" without
   // paying for the answer twice.
   const first = await fetch(url, { headers: auth });
@@ -384,7 +400,12 @@ test("the appearance mailbox round-trips a published look, caches it, and answer
   // wallpaper IS part of the look now. (The refusal above it has its own test —
   // see below for why it cannot share a connection with anything.)
   const heavy = publishedLook("With a wallpaper");
-  heavy.look.backdrop = { kind: "image", fit: "cover", blur: 0, dim: 0, image: `data:image/webp;base64,${"A".repeat(2 * 1024 * 1024)}` };
+  // The pixels live in `images`, shared by both states, and each state's stack
+  // names the layer that paints them — one picture, not two megabytes twice.
+  heavy.look.images = { wallpaper: `data:image/webp;base64,${"A".repeat(2 * 1024 * 1024)}` };
+  const wallpaper = { type: "image", id: "wallpaper", x: 50, y: 50, scale: 100, opacity: 100, tiled: false } as const;
+  heavy.look.composition.light.layers = [{ ...wallpaper }];
+  heavy.look.composition.dark.layers = [{ ...wallpaper }];
   await expect(client.setAppearance(heavy)).resolves.toMatchObject({ ok: true });
 
   // 405, NOT 404: the path exists, the verb does not — and `Allow` says which.
