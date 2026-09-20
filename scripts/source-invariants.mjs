@@ -844,6 +844,106 @@ const SYNC_SPAWN_SAMPLES = [
   { flags: false, why: "the import, which is not a call", code: `import { spawnSync } from "node:child_process";` },
 ];
 
+/**
+ * THE ONE PUSH IN THIS ENGINE MAY ONLY EVER APPEND — issue #670.
+ *
+ * `pushSessionBranch` is the first subprocess here that leaves the machine, and
+ * `git.ts`'s header argues it is inside the "additive and recoverable" rule on
+ * exactly one ground: the argv is fixed and cannot destroy anything that was
+ * already on the remote. A behavioural test proves the call site WE WROTE does
+ * not force. This is what stops a SECOND one appearing — the same shape as the
+ * sync-spawn rule, and the reason `check:source` runs in `verify`.
+ *
+ * A BRACKET-MATCHED SCAN, not a line grep, because an argv is often built
+ * across several lines and an unrelated `.push(` must not be mistaken for a git
+ * one. Only an array whose FIRST element is the literal `"push"` is read, which
+ * is what makes it a git push rather than any other array in the file.
+ */
+const FORBIDDEN_PUSH_TOKENS = [
+  { token: "--force", why: "a force push overwrites commits that were already on the remote" },
+  { token: "--force-with-lease", why: "a lease is still an overwrite, and this engine has no reader to check the lease for" },
+  { token: "--delete", why: "deleting a remote branch is not additive and is not recoverable" },
+  { token: "-f", why: "`-f` is `--force` spelled shorter" },
+];
+
+/** Every git push argv in a source file, with whatever it should not carry. */
+function pushArgvProblems(source) {
+  const problems = [];
+  const pattern = /\[\s*"push"/g;
+  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
+    const open = match.index;
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < source.length; i += 1) {
+      if (source[i] === "[") depth += 1;
+      else if (source[i] === "]" && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    if (end === -1) continue;
+    const argv = source.slice(open, end + 1);
+    const line = source.slice(0, open).split("\n").length;
+    for (const { token, why } of FORBIDDEN_PUSH_TOKENS) {
+      // Matched as a whole quoted element, so `--force-with-lease` is not also
+      // reported as `--force` and a BRANCH whose name contains the letters is
+      // not reported at all.
+      if (argv.includes(`"${token}"`)) problems.push({ line, token, why });
+    }
+    // A `+`-prefixed refspec is a force push wearing no flag to grep for.
+    if (/"\+[^"]+:/.test(argv)) {
+      problems.push({ line, token: "a +refspec", why: "a leading + on a refspec forces the update with no flag to grep for" });
+    }
+  }
+  return problems;
+}
+
+/**
+ * The shapes that matter, held to the standard the scans above set: a rule
+ * never shown to fire has demonstrated nothing. The last two are the ways a
+ * naive grep gets this wrong — an unrelated `.push(` call, and a BRANCH whose
+ * name merely contains the letters.
+ */
+const PUSH_ARGV_SAMPLES = [
+  { flags: true, why: "the plain force", code: `git(cwd, ["push", "--force", "origin", branch]);` },
+  { flags: true, why: "a lease is still an overwrite", code: `git(cwd, ["push", "--force-with-lease", "origin", branch]);` },
+  { flags: true, why: "deleting a remote branch", code: `git(cwd, ["push", "origin", "--delete", branch]);` },
+  { flags: true, why: "the short spelling", code: `git(cwd, ["push", "-f", "origin", branch]);` },
+  { flags: true, why: "a +refspec forces with no flag to grep for", code: `git(cwd, ["push", "origin", "+refs/heads/x:refs/heads/x"]);` },
+  {
+    flags: true,
+    why: "an argv built across several lines — the shape a line scan misses",
+    code: `git(cwd, [\n  "push",\n  "--set-upstream",\n  "--force",\n  "origin",\n  branch,\n]);`,
+  },
+  { flags: false, why: "the one push this engine makes", code: `git(cwd, ["push", "--set-upstream", "origin", branch]);` },
+  { flags: false, why: "an unrelated array push, which is not a git argv at all", code: `failures.push("--force is not allowed here");` },
+  { flags: false, why: "a branch whose NAME contains the letters", code: `git(cwd, ["push", "--set-upstream", "origin", "telar/force-refresh"]);` },
+];
+
+/** Every non-test source file under a directory. */
+async function sourceFilesUnder(directory) {
+  const found = [];
+  const walk = async (relative) => {
+    let entries;
+    try {
+      entries = await readdir(join(ROOT, relative), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const next = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "release" || entry.name.startsWith(".next")) continue;
+        await walk(next);
+      } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+        found.push(next);
+      }
+    }
+  };
+  await walk(directory);
+  return found;
+}
+
 const CHECKS = [
   /**
    * A SYNC CHILD WAIT IS OUTSIDE EVERY CEILING ABOVE IT — #807.
@@ -1793,6 +1893,39 @@ const CHECKS = [
           threw = true;
         }
         if (!threw) failures.push(`shardOf(files, ${index}, ${total}) returned instead of throwing; an impossible shard must not look empty.`);
+      }
+      return failures;
+    },
+  },
+  {
+    name: "git-push-argv-self-test",
+    protects: "#670: the push-argv scan still fires on every way of forcing, and stays quiet on the one push this engine makes",
+    async run() {
+      const failures = [];
+      for (const sample of PUSH_ARGV_SAMPLES) {
+        const hits = pushArgvProblems(sample.code);
+        const shown = sample.code.replace(/\n/g, " ");
+        if (sample.flags && hits.length === 0) failures.push(`the scan missed ${sample.why}: ${shown}`);
+        if (!sample.flags && hits.length > 0) failures.push(`the scan fired on ${sample.why}: ${shown}`);
+      }
+      return failures;
+    },
+  },
+  {
+    name: "git-push-argv",
+    protects: "#670: no git push in the engine carries --force, --force-with-lease, --delete or a +refspec",
+    async run() {
+      const failures = [];
+      for (const file of await sourceFilesUnder("apps/engine/src")) {
+        const source = await readFile(join(ROOT, file), "utf8");
+        for (const problem of pushArgvProblems(source)) {
+          failures.push(
+            `${file}:${problem.line}: a git push argv carries \`${problem.token}\` — ${problem.why}.\n` +
+              "        `git.ts`'s header argues this engine's one push is inside the additive-and-recoverable rule on " +
+              "exactly the ground that it cannot destroy what was already on the remote. A second push that can is not " +
+              "a new feature; it retires that argument. If this is genuinely wanted, the header is what has to change first.",
+          );
+        }
       }
       return failures;
     },

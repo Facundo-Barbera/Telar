@@ -2428,6 +2428,83 @@ export const GitCommitEntry = z.object({
 export type GitCommitEntry = z.infer<typeof GitCommitEntry>;
 
 /**
+ * Why a session's branch was not pushed — issue #670.
+ *
+ * TEN ANSWERS, AND THE FIRST FIVE NEVER TOUCH THE NETWORK. `not_repository`,
+ * `local_checkout`, `no_remote`, `not_session_branch` and `nothing_to_push` are
+ * decided from what the engine can already see, the way `mergePull` decides four
+ * of its seven refusals before GitHub is asked: they are facts rather than phrase
+ * matches, and a refusal that costs nothing on the far side is a refusal nobody
+ * has to apologise for. The rest are `git push`'s own stderr, classified.
+ *
+ * `nothing_to_push` IS NOT AN ERROR, the same judgement `commitSessionWork`
+ * makes about a clean tree. A branch level with its upstream is the ordinary
+ * state after a push, and a red failure for it would teach the reader to
+ * distrust the button.
+ */
+export const GitPushRefusal = z.enum([
+  /** The session's checkout is not a git repository. */
+  "not_repository",
+  /**
+   * A `local` session shares the PROJECT's checkout with the user's editor and
+   * with every other local session on it. This button publishes a session's own
+   * branch; there is no such branch here to publish.
+   */
+  "local_checkout",
+  /** The checkout has no `origin`. Nothing to push to — and plenty of
+   *  repositories are like this on purpose. */
+  "no_remote",
+  /**
+   * The checkout is not on the branch this session was cut for: somebody ran
+   * `git checkout`, or HEAD is detached. Pushing whatever happens to be checked
+   * out — the base branch, most likely — is not what this button means.
+   */
+  "not_session_branch",
+  /** The branch is level with its upstream. Not an error; see above. */
+  "nothing_to_push",
+  /** The remote refused: this account cannot write to that repository. */
+  "not_permitted",
+  /** Non-fast-forward. Somebody else pushed to this branch, and the fix is a
+   *  pull or a rebase — never a force, which this engine does not offer. */
+  "rejected",
+  /** Git wanted a credential and there was nobody to ask. `GIT_TERMINAL_PROMPT=0`
+   *  turns the prompt that would have hung into this. */
+  "auth",
+  /** The push outran its bound and was killed. The one refusal for which "try
+   *  again" is the honest offer — see `GitReadFailure`. */
+  "timeout",
+  /** Anything else. `message` is git's own words, never invented. */
+  "failed",
+]);
+export type GitPushRefusal = z.infer<typeof GitPushRefusal>;
+
+/**
+ * What a push attempt answers.
+ *
+ * A REFUSAL IS DATA, NOT AN EXCEPTION — the same shape as the merge's, and for
+ * the same reason: "git would not push this, and here is which of the ten
+ * reasons" is something a surface has to render.
+ *
+ * SUCCESS CARRIES THE COUNT IT PUSHED, so the surface can say what happened
+ * rather than "done". It is measured before the push, from the local
+ * remote-tracking ref.
+ */
+export const GitPushResult = z.union([
+  z.object({
+    pushed: z.literal(true),
+    branch: z.string().min(1),
+    /** Commits the branch had that `origin/<branch>` did not. Absent when there
+     *  was no remote-tracking ref to count against — a branch being published
+     *  for the first time. */
+    commits: z.number().int().nonnegative().optional(),
+    /** This branch had never been on the remote before. */
+    created: z.boolean().optional(),
+  }),
+  z.object({ pushed: z.literal(false), refusal: GitPushRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitPushResult = z.infer<typeof GitPushResult>;
+
+/**
  * WHAT THIS SESSION HAS DONE TO THE REPOSITORY, committed and uncommitted
  * together, measured from where it started.
  *

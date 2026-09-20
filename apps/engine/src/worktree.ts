@@ -116,6 +116,26 @@ export type GitRunOptions = {
    * ASYNC RUNNER ONLY — see `DEFAULT_GIT_ADMISSION_MS`.
    */
   admissionMs?: number;
+
+  /**
+   * Extra environment for this one child, merged over the engine's own — issue
+   * #670.
+   *
+   * IT EXISTS FOR EXACTLY ONE VARIABLE, `GIT_TERMINAL_PROMPT=0`, and the reason
+   * is that `git push` is the first git child in this engine that can be ASKED
+   * A QUESTION. Every other call here reads a local repository and answers or
+   * fails; a push against an HTTPS remote with no usable credential helper
+   * blocks on "Username for 'https://github.com':" and burns the whole timeout
+   * waiting for a person who is not there. With the prompt refused it exits
+   * immediately with words this engine can classify.
+   *
+   * IT IS NOT A CREDENTIAL CHANNEL AND MUST NOT BECOME ONE. The arrangement
+   * `github.ts` states — "sign-in lives outside Telar; the binaries already
+   * solved this on this machine" — is exactly as true for `git` as it is for
+   * `gh`. A token passed through here would move credentials into the engine's
+   * process, which is the one thing this whole design is arranged to avoid.
+   */
+  env?: Record<string, string>;
 };
 /** Injectable so tests never need a real repository. */
 export type GitRunner = (cwd: string, args: string[], options?: GitRunOptions) => GitResult;
@@ -233,6 +253,11 @@ export function createGitRunner(deps: GitRunnerDeps = {}): GitRunner {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      // MERGED OVER, NOT REPLACING: git needs HOME, PATH and the credential
+      // helper's own environment to work at all, so an `env` that stood alone
+      // would break every caller that passes one. Absent leaves inheritance
+      // exactly as it was.
+      ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
       timeout,
       // SIGKILL, NOT SIGTERM: the stall this guards against is a child stuck
       // in a syscall, and a signal git may handle politely is a signal it may
@@ -471,6 +496,9 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
       try {
         child = spawn(deps.gitBin ?? "git", args, {
           cwd,
+          // Merged over the engine's own, never replacing it — see the note on
+          // `GitRunOptions.env` and the synchronous runner above.
+          ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
           // THE ONE LINE THIS ISSUE IS ABOUT: git leads its own process group, so
           // the timeout path can reap what git spawned. `execFile` accepts this
           // option and ignores it (see the header) — the spawn is the fix.
