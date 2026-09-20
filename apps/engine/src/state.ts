@@ -7884,7 +7884,23 @@ export class EngineStore {
     const summary = options.runId === undefined
       ? store?.latestAnsweredTurn(sessionId)
       : store?.turnSummary(sessionId, options.runId);
-    const runId = options.runId ?? summary?.runId;
+    /**
+     * NO INDEX TO ASK: fold the QUEUE, never the journal — `turnOutline`'s own
+     * fallback, one projection over, and it is a CORRECTNESS fix rather than a
+     * completeness one.
+     *
+     * Without this a JSON-backed store answered `TURN_ANSWER_NONE` for every
+     * bare call, because the only thing that can name "the latest turn that
+     * left text" is the projection and there is none. The sentence that miss
+     * produces is "this session has never left an answer… do not ask it again"
+     * — a closed door (#592, deliberately) in front of a session whose answer
+     * is sitting in `queue.json`. A refusal that tells a model to stop asking
+     * has to be true on every backend or it is worse than a slow answer.
+     */
+    const folded = options.runId === undefined && !store
+      ? this.readQueue(sessionId).turns.filter((turn) => (turn.resultText ?? "").length > 0).at(-1)?.runId
+      : undefined;
+    const runId = options.runId ?? summary?.runId ?? folded;
     if (runId === undefined) throw new EngineStateError("not_found", TURN_ANSWER_NONE);
     const turn = this.turnByIndex(sessionId, runId);
     if (!turn) throw new EngineStateError("not_found", TURN_ANSWER_NO_SUCH_RUN);
