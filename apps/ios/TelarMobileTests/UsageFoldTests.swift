@@ -47,8 +47,14 @@ import Testing
 
     @Test func totalsSumEveryBucketAndCarryThePricedFlagDown() throws {
         let fold = foldUsage(try decoded())
-        // 1000 + 18 + 300
-        #expect(fold.total.processed == 1318)
+        // 1000 + 15 + 300. The middle bucket also reports 3 reasoning tokens,
+        // and they are NOT in the sum: `TokenUsage.processed` excludes
+        // `reasoning` because the providers that report it also count it inside
+        // `output`, so adding it would count those tokens twice. The web's
+        // `processedTokens` does the same, and this suite exists to keep the two
+        // printing the same figure. This read 1318 — 1000 + 18 + 300, the
+        // reasoning tokens counted — until CI first executed the suite (#755).
+        #expect(fold.total.processed == 1315)
         #expect(fold.total.tokens.input == 310)
         #expect(fold.total.tokens.cacheRead == 800)
         #expect(fold.total.turns == 7)
@@ -66,9 +72,13 @@ import Testing
         let fold = foldUsage(try decoded())
         #expect(fold.providers.map(\.driver) == ["claude", "codex"])
         let claude = try #require(fold.providers.first)
-        #expect(claude.totals.processed == 1018)
-        #expect(abs(claude.share - 1018.0 / 1318.0) < 0.0001)
-        #expect(abs(fold.providers[1].share - 300.0 / 1318.0) < 0.0001)
+        // 1000 + 15, reasoning excluded — see the note on the total above.
+        #expect(claude.totals.processed == 1015)
+        #expect(abs(claude.share - 1015.0 / 1315.0) < 0.0001)
+        #expect(abs(fold.providers[1].share - 300.0 / 1315.0) < 0.0001)
+        // Unchanged, and worth noticing: 1018/1318 and 1015/1315 both round to
+        // 77.2%, so the formatted figure this test was really about was right
+        // either way. The share assertions above are what caught the arithmetic.
         #expect(formatShare(claude.share) == "77.2%")
     }
 

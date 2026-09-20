@@ -171,7 +171,17 @@ private func stubAPI() -> HTTPEngineAPI {
     @Test func versionSkewIsNamedNotBlamedOnTheURL() async {
         // A 200 that doesn't decode proves the URL IS a cockpit — the two
         // ends are just on different versions.
-        StubURLProtocol.handler = { _ in (200, Data("{}".utf8)) }
+        //
+        // NOT `{}` ANY MORE, AND THAT IS A REAL CHANGE RATHER THAN A TWEAK.
+        // `LiveSessions` decodes an absent `sessions`/`projects` to empty on
+        // purpose since #459 — it is how one type reads both the full answer and
+        // the conditional read's "unchanged" answer, and `SessionModels.swift`
+        // says so where the decoder is. So `{}` is now a VALID body and this
+        // probe stopped probing anything the day that landed; it went unnoticed
+        // because nothing executed this suite until #755. A wrongly TYPED
+        // `sessions` is undecodable under either shape, which is what this test
+        // has always been about.
+        StubURLProtocol.handler = { _ in (200, Data(#"{"sessions":"not an array"}"#.utf8)) }
         do {
             _ = try await stubAPI().liveSessions()
             Issue.record("expected throw")
