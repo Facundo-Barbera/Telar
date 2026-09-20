@@ -1,5 +1,38 @@
 import SwiftUI
 
+// THIS VIEW IS CUT INTO LAYERS ON PURPOSE. DO NOT FOLD THEM BACK (#764).
+//
+// `body` was one 497-line view-builder chain and CI's type-check floor read it
+// at 3703–6337 ms — 7.4× to 12.7× the 500 ms bar. The Swift constraint solver
+// is superlinear in expression size, so N small solves are cheaper than one
+// solve of the combined expression on EVERY machine, slow or fast. That is
+// also why the cure is structural and not a compiler flag: #758 tried raising
+// the solver's limits twice and the second attempt ground for thirteen minutes
+// before failing.
+//
+// THE RULE, and it is the same one `SessionView.swift` carries after #768:
+// adding a modifier is fine, and adding a band is fine. Folding two layers
+// into one is what regressed. Two properties have to survive any edit here:
+//
+//   1. THE MODIFIER SEQUENCE IS ONE UNBROKEN ORDER. Read inside-out,
+//      `sessionList` receives `chrome`'s 1–5, `navigation`'s 6–9,
+//      `presentations`' 10–11, `lifecycle`'s 12–14 and `body`'s 15–17. Order
+//      is semantic in SwiftUI — `.background` before versus after
+//      `.safeAreaInset` is a different view — so a modifier moved across a
+//      boundary is a behaviour change wearing a refactor's clothes.
+//
+//   2. ONE STATEMENT PER MEMBER, so the `@ViewBuilder` arity is unchanged at
+//      every level and the `TupleView` the `List` sees keeps its element
+//      count. Two siblings folded into one member changes the structural path
+//      of every row under it, and row identity is what `List(selection:)`
+//      reads. This is why the two `shelf(...)` calls are still inline.
+//
+// THERE IS NO MILLISECOND GATE, deliberately. `DataframeGrid.body` measured
+// below 500, then 518, then 658 ms on byte-identical source — a 500 ms
+// threshold would have been green, red, red with no commit in between. A gate
+// becomes safe because the numbers get small, not because it gets tuned; when
+// every declaration is ten times under the floor, failing on PRESENCE at 500
+// is a clean gate and a number is still weather.
 struct SessionSidebar: View {
     let settings: AppSettings
     let inbox: MergedInbox
