@@ -85,11 +85,28 @@ describe("what the scope asks the engine for", () => {
     expect(diffBaseFor({ kind: "branch", base: "origin/main" })).toEqual({ base: "origin/main" });
   });
 
-  test("the turn scope sends no base either, because git cannot answer it", () => {
-    // A turn has no commit to diff against. The surface routes this scope to
-    // the journal instead, and this value is never used — but it must not be a
-    // base that would quietly produce a git answer to a journal question.
-    expect(diffBaseFor({ kind: "turn", turn: "run_1" })).toEqual({});
+  test("an UNANCHORED turn sends nothing at all — not an empty option (#741)", () => {
+    /**
+     * THIS TEST CHANGED ITS ANSWER FROM `{}` TO `undefined`, and the reason is
+     * the whole of #741's seam.
+     *
+     * It used to read: a turn has no commit to diff against, so the surface
+     * routes this scope to the journal and "this value is never used". That
+     * second clause stopped being true. An ANCHORED turn is now a real git
+     * range, so the caller reads this return to decide WHICH WITNESS ANSWERS —
+     * and `{}` is not a neutral placeholder, it is a legitimate git request
+     * meaning "the session's own recorded base". Returning it for a turn git
+     * cannot answer would put a whole-session file list under a heading naming
+     * one turn, and look entirely plausible doing it.
+     *
+     * So the refusal is `undefined`, which is not a request at all and cannot
+     * be mistaken for one. Every caller spreads `base ?? {}` or reads `base?.x`
+     * — there is no site that treats the return as an object without checking.
+     */
+    expect(diffBaseFor({ kind: "turn", turn: "run_1" })).toBeUndefined();
+    // ...and it is distinguishable from the branch scope's `{}`, which IS a
+    // request and means something else entirely.
+    expect(diffBaseFor({ kind: "branch" })).toEqual({});
   });
 });
 
