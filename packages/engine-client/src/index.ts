@@ -1602,6 +1602,27 @@ export class EngineClient {
     };
   }
 
+  /**
+   * WHERE EVERY SESSION'S EVENTS ARRIVE — issue #586.
+   *
+   * A URL AND HEADERS RATHER THAN A SUBSCRIPTION, exactly like `agentStream`:
+   * the caller opens the connection, so a cockpit route can PIPE the body
+   * untouched instead of parsing and re-framing it, and a client that wants
+   * `EventSource` can have one.
+   *
+   * NO `after`, UNLIKE THE AGENT'S. An event id here is per session —
+   * `PRIMARY KEY(session_id, id)` — so there is no machine-wide cursor to
+   * replay from, and a parameter that silently meant nothing would be worse
+   * than none. The feed is live-only and its readers reconcile on their own
+   * slower timer; see the route.
+   */
+  sessionsStream(): { url: string; headers: Record<string, string> } {
+    return {
+      url: `http://${this.discovery.host}:${this.discovery.port}/v2/sessions/stream`,
+      headers: { authorization: `Bearer ${this.discovery.token}` },
+    };
+  }
+
   /* ---------------------------------------------------------------- *
    * DICTATION — issue #544, first step.
    *

@@ -147,11 +147,25 @@ export async function deliverRecord(
  * TEN SECONDS, NOT FIVE. An alert about a session that needs you can be ten
  * seconds late; what it cannot be is a per-record relay call every five.
  *
- * NOT YET A SUBSCRIPTION. The issue asks for the engine's session events, and
- * the engine has none to give — there is no global feed and the rail polls for
- * exactly that reason (`engine-client`'s `liveSessionsSince`). The conditional
- * read is the whole of the win available without a new engine route; the feed
- * itself is filed separately.
+ * ── AND SINCE #586 IT IS A SUBSCRIPTION ─────────────────────────────────────
+ *
+ * The note here used to read "NOT YET A SUBSCRIPTION… the engine has none to
+ * give". The engine has one now: `/v2/sessions/stream`, emitted at
+ * `appendEvent`, which is the single chokepoint every session event passes
+ * through. So this worker stops asking every ten seconds whether anything
+ * happened and is TOLD.
+ *
+ * THE TEN-MINUTE RECONCILE STAYS, and it is what makes the feed safe to rely
+ * on. A frame is never the record: it names a fact re-derivable from a read,
+ * so a worker that missed one — a dropped connection, a daemon restart, a
+ * frame written while this process was busy — loses latency and nothing else,
+ * because the unconditional wide pass still comes round. Removing it would
+ * turn a latency optimisation into a second source of truth, which is exactly
+ * what this feed's design refuses.
+ *
+ * SO THE TIMER'S CADENCE FOLLOWS THE FEED. Connected, it is the reconcile and
+ * nothing else; disconnected, it falls straight back to the ten seconds it
+ * always was. See `pollDelay`.
  */
 const POLL_INTERVAL = 10_000;
 /** The safety net, not the mechanism: an unconditional wide pass that re-reads
@@ -162,6 +176,11 @@ const RECONCILE_INTERVAL = 600_000;
  *  so one that is REGISTERED and has live work behind it is refreshed on this
  *  cadence even when no signal changed. Nothing else wakes on it. */
 const HEARTBEAT_INTERVAL = 60_000;
+/** How long a frame waits for its neighbours before the pass runs. A turn
+ *  ending writes several events at once, and one wide pass for the burst is
+ *  the point — long enough to coalesce, short enough that "immediate" is still
+ *  the honest word for it. */
+const FEED_COALESCE_MS = 250;
 
 type WorkerState = {
   telarMobilePushTimer?: ReturnType<typeof setTimeout>;
@@ -176,6 +195,10 @@ type WorkerState = {
   telarMobilePushETag?: string;
   telarMobilePushReconciledAt?: number;
   telarMobilePushBeatAt?: number;
+  /** The session feed is connected, so the timer below is a safety net rather
+   *  than the mechanism — see `pollDelay` (#586). */
+  telarMobilePushFeedOpen?: boolean;
+  telarMobilePushFeedStop?: () => void;
 };
 const workerGlobal = globalThis as typeof globalThis & WorkerState;
 
@@ -237,6 +260,89 @@ export function heartbeatDue(records: PushRecord[], sessions: SessionSignal[], s
   if (!records.some(record => record.liveActivities && record.activities.length > 0)) return false;
   if (!automaticSessions(sessions).length) return false;
   return since === undefined || now - since >= HEARTBEAT_INTERVAL;
+}
+
+/**
+ * HOW LONG UNTIL THE NEXT UNCONDITIONAL PASS — issue #586.
+ *
+ * CONNECTED, THE TIMER IS THE SAFETY NET AND NOT THE MECHANISM: frames wake
+ * the work, so the only reason left to tick is the reconcile that catches
+ * whatever a frame failed to deliver. DISCONNECTED, it is the ten seconds this
+ * worker always ran at — the feed being unavailable must cost latency, never
+ * correctness.
+ *
+ * A FUNCTION RATHER THAN A TERNARY AT THE CALL SITE, so the saving can be
+ * counted in a test: over ten simulated minutes this is one pass connected
+ * against sixty disconnected, and that ratio is the whole of what #586 buys
+ * this worker.
+ */
+export function pollDelay(feedConnected: boolean): number {
+  return feedConnected ? RECONCILE_INTERVAL : POLL_INTERVAL;
+}
+
+/** How many unconditional passes a given stretch of time costs at that
+ *  cadence. Pure, and exported so the proof is arithmetic over the REAL
+ *  constants rather than over numbers a test restated. */
+export function passesOver(minutes: number, feedConnected: boolean): number {
+  return Math.floor((minutes * 60_000) / pollDelay(feedConnected));
+}
+
+/**
+ * OPEN THE SESSION FEED AND NUDGE ON EVERY FRAME — issue #586.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE FRAME IS NOT READ FOR ITS CONTENT, and that is deliberate. A frame names
+ * which session moved and which event id; this worker's pass already re-reads
+ * the wide list conditionally and diffs it, so all a frame has to do is say
+ * "now" — the work of deciding what changed stays in one place rather than
+ * being half in the feed and half in the pass.
+ *
+ * WHICH ALSO MAKES A MISSED FRAME HARMLESS. The reconcile comes round either
+ * way, so the worst a dropped connection costs is the latency it was bought to
+ * remove.
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * RECONNECTION IS THE TIMER'S JOB, NOT A LOOP'S. On any end — a daemon
+ * restart, a severed socket — the flag goes down and the next tick falls back
+ * to the ten-second cadence, which is also what re-opens this. So there is no
+ * backoff to tune and no reconnect storm to have: the feed is an optimisation
+ * that reapplies itself when it can.
+ */
+function openSessionFeed(onFrame: () => void): void {
+  if (workerGlobal.telarMobilePushFeedStop) return;
+  const controller = new AbortController();
+  workerGlobal.telarMobilePushFeedStop = () => {
+    workerGlobal.telarMobilePushFeedOpen = false;
+    delete workerGlobal.telarMobilePushFeedStop;
+    controller.abort();
+  };
+  void (async () => {
+    try {
+      const stream = (await engineClient()).sessionsStream();
+      const upstream = await fetch(stream.url, { headers: stream.headers, signal: controller.signal });
+      if (!upstream.ok || !upstream.body) throw new Error("the engine did not open the session feed");
+      workerGlobal.telarMobilePushFeedOpen = true;
+      const reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        const lines = buffered.split("\n");
+        buffered = lines.pop() ?? "";
+        // `: open` and `: beat` are comments and carry nothing; only a data
+        // frame is a reason to look.
+        if (lines.some((line) => line.startsWith("data: "))) onFrame();
+      }
+    } catch {
+      // Including the abort on shutdown. Nothing is logged: a feed that is not
+      // there is a latency cost, not an error a person can act on.
+    } finally {
+      workerGlobal.telarMobilePushFeedOpen = false;
+      delete workerGlobal.telarMobilePushFeedStop;
+    }
+  })();
 }
 
 export function startMobilePushWorker(): void {
@@ -333,8 +439,25 @@ export function startMobilePushWorker(): void {
     } catch {
       // Keep checkpoints for retry, without logging credentials or session content.
       console.warn("[mobile-push] Delivery unavailable; retrying.");
-    } finally { workerGlobal.telarMobilePushTimer = setTimeout(tick, POLL_INTERVAL); workerGlobal.telarMobilePushTimer.unref(); }
+    } finally {
+      // THE CADENCE FOLLOWS THE FEED (#586): the reconcile when frames are
+      // arriving, the old ten seconds when they are not.
+      workerGlobal.telarMobilePushTimer = setTimeout(tick, pollDelay(workerGlobal.telarMobilePushFeedOpen === true));
+      workerGlobal.telarMobilePushTimer.unref();
+    }
   };
   workerGlobal.telarMobilePushTimer = setTimeout(tick, 0);
   workerGlobal.telarMobilePushTimer.unref();
+  /**
+   * A FRAME RESCHEDULES THE PASS RATHER THAN RUNNING ONE (#586). Several
+   * events land together constantly — a turn completing writes more than one —
+   * and running a wide pass per frame would be worse than the poll this
+   * replaces. Clearing the pending timer and setting a short one coalesces a
+   * burst into a single pass a moment later.
+   */
+  openSessionFeed(() => {
+    if (workerGlobal.telarMobilePushTimer) clearTimeout(workerGlobal.telarMobilePushTimer);
+    workerGlobal.telarMobilePushTimer = setTimeout(tick, FEED_COALESCE_MS);
+    workerGlobal.telarMobilePushTimer.unref();
+  });
 }

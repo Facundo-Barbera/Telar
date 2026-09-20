@@ -2529,6 +2529,9 @@ export class EngineStore {
    * went away.
    */
   private readonly runProgress = new Map<string, { runId: string; at: number }>();
+  /** Everyone listening to `appendEvent` — see `watch`. Empty on a daemon
+   *  nobody is streaming from, which is what makes `publish` free there. */
+  private readonly watchers = new Set<(event: EngineEvent) => void>();
   /** Text streamed into still-open items, by `session\nitem`. A cache over the
    *  journal's deltas — see `openItemPrefix`. */
   private readonly openPrefixes = new Map<string, { text: string; through: number; sealed: boolean }>();
@@ -15182,6 +15185,7 @@ export class EngineStore {
       // `atomicWrite`, which makes its own — so the `mkdir` below was a syscall
       // per streamed token-chunk to guarantee a directory nothing would use.
       this.executionStore.append(stored);
+      this.publish(stored);
       return stored;
     }
     const file = eventsFile(this.paths, sessionId);
@@ -15207,7 +15211,57 @@ export class EngineStore {
     }
     this.journalHead.set(sessionId, record.id);
     fs.chmodSync(file, 0o600);
+    this.publish(record);
     return record;
+  }
+
+  /**
+   * TELL WHOEVER IS WATCHING — issue #586.
+   *
+   * AFTER THE WRITE, ON BOTH BACKENDS, AND NEVER BEFORE IT. A listener that
+   * learned of an event the store had not yet durably appended could ask for it
+   * and be told it does not exist — a feed that is AHEAD of the record is worse
+   * than one that is behind, because a reader cannot recover from it by asking
+   * again.
+   *
+   * A THROWING WATCHER MUST NOT TAKE DOWN THE TURN THAT WAS TALKING TO IT.
+   * Same guarantee `agentRuntime.push` makes, for the same reason: the socket
+   * on the other end is allowed to have gone, and its own route is what tidies
+   * up when it notices.
+   */
+  private publish(event: EngineEvent): void {
+    if (this.watchers.size === 0) return;
+    for (const watcher of [...this.watchers]) {
+      try {
+        watcher(event);
+      } catch {
+        /* see above — the watcher's own route unsubscribes it */
+      }
+    }
+  }
+
+  /**
+   * WATCH EVERY SESSION EVENT THIS PROCESS WRITES — issue #586.
+   *
+   * ONE EMITTER AT `appendEvent`, which is the single chokepoint every session
+   * event already passes through on a process the daemon lock makes the only
+   * writer. That is what makes this feed COMPLETE and TOTALLY ORDERED without
+   * anybody having to remember to emit: a second call site would be a frame
+   * that exists for some writes and not others, which is worse than no feed.
+   *
+   * THE SAME SIGNATURE AS `agentRuntime.watch`, deliberately, so the engine's
+   * two streams are one pattern rather than two things to learn.
+   *
+   * A FRAME IS NEVER THE RECORD. Every frame here names a fact the reader can
+   * re-derive from a cursor'd read of `/events` — which is what makes the feed
+   * a latency optimisation over a poll rather than a second source of truth. A
+   * phone that was asleep when a frame went out loses nothing by asking.
+   */
+  watch(listener: (event: EngineEvent) => void): () => void {
+    this.watchers.add(listener);
+    return () => {
+      this.watchers.delete(listener);
+    };
   }
 }
 

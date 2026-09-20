@@ -77,7 +77,10 @@ const LIST_READS = new Set(["sessions/live", "health", "inbox", "projects"]);
  * the connection ends when the client goes away or the engine does, and both of
  * those close the socket. `AbortSignal.timeout` is simply not armed for it.
  */
-const STREAMS = new Set(["agent/stream"]);
+/** Routes that are STREAMS and must never be given a finite upstream timeout:
+ *  silence is their normal state, so a bound would sever a healthy connection
+ *  on a schedule. `sessions/stream` joined on #586. */
+const STREAMS = new Set(["agent/stream", "sessions/stream"]);
 
 export function upstreamTimeout(request: Pick<Request, "method">, path: readonly string[]): number {
   if (request.method.toUpperCase() !== "GET") return UPSTREAM_TIMEOUT_MS;

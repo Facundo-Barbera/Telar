@@ -4274,6 +4274,107 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * on a cold start, by a screen that then leaves. There is no timer behind
        * it to make cheap.
        */
+      /**
+       * EVERY SESSION'S EVENTS, ON ONE CONNECTION — issue #586.
+       *
+       * ────────────────────────────────────────────────────────────────────
+       * WHY A FEED AT ALL. Every liveness surface in this app polls, because
+       * there has never been anything to subscribe to: the mobile push worker
+       * asks `liveSessionsMatching` every ten seconds whether anything needs a
+       * notification, and the answer is almost always no. What a person feels
+       * is the LATENCY — a request parked for approval is up to ten seconds
+       * late — and what a relay would pay for is the request count.
+       *
+       * A FRAME IS NEVER THE RECORD. Each one names a fact the reader can
+       * re-derive from a cursor'd read of `/events`, which is what keeps this a
+       * latency optimisation over a poll rather than a second source of truth.
+       * A phone asleep when a frame went out loses nothing by asking. Any
+       * future frame must meet that bar or it does not belong here.
+       *
+       * SO THE FRAME IS THIN ON PURPOSE: which session, which event id, what
+       * kind. A reader that cares pages `/events` from the id — the same
+       * contract every other read here has. Putting the event's BODY on the
+       * wire would make this the record, and a client that missed a frame
+       * would have lost something.
+       * ────────────────────────────────────────────────────────────────────
+       *
+       * MIRRORS `/v2/agent/stream` FRAME FOR FRAME, and the mirroring is the
+       * point: one pattern in this daemon rather than two. The `: open` first,
+       * the replay inside the same response, the 25 s `: beat`, the
+       * `openStreams` registration — every one of those has its reason written
+       * out at that route and every one of them applies here verbatim.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/sessions/stream") {
+        response.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        });
+        const frame = (event: { sessionId: string; id: number; type: string }) => {
+          try {
+            response.write(`data: ${JSON.stringify({ sessionId: event.sessionId, id: event.id, type: event.type })}\n\n`);
+          } catch {
+            // The socket has gone; the close handler below unsubscribes.
+          }
+        };
+        /**
+         * THE FLUSH, AND IT IS NOT POLITENESS — see `/v2/agent/stream`, where
+         * this was measured: `writeHead` alone does not put headers on the
+         * wire, so the QUIETEST feed hangs longest. A machine with nothing
+         * happening is exactly when a client most needs to be told it is
+         * connected.
+         */
+        response.write(": open\n\n");
+        /**
+         * ── THERE IS NO `?after=` REPLAY HERE, AND THAT IS A FINDING ────────
+         *
+         * `/v2/agent/stream` replays from a cursor inside the same response,
+         * and #586 asked for the same shape. IT CANNOT HAVE IT: an event id in
+         * this engine is per session — `PRIMARY KEY(session_id, id)` in
+         * `execution-store.ts` — so there is no machine-wide cursor for a
+         * caller to hold or for this route to replay from. Accepting an
+         * `?after=` that silently meant nothing would be worse than not
+         * offering one, and synthesising a global ordering would mean a scan
+         * across every session's journal on every connect, which is precisely
+         * the whole-store pass this feed exists to remove.
+         *
+         * SO THE FEED IS LIVE-ONLY, AND ITS READERS ARE ALREADY BUILT FOR
+         * THAT. The rule this issue settles on is that a frame never IS the
+         * record: it names a fact re-derivable from a cursor'd read, so a
+         * reader that missed one loses latency and nothing else. The mobile
+         * worker keeps its ten-minute reconcile for exactly this, and that
+         * reconcile — not a replay — is what closes a gap after a disconnect.
+         */
+        const stop = store.watch(frame);
+        const beat = setInterval(() => {
+          try {
+            response.write(": beat\n\n");
+          } catch {
+            /* the close handler is what actually tidies up */
+          }
+        }, 25_000);
+        beat.unref();
+        const finish = () => {
+          clearInterval(beat);
+          stop();
+          openStreams.delete(finish);
+        };
+        // THE SHUTDOWN HAS TO BE ABLE TO END THIS, or `server.close()` waits
+        // for ever on a connection that by design never ends. Same reason and
+        // same machinery as the agent stream's.
+        openStreams.add(finish);
+        request.on("close", finish);
+        response.on("close", finish);
+        (finish as { end?: () => void }).end = () => {
+          finish();
+          try {
+            response.end();
+          } catch {
+            /* already gone */
+          }
+        };
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/sessions/activity") {
         writeJson(response, 200, { projects: store.projectActivity() });
         return;
