@@ -158,14 +158,19 @@ describe("the compaction control", () => {
 });
 
 /**
- * THE FIELD'S OWN DECISION, driven directly.
+ * THE FIELD'S OWN DECISION, called directly.
  *
- * NOT THROUGH THE INPUT, because React's `onChange` does not survive this app's
- * DOM harness — happy-dom dispatches the `input` event, React's `onInput` sees
- * it, and its change plugin does not, so a controlled text field never updates.
- * Reaching `compactionEdit` through that would be a test of React's event
- * delegation rather than of this card, and it is the one thing here nobody
- * wrote. So the decision is exported and called.
+ * The note here used to say the input could not be driven at all — React's
+ * change plugin never firing under happy-dom. That was #732, the cause was
+ * import order in the test preload rather than the DOM, and it is fixed;
+ * `lib/testing/type-into.ts` would reach this field today.
+ *
+ * It is still called directly, for the reason that survives: `compactionEdit`
+ * is a pure arithmetic rule over what the CLI can honour, and the cases worth
+ * pinning are the refusals at its edges. Typing each of them into a field would
+ * be testing React's delegation once per case to learn the same answer. What is
+ * NOT covered either way is the wiring from the field to this function — one
+ * call site, and the kind of thing a driven test should now take.
  */
 describe("what a typed threshold does", () => {
   const configured: ProviderInstanceEnvVar[] = [{ name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW", value: "183000", sensitive: false }];

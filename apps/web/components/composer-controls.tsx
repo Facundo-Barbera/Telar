@@ -374,9 +374,11 @@ type ModelView = ProviderDriverKind | "favorites";
  * THE SESSION'S OWN PROVIDER LEADS. The harness you are already on is the one
  * whose rows you most likely meant.
  *
- * Exported for its own test: this app's DOM test environment cannot type into
- * a controlled input, so the rule is checked here rather than through the
- * field that drives it.
+ * Exported so the rule can be stated in one place and checked against all three
+ * drivers without mounting a picker per case. It is NO LONGER the only cover:
+ * #732 — which said this app could not type into a controlled input, and was
+ * the reason this export originally existed — is fixed, so the same rule is now
+ * also driven through the field itself in composer-controls.model-picker.test.tsx.
  */
 export function searchScope(driver: ProviderDriverKind, canSwitchProvider: boolean): ProviderDriverKind[] {
   return canSwitchProvider ? [driver, ...PROVIDERS.filter((option) => option !== driver)] : [driver];
