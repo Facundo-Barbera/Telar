@@ -642,16 +642,23 @@ test("the default base falls back to common names, and is absent without remote 
 });
 
 /**
- * A fake `git` that never returns. Writes its pid first so the test can prove
- * the child is GONE, not merely abandoned: a runner that gave up waiting but
- * left the process behind would still leak a stuck git per poll.
+ * A fake `git` that never returns. It writes nothing and needs no cooperation
+ * from the test: the runner reports the pid it killed, so proving the child is
+ * GONE rather than merely abandoned no longer depends on the child having got
+ * far enough to say who it was (#748).
+ *
+ * `exec` IS LOAD-BEARING, AND THE ASSERTION BELOW RELIES ON IT. `sh` replaces
+ * itself with `sleep`, so there is exactly one process and its pid is the one
+ * the runner spawned. SIGKILL reaps git; it does not reap what git SPAWNED
+ * (#743, measured: a clean filter outlived the git that started it by 5.6 s), so
+ * a fixture that forked instead of exec'ing would leave a grandchild this check
+ * cannot see and would prove less than it appears to.
  */
-function stalledGit(): { bin: string; pidFile: string } {
+function stalledGit(): { bin: string } {
   const dir = tmp("telar-stalled-git-");
-  const pidFile = path.join(dir, "pid");
   const bin = path.join(dir, "git");
-  fs.writeFileSync(bin, `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 600\n`, { mode: 0o755 });
-  return { bin, pidFile };
+  fs.writeFileSync(bin, "#!/bin/sh\nexec sleep 600\n", { mode: 0o755 });
+  return { bin };
 }
 
 const alive = (pid: number): boolean => {
@@ -663,25 +670,61 @@ const alive = (pid: number): boolean => {
   }
 };
 
-test("a git child that stalls is killed at the bound and reported, not waited on forever", () => {
-  // Measured: `git rev-parse --abbrev-ref HEAD` blocked for minutes in the
-  // kernel under ~/Documents, and the synchronous runner blocked the daemon's
-  // whole event loop with it — every project list timed out until the process
-  // was killed by hand. The runner now does that itself.
-  const { bin, pidFile } = stalledGit();
-  // Long enough for the fake to START under a loaded test run (the pid write
-  // is its first line) — a shorter bound killed it before it wrote anything.
-  const git = createGitRunner({ gitBin: bin, defaultTimeoutMs: 1_500 });
+/**
+ * TWO CLAIMS, TWO TESTS, AND THEY USED TO SHARE ONE NUMBER (#748).
+ *
+ * Measured: `git rev-parse --abbrev-ref HEAD` blocked for minutes in the kernel
+ * under ~/Documents, and the synchronous runner blocked the daemon's whole event
+ * loop with it — every project list timed out until the process was killed by
+ * hand. The runner now does that itself, and there are two separate things to
+ * check about it: that it REPORTS a timeout at its bound, and that the child is
+ * actually dead.
+ *
+ * `defaultTimeoutMs: 1_500` used to serve both, and only the first was under
+ * test. The second needed the fixture to have written its pid to a file, which
+ * it could only do if `sh` reached its first line inside the same 1,500 ms the
+ * bound was measuring — so the test passed at 1503.34 ms and failed at
+ * 1507.28 ms four minutes later, and the `ENOENT` meant the shell had never
+ * started at all rather than that a write was lost. Raising the number had
+ * already been tried once; it made the race rarer and left it in place.
+ *
+ * Nothing here is unsynchronised any more, and not because the numbers are
+ * bigger: there is no file, so there is nothing for the bound to race. The pid
+ * comes back from the runner, which has it because it did the spawn.
+ */
+test("a git child that stalls is reported as timed out at its bound, not waited on forever", () => {
+  const { bin } = stalledGit();
+  // 250 ms, where it used to be 1,500: nothing in this test depends on the child
+  // having reached its first line, because the bound is on the PARENT's wait.
+  const git = createGitRunner({ gitBin: bin, defaultTimeoutMs: 250 });
   const started = Date.now();
   const result = git("/tmp", ["rev-parse", "--abbrev-ref", "HEAD"]);
-  expect(Date.now() - started).toBeLessThan(5_000);
   expect(result.timedOut).toBe(true);
   expect(result.status).toBe(GIT_TIMEOUT_STATUS);
-  expect(result.stderr).toContain("did not finish within 1500ms");
-  // The child itself, not just the wait: execFileSync reaps what it kills.
-  const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
-  expect(pid).toBeGreaterThan(0);
-  expect(alive(pid)).toBe(false);
+  expect(result.stderr).toContain("did not finish within 250ms");
+  // The fake sleeps for ten minutes, so this bounds a hang rather than measuring
+  // the bound: twenty times the budget, compared against nothing (#706).
+  expect(Date.now() - started).toBeLessThan(5_000);
+});
+
+test("and the child itself is killed, not left behind once the runner has given up", () => {
+  const { bin } = stalledGit();
+  // Generously bounded ON PURPOSE. This test's claim is about a process being
+  // gone, not about when — so the wait costs nothing here, where in the old
+  // single test every extra millisecond was also a millisecond the assertion
+  // about the bound had to tolerate.
+  const git = createGitRunner({ gitBin: bin, defaultTimeoutMs: 2_000 });
+  const result = git("/tmp", ["rev-parse", "--abbrev-ref", "HEAD"]);
+  expect(result.timedOut).toBe(true);
+  // Reported by the runner, which spawned it — not written by the child, which
+  // may never have run a line. `spawnSync` reaps what it kills before returning,
+  // so by here the process is either gone or was never anything to begin with.
+  const killed = result.killedPid;
+  expect(killed).toBeGreaterThan(0);
+  expect(alive(killed as number)).toBe(false);
+  // And the pid is in the message, where a log that says which process it killed
+  // is worth more than one that says it killed something.
+  expect(result.stderr).toContain(`(pid ${killed})`);
 });
 
 test("a per-call bound wins over the runner's default", () => {
