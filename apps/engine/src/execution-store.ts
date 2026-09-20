@@ -1304,7 +1304,7 @@ export class ExecutionStore {
   /**
    * ══ ITEMS AS ROWS — issue #658 ══
    *
-   * The five methods below are the whole of the row shape's surface. Everything
+   * The six methods below are the whole of the row shape's surface. Everything
    * above them still speaks in documents, and a session that has not migrated
    * still IS a document; `itemsAreRows` is the only thing that decides which.
    */
@@ -1388,6 +1388,7 @@ export class ExecutionStore {
     return this.statement("SELECT value FROM items WHERE session_id=? AND run_id IN (SELECT value FROM json_each(?)) ORDER BY ord")
       .all(sessionId, JSON.stringify(runIds)).map((row) => String(row.value));
   }
+
   /**
    * A WINDOW OF THE JOURNAL, `(after, ...]` in id order — issue #494.
    *
