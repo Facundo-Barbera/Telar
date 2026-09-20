@@ -110,9 +110,14 @@ test("the preamble names every word that was being read wrong", () => {
    * own history, acts confidently on the wrong thing. A word dropped from the
    * paragraph is a word nobody is told about.
    */
-  for (const word of ["Telar", "browser", "telar-browser", "session", "panel", "rail", "Looks", "Warp", "surface"]) {
+  for (const word of ["Telar", "browser", "telar-browser", "session", "panel", "rail", "Looks", "surface"]) {
     expect(TELAR_ORIENTATION).toContain(word);
   }
+  // …and "Warp" is NOT one of them any more (#877). Pinned as an absence so a
+  // re-add has to argue with this line rather than slip back into the sentence.
+  // Case-folded: the feature was capitalised in prose and lower-case as a tool
+  // name, and an assertion that saw only one spelling would pass on the other.
+  expect(TELAR_ORIENTATION.toLowerCase()).not.toContain("warp");
   // It points at the depth rather than carrying it — see orientation.ts.
   expect(TELAR_ORIENTATION).toContain(TELAR_SKILL_NAME);
   // And it ends by saying "ask", which is the cheapest fix for the residue.
@@ -229,18 +234,6 @@ test("Claude's spawn options carry no orientation when the preamble is off", asy
   expect(withBrowser?.append).not.toContain(TELAR_ORIENTATION);
 });
 
-test("a Warp child is not oriented, because it is not in the cockpit", () => {
-  /**
-   * It is spawned OUTSIDE the turn contract, through `createWarpSpawn`, with a
-   * prompt that already states what it is and what it may do. Orienting it
-   * would be a paragraph about a window it is not sitting in, and the way that
-   * stays true is that the path has no system-prompt seam at all.
-   */
-  const source = readFileSync(new URL("../src/warp/spawn.ts", import.meta.url), "utf8");
-  expect(source).not.toContain("systemPrompt");
-  expect(source).not.toContain("orientation");
-});
-
 test("Codex's thread parameters carry the paragraph the same way, on start and on resume", () => {
   /**
    * READ OFF SOURCE for this one driver. Reaching Codex's `threadParams`
@@ -282,9 +275,11 @@ function telarToolNames(): string[] {
 test("the skill names every tool on the telar wall, so it cannot drift", () => {
   const missing = telarToolNames().filter((name) => !TELAR_SKILL.includes(name));
   expect(missing).toEqual([]);
-  // The fan-out tool is Claude-only and has no toolkit to enumerate, so it is
-  // named explicitly rather than left to the loop above.
-  expect(TELAR_SKILL).toContain("`warp`");
+  // The loop above reaches every toolkit there is. The one tool it could NOT
+  // reach was `warp` — Claude-only, with no toolkit to enumerate — and #877
+  // retired it, so the skill must not name it at all. Case-folded, because the
+  // feature was `warp` as a tool and "Warp" in every sentence about it.
+  expect(TELAR_SKILL.toLowerCase()).not.toContain("warp");
   // The browser is a separate server with its own briefing, and the skill is
   // where its tab rules are written down in full.
   expect(TELAR_SKILL).toContain("browser_list_tabs");
