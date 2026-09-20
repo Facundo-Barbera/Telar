@@ -2870,7 +2870,7 @@ export function SessionCockpit({
     return () => {
       cancelled = true;
     };
-  }, [hydrate, sessionId, hostId, syncKey]);
+  }, [hydrate, sessionId, hostId, fail, syncKey]);
 
   /**
    * THE TAIL, AT A CADENCE THAT FOLLOWS WHAT THE CONVERSATION IS DOING (#490).

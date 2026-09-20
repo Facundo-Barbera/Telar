@@ -35,7 +35,7 @@ export const OLDER_PAGE_TURNS = 20;
  * 3 s once the conversation has settled.
  *
  * A PORT, NOT A DESIGN. iOS has shipped exactly this since
- * `SessionSyncEngine.interval` (`apps/ios/Telar/Sync/SessionSyncEngine.swift`),
+ * `SessionSyncEngine.interval` (`apps/ios/TelarMobile/Sync/SessionSyncEngine.swift`),
  * and the web cockpit is simply the client that never got it. Two clients
  * disagreeing about when a conversation is worth watching is the class of bug
  * #490 keeps turning up, so the numbers here are the Swift ones rather than

@@ -662,7 +662,7 @@ describe("how fast the cockpit should tail a conversation in this state", () => 
   /** `isActiveTurn`'s three, including `queued`: a backlog is in motion even
    *  before the engine claims it, and its position changes as the one ahead
    *  finishes. */
-  test.each([["queued"], ["claimed"], ["running"]] as const)("a %s turn is live, so 1s", (state) => {
+  test.each([["queued"], ["claimed"], ["running"]] as const)("a %s turn is live, so 1s", (state: Turn["state"]) => {
     expect(tailIntervalMs([at(state)])).toBe(TAIL_LIVE_MS);
   });
 
@@ -675,7 +675,7 @@ describe("how fast the cockpit should tail a conversation in this state", () => 
    */
   test.each([["completed"], ["failed"], ["stopped"], ["ambiguous"], ["discarded"], ["steering"], ["steered"]] as const)(
     "a %s turn is not, so 3s",
-    (state) => {
+    (state: Turn["state"]) => {
       expect(tailIntervalMs([at(state)])).toBe(TAIL_SETTLED_MS);
     },
   );
