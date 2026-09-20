@@ -33,6 +33,23 @@ describe("what a happening is called", () => {
     expect(notificationVerbs({ kind: "wake", wakeKind: "request_opened" })).toEqual(asKind);
   });
 
+  /**
+   * A REQUEST THAT ANSWERED ITSELF IS THE OPPOSITE INSTRUCTION — issue #541 D.
+   *
+   * THE TONE IS THE ASSERTION. Both are `kind: "request"`, so a surface keying
+   * on the kind alone would badge a resolved row `warning` and send a person to
+   * something they cannot act on — which is how a badge becomes noise.
+   */
+  test("a request that took its own default is news, not an ask", () => {
+    const timedOut = notificationVerbs({ kind: "request", resolvedBy: "timeout" });
+    expect(timedOut).toEqual({ verb: "Session ran out its deadline and took its default", short: "Answered for you", tone: "muted" });
+    expect(timedOut.tone).not.toBe(notificationVerbs({ kind: "request" }).tone);
+    // And the inbox row lands on it, without inventing a wake that never was.
+    expect(inboxSubject({ kind: "request_timeout" })).toEqual({ kind: "request", resolvedBy: "timeout" });
+    expect(notificationVerbs(inboxSubject({ kind: "request_timeout" })).short).toBe("Answered for you");
+    expect(notificationVerbs(inboxSubject({ kind: "request_opened" })).short).toBe("Waiting on you");
+  });
+
   // A NEWER ENGINE'S VOCABULARY IS STILL A NOTIFICATION. Vague beats blank.
   test("a wake with no transition still says something true", () => {
     expect(notificationVerbs({ kind: "wake" })).toEqual({ verb: "Session activity", short: "Activity", tone: "muted" });
