@@ -27,6 +27,7 @@ import path from "node:path";
 import { EngineStore } from "../src/state";
 import type { Turn } from "@telar/engine-client";
 import { worktreeReady } from "./worktree-ready";
+import { until } from "./wait";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
@@ -65,20 +66,24 @@ function repo(seeded = true): { root: string; git: (...args: string[]) => string
 /**
  * Wait for the anchor the transition DISPATCHED to land.
  *
- * A BOUND, AND A REASON FOR IT. The probe is one `rev-parse` through the shared
- * async pool; two seconds is the same ceiling `worktreeReady` uses for a whole
- * `worktree add`, so anything slower than this is the pool wedged rather than
- * git being slow. Returning the turn rather than a boolean means the caller
- * asserts on values.
+ * THE SHARED BUDGET, NOT A PRIVATE ONE — #760, and this file paid for that
+ * lesson after shipping. It first carried its own two-second loop on the
+ * reasoning that a `rev-parse` slower than that meant a wedged pool. That is
+ * true on an idle machine and false in the suite: run under the full engine
+ * shard the same probe took longer, and the guard failed in COMPOSITION while
+ * passing alone — the exact shape `wait.ts`'s header describes and the exact
+ * shape `diff-base.test.ts` was split out to avoid.
+ *
+ * `until` also says what never happened when it times out, which a bare
+ * deadline loop returning a half-built turn could not.
  */
 async function anchored(store: EngineStore, sessionId: string, runId: string, side: "before" | "after"): Promise<Turn> {
-  const deadline = Date.now() + 2_000;
-  for (;;) {
-    const turn = store.turns(sessionId).find((candidate) => candidate.runId === runId);
-    if (turn?.anchor?.[side] !== undefined || turn?.anchor?.read !== undefined) return turn;
-    if (Date.now() > deadline) return turn ?? ({} as Turn);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  const read = (): Turn | undefined => store.turns(sessionId).find((candidate) => candidate.runId === runId);
+  await until(`the turn's \`${side}\` anchor to be stamped`, () => {
+    const turn = read();
+    return turn?.anchor?.[side] !== undefined || turn?.anchor?.read !== undefined;
+  });
+  return read()!;
 }
 
 /** Drive one turn to `running`, hand back its claim token. */
@@ -213,8 +218,10 @@ test("a session with no repository at all is not anchored, and does not fail the
   const token = startTurn(store, "session_plain", "run_1");
   const completed = store.completeTurn("session_plain", "run_1", token, { text: "done" });
   expect(completed.state).toBe("completed");
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  const turn = store.turns("session_plain").find((candidate) => candidate.runId === "run_1")!;
+  // WAITED FOR RATHER THAN SLEPT ON: this asserts a `read` that has to ARRIVE,
+  // so a fixed sleep that was too short would pass by finding nothing yet —
+  // vacuously, and only on a loaded machine.
+  const turn = await anchored(store, "session_plain", "run_1", "after");
   expect(turn.anchor?.before).toBeUndefined();
   expect(turn.anchor?.after).toBeUndefined();
   // git answered "not a repository" rather than not answering, so this is a
