@@ -52,13 +52,13 @@
  *      to "does Go forward and honour a prompt cache for this model".
  *   3. A LATER LAP. The same prefix with one more exchange appended — what the
  *      second lap of a turn really sends. A prefix cache should still hit.
- *   4. THE TURN BOUNDARY. The same conversation with one earlier tool result
- *      REWRITTEN from its compacted stub back to full text, which is what
- *      `compactToolResults` does to every prompt at every turn boundary (see
- *      `agent-prefix.test.ts`, which measures the rewrite landing ~71–78% into
- *      the prompt). If 3 hits and 4 does not, the cost of that rewrite is the
- *      difference, and that number is what decides whether fixing it is urgent
- *      or tidy.
+ *   4. THE TURN BOUNDARY. Lap 3's prompt with the next question appended and
+ *      NOTHING REWRITTEN — which is what a turn boundary is since #563 step 1
+ *      made the stub monotonic. It used to be lap 3 with the earlier stub
+ *      expanded back to full text, and `agent-prefix.test.ts` measured that
+ *      rewrite landing 71–78% into the prompt and costing every byte after it.
+ *      Line 4 should now read like line 3: if it does not, something else is
+ *      moving in the prefix and that is the finding.
  *
  * NOTHING IT PRINTS CAN CARRY A KEY — every line goes through `say`, which runs
  * `redactKey` first, the same rule `agent.live.test.ts` states.
@@ -207,10 +207,11 @@ describe.skipIf(!LIVE)("OpenCode Go, live, does the Agent's prefix get cached", 
     // `compactToolResults` sends once the lap that consumed it has passed.
     const stubbed = [SYSTEM, LAP_ONE[0]!, LAP_ONE[1]!, new ToolMessage({ tool_call_id: "call_1", content: toolResultStub("sessions_list", WIDE) }), new AIMessage({ content: "Still looking.", tool_calls: [call("call_2")] }), new ToolMessage({ tool_call_id: "call_2", content: WIDE })];
     const lap2 = await probe("3 later lap ", stubbed);
-    // The NEXT turn: the same conversation with that stub expanded back to its
-    // full text, which is exactly what crossing a turn boundary does.
-    const expanded = [SYSTEM, ...LAP_ONE, new AIMessage({ content: "Still looking.", tool_calls: [call("call_2")] }), new ToolMessage({ tool_call_id: "call_2", content: WIDE }), new HumanMessage("and the rail?")];
-    const boundary = await probe("4 boundary  ", expanded);
+    // The NEXT turn. Since #563 step 1 that is lap 3's prompt with the new
+    // question appended and the stub left exactly where it was — a pure append,
+    // not the backwards rewrite this line used to send.
+    const appended = [...stubbed, new HumanMessage("and the rail?")];
+    const boundary = await probe("4 boundary  ", appended);
 
     /**
      * THE REPORT, AND IT IS THE POINT OF THE FILE. A failure here is a finding
@@ -226,7 +227,7 @@ describe.skipIf(!LIVE)("OpenCode Go, live, does the Agent's prefix get cached", 
     } else {
       say(`[cache] warm vs cold: ${(warm.cached ?? 0) - (cold.cached ?? 0)} more tokens read from cache`);
       say(`[cache] later lap: ${warm.cached === undefined ? "—" : `${lap2.cached ?? 0} of ${lap2.input}`}`);
-      say(`[cache] turn boundary: ${boundary.cached ?? 0} of ${boundary.input} — the gap against line 3 is what the stub re-expansion costs`);
+      say(`[cache] turn boundary: ${boundary.cached ?? 0} of ${boundary.input} — an APPEND since #563 step 1, so this should read like line 3; a gap against it means something else is moving in the prefix`);
     }
     // THE ASSERTION IS ONLY THAT THE CALLS HAPPENED. Every number above is
     // reported rather than required: this file measures a service, and a service

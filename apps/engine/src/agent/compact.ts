@@ -20,21 +20,28 @@
  *      exactly as it is.
  *   2. STUBBED ON THE WAY OUT. A result is READ by the lap that follows it and
  *      almost never read again: by lap 12 the nine `sessions_find` answers from
- *      laps 1–9 are nine lists the model has already chosen from. So when a
- *      LATER lap of the same turn is sent, every result but the newest block's
- *      collapses to one line — the tool's name and a count/ids summary derived
- *      from the answer's own shape, or its first 160 characters when it has no
- *      shape to derive from.
+ *      laps 1–9 are nine lists the model has already chosen from. So on every
+ *      later send, every result but the newest block's collapses to one line —
+ *      the tool's name and a count/ids summary derived from the answer's own
+ *      shape, or its first 160 characters when it has no shape to derive from.
+ *
+ * ── AND THE STUB IS MONOTONIC (#563 step 1) ─────────────────────────────────
+ * The stub used to be scoped to the turn that made it, so the next turn sent
+ * those results in full again and rewrote a quarter of the prompt backwards. It
+ * is now scoped to "everything but the newest run", so a result goes full →
+ * stub ONCE and never back, and the divergence point a prefix cache stops at is
+ * always the second-newest result — lap to lap and across turn boundaries
+ * alike. `compactToolResults` below has the measurement and the cost.
  *
  * ── WHAT IS DELIBERATELY NOT COMPACTED ──────────────────────────────────────
  * THE NEWEST BLOCK, ever: it is the answer to the question the model asked one
  * superstep ago, and stubbing it would be answering with a summary of the thing
  * it just asked for.
  *
- * RESULTS FROM EARLIER TURNS. The unit here is the LAP, inside one turn, and a
- * turn boundary is the last human message. Older TURNS are a different problem
- * with a different answer — `foldOldTurns` at the foot of this file, one
- * deterministic line per turn, which is #541 part F's summary compaction.
+ * WHOLE OLD TURNS ARE STILL A DIFFERENT PROBLEM. A stub keeps the shape of the
+ * conversation — every call, every answer, one line each; the answer to "this
+ * thread is forty turns long" is `foldOldTurns` at the foot of this file, one
+ * deterministic line per TURN, which is #541 part F's summary compaction.
  *
  * AND THE TRANSCRIPT, WHICH KEEPS EVERYTHING. `agent_rows` is written from the
  * tool's own answer before any of this runs, so the cockpit still shows the
@@ -137,15 +144,30 @@ function idOf(row: unknown): string | undefined {
 }
 
 /**
- * THE HISTORY THIS LAP SENDS — every tool result from an EARLIER lap of the
- * SAME turn, as one line each.
+ * THE HISTORY THIS LAP SENDS — every tool result but the newest run's, as one
+ * line each.
  *
- * THE TURN BOUNDARY IS THE LAST HUMAN MESSAGE, which is what a turn starts
- * with: `runTurn` streams `{messages: [new HumanMessage(...)]}` and a resumed
- * approval adds nothing, so everything after the last human message is this
- * turn's laps. A conversation whose checkpoint holds no human message at all
- * (an older build, a truncated file) is treated as one long turn rather than
- * refused — the stub is lossy, not wrong.
+ * ── WHY THE SCOPE IS "EVERYTHING BUT THE NEWEST", NOT "THIS TURN" (#563) ────
+ * It used to be this turn's laps: the lower bound was the last human message,
+ * so a stub was scoped to the turn that made it. On the NEXT turn those results
+ * were no longer "this turn's" and were sent IN FULL AGAIN — and a prefix cache
+ * matches from the front and stops at the first byte that differs, so
+ * re-expanding a stub did not cost the expanded bytes, it cost EVERY BYTE AFTER
+ * THEM. Measured from the socket at byte 17,125 of a 24,072-byte prompt on turn
+ * 2 and 24,241 of 31,192 on turn 3: 22–29% of each prompt downstream of a
+ * rewrite, and the missed tail roughly constant while the prompt grows.
+ *
+ * WITHOUT THE LOWER BOUND EACH RESULT GOES FULL → STUB EXACTLY ONCE, at the lap
+ * after the one that read it, and never back. History becomes append-shaped in
+ * the only sense a prefix cache cares about: the divergence point is always the
+ * second-newest result run, on every lap and across every turn boundary.
+ *
+ * THE COST, SAID PLAINLY: a later turn can no longer re-read an earlier turn's
+ * full result — it sees the stub. What makes that acceptable rather than lossy
+ * is that the stub names the tool and the first three ids, the tool is one call
+ * away, `agent_rows` holds every answer whole and `recall` searches it, and
+ * `foldOldTurns` was going to reduce those turns to one line each anyway once
+ * the conversation passed its budget. The change is WHEN, not WHETHER.
  *
  * THE NEWEST CONTIGUOUS RUN OF RESULTS SURVIVES. It is the answer to the call
  * the model made one superstep ago.
@@ -195,12 +217,13 @@ export function answerOrphanedCalls(messages: readonly BaseMessage[]): BaseMessa
 }
 
 export function compactToolResults(messages: readonly BaseMessage[]): BaseMessage[] {
-  const turnStart = lastIndexOfType(messages, "human") + 1;
   const newest = newestResultRun(messages);
-  if (newest <= turnStart) return [...messages];
+  // Nothing ahead of the newest run: a conversation with no results at all, or
+  // one that is a single run of them.
+  if (newest <= 0) return [...messages];
   const names = toolCallNames(messages);
   return messages.map((message, index) => {
-    if (index < turnStart || index >= newest || message.getType() !== "tool") return message;
+    if (index >= newest || message.getType() !== "tool") return message;
     const result = message as ToolMessage;
     const text = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
     const stub = toolResultStub(names.get(result.tool_call_id) ?? "tool", text);
@@ -230,13 +253,6 @@ function toolCallNames(messages: readonly BaseMessage[]): Map<string, string> {
     }
   }
   return names;
-}
-
-function lastIndexOfType(messages: readonly BaseMessage[], type: string): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]!.getType() === type) return index;
-  }
-  return -1;
 }
 
 /* ------------------------------------------------------------------ *
