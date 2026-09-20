@@ -132,6 +132,30 @@ reason. Three tests in that file could not fail. If you add a grep-for-a-marker
 guard, exercise **both** directions: it passes on a real run, and it fails when
 the thing it guards did not happen.
 
+**An empty result from a tool you just wrote is a claim about the tool.** This is
+the general form of the section above, and the sharper half, because silence
+reads as an answer. The `grep -E` with `\|` returned nothing and that looked
+exactly like "those four sections are missing".
+
+The count habit above has its own instance of it, found while applying that
+habit: the obvious way to read a job's test counts is
+
+```
+gh api repos/OWNER/REPO/actions/jobs/<job-id>/logs      # returns nothing usable
+```
+
+which refuses with *"the response contains terminal escape sequences"* and yields
+one unusable line, so a grep over it comes back empty and looks like "CI does not
+report counts". What works:
+
+```
+gh run view <run-id> --log --job <job-id>
+```
+
+then grep for `Ran N tests across M files`. Two PRs whose counts were sitting
+right there would have been reported as unverifiable on the strength of that
+empty result.
+
 ---
 
 ## 4. Reporting
