@@ -32,6 +32,7 @@ import {
   parsePulls,
   parseRepoFromUrl,
   parseReviews,
+  parseThreadAuthors,
   readCheckLog,
   readForgeFacets,
   readGitHub,
@@ -221,7 +222,7 @@ describe("the author's face", () => {
    * unimpeded. Nothing else in the engine gates on github.com — `parseRepoFromUrl`
    * accepts any host and discards it. A corporate login is `jsmith`-shaped, and on
    * public github.com `jsmith` is a stranger: that is the stranger's-face failure
-   * at every author rather than at a bot-slug collision.
+   * at 100% of authors rather than at a bot-slug collision.
    */
   describe("and it is only derived for a github.com forge", () => {
     const GHES = "https://ghe.corp.example/o/r/issues/1";
@@ -590,6 +591,64 @@ describe("what the field sets ask gh for", () => {
     expect(issue.get("issue view")).toContain("closedByPullRequestsReferences");
     const pull = await fieldsFor((gh) => readPull(gh, "/repo", 7, () => 1, { skipProjects: true }));
     expect(pull.get("pr view")).toContain("closingIssuesReferences");
+  });
+
+  /**
+   * AND WHAT THE FIFTH READ ASKS FOR — issue #814.
+   *
+   * The same argument as the four above, one layer along: the thread read is a
+   * GraphQL document rather than a `--json` list, and a parser test hands the
+   * folded map in directly. So every test about a bot's face would go on passing
+   * with `avatarUrl` deleted from the query — the nodes would arrive faceless, the
+   * derivation would take over, and the suite would be green.
+   */
+  describe("the thread read", () => {
+    /** The `query=` document and the `-F` variables of the GraphQL call, per verb. */
+    async function threadReadFor(read: (gh: GhRunner) => Promise<unknown>) {
+      let argv: string[] | undefined;
+      await read(async (_cwd, args) => {
+        if (args[0] === "api" && args[1] === "graphql") argv = args;
+        return ok(args[0] === "repo" ? JSON.stringify({ nameWithOwner: "o/r" }) : "{}");
+      });
+      const at = (flag: string, name: string) => {
+        const index = argv?.findIndex((arg, position) => argv![position - 1] === flag && arg.startsWith(`${name}=`)) ?? -1;
+        return index === -1 ? undefined : argv![index]!.slice(name.length + 1);
+      };
+      return { argv, query: at("-f", "query") ?? "", variable: (name: string) => at("-F", name) };
+    }
+
+    test("BOTH detail paths make it, and it asks for the three facts gh's own projection drops", async () => {
+      for (const read of [
+        (gh: GhRunner) => readIssue(gh, "/repo", 7, () => 1, { skipProjects: true }),
+        (gh: GhRunner) => readPull(gh, "/repo", 7, () => 1, { skipProjects: true }),
+      ]) {
+        const thread = await threadReadFor(read);
+        expect(thread.argv).toBeDefined();
+        // `__typename` is what tells a GitHub App from a person — `gh`'s comment
+        // author is `{login}` alone, so without it the engine is back to guessing.
+        expect(thread.query).toContain("__typename");
+        // The face itself, read rather than derived. Deleting this one field is the
+        // edit that silently reinstates #814.
+        expect(thread.query).toContain("avatarUrl");
+        // Free on this read and on no other: `gh`'s projection has counts and no
+        // viewer state.
+        expect(thread.query).toContain("reactionGroups");
+        expect(thread.query).toContain("viewerHasReacted");
+      }
+    });
+
+    test("it asks for THIS number, at the engine's own cap, against gh's own repository placeholders", async () => {
+      const thread = await threadReadFor((gh) => readIssue(gh, "/repo", 7, () => 1, { skipProjects: true }));
+      expect(thread.variable("number")).toBe("7");
+      // `last: 100` IS the cap, natively and in the right order. A query asking for
+      // a different number than `parseComments` keeps would fold faces onto
+      // comments the thread then drops, or drop faces off ones it keeps.
+      expect(thread.variable("last")).toBe(String(MAX_THREAD_COMMENTS));
+      // `gh` resolves these from the checkout — which is also how this reaches the
+      // right host on GitHub Enterprise Server.
+      expect(thread.variable("owner")).toBe("{owner}");
+      expect(thread.variable("name")).toBe("{repo}");
+    });
   });
 });
 
@@ -1207,6 +1266,233 @@ describe("readIssue and readPull", () => {
       () => 777,
     );
     expect(read).toMatchObject({ issue: { number: 4, readAt: 777 } });
+  });
+});
+
+/**
+ * WHO WROTE EACH COMMENT — issue #814.
+ *
+ * THE DERIVATION IS BLIND ON A COMMENT AND THAT IS THE BUG. A ROW's author carries
+ * `is_bot`; a COMMENT's is `{login}` and nothing else — measured, and no `gh` field
+ * set can widen it. So `github.com/<login>.png` for a comment is a bet that no
+ * human owns that slug, and GitHub hands out free logins: of ten bot commenters
+ * swept across six large repositories, six 404 to a monogram TODAY and are one
+ * signup away from a stranger's face, and four already resolve to the vendor's own
+ * Organization rather than to the App.
+ *
+ * SO THE THREAD READ ASKS. One GraphQL call beside the detail read returns
+ * `__typename`, the App's own installation avatar, and reaction viewer state that
+ * `gh`'s projection drops.
+ */
+describe("the thread read asks GitHub who wrote each comment", () => {
+  const THREAD = "https://github.com/o/r/issues/7";
+  const AT = (n: number) => `${THREAD}#issuecomment-${n}`;
+  /** The App's own face. Measured against cli/cli#14443 — `/in/` is an
+   *  INSTALLATION avatar, which no login can be turned into. */
+  const APP_FACE = "https://avatars.githubusercontent.com/in/3557673?v=4";
+
+  /** What `gh issue view --json` answers: the bare slug, and no bot signal. */
+  const detail = (comments: unknown[]) =>
+    ok(JSON.stringify({ number: 7, title: "t", state: "OPEN", url: THREAD, createdAt: iso(1), comments }));
+
+  /** What `gh api graphql` answers. */
+  const graphql = (nodes: unknown[]) => ok(JSON.stringify({ data: { repository: { issueOrPullRequest: { comments: { nodes } } } } }));
+
+  const NO_REACTIONS: unknown[] = [];
+
+  async function thread(detailReply: GhResult, graphqlReply: GhResult) {
+    const read = await readIssue(verbRunner({ "issue view": detailReply, "api graphql": graphqlReply }), "/repo", 7, () => 1, {
+      skipProjects: true,
+    });
+    if (!("issue" in read)) throw new Error(`expected an issue, got ${read.unavailable}`);
+    return read.issue;
+  }
+
+  test("A BOT WEARS THE APP'S OWN FACE, never the face of whoever owns that login", async () => {
+    /**
+     * THE PROOF, AND IT IS WRITTEN TO FAIL IF THE SECOND READ IS DELETED. Asserting
+     * that `authorAvatar` is a non-empty string would pass with this read gone — the
+     * derived URL is also a non-empty string. So it asserts PROVENANCE: the value is
+     * the one GitHub sent, and it is NOT the one this engine could have invented.
+     */
+    const issue = await thread(
+      detail([{ url: AT(1), body: "triaged", createdAt: iso(2), author: { login: "cli-triage" } }]),
+      graphql([{ url: AT(1), author: { __typename: "Bot", login: "cli-triage", avatarUrl: APP_FACE }, reactionGroups: NO_REACTIONS }]),
+    );
+    expect(issue.comments).toHaveLength(1);
+    expect(issue.comments[0]!.author).toBe("cli-triage");
+    expect(issue.comments[0]!.authorAvatar).toBe(APP_FACE);
+    // The face the derivation would have produced: `github.com/cli-triage.png`, which
+    // is a 404 today and one signup away from a person who never wrote this.
+    expect(issue.comments[0]!.authorAvatar).not.toBe("https://github.com/cli-triage.png");
+  });
+
+  test("an App GitHub gives no face for gets NOTHING, not the slug's owner", async () => {
+    // The answer "GitHub knows this is a Bot and has no image" must land as absent.
+    // Falling through to the derivation here is the same bug with an extra step.
+    const issue = await thread(
+      detail([{ url: AT(1), body: "b", createdAt: iso(2), author: { login: "dependabot" } }]),
+      graphql([{ url: AT(1), author: { __typename: "Bot", login: "dependabot" }, reactionGroups: NO_REACTIONS }]),
+    );
+    expect(issue.comments[0]!.author).toBe("dependabot");
+    expect(issue.comments[0]!.authorAvatar).toBeUndefined();
+  });
+
+  test("a deleted account is an ANSWER, and it suppresses the face too", async () => {
+    // GitHub sends `author: null` for a deleted account. That is GitHub saying
+    // there is nobody to show, not this read failing to ask.
+    const issue = await thread(
+      detail([{ url: AT(1), body: "b", createdAt: iso(2), author: { login: "ghost" } }]),
+      graphql([{ url: AT(1), author: null, reactionGroups: NO_REACTIONS }]),
+    );
+    expect(issue.comments[0]!.author).toBe("ghost");
+    expect(issue.comments[0]!.authorAvatar).toBeUndefined();
+  });
+
+  test("a person's face is GitHub'S OWN URL, which is what makes this work off github.com", async () => {
+    // On GitHub Enterprise Server this is that server's avatar host. Nothing in the
+    // engine has to know the hostname, which is the second reason this is a read
+    // and not a cleverer derivation.
+    const issue = await thread(
+      detail([{ url: AT(1), body: "b", createdAt: iso(2), author: { login: "ada" } }]),
+      graphql([
+        { url: AT(1), author: { __typename: "User", login: "ada", avatarUrl: "https://avatars.githubusercontent.com/u/51800760?v=4" }, reactionGroups: NO_REACTIONS },
+      ]),
+    );
+    expect(issue.comments[0]!.authorAvatar).toBe("https://avatars.githubusercontent.com/u/51800760?v=4");
+  });
+
+  test("A FAILED SECOND READ COSTS THE FACES, NOT THE ISSUE", async () => {
+    // The `readBoards` bargain. The thread, the body and the states all survive, and
+    // each comment falls back to the derivation that shipped in #790 — worse than
+    // the read and better than a blank panel.
+    const issue = await thread(detail([{ url: AT(1), body: "b", createdAt: iso(2), author: { login: "ada" } }]), failed("HTTP 502"));
+    expect(issue.number).toBe(7);
+    expect(issue.comments).toHaveLength(1);
+    expect(issue.comments[0]!.authorAvatar).toBe("https://github.com/ada.png");
+    // Absent, not `[]`: nothing was asked, so "nobody reacted" would be invented.
+    expect(issue.comments[0]!.reactions).toBeUndefined();
+  });
+
+  test("output the thread read cannot be parsed from costs the faces and nothing else", async () => {
+    const issue = await thread(detail([{ url: AT(1), body: "b", createdAt: iso(2), author: { login: "ada" } }]), ok("<html>"));
+    expect(issue.comments).toHaveLength(1);
+    expect(issue.comments[0]!.authorAvatar).toBe("https://github.com/ada.png");
+  });
+
+  test("a comment the second read did not cover keeps the derivation, beside one that was", async () => {
+    // The fold is BY URL and not by position: a thread longer than the cap, or one
+    // that gained a comment between the two calls, must not shift faces onto the
+    // wrong rows.
+    const issue = await thread(
+      detail([
+        { url: AT(1), body: "older", createdAt: iso(2), author: { login: "ada" } },
+        { url: AT(2), body: "newer", createdAt: iso(3), author: { login: "cli-triage" } },
+      ]),
+      graphql([{ url: AT(2), author: { __typename: "Bot", login: "cli-triage", avatarUrl: APP_FACE }, reactionGroups: NO_REACTIONS }]),
+    );
+    expect(issue.comments.map((entry) => entry.body)).toEqual(["older", "newer"]);
+    expect(issue.comments[0]!.authorAvatar).toBe("https://github.com/ada.png");
+    expect(issue.comments[1]!.authorAvatar).toBe(APP_FACE);
+  });
+
+  test("REACTIONS ARRIVE COUNTED, with the groups nobody used dropped", async () => {
+    // GitHub answers all eight contents for every comment whether or not anybody
+    // used them — measured. Carried whole, a comment nobody reacted to would
+    // arrive as eight zeroes.
+    const issue = await thread(
+      detail([{ url: AT(1), body: "b", createdAt: iso(2), author: { login: "ada" } }]),
+      graphql([
+        {
+          url: AT(1),
+          author: { __typename: "User", login: "ada", avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4" },
+          reactionGroups: [
+            { content: "THUMBS_UP", viewerHasReacted: true, users: { totalCount: 3 } },
+            { content: "THUMBS_DOWN", viewerHasReacted: false, users: { totalCount: 0 } },
+            { content: "ROCKET", viewerHasReacted: false, users: { totalCount: 1 } },
+          ],
+        },
+      ]),
+    );
+    expect(issue.comments[0]!.reactions).toEqual([
+      { content: "THUMBS_UP", count: 3, viewerHasReacted: true },
+      { content: "ROCKET", count: 1, viewerHasReacted: false },
+    ]);
+  });
+
+  test("asked-and-nobody-reacted is `[]`, which is not the same as absent", async () => {
+    const issue = await thread(
+      detail([{ url: AT(1), body: "b", createdAt: iso(2), author: { login: "ada" } }]),
+      graphql([
+        {
+          url: AT(1),
+          author: { __typename: "User", login: "ada", avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4" },
+          reactionGroups: [{ content: "THUMBS_UP", viewerHasReacted: false, users: { totalCount: 0 } }],
+        },
+      ]),
+    );
+    expect(issue.comments[0]!.reactions).toEqual([]);
+  });
+
+  test("a PULL REQUEST's thread is read the same way, through the same query", async () => {
+    const read = await readPull(
+      verbRunner({
+        "pr view": ok(
+          JSON.stringify({
+            number: 7,
+            title: "t",
+            state: "OPEN",
+            isDraft: false,
+            url: "https://github.com/o/r/pull/7",
+            createdAt: iso(1),
+            comments: [{ url: AT(1), body: "b", createdAt: iso(2), author: { login: "cli-triage" } }],
+          }),
+        ),
+        "repo view": ok("{}"),
+        "api graphql": graphql([{ url: AT(1), author: { __typename: "Bot", login: "cli-triage", avatarUrl: APP_FACE }, reactionGroups: NO_REACTIONS }]),
+      }),
+      "/repo",
+      7,
+      () => 1,
+      { skipProjects: true },
+    );
+    if (!("pull" in read)) throw new Error(`expected a pull request, got ${read.unavailable}`);
+    expect(read.pull.comments[0]!.authorAvatar).toBe(APP_FACE);
+  });
+});
+
+describe("parseThreadAuthors", () => {
+  const nodes = (entries: unknown[]) => JSON.stringify({ data: { repository: { issueOrPullRequest: { comments: { nodes: entries } } } } });
+
+  test("folds by url, which is the identifier the two reads share", () => {
+    // Measured: `gh issue view --json comments` and the GraphQL connection return
+    // byte-identical `…#issuecomment-<id>` urls for the same comment.
+    const authors = parseThreadAuthors(
+      nodes([
+        { url: "https://github.com/o/r/issues/7#issuecomment-1", author: { __typename: "User", login: "ada", avatarUrl: "https://a/1" }, reactionGroups: [] },
+        { url: "https://github.com/o/r/issues/7#issuecomment-2", author: { __typename: "Bot", login: "app", avatarUrl: "https://a/in/2" }, reactionGroups: [] },
+      ]),
+    );
+    expect(authors.size).toBe(2);
+    expect(authors.get("https://github.com/o/r/issues/7#issuecomment-1")).toEqual({ login: "ada", avatarUrl: "https://a/1", reactions: [] });
+    expect(authors.get("https://github.com/o/r/issues/7#issuecomment-2")!.avatarUrl).toBe("https://a/in/2");
+  });
+
+  test("a node with no url cannot be folded onto anything, and is dropped", () => {
+    expect(parseThreadAuthors(nodes([{ author: { __typename: "User", login: "ada", avatarUrl: "https://a/1" } }])).size).toBe(0);
+  });
+
+  test("a null author is still an entry — GitHub answered, and the answer is nobody", () => {
+    const authors = parseThreadAuthors(nodes([{ url: "c1", author: null, reactionGroups: [] }]));
+    expect(authors.has("c1")).toBe(true);
+    expect(authors.get("c1")).toEqual({ reactions: [] });
+  });
+
+  test("an answer with no thread in it is an empty map, not a throw", () => {
+    // A number that resolves to neither an issue nor a pull request, and a partial
+    // GraphQL error, both arrive shaped like this.
+    expect(parseThreadAuthors(JSON.stringify({ data: { repository: { issueOrPullRequest: null } } })).size).toBe(0);
+    expect(parseThreadAuthors(JSON.stringify({ data: null })).size).toBe(0);
   });
 });
 

@@ -46,6 +46,7 @@ import type {
   GitHubPullFilter,
   GitHubPullRead,
   GitHubPullRequest,
+  GitHubReaction,
   GitHubReview,
   GitHubSnapshot,
   GitHubUnavailable,
@@ -165,27 +166,22 @@ function isBot(value: unknown): boolean {
  * answer — "this engine has no URL for this author" — and the surface draws a
  * monogram, which beats a broken image.
  *
- * THE ONE CASE THIS CANNOT GET RIGHT, named because it is invisible otherwise. A
+ * THE CASE THIS CANNOT GET RIGHT ON ITS OWN, and where it is now handled. A
  * COMMENT's author carries neither signal: measured, a Renovate comment answers
  * `{login: "renovate"}` with no prefix and no flag, so a bot commenting is
- * indistinguishable from a person. Usually that degrades to a 404 and a monogram
- * — `github.com/github-actions.png` is a 404, and `github-actions` is the only bot
- * commenting in this repository. It misleads only when a bot's bare slug is also a
- * real account: `github.com/dependabot.png` answers 302 to `u/27347476`, a
- * different account from the Dependabot App, so a Dependabot comment would wear a
- * stranger's face. Fixing that means a second read per thread for
- * `user.avatar_url` (`gh api repos/{owner}/{repo}/issues/<n>/comments`), which is
- * the `readBoards` pattern and its own change.
+ * indistinguishable from a person, and a bot whose bare slug is also a real
+ * account would wear that person's face. That is #814, and it is fixed a layer
+ * up rather than here — `readThreadAuthors` asks GitHub who wrote each comment
+ * and `comment()` takes the answer over this derivation. This function is left
+ * as the ROW's answer, where `is_bot` does arrive and the derivation is sound.
  *
- * AND IT ONLY DERIVES A github.com FACE FOR A github.com ROW — issue #814, and
- * the half of it that is invisible on this Mac. `gh` supports GitHub Enterprise
- * Server and `defaultGhRunner` forwards `process.env`, so `GH_HOST` works and a
- * corporate checkout reaches this code unimpeded; nothing else in the engine gates
- * on github.com, since `parseRepoFromUrl` accepts any host and discards it. A
- * corporate login is `jsmith`-shaped, and on public github.com `jsmith` is a
- * stranger — which is the stranger's-face failure at every author rather than at a
- * bot-slug collision. The row's own `url` is the only place a read says which host
- * answered, so it decides.
+ * AND IT ONLY DERIVES A github.com FACE FOR A github.com ROW. `gh` supports
+ * GitHub Enterprise Server and `defaultGhRunner` forwards `GH_HOST`, so a
+ * corporate checkout reaches this code unimpeded — and a corporate login is
+ * `jsmith`-shaped, which on public github.com is a stranger. The row's own `url`
+ * is the only place the read says which host it came from, so it decides. A url
+ * naming no host (a relative one, a test's placeholder) contradicts nothing and
+ * still derives.
  */
 function avatar(value: unknown, url: string): string | undefined {
   const name = login(value);
@@ -656,7 +652,139 @@ export function parseLabelList(result: GhResult) {
  */
 export const MAX_THREAD_COMMENTS = 100;
 
-function comment(entry: unknown): GitHubComment | undefined {
+/**
+ * What GitHub itself says about one comment's author — issue #814.
+ *
+ * KEYED BY URL, because that is the only identifier the two reads share and it is
+ * exact: measured, `gh issue view --json comments` and the GraphQL `comments`
+ * connection return byte-identical `…#issuecomment-5751097970` urls for the same
+ * comment.
+ *
+ * `avatarUrl` IS READ, NOT DERIVED, and that is the whole point. For a GitHub App
+ * it is the App's own installation face — `avatars.githubusercontent.com/in/3557673`,
+ * measured against cli/cli#14443 — which no login can be turned into. For a person
+ * on GitHub Enterprise Server it is that server's, not public github.com's.
+ */
+type ThreadAuthor = { login?: string; avatarUrl?: string; reactions: GitHubReaction[] };
+
+/**
+ * Ask GitHub who wrote each comment, and what it is holding against them.
+ *
+ * ONE GraphQL READ PER THREAD, because `gh`'s own comment projection is
+ * `author { login }` and nothing else — measured, and no field set can widen it.
+ * REST's `issues/<n>/comments` carries the same facts and returns oldest-first
+ * while ignoring every ordering parameter, so keeping the newest hundred there
+ * costs two or three requests; `comments(last: $last)` is one, in the engine's own
+ * order, at the engine's own cap.
+ *
+ * `issueOrPullRequest` SO BOTH READERS SHARE ONE QUERY. The two comment
+ * connections are the same type on two GitHub types, and an engine with two
+ * near-identical queries has two places for the field list to drift.
+ *
+ * `{owner}` AND `{repo}` ARE `gh`'s OWN PLACEHOLDERS — it resolves them from the
+ * checkout, so this never parses a remote URL, and on GHES it resolves against
+ * that host.
+ */
+const THREAD_AUTHORS_QUERY = `
+query($owner: String!, $name: String!, $number: Int!, $last: Int!) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      ... on Issue { comments(last: $last) { nodes { ...threadAuthor } } }
+      ... on PullRequest { comments(last: $last) { nodes { ...threadAuthor } } }
+    }
+  }
+}
+fragment threadAuthor on IssueComment {
+  url
+  author { __typename login avatarUrl }
+  reactionGroups { content viewerHasReacted users { totalCount } }
+}`;
+
+export function threadAuthorsArgv(number: number): string[] {
+  return [
+    "api",
+    "graphql",
+    "-F",
+    "owner={owner}",
+    "-F",
+    "name={repo}",
+    "-F",
+    `number=${number}`,
+    "-F",
+    `last=${MAX_THREAD_COMMENTS}`,
+    "-f",
+    `query=${THREAD_AUTHORS_QUERY}`,
+  ];
+}
+
+/**
+ * The reactions GitHub is holding, minus the ones nobody used.
+ *
+ * ALL EIGHT CONTENTS ARRIVE FOR EVERY COMMENT — measured, `THUMBS_UP` through
+ * `EYES` with `totalCount: 0` — so a comment nobody reacted to would otherwise
+ * carry eight zeroes into the contract and onto every surface that counted them.
+ */
+function reactions(value: unknown): GitHubReaction[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const row = entry as { content?: unknown; viewerHasReacted?: unknown; users?: { totalCount?: unknown } | null };
+    const content = text(row.content);
+    const total = row.users?.totalCount;
+    const count = typeof total === "number" && Number.isFinite(total) ? Math.trunc(total) : 0;
+    if (!content || count <= 0) return [];
+    return [{ content, count, viewerHasReacted: row.viewerHasReacted === true }];
+  });
+}
+
+/**
+ * The GraphQL answer, folded by comment url.
+ *
+ * A NODE WHOSE AUTHOR IS `null` STILL GETS AN ENTRY. GitHub answers null for a
+ * deleted account, and "GitHub says this comment has no identifiable author" is an
+ * answer — it must suppress the derived face rather than fall through to it.
+ */
+export function parseThreadAuthors(stdout: string): Map<string, ThreadAuthor> {
+  const byUrl = new Map<string, ThreadAuthor>();
+  const parsed = JSON.parse(stdout) as {
+    data?: { repository?: { issueOrPullRequest?: { comments?: { nodes?: unknown } } | null } | null };
+  };
+  const nodes = parsed.data?.repository?.issueOrPullRequest?.comments?.nodes;
+  if (!Array.isArray(nodes)) return byUrl;
+  for (const entry of nodes) {
+    const node = entry as Record<string, unknown>;
+    const url = text(node.url);
+    if (!url) continue;
+    const author = node.author as { login?: unknown; avatarUrl?: unknown } | null;
+    const name = login(author);
+    const face = text(author?.avatarUrl);
+    byUrl.set(url, {
+      ...(name ? { login: name } : {}),
+      ...(face ? { avatarUrl: face } : {}),
+      reactions: reactions(node.reactionGroups),
+    });
+  }
+  return byUrl;
+}
+
+/**
+ * Who wrote each comment on one thread.
+ *
+ * THE `readBoards` SHAPE, INCLUDING ITS FAILURE MODE: a failed second read answers
+ * an empty map, and an empty map costs the faces rather than the issue. Every
+ * comment then falls back to the derivation, which is what shipped in #790 — worse
+ * than this read and better than a blank panel.
+ */
+export async function readThreadAuthors(gh: GhRunner, cwd: string, number: number): Promise<Map<string, ThreadAuthor>> {
+  const result = await gh(cwd, threadAuthorsArgv(number));
+  if (result.status !== 0) return new Map();
+  try {
+    return parseThreadAuthors(result.stdout);
+  } catch {
+    return new Map();
+  }
+}
+
+function comment(entry: unknown, authors?: Map<string, ThreadAuthor>): GitHubComment | undefined {
   const row = entry as Record<string, unknown>;
   const url = text(row.url);
   // A comment with no url is not a comment this engine can identify or link, and
@@ -676,16 +804,34 @@ function comment(entry: unknown): GitHubComment | undefined {
    */
   const body = text(row.body);
   const attribution = parseSessionAttribution(body);
+  /**
+   * WHAT GITHUB SAID BEATS WHAT THIS ENGINE COULD GUESS — issue #814.
+   *
+   * `gh`'s comment author is `{login}` and nothing else, so the derivation in
+   * `avatar` is blind here: it cannot tell a GitHub App from the person who
+   * happens to own that login. When the second read answered FOR THIS COMMENT its
+   * answer is taken whole — the App's own installation face, or none — and the
+   * derivation is not consulted at all. An App with no avatar therefore gets a
+   * monogram rather than a stranger, which is the failure this closes.
+   *
+   * WHEN IT DID NOT ANSWER, the derivation stands. That is the `readBoards`
+   * bargain: a failed second read costs the faces, not the thread.
+   */
+  const known = authors?.get(url);
+  const face = known ? known.avatarUrl : avatar(row.author, url);
+  const name = login(row.author) ?? known?.login;
   return {
-    // A comment's author is `{login}` and nothing else — see `avatar` for what that
-    // costs and for the one case it gets wrong.
-    ...authorOf(row.author, url),
+    ...(name ? { author: name } : {}),
+    ...(face ? { authorAvatar: face } : {}),
     ...(text(row.authorAssociation) ? { authorAssociation: text(row.authorAssociation) } : {}),
     body: attribution ? stripSessionMarker(body) : body,
     createdAt: epoch(row.createdAt),
     minimized: row.isMinimized === true,
     ...(reason ? { minimizedReason: reason } : {}),
     url,
+    // Absent when the second read did not answer for this comment, `[]` when it
+    // answered and nobody reacted — see the contract for why those differ.
+    ...(known ? { reactions: known.reactions } : {}),
     ...(attribution ? { attribution } : {}),
   };
 }
@@ -698,11 +844,11 @@ function comment(entry: unknown): GitHubComment | undefined {
  * always arrived in order; sorting costs nothing and makes the cap correct
  * rather than correct-so-far.
  */
-export function parseComments(value: unknown): { comments: GitHubComment[]; olderComments: number } {
+export function parseComments(value: unknown, authors?: Map<string, ThreadAuthor>): { comments: GitHubComment[]; olderComments: number } {
   if (!Array.isArray(value)) return { comments: [], olderComments: 0 };
   const all = value
     .flatMap((entry) => {
-      const parsed = comment(entry);
+      const parsed = comment(entry, authors);
       return parsed ? [parsed] : [];
     })
     .sort((left, right) => left.createdAt - right.createdAt);
@@ -861,11 +1007,16 @@ export function parseChecks(value: unknown): GitHubCheck[] {
   });
 }
 
-export function parseIssueDetail(stdout: string, now: number, projects: string[] = []): GitHubIssueDetail {
+export function parseIssueDetail(
+  stdout: string,
+  now: number,
+  projects: string[] = [],
+  authors?: Map<string, ThreadAuthor>,
+): GitHubIssueDetail {
   const row = JSON.parse(stdout) as Record<string, unknown>;
   const base = issueRow(row);
   if (!base) throw new Error("gh returned an issue with no number");
-  const thread = parseComments(row.comments);
+  const thread = parseComments(row.comments, authors);
   const closedAt = epoch(row.closedAt);
   return {
     // `base` already carries the author, labels, assignees, milestone and state
@@ -914,11 +1065,12 @@ export function parsePullDetail(
   now: number,
   mergeMethods: GitHubMergeMethod[] = [],
   projects: string[] = [],
+  authors?: Map<string, ThreadAuthor>,
 ): GitHubPullDetail {
   const row = JSON.parse(stdout) as Record<string, unknown>;
   const base = pullRow(row);
   if (!base) throw new Error("gh returned a pull request with no number");
-  const thread = parseComments(row.comments);
+  const thread = parseComments(row.comments, authors);
   const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0);
   return {
     // Labels, assignees, milestone, the merge time and the review decision all
@@ -1001,13 +1153,17 @@ export async function readIssue(
   now: () => number = Date.now,
   options: { skipProjects?: boolean } = {},
 ): Promise<GitHubIssueRead> {
-  const [result, boards] = await Promise.all([
+  const [result, boards, authors] = await Promise.all([
     gh(cwd, ["issue", "view", String(number), "--json", ISSUE_DETAIL_FIELDS]),
     readBoards(gh, cwd, "issue", number, options.skipProjects),
+    // In the SAME `Promise.all`, so the wall clock is the max and not the sum —
+    // measured at 0.77s for a thread read, which sequentially would have been
+    // visible on every click (#814).
+    readThreadAuthors(gh, cwd, number),
   ]);
   if (result.status !== 0) return classifyDetailFailure(result);
   try {
-    return { issue: parseIssueDetail(result.stdout, now(), boards) };
+    return { issue: parseIssueDetail(result.stdout, now(), boards, authors) };
   } catch {
     return { unavailable: "failed", message: "gh returned output this engine could not read" };
   }
@@ -1030,14 +1186,15 @@ export async function readPull(
   now: () => number = Date.now,
   options: { skipProjects?: boolean } = {},
 ): Promise<GitHubPullRead> {
-  const [result, repo, boards] = await Promise.all([
+  const [result, repo, boards, authors] = await Promise.all([
     gh(cwd, ["pr", "view", String(number), "--json", PULL_DETAIL_FIELDS]),
     gh(cwd, ["repo", "view", "--json", MERGE_METHOD_FIELDS]),
     readBoards(gh, cwd, "pr", number, options.skipProjects),
+    readThreadAuthors(gh, cwd, number),
   ]);
   if (result.status !== 0) return classifyDetailFailure(result);
   try {
-    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : ""), boards) };
+    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : ""), boards, authors) };
   } catch {
     return { unavailable: "failed", message: "gh returned output this engine could not read" };
   }
