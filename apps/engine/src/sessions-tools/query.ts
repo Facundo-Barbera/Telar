@@ -443,7 +443,12 @@ export function sessionQueryTools(tool: ToolFactory, capability: SessionsQueryCa
             total: page.total,
             more,
             ...(next === undefined ? {} : { next }),
-            ...(more ? { note: `Turns down to sequence ${next}. Continue with sessions_outline(sessionId: "${sessionId}", before: ${next}).` } : {}),
+            // The continuation is only printable when there IS a cursor. A note
+            // naming `before: undefined` would be a call that reads the newest
+            // page again, which is worse than no note at all.
+            ...(more && next !== undefined
+              ? { note: `Turns down to sequence ${next}. Continue with sessions_outline(sessionId: "${sessionId}", before: ${next}).` }
+              : {}),
           });
         } catch (error) {
           return err(`Could not outline "${sessionId}": ${failure(error)}`);

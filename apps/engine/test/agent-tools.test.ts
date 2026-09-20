@@ -190,18 +190,18 @@ test("the bound tool array stays well under what it was, with every tool still o
   const shared = collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() });
   expect(shared).toHaveLength(24);
   /**
-   * 18,744 characters when #563 measured it, 11,576 afterwards for 21 tools,
-   * and 13,521 now for 24. A CEILING rather than an equality: prose is allowed
-   * to move, and the thing that must not come back is the tax — this array is
-   * resent on every lap of every turn, so a sentence added here is a sentence
-   * paid for a hundred times a day.
+   * 18,744 characters when #563 measured it, 11,582 at the commit this work
+   * branched from, and 13,521 now for 24 tools. A CEILING rather than an
+   * equality: prose is allowed to move, and the thing that must not come back
+   * is the tax — this array is resent on every lap of every turn, so a sentence
+   * added here is a sentence paid for a hundred times a day.
    *
    * ── THE NUMBER WENT UP AND IT WAS NOT PROSE CREEP (#516) ──────────────────
    * Three tools arrived: `sessions_steps`, `sessions_step` and `sessions_grep`.
    * The arithmetic that says this is the denominator changing rather than the
    * wall getting wordier is the PER-TOOL cost, which is the thing #563 was
-   * actually about: 551 characters a tool before, 563 after. Twelve characters.
-   * Everything else is three more tools existing.
+   * actually about: 551.5 characters a tool before, 563.4 after. Twelve
+   * characters. Everything else is three more tools existing.
    *
    * The ceiling is therefore raised deliberately and by the measured amount —
    * not nudged to fit. The rule it enforces is unchanged: a CLAUSE still has to
@@ -221,8 +221,8 @@ test("the bound tool array stays well under what it was, with every tool still o
     memory: { remember: (section) => ({ written: true, section, chars: 0, others: {}, standing: 0 }), recall: () => [] },
   });
   expect(whole).toHaveLength(28);
-  // 15,938 measured — see the paragraph above for why this moved and what it
-  // would have taken for it not to.
+  // 13,999 before, 15,938 after — see the paragraph above for why this moved
+  // and what it would have taken for it not to.
   expect(JSON.stringify(agentToolSpecs(whole)).length).toBeLessThan(16_200);
 });
 
@@ -289,11 +289,12 @@ test("the spoken wall is the saving, and it is paid on every lap", () => {
    */
   expect(wide).toBeLessThan(16_200);
   /**
-   * AND THE SPOKEN HALF DID NOT MOVE — 5,548, which is #516's whole effect on
-   * this number and it is nothing: all three new tools PAGE, so all three are
-   * withheld, and a spoken turn is bound to the same nine it was. That is the
-   * property worth pinning here, because it is what makes "the wall grew" and
-   * "every spoken turn costs more" two different statements.
+   * AND THE SPOKEN HALF DID NOT MOVE — 5,548 before this branch and 5,548
+   * after, measured both times. That is #516's whole effect on this number and
+   * it is nothing: all three new tools PAGE, so all three are withheld, and a
+   * spoken turn is bound to the same nine it was. It is the property worth
+   * pinning here, because it is what makes "the wall grew" and "every spoken
+   * turn costs more" two different statements.
    */
   expect(spoken).toBeLessThan(6_000);
   expect(spoken).toBeLessThan(wide / 2);
