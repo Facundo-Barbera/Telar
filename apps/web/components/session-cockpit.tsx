@@ -3497,8 +3497,10 @@ export function SessionCockpit({
    * reads the record the screen already holds, on the clock it already keeps,
    * and the record changes the instant the button is pressed (see
    * `snoozeFromMenu`). The WAKE edge — the dot that says a conversation came
-   * back — is the server-side half and is not here; `wokeAt` in the protocol
-   * already computes the moment and still has no consumer outside its tests.
+   * back — is the server-side half and is still not here: the engine stamps
+   * `Session.wokeAt` on its sweep (#812) and the RAIL ROW draws it (#816, see
+   * `wakeMark` in session/session-row.tsx). This surface is the conversation you
+   * already have open, so it has nothing to announce about its return.
    */
   const snoozedUntil =
     settleable && isSnoozed(settleable, settlingActivity, { now: settlingNow }) ? settleable.snoozedUntil : undefined;
