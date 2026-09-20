@@ -156,17 +156,185 @@ const SWEPT_FILES = [
 ];
 
 /**
- * `.system(size:` followed by a digit. The digit is the whole test: a number
- * is absolute, a property is not. Global so `String.match` returns every hit
- * rather than the first — `match` resets `lastIndex` itself, so sharing one
- * compiled regex across files is safe here in a way `test` would not be.
+ * THE SPELLINGS OF AN ABSOLUTE SIZE (#721). A digit after the colon is still
+ * the whole test — a number is absolute, a property is not — but `.system` is
+ * not the only call that takes one, and #674 shipped a guard that knew exactly
+ * one spelling. These are the ones that qualify, and the ones that were
+ * considered and deliberately left out are recorded below them, because a
+ * guard's exclusions are the part people later mistake for oversight.
+ *
+ * WHAT COUNTS IS "DOES IT SCALE", NOT "IS IT A LITERAL". That distinction
+ * decides every row, and it is the one I got wrong first time round: #721 was
+ * filed arguing `.custom(_:size:)` probably did not belong because a hard size
+ * in a non-system face might be a deliberate type treatment. That reasoning is
+ * irrelevant, because Apple's own documentation settles it — see EXCLUDED.
  */
-const ABSOLUTE_SIZE = /\.system\(\s*size:\s*\d/g;
+const ABSOLUTE_SIZES = [
+  {
+    /**
+     * `.system(size: 14)`. Whitespace-tolerant now: the #674 pattern required
+     * `.system(` and `size:` tight, so `.system (size: 14)` and
+     * `.system(size : 14)` both walked straight past it.
+     */
+    what: ".system(size:)",
+    re: /\.system\s*\(\s*size\s*:\s*\d/g,
+    uikit: false,
+  },
+  {
+    /**
+     * `.custom("Inter", fixedSize: 14)`. Apple: "Create a custom font with the
+     * given name and a fixed size that DOES NOT SCALE with Dynamic Type." It
+     * is the one `Font.custom` overload that is unambiguously this defect, and
+     * the one #721 never thought to name.
+     */
+    what: ".custom(_:fixedSize:)",
+    re: /\.custom\s*\([^()]*,\s*fixedSize\s*:\s*\d/g,
+    uikit: false,
+  },
+  {
+    /**
+     * `UIFont.systemFont(ofSize: 14)` and its bold/italic/monospaced
+     * siblings, all of which end in `ystemFont(ofSize:`. Apple: "Instead of
+     * using this method… it's often more appropriate to use
+     * preferredFont(forTextStyle:) because that method respects the user's
+     * selected content size category."
+     */
+    what: "UIFont…systemFont(ofSize:)",
+    re: /\.\w*[sS]ystemFont\s*\(\s*ofSize\s*:\s*\d/g,
+    uikit: true,
+  },
+  {
+    /** `UIFont(name: "Inter", size: 14)` — same, by the other constructor. */
+    what: "UIFont(name:size:)",
+    re: /\bUIFont\s*\(\s*name\s*:[^()]*\bsize\s*:\s*\d/g,
+    uikit: true,
+  },
+];
+
+/**
+ * EXCLUDED, AND ON PURPOSE — these hold a literal and still scale, so adding
+ * them would make the guard fire on correct code:
+ *
+ *   - `.custom("Inter", size: 14)` — Apple: "Create a custom font with the
+ *     given name and size that SCALES WITH THE BODY text style." A literal
+ *     here is not the defect; it is the seed the system scales from.
+ *   - `.custom("Inter", size: 14, relativeTo: .caption)` — the same, against a
+ *     style you choose.
+ *
+ * Also not covered, and not coverable from source text: a literal passed as a
+ * call-site ARGUMENT rather than written as a font size, e.g.
+ * `ProviderIconView(driver: …, size: 11)` where the view multiplies it into a
+ * font internally. No regex over font calls can see those. #718 is the record.
+ *
+ * `.preferredFont(forTextStyle:)` and `UIFontMetrics` are the UIKit ways to
+ * scale, and are what the failure text points at.
+ */
+
+/**
+ * THE UIKIT CARVE-OUT, deliberately coarse and deliberately LOUD. Wrapping a
+ * fixed UIFont in `UIFontMetrics` is the documented way to make it scale, and
+ * the wrapper contains the literal:
+ *
+ *     UIFontMetrics.default.scaledFont(for: .systemFont(ofSize: 17))
+ *
+ * So a UIKit hit on a line that also says `UIFontMetrics` is skipped. LINE
+ * level, not file level, and that choice is the point: a file-level carve-out
+ * would let one legitimate `UIFontMetrics` blind a whole file to every other
+ * UIKit literal in it, which is a hole. Line level errs the other way — split
+ * that call across two lines and the guard fires on correct code. A guard that
+ * occasionally asks a question you can answer is worth more than one that
+ * quietly stops looking, and the failure text says so.
+ *
+ * The app uses no UIKit font construction at all today, so this costs nothing
+ * now; it exists so that the first one to arrive is noticed.
+ */
+const UIKIT_SCALING = /UIFontMetrics/;
+
+/** Every absolute-size hit in one source file, already carved out. */
+function absoluteSizesIn(source) {
+  const hits = [];
+  for (const { what, re, uikit } of ABSOLUTE_SIZES) {
+    for (const match of source.matchAll(re)) {
+      if (uikit) {
+        const lineStart = source.lastIndexOf("\n", match.index) + 1;
+        let lineEnd = source.indexOf("\n", match.index);
+        if (lineEnd === -1) lineEnd = source.length;
+        if (UIKIT_SCALING.test(source.slice(lineStart, lineEnd))) continue;
+      }
+      hits.push(what);
+    }
+  }
+  return hits;
+}
+
+/**
+ * THE GUARD ABOVE, GUARDED (#721). A check that reports "ok" has proved that
+ * it found nothing — which is a different claim from "there is nothing", and
+ * the two only coincide while the patterns actually fire. #674's evidence for
+ * that was a person pasting an absolute into a file by hand, watching it go
+ * red, and taking it out again. That worked once and protects nothing after.
+ *
+ * So the samples live here and run on every CI pass. Each MUST row is a
+ * positive control; each MUST-NOT row is a negative one, and the negatives
+ * matter more, because a pattern that is too greedy fires on correct code and
+ * the next person's fix is to delete the pattern.
+ *
+ * If you widen `ABSOLUTE_SIZES`, add both kinds of row here. A new pattern
+ * with no sample is a claim with no evidence.
+ */
+const GUARD_SAMPLES = [
+  // Fires: these genuinely do not scale.
+  { fires: true, why: "the plain absolute", code: `Text("x").font(.system(size: 14))` },
+  { fires: true, why: "space before the paren", code: `Text("x").font(.system (size: 14))` },
+  { fires: true, why: "space before the colon", code: `Text("x").font(.system(size : 14))` },
+  { fires: true, why: "wrapped onto the next line", code: `Text("x").font(.system(\n    size: 14))` },
+  { fires: true, why: "Font.system spelt in full", code: `let f = Font.system(size: 14)` },
+  { fires: true, why: "a custom face pinned with fixedSize", code: `Text("x").font(.custom("Inter", fixedSize: 14))` },
+  { fires: true, why: "UIKit's system font", code: `label.font = .systemFont(ofSize: 14)` },
+  { fires: true, why: "UIKit's bold system font", code: `label.font = .boldSystemFont(ofSize: 14)` },
+  { fires: true, why: "UIKit's monospaced system font", code: `label.font = .monospacedSystemFont(ofSize: 14, weight: .regular)` },
+  { fires: true, why: "UIKit by font name", code: `label.font = UIFont(name: "Inter", size: 14)` },
+
+  // Silent: these hold a literal and scale anyway. A hit on any of them is the
+  // guard failing on correct code, which is worse than the hole it closes.
+  { fires: false, why: "custom(_:size:) scales with body", code: `Text("x").font(.custom("Inter", size: 14))` },
+  { fires: false, why: "custom(_:size:relativeTo:) scales", code: `Text("x").font(.custom("Inter", size: 14, relativeTo: .caption))` },
+  { fires: false, why: "a @ScaledMetric driving the size", code: `Text("x").font(.system(size: glyph))` },
+  { fires: false, why: "a fraction of the caller's own box", code: `Text("OC").font(.system(size: size * 0.65))` },
+  { fires: false, why: "UIFontMetrics is the scaling path", code: `let f = UIFontMetrics.default.scaledFont(for: .systemFont(ofSize: 17))` },
+  { fires: false, why: "the UIKit text-style path", code: `label.font = .preferredFont(forTextStyle: .body)` },
+  { fires: false, why: "prose about the sweep", code: `/// was .system(size:) before the sweep` },
+];
 
 const CHECKS = [
   {
+    name: "ios-type-scale-self-test",
+    protects: "#721: the absolute-size patterns still fire on what they claim, and stay quiet on correct code",
+    async run() {
+      const failures = [];
+      for (const { fires, why, code } of GUARD_SAMPLES) {
+        const hits = absoluteSizesIn(code);
+        if (fires && hits.length === 0) {
+          failures.push(
+            `the guard MISSED a sample it must catch (${why}): ${JSON.stringify(code)}. ` +
+              "A pattern in ABSOLUTE_SIZES has stopped matching, so ios-type-scale below is now reporting green " +
+              "for a spelling it no longer sees.",
+          );
+        }
+        if (!fires && hits.length > 0) {
+          failures.push(
+            `the guard FIRED on a sample it must ignore (${why}): ${JSON.stringify(code)} — matched ${hits.join(", ")}. ` +
+              "This spelling scales; flagging it makes the guard wrong about correct code, and the next person to " +
+              "hit it will delete the pattern rather than argue with it.",
+          );
+        }
+      }
+      return failures;
+    },
+  },
+  {
     name: "ios-type-scale",
-    protects: "the Dynamic Type sweep (#248, #674): no swept iOS file holds an absolute font size",
+    protects: "the Dynamic Type sweep (#248, #674, #721): no swept iOS file holds an absolute font size",
     async run() {
       const failures = [];
       for (const [path, note] of SWEPT_FILES) {
@@ -177,13 +345,16 @@ const CHECKS = [
           failures.push(`${path}: listed as swept but the file is missing — was it moved or renamed?`);
           continue;
         }
-        const found = (source.match(ABSOLUTE_SIZE) ?? []).length;
-        if (found === 0) continue;
+        const hits = absoluteSizesIn(source);
+        if (hits.length === 0) continue;
+        const spellings = [...new Set(hits)].join(", ");
         failures.push(
-          `${path}: ${found} absolute font size${found === 1 ? "" : "s"}. A .system(size: <number>) came back. ` +
+          `${path}: ${hits.length} absolute font size${hits.length === 1 ? "" : "s"} (${spellings}). ` +
             "Use a Dynamic Type style (Theme.captionTiny/caption/footnote/subhead), or — if the number has to survive, " +
             "as it does for a glyph locked in a fixed frame — a named @ScaledMetric seeded with it, which keeps the " +
-            `size and still scales. See apps/ios/TelarMobile/Views/ScaledFrame.swift.${note ? ` (note on this file: ${note})` : ""}`,
+            "size and still scales; see apps/ios/TelarMobile/Views/ScaledFrame.swift. In UIKit the scaling paths are " +
+            "UIFont.preferredFont(forTextStyle:) and UIFontMetrics — if this IS a UIFontMetrics call split across " +
+            `lines, put it on one line and the guard will read it correctly.${note ? ` (note on this file: ${note})` : ""}`,
         );
       }
       return failures;
