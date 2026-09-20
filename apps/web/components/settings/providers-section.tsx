@@ -61,7 +61,11 @@ function AddInstanceDialog({
   open: boolean;
   onOpenChange: (next: boolean) => void;
   taken: readonly string[];
-  onAdded: () => void;
+  /** Carries what the engine said the new login stopped inheriting (#594) — a
+   *  login added WITH a config folder is configured from its first breath, so
+   *  this is a transition like any other and must not be the one that is
+   *  silent. */
+  onAdded: (added: { id: string; stoppedInheriting?: string[] }) => void;
 }) {
   const [driver, setDriver] = useState<ProviderDriverKind>("claude");
   const [name, setName] = useState("");
@@ -81,7 +85,7 @@ function AddInstanceDialog({
     setBusy(true);
     setError(null);
     try {
-      await api.saveProviderInstance({
+      const answer = await api.saveProviderInstance({
         id,
         driver,
         ...(name.trim() ? { displayName: name.trim() } : {}),
@@ -89,7 +93,7 @@ function AddInstanceDialog({
       });
       reset();
       onOpenChange(false);
-      onAdded();
+      onAdded({ id, ...(answer.stoppedInheriting ? { stoppedInheriting: answer.stoppedInheriting } : {}) });
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause.message : "That login could not be added.");
     } finally {
@@ -200,6 +204,19 @@ export function ProvidersSection() {
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [adding, setAdding] = useState(false);
   const [rechecking, setRechecking] = useState(false);
+  /**
+   * WHAT A SAVE STOPPED A LOGIN INHERITING — #594, by instance id.
+   *
+   * THE ENGINE IS THE ONLY THING THAT CAN KNOW THIS, so this state holds its
+   * answer rather than computing one: the variables in question are the ones
+   * the ENGINE's own process carries, and a cockpit looking at a remote Mac
+   * cannot see them. Names only ever arrive here — several of them are
+   * credentials, and the value stays in the engine even when it is carried over.
+   *
+   * SET BY THE SAVE THAT CAUSED IT, so it says what a person just did rather
+   * than describing a standing state. Cleared when they act on it or dismiss it.
+   */
+  const [inheritance, setInheritance] = useState<Record<string, string[] | undefined>>({});
   /** Which BINARY is updating, expressed as the driver plus the pin that
    *  selects it — so every row resolving to that executable goes busy together
    *  and a row pinned to a different one stays pressable. */
@@ -238,11 +255,45 @@ export function ProvidersSection() {
   const patch = async (instance: ProviderInstance, next: InstancePatch) => {
     setErrors((current) => ({ ...current, [instance.id]: null }));
     try {
-      await api.saveProviderInstance({ id: instance.id, ...next });
+      const answer = await api.saveProviderInstance({ id: instance.id, ...next });
+      /**
+       * THE SAVE REPORTS WHAT IT COST, AND THE COST IS SHOWN (#594).
+       *
+       * Only ever SET here, never cleared on a quiet save: a person who typed a
+       * second variable without carrying the first one's losses over has not
+       * changed their mind, and blanking the notice under them would be a
+       * second silence in the same place as the first.
+       */
+      if (answer.stoppedInheriting?.length) {
+        setInheritance((current) => ({ ...current, [instance.id]: answer.stoppedInheriting }));
+      }
     } catch (cause) {
       setErrors((current) => ({
         ...current,
         [instance.id]: cause instanceof EngineApiError ? cause.message : "That change was not saved.",
+      }));
+    }
+    await load();
+  };
+
+  /**
+   * Keep the variables this login just stopped inheriting, as declarations of
+   * its own.
+   *
+   * NO VALUE CROSSES THIS CALL. The names go to the engine and the engine reads
+   * the values out of its own environment — which is the only place they exist,
+   * and the reason this is not simply "copy them into the form". A credential
+   * lands in the 0600 store and never comes back out.
+   */
+  const carryOver = async (instance: ProviderInstance, names: readonly string[]) => {
+    setErrors((current) => ({ ...current, [instance.id]: null }));
+    try {
+      await api.saveProviderInstance({ id: instance.id, carryOverInherited: [...names] });
+      setInheritance((current) => ({ ...current, [instance.id]: undefined }));
+    } catch (cause) {
+      setErrors((current) => ({
+        ...current,
+        [instance.id]: cause instanceof EngineApiError ? cause.message : "Those variables could not be carried over.",
       }));
     }
     await load();
@@ -338,6 +389,15 @@ export function ProvidersSection() {
               expanded={Boolean(expanded[instance.id])}
               onExpandedChange={(next) => setExpanded((current) => ({ ...current, [instance.id]: next }))}
               onPatch={(next) => void patch(instance, next)}
+              {...(inheritance[instance.id]?.length
+                ? {
+                    inheritance: {
+                      names: inheritance[instance.id]!,
+                      onCarryOver: () => void carryOver(instance, inheritance[instance.id]!),
+                      onDismiss: () => setInheritance((current) => ({ ...current, [instance.id]: undefined })),
+                    },
+                  }
+                : {})}
               // No delete on the built-in slot: a session on that driver would
               // have nothing left to route to.
               {...(isDefaultInstance(instance) ? {} : { onRemove: () => void remove(instance) })}
@@ -401,7 +461,22 @@ export function ProvidersSection() {
         </SettingsGroup>
       )}
 
-      <AddInstanceDialog open={adding} onOpenChange={setAdding} taken={(instances ?? []).map((instance) => instance.id)} onAdded={() => void load()} />
+      <AddInstanceDialog
+        open={adding}
+        onOpenChange={setAdding}
+        taken={(instances ?? []).map((instance) => instance.id)}
+        onAdded={(added) => {
+          // A new login added with a config folder is configured immediately,
+          // so it can lose an inherited variable on the very save that creates
+          // it. Its card is expanded, because the notice is in the body and a
+          // collapsed row would hide the one thing worth reading (#594).
+          if (added.stoppedInheriting?.length) {
+            setInheritance((current) => ({ ...current, [added.id]: added.stoppedInheriting }));
+            setExpanded((current) => ({ ...current, [added.id]: true }));
+          }
+          void load();
+        }}
+      />
     </>
   );
 }

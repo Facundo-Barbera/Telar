@@ -425,6 +425,78 @@ function CompactionField({ env, onChange }: { env: ProviderInstanceEnvVar[]; onC
   );
 }
 
+/** What the engine reported this login just stopped inheriting, and the two
+ *  ways out of it. */
+export type InheritanceNotice = {
+  /** NAMES ONLY, and that is the contract rather than the shape that happened
+   *  to be convenient: three of the names this list can hold are credentials. */
+  names: readonly string[];
+  onCarryOver: () => void;
+  onDismiss: () => void;
+};
+
+/**
+ * THE VARIABLES THIS LOGIN JUST STOPPED INHERITING — issue #594.
+ *
+ * WHY THIS EXISTS AT ALL. An instance is "configured" the moment it has one
+ * environment variable or a config folder, and a configured instance stops
+ * inheriting the variables its provider owns — its proxy, its Bedrock or Vertex
+ * routing, its API key. That rule is right: an inherited `ANTHROPIC_API_KEY`
+ * would silently move a subscription account onto metered billing. What was
+ * wrong is that it happened in SILENCE, and since the compaction control landed
+ * the first variable can be written by somebody who was thinking about
+ * compaction and nothing else. They would find out later, as an authentication
+ * error with no visible connection to the switch they touched.
+ *
+ * IT NAMES VARIABLES AND NEVER SHOWS A VALUE. `ANTHROPIC_AUTH_TOKEN` is on the
+ * list this can print. A notice that helpfully showed what was about to be lost
+ * would put a credential on a settings page — so the engine sends names, this
+ * renders names, and carrying one over sends a NAME back and lets the engine
+ * read the value from its own environment.
+ *
+ * IT IS NOT SHOWN WHEN NOTHING IS INHERITED, which on a Mac launched from the
+ * Dock is always: the engine checks its own environment first and says nothing
+ * when it is carrying none of them. A warning nobody can act on is one nobody
+ * reads.
+ */
+function InheritanceNotice({ driver, names, onCarryOver, onDismiss }: InheritanceNotice & { driver: ProviderInstance["driver"] }) {
+  return (
+    <div className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3" role="status">
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">
+          This login has stopped inheriting {names.length === 1 ? "a variable" : `${names.length} variables`} from Telar
+        </span>
+        <Button variant="ghost" size="icon-sm" aria-label="Dismiss" onClick={onDismiss}>
+          <XIcon className="size-3" />
+        </Button>
+      </div>
+      <p className="text-2xs leading-snug text-muted-foreground">
+        Configuring a login stops it picking up {DRIVER_LABEL[driver]}&rsquo;s own variables from the environment Telar was
+        launched with — otherwise an ambient key or proxy would silently replace this login&rsquo;s identity. Telar was passing
+        {names.length === 1 ? " this one" : " these"} down, and no longer will:
+      </p>
+      <ul className="flex flex-wrap gap-1">
+        {names.map((name) => (
+          <li key={name}>
+            {/* THE NAME, NOT THE VALUE. */}
+            <code className="rounded bg-muted/60 px-1 py-0.5 font-mono text-3xs text-foreground">{name}</code>
+          </li>
+        ))}
+      </ul>
+      <div className="flex items-center gap-2 pt-0.5">
+        <Button size="sm" className="h-7 px-2 text-xs" onClick={onCarryOver}>
+          Keep {names.length === 1 ? "it" : "them"} for this login
+        </Button>
+      </div>
+      <p className="text-2xs leading-snug text-muted-foreground/70">
+        Keeping {names.length === 1 ? "it" : "them"} copies the current value into this login&rsquo;s own environment below, where
+        it survives. The value is read by the engine and never shown here; a credential is stored as a secret. If this login is
+        meant to have its own identity, dismiss this instead.
+      </p>
+    </div>
+  );
+}
+
 export function ProviderInstanceCard({
   instance,
   probe,
@@ -436,6 +508,7 @@ export function ProviderInstanceCard({
   onUpdateCli,
   updating,
   error,
+  inheritance,
 }: {
   instance: ProviderInstance;
   probe?: ProviderProbe;
@@ -456,6 +529,10 @@ export function ProviderInstanceCard({
    *  disabled one. */
   onRemove?: () => void;
   error?: string | null;
+  /** What the engine said this login just stopped inheriting, when it said
+   *  anything (#594). Absent is the ordinary case and the only one on a Mac
+   *  launched from the Dock. */
+  inheritance?: InheritanceNotice;
 }) {
   const [tab, setTab] = useState<ProviderTab>("configuration");
   const title = displayNameOf(instance);
@@ -585,6 +662,7 @@ export function ProviderInstanceCard({
       <Collapsible open={expanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
           <div className="space-y-4 px-3 pb-4 pt-1 sm:px-4">
+            {inheritance && <InheritanceNotice driver={instance.driver} {...inheritance} />}
             {/* CONFIGURATION AND MODELS, the two things there are to say about a
                 login. They are tabs rather than two stacked sections because the
                 model list is long and is read for its own sake — scrolling past

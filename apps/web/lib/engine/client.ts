@@ -1402,9 +1402,16 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         "GET",
         `/api/provider-instances${options.refresh ? "?refresh=1" : ""}`,
       ),
-    /** `null` clears a field; an absent key leaves it alone. Sensitive values
-     *  round-trip as `{ value: "", valueRedacted: true }` and keep their
-     *  stored secret. */
+    /**
+     * `null` clears a field; an absent key leaves it alone. Sensitive values
+     * round-trip as `{ value: "", valueRedacted: true }` and keep their
+     * stored secret.
+     *
+     * `stoppedInheriting` IS THE ANSWER TO "WHAT DID THAT COST" (#594): the
+     * names this save stopped the login inheriting from the engine's own
+     * environment, present only when there are any. Names, never values —
+     * several of them are credentials.
+     */
     saveProviderInstance: (input: {
       id: string;
       driver?: ProviderDriverKind;
@@ -1414,7 +1421,16 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       binaryPath?: string | null;
       enabled?: boolean;
       env?: ProviderInstanceEnvVar[];
-    }) => request<{ providerInstance: ProviderInstance }>(fetcher, "PUT", "/api/provider-instances", input),
+      /** Inherited variables to keep, by name. The engine supplies the values
+       *  from its own environment; none crosses this call. */
+      carryOverInherited?: string[];
+    }) =>
+      request<{ providerInstance: ProviderInstance; stoppedInheriting?: string[] }>(
+        fetcher,
+        "PUT",
+        "/api/provider-instances",
+        input,
+      ),
     removeProviderInstance: (id: string) =>
       request<{ removed: boolean }>(fetcher, "DELETE", `/api/provider-instances/${encodeURIComponent(id)}`),
     /**
