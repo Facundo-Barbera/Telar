@@ -1794,12 +1794,21 @@ export type AgentWake = { notification: NotificationDetail };
  * them accepted and another silently dropped would be a toolbar toggle that
  * worked on a session and did nothing on a canvas.
  */
-export type FilePatchOptions = {
-  /** Untracked files are in no diff at all — see `sessionFilePatch`. */
-  untracked?: boolean;
-  /** Re-indentation and blank lines are not changes worth reading (#694). */
-  ignoreWhitespace?: boolean;
-};
+/**
+ * `DiffBaseOption` AND `FilePatchOptions` COME FROM THE CONTRACT, not from
+ * here — `protocol/diff-query.ts` owns the shape, its query builder and its
+ * parser together, because a fourth hand-written copy of this is precisely
+ * what dropped the ignore-whitespace flag in silence. Re-exported so the
+ * engine's own callers need not reach past their own module boundary.
+ */
+export type { DiffBaseOption, FilePatchOptions } from "@telar/engine-client";
+import type { DiffBaseOption, FilePatchOptions } from "@telar/engine-client";
+
+/** Absent keeps the recorded base; `null` drops it; a string replaces it. */
+function resolveRequestedBase(options: DiffBaseOption, recorded: string | undefined): string | undefined {
+  if (options.base === undefined) return recorded;
+  return options.base === null ? undefined : options.base;
+}
 
 export class EngineStore {
   private executionStore?: ExecutionStore;
@@ -5770,8 +5779,9 @@ export class EngineStore {
 
   /** NOT `async`, so a session with no directory is refused BEFORE the first
    *  await — see the projectless-session test, which asserts exactly that. */
-  sessionDiffAsync(sessionId: string): Promise<SessionDiff> {
+  sessionDiffAsync(sessionId: string, options: DiffBaseOption = {}): Promise<SessionDiff> {
     const session = this.getSession(sessionId);
+    const base = resolveRequestedBase(options, workspaceBaseRef(session.workspace));
     /**
      * A WORKTREE SESSION'S CHECKOUT IS ON THE INTERNAL DISK AND ITS `.git` IS
      * NOT — see `worktree.ts`'s header. So the availability that matters to this
@@ -5779,9 +5789,9 @@ export class EngineStore {
      * perfectly readable while every git command inside it fails.
      */
     return this.withAvailability(
-      this.cachedGitRead(`diff:${workspaceRootOf(session)}:${workspaceBaseRef(session.workspace) ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
+      this.cachedGitRead(`diff:${workspaceRootOf(session)}:${base ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
         cwd: workspaceRootOf(session),
-        ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
+        ...(base ? { baseRef: base } : {}),
       })),
       this.projectOfSession(session),
       // Outside the cached read, like the availability above it: two local
@@ -5797,7 +5807,15 @@ export class EngineStore {
 
   sessionFilePatchAsync(sessionId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {
     const session = this.getSession(sessionId);
-    return this.readFilePatchAsync(workspaceRootOf(session), target, options, workspaceBaseRef(session.workspace));
+    /**
+     * THE ROW'S PATCH IS READ AGAINST THE SAME BASE THE LIST WAS (#694).
+     *
+     * They are one answer shown at two depths: a list built from `unstaged`
+     * over a row's patch built from the session's base would put hunks under a
+     * row whose ± counts came from a different comparison, and neither figure
+     * would be wrong on its own.
+     */
+    return this.readFilePatchAsync(workspaceRootOf(session), target, options, resolveRequestedBase(options, workspaceBaseRef(session.workspace)));
   }
 
   private readFilePatchAsync(cwd: string, target: string, options: FilePatchOptions, baseRef?: string): Promise<GitFilePatch> {
