@@ -141,7 +141,21 @@ fi
 # Force unsigned regardless of any Developer ID cert sitting in Keychain — this
 # script is for fast local iteration, not a release build. `--publish never`
 # for the same reason: nothing here ever talks to an update feed.
-CSC_IDENTITY_AUTO_DISCOVERY=false NODE_OPTIONS= bunx electron-builder --dir --publish never "${CONFIG_OVERRIDES[@]}"
+#
+# `${A[@]+"${A[@]}"}` RATHER THAN `"${A[@]}"`, AND IT IS NOT STYLE (#808).
+# Under `set -u`, bash 3.2 treats `"${A[@]}"` on an EMPTY array as an unbound
+# variable and aborts the script. macOS ships 3.2.57 as /bin/bash, so
+# `#!/usr/bin/env bash` resolves to it on any machine without a newer bash
+# earlier on PATH. Bash 4.4 stopped doing this, which is why the failure is
+# invisible to anyone set up with a Homebrew bash — and why it survived here.
+#
+# CONFIG_OVERRIDES is populated ONLY inside the --dev branch above, so every
+# other entry point (`pack`, `package:local`, `install:local`) died on this
+# line while `package:dev` worked. The `+` form expands to nothing at all when
+# the array is empty and to exactly its elements, quoting intact, when it is
+# not — which is why it beats seeding the array with a placeholder, since a
+# placeholder would reach electron-builder as a real argument.
+CSC_IDENTITY_AUTO_DISCOVERY=false NODE_OPTIONS= bunx electron-builder --dir --publish never ${CONFIG_OVERRIDES[@]+"${CONFIG_OVERRIDES[@]}"}
 
 test -d "$APP" || { echo "!! expected app not found at $APP" >&2; exit 1; }
 test -x "$BIN" || { echo "!! packaged executable missing at $APP" >&2; exit 1; }
@@ -206,5 +220,8 @@ rm -f "$SMOKE_LOG"
 echo "==> packaged app ready: $APP"
 
 if [ "$INSTALL" -eq 1 ]; then
-  bash "$DESKTOP_DIR/install-app.sh" --app "$APP" --verified "${INSTALL_ARGS[@]}"
+  # Guarded for the same reason as the electron-builder line above (#808):
+  # `install:local` passes --install and nothing else, so INSTALL_ARGS is empty
+  # on exactly the path that reaches here most often.
+  bash "$DESKTOP_DIR/install-app.sh" --app "$APP" --verified ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 fi
