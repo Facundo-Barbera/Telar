@@ -128,8 +128,14 @@ jobs:
           # One line per distinct warning, path stripped to the file name, as
           # "<ms>\t<warning>". Xcode repeats a warning once per emitted target
           # pass, hence the sort -u.
+          #
+          # THE LEADING SLASH IS KEPT ON PURPOSE. Without it "SessionView.swift"
+          # also matches NewSessionView.swift, and it did: the first report
+          # credited SessionView with a 171 ms `body` that belonged to
+          # NewSessionView (run 35492131861). "/SessionView.swift" is the whole
+          # file name and nothing else's tail.
           /usr/bin/grep -a 'ms to type-check' "$LOG" \
-            | sed -E 's#^[^ ]*/##' \
+            | sed -E 's#^[^ ]*/#/#' \
             | sort -u \
             | awk 'match($0, /took [0-9]+ms to type-check/) {
                      ms = substr($0, RSTART + 5); sub(/ms.*/, "", ms);
@@ -144,7 +150,7 @@ jobs:
 
           echo
           echo "── SessionView.swift only ────────────────────────────────────"
-          /usr/bin/grep -a 'SessionView\.swift' "$RUNNER_TEMP/slow.tsv" \
+          /usr/bin/grep -a '/SessionView\.swift' "$RUNNER_TEMP/slow.tsv" \
             || echo "(no warnings from SessionView.swift — everything in it is under $FLOOR ms)"
 
           echo
@@ -152,8 +158,8 @@ jobs:
           # Named one by one, because the headroom that matters is per layer:
           # one of them creeping back up is how this regresses, and a single
           # worst-figure line would hide which.
-          /usr/bin/grep -a 'SessionView\.swift' "$RUNNER_TEMP/slow.tsv" > "$RUNNER_TEMP/sv.tsv"
-          for layer in body presentations lifecycle stack statusStrip transcript; do
+          /usr/bin/grep -a '/SessionView\.swift' "$RUNNER_TEMP/slow.tsv" > "$RUNNER_TEMP/sv.tsv"
+          for layer in body presentations presence notices polling stack statusStrip transcript; do
             # SessionView's own rows only — every SwiftUI view in the app has a
             # property called 'body', and SessionSidebar's is over the bar too.
             ms=$(/usr/bin/grep -a "property '$layer'" "$RUNNER_TEMP/sv.tsv" | head -1 | cut -f1)
@@ -162,7 +168,7 @@ jobs:
 
           echo
           echo "── SessionView.swift, worst single figure ────────────────────"
-          WORST=$(/usr/bin/grep -a 'SessionView\.swift' "$RUNNER_TEMP/slow.tsv" | head -1 | cut -f1)
+          WORST=$(/usr/bin/grep -a '/SessionView\.swift' "$RUNNER_TEMP/slow.tsv" | head -1 | cut -f1)
           if [ -n "${WORST:-}" ]; then
             echo "$WORST ms — the bar #758 argues about is 500 ms"
           else
