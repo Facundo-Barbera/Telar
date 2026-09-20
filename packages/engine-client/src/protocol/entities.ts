@@ -787,6 +787,50 @@ export type ClaudeConversation = z.infer<typeof ClaudeConversation>;
 export const MIN_REPORT_WINDOW_MINUTES = 1;
 export const MAX_REPORT_WINDOW_MINUTES = 24 * 60;
 
+/**
+ * THE WINDOW THAT NEVER CLOSES — issue #784, step 2.
+ *
+ * A THIRD CADENCE ON THE SAME FIELD, not a second field. "As they arrive",
+ * "every N minutes" and "hold them" are three answers to ONE question — how
+ * this session is told about its peers — and a boolean beside the number would
+ * be two records of one decision, with the pair `{minutes: 25, held: true}`
+ * meaning nothing anybody could name.
+ *
+ * WHY IT IS NOT JUST A VERY LONG WINDOW. `MAX_REPORT_WINDOW_MINUTES` is a day,
+ * and lengthening it was the obvious move and the wrong one: every window ends
+ * in a FLUSH, and a flush is a TURN. #784's finding is that for a PERSON'S
+ * session the turn is the cost — the conversation gains a row, a provider call
+ * is paid against context they will re-read cold, and whatever they were
+ * reading moves. A 25-minute window set overnight delivers at 3:14am, 3:41am and
+ * 4:09am: quieter than forty, no better for them. This cadence holds the
+ * mailbox and NEVER flushes it, so the count on the panel is the whole delivery
+ * and the person reads it when they choose to look.
+ *
+ * IT DOES NOT LOSE ANYTHING, and the surface is what makes that true rather
+ * than the claim. The reports stay in the mailbox `sessions_status` and
+ * `GET /v2/sessions/:id/report-window` already report, and the Agents panel
+ * already draws that count — the one risk `report-cadence.tsx` names about its
+ * own feature is that *"'held' and 'lost' look identical from outside"*, which
+ * is exactly why the count had to exist before this value could.
+ *
+ * AND IT HOLDS ONLY WHAT A WINDOW HOLDS: a `report`, and a `result` nobody is
+ * awaiting. A `task`, a `blocker` and an awaited `result` are untouched — the
+ * one clause a cadence withdraws is the same one, and a hold that swallowed a
+ * blocker would be the single way this change could make things worse.
+ */
+export const HOLD_REPORTS = "hold";
+
+/**
+ * How a session is told about routine peer traffic: a number of minutes, or
+ * `HOLD_REPORTS`. Absent (on `Session`) or `null` (on a patch) is the default —
+ * each report wakes the session as it arrives.
+ */
+export const ReportCadence = z.union([
+  z.number().int().min(MIN_REPORT_WINDOW_MINUTES).max(MAX_REPORT_WINDOW_MINUTES),
+  z.literal(HOLD_REPORTS),
+]);
+export type ReportCadence = z.infer<typeof ReportCadence>;
+
 export const Session = z.object({
   id: Id,
   /**
@@ -1085,8 +1129,13 @@ export const Session = z.object({
    *
    * MINUTES, because it is a cadence a person states out loud ("report every
    * 25 minutes") and no reader of this field wants to count zeros.
+   *
+   * OR `HOLD_REPORTS`, WHICH IS A WINDOW THAT NEVER CLOSES — issue #784. The
+   * name kept its `Minutes` suffix because a rename across seven files and two
+   * wire surfaces would have been the change rather than the cadence; read it as
+   * "how long", of which "indefinitely" is an answer. See `ReportCadence`.
    */
-  reportWindowMinutes: z.number().int().min(MIN_REPORT_WINDOW_MINUTES).max(MAX_REPORT_WINDOW_MINUTES).optional(),
+  reportWindowMinutes: ReportCadence.optional(),
 
   /** Legacy pause metadata, accepted when reading older state. Startup and
    * session Stop settle its held backlog and remove the latch without replay.

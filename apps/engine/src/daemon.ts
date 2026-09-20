@@ -32,6 +32,7 @@ import {
   type McpOAuthStatus,
   type McpServer,
   type ModelSelection,
+  type ReportCadence,
   type RuntimeMode,
   type StorageReport,
   type TurnSubmissionResult,
@@ -1518,6 +1519,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       send: async (sessionId, input) =>
         store.submitAgentTurn(sessionId, input, self && isAgentSelf(self.sessionId) ? { sessionId: AGENT_SELF_ID } : undefined),
+      /**
+       * ADDRESSING THE AGENT — issue #784, and this build has no proof to offer.
+       *
+       * The socket's caller is not a session, and the Agent's own build would be
+       * the Agent addressing itself; the store refuses both, in those words. It
+       * is still WIRED at this seam rather than omitted, so the refusal a model
+       * reads is the store's sentence about who may speak — not the wall's
+       * "this door cannot", which would be true of the worker too and is not.
+       *
+       * The SESSION's build of this wall is `worker.ts`, over HTTP, and that one
+       * carries the claim of the turn doing the sending.
+       */
+      sendToAgent: async (input) =>
+        store.sendToAgent(input, self && isAgentSelf(self.sessionId) ? { sessionId: AGENT_SELF_ID } : undefined),
       read: async (sessionId, after, options) => store.readEvents(sessionId, after, options?.limit),
       // The last event id, so the wall can serve "what happened lately" from
       // one page rather than by walking a journal to reach its end (#515).
@@ -1765,9 +1780,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * every subscriber to this transition (#550), so the Agent's row and a
    * session's notification item say the same sentence about the same fact.
    */
-  store.setAgentWakeSink((wake) => {
-    agentRuntime.wake({ notification: wake.notification, ...(wake.inboxKind ? { inboxKind: wake.inboxKind } : {}) });
-  });
+  store.setAgentWakeSink((wake) =>
+    agentRuntime.wake({ notification: wake.notification, ...(wake.inboxKind ? { inboxKind: wake.inboxKind } : {}) }),
+  );
   /**
    * AN APPROVAL THIS MACHINE PARKED BEFORE IT LAST STOPPED, FOUND AGAIN.
    *
@@ -2235,6 +2250,34 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         if (!ids) throw new HttpError(400, "invalid_request", "ids must be a list of row ids");
         if (ids.length > INBOX_PAGE_MAX) throw new HttpError(400, "invalid_request", `mark at most ${INBOX_PAGE_MAX} rows read at a time`);
         writeJson(response, 200, agentRuntime.markInboxRead(ids));
+        return;
+      }
+      /**
+       * A SESSION ADDRESSING THE AGENT — issue #784.
+       *
+       * UNDER `/v2/agent` RATHER THAN `/v2/sessions/:id/turns/agent`, and the
+       * placement is the same argument this family was built on: the Agent is
+       * not a session and has no id in that namespace, so a route that reached
+       * it through one would promise a conversation `sessions_read` cannot open.
+       * It is also the difference the route names — that one submits a TURN, and
+       * this one writes a ROW and starts nothing.
+       *
+       * `proof` IS THE SENDING TURN'S OWN CLAIM, exactly as on `/turns/agent`:
+       * the store checks it is live and reads the sender off it, so a model
+       * cannot name a session it is not, and an unproven caller is refused
+       * rather than recorded anonymously. There is no anonymous arm here — a row
+       * with no sender has no fetch call, which is the whole of what it carries.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/agent/inbox/message") {
+        const input = await body(request);
+        const text = typeof input.input === "string" ? input.input : "";
+        if (!text) throw new HttpError(400, "invalid_request", "input is required");
+        const proof = input.proof as { sessionId?: unknown; runId?: unknown; claimToken?: unknown } | undefined;
+        if (typeof proof?.sessionId !== "string" || typeof proof.runId !== "string" || typeof proof.claimToken !== "string") {
+          throw new HttpError(400, "invalid_request", "a sender proof (sessionId, runId, claimToken) is required to address the Agent");
+        }
+        const intent = input.intent === "task" || input.intent === "result" || input.intent === "blocker" ? input.intent : "report";
+        writeJson(response, 200, store.sendToAgent({ input: text, intent }, { sessionId: proof.sessionId, runId: proof.runId, claimToken: proof.claimToken }));
         return;
       }
       if (request.method === "POST" && url.pathname.startsWith("/v2/agent/requests/")) {
@@ -5266,7 +5309,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               // The report window, same reasoning again — the bounds are the
               // store's, so an in-process caller cannot set a window this hop
               // would have refused (#723).
-              ...(input.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: input.reportWindowMinutes as number | null }),
+              ...(input.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: input.reportWindowMinutes as ReportCadence | null }),
             }),
           });
           return;

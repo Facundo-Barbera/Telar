@@ -10,6 +10,7 @@
  */
 import { expect, test } from "bun:test";
 import { activeAssignments, assignmentsOf, reviewableAssignments, unresolvedAssignments, type AssignmentTurn } from "../src/protocol/assignments";
+import { AGENT_SELF_ID } from "../src/protocol/common";
 import { Turn } from "../src/protocol/entities";
 
 const task = (runId: string, from: string, extra: Partial<AssignmentTurn> = {}): AssignmentTurn => ({
@@ -179,4 +180,25 @@ test("a detached task whose carrier is absent is detached, not unknown", () => {
   const turns = [task("run_task", "session_coord", { state: "steered", steer: { intoRunId: "run_gone" }, assignmentDetachedAt: 7 })];
   expect(unresolvedAssignments(turns)).toEqual([]);
   expect(assignmentsOf(turns)[0]).toMatchObject({ outcome: "detached", runId: "run_gone" });
+});
+
+/**
+ * THE RESERVED AGENT ID IS NOT A SENDER — issue #784.
+ *
+ * `AGENT_SELF_ID` is an address `sessions_send` may name, not a session: the
+ * built-in Agent is the PERSON'S conversation, it has no session document, and
+ * `submitAgentTurn` deliberately stamps no sender for it because there is no id
+ * a `sessions_read` could resolve. So a `fromSessionId` of `agent` is either a
+ * record written before that rule or a forgery, and folding it would put
+ * "Working on behalf of agent" on a row whose link opens nothing — while
+ * claiming the person handed this session work that nobody handed it.
+ *
+ * ASSERTED BESIDE A REAL SENDER, so the guard cannot pass by refusing
+ * everything: one task is folded and the other is not, in the same call.
+ */
+test("a task naming the reserved Agent id is not an assignment, and a real peer's still is", () => {
+  const turns = [task("run_agent", AGENT_SELF_ID), task("run_peer", "session_coord")];
+  expect(assignmentsOf(turns).map((a) => a.taskRunId)).toEqual(["run_peer"]);
+  expect(activeAssignments(turns).map((a) => a.fromSessionId)).toEqual(["session_coord"]);
+  expect(assignmentsOf([task("run_agent", AGENT_SELF_ID)])).toEqual([]);
 });

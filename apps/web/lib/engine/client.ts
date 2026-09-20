@@ -97,6 +97,7 @@ import type {
   ProviderUpdateRun,
   PublishedAppearance,
   EngineRequest,
+  ReportCadence,
   ReportWindowStatus,
   RequestDecision,
   RuntimeMode,
@@ -1117,10 +1118,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         /** Sit out a usage limit and carry on. `null` returns the session to the
          *  driver's default — see `Session.resumeAfterRateLimit`. */
         resumeAfterRateLimit?: boolean | null;
-        /** Hold routine peer reports and deliver them together on this cadence.
-         *  `null` returns the session to arrival delivery — see
+        /** Hold routine peer reports and deliver them together on this cadence,
+         *  or `HOLD_REPORTS` to hold them and never take them as a turn at all
+         *  (#784). `null` returns the session to arrival delivery — see
          *  `Session.reportWindowMinutes`. */
-        reportWindowMinutes?: number | null;
+        reportWindowMinutes?: ReportCadence | null;
       },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
     /**

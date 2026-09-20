@@ -35,7 +35,12 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { TimerIcon } from "lucide-react";
-import { MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES } from "@telar/engine-client";
+import { HOLD_REPORTS, MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, type ReportCadence as Cadence } from "@telar/engine-client";
+
+/** The contract's `ReportCadence` under a local name: this file already exports
+ *  a component called `ReportCadence`, and the value type is the one that has
+ *  somewhere else to live. */
+type CadenceValue = Cadence;
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -59,7 +64,20 @@ import { cn } from "@/lib/utils";
  * picking from a list wants the few that are actually different decisions, and
  * 25 is here because it is the one the owner said out loud.
  */
-export const CADENCES: readonly (number | null)[] = [null, 5, 10, 15, 25, 30, 60];
+export const CADENCES: readonly (CadenceValue | null)[] = [null, 5, 10, 15, 25, 30, 60, HOLD_REPORTS];
+
+/**
+ * AND `HOLD_REPORTS` IS LAST, WHICH IS A DECISION RATHER THAN THE END OF A LIST
+ * — issue #784.
+ *
+ * The numbers above it are one axis and this is the end of it: "as they arrive"
+ * through to "never, until I look". Ordering it last puts the quietest option
+ * furthest from the default, so nobody reaches it by overshooting.
+ *
+ * IT IS NOT THE DEFAULT AND MUST NOT BECOME ONE. A person running ONE session
+ * has no orchestrator and nothing to hold; for them this is latency bought for
+ * a problem they do not have. `null` stays first and stays exactly today.
+ */
 
 /**
  * THE MENU FOR A SESSION THAT IS ALREADY SET TO SOMETHING ELSE.
@@ -69,16 +87,20 @@ export const CADENCES: readonly (number | null)[] = [null, 5, 10, 15, 25, 30, 60
  * disagreeing with the row above it. The odd value joins the list in its place
  * rather than replacing anything.
  */
-export function cadenceOptions(minutes: number | null): (number | null)[] {
+export function cadenceOptions(minutes: CadenceValue | null): (CadenceValue | null)[] {
   if (minutes === null || CADENCES.includes(minutes)) return [...CADENCES];
-  const numbers = [...CADENCES.filter((each): each is number => each !== null), minutes].sort((a, b) => a - b);
-  return [null, ...numbers];
+  const numbers = [...CADENCES.filter((each): each is number => typeof each === "number"), minutes as number].sort((a, b) => a - b);
+  return [null, ...numbers, HOLD_REPORTS];
 }
 
 /** What a cadence is called. `null` is the engine's default: each report wakes
  *  the session as it lands. */
-export function cadenceLabel(minutes: number | null): string {
+export function cadenceLabel(minutes: CadenceValue | null): string {
   if (minutes === null) return "As they arrive";
+  // NOT "Never": the reports are kept and counted, and the row says how many.
+  // A label promising nothing arrives is the "held and lost look identical"
+  // failure written onto the control itself.
+  if (minutes === HOLD_REPORTS) return "Hold for me";
   if (minutes === 1) return "Every minute";
   if (minutes < 60 || minutes % 60 !== 0) return `Every ${minutes} minutes`;
   const hours = minutes / 60;
@@ -87,12 +109,13 @@ export function cadenceLabel(minutes: number | null): string {
 
 /** The radio group's value for a cadence — `null` needs a name of its own,
  *  because a menu item cannot carry the absence of one. */
-export const cadenceValue = (minutes: number | null): string => (minutes === null ? "arrival" : String(minutes));
+export const cadenceValue = (minutes: CadenceValue | null): string => (minutes === null ? "arrival" : String(minutes));
 
 /** And back. Anything unrecognised reads as the default rather than as a
  *  window, so a value this build does not know cannot silently start holding. */
-export function cadenceFromValue(value: string): number | null {
+export function cadenceFromValue(value: string): CadenceValue | null {
   if (value === "arrival") return null;
+  if (value === HOLD_REPORTS) return HOLD_REPORTS;
   const minutes = Number(value);
   return Number.isInteger(minutes) && minutes >= MIN_REPORT_WINDOW_MINUTES && minutes <= MAX_REPORT_WINDOW_MINUTES ? minutes : null;
 }
@@ -104,11 +127,16 @@ export function cadenceFromValue(value: string): number | null {
  * a control that silently kept its old value would be the panel disagreeing
  * with a person who just pressed something.
  */
-export function cadenceDetail(minutes: number | null, failed: boolean): string {
+export function cadenceDetail(minutes: CadenceValue | null, failed: boolean): string {
   if (failed) return "That did not go through — try again.";
-  return minutes === null
-    ? "Each routine report wakes this conversation as it arrives."
-    : "Routine reports are held and delivered together. A task, a blocker and a result you follow still arrive at once.";
+  if (minutes === null) return "Each routine report wakes this conversation as it arrives.";
+  // THE HOLD'S LINE SAYS WHERE THE REPORTS ARE, not just that they are not
+  // coming — the count on this row's trailing edge is the delivery, and this
+  // is the sentence that tells a person to read it as one.
+  if (minutes === HOLD_REPORTS) {
+    return "Routine reports are kept here and never open a turn — the count is what is waiting. A task, a blocker and a result you follow still arrive at once.";
+  }
+  return "Routine reports are held and delivered together. A task, a blocker and a result you follow still arrive at once.";
 }
 
 /**
@@ -120,17 +148,17 @@ export function cadenceDetail(minutes: number | null, failed: boolean): string {
  * causing. Nothing held is not a fact worth a number: the value of the mailbox
  * being visible is seeing that it IS holding something.
  */
-export function heldLabel(minutes: number | null, held: number): string | undefined {
+export function heldLabel(minutes: CadenceValue | null, held: number): string | undefined {
   return minutes !== null && held > 0 ? `${held} held` : undefined;
 }
 
 export type ReportCadenceViewProps = {
-  minutes: number | null;
+  minutes: CadenceValue | null;
   held: number;
   /** A write is in flight — the trigger is disabled rather than optimistic. */
   busy?: boolean;
   failed?: boolean;
-  onChoose?: (minutes: number | null) => void;
+  onChoose?: (minutes: CadenceValue | null) => void;
 };
 
 /**
@@ -192,7 +220,7 @@ export function ReportCadenceView({ minutes, held, busy = false, failed = false,
 }
 
 /** What the surface holds while it reads, and what it says when it could not. */
-type Read = { minutes: number | null; held: number; done: boolean };
+type Read = { minutes: CadenceValue | null; held: number; done: boolean };
 
 const EMPTY_READ: Read = { minutes: null, held: 0, done: false };
 
@@ -254,7 +282,7 @@ export function ReportCadence({
    * round now rather than in ten seconds.
    */
   const choose = useCallback(
-    async (minutes: number | null) => {
+    async (minutes: CadenceValue | null) => {
       if (!sessionId || busy) return;
       setBusy(true);
       const api = createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));

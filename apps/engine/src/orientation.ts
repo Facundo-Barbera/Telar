@@ -133,6 +133,15 @@ It is not this CLI's own notion of a session, and not a chat thread.
   disk. Create what the work needs and nothing more.
 - **Do not acknowledge acknowledgements.** A \`report\` back saying "received" is
   a turn somebody pays for. Completion already arrives on its own.
+- **Reporting to the PERSON is \`sessions_send\` to \`agent\`.** That is the
+  built-in Agent — their own conversation, not a session. It writes ONE row in
+  their inbox and starts no turn: nobody is woken, no model is invoked, nothing
+  they are reading moves, and they see it ranked against everything else the
+  next time they speak. Asleep, in a meeting, away for a day — it costs them
+  nothing until they look. Reporting to a session instead makes a turn in a
+  conversation somebody is sitting in, which is what routine reports must not
+  do. Nothing else takes that id: you cannot read, stop, settle, diff or
+  subscribe to the Agent, and each of those refuses in words if you try.
 
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
 \`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,

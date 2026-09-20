@@ -22,7 +22,7 @@
  * the same reason.
  */
 import type { NotificationDetail, NotificationEntry, WakeKind } from "@telar/engine-client";
-import { agentNotice, type AgentNoticeInput } from "./agent-notice";
+import { agentInboxNotice, agentNotice, type AgentNoticeInput } from "./agent-notice";
 
 /**
  * How long a row's one line may be. Past this a notification stops being
@@ -78,6 +78,44 @@ export function peerNotification(input: AgentNoticeInput): NotificationDetail {
     intent: input.intent,
     summary: summaryOf(body),
     fetch: { sessionId: input.recipientSessionId, runId: input.runId },
+    body,
+  };
+}
+
+/**
+ * A PEER'S MESSAGE ADDRESSED TO THE AGENT — issue #784.
+ *
+ * SAME KIND, DIFFERENT SUBJECT, and the difference is the whole of why this is
+ * a second function. `peerNotification`'s `sessionId` and `fetch` both name the
+ * RECIPIENT's turn, because that is where the body was stored. Nothing stores a
+ * body for the Agent — the message is one inbox row — so both name the SENDER
+ * and the turn it spoke from, which is where the words actually are.
+ *
+ * THAT IS ALSO THE RIGHT SUBJECT FOR THE ROW. `inboxRowFromNotification` reads
+ * `sessionId` as "the session this is ABOUT" and `runId` as "its turn"; for a
+ * completion those are the session that finished, and for this they are the
+ * session that spoke. A row naming the Agent as its own subject would point the
+ * digest at a conversation the person is already in.
+ */
+export function agentInboxNotification(input: {
+  senderSessionId: string;
+  senderRunId: string;
+  body: string;
+  intent: AgentNoticeInput["intent"];
+}): NotificationDetail {
+  const body = agentInboxNotice({
+    senderSessionId: input.senderSessionId,
+    senderRunId: input.senderRunId,
+    body: input.body,
+    intent: input.intent,
+  });
+  return {
+    kind: "peer_message",
+    sessionId: input.senderSessionId,
+    runId: input.senderRunId,
+    intent: input.intent,
+    summary: summaryOf(body),
+    fetch: { sessionId: input.senderSessionId, runId: input.senderRunId },
     body,
   };
 }

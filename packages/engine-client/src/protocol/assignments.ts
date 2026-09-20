@@ -26,7 +26,7 @@
  * writing it, and every existing approval still applies.
  */
 import { z } from "zod";
-import { Id, Timestamp } from "./common";
+import { AGENT_SELF_ID, Id, Timestamp } from "./common";
 
 /** How an assignment ended, when it has. */
 export const AssignmentOutcome = z.enum(["completed", "failed", "stopped", "detached"]);
@@ -99,6 +99,16 @@ const outcomeOf = (state: string): AssignmentOutcome | undefined =>
  * telling you something, not a peer handing you work — treating one as an
  * assignment is how a coordinator's status update would make a session look
  * like somebody's employee.
+ *
+ * AND NEVER THE RESERVED AGENT ID — issue #784. `AGENT_SELF_ID` is an address a
+ * `sessions_send` may name, not a session, and no conversation stands behind it:
+ * the built-in Agent is the PERSON's, and `submitAgentTurn` deliberately stamps
+ * no sender for it ("it has no session page to link to and no id a
+ * `sessions_read` would resolve"). So a `fromSessionId` of `agent` can only be
+ * one of two things, and both must be refused rather than folded: a record
+ * written before that rule, or a forgery. Folded, it would put "Working on
+ * behalf of agent" on a row whose link opens nothing, and — worse — it would
+ * claim the person handed this session work when nobody did.
  */
 export function assignmentsOf(turns: readonly AssignmentTurn[]): SessionAssignment[] {
   const byRun = new Map(turns.map((turn) => [turn.runId, turn]));
@@ -106,7 +116,7 @@ export function assignmentsOf(turns: readonly AssignmentTurn[]): SessionAssignme
   for (const turn of turns) {
     if (turn.origin !== "session" || turn.agentIntent !== "task") continue;
     const fromSessionId = turn.sender?.sessionId;
-    if (!fromSessionId) continue;
+    if (!fromSessionId || fromSessionId === AGENT_SELF_ID) continue;
 
     // A steered task's work lives in the run it joined; follow that one.
     const joined = turn.state === "steered" ? turn.steer?.intoRunId : undefined;

@@ -41,6 +41,7 @@ import {
   workspacePath,
   TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
+  HOLD_REPORTS,
   MAX_AUTO_SETTLE_HOURS,
   MAX_REPORT_WINDOW_MINUTES,
   STALLED_AFTER_MS,
@@ -150,6 +151,7 @@ import {
   type RequestDetail,
   type RequestKind,
   type RequestOpenResult,
+  type ReportCadence,
   type RequestResolver,
   type RuntimeMode,
   type Session,
@@ -196,7 +198,7 @@ import { lastKeytermFit, type KeytermFit } from "./dictation/fit";
 import { dictationLanguages, isDictationLanguage, isDictationProviderId, type DictationLanguage, type DictationProviderId } from "./dictation/provider";
 import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings } from "./dictation/settings";
 import type { DictationContext } from "./dictation/keyterms";
-import { isAgentSelf, type AgentSenderProof } from "./agent/identity";
+import { AGENT_IS_NOT_A_SESSION, AGENT_SELF_ID, isAgentSelf, type AgentSenderProof } from "./agent/identity";
 import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
@@ -221,8 +223,8 @@ import {
 } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, timeoutNotification, wakeNotification } from "./notification";
-import type { AgentInboxKind } from "./agent/inbox";
+import { agentInboxNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, timeoutNotification, wakeNotification } from "./notification";
+import type { AgentInboxKind, AgentInboxRow } from "./agent/inbox";
 import {
   commentOn,
   DEFAULT_ISSUE_FILTER,
@@ -7667,7 +7669,7 @@ export class EngineStore {
        * minutes turns it on. Two answers plus "leave it alone", so not a
        * boolean and not a bare number.
        */
-      reportWindowMinutes?: number | null;
+      reportWindowMinutes?: ReportCadence | null;
     },
   ): Session {
     const session = this.getSession(sessionId);
@@ -7792,12 +7794,19 @@ export class EngineStore {
     if (patch.reportWindowMinutes !== undefined) {
       if (patch.reportWindowMinutes === null) {
         delete next.reportWindowMinutes;
+      } else if (patch.reportWindowMinutes === HOLD_REPORTS) {
+        /**
+         * THE WINDOW THAT NEVER CLOSES — issue #784, step 2. Taken by value
+         * rather than by a flag beside the number, so the three cadences stay
+         * three answers to one question. See `ReportCadence` in the contract.
+         */
+        next.reportWindowMinutes = HOLD_REPORTS;
       } else {
         const minutes = Number(patch.reportWindowMinutes);
         if (!Number.isInteger(minutes) || minutes < MIN_REPORT_WINDOW_MINUTES || minutes > MAX_REPORT_WINDOW_MINUTES) {
           throw new EngineStateError(
             "invalid_request",
-            `reportWindowMinutes must be a whole number of minutes between ${MIN_REPORT_WINDOW_MINUTES} and ${MAX_REPORT_WINDOW_MINUTES}`,
+            `reportWindowMinutes must be "${HOLD_REPORTS}", or a whole number of minutes between ${MIN_REPORT_WINDOW_MINUTES} and ${MAX_REPORT_WINDOW_MINUTES}`,
           );
         }
         next.reportWindowMinutes = minutes;
@@ -7938,6 +7947,29 @@ export class EngineStore {
    * is gone, and only where its result was discarded.
    */
   private requireSession(sessionId: string): Session {
+    /**
+     * THE RESERVED AGENT ID IS REFUSED HERE, IN WORDS — issue #784.
+     *
+     * WRITTEN BEFORE THE HAPPY PATH, and this is the one line that makes the
+     * reserved target affordable. `agent` passes `assertId` (letters only) and
+     * names no session document, so every read of it fell through to
+     * `not_found` — "session does not exist" for the one id in this engine that
+     * deliberately does not, which tells a caller nothing and invites it to
+     * create one. Fifteen-odd callers validate a session id by asking this
+     * method for one; a refusal here is a refusal at all of them, in one
+     * sentence, rather than a rule each door writes for itself and one door
+     * forgets.
+     *
+     * `invalid_request` RATHER THAN `not_found`, because the id is not missing.
+     * It names something real that is not a session, and the two are different
+     * answers to a caller deciding whether to retry.
+     *
+     * `sessions_send` IS THE ONE VERB THAT TAKES IT, and it never arrives here:
+     * it branches on the id before it asks for a session at all. Everything
+     * else — read, status, stop, settle, diff, requests, subscribe-to — is a
+     * thing there is no Agent to do it to.
+     */
+    if (isAgentSelf(sessionId)) throw new EngineStateError("invalid_request", AGENT_IS_NOT_A_SESSION);
     const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
     return parseSession(stored);
@@ -9389,6 +9421,18 @@ export class EngineStore {
     input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string },
     proof?: AgentSenderProof,
   ): { turn: Turn; replayed: boolean; stoppedByUser?: { at?: number } } {
+    /**
+     * THE AGENT IS NOT A RECIPIENT OF A TURN — issue #784, and the refusal is
+     * here rather than only in `requireSession` because this is the method that
+     * would have written something first.
+     *
+     * A message TO the Agent has its own verb (`sendToAgent`) and leaves one
+     * inbox row. Reaching this one with the reserved id would mean queueing a
+     * turn on a session document that does not exist — the store would refuse a
+     * few lines down, but by then the run id is spoken for and the caller has
+     * been told about a session rather than about the Agent.
+     */
+    if (isAgentSelf(sessionId)) throw new EngineStateError("invalid_request", AGENT_IS_NOT_A_SESSION);
     let sender: { sessionId?: string } = {};
     let fromBuiltInAgent = false;
     if (proof) {
@@ -9566,6 +9610,91 @@ export class EngineStore {
       ...(scope ? { assignmentScope: scope } : {}),
     });
     return { ...result, ...(stoppedByUser ? { stoppedByUser } : {}) };
+  }
+
+  /**
+   * ══ A SESSION ADDRESSES THE BUILT-IN AGENT — issue #784, step 1 ══
+   *
+   * `agent/inbox.ts` has declared this seam and its own absence since #541:
+   * *"`peer_message` IS THE FIFTH, and it has no producer yet … the day
+   * something CAN address the Agent, the row it writes should not need a
+   * migration to exist."* This is that producer, and the row needs no migration.
+   *
+   * ── WHY THIS IS NOT `submitAgentTurn` WITH A BRANCH ─────────────────────────
+   * Everything that method does is a TURN on a session: a run id the queue owns,
+   * a backlog cap, a mailbox, a cohort merge, a delivery decision. The Agent has
+   * none of that and wants none of it. A report reaching the person used to cost
+   * a turn in an ordinary session — a model call, a row in a conversation they
+   * were reading, a provider bill — and #784's finding is that a flush *changes
+   * the count and not the kind*: forty wakes becoming eight is a smaller version
+   * of the thing that was asked to stop. So this writes ONE ROW and starts
+   * nothing. `agent/digest.ts` renders it at the top of the next turn a PERSON
+   * begins, which is the only moment a report costs anything at all.
+   *
+   * ── IT IS PULL, AND THAT IS WHAT ANSWERS THE HARD CASES ─────────────────────
+   * Asleep: nothing arrives, and the digest is there at breakfast, capped at
+   * `DIGEST_MAX_CHARS` however long the night was. In a meeting: the same. On a
+   * phone: the same, and the phone's own alerts are untouched because they ride
+   * session activity and this touches none. One session rather than fifteen: a
+   * person with no orchestrator has nothing writing rows and nothing to opt out
+   * of.
+   *
+   * ── THE SENDER MUST BE A SESSION IN A LIVE TURN ─────────────────────────────
+   * THREE REFUSALS, AND EACH IS A DIFFERENT SENDER (`agent/identity.ts` holds
+   * the two ways there are to prove who is sending):
+   *
+   *   - NO PROOF AT ALL is the outward sessions socket — a chat client the
+   *     person is typing at. It is not a session, it has no run, and a person
+   *     with a keyboard does not need an inbox row to reach their own Agent.
+   *   - A CLAIMLESS PROOF is the Agent itself, and it may not address itself: a
+   *     conversation that could write its own inbox would open its next turn
+   *     reading a digest of what it had already said.
+   *   - A CLAIM THAT IS NOT LIVE is refused by `requireSenderClaim`, exactly as
+   *     it is for every other send.
+   *
+   * What is left is a session inside a running turn, which is the orchestrator
+   * this issue is about — and it always has the run id the row's fetch call
+   * needs, which is what makes the body retrievable with nothing stored twice.
+   *
+   * ── AND IT ANSWERS WHETHER ANYTHING KEPT IT ─────────────────────────────────
+   * `undefined` when the Agent is switched off or has no thread yet. The sink is
+   * optional and a miss is silent for a WAKE, because a wake happens to a turn
+   * that is ending and there is nobody to tell; this is a call somebody made,
+   * and a sender told "sent" about a message nothing kept is the "held and lost
+   * look identical" failure one layer up.
+   */
+  sendToAgent(input: { input: string; intent?: Turn["agentIntent"] }, proof?: AgentSenderProof): { row?: AgentInboxRow; notice: string } {
+    if (!proof) {
+      throw new EngineStateError(
+        "invalid_request",
+        "only a session inside a turn can address the Agent; this caller is an agent outside any session (the sessions socket), and the person it is talking to already has the Agent in front of them",
+      );
+    }
+    assertId(proof.sessionId, "sender session id");
+    if (proof.claimToken === undefined) {
+      throw new EngineStateError(
+        "invalid_request",
+        isAgentSelf(proof.sessionId)
+          ? "the built-in Agent cannot address itself"
+          : "a claimless sender proof belongs to the built-in Agent alone",
+      );
+    }
+    const claimed = this.requireSenderClaim(proof);
+    const intent = input.intent ?? "report";
+    const notification = agentInboxNotification({
+      senderSessionId: claimed.sessionId,
+      senderRunId: proof.runId,
+      body: input.input,
+      intent,
+    });
+    /**
+     * NO try/catch, UNLIKE EVERY OTHER SINK CALL IN THIS FILE. The others are
+     * inside a turn that is ending and must not be failed by the Agent refusing
+     * a row; this one IS the call, and a sender is entitled to hear that its
+     * message did not land rather than to be told it did.
+     */
+    const row = this.agentWakeSink?.({ notification });
+    return { ...(row ? { row } : {}), notice: notification.body };
   }
 
   /**
@@ -11866,11 +11995,19 @@ export class EngineStore {
    * is torn down. A function rather than an import because the direction has to
    * be this way round: the runtime knows about the store, and the store must
    * not know about a graph.
+   *
+   * IT ANSWERS THE ROW IT WROTE, OR NOTHING — added by #784. Every caller before
+   * this one fired and forgot, because a wake happens to a turn that is ending
+   * and there is nobody to tell. `sendToAgent` is a CALL somebody made, and its
+   * answer is the difference between "your message is in the Agent's inbox" and
+   * "the Agent is switched off, so nothing kept it" — which a sender that has
+   * just reported a finding needs to know and cannot find out any other way.
+   * `undefined` stays the honest answer for both of those misses.
    */
-  setAgentWakeSink(sink: ((wake: AgentWake) => void) | undefined): void {
+  setAgentWakeSink(sink: ((wake: AgentWake) => AgentInboxRow | undefined) | undefined): void {
     this.agentWakeSink = sink;
   }
-  private agentWakeSink?: (wake: AgentWake) => void;
+  private agentWakeSink?: (wake: AgentWake) => AgentInboxRow | undefined;
   /** Sessions already refused for running on the removed `telar` driver, so the
    *  refusal is one log line rather than one per worker poll (#531). */
   private readonly warnedLegacyDriver = new Set<string>();
@@ -12300,6 +12437,31 @@ export class EngineStore {
          * turn-boundary drains are unchanged.
          */
         if (session.settledOverride === "settled" || session.snoozedUntil !== undefined) continue;
+        /**
+         * AND A SESSION SET TO HOLD IS NEVER DELIVERED TO BY THIS TICK — issue
+         * #784, step 2.
+         *
+         * THE SAME SHAPE AS THE SHELF ABOVE, deliberately: a `continue` in the
+         * sweep, not a condition on the flush. A session that ENDS A TURN is
+         * awake by demonstration whatever its cadence says, and the four
+         * turn-boundary drains stay exactly as they are — so a person who
+         * actually speaks to this session still gets their mail, merged, at the
+         * moment they were already paying for a turn.
+         *
+         * WHAT THIS REMOVES IS THE DELIVERY NOBODY ASKED FOR. Every other
+         * cadence ends in a flush, and a flush is a turn: a row in a
+         * conversation, a provider call, the thing the person was reading
+         * moving under them, and — because it moves `lastTurnEndedAt` —
+         * `push.ts`'s "A session finished" on their phone. At 3am that is
+         * quieter than forty wakes and no better. Held, the mailbox IS the
+         * delivery, and the count beside the cadence in the Agents panel is how
+         * they see it.
+         *
+         * BEFORE THE BOX IS READ, on this sweep's own "cheap refusals first"
+         * rule: this is a comparison on a document already in hand, and the
+         * read below is another file.
+         */
+        if (minutes === HOLD_REPORTS) continue;
         if (this.readPendingNotifications(sessionId).length === 0) continue;
         /**
          * A BOX WITH NO STAMP IS DUE NOW. It was filled before this field

@@ -98,3 +98,36 @@ test("a window the contract refuses is refused over the wire too", async () => {
   // And the session is untouched by either attempt.
   expect(await client.sessionReportWindow("session_coord")).toEqual({ reportWindowMinutes: null, held: 0 });
 });
+
+test("the hold cadence rides the wire whole, and what it is holding is still counted", async () => {
+  /**
+   * THE VISIBILITY HALF OF #784's STEP 2. A hold that never flushes is only
+   * defensible if the mailbox is on a surface — the one risk
+   * `report-cadence.tsx` names about its own feature is that *"'held' and
+   * 'lost' look identical from outside"*. So this route has to answer BOTH
+   * numbers for a hold exactly as it does for a window, and the value has to
+   * survive the round trip rather than being flattened to `null` by a client
+   * that only knew about numbers.
+   */
+  const { client, store, proof } = await ready();
+  await client.setSessionReportWindow("session_coord", "hold");
+  expect(await client.sessionReportWindow("session_coord")).toEqual({ reportWindowMinutes: "hold", held: 0 });
+
+  report(store, proof, "run_one");
+  report(store, proof, "run_two");
+  expect(await client.sessionReportWindow("session_coord")).toEqual({ reportWindowMinutes: "hold", held: 2 });
+
+  // The tick leaves it alone, over the wire as in the store — and the count is
+  // unchanged, which is how the person can tell this is a hold and not a loss.
+  expect(store.sweepReportWindows()).toEqual([]);
+  expect(await client.sessionReportWindow("session_coord")).toEqual({ reportWindowMinutes: "hold", held: 2 });
+});
+
+test("a cadence the contract does not name is refused over the wire", async () => {
+  const { client } = await ready();
+  // "hold" is the one string. A build that accepted any string would let a
+  // typo silently start holding a person's reports — `cadenceFromValue` makes
+  // the same promise on the cockpit side.
+  await expect(client.setSessionReportWindow("session_coord", "never" as never)).rejects.toThrow();
+  expect(await client.sessionReportWindow("session_coord")).toEqual({ reportWindowMinutes: null, held: 0 });
+});
