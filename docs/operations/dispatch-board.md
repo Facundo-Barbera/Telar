@@ -306,10 +306,34 @@ Two halves, and the second is the one that gets skipped:
 
 Report to the coordinator who hired you, not to the main session.
 
+**Report when you are blocked or when you are finished. Not on a clock.**
+
+This replaces the ~25-minute cadence that was in force on 2026-09-20, and the
+reason is worth keeping because it is not about report quality. Those reports
+were good — two of them corrected the orchestrator's own premises before either
+cost a worker a day. But **every message to the main session wakes it, and
+waking it interrupts the person in the cockpit.** He asked for that to stop. The
+cadence, not the content, was the cost.
+
+So: **blocked** means a decision that is not yours to take, or a rule you would
+have to break to proceed. It does not mean a status update, a milestone, a good
+finding, or a premise correction.
+
+Findings, corrections and measurements go where they outlive a message — the
+issue, the PR body, this file. A struck-and-corrected comment on the issue is
+worth more than a message to a coordinator, because the next person to read that
+issue is not in this conversation.
+
+When you finish, send exactly one message saying so.
+
 Lead with what is true now. Name what you could not verify as unverified rather
 than smoothing it into the narrative. If you changed the plan, say what you
 changed and why — a coordinator that learns about a departure from the diff has
 been given a worse report than a short one.
+
+**Pass this rule downward.** A coordinator that stops reporting upward while its
+workers keep reporting on a clock has not removed the interruption, it has moved
+it one level down and made it arrive as a burst.
 
 ---
 
@@ -319,13 +343,36 @@ Waves are capped. **No more than 2 workers running concurrently per coordinator*
 and no more than 3 coordinators at once. Unbounded fan-out is what put the machine
 at load 27.
 
-| Wave | Coordinator | Issues |
-|---|---|---|
-| 1 | iOS release path | #757, #758 |
-| 1 | Engine defects | #520, #521, #594, #710, #743 |
-| 1 | Tests and tooling | #622, #633, #732, #740, #748 |
-| 2 | — | #488, #547, #577, #620, #632, #639, #658, #686, #697, #711 |
-| 3 | — | #516, #543 (one worker each, these are large) |
+**Waves are retired.** On 2026-09-20 the owner stopped them:
 
-**Needs Facundo, do not start:** #49, #198, #199, #471, #490, #541, #542, #563,
-#586, #587, #637, #646, #665, #670, #694, #705, #723, #741.
+> *"te pedí hace un rato que fuéramos de lo más viejo a lo más nuevo y no has
+> podido cerrar issues de hace más de 2 semanas. Necesito que paremos todo lo que
+> está en cola y lo vayamos solucionando uno por uno, no importa el tiempo que
+> tome."*
+
+He had asked for oldest-first, one at a time, and got parallel waves of whatever
+was tractable instead. **Oldest first, one issue at a time, however long it
+takes.** The batch coordinators below exist only for small fixes that are
+genuinely independent of each other and of the main line; they are not a wave.
+
+### In flight, 2026-09-20 night
+
+| Coordinator | Issue(s) | Note |
+|---|---|---|
+| #198 Terminal surface + Run | #198 | W1+W3 running, W2/W4 stacked |
+| #490 Loading latency + snooze | #490 | Audit before code; two workers |
+| #516 Query-based session tools | #516 | Mostly built; verify what remains |
+| Small verifiable fixes | #771, #779, #792 | One PR each, not combined |
+| GitHub surface | #790, #791 | #790 must stand alone if #791 is slow |
+
+### Needs Facundo
+
+- **#541** — Agent v2. Held at his word on 2026-09-20: *"mejor dejamos este issue
+  solo hasta mañana."* It is the third definition of the Agent's shape and the
+  issue itself says it must be the last for a while. Parts A and D were the
+  recommended cut; he has not taken it.
+- **#760** — which tests earn their place. The analysis is done; what to delete
+  is a judgement about risk appetite, not a measurement.
+
+Anything else that reaches "this needs him" goes here rather than into a
+message.
