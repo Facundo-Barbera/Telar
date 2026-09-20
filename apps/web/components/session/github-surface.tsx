@@ -21,6 +21,11 @@
  *     it", and a list that cannot answer it sends you to the browser.
  *   - LABELS, MILESTONE AND BOARDS, in that order, each absent when empty rather
  *     than drawn as a placeholder.
+ *   - AND, ON AN OPEN PULL REQUEST, THAT IT CAN BE MERGED FROM HERE (#703). The
+ *     one outward-facing write this cockpit has was reachable only by somebody
+ *     who already knew it existed. A row cannot say whether GitHub will take the
+ *     merge — the list read carries no mergeability — so it says the control is
+ *     there and the detail says the rest.
  *
  * AND AN ISSUE ROW CAN START A SESSION ON ITSELF (#695) — the one thing on this
  * surface that github.com structurally cannot do. Everything else here is an
@@ -75,7 +80,7 @@ import {
 import type { GitHubFacets, GitHubIssue, GitHubIssueFilter, GitHubPullFilter, GitHubPullRequest, GitHubSnapshot } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
-import { filterChips, issueStatus, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeFilterChip, type ForgeStatus } from "@/lib/github-forge";
+import { filterChips, issueStatus, offersMerge, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeFilterChip, type ForgeStatus } from "@/lib/github-forge";
 import { insertReference, issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import { issueSessionStart } from "@/lib/issue-session";
@@ -427,7 +432,10 @@ function IssueRow({ issue, open, onOpen, busy, onStart }: { issue: GitHubIssue; 
   );
 }
 
-function PullRow({ pull, mine, open, onOpen }: { pull: GitHubPullRequest; mine: boolean; open: boolean; onOpen: () => void }) {
+/** Exported for its markup alone, the way `EntryCard` and `MergeFooter` are next
+ *  door: the list itself cannot be rendered without a `gh` read, so a claim about
+ *  what a ROW says has nowhere else to be made. */
+export function PullRow({ pull, mine, open, onOpen }: { pull: GitHubPullRequest; mine: boolean; open: boolean; onOpen: () => void }) {
   const status = pullStatus(pull);
   return (
     <ForgeRow
@@ -463,6 +471,38 @@ function PullRow({ pull, mine, open, onOpen }: { pull: GitHubPullRequest; mine: 
           {status === "open" && pull.reviewDecision === "CHANGES_REQUESTED" && (
             <Badge variant="outline" className="px-1 py-0 text-4xs font-normal text-warning">
               changes requested
+            </Badge>
+          )}
+          {/**
+           * THE ONE OUTWARD WRITE, ANNOUNCED WHERE IT IS FOUND — issue #703.
+           *
+           * The merge control is good and it was invisible: you had to already
+           * know to open a pull request here to discover that this cockpit can
+           * merge one at all, and a capability you must already know about is one
+           * you will not find. #692 gave the control a home; this is the sign on
+           * the door, in the list, which is where somebody who does not know it
+           * exists is standing.
+           *
+           * IT SAYS THERE IS A CONTROL, NOT THAT IT WILL WORK. A row is drawn from
+           * the list snapshot, which carries no `mergeable` and no
+           * `mergeStateStatus` — see `offersMerge`. So the wording is an offer of
+           * a place ("merge here"), not a verdict: the footer one click away holds
+           * the verdict, and it is pinned outside the detail's scroller, so
+           * clicking this row lands on it without scrolling anything.
+           *
+           * NOT ITS OWN BUTTON. The row already opens the detail, and a second
+           * control going to the same place would be a nested interactive element
+           * for a click the whole row already accepts. What was missing was never
+           * a target — it was the word.
+           */}
+          {offersMerge(pull) && (
+            <Badge
+              variant="outline"
+              className="gap-0.5 px-1 py-0 text-4xs font-normal text-muted-foreground"
+              title="Telar can merge this one — open it and the footer says whether GitHub will."
+            >
+              <GitMergeIcon className="size-2.5" />
+              merge here
             </Badge>
           )}
         </>

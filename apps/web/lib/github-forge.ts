@@ -216,6 +216,28 @@ export function pullStatus(pull: { state: string; isDraft: boolean; mergedAt?: n
   return pull.isDraft ? "draft" : "open";
 }
 
+/**
+ * WHETHER THERE IS A MERGE CONTROL BEHIND THIS ROW — issue #703.
+ *
+ * NOT "WILL IT MERGE". That needs `mergeable` and `mergeStateStatus`, and a LIST
+ * row has neither: `gh pr list --json` is asked for thirteen fields
+ * (apps/engine/src/github.ts, `PULL_FIELDS`) and those two are not among them —
+ * they arrive only with the per-pull read. So this answers the one thing a row
+ * can answer honestly, which is also the thing the finding was about: that this
+ * cockpit merges pull requests AT ALL. `mergeReadiness` answers the other half,
+ * in the detail, where the data to answer it exists.
+ *
+ * THE ONE MERGE-RELEVANT FIELD A ROW DOES CARRY IS `isDraft`, and it is load
+ * bearing: `mergeReadiness` refuses a draft outright, so a row that pointed at
+ * one would be pointing at a control that is disabled the moment you arrive.
+ * Merged and closed rows are excluded for a stronger version of the same reason —
+ * `MergeFooter` renders nothing whatsoever for them. `pullStatus` already folds
+ * all three into one word, so "open" IS the condition, and the two cannot drift.
+ */
+export function offersMerge(pull: { state: string; isDraft: boolean; mergedAt?: number }): boolean {
+  return pullStatus(pull) === "open";
+}
+
 /** The word under a row. Short enough for a 320px column, and never a repeat of
  *  what the glyph beside it already said in colour. */
 export const STATUS_LABEL: Record<ForgeStatus, string> = {

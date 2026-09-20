@@ -20,8 +20,9 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
+import type { GitHubPullRequest } from "@telar/engine-client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { GitHubSurface } from "./github-surface";
+import { GitHubSurface, PullRow } from "./github-surface";
 
 const draw = (props: Parameters<typeof GitHubSurface>[0]) => renderToStaticMarkup(<GitHubSurface {...props} />);
 
@@ -88,5 +89,50 @@ describe("the list and a detail are a swap", () => {
     // an `h-full` detail inside an auto-height box is how an issue's comments
     // became unreachable once before.
     expect(draw({ kind: "pulls", projectId: "p" })).toContain("h-full");
+  });
+});
+
+/**
+ * THE MERGE IS ANNOUNCED IN THE LIST — issue #703.
+ *
+ * `lib/github-forge.test.ts` holds the rule (`offersMerge`, and why it is not and
+ * cannot be a mergeability claim). This is the other half: that the rule reaches
+ * the markup, which is the whole of the finding — the control existed, worked, and
+ * said nothing about itself anywhere a person who did not know it existed would be.
+ */
+describe("a pull-request row", () => {
+  const pull = (over: Partial<GitHubPullRequest> = {}): GitHubPullRequest => ({
+    number: 700,
+    title: "Give the merge control a home",
+    state: "OPEN",
+    isDraft: false,
+    labels: [],
+    assignees: [],
+    projects: [],
+    updatedAt: Date.now(),
+    url: "https://github.com/o/r/pull/700",
+    ...over,
+  });
+  const row = (over: Partial<GitHubPullRequest> = {}) =>
+    renderToStaticMarkup(<PullRow pull={pull(over)} mine={false} open={false} onOpen={() => {}} />);
+
+  test("says the merge lives here, and says it without promising it", () => {
+    const markup = row();
+    expect(markup).toContain("merge here");
+    // The sign points at the footer; it does not stand in for it. Anything that
+    // read as a verdict would be one the list read has no fields to reach.
+    expect(markup).not.toContain("mergeable");
+    expect(markup).toContain("whether GitHub will");
+  });
+
+  test("and is silent wherever the footer would be disabled or absent", () => {
+    // A sign on a door that does not open teaches the capability by showing it
+    // broken, which is worse than the silence it replaced.
+    for (const silent of [{ isDraft: true }, { state: "MERGED" }, { state: "CLOSED" }]) {
+      // The row still DREW — without this the assertion below would also pass on
+      // a render that threw its way to an empty string.
+      expect(row(silent)).toContain("#700");
+      expect(row(silent)).not.toContain("merge here");
+    }
   });
 });
