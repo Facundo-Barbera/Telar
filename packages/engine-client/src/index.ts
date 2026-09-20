@@ -131,6 +131,9 @@ import {
   type RunConfigurationView,
   type RunConfigurationsAnswer,
   type RunOutputAnswer,
+  type RunBytesAnswer,
+  type RunWriteAnswer,
+  type RunResizeAnswer,
   type RunStartInput,
   type RunStatusAnswer,
   type SessionAssignment,
@@ -977,6 +980,16 @@ export type LiveSessionsUnchanged = { unchanged: true; revision: number; daemonI
  *  why a project-scoped answer lives under a session-scoped path. */
 function runBase(sessionId: string): string {
   return `/v2/sessions/${encodeURIComponent(sessionId)}/run`;
+}
+
+/** `?runId=&after=` for the two windows that share a cursor contract, written
+ *  once so the line view and the byte view cannot drift apart in their
+ *  spelling of it. */
+function runCursor(input: { runId?: string; after?: number }): string {
+  const query = new URLSearchParams();
+  if (input.runId !== undefined) query.set("runId", input.runId);
+  if (input.after !== undefined) query.set("after", String(input.after));
+  return query.size === 0 ? "" : `?${query.toString()}`;
 }
 
 /**
@@ -2827,11 +2840,36 @@ export class EngineClient {
   /** Captured output from `after`. A cursor that goes BACKWARDS means a
    *  different run, not lost lines — see `RunOutputAnswer`. */
   runOutput(sessionId: string, input: { runId?: string; after?: number } = {}): Promise<RunOutputAnswer> {
-    const query = new URLSearchParams();
-    if (input.runId !== undefined) query.set("runId", input.runId);
-    if (input.after !== undefined) query.set("after", String(input.after));
-    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
-    return this.request("GET", `${runBase(sessionId)}/output${suffix}`);
+    return this.request("GET", `${runBase(sessionId)}/output${runCursor(input)}`);
+  }
+
+  /**
+   * The same window as `runOutput`, as the redacted BYTES an emulator draws.
+   *
+   * BOTH EXIST AND NEITHER IS THE OTHER'S REPLACEMENT. `run_output` hands lines
+   * to an agent, which is what an agent can use; this hands a terminal a
+   * terminal's stream. Same cursor contract, so one poll shape serves both.
+   */
+  runBytes(sessionId: string, input: { runId?: string; after?: number } = {}): Promise<RunBytesAnswer> {
+    return this.request("GET", `${runBase(sessionId)}/bytes${runCursor(input)}`);
+  }
+
+  /**
+   * Type into the program a run's recipe named.
+   *
+   * NOT A SHELL, usually: an unpinned recipe is `/bin/sh -c "<command>"`, so
+   * these bytes reach `psql`, an installer's prompt or a dev server's watch
+   * mode. A run that is not running refuses `conflict`; `delivered: false` is
+   * the narrower fact that the bytes reached no process.
+   */
+  writeRun(sessionId: string, input: { runId?: string; data: string }): Promise<RunWriteAnswer> {
+    return this.request("POST", `${runBase(sessionId)}/write`, input);
+  }
+
+  /** The geometry the surface drawing it is using, so SIGWINCH says something
+   *  true to a program that draws a full screen. */
+  resizeRun(sessionId: string, input: { runId?: string; cols: number; rows: number }): Promise<RunResizeAnswer> {
+    return this.request("POST", `${runBase(sessionId)}/resize`, input);
   }
 
   /** A window of rows from a CSV, TSV or Parquet file in the session's tree. */

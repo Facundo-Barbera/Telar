@@ -100,6 +100,40 @@ export const runRoutes: RunRoute[] = [
     handle: async ({ capability, input }) =>
       await capability.output(parse(RunIdOnly.extend({ after: z.coerce.number().int().min(0).optional() }), input)),
   },
+  /**
+   * THE SAME WINDOW, IN BYTES — what the cockpit's emulator reads (#198).
+   *
+   * BESIDE `/run/output` RATHER THAN INSTEAD OF IT. The line view is what
+   * `run_output` hands an agent, and an agent wants lines rather than escape
+   * sequences; retiring it would also have left a session on a PAIRED MAC with
+   * nothing, since `terminalBridge()` is local-host only by design while this
+   * path goes over the ordinary host hop like every other run route.
+   */
+  {
+    method: "GET",
+    pattern: /^\/run\/bytes$/,
+    handle: async ({ capability, input }) =>
+      await capability.bytes(parse(RunIdOnly.extend({ after: z.coerce.number().int().min(0).optional() }), input)),
+  },
+  /**
+   * AND THE KEYBOARD. The owner's decision for #198 is that a run's terminal is
+   * writable — `psql`, an installer's `Proceed (Y/n)`, a dev server's `r`.
+   *
+   * `data` MAY BE EMPTY AND MAY NOT BE ABSENT. A missing field is a caller
+   * that meant something and sent nothing; an empty string is a caller that
+   * meant nothing, which is cheap to honour and impossible to misread.
+   */
+  {
+    method: "POST",
+    pattern: /^\/run\/write$/,
+    handle: async ({ capability, input }) => await capability.write(parse(RunIdOnly.extend({ data: z.string() }), input)),
+  },
+  {
+    method: "POST",
+    pattern: /^\/run\/resize$/,
+    handle: async ({ capability, input }) =>
+      await capability.resize(parse(RunIdOnly.extend({ cols: z.number().int().positive(), rows: z.number().int().positive() }), input)),
+  },
 ];
 
 /** Find the entry for a request, with its capture groups. Used by the mount. */

@@ -160,6 +160,33 @@ export class RunTerminalClient {
     return answer?.signalled === true;
   }
 
+  /**
+   * Keystrokes, BY ID.
+   *
+   * `false` IS AN ANSWER AND NOT A FAILURE. The host drops a write to a
+   * terminal it no longer holds, and it learns of an exit before we do, so a
+   * keystroke crossing that gap is the ordinary case rather than an error to
+   * raise at a person. A channel that is GONE is a different thing entirely and
+   * still throws `RunTerminalLost` out of `post` — there the stream's own
+   * `lose()` is already settling every terminal on it `unknown`, so nothing
+   * here has to do that bookkeeping a second time.
+   *
+   * NOTHING ON THIS PATH IS REDACTED, and that is not an oversight: redaction
+   * covers what a PROCESS WRITES (`pty-stream.ts`), and never covered what a
+   * person types. docs/run-terminal.md §5 says so where a user will look.
+   */
+  async write(id: string, data: string): Promise<boolean> {
+    const answer = (await this.post("/write", { id, data })) as { ok?: boolean };
+    return answer?.ok === true;
+  }
+
+  /** The surface drawing this terminal says how big it is; SIGWINCH is the
+   *  PTY's job. Same `false` rule as `write`. */
+  async resize(id: string, cols: number, rows: number): Promise<boolean> {
+    const answer = (await this.post("/resize", { id, cols, rows })) as { ok?: boolean };
+    return answer?.ok === true;
+  }
+
   /** Stop listening. Kills nothing — that is policy, and policy is the manager's. */
   close(): void {
     this.closed = true;

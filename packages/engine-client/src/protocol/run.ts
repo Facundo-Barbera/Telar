@@ -198,6 +198,36 @@ export const RunOutputAnswer = z.object({
 });
 export type RunOutputAnswer = z.infer<typeof RunOutputAnswer>;
 
+/**
+ * The same window, as the redacted BYTES an emulator draws.
+ *
+ * CHUNKS RATHER THAN ONE STRING, and that is a contract rather than a shape.
+ * Every chunk left the engine's redactor whole, so no escape sequence straddles
+ * a boundary and a reader may concatenate them in order or write them one at a
+ * time with the same result. `dropped` counts CHUNKS, for the same reason
+ * `cursor` does.
+ */
+export const RunBytesAnswer = z.object({
+  chunks: z.array(z.string()),
+  cursor: z.number(),
+  dropped: z.number(),
+});
+export type RunBytesAnswer = z.infer<typeof RunBytesAnswer>;
+
+/**
+ * Whether keystrokes reached a process.
+ *
+ * `false` IS NOT AN ERROR. The desktop shell learns of an exit before the
+ * cockpit does, so a key pressed across that gap is the ordinary case — a run
+ * that is not running at all refuses with `conflict` instead, which is a
+ * different fact and arrives a different way.
+ */
+export const RunWriteAnswer = z.object({ delivered: z.boolean() });
+export type RunWriteAnswer = z.infer<typeof RunWriteAnswer>;
+
+export const RunResizeAnswer = z.object({ resized: z.boolean() });
+export type RunResizeAnswer = z.infer<typeof RunResizeAnswer>;
+
 /** `replace` is opt-in and named: taking over a deployment somebody else is
  *  watching must be asked for, never inferred from an ordinary start. */
 export const RunStartInput = z.object({ configId: z.string().min(1), replace: z.boolean().optional() });
