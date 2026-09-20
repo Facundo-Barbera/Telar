@@ -262,6 +262,34 @@ diff --git a/brack[1].ts b/brack[1].ts
     expect(reading.file).toBeUndefined();
   });
 
+  test("a journal patch is a CHANGE, not a rename of a/x.ts to b/x.ts (#694, §2.4)", () => {
+    /**
+     * THE OTHER END OF `apps/engine/test/diff-journal-patch.test.ts`, which
+     * pins that `unifiedDiff` emits exactly this text. The parser is a
+     * dependency of this app and not of the engine, so the seam is asserted
+     * from both sides against the same literal — change one and the other must
+     * change in the same commit.
+     *
+     * WITHOUT the `diff --git` line the parser does not know this is a git
+     * diff, so it leaves the `a/`/`b/` prefixes on the names — and since
+     * `a/x.ts ≠ b/x.ts`, every patch in the turn scope was a rename.
+     */
+    const withHeader = readPatchShape(["diff --git a/x.ts b/x.ts", "--- a/x.ts", "+++ b/x.ts", "@@ -1 +1 @@", "-old", "+new"].join("\n"));
+    expect(withHeader.complaint).toBeUndefined();
+    expect(withHeader.file).toMatchObject({ name: "x.ts", type: "change", hunks: 1 });
+    expect(withHeader.file?.prevName).toBeUndefined();
+
+    // The shape that shipped, so the assertion above is a difference rather
+    // than a description.
+    const without = readPatchShape(["--- a/x.ts", "+++ b/x.ts", "@@ -1 +1 @@", "-old", "+new"].join("\n"));
+    expect(without.file).toMatchObject({ name: "b/x.ts", prevName: "a/x.ts", type: "rename-changed" });
+
+    // And the absolute arm, which gets no header and never needed one.
+    const absolute = readPatchShape(["--- /tmp/x.ts", "+++ /tmp/x.ts", "@@ -1 +1 @@", "-old", "+new"].join("\n"));
+    expect(absolute.complaint).toBeUndefined();
+    expect(absolute.file).toMatchObject({ name: "/tmp/x.ts", type: "change" });
+  });
+
   test("the shapes with no hunks are read, not refused", () => {
     // Mode-only and pure-rename patches are VALID and carry no hunks at all.
     // A seam that called them malformed would put a warning over every

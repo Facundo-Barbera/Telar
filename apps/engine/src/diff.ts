@@ -89,10 +89,34 @@ export function patchHunksOf(value: unknown): PatchHunk[] | undefined {
  * prefix produces `--- a//tmp/x.ts` — a double slash, and a path that is now
  * neither absolute nor repo-relative. Observed on a real turn; git itself omits
  * the prefixes in the same situation.
+ *
+ * ══ AND IT OPENS WITH `diff --git`, OR THE PREFIXES BECOME THE NAME (#694) ══
+ *
+ * Without that line a parser does not know it is looking at a GIT diff, so it
+ * does not strip `a/` and `b/` — and since `a/x.ts ≠ b/x.ts` it concludes the
+ * file was renamed. Measured against `@pierre/diffs` 1.4.3, which is what the
+ * Diff surface renders with:
+ *
+ *   `--- a/x.ts` / `+++ b/x.ts`  alone  →  name="b/x.ts" prevName="a/x.ts"
+ *                                          type="rename-changed"
+ *   with `diff --git a/x.ts b/x.ts`     →  name="x.ts"   type="change"
+ *
+ * EVERY patch in the turn scope, in both the single-line and multi-line hunk
+ * forms. It is invisible today only because the viewer's file header is off;
+ * a file tree or a re-enabled header draws it as `a/x.ts → b/x.ts`.
+ *
+ * THE ABSOLUTE ARM GETS NO HEADER, and that asymmetry is measured rather than
+ * tidy. `diff --git /tmp/x.ts /tmp/x.ts` — the only form that would not
+ * reintroduce the double slash — is rejected outright ("invalid git diff
+ * header"), while the bare `---`/`+++` pair with no prefixes already parses as
+ * `name="/tmp/x.ts" type="change"`. The arm this module treats as the awkward
+ * exception is the one that was always right.
  */
 export function unifiedDiff(path: string, hunks: readonly PatchHunk[], max = MAX_DIFF_CHARS): string {
-  const [from, to] = path.startsWith("/") ? [path, path] : [`a/${path}`, `b/${path}`];
-  const body: string[] = [`--- ${from}`, `+++ ${to}`];
+  const absolute = path.startsWith("/");
+  const [from, to] = absolute ? [path, path] : [`a/${path}`, `b/${path}`];
+  const body: string[] = absolute ? [] : [`diff --git ${from} ${to}`];
+  body.push(`--- ${from}`, `+++ ${to}`);
   for (const hunk of hunks) {
     // `,1` is omitted by convention when a range covers exactly one line, and
     // some parsers are strict about it.
