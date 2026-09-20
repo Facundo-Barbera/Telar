@@ -54,6 +54,16 @@ export type DiffTurn = {
    * fact about the record, so it travels as one.
    */
   patches: ReadonlyMap<string, { patch: string; truncated: boolean }>;
+  /**
+   * WHERE THE REPOSITORY STOOD WHEN THIS TURN RAN — issue #741.
+   *
+   * Carried per TURN rather than per scope, because the route the surface takes
+   * is a property of the turn: one that ran before anchoring existed has no
+   * shas and must keep the journal witness, while the one beside it in the same
+   * picker can be asked of git. A scope-level flag would have to be true for
+   * both or neither.
+   */
+  anchor?: Turn["anchor"];
 };
 
 /** A path is counted once per turn however many times the turn wrote it: the
@@ -122,6 +132,10 @@ export function diffTurns(items: readonly Item[], turns: readonly Turn[] = []): 
       runId,
       ...(turn ? { sequence: turn.sequence } : {}),
       ...(turn?.input.trim() ? { input: turn.input } : {}),
+      // Absent when the turn record never arrived, and absent on every turn
+      // that ran before #741 — both of which read as "not anchored" rather
+      // than as "this turn committed nothing".
+      ...(turn?.anchor ? { anchor: turn.anchor } : {}),
       at: draft.at,
       // Alphabetical, like every other file list on this surface — the order
       // the tools happened to run in is not an order a reviewer reads in.

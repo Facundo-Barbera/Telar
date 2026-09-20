@@ -110,22 +110,44 @@ export function diffTabParams(tab: DiffTab): PanelTabParams {
 /**
  * WHAT TO ASK THE ENGINE FOR — the one place a scope becomes a request.
  *
- * `turn` IS NOT HERE AND CANNOT BE. Its answer comes out of the journal, not
- * out of git: a turn has no commit to diff against, so there is no base that
- * would express it. Callers ask this only for the two scopes git can answer,
- * and the surface routes `turn` somewhere else entirely — which is exactly the
- * seam where "this is the agent's own patch, not the disk" gets said out loud.
+ * ── `turn` USED TO BE REFUSED HERE, AND THE CONDITIONS IT CAN NOW MEET ──────
  *
- * NOTE THE THREE-WAY RETURN, which is the whole reason `DiffBaseOption` has a
- * `null`: `unstaged` must send an EMPTY base rather than no base, because no
- * base means "use the one you have on file" and would quietly answer a
- * different question.
+ * The comment this replaces said `turn` "IS NOT HERE AND CANNOT BE", because a
+ * turn had no commit to diff against and so no base that would express it.
+ * That was true and is no longer: #741 stamps `Turn.anchor` — the shas the
+ * ENGINE observed when the turn started and ended — so a turn with an anchor is
+ * a range, and `to` on `DiffBaseOption` is the right-hand side that says so.
+ *
+ * IT IS STILL REFUSED WHEN IT CANNOT BE ANSWERED, which is three cases and not
+ * one. A turn that ran before anchoring existed has no shas at all; a turn
+ * whose probe never answered has `read` and no shas; and a turn whose `before`
+ * is absent ran in a repository with no commits. In every one of them the
+ * journal is still the only witness there is, so this returns `undefined` and
+ * the caller keeps the route it always had. `undefined` rather than `{}`:
+ * `{}` is a legitimate git request meaning "the session's own base", and
+ * answering a turn with it would compare something nobody asked about.
+ *
+ * NOTE THE THREE-WAY RETURN for the other two scopes, which is the whole reason
+ * `DiffBaseOption` has a `null`: `unstaged` must send an EMPTY base rather than
+ * no base, because no base means "use the one you have on file" and would
+ * quietly answer a different question.
  */
-export function diffBaseFor(tab: DiffTab): DiffBaseOption {
+export function diffBaseFor(tab: DiffTab, anchor?: TurnAnchor): DiffBaseOption | undefined {
   if (tab.kind === "unstaged") return { base: null };
+  if (tab.kind === "turn") {
+    // BOTH SIDES OR NEITHER. `before` alone would be "from where this turn
+    // started to wherever the disk is now", which includes every later turn's
+    // work and is not what the picker says it is showing.
+    if (!anchor?.before || !anchor.after) return undefined;
+    return { base: anchor.before, to: anchor.after };
+  }
   // `branch` with no chosen ref is the session's own base: absent, not empty.
   return tab.base?.trim() ? { base: tab.base.trim() } : {};
 }
+
+/** The engine's own anchor shape, named here so this module's signature does
+ *  not depend on the whole `Turn`. */
+export type TurnAnchor = { before?: string; after?: string; read?: "timeout" | "failed" };
 
 /** The scope a canvas can have. A project with no session has no recorded base
  *  and no turns, so `branch` without an explicit ref and `turn` are not offers
