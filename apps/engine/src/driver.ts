@@ -63,6 +63,7 @@ import {
 import {
   ClaudeRuntimeStore,
   MessageFeed,
+  UNATTENDED_BACKGROUND_WORK_MS,
   type ClaudeSessionRuntime,
   type FeedMessage,
   type RuntimeBindings,
@@ -1275,6 +1276,12 @@ export function createClaudeDriver(
     /** How long to wait for a `result` after `end_turn` — see
      *  `END_TURN_GRACE_MS`. Injected so a test does not sleep for the real one. */
     endTurnGraceMs?: number;
+    /**
+     * How long background work may run with nobody watching before it is
+     * stopped — see `UNATTENDED_BACKGROUND_WORK_MS`. Injected only so a test
+     * does not have to wait half an hour for the real ceiling.
+     */
+    unattendedBackgroundWorkMs?: number;
   } = {},
 ): TurnDriver {
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
@@ -1304,6 +1311,28 @@ export function createClaudeDriver(
      * exactly what the #201 fixtures reproduced.
      */
     liveBackgroundWork: (seed) => isBackgroundWork(seed) && !isTerminalTaskState(seed.state),
+    /**
+     * AND HOW LONG IT MAY RUN WITH NOBODY WATCHING — #807. The clause above
+     * says a process holding live background work is never evicted TO HONOUR A
+     * COUNT, which is right and stays. This says the work does not run forever
+     * unattended, which is a different trade and does not cost the same thing.
+     */
+    unattendedAfterMs: options.unattendedBackgroundWorkMs ?? UNATTENDED_BACKGROUND_WORK_MS,
+    /**
+     * SAID OUT LOUD. The rows already report it — every task goes through
+     * `stopTask`, which the CLI answers with a `task_notification` the idle
+     * pump folds onto the row — and this is the operator's half of the same
+     * fact, in the place a long-running daemon's other surprises are logged.
+     */
+    onUnattended: (stops) => {
+      for (const stop of stops) {
+        console.error(
+          `[claude-runtime] session=${stop.sessionId} stopped background task ${stop.taskId}` +
+            `${stop.providerTaskId ? ` (${stop.providerTaskId})` : ""} after ${Math.round(stop.idleForMs / 60_000)} minutes with nobody watching` +
+            `${stop.stopped ? "" : "; the provider offered no stop, so the process was ended instead"}`,
+        );
+      }
+    },
   });
   return {
     dispose: () => runtimes.destroyAll(),

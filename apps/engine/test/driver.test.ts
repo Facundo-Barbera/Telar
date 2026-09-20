@@ -16,6 +16,7 @@ import {
   titleForToolCall,
 } from "../src/driver";
 import { SteerMailbox } from "../src/steering";
+import { until } from "./wait";
 
 /**
  * EVERY TEST BELOW RUNS AGAINST A FAKE SDK, so none of them should care whether
@@ -3445,6 +3446,94 @@ describe("the session runtime", () => {
     // Five processes, one protected: the oldest EVICTABLE one goes instead.
     expect(ended).not.toContain("query_1");
     expect(ended).toEqual(["query_2"]);
+  });
+
+  /**
+   * A CEILING ON AGE WITH NOBODY WATCHING — #807, and deliberately NOT a
+   * second attempt at the case above.
+   *
+   * The test above is #201's and stays exactly as it is: a runtime holding live
+   * background work is never evicted TO HONOUR A COUNT, because between a
+   * memory bound and a person's running work the work wins. That argument is
+   * about a number of runtimes and says nothing at all about time. Measured in
+   * #807: five `bun test` processes alive for 28 to 56 minutes, each pinning
+   * the runtime that started it, with nothing on a clock anywhere that would
+   * ever have noticed — `ClaudeRuntimeStore`'s own header said "NO TIMERS", and
+   * the cap is only consulted when ANOTHER session arrives.
+   *
+   * STOPPED THROUGH `stopTask`, NOT KILLED. #201's objection was to work
+   * vanishing silently; the affordance the driver already exposes is what makes
+   * the session's row say what became of it.
+   */
+  const backgroundWorkDriver = (ended: string[], stopped: string[], unattendedBackgroundWorkMs: number) => {
+    let opened = 0;
+    return createClaudeDriver(
+      async () => ({
+        query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+          const mine = (opened += 1);
+          const generator = (async function* () {
+            try {
+              for await (const message of prompt) {
+                void message;
+                // The FIRST session launches a detached shell and leaves it
+                // running; the rest are ordinary turns.
+                if (mine === 1) {
+                  yield { type: "system", subtype: "task_started", task_id: "sdk_bg", tool_use_id: "use_bg", task_type: "bash", is_backgrounded: true, description: "bun test" };
+                }
+                yield { type: "result", subtype: "success" };
+              }
+            } finally {
+              ended.push(`query_${mine}`);
+            }
+          })();
+          return Object.assign(generator, { stopTask: async (taskId: string) => void stopped.push(taskId) });
+        },
+      }) as never,
+      { unattendedBackgroundWorkMs },
+    );
+  };
+
+  test("background work nobody has watched for the ceiling is stopped, and the process that held it ends", async () => {
+    const ended: string[] = [];
+    const stopped: string[] = [];
+    // 30 ms stands in for thirty minutes: the ceiling is injected for exactly
+    // the reason `providerSilenceMs` is — so a test never sleeps for a real one.
+    const driver = backgroundWorkDriver(ended, stopped, 30);
+    await run(driver, { sessionId: "session_unattended" }).result;
+
+    // The shared wait (#760), not a copy: the sweep is on a timer, so what this
+    // needs is a wall clock rather than a fixed sleep somebody guessed.
+    await until("the unattended ceiling to stop the shell and end the process holding it", () => ended.includes("query_1"));
+    // THE AFFORDANCE, WITH THE PROVIDER'S OWN HANDLE. Not a kill: the CLI was
+    // asked to stop that task, which is what puts it on the session's row.
+    expect(stopped).toEqual(["sdk_bg"]);
+    // And the process that existed only to hold it is gone.
+    expect(ended).toEqual(["query_1"]);
+    driver.dispose?.();
+  });
+
+  test("and a session whose work is younger than the ceiling keeps it — the #201 fixtures, with a clock added", async () => {
+    /**
+     * THE NEGATIVE THE CEILING IS MOST LIKELY TO GET WRONG: a sweep that fired
+     * on arming rather than on the deadline, or one that read "has background
+     * work" as "is unattended", would take this session's shell away while the
+     * pool churns — which is #201's defect restored by its own fix.
+     *
+     * Five sequential sessions, the first holding live background work, and a
+     * ceiling far above anything this test takes. The cap must still evict the
+     * oldest EVICTABLE runtime and must still spare the protected one.
+     */
+    const ended: string[] = [];
+    const stopped: string[] = [];
+    const driver = backgroundWorkDriver(ended, stopped, 30_000);
+    for (const id of ["a", "b", "c", "d", "e"]) await run(driver, { sessionId: `session_young_${id}` }).result;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Nothing was stopped, and the protected process is still the one the cap
+    // spared — exactly the #201 answer.
+    expect(stopped).toEqual([]);
+    expect(ended).toEqual(["query_2"]);
+    driver.dispose?.();
   });
 
   test("the cap is enforced on release, not only on adoption", async () => {
