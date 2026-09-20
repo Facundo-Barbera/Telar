@@ -146,6 +146,12 @@ async function main() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // MATCHING `createWindow` IN main.js, and load-bearing here rather than
+      // cosmetic: this window is never shown, and Chromium throttles a hidden
+      // renderer's task queues. The real cockpit window turns it off, so a test
+      // that left it on would be asking a question about a configuration the
+      // product does not ship.
+      backgroundThrottling: false,
     },
   });
 
@@ -220,11 +226,40 @@ async function main() {
     );
 
     // ── 4a. out through the contextBridge ─────────────────────────────────
+    //
+    // THE ANSWER IS STASHED ON THE PAGE AND READ BACK AS A PLAIN VALUE, rather
+    // than returned as a promise for `executeJavaScript` to await. Handing it a
+    // pending promise makes exactly one outcome — "the invoke never came back" —
+    // indistinguishable from a hang, and a hang in this tier costs the job's
+    // whole budget and reports nothing. Polling a plain object instead lets the
+    // three outcomes be told apart: no bridge, a rejection with its reason, or
+    // an invoke that is still outstanding after a bounded wait.
     at("reading the bridge from a real renderer");
-    const throughBridge = await window.webContents.executeJavaScript(
-      "window.telarDesktop && window.telarDesktop.metrics ? window.telarDesktop.metrics.read() : null",
+    const started = await window.webContents.executeJavaScript(`
+      (function () {
+        if (!window.telarDesktop || !window.telarDesktop.metrics) return "no-bridge";
+        window.__telarMetrics = { state: "pending" };
+        window.telarDesktop.metrics.read().then(
+          (summary) => { window.__telarMetrics = { state: "ok", summary: summary }; },
+          (error) => { window.__telarMetrics = { state: "error", why: String((error && error.message) || error) }; },
+        );
+        return "started";
+      })()
+    `);
+    assert(started === "started", `preload.js exposed no telarDesktop.metrics bridge to a real renderer (${started})`);
+
+    let bridged = { state: "pending" };
+    for (let attempt = 0; attempt < 40 && bridged.state === "pending"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      bridged = await window.webContents.executeJavaScript("window.__telarMetrics");
+    }
+    assert(
+      bridged.state !== "pending",
+      "telar:metrics:read never answered a real renderer within four seconds — the preload bridge reaches the main process but the invoke does not come back",
     );
-    assert(throughBridge, "preload.js exposed no telarDesktop.metrics bridge to a real renderer");
+    assert(bridged.state === "ok", `the bridge rejected: ${bridged.why}`);
+    const throughBridge = bridged.summary;
+    assert(throughBridge, "the bridge resolved with nothing at all");
     assert(Array.isArray(throughBridge.types) && throughBridge.types.length > 0, "the bridge answered with no process types");
     assert(
       typeof throughBridge.totals?.cpuPercent === "number" && typeof throughBridge.totals?.processes === "number",
