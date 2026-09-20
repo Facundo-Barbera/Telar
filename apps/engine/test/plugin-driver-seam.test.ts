@@ -15,9 +15,7 @@
  * the Claude SDK is a fake and Codex's app-server is a fake that records the
  * `thread/start` config it was given.
  */
-import fs from "node:fs";
-import path from "node:path";
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import {
   TELAR_MCP_SERVER,
   canonicalToolName,
@@ -30,7 +28,7 @@ import { helloToolModule } from "../src/plugins/hello";
 import { HOST_RATIFIED_READ_TOOLS } from "../src/plugins/policy";
 import { PluginToolSocket } from "../src/plugins/socket";
 import { TelarToolSocket } from "../src/telar-socket";
-import { allowCliInThisFile } from "./allow-cli";
+import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";
 
 /** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
  *  both drivers resolve one on their way to a fake Claude SDK and the fake `codex` app-server.
@@ -38,33 +36,8 @@ import { allowCliInThisFile } from "./allow-cli";
  *  See ./allow-cli.ts. */
 allowCliInThisFile();
 
-const FAKE_CLAUDE = path.join(import.meta.dir, "fixtures", "fake-claude");
-
-/**
- * THE RESOLUTION IS PINNED, exactly as `plugin-approval-dispatch.test.ts` pins
- * `CODEX_BIN` — and for the mirror-image reason (issue #752).
- *
- * That file pins so the driver cannot find the REAL `codex` and spawn it. This
- * one pins so the driver cannot fail to find a `claude` at all: the path above
- * is resolved on the way to the fake SDK and never executed, but `requireCli`
- * throws when resolution comes up empty, and eight tests here went down with it.
- *
- * Unpinned, `cli-resolution.ts` searches PATH, then the login shell's and
- * `launchctl`'s PATH, then three well-known directories — so a developer Mac
- * essentially always finds something and a clean runner finds nothing. The
- * suite therefore passed here and failed on `ubuntu-latest`, which is to say it
- * was reporting a fact about the machine rather than about the code.
- */
-let previousClaudeExecutable: string | undefined;
-beforeAll(() => {
-  if (!fs.existsSync(FAKE_CLAUDE)) throw new Error("the fake claude fixture is missing; refusing to run rather than fall back to whatever this machine has installed");
-  previousClaudeExecutable = process.env.CLAUDE_CODE_EXECUTABLE;
-  process.env.CLAUDE_CODE_EXECUTABLE = FAKE_CLAUDE;
-});
-afterAll(() => {
-  if (previousClaudeExecutable === undefined) delete process.env.CLAUDE_CODE_EXECUTABLE;
-  else process.env.CLAUDE_CODE_EXECUTABLE = previousClaudeExecutable;
-});
+/** And pin WHICH claude, so the resolve cannot depend on this machine (#752). */
+pinFakeClaudeInThisFile();
 
 const sockets: PluginToolSocket[] = [];
 const telarSockets: TelarToolSocket[] = [];
