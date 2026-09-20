@@ -66,6 +66,7 @@ import { RelatedConversations } from "@/components/session/related-conversations
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
+import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspace";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { cn } from "@/lib/utils";
 
@@ -104,7 +105,6 @@ const TableSurface = dynamic(() => import("@/components/session/table-surface").
 const DataSurface = dynamic(() => import("@/components/session/data-surface").then((mod) => mod.DataSurface));
 const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface));
 const RunPanel = dynamic(() => import("@/components/run/run-panel").then((mod) => mod.RunPanel));
-const ForgeDetailSurface = dynamic(() => import("@/components/session/github-detail-surface").then((mod) => mod.ForgeDetailSurface));
 const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface));
 /** Not a tab: an overlay over the whole panel, and only once an attachment is
  *  pressed — so it is never on screen on arrival either. */
@@ -201,6 +201,14 @@ const SURFACES = [
    * THE TWO NETWORK SURFACES, and the only two. Everything above folds records
    * the cockpit already holds; these go out to GitHub through the `gh` CLI, so
    * they never poll and they always say how old their answer is.
+   *
+   * EACH HOLDS ITS OWN DETAILS (#693), in a sub-strip like the Editor's files.
+   * One issue used to be a top-level tab of its own, and the argument against
+   * that is the one written above for files: issues arrive by the dozen, so a
+   * morning's triage pushed the surfaces you had arranged off the end of the
+   * strip. They are still TWO tabs and not one — that collapse was considered
+   * and deferred, because they hold separate filter state and "issues open
+   * beside pull requests" is an ordinary arrangement, not a duplicate.
    */
   { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues" },
   { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests" },
@@ -277,12 +285,21 @@ export function isFilePanelTab(value: string): boolean {
  * by `readPanelTabs`. The files themselves are not lost with the tabs: they are
  * restored INTO the Editor by `editorFromLegacyTabs`, which reads the same
  * stored ids before this collapses them (see the cockpit's restore effect).
+ *
+ * AND EVERY OPEN ISSUE BECOMES THE ISSUES SURFACE (#693), on the same terms:
+ * `issue:675` and `issue:9` both name `issues`, `readPanelTabs` leaves one tab
+ * where there were two, and the NUMBERS are read out first by
+ * `forgeFromLegacyTabs` and seeded as that surface's open set. Without that
+ * second half this rename would quietly close every issue anybody had open —
+ * the exact thing moving them inside the list is meant to stop happening.
  */
 export function migratePanelTab(value: string): string {
   if (LEGACY_DS_TABS.has(value)) return "data";
   // `files` was retired in favour of Editor (#193). A saved arrangement that
   // names it opens on Editor's tree rather than on nothing.
   if (value === "files") return "editor";
+  if (issuePanelNumber(value as PanelTab) !== undefined) return "issues";
+  if (pullPanelNumber(value as PanelTab) !== undefined) return "pulls";
   return isFilePanelTab(value) ? "editor" : value;
 }
 
@@ -305,6 +322,13 @@ function surfacesFor(dataScience: boolean, latex = false): typeof SURFACES[numbe
  * close when they are done with it. The alternative — a preview pane under the
  * tree — splits a 320px column into two unreadable halves (see
  * session/file-view-surface.tsx).
+ *
+ * THE FILE AND FORGE SHAPES BELOW ARE REQUESTS, NOT TABS, and have been since
+ * the Editor (#193) and #693 respectively. They stay in this union because the
+ * gestures that open a file or an issue still NAME one this way, from a dozen
+ * call sites; `showPanelTab` reads the subject back out and opens it inside the
+ * surface that holds it. `migratePanelTab` is what stops one ever reaching the
+ * strip, including out of a layout saved before either change.
  */
 export type PanelTab =
   | SurfaceId
@@ -335,9 +359,15 @@ export type PanelTabItem = PanelTabInstance<PanelTab>;
  * (in its own native scope — see `browserScopeKey`), and a Diff is a review you
  * can want two of when comparing one part of a change against another.
  *
- * A FILE, AN ISSUE AND A BROWSER PAGE ARE NOT ON THIS LIST and do not need to
- * be: their subject is already in the kind (`issue:322`), so two of them are
- * two kinds, and a second tab for the same issue would show the same thing.
+ * ISSUES AND PULL REQUESTS ARE FOLDS AND STAY SINGLETONS, even though each now
+ * holds its own open details (#693). A second Issues tab would show the same
+ * project's same list — the detail sub-strip inside it is the thing you wanted
+ * two of, and it already holds as many as you open. That is the Editor's
+ * arrangement exactly: the surface is one, its contents are many.
+ *
+ * A FILE, AN ISSUE AND A BROWSER PAGE ARE NOT ON THIS LIST either. A page
+ * carries its subject in the kind, so two of them are two kinds; a file and an
+ * issue are not kinds at all any more, but content inside a surface.
  */
 const MULTI_INSTANCE: ReadonlySet<string> = new Set<string>(["editor", "diff"]);
 
@@ -453,11 +483,24 @@ export function filePanelPath(tab: PanelTab): string | undefined {
    inside Editor reads it from there (session/editor-surface.tsx). */
 
 /**
- * ONE ISSUE OR ONE PULL REQUEST IS ALSO A TAB, and for the third time the same
- * argument: you opened it, several can be open, each closes on its own, and the
- * arrangement survives a reload. The alternative — a drill-down inside the list
- * surface with a back button — would make reading two issues at once impossible
- * and would put a navigation stack inside a panel that already has tabs.
+ * ONE ISSUE OR ONE PULL REQUEST IS A REQUEST, NOT A TAB (#693) — the same turn
+ * `file:` took when files moved into the Editor, and for the same reason.
+ *
+ * It WAS a tab, on the argument that you opened it, several can be open, and
+ * each closes on its own. All three are still true; what was wrong was the
+ * STRIP they were true in. Issues arrive by the dozen, so five of them pushed
+ * Diff and Browser off the end of a strip built to hold a handful of surfaces —
+ * and the answer the Editor already found is a sub-strip one level down, not a
+ * narrower top-level strip. So these ids still name "open issue #675", because
+ * that is the vocabulary the call sites speak — a conversation chip
+ * (session/prompt-text.tsx), a GitHub link in a message (the cockpit's
+ * `onConversationClick`), a saved layout from before this change. The cockpit
+ * reads the number back out and opens it INSIDE the Issues surface
+ * (`showPanelTab`), which is what let this land without rewriting every gesture.
+ *
+ * NOT A DRILL-DOWN WITH A BACK BUTTON, which is the shape this used to argue
+ * against: the list stays a chip in the sub-strip beside the details, so two
+ * issues are still two chips and the way back is not a navigation stack.
  */
 export function issuePanelTab(number: number): PanelTab {
   return `${ISSUE_PREFIX}${number}`;
@@ -502,19 +545,22 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => notebookPanelPath(tab) !== undefined,
   (tab) => tablePanelPath(tab) !== undefined,
   (tab) => pdfPanelPath(tab) !== undefined,
-  (tab) => issuePanelNumber(tab) !== undefined,
-  (tab) => pullPanelNumber(tab) !== undefined,
+  /* THE TWO GITHUB SURFACES OWN THEIR HEIGHT NOW (#693). They used to be plain
+     lists the panel scrolled; each holds a detail sub-strip and, behind it, a
+     thread with its own scroller and a merge footer pinned under it. That is an
+     `h-full` child, and one line of chrome above an `h-full` child pushes its
+     bottom past the bottom of the box — which is exactly how an issue's comments
+     became unreachable the first time. */
+  (tab) => tab === "issues",
+  (tab) => tab === "pulls",
   (tab) => tab === "editor",
   (tab) => tab === "data",
   (tab) => tab === "latex",
 ];
 
-/** Which numbers are already open, so a list row can say so instead of opening a
- *  second tab for the same issue. The same courtesy the file tree does. */
-export function openForgeNumbers(tabs: readonly PanelTabItem[], kind: "issue" | "pull"): number[] {
-  const read = kind === "issue" ? issuePanelNumber : pullPanelNumber;
-  return tabs.map((tab) => read(tab.kind)).filter((number): number is number => number !== undefined);
-}
+/* WHICH NUMBERS ARE ALREADY OPEN is no longer a question about the STRIP (#693).
+   A detail opens inside its list, so the list surface holds its own open set and
+   marks its own rows from it — see session/github-surface.tsx. */
 
 /** Anything shaped like a tab id this build understands — the validator for
  *  what comes back out of localStorage. A browser page whose id is no longer
@@ -1349,8 +1395,6 @@ export function PanelSurface({
   sessionTitle,
   projectId,
   branch,
-  openIssueNumbers,
-  openPullNumbers,
   onOpenTab,
   onOpenNewTab,
   onOpenFileInNewTab,
@@ -1392,9 +1436,6 @@ export function PanelSurface({
   projectId?: string;
   /** The session's own branch, so its pull request can be marked as its own. */
   branch?: string;
-  /** Issues and pull requests already open as tabs, so a list row can say so. */
-  openIssueNumbers?: readonly number[];
-  openPullNumbers?: readonly number[];
   /**
    * The tree opens a file by naming it, which the cockpit routes — a surface
    * tab opens as a tab; a file-shaped id opens in the Editor. `intent` says how
@@ -1548,12 +1589,6 @@ export function PanelSurface({
         {...(active ? { active } : {})}
       />
     );
-  const issueNumber = issuePanelNumber(kind);
-  if (issueNumber !== undefined)
-    return <ForgeDetailSurface kind="issue" number={issueNumber} {...(projectId ? { projectId } : {})} />;
-  const pullNumber = pullPanelNumber(kind);
-  if (pullNumber !== undefined)
-    return <ForgeDetailSurface kind="pull" number={pullNumber} {...(projectId ? { projectId } : {})} {...(branch ? { branch } : {})} />;
   const pageId = browserTabId(kind);
   if (pageId !== undefined)
     return (
@@ -1597,8 +1632,12 @@ export function PanelSurface({
         kind={kind}
         {...(projectId ? { projectId } : {})}
         {...(branch ? { branch } : {})}
-        onOpen={(number) => onOpenTab(kind === "issues" ? issuePanelTab(number) : pullPanelTab(number))}
-        openNumbers={kind === "issues" ? openIssueNumbers : openPullNumbers}
+        // THIS instance's open details, read from and written back to the tab's
+        // own params — the same round trip the Diff's filter and the Editor's
+        // active file make. That is what persists the sub-strip across a reload
+        // and what keeps two windows on one session independent of each other.
+        open={readForgeOpen(tab.params)}
+        {...(onTabParams ? { onOpenChange: (next: ForgeOpen) => onTabParams(forgeParams(next)) } : {})}
       />
     );
   if (kind === "agents")
@@ -2087,8 +2126,6 @@ export function RightPanel({
     [sessionId, tabs],
   );
   const livePages = useLivePages(browserScopes);
-  const openIssueNumbers = useMemo(() => openForgeNumbers(tabs, "issue"), [tabs]);
-  const openPullNumbers = useMemo(() => openForgeNumbers(tabs, "pull"), [tabs]);
   /** The instance the panel is showing, resolved once. */
   const activeTab = useMemo(() => tabs.find((entry) => entry.id === tab), [tabs, tab]);
   /** Which kinds the strip holds more than one of — what decides whether a tab
@@ -2535,8 +2572,6 @@ export function RightPanel({
               writes={writes}
               tasks={tasks}
               {...(focusedTask ? { focusedTask } : {})}
-              openIssueNumbers={openIssueNumbers}
-              openPullNumbers={openPullNumbers}
               onOpenTab={onOpenTab}
               {...(onOpenNewTab ? { onOpenNewTab } : {})}
               {...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {})}

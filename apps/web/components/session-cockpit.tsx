@@ -62,7 +62,7 @@ import { Composer, MAX_ATTACHMENTS } from "./composer";
 // one function every notification verb in this app comes from (#572) — so this
 // header cannot name a happening differently from the row below it.
 import { ActivityGroup, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
-import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
@@ -101,6 +101,7 @@ import {
   type EditorState,
   type OpenIntent,
 } from "@/lib/editor-workspace";
+import { forgeFromLegacyTabs, forgeParams, openForge, readForgeOpen } from "@/lib/forge-workspace";
 import {
   buildSessionActionMenuItems,
   type SessionActionHandlers,
@@ -1890,7 +1891,26 @@ export function SessionCockpit({
       // On desktop the native strip owns the pages: collapse any per-page
       // browser tabs persisted before this change into one "Browser" tab, so
       // an upgraded session does not still show the old per-page outer tabs.
-      const next = desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
+      const collapsed = desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
+      /**
+       * THE ISSUES SOMEBODY LEFT OPEN SURVIVE THE UPGRADE (#693) — the same
+       * two-step the Editor's files take above, for the same reason.
+       * `migratePanelTab` folds `issue:675` into `issues`, which on its own
+       * would silently close it, so the NUMBERS are read off the stored ids
+       * first and seeded as that surface's open set.
+       *
+       * ONLY ONTO A SURFACE WITH NOTHING OF ITS OWN. A session migrated once
+       * stays migrated: re-seeding a tab that already carries an open set would
+       * resurrect issues closed since, and the first write after the upgrade
+       * replaces those ids in storage anyway.
+       */
+      const legacyForge = forgeFromLegacyTabs(ids.tabs, ids.activeTab);
+      let next = collapsed;
+      for (const entry of collapsed.tabs) {
+        const seed = entry.kind === "issues" ? legacyForge.issues : entry.kind === "pulls" ? legacyForge.pulls : undefined;
+        if (!seed || readForgeOpen(entry.params).numbers.length > 0) continue;
+        next = setPanelTabParams(next, entry.id, forgeParams(seed));
+      }
       /**
        * THE FIRST EDITOR IS LOADED WHETHER OR NOT ITS TAB IS OPEN — closing the
        * Editor has never thrown away the files in it, and reopening must still
@@ -2083,6 +2103,30 @@ export function SessionCockpit({
         const target = editorTargetId(panelNow.current);
         updateEditor(target, (current) => openInEditor(current, editorFileForPath(path, dataScience), intent));
         updatePanel((current) => openPanelTab(current, "editor"));
+        return;
+      }
+      /**
+       * AN ISSUE IS NOT A SURFACE EITHER (#693), and this is the other half of
+       * the same decision the file arm above makes. Every caller still names one
+       * `issue:675` — a chip in the conversation, a GitHub link in a message, a
+       * layout saved before this change — and the number is read back out here
+       * and opened INSIDE the list surface, which is brought forward.
+       *
+       * ONE UPDATE, not an open-then-focus pair: the tab has to exist before its
+       * params can be written, and doing it in two `updatePanel` calls would
+       * persist an Issues tab with an empty open set in between.
+       */
+      const issue = issuePanelNumber(tab);
+      const pull = issue === undefined ? pullPanelNumber(tab) : undefined;
+      if (issue !== undefined || pull !== undefined) {
+        const kind = issue !== undefined ? "issues" : "pulls";
+        const number = (issue ?? pull)!;
+        updatePanel((current) => {
+          const opened = openPanelTab(current, kind);
+          const target = activePanelTab(opened);
+          if (!target) return opened;
+          return setPanelTabParams(opened, target.id, forgeParams(openForge(readForgeOpen(target.params), number)));
+        });
         return;
       }
       updatePanel((current) => openPanelTab(current, tab));

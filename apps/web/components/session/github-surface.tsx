@@ -31,9 +31,19 @@
  * cockpit already holds; this one goes out to GitHub through the `gh` CLI and can
  * be slow, stale, rate-limited or unauthenticated. So it never polls, it carries
  * the time it was read, and each way it can be unavailable gets its own sentence.
+ *
+ * AND THE DETAILS OPEN INSIDE IT (#693). Clicking a row used to mint a top-level
+ * panel tab — the strip read `Diff · Issues · #675 · Pull requests · #666`, four
+ * Git tabs of which two were documents rather than surfaces. Issues arrive by the
+ * dozen exactly as files do, so they get the treatment files got: a sub-strip of
+ * this surface's own, with the list as its first chip. The panel's strip goes back
+ * to holding surfaces, and nothing is lost — the open set persists per tab
+ * instance (lib/forge-workspace.ts), so it survives a reload and two windows on
+ * one session still keep an issue each.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   CircleCheckIcon,
   CircleDotIcon,
@@ -56,7 +66,23 @@ import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { filterChips, issueStatus, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeFilterChip, type ForgeStatus } from "@/lib/github-forge";
 import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
+import {
+  activateForge,
+  closeForge,
+  emptyForge,
+  forgeNumbersAfter,
+  openForge,
+  otherForgeNumbers,
+  showForgeList,
+  type ForgeOpen,
+} from "@/lib/forge-workspace";
 import { Badge } from "@/components/ui/badge";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -75,6 +101,16 @@ import {
 import { PanelEmpty, PanelRow } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+
+/**
+ * THE DETAIL STAYS A CHUNK OF ITS OWN, for the same reason the panel splits its
+ * surfaces (components/right-panel.tsx, "ONE TAB IS OPEN"). This list is cheap —
+ * rows and a filter menu — and the detail behind a row is not: a markdown
+ * pipeline, a checks block and the merge machinery. Opening Issues must not pay
+ * for a detail nobody has clicked yet, so the import that used to sit up in the
+ * panel comes DOWN here rather than becoming a static one.
+ */
+const ForgeDetailSurface = dynamic(() => import("@/components/session/github-detail-surface").then((mod) => mod.ForgeDetailSurface));
 
 const api = createEngineApi();
 
@@ -376,17 +412,23 @@ export function GitHubSurface({
   projectId,
   /** The session's own branch, so its pull request can be marked. */
   branch,
-  /** Opening one is opening a TAB, which the panel owns — the same arrangement
-   *  the file tree has with the file view. */
-  onOpen,
-  /** Which numbers already have a tab, so a row can say so. */
-  openNumbers,
+  /**
+   * WHICH DETAILS ARE OPEN INSIDE THIS SURFACE, and which one is showing.
+   *
+   * Owned by the panel — it lives in this tab instance's `params`, which is what
+   * persists it and what keeps two windows on one session independent — and
+   * handed down here the way the Editor's files are (lib/forge-workspace.ts).
+   * Absent means a surface nobody can drill into: the rows still read, which is
+   * the right fallback for a caller with no panel to give.
+   */
+  open,
+  onOpenChange,
 }: {
   kind: "issues" | "pulls";
   projectId?: string;
   branch?: string;
-  onOpen?: (number: number) => void;
-  openNumbers?: readonly number[];
+  open?: ForgeOpen;
+  onOpenChange?: (next: ForgeOpen) => void;
 }) {
   const [snapshot, setSnapshot] = useState<GitHubSnapshot>();
   const [error, setError] = useState<string>();
@@ -466,13 +508,30 @@ export function GitHubSurface({
         : { ...current, [chip.clear]: undefined },
     );
 
+  const forge = open ?? emptyForge();
+  const detail = forge.at;
+  /** The `load` this surface has already issued. Its identity changes exactly
+   *  when the project, the kind or the filter does — which is the whole of what
+   *  makes an answer stale — so comparing it is how "read once for this
+   *  question" is expressed without a second copy of the question. */
+  const issued = useRef<typeof load>(undefined);
+
   useEffect(() => {
     // ONCE, ON OPEN, and again when the filter changes — which is a person asking,
     // not a timer. No interval: this is somebody else's rate limit, and a panel
     // left open on a second monitor must not spend it.
+    //
+    // AND NOT WHILE A DETAIL IS SHOWING (#693). The list is behind the sub-strip
+    // then, and reading a list nobody is looking at spends the same rate limit
+    // for nothing — a session restored onto `#675` would have paid for it before
+    // drawing a single row. Coming BACK does not re-read either: the header
+    // stamps how old the answer is and offers the refresh, which is the contract
+    // this surface has always had with a stale read.
+    if (detail !== undefined || issued.current === load) return;
+    issued.current = load;
     const first = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(first);
-  }, [load]);
+  }, [load, detail]);
 
   const label = kind === "issues" ? "issues" : "pull requests";
   const Icon = kind === "issues" ? CircleDotIcon : GitPullRequestIcon;
@@ -480,270 +539,428 @@ export function GitHubSurface({
   const chosen = options.find((entry) => entry.id === filter.state) ?? options[0];
   const chips = filterChips(filter);
 
-  if (error) {
+  /**
+   * THE LIST, WHICH IS NOW ONE OF TWO BODIES rather than the whole surface.
+   *
+   * A function rather than three early returns from the component, because the
+   * sub-strip above has to stay drawn whatever the list is doing: a read that
+   * failed, or a repository `gh` cannot see, must not take away the chips that
+   * are the way back to the issue you were reading.
+   */
+  const list = () => {
+    if (error) {
+      return (
+        <PanelEmpty icon={<Icon />} title="Could not read GitHub">
+          {error}
+        </PanelEmpty>
+      );
+    }
+    if (!snapshot) {
+      return (
+        <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground">
+          <Spinner className="size-3" /> asking gh…
+        </p>
+      );
+    }
+    if (snapshot.unavailable) {
+      const reason = UNAVAILABLE[snapshot.unavailable];
+      return (
+        <PanelEmpty icon={<Icon />} title={reason.title}>
+          {reason.detail || snapshot.message || "gh exited without an explanation."}
+        </PanelEmpty>
+      );
+    }
+
+    const rows = kind === "issues" ? snapshot.issues : snapshot.pulls;
+    /** Which numbers already have a chip in the sub-strip, so a row can say so
+     *  rather than opening a second one for the same issue. */
+    const alreadyOpen = new Set(forge.numbers);
+    /** The filter the ROWS were read under, not the one the menu is showing: a read
+     *  in flight means those two disagree for a moment, and the sentence under an
+     *  empty list has to describe what produced it. */
+    const shown = kind === "issues" ? snapshot.issueFilter : snapshot.pullFilter;
+    const shownChips = filterChips(shown);
+
     return (
-      <PanelEmpty icon={<Icon />} title="Could not read GitHub">
-        {error}
-      </PanelEmpty>
-    );
-  }
-  if (!snapshot) {
-    return (
-      <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground">
-        <Spinner className="size-3" /> asking gh…
-      </p>
-    );
-  }
-  if (snapshot.unavailable) {
-    const reason = UNAVAILABLE[snapshot.unavailable];
-    return (
-      <PanelEmpty icon={<Icon />} title={reason.title}>
-        {reason.detail || snapshot.message || "gh exited without an explanation."}
-      </PanelEmpty>
-    );
-  }
+      <div className="flex flex-col">
+        <div className="flex items-center gap-1.5 border-b border-border px-4 py-2 text-2xs text-muted-foreground">
+          {/**
+           * ONE MENU FOR EVERY NARROWING, with the state at the top level and the
+           * facets in submenus. A row of pills does not fit in 320px once there are
+           * four states and three facets, and the thing worth showing on the trigger is
+           * what you chose rather than what you could choose.
+           *
+           * `onOpenChange` IS WHAT FETCHES THE FACETS, which is why they are free for
+           * anybody who never opens this.
+           */}
+          <DropdownMenu onOpenChange={openFacets}>
+            <DropdownMenuTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`Filter ${label}`}
+                  title={`Filter ${label}`}
+                  className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-muted hover:text-foreground"
+                />
+              }
+            >
+              <ListFilterIcon className="size-3" />
+              <span>{chosen.label}</span>
+              {/* A COUNT ON THE TRIGGER, so a collapsed menu still admits it is
+                  narrowing. The chips below say by what. */}
+              {chips.length > 0 && (
+                <span className="rounded-full bg-primary/15 px-1 font-mono text-4xs leading-4 text-primary">{chips.length}</span>
+              )}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56">
+              {/* THE LABEL LIVES INSIDE THE GROUP IT NAMES. A label at depth zero is
+                  not associated with anything for a screen reader, which this
+                  repository has a test for — see ui/dropdown-menu.test.ts. */}
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Show</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={filter.state} onValueChange={(next) => choose({ state: next as Filter["state"] })}>
+                  {options.map((option) => (
+                    <DropdownMenuRadioItem key={option.id} value={option.id}>
+                      {option.label}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuGroup>
 
-  const rows = kind === "issues" ? snapshot.issues : snapshot.pulls;
-  const alreadyOpen = new Set(openNumbers ?? []);
-  /** The filter the ROWS were read under, not the one the menu is showing: a read
-   *  in flight means those two disagree for a moment, and the sentence under an
-   *  empty list has to describe what produced it. */
-  const shown = kind === "issues" ? snapshot.issueFilter : snapshot.pullFilter;
-  const shownChips = filterChips(shown);
+              <DropdownMenuSeparator />
 
-  return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 border-b border-border px-4 py-2 text-2xs text-muted-foreground">
-        {/**
-         * ONE MENU FOR EVERY NARROWING, with the state at the top level and the
-         * facets in submenus. A row of pills does not fit in 320px once there are
-         * four states and three facets, and the thing worth showing on the trigger is
-         * what you chose rather than what you could choose.
-         *
-         * `onOpenChange` IS WHAT FETCHES THE FACETS, which is why they are free for
-         * anybody who never opens this.
-         */}
-        <DropdownMenu onOpenChange={openFacets}>
-          <DropdownMenuTrigger
-            render={
-              <button
-                type="button"
-                aria-label={`Filter ${label}`}
-                title={`Filter ${label}`}
-                className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-muted hover:text-foreground"
-              />
-            }
-          >
-            <ListFilterIcon className="size-3" />
-            <span>{chosen.label}</span>
-            {/* A COUNT ON THE TRIGGER, so a collapsed menu still admits it is
-                narrowing. The chips below say by what. */}
-            {chips.length > 0 && (
-              <span className="rounded-full bg-primary/15 px-1 font-mono text-4xs leading-4 text-primary">{chips.length}</span>
-            )}
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            {/* THE LABEL LIVES INSIDE THE GROUP IT NAMES. A label at depth zero is
-                not associated with anything for a screen reader, which this
-                repository has a test for — see ui/dropdown-menu.test.ts. */}
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>Show</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={filter.state} onValueChange={(next) => choose({ state: next as Filter["state"] })}>
-                {options.map((option) => (
-                  <DropdownMenuRadioItem key={option.id} value={option.id}>
-                    {option.label}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuGroup>
+              {/* MILESTONE IS ISSUES-ONLY. `gh pr list` has no `--milestone` flag, so
+                  offering it here would be a control that cannot work. */}
+              {kind === "issues" && (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <MilestoneIcon />
+                    <span className="flex-1 truncate">Milestone</span>
+                    <span className="max-w-24 truncate text-muted-foreground">{filter.milestone ?? "any"}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56">
+                    <FacetList loading={loadingFacets} empty="This repository has no milestones.">
+                      {facets?.milestones.length ? (
+                        <DropdownMenuRadioGroup
+                          value={filter.milestone ?? ""}
+                          onValueChange={(next) => choose({ milestone: next || undefined })}
+                        >
+                          <DropdownMenuRadioItem value="">Any milestone</DropdownMenuRadioItem>
+                          {facets.milestones.map((milestone) => (
+                            <DropdownMenuRadioItem key={milestone.title} value={milestone.title}>
+                              <span className="flex-1 truncate">{milestone.title}</span>
+                              {/* What is LEFT in it, which is the number that decides
+                                  whether the milestone is worth opening. */}
+                              <span className="ml-1 shrink-0 font-mono text-4xs text-muted-foreground tabular-nums">{milestone.open}</span>
+                            </DropdownMenuRadioItem>
+                          ))}
+                        </DropdownMenuRadioGroup>
+                      ) : null}
+                    </FacetList>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              )}
 
-            <DropdownMenuSeparator />
-
-            {/* MILESTONE IS ISSUES-ONLY. `gh pr list` has no `--milestone` flag, so
-                offering it here would be a control that cannot work. */}
-            {kind === "issues" && (
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
-                  <MilestoneIcon />
-                  <span className="flex-1 truncate">Milestone</span>
-                  <span className="max-w-24 truncate text-muted-foreground">{filter.milestone ?? "any"}</span>
+                  <UserRoundIcon />
+                  <span className="flex-1 truncate">Assignee</span>
+                  <span className="max-w-24 truncate text-muted-foreground">{filter.assignee ?? "anyone"}</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-56">
-                  <FacetList loading={loadingFacets} empty="This repository has no milestones.">
-                    {facets?.milestones.length ? (
-                      <DropdownMenuRadioGroup
-                        value={filter.milestone ?? ""}
-                        onValueChange={(next) => choose({ milestone: next || undefined })}
-                      >
-                        <DropdownMenuRadioItem value="">Any milestone</DropdownMenuRadioItem>
-                        {facets.milestones.map((milestone) => (
-                          <DropdownMenuRadioItem key={milestone.title} value={milestone.title}>
-                            <span className="flex-1 truncate">{milestone.title}</span>
-                            {/* What is LEFT in it, which is the number that decides
-                                whether the milestone is worth opening. */}
-                            <span className="ml-1 shrink-0 font-mono text-4xs text-muted-foreground tabular-nums">{milestone.open}</span>
+                  <FacetList loading={loadingFacets} empty="No assignees to choose from.">
+                    <DropdownMenuRadioGroup value={filter.assignee ?? ""} onValueChange={(next) => choose({ assignee: next || undefined })}>
+                      <DropdownMenuRadioItem value="">Anyone</DropdownMenuRadioItem>
+                      {/* THE VIEWER FIRST AND BY NAME. "assigned to me" is the filter
+                          people actually want, and naming the account says which one
+                          gh is signed in as — worth knowing before you trust it. */}
+                      {facets?.viewer && <DropdownMenuRadioItem value={facets.viewer}>{facets.viewer} · me</DropdownMenuRadioItem>}
+                      {(facets?.assignees ?? [])
+                        .filter((login) => login !== facets?.viewer)
+                        .map((login) => (
+                          <DropdownMenuRadioItem key={login} value={login}>
+                            <span className="truncate">{login}</span>
                           </DropdownMenuRadioItem>
                         ))}
-                      </DropdownMenuRadioGroup>
-                    ) : null}
+                    </DropdownMenuRadioGroup>
                   </FacetList>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-            )}
 
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <UserRoundIcon />
-                <span className="flex-1 truncate">Assignee</span>
-                <span className="max-w-24 truncate text-muted-foreground">{filter.assignee ?? "anyone"}</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-56">
-                <FacetList loading={loadingFacets} empty="No assignees to choose from.">
-                  <DropdownMenuRadioGroup value={filter.assignee ?? ""} onValueChange={(next) => choose({ assignee: next || undefined })}>
-                    <DropdownMenuRadioItem value="">Anyone</DropdownMenuRadioItem>
-                    {/* THE VIEWER FIRST AND BY NAME. "assigned to me" is the filter
-                        people actually want, and naming the account says which one
-                        gh is signed in as — worth knowing before you trust it. */}
-                    {facets?.viewer && <DropdownMenuRadioItem value={facets.viewer}>{facets.viewer} · me</DropdownMenuRadioItem>}
-                    {(facets?.assignees ?? [])
-                      .filter((login) => login !== facets?.viewer)
-                      .map((login) => (
-                        <DropdownMenuRadioItem key={login} value={login}>
-                          <span className="truncate">{login}</span>
-                        </DropdownMenuRadioItem>
-                      ))}
-                  </DropdownMenuRadioGroup>
-                </FacetList>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <TagIcon />
+                  <span className="flex-1 truncate">Labels</span>
+                  <span className="shrink-0 text-muted-foreground">{filter.labels.length > 0 ? filter.labels.length : "any"}</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                  <FacetList loading={loadingFacets} empty="This repository has no labels.">
+                    {/* CHECKBOXES, because `gh` ANDs repeated `--label` flags — two
+                        ticks means rows carrying both, which is what a reader expects
+                        of two ticks. */}
+                    {(facets?.labels ?? []).map((entry) => (
+                      <DropdownMenuCheckboxItem
+                        key={entry.name}
+                        checked={filter.labels.includes(entry.name)}
+                        onCheckedChange={() => toggleLabel(entry.name)}
+                        closeOnClick={false}
+                      >
+                        <span className="truncate">{entry.name}</span>
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </FacetList>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
 
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <TagIcon />
-                <span className="flex-1 truncate">Labels</span>
-                <span className="shrink-0 text-muted-foreground">{filter.labels.length > 0 ? filter.labels.length : "any"}</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                <FacetList loading={loadingFacets} empty="This repository has no labels.">
-                  {/* CHECKBOXES, because `gh` ANDs repeated `--label` flags — two
-                      ticks means rows carrying both, which is what a reader expects
-                      of two ticks. */}
-                  {(facets?.labels ?? []).map((entry) => (
-                    <DropdownMenuCheckboxItem
-                      key={entry.name}
-                      checked={filter.labels.includes(entry.name)}
-                      onCheckedChange={() => toggleLabel(entry.name)}
-                      closeOnClick={false}
-                    >
-                      <span className="truncate">{entry.name}</span>
-                    </DropdownMenuCheckboxItem>
+              {chips.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setFilter({ state: filter.state, labels: [] })}>
+                    <XIcon />
+                    Clear filters
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <span className="min-w-0 truncate">
+            · {rows.length === 0 ? `no ${label}` : `${rows.length}${rows.length === GITHUB_PAGE_HINT ? "+" : ""} ${rows.length === 1 ? label.replace(/s$/, "") : label}`}
+            {snapshot.repository ? ` in ${snapshot.repository}` : ""}
+          </span>
+          {/* A network read is not live, and a surface that cannot say how old its
+              answer is invites the reader to trust a stale one. */}
+          <span className="ml-auto shrink-0">{fmtAgo(snapshot.readAt)}</span>
+          <button
+            type="button"
+            aria-label={`Refresh ${label}`}
+            title="Ask gh again"
+            onClick={() => {
+              setRefreshing(true);
+              void load(true).finally(() => setRefreshing(false));
+            }}
+            className="shrink-0 rounded p-0.5 transition-colors hover:text-foreground"
+          >
+            <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
+          </button>
+        </div>
+
+        {/**
+         * WHAT IS NARROWING THIS LIST, visible without opening the menu that set it.
+         *
+         * The failure this prevents: pick a milestone, come back tomorrow, see no rows
+         * and conclude the repository is empty. Each chip removes its own filter, which
+         * is faster than reopening a submenu to unset one thing.
+         *
+         * Drawn from the filter the ROWS were read under, not the one being edited, so
+         * it never describes a narrowing that has not been applied yet.
+         */}
+        {shownChips.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 border-b border-border px-4 py-1.5">
+            {shownChips.map((chip) => (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={() => clearChip(chip)}
+                title={`Stop filtering by ${chip.label}`}
+                className="inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 py-0 text-4xs text-muted-foreground transition-colors hover:border-destructive/40 hover:text-foreground"
+              >
+                <span className="truncate">{chip.label}</span>
+                <XIcon className="size-2.5 shrink-0" />
+              </button>
+            ))}
+          </div>
+        )}
+
+        {rows.length === 0 ? (
+          <p className="px-4 py-6 text-center text-2xs leading-snug text-muted-foreground">
+            {shownChips.length > 0
+              ? `Nothing matches those filters.`
+              : shown.state === "open"
+                ? `Nothing open.`
+                : `No ${label} in this repository match that.`}
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-col group">
+              {kind === "issues"
+                ? snapshot.issues.map((issue) => (
+                    <IssueRow
+                      key={issue.number}
+                      issue={issue}
+                      open={alreadyOpen.has(issue.number)}
+                      onOpen={() => onOpenChange?.(openForge(forge, issue.number))}
+                    />
+                  ))
+                : snapshot.pulls.map((pull) => (
+                    <PullRow
+                      key={pull.number}
+                      pull={pull}
+                      mine={Boolean(branch) && pull.headRefName === branch}
+                      open={alreadyOpen.has(pull.number)}
+                      onOpen={() => onOpenChange?.(openForge(forge, pull.number))}
+                    />
                   ))}
-                </FacetList>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-
-            {chips.length > 0 && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => setFilter({ state: filter.state, labels: [] })}>
-                  <XIcon />
-                  Clear filters
-                </DropdownMenuItem>
-              </>
+            </div>
+            {/* WHY THE BOARD CHIPS ARE MISSING, said once at the bottom and only when
+                it is true. Silence would make every row look like it is on no board. */}
+            {snapshot.projectsUnavailable === "scope" && (
+              <p className="border-t border-border px-4 py-2 text-2xs leading-snug text-muted-foreground">
+                Boards are not shown: the gh token has no <span className="font-mono">read:project</span> scope. Run{" "}
+                <span className="font-mono">gh auth refresh -s read:project</span> and press refresh.
+              </p>
             )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <span className="min-w-0 truncate">
-          · {rows.length === 0 ? `no ${label}` : `${rows.length}${rows.length === GITHUB_PAGE_HINT ? "+" : ""} ${rows.length === 1 ? label.replace(/s$/, "") : label}`}
-          {snapshot.repository ? ` in ${snapshot.repository}` : ""}
-        </span>
-        {/* A network read is not live, and a surface that cannot say how old its
-            answer is invites the reader to trust a stale one. */}
-        <span className="ml-auto shrink-0">{fmtAgo(snapshot.readAt)}</span>
-        <button
-          type="button"
-          aria-label={`Refresh ${label}`}
-          title="Ask gh again"
-          onClick={() => {
-            setRefreshing(true);
-            void load(true).finally(() => setRefreshing(false));
-          }}
-          className="shrink-0 rounded p-0.5 transition-colors hover:text-foreground"
-        >
-          <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
-        </button>
+            {snapshot.projectsUnavailable === "failed" && (
+              <p className="border-t border-border px-4 py-2 text-2xs leading-snug text-muted-foreground">
+                Boards could not be read this time.
+              </p>
+            )}
+            <p className="px-4 py-2 text-2xs leading-snug text-muted-foreground">
+              Click a row to read it here; drag one into the message to reference it.
+            </p>
+          </>
+        )}
       </div>
+    );
+  };
 
+  /** `issues`/`pulls` name a LIST; `issue`/`pull` name ONE of them. The detail
+   *  surface asks `gh` in the singular, so the translation happens once, here. */
+  const one = kind === "issues" ? "issue" : "pull";
+  const close = (number: number) => onOpenChange?.(closeForge(forge, number));
+  /** A sweep is the ordinary close run repeatedly, not a filter over the open
+   *  set — one close path, so the focus rule stays in one place. */
+  const closeMany = (numbers: readonly number[]) => {
+    let next = forge;
+    for (const number of numbers) next = closeForge(next, number);
+    onOpenChange?.(next);
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
       {/**
-       * WHAT IS NARROWING THIS LIST, visible without opening the menu that set it.
+       * THE SUB-STRIP, AND ONLY ONCE THERE IS SOMETHING IN IT.
        *
-       * The failure this prevents: pick a milestone, come back tomorrow, see no rows
-       * and conclude the repository is empty. Each chip removes its own filter, which
-       * is faster than reopening a submenu to unset one thing.
+       * A surface nobody has drilled into reads exactly as it did before this
+       * change — its own filter row is still the first thing in the box. Drawing
+       * an always-present strip holding one chip that says "Issues", above a
+       * surface whose tab already says Issues, would spend 32px to repeat the
+       * word above it.
        *
-       * Drawn from the filter the ROWS were read under, not the one being edited, so
-       * it never describes a narrowing that has not been applied yet.
+       * SAME VOCABULARY AS THE PANEL'S OWN STRIP and as the Editor's: rounded
+       * chips, × on hover, middle-click closes, the four close verbs on the
+       * right-press. A second dialect of "tab" one level down is the thing that
+       * makes a panel feel like an app inside an app.
        */}
-      {shownChips.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1 border-b border-border px-4 py-1.5">
-          {shownChips.map((chip) => (
-            <button
-              key={chip.key}
-              type="button"
-              onClick={() => clearChip(chip)}
-              title={`Stop filtering by ${chip.label}`}
-              className="inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 py-0 text-4xs text-muted-foreground transition-colors hover:border-destructive/40 hover:text-foreground"
-            >
-              <span className="truncate">{chip.label}</span>
-              <XIcon className="size-2.5 shrink-0" />
-            </button>
-          ))}
+      {forge.numbers.length > 0 && (
+        <div
+          role="tablist"
+          aria-label={kind === "issues" ? "Open issues" : "Open pull requests"}
+          className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-2 py-1"
+        >
+          {/* THE LIST IS THE FIRST CHIP AND HAS NO ×. It is what the surface is
+              for; closing the last detail comes back here rather than to
+              nothing (see `closeForge`). */}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detail === undefined}
+            onClick={() => onOpenChange?.(showForgeList(forge))}
+            title={`All ${label}`}
+            className={cn(
+              "flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+              detail === undefined ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+            )}
+          >
+            <Icon className="size-3" />
+            {kind === "issues" ? "Issues" : "Pull requests"}
+          </button>
+          {forge.numbers.map((number) => {
+            const on = number === detail;
+            return (
+              <span
+                key={number}
+                className={cn(
+                  "group/forge relative flex h-7 min-w-0 shrink-0 rounded-md text-xs transition-colors",
+                  on ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                )}
+              >
+                {/* THE TRIGGER IS THE CHIP'S FLEX ROW, PADDING AND ALL — it
+                    cannot be `display: contents`, which is never painted and so
+                    is never an event target, and a right-press in the chip's own
+                    padding would sail past this menu into the strip behind it.
+                    The Editor's strip paid a screenshot to learn that. */}
+                <ContextMenu>
+                  <ContextMenuTrigger render={<span className="flex min-w-0 flex-1 items-center px-1.5" />}>
+                    {/**
+                     * A CHIP WEARS ITS NUMBER, not its title. `#675` is the
+                     * shortest thing that identifies an issue and the thing a
+                     * person says out loud; a truncated title (`Navigation
+                     * fr…`) is longer, less recognisable, and would have to be
+                     * fetched before the chip could be drawn — so a restored
+                     * strip would have no labels until the network answered.
+                     */}
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={on}
+                      onClick={() => onOpenChange?.(activateForge(forge, number))}
+                      onAuxClick={(event) => {
+                        if (event.button !== 1) return;
+                        event.preventDefault();
+                        close(number);
+                      }}
+                      title={`${one === "issue" ? "Issue" : "Pull request"} #${number}`}
+                      className="flex min-w-0 flex-1 items-center font-mono tabular-nums outline-none"
+                    >
+                      #{number}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Close #${number}`}
+                      title="Close"
+                      onClick={() => close(number)}
+                      className={cn(
+                        "ml-1 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100",
+                        on ? "opacity-70" : "opacity-0 group-hover/forge:opacity-70",
+                      )}
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem onClick={() => close(number)}>Close</ContextMenuItem>
+                    <ContextMenuItem onClick={() => closeMany(otherForgeNumbers(forge, number))}>Close others</ContextMenuItem>
+                    <ContextMenuItem onClick={() => closeMany(forgeNumbersAfter(forge, number))}>Close to the right</ContextMenuItem>
+                    <ContextMenuItem onClick={() => closeMany(forge.numbers)}>Close all</ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
+              </span>
+            );
+          })}
         </div>
       )}
 
-      {rows.length === 0 ? (
-        <p className="px-4 py-6 text-center text-2xs leading-snug text-muted-foreground">
-          {shownChips.length > 0
-            ? `Nothing matches those filters.`
-            : shown.state === "open"
-              ? `Nothing open.`
-              : `No ${label} in this repository match that.`}
-        </p>
-      ) : (
-        <>
-          <div className="flex flex-col group">
-            {kind === "issues"
-              ? snapshot.issues.map((issue) => (
-                  <IssueRow key={issue.number} issue={issue} open={alreadyOpen.has(issue.number)} onOpen={() => onOpen?.(issue.number)} />
-                ))
-              : snapshot.pulls.map((pull) => (
-                  <PullRow
-                    key={pull.number}
-                    pull={pull}
-                    mine={Boolean(branch) && pull.headRefName === branch}
-                    open={alreadyOpen.has(pull.number)}
-                    onOpen={() => onOpen?.(pull.number)}
-                  />
-                ))}
-          </div>
-          {/* WHY THE BOARD CHIPS ARE MISSING, said once at the bottom and only when
-              it is true. Silence would make every row look like it is on no board. */}
-          {snapshot.projectsUnavailable === "scope" && (
-            <p className="border-t border-border px-4 py-2 text-2xs leading-snug text-muted-foreground">
-              Boards are not shown: the gh token has no <span className="font-mono">read:project</span> scope. Run{" "}
-              <span className="font-mono">gh auth refresh -s read:project</span> and press refresh.
-            </p>
-          )}
-          {snapshot.projectsUnavailable === "failed" && (
-            <p className="border-t border-border px-4 py-2 text-2xs leading-snug text-muted-foreground">
-              Boards could not be read this time.
-            </p>
-          )}
-          <p className="px-4 py-2 text-2xs leading-snug text-muted-foreground">
-            Click a row to read it here; drag one into the message to reference it.
-          </p>
-        </>
-      )}
+      {/* THE LIST SCROLLS IN THIS BOX; THE DETAIL DOES NOT. A detail runs
+          `h-full` with its own scroller and a merge footer pinned under it, so a
+          second scroller around it would put the footer below the fold — which
+          is how an issue's comments became unreachable once before (see the
+          panel's `OWNS_ITS_HEIGHT`). */}
+      <div className={cn("min-h-0 flex-1", detail === undefined ? "overflow-y-auto" : "overflow-hidden")}>
+        {detail === undefined ? (
+          list()
+        ) : (
+          /* KEYED BY THE NUMBER, so switching chips remounts rather than leaving
+             the previous issue's thread on screen under the new chip's label
+             while `gh` answers. */
+          <ForgeDetailSurface
+            key={detail}
+            kind={one}
+            number={detail}
+            {...(projectId ? { projectId } : {})}
+            {...(one === "pull" && branch ? { branch } : {})}
+          />
+        )}
+      </div>
     </div>
   );
 }
