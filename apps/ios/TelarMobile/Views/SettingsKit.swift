@@ -63,14 +63,11 @@ struct CardRow<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // ABSOLUTE ON PURPOSE: a 27pt square, fixed in both dimensions and
-            // clipping, so a glyph that grew with the reader's text would only
-            // outgrow its own box. Wants a @ScaledMetric frame — a layout
-            // change rather than a token swap (#674).
+            // The row's 27pt square scales with its glyph (#674), so the icon
+            // column keeps pace with the title beside it.
             Image(systemName: icon)
-                .font(.system(size: 17))
                 .foregroundStyle(iconColor)
-                .frame(width: 27, height: 27)
+                .scaledGlyphBox(27, glyph: 17)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(.callout, weight: .semibold))
@@ -193,12 +190,10 @@ struct StatusBanner: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            // The same fixed 27pt square as the row above, held back for the
-            // same reason (#674).
+            // The same 27pt square as the row above, scaling the same way.
             Image(systemName: icon)
-                .font(.system(size: 17))
                 .foregroundStyle(color)
-                .frame(width: 27, height: 27)
+                .scaledGlyphBox(27, glyph: 17)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(Theme.subhead, weight: .medium))

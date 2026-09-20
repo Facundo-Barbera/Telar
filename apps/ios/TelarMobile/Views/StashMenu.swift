@@ -91,14 +91,12 @@ struct StashButton: View {
                 if hasDraft { onStash() } else { onOpen() }
             } label: {
                 ZStack(alignment: .topTrailing) {
-                    // The tray's 44pt circle is fixed in both dimensions and
-                    // clips, so its glyph keeps an absolute size — the same
+                    // The tray's circle scales with its glyph, the same
                     // affordance as the composer's circles (#674). The count
-                    // badge above it has no frame and does scale.
+                    // badge above it has no frame and takes a token instead.
                     Image(systemName: hasDraft ? "tray.and.arrow.down" : "tray.full")
-                        .font(.system(size: 15))
                         .foregroundStyle(Theme.text)
-                        .frame(width: 44, height: 44)
+                        .scaledGlyphBox(44, glyph: 15)
                         .background(Theme.subtle)
                         .clipShape(Circle())
                         .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))

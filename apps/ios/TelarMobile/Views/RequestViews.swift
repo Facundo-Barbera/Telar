@@ -122,14 +122,10 @@ struct RequestCardView: View {
                     Task { await store.resolve(request, decision: .cancel) }
                 }
             } label: {
-                // ABSOLUTE ON PURPOSE: a 28pt square, fixed in both dimensions
-                // and clipping, so a glyph that grew with the reader's text
-                // would only outgrow its own box. Wants a @ScaledMetric frame
-                // — a layout change rather than a token swap.
+                // The menu's 28pt square scales with its glyph (#674).
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 12))
                     .foregroundStyle(Theme.textMuted)
-                    .frame(width: 28, height: 28)
+                    .scaledGlyphBox(28, glyph: 12)
                     .contentShape(Rectangle())
             }
             Spacer(minLength: 0)

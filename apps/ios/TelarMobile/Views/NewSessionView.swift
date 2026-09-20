@@ -285,14 +285,10 @@ struct NewSessionView: View {
 
     private var addProjectLabel: some View {
         HStack(spacing: 12) {
-            // ABSOLUTE ON PURPOSE: a 27pt square, fixed in both dimensions and
-            // clipping, so a glyph that grew with the reader's text would only
-            // outgrow its own box. Wants a @ScaledMetric frame — a layout
-            // change rather than a token swap — so it waits for that pass.
+            // The 27pt square and its glyph scale together (#674).
             Image(systemName: "plus.circle.fill")
-                .font(.system(size: 17))
                 .foregroundStyle(Theme.accent)
-                .frame(width: 27, height: 27)
+                .scaledGlyphBox(27, glyph: 17)
             Text("Add project…")
                 .font(.system(.callout, weight: .bold))
                 .foregroundStyle(Theme.text)
@@ -453,14 +449,12 @@ struct NewSessionDraftView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             PhotosPicker(selection: $pickedPhotos, maxSelectionCount: 8, matching: .images) {
-                                // The composer's 44pt circles keep their
-                                // absolute size, exactly as SessionView's do
-                                // (#449): the circle cannot grow, so a glyph
-                                // that scaled inside it would outgrow it.
+                                // The composer's circles scale with their
+                                // glyphs, exactly as SessionView's do (#674):
+                                // one ratio, so 16-in-44 holds at every size.
                                 Image(systemName: "plus")
-                                    .font(.system(size: 16))
                                     .foregroundStyle(Theme.text)
-                                    .frame(width: 44, height: 44)
+                                    .scaledGlyphBox(44, glyph: 16)
                                     .background(Theme.subtle)
                                     .clipShape(Circle())
                                     .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
@@ -513,16 +507,15 @@ struct NewSessionDraftView: View {
                     } label: {
                         if submitting {
                             ProgressView()
-                                .frame(width: 44, height: 44)
+                                .scaledSquare(44)
                                 .background(Theme.subtleStrong)
                                 .clipShape(Circle())
                         } else {
-                            // Send: the same fixed 44pt circle as the attach
-                            // button above, held back for the same reason.
+                            // Send: the same circle as the attach button
+                            // above, scaling for the same reason.
                             Image(systemName: "arrow.up")
-                                .font(.system(size: 16, weight: .semibold))
                                 .foregroundStyle(canStart ? Theme.primaryGlyph : Theme.textMuted)
-                                .frame(width: 44, height: 44)
+                                .scaledGlyphBox(44, glyph: 16, weight: .semibold)
                                 .background(canStart ? Theme.primaryFill : Theme.subtleStrong)
                                 .clipShape(Circle())
                         }

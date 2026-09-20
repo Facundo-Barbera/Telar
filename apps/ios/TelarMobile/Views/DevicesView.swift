@@ -154,14 +154,11 @@ struct DevicesView: View {
     @ViewBuilder
     private func deviceRow(_ device: RemoteDevice, isSelf: Bool) -> some View {
         HStack(spacing: 12) {
-            // ABSOLUTE ON PURPOSE: a 27pt square, fixed in both dimensions and
-            // clipping, so a glyph that grew with the reader's text would only
-            // outgrow its own box. Wants a @ScaledMetric frame — a layout
-            // change rather than a token swap (#674).
+            // The row's 27pt square scales with its glyph (#674), the same
+            // icon column as SettingsKit's rows.
             Image(systemName: platformSymbol(device.platform))
-                .font(.system(size: 17))
                 .foregroundStyle(Theme.textMuted)
-                .frame(width: 27, height: 27)
+                .scaledGlyphBox(27, glyph: 17)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(device.name)

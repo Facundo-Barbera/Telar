@@ -28,6 +28,10 @@ struct NotebookSurface: View {
     @State private var drafts: [String: String] = [:]
     @State private var saveTasks: [String: Task<Void, Never>] = [:]
     @State private var lightbox: EngineID?
+    /// The cell gutter, as wide as the run button it holds. Same seed and the
+    /// same reference style as `scaledGlyphBox`, so the column and the square
+    /// inside it grow by one ratio (#674).
+    @ScaledMetric(relativeTo: .body) private var gutter: CGFloat = 44
     /// THE SELECTED CELL — JupyterLab's command mode, sized for touch. Tap
     /// selects, tap the selected one edits. Without it every tap landed a
     /// caret, and a notebook you could not scroll without typing in it.
@@ -279,15 +283,12 @@ struct NotebookSurface: View {
                     // A 44pt TARGET. An 11pt glyph is a dart-throw on a
                     // touchscreen, and running a cell is the thing you do most.
                     //
-                    // THE 14 STAYS ABSOLUTE, unlike the rest of this file. The
-                    // square is fixed and it clips, so a glyph that grew with
-                    // the reader's text would only outgrow its own target. It
-                    // wants a @ScaledMetric frame — a layout change, not a
-                    // token swap — so it is left for that pass.
+                    // THE SQUARE SCALES WITH ITS GLYPH (#674), and the gutter
+                    // below scales with the square — a 44 that grew inside a
+                    // column that did not would clip against the cell body.
                     Button { Task { await run(cell) } } label: {
                         Image(systemName: running.contains(cell.id) ? "hourglass" : "play.fill")
-                            .font(.system(size: 14))
-                            .frame(width: 44, height: 44)
+                            .scaledGlyphBox(44, glyph: 14)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).foregroundStyle(Theme.textMuted).disabled(running.contains(cell.id))
@@ -295,14 +296,13 @@ struct NotebookSurface: View {
                     Text(cell.executionCount.map { "[\($0)]" } ?? "[ ]")
                         .font(.system(Theme.captionTiny, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 } else {
-                    // The markdown marker sits in the same fixed 44pt square as
-                    // the run button above, so it keeps its absolute size for
-                    // the same reason — see that comment.
-                    Image(systemName: "text.alignleft").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                        .frame(width: 44, height: 44)
+                    // The markdown marker sits in the same square as the run
+                    // button above and scales the same way.
+                    Image(systemName: "text.alignleft").foregroundStyle(Theme.textMuted)
+                        .scaledGlyphBox(44, glyph: 12)
                 }
             }
-            .frame(width: 44)
+            .frame(width: gutter)
             VStack(alignment: .leading, spacing: 6) {
                 if cell.type == .markdown && editing != cell.id {
                     MarkdownText(text: drafts[cell.id] ?? cell.source, source: .notebookCell(path: path))

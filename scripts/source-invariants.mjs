@@ -38,21 +38,20 @@ const read = (path) => readFile(join(ROOT, path), "utf8");
  * and nobody notices, because nothing about an absolute size looks wrong until
  * a reader turns their text up.
  *
- * A non-zero count is NOT a to-do. Three different reasons hide behind one,
- * and each entry says which:
+ * WHAT IS COUNTED IS A DIGIT, NOT THE CALL. `.system(size:` followed by a
+ * number is an absolute size. `.system(size: someProperty)` is not: it is a
+ * `@ScaledMetric`, or a fraction of a caller's own box, and both of those
+ * move when the reader's text does. Until #674 the check counted the string
+ * and could not tell the two apart, so a swept file carried a non-zero pin
+ * and a paragraph explaining that the number did not mean what it said. It
+ * now means what it says.
  *
- *   1. HELD FOR A FRAME fixed in BOTH dimensions, which clips — a glyph that
- *      grew with the reader's text would only outgrow its own target. These
- *      need a `@ScaledMetric` frame, a layout change rather than a token
- *      swap, and are tracked in #674. These numbers are MEANT TO DROP as that
- *      work lands, and the failure is how you find out it did.
- *   2. A SCALED METRIC ALREADY — `.system(size: someScaledMetric)` still
- *      matches the string counted below, so it reads as a literal and is not
- *      one. WelcomeView's wordmark is the only one.
- *   3. CORRECT AS IT STANDS — a size derived from a caller's parameter rather
- *      than an absolute standing in for a rung. ProjectAvatar's glyphs are
- *      fractions of the box they sit in. These are finished and are NOT
- *      waiting on #674.
+ * SO EVERY PIN IS ZERO, AND THAT IS THE WHOLE RULE. #674 scaled the frames
+ * the sweep had to defer to — a glyph in a box fixed in both dimensions —
+ * which was the only standing reason for a swept file to keep an absolute.
+ * There is no longer a good one. If you need a literal point size for a
+ * genuine reason, the answer is a named `@ScaledMetric` seeded with it (see
+ * `ScaledFrame.swift`), which keeps the number, scales it, and passes here.
  *
  * WHAT "REMAINING" MEANS, because three different figures were circulating
  * on the day this was written and all three were arithmetically correct:
@@ -60,144 +59,99 @@ const read = (path) => readFile(join(ROOT, path), "utf8");
  *     the queue = UNSWEPT APP SOURCE ONLY
  *
  * Excluded, and each excluded for its own reason:
- *   - files listed below. They are swept; a non-zero count here is a recorded
- *     decision, not outstanding work, per the three cases above.
+ *   - files listed below. They are swept, and now provably so.
  *   - anything under `apps/ios/DerivedData/`. Vendored checkouts — at the
  *     time of writing swift-markdown-ui contributes ten hits that are not
  *     ours to convert and never will be.
  *   - `.system(size:)` inside comments and doc comments. `Theme.swift` and
  *     `TypeScaleTests.swift` between them hold four, written as prose about
- *     the sweep rather than as calls.
+ *     the sweep rather than as calls — and two of them DO carry a digit, in
+ *     worked before/after examples. They are excluded because neither file is
+ *     listed below, not because the digit rule is clever enough to see them.
+ *     If either file is ever added to the list, those examples trip it.
  *
- * A raw `grep -rc '\.system(size:' apps/ios` counts all three and answers a
+ * A raw `grep -rc '\.system(size:' apps/ios` counts all of it and answers a
  * question nobody asked. If you are re-deriving the queue, subtract them.
  */
 const SWEPT_FILES = [
-  ["apps/ios/TelarMobile/Views/TranscriptViews.swift", 0, ""],
-  [
-    "apps/ios/TelarMobile/Views/SessionView.swift",
-    9,
-    "the composer's send/attach/stop circles, the model pill and the jump-to-bottom button — 44pt and 36pt (#449)",
-  ],
-  [
-    "apps/ios/TelarMobile/Views/Panel/NotebookSurface.swift",
-    2,
-    "the run button's 44pt square and the markdown marker beside it",
-  ],
-  [
-    "apps/ios/TelarMobile/Views/Panel/CellOutputView.swift",
-    3,
-    "DataframeGrid's 96×30 header and 96×22 cells",
-  ],
-  ["apps/ios/TelarMobile/Views/DiffView.swift", 0, ""],
-  [
-    "apps/ios/TelarMobile/Views/Panel/FilesSurface.swift",
-    1,
-    "the file strip's 28×28 tree toggle",
-  ],
-  [
-    "apps/ios/TelarMobile/Views/SessionSidebar.swift",
-    2,
-    "the footer's settings and usage glyphs, both 44pt squares",
-  ],
-  ["apps/ios/TelarMobile/Views/AgentModelPickerSheet.swift", 0, ""],
-  ["apps/ios/TelarMobile/Views/InboxView.swift", 0, ""],
-  [
-    "apps/ios/TelarMobile/Views/RequestViews.swift",
-    1,
-    "the request row's 28pt ellipsis square",
-  ],
-  ["apps/ios/TelarMobile/Views/Panel/LatexSurface.swift", 0, ""],
-  ["apps/ios/TelarMobile/Views/Panel/DataSurface.swift", 0, ""],
-  [
-    "apps/ios/TelarMobile/Views/NewSessionView.swift",
-    3,
-    "the add-project glyph's 27pt square and the composer's two 44pt circles",
-  ],
-  ["apps/ios/TelarMobile/Views/AddProjectView.swift", 0, ""],
-  ["apps/ios/TelarMobile/Views/BranchPickerSheet.swift", 0, ""],
-  [
-    "apps/ios/TelarMobile/Views/SettingsKit.swift",
-    2,
-    "the settings row and notice glyphs, both 27pt squares",
-  ],
-  [
-    "apps/ios/TelarMobile/Views/DevicesView.swift",
-    1,
-    "the device row's 27pt platform glyph",
-  ],
-  ["apps/ios/TelarMobile/Views/UsageView.swift", 0, ""],
-  ["apps/ios/TelarMobile/Views/Panel/TextFileView.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/TranscriptViews.swift", ""],
+  ["apps/ios/TelarMobile/Views/SessionView.swift", ""],
+  ["apps/ios/TelarMobile/Views/Panel/NotebookSurface.swift", ""],
+  ["apps/ios/TelarMobile/Views/Panel/CellOutputView.swift", ""],
+  ["apps/ios/TelarMobile/Views/DiffView.swift", ""],
+  ["apps/ios/TelarMobile/Views/Panel/FilesSurface.swift", ""],
+  ["apps/ios/TelarMobile/Views/SessionSidebar.swift", ""],
+  ["apps/ios/TelarMobile/Views/AgentModelPickerSheet.swift", ""],
+  ["apps/ios/TelarMobile/Views/InboxView.swift", ""],
+  ["apps/ios/TelarMobile/Views/RequestViews.swift", ""],
+  ["apps/ios/TelarMobile/Views/Panel/LatexSurface.swift", ""],
+  ["apps/ios/TelarMobile/Views/Panel/DataSurface.swift", ""],
+  ["apps/ios/TelarMobile/Views/NewSessionView.swift", ""],
+  ["apps/ios/TelarMobile/Views/AddProjectView.swift", ""],
+  ["apps/ios/TelarMobile/Views/BranchPickerSheet.swift", ""],
+  ["apps/ios/TelarMobile/Views/SettingsKit.swift", ""],
+  ["apps/ios/TelarMobile/Views/DevicesView.swift", ""],
+  ["apps/ios/TelarMobile/Views/UsageView.swift", ""],
+  ["apps/ios/TelarMobile/Views/Panel/TextFileView.swift", ""],
   [
     "apps/ios/TelarMobile/Views/WelcomeView.swift",
-    1,
-    "the wordmark — NOT an unconverted literal: it is `.system(size: wordmark)` off a @ScaledMetric(relativeTo: .largeTitle), which scales. 40 has no rung (the ramp stops at 34) and mapping it down would shrink the brand. See the comment at the property",
+    "holds one `.system(size: wordmark)` that this check does NOT count, and should not: `wordmark` is a @ScaledMetric(relativeTo: .largeTitle) seeded with 40. 40 has no rung (the ramp stops at 34) and mapping it down would shrink the brand. #674 gave TelarMark the same treatment so the logo and the word keep their ratio",
   ],
-  [
-    "apps/ios/TelarMobile/Views/Panel/TableSurface.swift",
-    5,
-    "the whole grid — header and body cells fixed in width AND height so columns align across a two-axis scroll, plus the `…` placeholder held with them so a loading row does not scale while loaded rows do not",
-  ],
+  ["apps/ios/TelarMobile/Views/Panel/TableSurface.swift", ""],
   [
     "apps/ios/TelarMobile/Views/ProjectAvatar.swift",
-    4,
-    "not literals at all — each is a fraction of the caller's `size`, so the glyph is proportional to its own square by construction. These are correct as they stand and are NOT waiting on #674. They are also invisible to a `\\d+` regex, so a future sweep will not re-find them: this entry is the only record",
+    "holds four `.system(size:)` calls this check does NOT count: each is a fraction of the caller's `size`, so the glyph is proportional to its own square by construction. They were never waiting on #674 and are finished as they stand — this entry is the only record of that, since no digit regex will re-find them",
   ],
-  [
-    "apps/ios/TelarMobile/Views/Panel/PanelView.swift",
-    2,
-    "the full-screen and close glyphs, both 30pt squares",
-  ],
-  ["apps/ios/TelarMobile/Views/Panel/FileBody.swift", 0, ""],
-  [
-    "apps/ios/TelarMobile/Views/StashMenu.swift",
-    1,
-    "the tray's 44pt circle; its count badge has no frame and does scale",
-  ],
-  ["apps/ios/TelarMobile/Views/Panel/AgentsSurface.swift", 0, ""],
-  [
-    "apps/ios/TelarMobile/Views/AttachmentChip.swift",
-    3,
-    "the whole chip — a fixed 72pt tile and its fixed 22pt remove badge",
-  ],
+  ["apps/ios/TelarMobile/Views/Panel/PanelView.swift", ""],
+  ["apps/ios/TelarMobile/Views/Panel/FileBody.swift", ""],
+  ["apps/ios/TelarMobile/Views/StashMenu.swift", ""],
+  ["apps/ios/TelarMobile/Views/Panel/AgentsSurface.swift", ""],
+  ["apps/ios/TelarMobile/Views/AttachmentChip.swift", ""],
   [
     "apps/ios/TelarMobile/Views/ModelPill.swift",
-    1,
-    "the provider badge's `size * 0.65`, proportional to its own square like ProjectAvatar's — correct as it stands, NOT waiting on #674",
+    "holds one `.system(size: size * 0.65)` this check does NOT count, proportional to its own square like ProjectAvatar's. The pill's capsule takes a @ScaledMetric of its own (#674) so the badge grows with the label beside it",
   ],
-  ["apps/ios/TelarMobile/Views/Panel/HtmlOutputView.swift", 0, ""],
-  ["apps/ios/TelarMobile/Views/DictationSettingsView.swift", 0, ""],
-  ["apps/ios/TelarMobile/Views/DictationCaretPill.swift", 0, ""],
-  ["apps/ios/TelarMobile/Views/AgentSettingsView.swift", 0, ""],
-  ["apps/ios/TelarMobile/Views/MarkdownText.swift", 0, ""],
+  ["apps/ios/TelarMobile/Views/Panel/HtmlOutputView.swift", ""],
+  ["apps/ios/TelarMobile/Views/DictationSettingsView.swift", ""],
+  ["apps/ios/TelarMobile/Views/DictationCaretPill.swift", ""],
+  ["apps/ios/TelarMobile/Views/AgentSettingsView.swift", ""],
+  ["apps/ios/TelarMobile/Views/MarkdownText.swift", ""],
   // Not a view: a `Font` stored on the highlighter's theme, which is why it
   // is the one swept file outside `Views/`. A count scoped to `Views/` misses
   // it — the sweep's last site was very nearly its least visible.
-  ["apps/ios/TelarMobile/Stores/CodeHighlighter.swift", 0, ""],
+  ["apps/ios/TelarMobile/Stores/CodeHighlighter.swift", ""],
+  ["apps/ios/TelarMobile/Views/ScaledFrame.swift", ""],
 ];
 
-const LITERAL = ".system(size:";
+/**
+ * `.system(size:` followed by a digit. The digit is the whole test: a number
+ * is absolute, a property is not. Global so `String.match` returns every hit
+ * rather than the first — `match` resets `lastIndex` itself, so sharing one
+ * compiled regex across files is safe here in a way `test` would not be.
+ */
+const ABSOLUTE_SIZE = /\.system\(\s*size:\s*\d/g;
 
 const CHECKS = [
   {
     name: "ios-type-scale",
-    protects: "the Dynamic Type sweep (#248): no swept iOS file regains an absolute font size",
+    protects: "the Dynamic Type sweep (#248, #674): no swept iOS file holds an absolute font size",
     async run() {
       const failures = [];
-      for (const [path, allowed, why] of SWEPT_FILES) {
+      for (const [path, note] of SWEPT_FILES) {
         let source;
         try {
           source = await read(path);
         } catch {
-          failures.push(`${path}: pinned at ${allowed} but the file is missing — was it moved or renamed?`);
+          failures.push(`${path}: listed as swept but the file is missing — was it moved or renamed?`);
           continue;
         }
-        const found = source.split(LITERAL).length - 1;
-        if (found === allowed) continue;
+        const found = (source.match(ABSOLUTE_SIZE) ?? []).length;
+        if (found === 0) continue;
         failures.push(
-          found > allowed
-            ? `${path}: ${found} absolute sizes, expected ${allowed}. A ${LITERAL}) came back — use a Dynamic Type style, or if it genuinely belongs in a frame fixed in both dimensions, raise the pin in scripts/source-invariants.mjs and say why.`
-            : `${path}: ${found} absolute sizes, expected ${allowed}. Fewer than pinned is good news — lower the number in scripts/source-invariants.mjs to lock it in.${why ? ` (held back: ${why})` : ""}`,
+          `${path}: ${found} absolute font size${found === 1 ? "" : "s"}. A .system(size: <number>) came back. ` +
+            "Use a Dynamic Type style (Theme.captionTiny/caption/footnote/subhead), or — if the number has to survive, " +
+            "as it does for a glyph locked in a fixed frame — a named @ScaledMetric seeded with it, which keeps the " +
+            `size and still scales. See apps/ios/TelarMobile/Views/ScaledFrame.swift.${note ? ` (note on this file: ${note})` : ""}`,
         );
       }
       return failures;

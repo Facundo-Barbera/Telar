@@ -11,7 +11,27 @@ struct TableSurface: View {
     let active: Bool
 
     static let page = 200
-    static let rowHeight: CGFloat = 24
+
+    /// THE GRID IS THE UNIT (#674). Every figure a column's geometry is built
+    /// from scales off `.caption`, the style the cells are drawn in, so the
+    /// whole grid grows by one ratio and the columns stay square across a
+    /// two-axis scroll. Scaling any of these alone would break the alignment
+    /// the fixed sizes existed to hold.
+    ///
+    /// The seeds are nudged up on what was here — 32 → 34, 24 → 26, and a
+    /// column's estimate from 8-per-character on 24 of padding to 9 on 26 —
+    /// because the cells moved from an 11 and a 9 onto `.caption` (12) and
+    /// `.caption2` (11). The clamp band keeps its 80 and 260 and scales with
+    /// the rest. Same default-size widening `DataframeGrid` takes, same reason.
+    @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 34
+    @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 26
+    @ScaledMetric(relativeTo: .caption) private var columnPerCharacter: CGFloat = 9
+    @ScaledMetric(relativeTo: .caption) private var columnPadding: CGFloat = 26
+    @ScaledMetric(relativeTo: .caption) private var columnMinimum: CGFloat = 80
+    @ScaledMetric(relativeTo: .caption) private var columnMaximum: CGFloat = 260
+    /// The fallback width for a cell with no column above it — scaled with the
+    /// rest so a malformed row cannot pin one column to an absolute 100.
+    @ScaledMetric(relativeTo: .caption) private var columnFallback: CGFloat = 100
 
     @State private var meta: TableWindow?
     @State private var rows: [Int: [JSONValue]] = [:]
@@ -36,7 +56,7 @@ struct TableSurface: View {
 
     private func grid(_ meta: TableWindow) -> some View {
         let widths = meta.columns.map { column -> CGFloat in
-            max(80, min(260, CGFloat(column.count) * 8 + 24))
+            max(columnMinimum, min(columnMaximum, CGFloat(column.count) * columnPerCharacter + columnPadding))
         }
         return ScrollView([.vertical, .horizontal]) {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -53,17 +73,17 @@ struct TableSurface: View {
                             } label: {
                                 HStack(spacing: 3) {
                                     VStack(alignment: .leading, spacing: 0) {
-                                        Text(column).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text).lineLimit(1)
+                                        Text(column).font(.system(Theme.caption, weight: .semibold)).foregroundStyle(Theme.text).lineLimit(1)
                                         if let dtype = meta.dtypes?[safe: i] {
-                                            Text(dtype).font(.system(size: 9)).foregroundStyle(Theme.textMuted)
+                                            Text(dtype).font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted)
                                         }
                                     }
                                     if sort?.column == column {
-                                        Image(systemName: sort?.desc == true ? "chevron.down" : "chevron.up").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.accent)
+                                        Image(systemName: sort?.desc == true ? "chevron.down" : "chevron.up").font(.system(Theme.captionTiny, weight: .bold)).foregroundStyle(Theme.accent)
                                     }
                                 }
                                 .padding(.horizontal, 8)
-                                .frame(width: widths[i], height: 32, alignment: .leading)
+                                .frame(width: widths[i], height: headerHeight, alignment: .leading)
                             }
                             .buttonStyle(.plain)
                             .contextMenu { headerMenu(column) }
@@ -104,25 +124,20 @@ struct TableSurface: View {
         if on { Label(label, systemImage: "checkmark") } else { Text(label) }
     }
 
-    /// THIS GRID KEEPS ITS ABSOLUTE SIZES, as a unit — the Dynamic Type sweep
-    /// (#248) holds all five back, not four. The header cells and the body
-    /// cells are pinned to a fixed width AND height so the columns line up
-    /// across a two-axis scroll, and text that grew inside them would be cut
-    /// off. The fifth is the `…` placeholder below, whose frame is height-only
-    /// and so could convert — but converting it alone would make a row that
-    /// has not loaded scale while the loaded rows beside it do not, which is
-    /// a worse answer than either state on its own.
-    ///
-    /// Making the grid scale is `@ScaledMetric` on the widths and both row
-    /// heights, with the column alignment surviving it: a layout change, and
-    /// the same one `DataframeGrid` needs. Tracked in #674.
+    /// THIS GRID SCALES AS A UNIT (#674) — all five sites, not four. The `…`
+    /// placeholder below is the fifth: its frame is height-only, so the sweep
+    /// COULD have converted it on its own, and deliberately did not. A row
+    /// that has not loaded yet scaling while the loaded rows beside it did not
+    /// is a worse answer than either state on its own, and it stays the fifth
+    /// member of this unit now for the same reason — it takes the same
+    /// `rowHeight` and the same token as the cells it stands in for.
     private func row(_ index: Int, widths: [CGFloat]) -> some View {
         HStack(spacing: 0) {
             if let cells = rows[index] {
                 ForEach(Array(cells.enumerated()), id: \.offset) { i, cell in
                     cellText(cell)
                         .padding(.horizontal, 8)
-                        .frame(width: widths[safe: i] ?? 100, height: Self.rowHeight, alignment: .leading)
+                        .frame(width: widths[safe: i] ?? columnFallback, height: rowHeight, alignment: .leading)
                         .contentShape(Rectangle())
                         // ONE CELL, AND THE ONE THING ANYBODY WANTS FROM IT. A
                         // cell is clipped to its column's width, so the value
@@ -136,7 +151,7 @@ struct TableSurface: View {
                         }
                 }
             } else {
-                Text("…").font(.system(size: 11)).foregroundStyle(Theme.textMuted).padding(.horizontal, 8).frame(height: Self.rowHeight)
+                Text("…").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted).padding(.horizontal, 8).frame(height: rowHeight)
             }
         }
         .background(index % 2 == 0 ? Color.clear : Theme.subtle.opacity(0.5))
@@ -154,7 +169,7 @@ struct TableSurface: View {
         // on the clipboard are not what was in the column.
         let label: String = if case .string(let s) = cell, s.isEmpty { "\"\"" } else { tableCellValue(cell) }
         return Text(label)
-            .font(.system(size: 11, design: .monospaced))
+            .font(.system(Theme.caption, design: .monospaced))
             .foregroundStyle(tone)
             .italic(cell == .null)
             .lineLimit(1)
