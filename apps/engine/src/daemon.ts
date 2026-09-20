@@ -120,6 +120,7 @@ import * as shelf from "./prompts";
 import { PreparedPromptsError } from "./prompts";
 import type { GhRunner } from "./github";
 import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
+import { reapNodeModules, reapReport } from "./node-modules-reap";
 import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
 import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
 import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
@@ -959,6 +960,36 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    */
   const decommissioned = sweepReport(sweepSpoolAndLooms(store.paths.root));
   if (decommissioned) process.stdout.write(`${decommissioned}\n`);
+  /**
+   * AND THE `node_modules` UNDER FINISHED CONVERSATIONS — issue #633.
+   *
+   * A third sweep beside the two above, on their judgement: the machines
+   * carrying these are nobody's to administer, and a cleanup you have to know
+   * to run is a cleanup that does not happen. Archived sessions only, and the
+   * checkout itself — its uncommitted work, its branch — is never touched; what
+   * goes is the one part `bun install` remakes.
+   *
+   * THE CHECKOUTS ROOT IS ASKED FIRST, and its answer is passed in rather than
+   * re-derived from a `stat`. A root on a drive that is out makes every tree
+   * look already gone, and deleting on that reading is `git worktree prune`'s
+   * failure from `docs/store-location.md` §4a. `readWorktreesRoot` is the one
+   * place that tells "the drive is out" from "this build cannot tell" from "it
+   * is right here".
+   *
+   * Best-effort and silent unless something actually went.
+   */
+  try {
+    const checkouts = readWorktreesRoot(store.paths.root);
+    const reaped = reapReport(reapNodeModules(store.paths.root, {
+      rootReadable: checkouts.kind === "configured" || checkouts.kind === "default",
+      candidates: store.reapableWorktrees(),
+    }));
+    if (reaped) process.stdout.write(`${reaped}\n`);
+  } catch {
+    // A sweep over somebody else's litter is never the reason a daemon fails to
+    // start; the next one has another go. `decommission-sweep.ts` makes the
+    // same trade for the same reason.
+  }
   /**
    * AND EVERY LIVE WORKTREE IS LOCKED — issue #641.
    *
