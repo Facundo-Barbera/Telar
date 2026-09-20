@@ -12,7 +12,8 @@ import { collectAgentTools, onSpokenWall } from "../src/agent/tools";
 import { AGENT_SELF_ID } from "../src/agent/identity";
 import type { SessionsCapability } from "../src/sessions-tools/tools";
 import type { NotesCapability } from "../src/notes-tools/tools";
-import type { AgentFleetCapability, AgentQueryCapability } from "../src/agent/tools";
+import type { AgentFleetCapability } from "../src/agent/tools";
+import { noQueries } from "./query-stub";
 import type { Session, Turn } from "@telar/engine-client";
 
 const noSessions = (): SessionsCapability => ({
@@ -41,11 +42,6 @@ const noNotes = (): NotesCapability => ({
   remove: async () => false,
 });
 
-const noQueries = (): AgentQueryCapability => ({
-  find: async () => ({ sessions: [], index: "like", more: false }),
-  outline: async () => ({ turns: [], total: 0, more: false }),
-  answer: async () => ({ runId: "run_1", sequence: 1, text: "", from: 0, totalChars: 0, more: false }),
-});
 
 /** An empty fleet. These tests read DESCRIPTIONS, never call anything. */
 const noFleet = (): AgentFleetCapability => ({

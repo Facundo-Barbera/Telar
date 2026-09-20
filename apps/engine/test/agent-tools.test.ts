@@ -22,17 +22,16 @@ import { collectTools, toolInputSchema } from "../src/mcp-socket";
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
 import {
   agentFleetTools,
-  agentQueryTools,
   agentToolSpecs,
-  answerIdentity,
   collectAgentTools,
   onSpokenWall,
   spokenWallTable,
   withheldFromSpokenTurn,
   type AgentFleetCapability,
-  type AgentQueryCapability,
   type FleetSessionRow,
 } from "../src/agent/tools";
+import { answerIdentity, sessionQueryTools, type SessionsQueryCapability } from "../src/sessions-tools/query";
+import { noQueries } from "./query-stub";
 import { AGENT_SELF_ID } from "../src/agent/identity";
 import { approvalRequest, classifiedTools, needsApproval, readsOnly } from "../src/agent/approval";
 import { EngineStateError, TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "../src/state";
@@ -62,7 +61,8 @@ test("every read on both walls is ungated", () => {
   const reads = [
     "sessions_list", "sessions_read", "sessions_status", "sessions_diff", "sessions_requests",
     "sessions_subscriptions", "sessions_subscribe", "sessions_unsubscribe", "sessions_settle",
-    "sessions_find", "sessions_outline", "sessions_answer", "fleet_status",
+    "sessions_find", "sessions_outline", "sessions_answer", "sessions_steps", "sessions_step", "sessions_grep",
+    "fleet_status",
     "notes_projects", "notes_list", "notes_read", "notes_write",
   ];
   for (const name of reads) expect(needsApproval({ name, args: {} })).toBe(false);
@@ -153,12 +153,6 @@ const noNotes = (): NotesCapability => ({
   remove: async () => false,
 });
 
-const noQueries = (): AgentQueryCapability => ({
-  find: async () => ({ sessions: [], index: "like", more: false }),
-  outline: async () => ({ turns: [], total: 0, more: false }),
-  answer: async () => ({ runId: "run_1", sequence: 1, text: "", from: 0, totalChars: 0, more: false }),
-});
-
 const emptyFleet = (): AgentFleetCapability => ({
   rail: async () => ({ sessions: [], projects: [] }),
   subscribed: async () => [],
@@ -170,13 +164,16 @@ const emptyFleet = (): AgentFleetCapability => ({
   since: () => undefined,
 });
 
-test("the Agent's wall is the two walls plus the three query reads, and nothing else", () => {
+test("the Agent's wall is the two walls plus the six query reads, and nothing else", () => {
   const names = collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() }).map((tool) => tool.name);
   expect(names).toEqual([
     "sessions_list", "sessions_create", "sessions_send", "sessions_read", "sessions_status",
     "sessions_stop", "sessions_settle", "sessions_diff", "sessions_subscribe", "sessions_unsubscribe",
     "sessions_subscriptions", "sessions_requests", "sessions_resolve_request",
-    "sessions_find", "sessions_outline", "sessions_answer",
+    // #516's six, which arrive as part of the sessions wall itself rather than
+    // as a second list this file's `collectAgentTools` pastes on — see
+    // `collectAgentTools`. The ORDER is therefore the wall's, not the Agent's.
+    "sessions_find", "sessions_outline", "sessions_answer", "sessions_steps", "sessions_step", "sessions_grep",
     "notes_projects", "notes_list", "notes_read", "notes_write", "notes_delete",
   ]);
   // ABSENT, not disabled: a model with no such tool says so.
@@ -191,16 +188,27 @@ test("the Agent's wall is the two walls plus the three query reads, and nothing 
 
 test("the bound tool array stays well under what it was, with every tool still on it", () => {
   const shared = collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() });
-  expect(shared).toHaveLength(21);
+  expect(shared).toHaveLength(24);
   /**
-   * 18,744 characters when #563 measured it, 11,576 now for the same 21 tools
-   * and 13,519 for the 24 the Agent actually binds. A CEILING rather than an
-   * equality: prose is allowed to move, and the thing
-   * that must not come back is the tax — this array is resent on every lap of
-   * every turn, so a sentence added here is a sentence paid for a hundred times
-   * a day.
+   * 18,744 characters when #563 measured it, 11,576 afterwards for 21 tools,
+   * and 13,521 now for 24. A CEILING rather than an equality: prose is allowed
+   * to move, and the thing that must not come back is the tax — this array is
+   * resent on every lap of every turn, so a sentence added here is a sentence
+   * paid for a hundred times a day.
+   *
+   * ── THE NUMBER WENT UP AND IT WAS NOT PROSE CREEP (#516) ──────────────────
+   * Three tools arrived: `sessions_steps`, `sessions_step` and `sessions_grep`.
+   * The arithmetic that says this is the denominator changing rather than the
+   * wall getting wordier is the PER-TOOL cost, which is the thing #563 was
+   * actually about: 551 characters a tool before, 563 after. Twelve characters.
+   * Everything else is three more tools existing.
+   *
+   * The ceiling is therefore raised deliberately and by the measured amount —
+   * not nudged to fit. The rule it enforces is unchanged: a CLAUSE still has to
+   * buy its space out of another clause, and only a genuinely new tool may move
+   * this number.
    */
-  expect(JSON.stringify(agentToolSpecs(shared)).length).toBeLessThan(12_000);
+  expect(JSON.stringify(agentToolSpecs(shared)).length).toBeLessThan(14_000);
 
   // AND THE WHOLE LIST THE AGENT ACTUALLY BINDS, three tools larger — the same
   // ceiling applies to it, because it is the one that is resent.
@@ -212,8 +220,10 @@ test("the bound tool array stays well under what it was, with every tool still o
     github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
     memory: { remember: (section) => ({ written: true, section, chars: 0, others: {}, standing: 0 }), recall: () => [] },
   });
-  expect(whole).toHaveLength(25);
-  expect(JSON.stringify(agentToolSpecs(whole)).length).toBeLessThan(14_000);
+  expect(whole).toHaveLength(28);
+  // 15,938 measured — see the paragraph above for why this moved and what it
+  // would have taken for it not to.
+  expect(JSON.stringify(agentToolSpecs(whole)).length).toBeLessThan(16_200);
 });
 
 /* ------------------------------------------------------------------ *
@@ -277,7 +287,14 @@ test("the spoken wall is the saving, and it is paid on every lap", () => {
    * warning itself moved to the answer's own `note`, which is free per lap.
    * THE NEXT CLAUSE HERE HAS TO BUY ITS SPACE. Two characters is not headroom.
    */
-  expect(wide).toBeLessThan(14_000);
+  expect(wide).toBeLessThan(16_200);
+  /**
+   * AND THE SPOKEN HALF DID NOT MOVE — 5,548, which is #516's whole effect on
+   * this number and it is nothing: all three new tools PAGE, so all three are
+   * withheld, and a spoken turn is bound to the same nine it was. That is the
+   * property worth pinning here, because it is what makes "the wall grew" and
+   * "every spoken turn costs more" two different statements.
+   */
   expect(spoken).toBeLessThan(6_000);
   expect(spoken).toBeLessThan(wide / 2);
 });
@@ -354,7 +371,8 @@ test("a `self` of agent is what lets the subscription tools work at all", async 
 
 test("the query tools clamp rather than refuse, and say when there is more", async () => {
   const asked: unknown[] = [];
-  const capability: AgentQueryCapability = {
+  const capability: SessionsQueryCapability = {
+    ...noQueries(),
     find: async (query) => {
       asked.push(query);
       return { sessions: [{ id: "session_a", activity: "idle", updatedAt: 1, why: "the appearance rework" }], index: "fts5", more: true };
@@ -368,7 +386,7 @@ test("the query tools clamp rather than refuse, and say when there is more", asy
       return { runId: "run_1", sequence: 1, text: "ok", from: 0, totalChars: 2, more: false };
     },
   };
-  const tools = collectTools(agentQueryTools as never, capability as never);
+  const tools = collectTools(sessionQueryTools as never, capability as never);
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
   const found = await byName.get("sessions_find")!.run({ q: "appearance", limit: 5_000 });
@@ -382,8 +400,113 @@ test("the query tools clamp rather than refuse, and say when there is more", asy
   expect((asked[2] as { limit: number }).limit).toBe(64_000);
 });
 
+/**
+ * THE THREE #516 ASKED FOR AND NOBODY HAD BUILT — `sessions_steps`,
+ * `sessions_step` and `sessions_grep`. Same three claims as the tools above:
+ * the ceiling is a clamp rather than a refusal, the answer says what it left
+ * out, and a miss is a sentence that closes rather than one that invites a
+ * retry.
+ */
+test("the three new queries clamp their ceilings too, and pass the caller's number down", async () => {
+  const asked: unknown[] = [];
+  const tools = collectTools(sessionQueryTools as never, {
+    ...noQueries(),
+    steps: async (_id: string, runId: string) => {
+      asked.push(runId);
+      return { items: Array.from({ length: 300 }, (_, index) => ({ index, id: `item_${index}`, title: `step ${index}`, status: "completed" as const, bytes: 10 })) };
+    },
+    grep: async (_id: string, pattern: string, window: { limit: number }) => {
+      asked.push({ pattern, ...window });
+      return { matches: [], more: false };
+    },
+    step: async (_id: string, _runId: string, step: number | string, maxChars: number) => {
+      asked.push({ step, maxChars });
+      return { index: 0, id: "item_0", title: "a step", status: "completed" as const, startedAt: 1, text: "body", totalChars: 4, more: false };
+    },
+  } as never);
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const body = async (name: string, args: Record<string, unknown>) =>
+    JSON.parse(String(((await byName.get(name)!.run(args)).content[0] as { text: string }).text)) as Record<string, unknown>;
+
+  /**
+   * A 300-STEP RUN IS PAGED, not refused and not handed over — and by BOTH
+   * numbers, whichever is reached first. Here it is the byte budget: a step row
+   * is around a hundred characters pretty-printed, so 8,000 of them runs out
+   * well before the 200-row ceiling. What the test pins is that the answer is
+   * honest whichever bound stopped it — `next` is the number of rows actually
+   * shown, never the number that were asked for.
+   */
+  const steps = await body("sessions_steps", { sessionId: "session_a", runId: "run_1", limit: 5_000 });
+  const shown = (steps.items as unknown[]).length;
+  expect(shown).toBeGreaterThan(0);
+  expect(shown).toBeLessThan(200);
+  expect(steps.total).toBe(300);
+  expect(steps.more).toBe(true);
+  expect(steps.next).toBe(shown);
+  expect(String(steps.note)).toContain(`after: ${shown}`);
+  // And the default is smaller still — a model that named no number gets a
+  // screen it can read rather than everything that fits in the budget.
+  expect(((await body("sessions_steps", { sessionId: "session_a", runId: "run_1" })).items as unknown[]).length).toBeLessThanOrEqual(50);
+
+  // GREP's ceiling is the route's, and the caller's number reaches the store.
+  await body("sessions_grep", { sessionId: "session_a", pattern: "index.lock", limit: 5_000 });
+  expect(asked.at(-1)).toEqual({ pattern: "index.lock", limit: 100 });
+
+  // A STEP'S READ BUDGET IS CLAMPED THE SAME WAY, and an absent one is the
+  // default rather than an error.
+  await body("sessions_step", { sessionId: "session_a", runId: "run_1", step: 3, maxChars: 500_000 });
+  expect(asked.at(-1)).toEqual({ step: 3, maxChars: 64_000 });
+  await body("sessions_step", { sessionId: "session_a", runId: "run_1", step: "item_7" });
+  // A STRING THAT IS NOT A NUMBER IS AN ITEM ID, and one that is gets read as
+  // the position it looks like — the route parses it the same way.
+  expect(asked.at(-1)).toEqual({ step: "item_7", maxChars: 8_000 });
+  await body("sessions_step", { sessionId: "session_a", runId: "run_1", step: "4" });
+  expect(asked.at(-1)).toEqual({ step: 4, maxChars: 8_000 });
+});
+
+test("an empty answer from one of the three says so, rather than looking like a small one", async () => {
+  const tools = collectTools(sessionQueryTools as never, noQueries() as never);
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const body = async (name: string, args: Record<string, unknown>) =>
+    JSON.parse(String(((await byName.get(name)!.run(args)).content[0] as { text: string }).text)) as Record<string, unknown>;
+
+  // NO STEPS is either "it has done nothing yet" or "that runId is not this
+  // session's", and a caller cannot tell them apart — so the note says both and
+  // names the call that settles it.
+  const steps = await body("sessions_steps", { sessionId: "session_a", runId: "run_nope" });
+  expect(steps.items).toEqual([]);
+  expect(steps.total).toBe(0);
+  expect(String(steps.note)).toContain("sessions_outline");
+
+  // NO MATCHES is a claim about the search, so it names what kind of search it
+  // was — an agent that thinks it ran a regular expression will conclude the
+  // phrase is absent when it only mistyped the syntax.
+  const grepped = await body("sessions_grep", { sessionId: "session_a", pattern: "^index" });
+  expect(grepped.matches).toEqual([]);
+  expect(String(grepped.note)).toContain("substring match");
+});
+
+test("each of the three new queries passes a store refusal back as a sentence", async () => {
+  const refusing = (member: string) =>
+    collectTools(sessionQueryTools as never, {
+      ...noQueries(),
+      [member]: async () => {
+        throw new Error("session does not exist");
+      },
+    } as never);
+  for (const [member, name] of [["steps", "sessions_steps"], ["step", "sessions_step"], ["grep", "sessions_grep"]]) {
+    const tool = refusing(member!).find((each) => each.name === name)!;
+    const answer = await tool.run({ sessionId: "session_gone", runId: "run_1", step: 0, pattern: "x" });
+    expect(answer.isError).toBe(true);
+    const text = String((answer.content[0] as { text: string }).text);
+    expect(text).toContain("session does not exist");
+    // The sentence names WHICH session missed: a batch of reads needs pairing.
+    expect(text).toContain("session_gone");
+  }
+});
+
 test("a refusal from the store comes back as a sentence the model can read", async () => {
-  const tools = collectTools(agentQueryTools as never, {
+  const tools = collectTools(sessionQueryTools as never, {
     ...noQueries(),
     outline: async () => {
       throw new Error("session does not exist");
@@ -405,7 +528,7 @@ test("a refusal from the store comes back as a sentence the model can read", asy
  */
 test("both sessions_answer misses tell the model to stop rather than to retry", async () => {
   const miss = async (message: string) => {
-    const tools = collectTools(agentQueryTools as never, {
+    const tools = collectTools(sessionQueryTools as never, {
       ...noQueries(),
       answer: async () => {
         throw new EngineStateError("not_found", message);
@@ -447,7 +570,7 @@ test("both sessions_answer misses tell the model to stop rather than to retry", 
 test("a limit under the default is served the default, so the first call is the whole answer", async () => {
   const asked: Array<{ from: number; limit: number }> = [];
   const whole = "x".repeat(6_127);
-  const tools = collectTools(agentQueryTools as never, {
+  const tools = collectTools(sessionQueryTools as never, {
     ...noQueries(),
     answer: async (_id: string, options: { from: number; limit: number }) => {
       asked.push(options);
@@ -472,7 +595,7 @@ test("a limit under the default is served the default, so the first call is the 
   // ABOVE THE FLOOR THE NUMBER IS THE CALLER'S AGAIN — a genuinely long answer
   // is still paged, and the reply hands over the exact next call.
   const long = "y".repeat(40_000);
-  const paged = collectTools(agentQueryTools as never, {
+  const paged = collectTools(sessionQueryTools as never, {
     ...noQueries(),
     answer: async (_id: string, options: { from: number; limit: number }) => {
       const text = long.slice(options.from, options.from + options.limit);
@@ -525,7 +648,7 @@ test("a sessions_answer reply names the run it resolved to, and whether it is fi
 });
 
 test("a store failure that is not one of the two misses is passed through unchanged", async () => {
-  const tools = collectTools(agentQueryTools as never, {
+  const tools = collectTools(sessionQueryTools as never, {
     ...noQueries(),
     answer: async () => {
       throw new Error("the database is locked");

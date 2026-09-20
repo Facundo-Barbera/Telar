@@ -39,7 +39,8 @@ import { AGENT_BRIEFING } from "../src/agent/briefing";
 import { renderDigest } from "../src/agent/digest";
 import { describeGoCredential, resolveGoCredential } from "../src/agent/credentials";
 import { agentChatModel } from "../src/agent/model";
-import { agentToolSpecs, collectAgentTools, type AgentFleetCapability, type AgentQueryCapability } from "../src/agent/tools";
+import { agentToolSpecs, collectAgentTools, type AgentFleetCapability } from "../src/agent/tools";
+import { noQueries } from "./query-stub";
 import { AGENT_SELF_ID } from "../src/agent/identity";
 import type { AgentInboxRow } from "../src/agent/inbox";
 import type { NotesCapability } from "../src/notes-tools/tools";
@@ -83,11 +84,7 @@ const stubNotes = (): NotesCapability => ({
   remove: async () => false,
 });
 
-const stubQueries = (): AgentQueryCapability => ({
-  find: async () => ({ sessions: [], index: "like", more: false }),
-  outline: async () => ({ turns: [], total: 0, more: false }),
-  answer: async () => ({ runId: "run_1", sequence: 1, text: "", from: 0, totalChars: 0, more: false }),
-});
+const stubQueries = noQueries;
 
 const stubFleet = (): AgentFleetCapability => ({
   rail: async () => ({ sessions: [], projects: [] }),

@@ -31,7 +31,9 @@ import type { ChatResult } from "@langchain/core/outputs";
 import type { NotificationDetail, WakeKind } from "@telar/engine-client";
 import { collectTools, type SocketTool } from "../src/mcp-socket";
 import { sessionsTools } from "../src/sessions-tools/tools";
-import { agentFleetTools, agentQueryTools } from "../src/agent/tools";
+import { agentFleetTools } from "../src/agent/tools";
+import { sessionQueryTools } from "../src/sessions-tools/query";
+import { noQueries } from "./query-stub";
 import { wakeNotification } from "../src/notification";
 import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING, AGENT_SPOKEN_BRIEFING } from "../src/agent/briefing";
 import { AgentRuntime, type AgentStreamEvent } from "../src/agent/runtime";
@@ -1935,9 +1937,8 @@ function replayWall(landed: Landed[]): SocketTool[] {
 
   return [
     ...counted(
-      collectTools(agentQueryTools as never, {
-        find: async () => ({ sessions: [], index: "like", more: false }),
-        outline: async () => ({ turns: [], total: 0, more: false }),
+      collectTools(sessionQueryTools as never, {
+        ...noQueries(),
         answer: async (_id: string, options: { from: number; limit: number }) => {
           const text = answer.slice(options.from, options.from + options.limit);
           const more = options.from + text.length < answer.length;

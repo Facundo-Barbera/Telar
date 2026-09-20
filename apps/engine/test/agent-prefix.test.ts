@@ -35,7 +35,8 @@ import { expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentFleetCapability, AgentQueryCapability } from "../src/agent/tools";
+import type { AgentFleetCapability } from "../src/agent/tools";
+import { noQueries } from "./query-stub";
 import type { NotesCapability, SessionsCapability, SocketTool } from "../src/mcp-socket";
 import { AGENT_SELF_ID, agentToolSpecs, collectAgentTools } from "../src/agent/tools";
 import { AGENT_BRIEFING } from "../src/agent/briefing";
@@ -79,11 +80,6 @@ const noNotes = (): NotesCapability =>
     remove: async () => false,
   }) as never;
 
-const noQueries = (): AgentQueryCapability => ({
-  find: async () => ({ sessions: [], index: "like", more: false }),
-  outline: async () => ({ turns: [], total: 0, more: false }),
-  answer: async () => ({ runId: "run_1", sequence: 1, text: "", from: 0, totalChars: 0, more: false }),
-});
 
 const emptyFleet = (): AgentFleetCapability => ({
   rail: async () => ({ sessions: [], projects: [] }),

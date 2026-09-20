@@ -66,7 +66,8 @@
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
 import { HumanMessage, SystemMessage, AIMessage, ToolMessage } from "@langchain/core/messages";
-import type { AgentFleetCapability, AgentQueryCapability } from "../src/agent/tools";
+import type { AgentFleetCapability } from "../src/agent/tools";
+import { noQueries } from "./query-stub";
 import type { NotesCapability, SessionsCapability, SocketTool } from "../src/mcp-socket";
 import { AGENT_SELF_ID, agentToolSpecs, collectAgentTools } from "../src/agent/tools";
 import { AGENT_BRIEFING } from "../src/agent/briefing";
@@ -120,11 +121,6 @@ const noSessions = (): SessionsCapability =>
 const noNotes = (): NotesCapability =>
   ({ projects: async () => [], list: async () => [], read: async () => null, create: async () => ({}) as never, update: async () => null, remove: async () => false }) as never;
 
-const noQueries = (): AgentQueryCapability => ({
-  find: async () => ({ sessions: [], index: "like", more: false }),
-  outline: async () => ({ turns: [], total: 0, more: false }),
-  answer: async () => ({ runId: "run_1", sequence: 1, text: "", from: 0, totalChars: 0, more: false }),
-});
 
 const emptyFleet = (): AgentFleetCapability => ({
   rail: async () => ({ sessions: [], projects: [] }),
