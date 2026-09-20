@@ -37,6 +37,7 @@ import type {
   GitHubIssueDetail,
   GitHubIssueFilter,
   GitHubIssueRead,
+  GitHubLink,
   GitHubMergeMethod,
   GitHubMergeRefusal,
   GitHubMergeResult,
@@ -126,6 +127,119 @@ function login(value: unknown): string | undefined {
   return name || undefined;
 }
 
+/**
+ * Whether this author is a GitHub App rather than a person.
+ *
+ * TWO SIGNALS, BECAUSE `gh` SENDS DIFFERENT ONES IN DIFFERENT PLACES — both
+ * measured. A list or detail author carries the flag outright:
+ * `{is_bot: true, login: "app/renovate"}`. The `app/` prefix is `gh`'s own
+ * rendering of the GraphQL `Bot` actor and is checked too, so an author object
+ * that dropped the flag still lands here.
+ */
+function isBot(value: unknown): boolean {
+  const record = value as { is_bot?: unknown; login?: unknown } | null;
+  if (record?.is_bot === true) return true;
+  return typeof record?.login === "string" && record.login.startsWith("app/");
+}
+
+/**
+ * Where this author's face is, when this engine can honestly say.
+ *
+ * `gh` HAS NO AVATAR FIELD AT ALL, which is the finding that shaped this. #790
+ * reads as "these fields are not in the `gh` field sets"; for the issue↔PR link
+ * that is exactly right, and for avatars there is no field to add. Measured
+ * against this repository: `--json author` answers `{id, is_bot, login, name}` on
+ * every list and detail read, and `--json comments` answers `author: {login}`
+ * alone. Widening a field set reaches nothing, so the URL is DERIVED.
+ *
+ * `github.com/<login>.png` IS GITHUB'S OWN REDIRECT and it costs this engine
+ * nothing: measured, `https://github.com/Facundo-Barbera.png?size=64` answers 302
+ * to `avatars.githubusercontent.com/u/51800760?s=64&v=4`. The client's own image
+ * request follows it, so a fifty-row list adds no `gh` call and no engine round
+ * trip — which is the only reason avatars are affordable here at all. The row
+ * comment this replaces said an avatar "needs a network round trip per person",
+ * and that is true of `gh api users/<login>` and false of this.
+ *
+ * A BOT GETS NOTHING, because for a bot the derived URL is wrong rather than
+ * slow: `github.com/app/renovate.png` is not a user page. Absent is the honest
+ * answer — "this engine has no URL for this author" — and the surface draws a
+ * monogram, which beats a broken image.
+ *
+ * THE ONE CASE THIS CANNOT GET RIGHT, named because it is invisible otherwise. A
+ * COMMENT's author carries neither signal: measured, a Renovate comment answers
+ * `{login: "renovate"}` with no prefix and no flag, so a bot commenting is
+ * indistinguishable from a person. Usually that degrades to a 404 and a monogram
+ * — `github.com/github-actions.png` is a 404, and `github-actions` is the only bot
+ * commenting in this repository. It misleads only when a bot's bare slug is also a
+ * real account: `github.com/dependabot.png` answers 302 to `u/27347476`, a
+ * different account from the Dependabot App, so a Dependabot comment would wear a
+ * stranger's face. Fixing that means a second read per thread for
+ * `user.avatar_url` (`gh api repos/{owner}/{repo}/issues/<n>/comments`), which is
+ * the `readBoards` pattern and its own change.
+ */
+function avatar(value: unknown): string | undefined {
+  const name = login(value);
+  if (!name || isBot(value)) return undefined;
+  return `https://github.com/${encodeURIComponent(name)}.png`;
+}
+
+/** The author and their face, as every row, comment and review carries them. */
+function authorOf(value: unknown) {
+  const name = login(value);
+  const face = avatar(value);
+  return {
+    ...(name ? { author: name } : {}),
+    ...(face ? { authorAvatar: face } : {}),
+  };
+}
+
+/**
+ * `owner/repo` out of a github.com issue or pull-request URL.
+ *
+ * SO A LINK CAN SAY WHETHER IT IS REACHABLE. `gh` sends each linked reference with
+ * its own repository, and the panel's Pull requests surface can only open THIS
+ * repository's numbers — so the two have to be compared, and the row's own `url` is
+ * the only place the read says which repository it came from. A URL this cannot
+ * parse answers nothing, which makes every link read as cross-repository: a link
+ * out where a jump was possible, rather than a jump to the wrong #768.
+ */
+export function parseRepoFromUrl(url: string): string | undefined {
+  const match = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+)\/(?:issues|pull)\//.exec(url);
+  return match ? `${match[1]}/${match[2]}` : undefined;
+}
+
+/**
+ * The issue↔pull-request link, from either end.
+ *
+ * ONE PARSER FOR BOTH, because `closedByPullRequestsReferences` and
+ * `closingIssuesReferences` are the same relation seen from two sides and `gh`
+ * gives them the same shape — `{ number, url, repository: { name, owner: { login } } }`,
+ * measured. A reference with no number is dropped, the way a row with no number is.
+ *
+ * `self` IS THE READING REPOSITORY, and `repository` survives on the reference only
+ * when it differs — see the field's own note in the contract for why absence is the
+ * load-bearing case.
+ */
+function links(value: unknown, self: string | undefined): GitHubLink[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const row = entry as Record<string, unknown>;
+    const number = typeof row.number === "number" ? row.number : 0;
+    if (number <= 0) return [];
+    const repo = row.repository as { name?: unknown; owner?: { login?: unknown } } | null;
+    const owner = text(repo?.owner?.login);
+    const name = text(repo?.name);
+    const where = owner && name ? `${owner}/${name}` : "";
+    return [
+      {
+        number,
+        url: text(row.url) || `#${number}`,
+        ...(where && where !== self ? { repository: where } : {}),
+      },
+    ];
+  });
+}
+
 /** Labels, minus the ones with no name — an unnamed label is an empty chip. */
 function labels(value: unknown) {
   if (!Array.isArray(value)) return [];
@@ -161,7 +275,10 @@ function milestone(value: unknown): string | undefined {
  */
 function rowFields(row: Record<string, unknown>) {
   return {
-    ...(login(row.author) ? { author: login(row.author)! } : {}),
+    // The author AND their face, from one helper: `login` on its own structurally
+    // discarded everything else on the author object, so widening a field set here
+    // would never have reached a surface (#790).
+    ...authorOf(row.author),
     labels: labels(row.labels),
     assignees: logins(row.assignees),
     ...(milestone(row.milestone) ? { milestone: milestone(row.milestone)! } : {}),
@@ -186,6 +303,7 @@ function issueRow(row: Record<string, unknown>): GitHubIssue | undefined {
     title: text(row.title),
     state: text(row.state) || "OPEN",
     ...(text(row.stateReason) ? { stateReason: text(row.stateReason) } : {}),
+    linkedPulls: links(row.closedByPullRequestsReferences, parseRepoFromUrl(text(row.url))),
     ...rowFields(row),
   };
 }
@@ -204,6 +322,7 @@ function pullRow(row: Record<string, unknown>): GitHubPullRequest | undefined {
     // `epoch` answers 0 for an absent date, and an open pull request has no merge
     // time — 0 would render as January 1970.
     ...(mergedAt ? { mergedAt } : {}),
+    linkedIssues: links(row.closingIssuesReferences, parseRepoFromUrl(text(row.url))),
     ...rowFields(row),
   };
 }
@@ -240,9 +359,11 @@ export function parsePulls(stdout: string): GitHubPullRequest[] {
  * omitting the field. Measured against this machine's own `gh`, whose token has
  * `repo` and not `read:project`: putting it here would blank the Issues list for
  * anybody on a default token. It gets its own call.
+
  */
-const ISSUE_FIELDS = "number,title,state,stateReason,labels,author,assignees,milestone,updatedAt,url";
-const PULL_FIELDS = "number,title,state,isDraft,author,assignees,milestone,labels,headRefName,updatedAt,url,reviewDecision,mergedAt";
+const ISSUE_FIELDS = "number,title,state,stateReason,labels,author,assignees,milestone,updatedAt,url,closedByPullRequestsReferences";
+const PULL_FIELDS =
+  "number,title,state,isDraft,author,assignees,milestone,labels,headRefName,updatedAt,url,reviewDecision,mergedAt,closingIssuesReferences";
 
 /**
  * Which boards each row is on, keyed by number.
@@ -532,7 +653,9 @@ function comment(entry: unknown): GitHubComment | undefined {
   const body = text(row.body);
   const attribution = parseSessionAttribution(body);
   return {
-    ...(login(row.author) ? { author: login(row.author)! } : {}),
+    // A comment's author is `{login}` and nothing else — see `avatar` for what that
+    // costs and for the one case it gets wrong.
+    ...authorOf(row.author),
     ...(text(row.authorAssociation) ? { authorAssociation: text(row.authorAssociation) } : {}),
     body: attribution ? stripSessionMarker(body) : body,
     createdAt: epoch(row.createdAt),
@@ -574,7 +697,7 @@ export function parseReviews(value: unknown): GitHubReview[] {
       if (!state) return [];
       return [
         {
-          ...(login(row.author) ? { author: login(row.author)! } : {}),
+          ...authorOf(row.author),
           state,
           body: text(row.body),
           submittedAt: epoch(row.submittedAt),
@@ -798,9 +921,19 @@ export function parsePullDetail(
   };
 }
 
-const ISSUE_DETAIL_FIELDS = "number,title,state,stateReason,author,body,labels,assignees,milestone,comments,createdAt,updatedAt,url,closedAt";
+/**
+ * What a DETAIL read asks for.
+ *
+ * THE LINK IS ON BOTH, and it has to be on the detail as well as the row even
+ * though `issueRow` and `pullRow` parse it: a detail read is its own `gh` call with
+ * its own field list, so a field absent here arrives as `[]` and the detail would
+ * quietly disagree with the row you clicked to reach it — the exact failure the
+ * shared row parsers exist to prevent.
+ */
+const ISSUE_DETAIL_FIELDS =
+  "number,title,state,stateReason,author,body,labels,assignees,milestone,comments,createdAt,updatedAt,url,closedAt,closedByPullRequestsReferences";
 const PULL_DETAIL_FIELDS =
-  "number,title,state,isDraft,author,body,labels,assignees,baseRefName,headRefName,headRefOid,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,comments,reviews,statusCheckRollup,createdAt,updatedAt,url,mergedAt,mergedBy";
+  "number,title,state,isDraft,author,body,labels,assignees,baseRefName,headRefName,headRefOid,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,comments,reviews,statusCheckRollup,createdAt,updatedAt,url,mergedAt,mergedBy,closingIssuesReferences";
 
 /**
  * Which kind of nothing a DETAIL read is.

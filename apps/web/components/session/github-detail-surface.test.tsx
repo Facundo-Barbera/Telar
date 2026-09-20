@@ -17,7 +17,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { GitHubIssueDetail, GitHubPullDetail } from "@telar/engine-client";
+import type { GitHubIssueDetail, GitHubLink, GitHubPullDetail } from "@telar/engine-client";
 import { EntryCard, ForgeFacts, MergeFooter } from "./github-detail-surface";
 import { buildForgeTimeline, type ForgeEntry } from "@/lib/github-forge";
 
@@ -37,6 +37,7 @@ const issue = (over: Partial<GitHubIssueDetail> = {}): GitHubIssueDetail =>
     assignees: [],
     labels: [],
     projects: [],
+    linkedPulls: [],
     comments: [],
     olderComments: 0,
     ...over,
@@ -48,6 +49,7 @@ const pull = (over: Partial<GitHubPullDetail> = {}): GitHubPullDetail =>
     number: 700,
     url: "https://github.com/o/r/pull/700",
     isDraft: false,
+    linkedIssues: [],
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
     mergeMethods: ["squash"],
@@ -100,7 +102,16 @@ describe("the opening post", () => {
     const markup = renderToStaticMarkup(<ForgeFacts thing={issue()} />);
     expect(markup).toContain("Facundo-Barbera");
     expect(markup).toContain("opened this");
-    expect(markup.split("Facundo-Barbera").length - 1).toBe(1);
+    // ONE MENTION IN TEXT. The avatar's `title` carries the login too — it is how a
+    // monogram says whose letter it is — so the count is of the visible name.
+    expect(markup.split(">Facundo-Barbera<").length - 1).toBe(1);
+  });
+
+  test("and carries the author's face, so the opening post is marked like every reply", () => {
+    // #790: the thread's one attribution had no face while the replies below it did,
+    // which made the opening post the odd row out in its own thread.
+    const markup = renderToStaticMarkup(<ForgeFacts thing={issue({ authorAvatar: "https://github.com/Facundo-Barbera.png" })} />);
+    expect(markup).toContain("https://github.com/Facundo-Barbera.png?size=48");
   });
 });
 
@@ -125,6 +136,80 @@ describe("a reply's author bar", () => {
     expect(bar({ kind: "review", state: "APPROVED" })).toContain("approved");
     expect(bar()).not.toContain("commented");
   });
+
+  /**
+   * THE FACE — issue #790, and this bar is the reason the feature exists.
+   *
+   * A face is decoration on a repository with twelve contributors. Here nearly every
+   * comment is an agent under one account, so the author bar is a column of identical
+   * logins and the face is the only mark in it a reader recognises without reading.
+   */
+  test("draws the author's face at the head of the bar, before the name", () => {
+    const markup = bar({ avatar: "https://github.com/Facundo-Barbera.png" });
+    // The size travels with the request and not with the record — one size for
+    // every placement, which is what keeps a forty-comment thread to one fetch.
+    expect(markup).toContain("https://github.com/Facundo-Barbera.png?size=48");
+    // Before the name, not after it: the face is what the eye lands on.
+    expect(markup.indexOf("size=48")).toBeLessThan(markup.indexOf("Facundo-Barbera<"));
+  });
+
+  test("an author with no face gets a LETTER, not a blank circle or a broken image", () => {
+    // Absent is ordinary: a bot has no derived URL at all. A broken-image glyph
+    // would read as the renderer being broken, and an empty circle says nothing.
+    const markup = bar({ author: "app/renovate", avatar: undefined });
+    expect(markup).not.toContain("<img");
+    expect(markup).toContain(">R<");
+  });
+
+  /**
+   * THE FACE AND THE SESSION LINK SHARE THIS BAR — #790 landing on top of #791.
+   *
+   * They are complementary halves of one attribution and neither is sufficient: the
+   * face says WHICH ACCOUNT, and in this repository that is the same account on every
+   * comment, which is exactly why #791 added WHICH CONVERSATION. A reader scanning a
+   * thread uses the face to find the boundary between voices and the link to go and
+   * read the reasoning behind one.
+   *
+   * SO THE FAILURE THIS GUARDS IS A LATER EDIT PICKING A SIDE. The two features were
+   * built in parallel against the same six lines of markup, and the merge that put
+   * them together was automatic — nothing in either file would have noticed one being
+   * dropped for the other's room.
+   */
+  test("carries the face AND the session link together, in the reading order who → when → whence", () => {
+    const markup = bar({
+      avatar: "https://github.com/Facundo-Barbera.png",
+      sessionId: "session_a957243f19c8423db79774b49ea2134c",
+      url: "https://github.com/o/r/issues/692#issuecomment-1",
+    });
+    expect(markup).toContain("size=48");
+    expect(markup).toContain("session_a957243f19c8423db79774b49ea2134c");
+    // The face leads the bar; the session comes after the time, which is where #791
+    // put it and why — "who said this, and when, and out of which thread".
+    expect(markup.indexOf("size=48")).toBeLessThan(markup.indexOf("Facundo-Barbera<"));
+    expect(markup.indexOf("tabular-nums")).toBeLessThan(markup.indexOf("session_a957243f"));
+    // And the link out is still the only thing on the far right — a face and a
+    // session id both riding this bar must not have cost it its right edge.
+    expect(markup.split("ml-auto").length - 1).toBe(1);
+    expect(markup.slice(markup.indexOf("Open this comment on GitHub"))).toContain("ml-auto");
+  });
+
+  test("a face with no session, and a session with no face, each still draw", () => {
+    // Neither feature may depend on the other having arrived: an agent comment
+    // written before #791 has no marker, and a bot's comment has no face.
+    expect(bar({ avatar: "https://github.com/ada.png" })).not.toContain("/sessions/");
+    const noFace = bar({ author: "app/renovate", sessionId: "session_1" });
+    expect(noFace).not.toContain("<img");
+    expect(noFace).toContain("/sessions/session_1");
+    expect(noFace).toContain(">R<");
+  });
+
+  test("the face is decorative, so a screen reader hears the name once", () => {
+    // The login is right beside it in text. An `alt` naming the author again would
+    // make every card in the thread say who wrote it twice.
+    const markup = bar({ avatar: "https://github.com/ada.png" });
+    expect(markup).toContain('alt=""');
+    expect(markup).toContain('aria-hidden="true"');
+  });
 });
 
 describe("the chips line", () => {
@@ -144,6 +229,87 @@ describe("the chips line", () => {
     const markup = renderToStaticMarkup(<ForgeFacts thing={issue({ milestone: "Wave 1", projects: ["Telar"] })} />);
     expect(markup).toContain("Wave 1");
     expect(markup).toContain("Telar");
+  });
+});
+
+/**
+ * THE ISSUE↔PR LINK — issue #790. #49's design: "the single most useful thing on a
+ * GitHub issue page and we do not have it."
+ *
+ * `lib/github-forge.test.ts` and the engine's `github.test.ts` hold the DATA; these
+ * are the claims about the line — what it is called in each direction, that it is a
+ * jump rather than a fourth way out of the cockpit, and that a cross-repository
+ * reference is the one case where it must not be.
+ */
+describe("the line that names the other end of the link", () => {
+  const link = (number: number, over: Partial<GitHubLink> = {}): GitHubLink => ({
+    number,
+    url: `https://github.com/o/r/pull/${number}`,
+    ...over,
+  });
+  const facts = (thing: GitHubIssueDetail | GitHubPullDetail, onOpenLinked?: (link: GitHubLink) => void) =>
+    renderToStaticMarkup(<ForgeFacts thing={thing} {...(("mergeable" in thing) ? { pull: thing as GitHubPullDetail } : {})} {...(onOpenLinked ? { onOpenLinked } : {})} />);
+
+  test("a CLOSED issue says which pull request closed it", () => {
+    // The evidence #790 was filed on: reading this repository meant asking "is this
+    // closed, and by which PR" and answering it with `gh` by hand.
+    const markup = facts(issue({ state: "CLOSED", linkedPulls: [link(786)] }));
+    expect(markup).toContain("closed by");
+    expect(markup).toContain("#786");
+  });
+
+  test("an OPEN issue does NOT say it was closed by anything", () => {
+    /**
+     * The reference is the RELATION, not the outcome — measured against cli/cli, an
+     * open issue answers a reference to a pull request that closed without merging.
+     * "closed by" on an open issue would claim a merge that may never happen.
+     */
+    const markup = facts(issue({ state: "OPEN", linkedPulls: [link(786)] }));
+    expect(markup).toContain("will close with");
+    expect(markup).not.toContain("closed by");
+  });
+
+  test("a pull request says which issues it closes, which is a declaration and always true", () => {
+    const markup = facts(pull({ linkedIssues: [link(488)] }));
+    expect(markup).toContain("closes");
+    expect(markup).toContain("#488");
+  });
+
+  test("IT IS A BUTTON, so following it stays in the cockpit", () => {
+    // A URL to github.com would be a fourth way to leave. The jump ends at the
+    // cockpit's own `showPanelTab("pull:786")` — the door a GitHub link in a message
+    // already uses.
+    const markup = facts(issue({ state: "CLOSED", linkedPulls: [link(786)] }), () => {});
+    expect(markup).toContain('title="Open #786 here"');
+    expect(markup).not.toContain('href="https://github.com/o/r/pull/786"');
+  });
+
+  test("A CROSS-REPOSITORY REFERENCE IS A LINK OUT, and says whose repository it is", () => {
+    // The panel's Pull requests surface can only open THIS repository's numbers, so
+    // a jump here would land on a different #768 entirely.
+    const markup = facts(issue({ state: "CLOSED", linkedPulls: [link(768, { repository: "other/repo", url: "https://github.com/other/repo/pull/768" })] }), () => {});
+    expect(markup).toContain("other/repo#768");
+    expect(markup).toContain('href="https://github.com/other/repo/pull/768"');
+    expect(markup).not.toContain("Open #768 here");
+  });
+
+  test("with nowhere to jump to, it is still a link rather than dead text", () => {
+    // A caller with no panel — the detail rendered outside one — must still be able
+    // to follow it.
+    const markup = facts(issue({ state: "CLOSED", linkedPulls: [link(786)] }));
+    expect(markup).toContain('href="https://github.com/o/r/pull/786"');
+  });
+
+  test("and the line is ABSENT on the unlinked issue, which is most of them", () => {
+    // Unlike the chips line below it, which is drawn empty because an unlabelled
+    // issue and a failed read look identical. This field rides the row read, so a
+    // header that drew at all had it — there is no failure to distinguish.
+    const markup = facts(issue());
+    expect(markup).not.toContain("will close with");
+    expect(markup).not.toContain("closed by");
+    // The row still drew, so the assertions above are about the line and not about
+    // a render that threw its way to an empty string.
+    expect(markup).toContain("opened this");
   });
 });
 

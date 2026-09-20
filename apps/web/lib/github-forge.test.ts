@@ -10,6 +10,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   activeFilterCount,
+  authorMonogram,
+  avatarSrc,
+  AVATAR_PIXELS,
   buildForgeTimeline,
   checkHeadline,
   filterChips,
@@ -309,6 +312,54 @@ describe("buildForgeTimeline", () => {
       reviews: [review(10, "APPROVED", "one"), review(10, "APPROVED", "two")],
     });
     expect(new Set(timeline.map((entry) => entry.id)).size).toBe(timeline.length);
+  });
+
+  test("a face travels with every kind of entry, and an absent one stays absent (#790)", () => {
+    // ALL THREE OR NONE. The card draws the face in the author bar, so an avatar
+    // that reached comments but not reviews would give a thread a column of faces
+    // with holes in it at exactly the rows a review sits in.
+    const timeline = buildForgeTimeline({
+      body: "b",
+      author: "ada",
+      authorAvatar: "https://github.com/ada.png",
+      createdAt: 1,
+      comments: [comment(10, "c", { author: "grace", authorAvatar: "https://github.com/grace.png" }), comment(20, "d", { author: "app/renovate" })],
+      reviews: [{ state: "APPROVED", body: "ok", submittedAt: 30, author: "alan", authorAvatar: "https://github.com/alan.png" }],
+    });
+    expect(timeline.map((entry) => [entry.kind, entry.avatar])).toEqual([
+      ["body", "https://github.com/ada.png"],
+      ["comment", "https://github.com/grace.png"],
+      // A bot has no face and the entry says so rather than carrying an empty
+      // string — the card draws a monogram off the login instead.
+      ["comment", undefined],
+      ["review", "https://github.com/alan.png"],
+    ]);
+  });
+});
+
+/**
+ * THE FACE ITSELF — issue #790.
+ *
+ * These two are the whole of the display decision the engine deliberately does not
+ * make: which pixel size to ask GitHub for, and what to draw when there is no URL.
+ */
+describe("an author's avatar", () => {
+  test("is asked for at ONE size, so a thread of one author is ONE fetch", () => {
+    // The URL including `?size=` is the browser's cache key, and this repository's
+    // threads are the case #790 was filed on — forty comments by one account. Two
+    // sizes for two placements would be two fetches, and a third placement a third.
+    expect(avatarSrc("https://github.com/ada.png")).toBe(`https://github.com/ada.png?size=${AVATAR_PIXELS}`);
+    expect(AVATAR_PIXELS).toBeGreaterThan(16);
+  });
+
+  test("falls back to a letter, never to a blank circle", () => {
+    expect(authorMonogram("Facundo-Barbera")).toBe("F");
+    // A bot arrives as `app/<slug>` from a row read, and `a` for every bot in the
+    // repository would be a monogram that identifies nothing.
+    expect(authorMonogram("app/renovate")).toBe("R");
+    // `gh` sends no author at all for a deleted account.
+    expect(authorMonogram(undefined)).toBe("?");
+    expect(authorMonogram("  ")).toBe("?");
   });
 });
 

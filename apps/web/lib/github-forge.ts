@@ -22,6 +22,44 @@ import type {
 } from "@telar/engine-client";
 
 /**
+ * HOW BIG AN AVATAR THIS COCKPIT ASKS GITHUB FOR — one number, for every face on
+ * every surface, and the sameness is the point.
+ *
+ * ONE SIZE SO THE CACHE WORKS. `github.com/<login>.png` takes a `?size=`, and the
+ * URL including that parameter is the browser's cache key. This repository's threads
+ * are the case #790 was filed on — nearly every comment is an agent under one
+ * account — so a thread of forty comments is FORTY REFERENCES TO ONE URL and
+ * therefore one fetch. Asking 24px for a row and 32px for a card would turn that
+ * into two, and a third the moment somebody adds a third placement.
+ *
+ * 48 RATHER THAN THE 12–16 IT IS DRAWN AT, because these are Retina surfaces and a
+ * 16px `<img>` given a 16px source is visibly soft at 2× and worse at 3×. The
+ * difference is a few KB once.
+ */
+export const AVATAR_PIXELS = 48;
+
+/** The engine sends the face without a size — the size is the renderer's
+ *  business — so every consumer goes through here and asks for the same one. */
+export function avatarSrc(url: string): string {
+  return `${url}?size=${AVATAR_PIXELS}`;
+}
+
+/**
+ * THE LETTER BEHIND A FACE THAT DOES NOT LOAD.
+ *
+ * An avatar is absent for a bot, and a derived URL can 404 for a deleted account
+ * or simply not arrive on a machine that cannot reach the CDN. A monogram is the
+ * device every chat surface uses for exactly that, and it is better than the
+ * alternatives in both directions: a broken-image glyph says the renderer is
+ * broken, and an empty circle says nothing at all. `?` when there is not even a
+ * login, which is what `gh` sends for a comment by a deleted account.
+ */
+export function authorMonogram(login?: string): string {
+  const first = login?.trim().replace(/^app\//, "").charAt(0);
+  return first ? first.toUpperCase() : "?";
+}
+
+/**
  * Why there is nothing to show, and what to do about it.
  *
  * FIVE SENTENCES RATHER THAN ONE. Four of them are the list surface's, and the
@@ -320,6 +358,9 @@ export type ForgeEntry = {
   kind: ForgeEntryKind;
   at: number;
   author?: string;
+  /** The author's face, when the engine had a URL for it. Absent is ordinary —
+   *  a bot has none — and the card draws a monogram. */
+  avatar?: string;
   /** GitHub's `OWNER` / `MEMBER` / `CONTRIBUTOR`, when it is worth a badge. */
   association?: string;
   /** A review's verdict. Absent on a body and on a comment. */
@@ -345,6 +386,7 @@ export type ForgeEntry = {
 export function buildForgeTimeline(input: {
   body: string;
   author?: string;
+  authorAvatar?: string;
   createdAt: number;
   comments: readonly GitHubComment[];
   reviews?: readonly GitHubReview[];
@@ -354,6 +396,7 @@ export function buildForgeTimeline(input: {
     kind: "comment" as const,
     at: comment.createdAt,
     ...(comment.author ? { author: comment.author } : {}),
+    ...(comment.authorAvatar ? { avatar: comment.authorAvatar } : {}),
     ...(comment.authorAssociation && comment.authorAssociation !== "NONE" ? { association: comment.authorAssociation } : {}),
     body: comment.body,
     minimized: comment.minimized,
@@ -378,6 +421,7 @@ export function buildForgeTimeline(input: {
       kind: "review",
       at: review.submittedAt,
       ...(review.author ? { author: review.author } : {}),
+      ...(review.authorAvatar ? { avatar: review.authorAvatar } : {}),
       state: review.state,
       body: review.body,
     });
@@ -396,6 +440,7 @@ export function buildForgeTimeline(input: {
       kind: "body",
       at: input.createdAt,
       ...(input.author ? { author: input.author } : {}),
+      ...(input.authorAvatar ? { avatar: input.authorAvatar } : {}),
       body: input.body,
     },
     ...entries,
