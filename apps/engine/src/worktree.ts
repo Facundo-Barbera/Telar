@@ -69,6 +69,7 @@ import path from "node:path";
 import type { ProjectAvailability } from "./volumes";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, type WorktreesRootState } from "./worktrees-location";
 import { detectCacheDedup, type CacheDedupVerdict } from "./package-caches";
+import { mountRootsFor } from "./volumes";
 
 export type GitResult = {
   status: number;
@@ -738,7 +739,9 @@ export { defaultWorktreesRoot } from "./worktrees-location";
  *  list, for the reason `volumes.ts`'s header gives: no app here imports
  *  another, and each says so. */
 function isOnRemovableVolume(target: string, platform: NodeJS.Platform = process.platform): boolean {
-  const roots = platform === "darwin" ? ["/Volumes"] : platform === "linux" ? ["/media", "/mnt"] : [];
+  // THE ONE LIST (#665). This used to be the fourth copy, and its own comment
+  // said so; the win32 hole was in every one of them.
+  const roots = mountRootsFor(platform);
   for (const root of roots) {
     const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
     if (!target.startsWith(prefix)) continue;

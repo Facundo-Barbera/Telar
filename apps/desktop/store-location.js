@@ -585,6 +585,10 @@ function archiveActive(userData, deps = {}) {
 }
 
 module.exports = {
+  // Exported so `mount-roots.test.js` can hold this copy to the one list in
+  // `@telar/engine-client` — the shell cannot import that package, so a test
+  // is what keeps the two from drifting (#665).
+  volumesResolvableOn,
   MARKER_VERSION,
   STAMP_VERSION,
   MARKER_NAME,

@@ -42,6 +42,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { mountRootsFor } from "@telar/engine-client";
 
 /** One folder somebody could descend into or take. */
 export type DirectoryEntry = {
@@ -120,17 +121,13 @@ export type DirectoryDeps = {
 
 type Resolved = Required<DirectoryDeps>;
 
-/** This platform's mount roots — where an external disk appears. */
-function platformMounts(platform: NodeJS.Platform): string[] {
-  return platform === "darwin" ? ["/Volumes"] : platform === "linux" ? ["/media", "/mnt"] : [];
-}
-
 function resolveDeps(deps: DirectoryDeps): Resolved {
   const platform = deps.platform ?? process.platform;
   return {
     home: deps.home ?? os.homedir(),
     platform,
-    mounts: deps.mounts ?? platformMounts(platform),
+    // THE ONE LIST (#665) — this was the third copy, and it said so.
+    mounts: deps.mounts ?? mountRootsFor(platform),
     realpath: deps.realpath ?? ((target) => fs.realpathSync.native(target)),
     stat: deps.stat ?? ((target) => fs.statSync(target)),
     readdir: deps.readdir ?? ((target) => fs.readdirSync(target, { withFileTypes: true })),
