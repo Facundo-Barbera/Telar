@@ -63,7 +63,7 @@ mirrors that exactly, and the whole fate model exists to protect it:
 | Fate | Produced by | Means |
 |---|---|---|
 | `exited` | **only** node-pty's own exit event | Observed, with a code |
-| `failed` | the spawn itself threw | No process was ever created |
+| `failed` | the spawn threw, **or** Telar refused it before spawning | No process was ever created — and no exit code |
 | `unknown` | everything else | We stopped being able to vouch — the slot stays held |
 
 `unknown` is reported when the host is disposed with terminals still live (the
@@ -76,12 +76,29 @@ something downstream frees a slot for a dev server that is still listening.
 
 ### One thing W4 must not assume
 
-A **missing binary** and an **unusable cwd** do *not* produce `failed`. node-pty
-forks the pty successfully in both cases and the failure happens inside the
-child, so each arrives as an ordinary **nonzero `exited` with a real pid**
-(measured: exit 126 and exit 1 respectively). `failed` is reachable only when
-`pty.fork` itself throws. So "the command was wrong" has to be read off an exit
-code, never off the fate.
+A **missing binary** does *not* produce `failed`. node-pty forks the pty
+successfully and `execvp` fails inside the child, so it arrives as an ordinary
+**nonzero `exited` with a real pid** (measured: exit 126). So "the command was
+wrong" has to be read off an exit code, never off the fate.
+
+An **unusable cwd** is different, and since #845 it is refused before anything
+is spawned — `failed`, with a sentence naming the directory and **no exit
+code**. It had to be: on macOS node-pty does not `chdir` in our process, it
+hands the cwd to `spawn-helper`, whose entire handling of a `chdir` it cannot
+make is `_exit(1)` with nothing written anywhere (1.1.0,
+`src/unix/spawn-helper.cc`). Without the check, a person who opens a terminal
+on a directory that has been moved or unmounted gets a blank terminal that
+closes and no message. `unusableCwd()` is a *diagnostic*, not a gate: the
+kernel's `chdir` in the child still enforces it, and a directory that
+disappears between the check and the spawn ends the way it always did.
+
+### Reading an `exited` — the exit code alone is not the answer
+
+node-pty only assigns `exit_code` under `WIFEXITED` (`src/unix/pty.cc:110`,
+`:189-194`), so a **signalled** child comes back as `{exitCode: 0, signal: 9}`.
+On the code alone that is indistinguishable from a command that succeeded.
+#845 was an hour of CI spent on exactly that: a stray ending from a SIGKILLed
+shell read as "an unusable cwd exited 0". Look at `signal` before believing a 0.
 
 ## 4. Killing — one function, with `platform` injected
 
@@ -154,7 +171,7 @@ suite runs on `ubuntu-latest`.
 
 ## 6. How it is proven
 
-`bun run test:desktop:pty` (registered in CI's `electron` job) runs ten cases
+`bun run test:desktop:pty` (registered in CI's `electron` job) runs eleven cases
 against real Electron, a real addon and a real shell. The central one:
 
 ```sh
@@ -167,7 +184,7 @@ fail this. **Case 2 runs the identical script through a pipe and requires the
 opposite answer**, so a run where the PTY silently degraded cannot pass.
 
 The CI marker is a **count plus those two opposite answers** —
-`PTY_HOST_OK 10/10 pty=tty pipe=not-a-tty` — printed only after all ten cases
+`PTY_HOST_OK 11/11 pty=tty pipe=not-a-tty` — printed only after all eleven cases
 pass. It is deliberately not a describe-name: a *skipped* test prints its own
 name, which is how this repo's previous "prove it ran" guard was vacuous from
 the day it was written (see `docs/operations/dispatch-board.md` §3). Both
