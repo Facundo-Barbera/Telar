@@ -106,38 +106,20 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
           rm -f "$RUNNER_TEMP/dist.p12"
 
-      # SCAFFOLDING FOR A DIFFERENT BUG, and it is not a fix for it. #758 is
-      # SessionView.body exceeding the Swift type checker's budget, which fails
-      # the ARCHIVE here before the export is ever reached. This probe is about
-      # the export, so it buys its way past #758 with a raised solver budget —
-      # applied through XCODE_XCCONFIG_FILE so that not one line of the app or
-      # of nightly.sh is altered to get the answer.
+      # NO SCAFFOLDING ON THIS BRANCH. Raising the Swift solver budget to buy
+      # past #758 was tried and does not work: run 35491585777 raised two of
+      # the four limits and run 35491754583 raised all four to 20M, and
+      # SessionView.swift:515 failed both times — the second after grinding
+      # thirteen minutes on that one expression. The budget is not the lever.
       #
-      # Do not read a green probe as #758 being fixed, and do not copy this into
-      # nightly-ios.yml: it hides the very threshold #758 is about. DELETE THIS
-      # STEP once #758 lands — a raised budget left lying around is how the next
-      # expression over the line gets to stay there unnoticed.
-      #
-      # ALL FOUR LIMITS, because the solver has four and the error names none
-      # of them. Run 35491585777 raised the scope and time thresholds alone and
-      # SessionView.swift:515 still failed, which says the limit it actually
-      # trips is the trail or the memory one. The memory figure is deliberately
-      # not enormous: a compiler that keeps allocating until the runner OOMs
-      # reports something far less legible than a threshold error.
-      - name: Raise the Swift solver budget, for this probe only (#758)
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/probe.xcconfig" <<'XCCONFIG'
-          OTHER_SWIFT_FLAGS = $(inherited) -Xfrontend -solver-expression-time-threshold=1200 -Xfrontend -solver-scope-threshold=20000000 -Xfrontend -solver-trail-threshold=20000000 -Xfrontend -solver-memory-threshold=2147483648
-          XCCONFIG
-          cat "$RUNNER_TEMP/probe.xcconfig"
-
+      # So this branch carries #758's actual fix merged in, and the archive
+      # below is the real one. That makes the export result below evidence
+      # about the export and nothing else.
       - name: Archive and export, stopping before the upload
         env:
           TELAR_ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           TELAR_ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER }}
           TELAR_ASC_KEY_PATH: ${{ runner.temp }}/apple_api_key.p8
-          XCODE_XCCONFIG_FILE: ${{ runner.temp }}/probe.xcconfig
         run: apps/ios/nightly.sh --export-only
 
       # The export writes its real reasons into an xcdistributionlogs bundle and
