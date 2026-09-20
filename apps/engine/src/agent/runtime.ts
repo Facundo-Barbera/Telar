@@ -79,7 +79,10 @@ import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interr
 import crypto from "node:crypto";
 import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
-import { agentToolSpecs, answerIdentity, onSpokenWall, withheldFromSpokenTurn, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
+import { agentToolSpecs, onSpokenWall, withheldFromSpokenTurn, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
+// The memo's key comes from the tool that writes the reply shape, and #516
+// moved that tool onto the shared sessions wall.
+import { answerIdentity } from "../sessions-tools/query";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, readsOnly, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING, AGENT_SPOKEN_BRIEFING } from "./briefing";
 import { answerOrphanedCalls, compactToolResults, foldOldTurns, minifyToolResult } from "./compact";

@@ -96,7 +96,7 @@ import {
   handleSessionsSocketMessage,
   sessionsSocketConnectCard,
 } from "./sessions-tools/socket";
-import type { SessionsCapability } from "./sessions-tools/tools";
+import type { SessionsCapability, SessionsQueryCapability } from "./sessions-tools/tools";
 import {
   collectNotesWallTools,
   ensureNotesSocketSecret,
@@ -1391,8 +1391,39 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
       requests: async (sessionId) => store.requests(sessionId),
       resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
+      /**
+       * #516's SIX READS, AND THEY ARE THE ROUTES' OWN METHODS.
+       *
+       * Nearly free in this deployment, which is the point of doing it twice:
+       * every one of them is the same `store.*` call the query route above
+       * serves, so the in-process wall and the HTTP one cannot answer
+       * differently. The clamps are the WALL's (`sessions-tools/query.ts`) and
+       * the route's, in that order, and they are the same numbers — see the
+       * query-route block for why they are stated twice rather than shared.
+       */
+      query: buildQueryCapability(),
     };
   };
+
+  /**
+   * THE QUERY PORT, BUILT ONCE FOR BOTH THINGS THAT WANT IT — the sessions wall
+   * (a session's, and the outward socket's) and the Agent's.
+   *
+   * Written as a function for `buildSessionsCapability`'s own reason: a read
+   * added to one of the two is added to both, and the drift this prevents is
+   * exactly the kind nobody notices until an agent's tool answers differently
+   * from a session's.
+   */
+  function buildQueryCapability(): SessionsQueryCapability {
+    return {
+      find: async (query) => store.findSessions(query),
+      outline: async (sessionId, window) => store.turnOutline(sessionId, window),
+      answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
+      steps: async (sessionId, runId) => ({ items: store.runItems(sessionId, runId) }),
+      step: async (sessionId, runId, step, maxChars) => store.runItem(sessionId, runId, step, maxChars),
+      grep: async (sessionId, pattern, window) => store.grepSession(sessionId, pattern, window),
+    };
+  }
   const sessionsSocketTools = (): SocketTool[] => (sessionsToolsCache ??= collectSessionsWallTools(buildSessionsCapability()));
 
   /**
@@ -1466,11 +1497,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       collectAgentTools({
         sessions: buildSessionsCapability({ sessionId: AGENT_SELF_ID }),
         notes: buildNotesCapability(),
-        query: {
-          find: async (query) => store.findSessions(query),
-          outline: async (sessionId, window) => store.turnOutline(sessionId, window),
-          answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
-        },
+        // THE SAME SIX A SESSION GETS — see `buildQueryCapability`. Passed
+        // separately from `sessions` only because the two have different owners
+        // here; `collectAgentTools` merges them back into one wall (#516).
+        query: buildQueryCapability(),
         /**
          * "HOW ARE THINGS", IN ONE CALL — #570.
          *

@@ -82,10 +82,16 @@ const TOOL_EFFECT: Readonly<Record<string, "reads" | "lands">> = {
   // than an omission: this table is held against the tools the AGENT is given,
   // and that tool is deliberately not one of them — the Agent is a thread, not a
   // session, so it has no mailbox to hold reports in. See `NOT_ON_THE_AGENTS_WALL`.
-  // The three queries and the fleet read.
+  // #516's six queries and the fleet read. Every one of them is a READ by
+  // construction rather than by classification: the query capability has no
+  // verb that writes, so there is nothing here for a future tool on it to be
+  // misfiled as.
   sessions_find: "reads",
   sessions_outline: "reads",
   sessions_answer: "reads",
+  sessions_steps: "reads",
+  sessions_step: "reads",
+  sessions_grep: "reads",
   fleet_status: "reads",
   // The notebook.
   notes_projects: "reads",

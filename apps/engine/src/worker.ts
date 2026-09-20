@@ -99,6 +99,16 @@ type WorkerClient = Pick<
   | "unsubscribe"
   | "subscriptions"
   | "resolveRequest"
+  // #516's five query routes, and every one of them a GET. They are what lets
+  // the wall's six query tools be mounted HERE as well as in the daemon's
+  // embedded worker — the parity is the point, and before this Pick grew there
+  // was no method on the client to reach a single one of them.
+  | "findSessions"
+  | "sessionOutline"
+  | "runItems"
+  | "runItem"
+  | "turnAnswer"
+  | "grepSession"
 >;
 
 /**
@@ -1405,6 +1415,29 @@ export class EngineWorker {
         requests: async (id) => (await this.options.client.session(id)).requests,
         resolveRequest: async (id, requestId, input) =>
           (await this.options.client.resolveRequest(id, requestId, { ...input, resolvedBy: "session" })).request,
+        /**
+         * #516's SIX READS, OVER THE FIVE QUERY ROUTES.
+         *
+         * THE HALF THAT WAS MISSING, and the reason the tools could not simply
+         * be mounted: the daemon's build is six `store.*` calls, and this one
+         * had no client method for a single one of the routes behind them. A
+         * wall mounted without these would have been complete in the daemon's
+         * embedded worker and absent here, so the answer a session got to
+         * "what did step twelve do" would have depended on which worker claimed
+         * its turn — which is the drift this whole capability exists to stop.
+         *
+         * NOTHING IS CLAMPED ON THE WAY THROUGH. The wall has already applied a
+         * model's ceiling and the route applies everybody's; a third one here
+         * would be a number with no owner. See `EngineClient.findSessions`.
+         */
+        query: {
+          find: (search) => this.options.client.findSessions(search),
+          outline: (id, window) => this.options.client.sessionOutline(id, window),
+          answer: (id, options) => this.options.client.turnAnswer(id, options),
+          steps: (id, runId) => this.options.client.runItems(id, runId),
+          step: (id, runId, step, maxChars) => this.options.client.runItem(id, runId, step, { maxChars }),
+          grep: (id, pattern, window) => this.options.client.grepSession(id, pattern, window),
+        },
       };
       /**
        * THE PROJECT'S NOTEBOOK, SCOPED TO THIS TURN'S PROJECT.

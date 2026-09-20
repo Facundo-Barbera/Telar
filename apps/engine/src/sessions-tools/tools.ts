@@ -210,10 +210,30 @@ export type SessionsCapability = {
     requestId: string,
     input: { decision: "accept" | "acceptForSession" | "decline"; reason?: string; answers?: Record<string, string> },
   ): Promise<EngineRequest>;
+  /**
+   * THE SIX READS THAT ASK A CONVERSATION SOMETHING — issue #516, and the one
+   * member here that is not a single store verb.
+   *
+   * A SUB-PORT RATHER THAN SIX MORE MEMBERS, because they are answered by a
+   * different half of the engine: the verbs above land on `EngineStore` methods
+   * about a session's LIFE, and these land on the `turn_summary` projection and
+   * on indexed document spans. Grouping them is what lets the Agent's wall take
+   * this one object (`AgentWalls.query`) while it supplies the rest itself.
+   *
+   * REQUIRED, NOT OPTIONAL, AND THAT IS THE POINT OF THE PORT. `cursor` above is
+   * optional because an implementation that cannot answer it has a documented
+   * fallback; there is no fallback for these — a deployment that left them out
+   * would answer a session's question differently depending on which worker ran
+   * its turn, which is the exact drift this seam exists to prevent. Both builds
+   * can answer: the daemon's from `store.*`, the worker's from `EngineClient`.
+   */
+  query: SessionsQueryCapability;
 };
 
 import { err, failure, fillWithin, json, ok, type ToolFactory } from "../tool-kit";
+import { deferredQuery, sessionQueryTools, type SessionsQueryCapability } from "./query";
 export type { ToolFactory };
+export type { SessionsQueryCapability, StepRead, StepRow } from "./query";
 
 /**
  * THE SENTENCE THE WALL CANNOT ENFORCE, so it says it instead — in the prose of
@@ -1770,6 +1790,25 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         }
       },
     ),
+    /**
+     * THE QUERY READS — issue #516, appended last for the reason the
+     * subscription tools and the cadence were: the pinned name lists in the
+     * tests GROW rather than reorder, so a change that adds a tool cannot also
+     * silently move one.
+     *
+     * THEY ARE INSIDE `sessionsTools` RATHER THAN COMPOSED AT EACH DOOR, and
+     * that is the whole of how the issue's "both deployments" requirement is
+     * met. This function has five callers — the outward MCP socket, the Codex
+     * run-socket, Claude's in-process registration in `driver.ts`, the
+     * out-of-process worker, and the cockpit Agent — and a wall assembled per
+     * caller is a wall that is complete at four of them. Composed here, a tool
+     * added to this array is on every door by construction.
+     *
+     * `deferredQuery` IS NOT CEREMONY: one of those five binds this wall over a
+     * Proxy that throws until a turn is running, and reading `capability.query`
+     * to compose the tools is a read at registration time. See its note.
+     */
+    ...sessionQueryTools(tool, deferredQuery(() => capability.query)),
   ];
 }
 
