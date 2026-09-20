@@ -509,9 +509,18 @@ describe("cards must paint", () => {
   test("a semantic tint on a reading surface goes through the floor, not through an alpha", () => {
     // `bg-success/10` is 10% of the theme's green and 90% of the scene, with no
     // floor under it anywhere — the gap #434 closed for --muted-foreground and
-    // left open here. `.tint-success` / `.tint-destructive` mix the same colour
-    // INTO the card instead; globals.css carries the argument and the number.
-    const alpha = /\bbg-(success|destructive|warning|info|verify)\/\d+\b/g;
+    // left open here. The `.tint-*` classes mix the same colour INTO the card
+    // instead; globals.css carries the argument and the number.
+    //
+    // `(?<!:)` DROPS A VARIANT-PREFIXED MATCH, which is the same rule `classes()`
+    // above applies and it is here for a sharper reason than consistency. A
+    // `hover:bg-warning/15` composites over the element's own RESTING fill, so
+    // once that fill paints there is nothing left over the scene to dissolve —
+    // and an alpha is the right tool for a hover precisely because it deepens
+    // what it sits on, which an opaque `.tint-*` cannot. Forcing the class onto
+    // a hover state would make the interaction worse, not safer. A resting fill
+    // is the thing this guard is about.
+    const alpha = /(?<!:)\bbg-(success|destructive|warning|info|verify)\/\d+\b/g;
     const offenders: string[] = [];
     for (const { file, source } of readingSurfaces) {
       for (const hit of source.matchAll(alpha)) offenders.push(`${file}: ${hit[0]} → tint-${hit[1]}`);

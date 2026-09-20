@@ -434,7 +434,15 @@ export function DiffUnknownBand({
     }
   };
   return (
-    <div className="border-b border-warning/30 bg-warning/10 px-4 py-2.5">
+    /* `tint-warning` rather than `bg-warning/10` (#691). This band carries a
+       semantic fill AND semantic ink — `text-warning` sentences on 10% of
+       --warning — so over the wash both ends of the pair were 90% desktop, and
+       the one band whose whole job is to say "this list may be incomplete"
+       became the least legible thing on the surface. Not the same case as
+       ReconciliationBand's `bg-muted/25` above: that is a neutral separator
+       under ordinary ink, which #434's light-under-glass floor already covers.
+       The hairline keeps its alpha — a border is a mark, not a ground. */
+    <div className="border-b border-warning/30 tint-warning px-4 py-2.5">
       {sentences.map((sentence) => (
         <p key={sentence} className="flex gap-1.5 text-2xs leading-relaxed text-warning">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />

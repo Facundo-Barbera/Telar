@@ -900,13 +900,20 @@ html:not(.dark)[data-telar-shell][data-translucent] {
    renders in every scene, so the VALUE is the thing that has to stop moving.
 
    12% IS THE FLOOR AND IT IS ONE NUMBER, in one declaration, so a re-tune
-   cannot leave the two tints disagreeing. It replaces 10% of an unknown with
-   12% of the live --success or --destructive against the live --card, which
-   means both schemes and every Look are already covered — there is nothing
-   scheme-specific to state and so nothing to keep in sync.
+   cannot leave the tints disagreeing. It replaces 10% of an unknown with 12% of
+   the live token against the live --card, which means both schemes and every
+   Look are already covered — there is nothing scheme-specific to state and so
+   nothing to keep in sync.
 
    THE INK IS UNTOUCHED. `text-success` on an added line keeps the colour its
-   theme gave it. The wash never retints a mark, and neither does this. */
+   theme gave it. The wash never retints a mark, and neither does this.
+
+   A RESTING FILL ONLY, AND THAT IS NOT A LIMITATION. There is deliberately no
+   variant-capable form of these: a HOVER tint should compose with whatever it is
+   over — deepening the surface under the pointer — which is exactly what an
+   alpha is for and exactly what an opaque mix cannot do. `hover:bg-warning/15`
+   over a band that now paints is correct as written; the same string over a band
+   that did not paint was the bug, and painting the band is the fix for both. */
 :root {
   --tint-floor: 12%;
 }
@@ -915,6 +922,9 @@ html:not(.dark)[data-telar-shell][data-translucent] {
 }
 .tint-destructive {
   background-color: color-mix(in oklab, var(--destructive) var(--tint-floor), var(--card));
+}
+.tint-warning {
+  background-color: color-mix(in oklab, var(--warning) var(--tint-floor), var(--card));
 }
 
 /* ─── THE BACKDROP LAYER (lib/backdrop.ts) ──────────────────────────────────
