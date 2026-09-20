@@ -35,6 +35,12 @@
  * is why dictation already works on this Mac and why a tunnel is the cheap fix
  * rather than HTTPS. Worth naming in the sentence, because the obvious reading of
  * "not secure" is "go and get a certificate".
+ *
+ * THE LONG FORM OF THIS SENTENCE is `docs/dictation-secure-context.md`: the exact
+ * `ssh -L` that produces a loopback origin, the OS-keyboard fallback and what it
+ * costs in transcription quality, and the permanent public ledger entry that
+ * Tailscale HTTPS buys the secure context with. Two lines in a caption cannot
+ * carry that, and the reader who wants it should not have to rediscover it.
  */
 export function microphoneUnavailable(facts: { secure: boolean; canRecord: boolean }): string | undefined {
   if (!facts.secure) {

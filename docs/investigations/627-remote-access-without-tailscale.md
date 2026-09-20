@@ -640,23 +640,50 @@ should appear in the product, not just in this document.
 
 ## 10. HTTPS to the phone, and the feature it decides
 
-`getUserMedia` requires a secure context, so **dictation works only where the
-phone gets HTTPS** (`lib/dictation/use-dictation.ts:98`, and the Remote access
-pane already says so). Per path:
+> **CORRECTED BY #639.** This section originally said dictation works *only*
+> where the phone gets HTTPS. That is wrong, and the error mattered: it made
+> every route here look like it had to buy a certificate. `getUserMedia`
+> requires a **secure context**, which is not the same thing — W3C Secure
+> Contexts treats `127.0.0.0/8` and `::1/128` as Potentially Trustworthy with
+> no certificate at all. The row below that says so is the cheapest path on
+> this page and it needs none of the architecture in §12. The long form, with
+> the exact command, is [`../dictation-secure-context.md`](../dictation-secure-context.md).
 
-| Path | HTTPS to the phone? | Dictation |
+`getUserMedia` requires a secure context, so **dictation works wherever the
+phone's browser has one** — HTTPS, *or* a loopback origin
+(`lib/dictation/use-dictation.ts`, `canRecord`; the composer now says which of
+those is missing rather than drawing no button). Per path:
+
+| Path | Secure context on the client? | Dictation |
 |---|---|---|
-| LAN IP / tailnet IP (`http://100.x:3000`) | no | **broken today** |
+| LAN IP / tailnet IP (`http://100.x:PORT`) | no | **broken today** |
+| **`ssh -L` forward to the Mac** | **yes — loopback, no certificate** | **works today** |
 | Tailscale Serve (MagicDNS) | yes, real cert | works |
 | **Tailscale Funnel** | yes, real cert | works |
 | Relay (our origin) | yes, by construction | works |
 | Hosted cockpit on Vercel | yes | works |
 | Cloudflare Tunnel | yes | works |
 | Self-signed cert served by Telar | **only after per-device trust** | see below |
+| OS keyboard dictation / `window.telar.dictate` | not needed — the page never opens a mic | works, without keyterms (#581) |
 
-Every candidate architecture delivers HTTPS. The one that does not is the path
-most people are on today — the tailnet IP — which is why `tailscaleServe` exists
-and why the failure in §11.2 matters.
+Every candidate architecture delivers a secure context. The one that does not is
+the path most people are on today — the tailnet IP — which is why `tailscaleServe`
+exists and why the failure in §11.2 matters.
+
+**The `ssh -L` row is the one to reach for first**, and it is not in §12 because
+it needs nothing built: it works against what is shipping, it requires no change
+to anybody's network, it leaves Telar bound to loopback only, and it bypasses no
+gate (`lib/remote/gate.ts` decides on the host token and device cookie, never on
+the source address). Its limit is that iOS has no built-in SSH client — which is
+the actual case for a *product* forwarder, and the reason that forwarder belongs
+in this document's scope rather than #639's.
+
+**A note on the Tailscale rows, wherever they are offered:** enabling HTTPS
+certificates publishes the machine's DNS name to a public Certificate
+Transparency ledger, permanently and irreversibly, and a default macOS machine
+name carries the account holder's surname. §12.A's "offer Funnel in the Remote
+access pane" must state that **before** the click and suggest renaming the
+machine first.
 
 **On the self-signed thread:** a manually trusted self-signed origin *is* a
 secure context, so dictation would work — but on iOS that means downloading a
