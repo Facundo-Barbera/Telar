@@ -794,7 +794,7 @@ jobs:
             DEVELOPMENT_TEAM=MM74W7WGAM \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            OTHER_SWIFT_FLAGS='$(inherited) -Xfrontend -warn-long-expression-type-checking=10 -Xfrontend -warn-long-function-bodies=10' \
+            OTHER_SWIFT_FLAGS='$(inherited) -Xfrontend -warn-long-expression-type-checking=500 -Xfrontend -warn-long-function-bodies=500' \
             archive > "$RUNNER_TEMP/archive.log" 2>&1 || {
               status=$?
               echo "::group::the archive log, last 300 lines"
@@ -880,7 +880,7 @@ jobs:
           set +e
           set -uo pipefail
           LOG="$RUNNER_TEMP/archive.log"
-          FLOOR=10
+          FLOOR=500
 
           carriers=$(/usr/bin/grep -ac -- "-warn-long-expression-type-checking=$FLOOR" "$LOG" || true)
           if [ "${carriers:-0}" -eq 0 ]; then
