@@ -353,6 +353,14 @@ jobs:
           }
           prove "the swap helper, run for real against fake bundles" "the ditto swap helper"
           prove "writing the Keychain item" "the push relay's Keychain write"
+          # #808's CONTROL, and it is macOS-only for the same reason the bug was.
+          # Only a 3.2-era bash aborts on an empty array under `set -u`, and
+          # /bin/bash here is Apple's 3.2.57 — on the ubuntu leg it is 5.x, the
+          # failure cannot be reproduced, and the block skips itself. So this is
+          # the one runner where "the guards are load-bearing" is asserted by
+          # anything, and where a skip would leave the positive block passing
+          # against scripts that had lost every guard.
+          prove "the guards are load-bearing: removing one reproduces #808" "the bash 3.2 empty-array guards in scripts/*.sh"
 
   # THE ELECTRON SUITE, WHICH NOTHING RAN UNTIL NOW (#622).
   #
