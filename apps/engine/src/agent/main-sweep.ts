@@ -30,11 +30,11 @@
  * than the marker would be, and the answer is the same.
  */
 import fs from "node:fs";
-import path from "node:path";
+import { statePaths } from "../state";
 
 /** The document the designation lived in, at the engine root. */
 export function mainSessionFile(engineRoot: string): string {
-  return path.join(engineRoot, "main-session.json");
+  return statePaths(engineRoot).mainSession;
 }
 
 export type MainSweep = {

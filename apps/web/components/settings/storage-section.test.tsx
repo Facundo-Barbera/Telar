@@ -17,7 +17,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { StorageReport } from "@telar/engine-client";
-import { measuredLabel, orderEntries, StorageSection } from "./storage-section";
+import { cacheLabel, measuredLabel, orderEntries, StorageSection } from "./storage-section";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -307,5 +307,54 @@ describe("the two decisions that are pure functions", () => {
     const noon = new Date(2026, 8, 19, 12, 0, 0).getTime();
     expect(measuredLabel(noon, noon + 60_000)).toMatch(/^as of \d/);
     expect(measuredLabel(noon, noon + 3 * 24 * 60 * 60 * 1000)).toContain("Sep");
+  });
+});
+
+/**
+ * THE SENTENCE UNDER THE CHECKOUTS FIGURE — issue #633.
+ *
+ * It exists because the figure itself cannot carry this: `stat.blocks` counts
+ * a copy-on-write clone at full size, so "Session checkouts — 7.3 GB" reads
+ * identically whether deduplication is working or not. The row that makes
+ * somebody ask is precisely the row that cannot answer.
+ */
+describe("what a checkout's node_modules costs, and why", () => {
+  test("one disk says nothing at all", () => {
+    // The engine filters `same-device` out, so this is the empty case — and
+    // most people are it. Their entitlement is silence, not a reassuring row.
+    expect(cacheLabel([])).toBeUndefined();
+  });
+
+  test("a cache on another disk says what it costs and what would fix it", () => {
+    const said = cacheLabel([{ name: "bun", path: "/Users/someone/.bun/install/cache", dedup: "different-device" }])!;
+    expect(said).toContain("bun");
+    expect(said).toContain("copies every package instead of sharing it");
+    expect(said).toContain("same disk");
+    // NOT A PATH. The sentence is about a relationship between two locations,
+    // and printing either of them invites somebody to go and look at the wrong
+    // one — the cache is not where the bytes are.
+    expect(said).not.toContain("/Users/someone");
+  });
+
+  test("a cache nobody has ever created is said differently, and is not called a different disk", () => {
+    const said = cacheLabel([{ name: "pnpm", path: "/Users/someone/Library/pnpm", dedup: "unreachable" }])!;
+    expect(said).toContain("no cache Telar can reach");
+    expect(said).toContain("may simply never have run here");
+    // THE DISTINCTION IS THE WHOLE POINT OF TWO WORDS. Calling an absent cache
+    // "a different disk" would be a wrong answer dressed as a precise one.
+    expect(said).not.toContain("different disk");
+  });
+
+  test("both at once are two sentences, not a merged count", () => {
+    const said = cacheLabel([
+      { name: "bun", path: "/a", dedup: "different-device" },
+      { name: "yarn", path: "/b", dedup: "unreachable" },
+    ])!;
+    expect(said).toContain("bun");
+    expect(said).toContain("yarn");
+    // "2 package caches have problems" would send a person looking for one
+    // thing where there are two, with two different answers.
+    expect(said).toContain("copies every package");
+    expect(said).toContain("no cache Telar can reach");
   });
 });

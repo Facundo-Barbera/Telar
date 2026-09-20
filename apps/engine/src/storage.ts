@@ -15,11 +15,19 @@
  * project would attribute their repository's bytes to Telar, which is how a
  * storage pane turns into a disk cleaner.
  *
- * IT MEASURES WHAT `du` MEASURES — allocated blocks, not apparent size — so the
- * number agrees with Finder's "on disk" and with the terminal somebody will
- * check it against. Hard links are counted once; a file whose blocks are zero
- * but whose size is not (macOS stores a compressed file's data in an extended
- * attribute) falls back to its size rather than reporting nothing.
+ * IT MEASURES WHAT `du` MEASURES — allocated blocks — so the number agrees with
+ * Finder's "on disk" and with the terminal somebody will check it against. Hard
+ * links are counted once; a file whose blocks are zero but whose size is not
+ * (macOS stores a compressed file's data in an extended attribute) falls back
+ * to its size rather than reporting nothing.
+ *
+ * THAT MAKES IT AN APPARENT FIGURE, NOT A PHYSICAL ONE, and #633 is the reason
+ * that sentence is here rather than implied. `du` and `stat.blocks` are both
+ * blind to APFS block sharing, so a copy-on-write clone — which is what `bun
+ * install` makes by default on macOS — is counted at full size. A deduplicated
+ * `node_modules` and a fully duplicated one weigh the same in this pane. See
+ * `bytesOf`, which carries the measurement, and `package-caches.ts`, which
+ * answers the deduplication question from `st_dev` because this cannot.
  *
  * NOTHING HERE CACHES, POLLS, OR SCHEDULES. This is a function that walks a
  * tree and returns a number with a timestamp on it; when it runs is the
@@ -33,6 +41,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { StorageCategory, StorageEntry, StorageReport } from "@telar/engine-client";
+import { detectCacheDedup } from "./package-caches";
 
 /**
  * The store root's own subdirectories, each one a category.
@@ -118,6 +127,29 @@ type Walk = { bytes: number; partial: boolean };
  *  many descriptors as the tree is wide. */
 const STAT_BATCH = 64;
 
+/**
+ * ONE FILE'S BYTES — APPARENT, NOT PHYSICAL, AND THE DIFFERENCE MATTERS (#633).
+ *
+ * `stat.blocks` is what the filesystem ALLOCATED to this file, and on APFS that
+ * is not what the file COSTS. A copy-on-write clone — which is what `cp -c`
+ * makes, and what `bun install` makes by default on macOS, since its default
+ * backend is `clonefile` — shares its blocks with the original and reports the
+ * full count anyway. So a deduplicated `node_modules` and a fully duplicated one
+ * weigh exactly the same here.
+ *
+ * Measured, deliberately, on a file the measurement was allowed to move: a real
+ * 256 MB write consumed 257 MB of free space, `cp -c` of it consumed −1 MB, and
+ * a plain `cp` consumed 256 MB. `du` read 262144 KB for all three and
+ * `stat.blocks` read 524288 for all three. **Only a `df` delta separated the
+ * free clone from the paid copy.**
+ *
+ * THIS IS NOT A BUG TO FIX HERE. Physical usage is not a per-file quantity on a
+ * filesystem with block sharing — the honest per-file answer IS the apparent
+ * size, and the pane's copy now says so rather than implying a number it cannot
+ * produce. What must not happen is somebody using this figure to decide whether
+ * deduplication is working: it reads the same either way. `package-caches.ts`
+ * answers that question, and it answers it from `st_dev` rather than from bytes.
+ */
 function bytesOf(stat: fs.Stats): number {
   const allocated = stat.blocks * 512;
   // macOS keeps a compressed file's data in an extended attribute and reports
@@ -310,6 +342,28 @@ export async function measureStorage(input: {
     // about, and that is almost always the big one.
     .sort((left, right) => right.bytes - left.bytes);
 
+  /**
+   * WHETHER AN INSTALL INTO A CHECKOUT CAN CLONE FROM THE CACHE — issue #633.
+   *
+   * IT BELONGS ON THIS REPORT AND NOWHERE ELSE, because this is the pane where
+   * somebody reads "Session checkouts — 7.3 GB" and asks why. The answer is
+   * often that the checkouts and the package cache are on different
+   * filesystems, so every install pays a full copy that the same install on one
+   * disk would have got for free.
+   *
+   * AND THE FIGURES ABOVE CANNOT SHOW IT. `bytesOf` is `stat.blocks`, which
+   * counts a copy-on-write clone at its full apparent size — see that function.
+   * So the row that would make somebody look is precisely the row that reads
+   * identically whether deduplication is working or not. This is the answer
+   * from `st_dev`, which is the only place it can be read from.
+   *
+   * ONLY THE ONES WORTH SAYING. A cache on the same device is the single-disk
+   * case, which is most people, and their whole entitlement is silence.
+   */
+  const caches = detectCacheDedup(worktrees)
+    .filter((verdict): verdict is typeof verdict & { dedup: "different-device" | "unreachable" } => verdict.dedup !== "same-device")
+    .map(({ name, path: cache, dedup }) => ({ name, path: cache, dedup }));
+
   return {
     root,
     total: entries.reduce((sum, entry) => sum + entry.bytes, 0),
@@ -317,5 +371,6 @@ export async function measureStorage(input: {
     measuredAt: input.now ?? Date.now(),
     tookMs: Date.now() - started,
     partial,
+    ...(caches.length > 0 ? { caches } : {}),
   };
 }

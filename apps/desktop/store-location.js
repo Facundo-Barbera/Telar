@@ -115,6 +115,25 @@ function stampPath(storeRoot) {
   return path.join(storeRoot, STAMP_NAME);
 }
 
+/**
+ * CAN THIS PLATFORM BE ASKED WHICH REMOVABLE VOLUME A PATH IS ON — issue #665.
+ *
+ * The shell's own copy of `apps/engine/src/volumes.ts`'s `volumeSupportOn`, for
+ * the reason the deps below give: the gate runs before the engine exists, so it
+ * cannot import from it. Two values rather than that function's three, because
+ * the gate never needs to tell "found but not identified" from "identified" —
+ * `atMovedVolume` already copes with a missing uuid.
+ *
+ * WHY IT IS A CHECK AND NOT AN OMISSION. Without it, a store on `D:\` records
+ * no volume and every absence looks like a deletion: unplugging the drive skips
+ * the whole `waiting` state — no window naming the drive, no `volume-watch`
+ * recovery, no "nothing has been touched" — and lands on a flat refuse that
+ * invites somebody to start over on top of their own history.
+ */
+function volumesResolvableOn(platform = process.platform) {
+  return platform === "darwin" || platform === "linux";
+}
+
 function resolveDeps(deps = {}) {
   return {
     fs: deps.fs ?? fsDefault,
@@ -124,6 +143,10 @@ function resolveDeps(deps = {}) {
     // another, each saying so.
     isMountPoint: deps.isMountPoint ?? defaultIsMountPoint,
     findVolumeMount: deps.findVolumeMount ?? (() => undefined),
+    // Injected for the same reason the two above are: a test cannot change the
+    // platform it runs on, and asserting a Windows branch by not running it is
+    // the shape that ships a branch nobody has ever executed.
+    volumesResolvable: deps.volumesResolvable ?? volumesResolvableOn(),
     now: deps.now ?? (() => Date.now()),
     newId: deps.newId ?? (() => crypto.randomUUID()),
   };
@@ -349,6 +372,35 @@ function resolveStoreLocation(input, deps = {}) {
   // On the machine's own disk there is no drive to be absent: the store is
   // either there and stamped, or somebody moved or deleted it by hand.
   if (!active.volume) return atRecordedPath(active, resolved);
+
+  /**
+   * A RECORDED VOLUME THIS PLATFORM CANNOT RESOLVE — issue #665.
+   *
+   * Every branch below asks whether the drive is mounted and, if not, where it
+   * went. On a platform with no mount roots both questions answer "no" for a
+   * drive that is plugged in and working, so a store on `D:\` would fall
+   * through to `waiting` and sit there forever while the person is looking at
+   * the drive.
+   *
+   * SO THE STORE IS OPENED IF IT IS THERE, and only the drive-absent REASONING
+   * is refused. `atRecordedPath` reads the stamp, which is the check that
+   * actually protects the history; what is given up is the ability to say "your
+   * drive is unplugged" rather than "the store is not where it was recorded".
+   * The refusal says which of the two this build cannot tell, so the message is
+   * about this platform rather than about the person's disk.
+   */
+  if (!resolved.volumesResolvable) {
+    const here = atRecordedPath(active, resolved);
+    if (here.state === "ready") return here;
+    return {
+      state: "refuse",
+      reason: "volume-unresolvable",
+      detail: active.path,
+      message:
+        `Telar's store is recorded on ${describeVolume(active.volume)}, and this build cannot tell whether that drive is connected. ` +
+        `It has not opened or created anything. Reconnect the drive if it is out, or choose the store's location again.`,
+    };
+  }
 
   // THE VOLUME FIRST, and this order is the one that matters. A stat on the
   // store path can succeed inside a leftover empty mount point, which is the

@@ -201,6 +201,51 @@ test("the empty folder macOS leaves behind is not a mount, and waits", () => {
   expect(outcome.state).toBe("waiting");
 });
 
+/**
+ * THE PLATFORM THAT CANNOT ANSWER THE QUESTION — issue #665.
+ *
+ * `mountRootsFor` returns an empty list on win32, so nothing is ever a mount
+ * point there and `findVolumeMount` can never resolve a drive. Before this,
+ * both branches above answered "no" for a drive that was plugged in and
+ * working, and a store on `D:\` fell through to `waiting` and sat there
+ * forever while the person was looking at the drive.
+ *
+ * THE PLATFORM IS INJECTED because a test cannot change the one it runs on,
+ * and a Windows branch asserted by not running it is a branch nobody has ever
+ * executed.
+ */
+test("a platform that cannot resolve volumes still opens the store when it is there", () => {
+  const drive = makeVolumeStore();
+  store.adoptStore(userData, { path: drive.root, storeId: drive.storeId, volume: { mount: drive.mount, uuid: "UUID-1", label: "Drive" } });
+  const outcome = store.resolveStoreLocation(
+    { userData, defaultRoot: path.join(scratch, "default") },
+    // Nothing is a mount and no uuid resolves — which is exactly what win32
+    // reports for a drive that is present and fine.
+    { isMountPoint: mountsAt(), volumesResolvable: false },
+  );
+  expect(outcome.state).toBe("ready");
+  expect(outcome.root).toBe(drive.root);
+});
+
+test("…and says which question it cannot answer when the store is not there", () => {
+  const drive = makeVolumeStore();
+  store.adoptStore(userData, { path: drive.root, storeId: drive.storeId, volume: { mount: drive.mount, uuid: "UUID-1", label: "Drive" } });
+  fs.rmSync(drive.root, { recursive: true, force: true });
+  const outcome = store.resolveStoreLocation(
+    { userData, defaultRoot: path.join(scratch, "default") },
+    { isMountPoint: mountsAt(), volumesResolvable: false },
+  );
+  // REFUSE, NOT `first-run`, which is the property this whole module exists for:
+  // the marker is there and the store is not reachable, and initialising over
+  // somebody's absent history is the failure that must stay impossible.
+  expect(outcome.state).toBe("refuse");
+  expect(outcome.reason).toBe("volume-unresolvable");
+  // The message is about this build rather than about their disk, because
+  // "your drive is unplugged" is precisely what it does not know.
+  expect(outcome.message).toContain("cannot tell whether that drive is connected");
+  expect(outcome.message).toContain("Drive");
+});
+
 test("a present drive with the right store opens", () => {
   const drive = makeVolumeStore();
   store.adoptStore(userData, { path: drive.root, storeId: drive.storeId, volume: { mount: drive.mount, uuid: "UUID-1" } });

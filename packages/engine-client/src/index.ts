@@ -41,6 +41,7 @@ import {
   type JournalRetirement,
   type RetentionBucket,
   type RetentionPolicy,
+  type StoreCopy,
   type TextGenPolicy,
   type WorktreeMoveResult,
   type WorktreeInventory,
@@ -1752,6 +1753,22 @@ export class EngineClient {
    */
   reclaimJournal(): Promise<{ reclaimed: JournalReclaim }> {
     return this.request("POST", "/v2/storage/journal/reclaim");
+  }
+
+  /**
+   * A COPY OF THIS STORE SOMEBODY CAN OPEN WITHOUT RISK — issue #665.
+   *
+   * SLOW, and it writes to `destination`, which must not already exist. It does
+   * NOT touch the live store: the database is copied through `VACUUM INTO`, so
+   * the copy is consistent rather than pages from different moments, and no
+   * compaction or watermark is written on this side.
+   *
+   * The reproducible tier is deliberately not carried — checkouts, Python
+   * environments and toolchains are re-makeable, and on a real machine they are
+   * most of the bytes.
+   */
+  copyStore(destination: string): Promise<{ copy: StoreCopy }> {
+    return this.request("POST", "/v2/storage/copy", { destination });
   }
 
   /**

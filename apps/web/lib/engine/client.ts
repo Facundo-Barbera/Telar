@@ -59,6 +59,7 @@ import type {
   JournalRetirement,
   RetentionBucket,
   RetentionPolicy,
+  StoreCopy,
   StorageReport,
   TextGenPolicy,
   WorktreeMoveResult,
@@ -665,6 +666,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  the database under a lock. It drops rows a settled turn has superseded
      *  and never a turn, an item or an answer. */
     reclaimJournal: () => request<{ reclaimed: JournalReclaim }>(fetcher, "POST", "/api/storage/journal/reclaim", {}),
+    /** A copy of this store somebody can open without risk — see `StoreCopy`.
+     *  SLOW, writes to a destination that must not exist, and never touches the
+     *  live store: the database goes through `VACUUM INTO`. The reproducible
+     *  tier (checkouts, Python, toolchains) is deliberately not carried. */
+    copyStore: (destination: string) => request<{ copy: StoreCopy }>(fetcher, "POST", "/api/storage/copy", { destination }),
     /** The retention window in force, and what each candidate window would take
      *  on THIS store — see `RetentionBucket`. Read-only: nothing is deleted to
      *  answer it. `bytes` costs a scan of every qualifying row's text where the

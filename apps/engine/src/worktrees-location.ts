@@ -31,7 +31,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { atomicWrite } from "./atomic";
-import { findVolumeMount, isMountPoint, volumeForRoot, type VolumeDeps, type VolumeIdentity } from "./volumes";
+import { statePaths } from "./state-paths";
+import { findVolumeMount, isMountPoint, volumeForRoot, volumeSupportOn, type VolumeDeps, type VolumeIdentity } from "./volumes";
 
 /**
  * The default: beside everything else the engine keeps. What "put it back"
@@ -85,6 +86,24 @@ export type WorktreesRootState =
    *  designed-for state, and plugging the drive back in resolves it with
    *  nothing written in the meantime. */
   | { kind: "absent"; root: string; volume: VolumeIdentity; label?: string }
+  /**
+   * Chosen, on a drive, and THIS PLATFORM CANNOT TELL WHETHER IT IS HERE —
+   * issue #665.
+   *
+   * `mountRootsFor` returns an empty list on win32, so nothing is ever a mount
+   * point there and `findVolumeMount` can never resolve a drive. Before this
+   * state existed, a checkouts root on `D:\` took the `configured` branch and
+   * reported as fine whether or not the disk was connected: the blocker never
+   * fired, the cut proceeded, and `mkdirSync` failed mid-session with an I/O
+   * error instead of the sentence this type exists to carry.
+   *
+   * IT IS A BLOCKER, LIKE `absent`, because the honest thing to do with an
+   * unverifiable drive is refuse the cut and say why — not cut and hope. It is
+   * NOT `absent`, because "your drive is unplugged" is precisely the claim that
+   * cannot be made here, and a person looking at a connected drive being told
+   * to plug it in would trust the next message less.
+   */
+  | { kind: "unverifiable"; root: string; volume: VolumeIdentity; label?: string }
   /** The file is there and this build cannot read it. */
   | { kind: "unreadable"; reason: string };
 
@@ -105,12 +124,22 @@ export function worktreesRootBlocker(state: WorktreesRootState): string | undefi
   if (state.kind === "absent") {
     return `Telar keeps its session checkouts on ${state.label ?? path.basename(state.volume.mount)}, which is not connected. Plug it back in, or choose another location in Settings ▸ Storage.`;
   }
+  if (state.kind === "unverifiable") {
+    // NAMES WHAT THIS BUILD CANNOT DO, not what the person's disk is doing.
+    // "Plug it back in" would be wrong half the time and unfalsifiable the
+    // other half; this sends them to the one action that always works.
+    return `Telar keeps its session checkouts on ${state.label ?? path.basename(state.volume.mount)}, and this build cannot tell whether that drive is connected. Make sure it is, or choose a location on this machine's own disk in Settings ▸ Storage.`;
+  }
   if (state.kind === "unreadable") return state.reason;
   return undefined;
 }
 
+/** Through `statePaths`, which is the ONLY way to name a store-root file
+ *  (#665). It is importable from here because `state-paths.ts` depends on
+ *  nothing but `node:path` — `state.ts` imports this module, so the list living
+ *  there is exactly what made this one a hand-written join for so long. */
 function locationFile(engineRoot: string): string {
-  return path.join(engineRoot, "worktrees-location.json");
+  return statePaths(engineRoot).worktreesLocation;
 }
 
 /**
@@ -159,6 +188,26 @@ export function readWorktreesRoot(engineRoot: string, deps: VolumeDeps = {}): Wo
   const volume = record.volume;
   const label = typeof record.label === "string" ? record.label : undefined;
   if (!volume) return { kind: "configured", root: path.resolve(record.root) };
+
+  /**
+   * A RECORDED VOLUME THIS PLATFORM CANNOT RESOLVE — issue #665, and it is
+   * checked BEFORE the two branches below rather than after.
+   *
+   * Both of them ask the same question in different words — is this mounted,
+   * and if not where did it go — and on a platform with no mount roots both
+   * answer "no" for a drive that is plugged in and working. Asked in order,
+   * that lands on `absent`, which tells somebody looking at their connected
+   * drive to plug it in. Asked first, this says the one true thing instead.
+   *
+   * THE PATH STILL DECIDES when it is readable: a root that exists is used, and
+   * only the drive-absent REASONING is refused. What is given up is the ability
+   * to say which of "unplugged" and "deleted" happened, which is exactly what
+   * is not known.
+   */
+  if (volumeSupportOn(deps.platform) === "unsupported") {
+    if (fs.existsSync(record.root)) return { kind: "configured", root: path.resolve(record.root), volume, ...(label ? { label } : {}) };
+    return { kind: "unverifiable", root: path.resolve(record.root), volume, ...(label ? { label } : {}) };
+  }
 
   // Still mounted where it was: the ordinary case, and the cheapest check.
   if (isMountPoint(volume.mount, deps) && fs.existsSync(record.root)) {

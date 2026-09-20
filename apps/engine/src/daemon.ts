@@ -1031,7 +1031,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   void syncOrientationSkill();
   /** The per-transcript parse cache behind /v2/usage — beside the rates
    *  snapshot it prices with. See usage.ts. */
-  const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
+  const usageScanCachePath = store.paths.usageScanCache;
   /**
    * THE LAST THING THE HUBS SAID, and when.
    *
@@ -2543,6 +2543,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * A SAFE COPY OF THIS STORE — issue #665.
+       *
+       * THE ROUTE WHOSE ABSENCE WAS THE FINDING. There was no sanctioned way to
+       * look at a store without opening the live one, so every "what is
+       * actually in there" became a hand-run query against the one
+       * irreplaceable artifact — which is how #646's figures came to be
+       * corrected twice.
+       *
+       * SLOW, AND A POST BECAUSE IT WRITES — to a destination that must not
+       * already exist, which is the one refusal that matters here. It does not
+       * touch this store: `VACUUM INTO` takes a read transaction and writes
+       * elsewhere, with no compaction and no watermark.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/storage/copy") {
+        const input = (await body(request)) as { destination?: unknown };
+        if (typeof input.destination !== "string" || !input.destination.trim())
+          throw new HttpError(400, "invalid_request", "name a folder for Telar to create the copy in");
+        writeJson(response, 200, { copy: store.copyStoreTo(input.destination.trim()) });
+        return;
+      }
+      /**
        * WHAT A RETENTION WINDOW WOULD TAKE, AND THE WINDOW ITSELF — #542, #646.
        *
        * READ-ONLY, AND THE NUMBERS ARE THE READER'S OWN. That is the whole
@@ -2719,7 +2740,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, {
           usage: await readUsageReport(
             { sinceMs, untilMs, resolution, timeZone },
-            { ratesCachePath: path.join(store.paths.root, "usage-model-rates.json"), scanCachePath: usageScanCachePath },
+            { ratesCachePath: store.paths.usageModelRates, scanCachePath: usageScanCachePath },
           ),
         });
         return;
@@ -5194,7 +5215,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const { BrowserRuntime, BrowserRouter, desktopBrowserFromEnv } = await import("./browser");
       // Persistent per-session profiles, under the engine's own state root:
       // a login the human helped with on Tuesday still holds on Thursday.
-      browser = new BrowserRuntime({ profileRoot: path.join(store.paths.root, "browser-profiles") });
+      browser = new BrowserRuntime({ profileRoot: store.paths.browserProfiles });
       /**
        * THE SHARED BROWSER (§6 of the plan): when the desktop shell exported
        * its control server, calls route to the Electron-hosted tabs the human

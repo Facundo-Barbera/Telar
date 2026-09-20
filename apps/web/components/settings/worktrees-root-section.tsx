@@ -45,6 +45,15 @@ export function worktreesRootHint(state: WorktreesRoot): string {
     return state.blocker ?? "Telar cannot read where session checkouts belong, and will not guess. Choose a location again.";
   }
   if (state.kind === "absent") return state.blocker ?? `${state.root} is on a drive that is not connected.`;
+  /**
+   * THE PLATFORM THAT CANNOT ANSWER — issue #665, and it deliberately does not
+   * borrow `absent`'s sentence. "Plug it back in" would be wrong half the time
+   * and unfalsifiable the other half; a person looking at a connected drive
+   * being told to connect it trusts the next message less.
+   */
+  if (state.kind === "unverifiable") {
+    return state.blocker ?? `${state.root} is on a drive this build cannot check. Make sure it is connected, or choose a location on this machine's own disk.`;
+  }
   if (state.kind === "default") {
     return `${state.root} — beside everything else Telar keeps. Checkouts are re-cut from the commit each session recorded, so they are the one thing here that comes back.`;
   }

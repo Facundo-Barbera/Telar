@@ -30,7 +30,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { JournalReclaim, StorageCategory, StorageEntry, StorageReport } from "@telar/engine-client";
+import type { JournalReclaim, PackageCacheStatus, StorageCategory, StorageEntry, StorageReport } from "@telar/engine-client";
 import {
   ActivityIcon,
   BotIcon,
@@ -175,6 +175,38 @@ export function measuredLabel(measuredAt: number, now = Date.now()): string {
  * like conversations being deleted; "superseded" is the word that is both true
  * and reassuring, and it is true because of the guard in `compactJournal`.
  */
+/**
+ * WHY A CHECKOUT'S `node_modules` COSTS WHAT IT COSTS — issue #633.
+ *
+ * It reads directly under the checkouts figure because that is the row
+ * somebody looks at and the question they then ask. Hardlinks and APFS clones
+ * are same-filesystem only, so a checkout on one disk and a package cache on
+ * another means every install pays a real full copy — and the figure above
+ * cannot show that, because `stat.blocks` counts a clone at full size either
+ * way.
+ *
+ * `unreachable` IS SAID DIFFERENTLY, and the distinction is the whole point of
+ * having two words: a cache that does not exist yet is the ordinary state of a
+ * fresh machine, not evidence of anything, and calling it "a different disk"
+ * would be a wrong answer dressed as a precise one.
+ *
+ * NOTHING AT ALL ON ONE DISK. The engine sends no row for a cache on the same
+ * device, so this is never reached by the people it would only confuse.
+ */
+export function cacheLabel(caches: readonly PackageCacheStatus[]): string | undefined {
+  if (caches.length === 0) return undefined;
+  const elsewhere = caches.filter((cache) => cache.dedup === "different-device").map((cache) => cache.name);
+  const gone = caches.filter((cache) => cache.dedup === "unreachable").map((cache) => cache.name);
+  const said: string[] = [];
+  if (elsewhere.length > 0) {
+    said.push(
+      `${elsewhere.join(", ")} keeps its download cache on a different disk from your checkouts, so installing into one copies every package instead of sharing it. Putting the cache on the same disk would make them free.`,
+    );
+  }
+  if (gone.length > 0) said.push(`${gone.join(", ")} has no cache Telar can reach right now — it may simply never have run here.`);
+  return said.join(" ");
+}
+
 export function reclaimLabel(reclaimed: JournalReclaim): string {
   // The usage fold's rows count as superseded on the same terms as the other
   // two (#697); an engine from before it sends no field, which is zero rows.
@@ -259,6 +291,8 @@ export function StorageSection() {
     }
   };
 
+  const cacheNote = cacheLabel(report?.caches ?? []);
+
   const revealControl = (entry: { path: string; kind: "directory" | "file" }) =>
     cannotReveal ? null : (
       <Button size="sm" variant="ghost" onClick={() => reveal(entry)}>
@@ -271,6 +305,25 @@ export function StorageSection() {
       title="What Telar is keeping"
       description={[
         "Measured when this pane opens, and again when you refresh — never on its own.",
+        /**
+         * APPARENT SIZE, SAID OUT LOUD — issue #633.
+         *
+         * The walk behind these figures is `stat.blocks`, which is what the
+         * filesystem ALLOCATED to each file and not what the file costs. On
+         * APFS a copy-on-write clone shares its blocks and reports the full
+         * count anyway, so a deduplicated `node_modules` and a fully
+         * duplicated one weigh the same here — measured: a real write, a
+         * `cp -c` clone and a plain `cp` of the same 256 MB file read
+         * identically to `du` and to `stat`, and only free space told them
+         * apart.
+         *
+         * IT IS ONE SENTENCE RATHER THAN A FOOTNOTE because of who reads it:
+         * the number in this pane is the number somebody would check to see
+         * whether deduplication is working, and it reads "fine" when that is
+         * broken and "broken" when it is fine. Saying what the figure is
+         * costs a line; letting it be believed costs a wrong conclusion.
+         */
+        "Sizes are apparent, not physical: files that share storage are counted in full.",
         // A floor, not a total, and said rather than quietly under-reported.
         report?.partial ? "Something under the store could not be read, so these figures are a floor." : undefined,
         cannotReveal,
@@ -310,7 +363,12 @@ export function StorageSection() {
                 hint={
                   isJournal
                     ? `${hint} Reclaim drops the streaming rows a finished turn has already superseded and compacts the file — no turn, item or answer is removed.${reclaimed ? ` ${reclaimed}` : ""}`
-                    : hint
+                    : entry.category === "worktrees" && cacheNote
+                      // UNDER THE FIGURE THAT MADE SOMEBODY ASK (#633), rather
+                      // than in a row of its own: "Session checkouts — 7.3 GB"
+                      // is the sentence, and this is the answer to why.
+                      ? `${hint} ${cacheNote}`
+                      : hint
                 }
                 control={
                   <span className="flex items-center gap-2">

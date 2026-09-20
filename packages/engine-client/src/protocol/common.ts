@@ -543,6 +543,47 @@ export type StorageEntry = z.infer<typeof StorageEntry>;
  * away mid-walk. The total is then a floor rather than a figure, and the pane
  * says so instead of quietly under-reporting.
  */
+/**
+ * WHETHER AN INSTALL INTO A SESSION CHECKOUT CAN CLONE FROM THE CACHE — #633.
+ *
+ * `different-device` means deduplication is impossible, not broken: hardlinks
+ * and APFS clones are same-filesystem only, so a checkout on one disk and a
+ * package cache on another means every install pays a real full copy.
+ *
+ * `unreachable` IS NOT `different-device`. A cache root that does not exist yet
+ * is the ordinary state of a fresh machine or of a package manager nobody has
+ * run, and reporting it as a different filesystem would be a wrong answer
+ * dressed as a precise one. A drive that went away lands here too.
+ *
+ * `same-device` NEVER REACHES A READER. It is the single-disk case, which is
+ * most people, and their whole entitlement is silence — the engine filters it
+ * out rather than sending a row for a cockpit to remember not to draw.
+ */
+/**
+ * WHAT A SAFE COPY OF THE STORE PRODUCED — issue #665.
+ *
+ * COUNTS AND A PATH, because the point of the operation is that the copy is
+ * somewhere a person can open: the path is the answer, and the two numbers are
+ * how they know it is the whole store rather than an empty directory.
+ *
+ * IT IS NOT THE STORE'S SIZE. The reproducible tier — checkouts, Python
+ * environments, toolchains — is deliberately not carried, so this figure is
+ * smaller than the Storage pane's total and is meant to be.
+ */
+export const StoreCopy = z.object({
+  root: z.string().min(1),
+  files: z.number().min(0),
+  bytes: z.number().min(0),
+});
+export type StoreCopy = z.infer<typeof StoreCopy>;
+
+export const PackageCacheStatus = z.object({
+  name: z.string().min(1),
+  path: z.string().min(1),
+  dedup: z.enum(["different-device", "unreachable"]),
+});
+export type PackageCacheStatus = z.infer<typeof PackageCacheStatus>;
+
 export const StorageReport = z.object({
   /** Where the store is, which is the other half of "what is Telar keeping". */
   root: z.string().min(1),
@@ -553,6 +594,13 @@ export const StorageReport = z.object({
    *  slow diagnosable without re-measuring by hand. */
   tookMs: z.number().min(0),
   partial: z.boolean(),
+  /**
+   * The package caches an install into a checkout cannot clone from — see
+   * `PackageCacheStatus`. ABSENT when there are none, which is the ordinary
+   * single-disk answer, and optional besides so an engine from before #633
+   * still satisfies a cockpit that knows about it.
+   */
+  caches: z.array(PackageCacheStatus).optional(),
 });
 export type StorageReport = z.infer<typeof StorageReport>;
 
@@ -590,10 +638,20 @@ export type JournalReclaim = z.infer<typeof JournalReclaim>;
 /**
  * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
  *
- * FOUR KINDS AND NOT A PATH, because three of them are things a person has to
+ * FIVE KINDS AND NOT A PATH, because four of them are things a person has to
  * be told rather than a location to quietly use: nothing chosen, chosen and
- * present, chosen and on a drive that is not connected, and a record this
- * build cannot read.
+ * present, chosen and on a drive that is not connected, a record this build
+ * cannot read, and — issue #665 — chosen on a platform that cannot tell which
+ * of those last two is true.
+ *
+ * `unverifiable` IS THE HONEST WINDOWS ANSWER, and it exists because the
+ * alternative was a confident wrong one. `mountRootsFor` returns an empty list
+ * on win32, so nothing is ever a mount point there and a checkouts root on
+ * `D:\` reported as *configured and fine* whether or not the drive was
+ * connected: `worktreesRootBlocker` returned nothing, the cut proceeded, and
+ * `mkdirSync` failed mid-session with an I/O error instead of the sentence this
+ * type exists to carry. This says "the location is recorded and this build
+ * cannot check the drive", which is exactly what is known.
  *
  * THERE IS NO `restartRequired` HERE, and its absence is a finding rather than
  * an omission. The root is consulted at exactly one moment — planning where a
@@ -609,7 +667,7 @@ export type JournalReclaim = z.infer<typeof JournalReclaim>;
  * the moment the drive is not there to be asked.
  */
 export const WorktreesRoot = z.object({
-  kind: z.enum(["default", "configured", "absent", "unreadable"]),
+  kind: z.enum(["default", "configured", "absent", "unreadable", "unverifiable"]),
   /** Where checkouts go, or would go. Absent only when the record is
    *  unreadable — the one state with no location to name. */
   root: z.string().min(1).optional(),

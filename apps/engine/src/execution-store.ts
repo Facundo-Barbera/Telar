@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { EngineEvent, idleSince, isShelved, settlingActivityOf } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import { statePaths } from "./state-paths";
 import type { TurnSummary } from "./turn-summary";
 
 type Statement = { run(...args: unknown[]): unknown; get(...args: unknown[]): Record<string, unknown> | undefined; all(...args: unknown[]): Array<Record<string, unknown>> };
@@ -861,7 +862,7 @@ export class ExecutionStore {
     if (!this.db.prepare("PRAGMA table_info(receipts)").all().some((column) => String(column.name) === "at"))
       this.db.exec("ALTER TABLE receipts ADD COLUMN at INTEGER NOT NULL DEFAULT 0");
     if (!this.db.prepare("SELECT value FROM metadata WHERE key='imported'").get()) this.importLegacy();
-    atomicWrite(path.join(root, "execution-store.json"), { version: 1, backend: "sqlite" });
+    atomicWrite(statePaths(root).executionStore, { version: 1, backend: "sqlite" });
     // A previous binary must fail closed instead of reading stale JSON state.
     for (const sessionId of this.sessionIds()) this.fenceLegacy(sessionId);
     this.housekeeping.receipts = this.pruneReceipts();
@@ -1618,6 +1619,47 @@ export class ExecutionStore {
     this.db.exec("VACUUM");
     this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     return { before, after: this.journalBytes(), ...journal, usage: usage.rows };
+  }
+
+  /**
+   * A CONSISTENT COPY OF THE DATABASE, WITHOUT CLOSING IT — issue #665.
+   *
+   * ══ WHY THIS HAD TO EXIST BEFORE THE SHAPE COULD BE CALLED FINISHED ══
+   *
+   * There was no sanctioned way to look at a store without opening the live
+   * one. The only read paths were a size walk and a hand-run `sqlite3
+   * -readonly` snippet pasted into an issue, so every question of the form
+   * "what is actually in there" became either a manual query against the one
+   * irreplaceable artifact or an estimate — which is what happened in #646 and
+   * #658, and why #646's own figures had to be corrected twice.
+   *
+   * ══ `VACUUM INTO` AND NOT A FILE COPY ══
+   *
+   * Copying `execution.sqlite` with `cp` while the daemon is running produces a
+   * file whose pages come from different moments and whose `-wal` is not
+   * beside it — a database that opens and is wrong, which is worse than one
+   * that refuses. `VACUUM INTO` takes a read transaction and writes a
+   * defragmented, self-contained database at a single consistent point, with no
+   * WAL to carry. It is also the cheap direction: #646 measured it at 7 s on a
+   * gigabyte where the in-place `VACUUM` took 20–35 s.
+   *
+   * IT DOES NOT TOUCH THIS DATABASE. No compaction, no fold, no watermark —
+   * the copy is for reading, and a "get me a safe copy" that quietly rewrote
+   * the original would be the opposite of the point.
+   *
+   * THE DESTINATION MUST NOT EXIST, sqlite's own rule and `exportLegacy`'s.
+   */
+  vacuumInto(file: string): void {
+    if (fs.existsSync(file)) throw new Error("Copy destination must not already exist");
+    // Everything held must be in the database before it is read out: a delta in
+    // the buffer is a delta the copy would not contain.
+    this.flush();
+    this.statement("VACUUM INTO ?").run(file);
+    // 0600 to match the original. `VACUUM INTO` creates the file with the
+    // process umask, which on a default macOS account is 0644 — a copy of every
+    // conversation on the machine, world-readable, made by a button whose whole
+    // purpose is to be the SAFE way to do this.
+    fs.chmodSync(file, 0o600);
   }
 
   /**
@@ -2537,14 +2579,17 @@ export class ExecutionStore {
           }
         }
       }
-      for (const name of ["task-stops.json", "subscriptions.json"]) {
-        const file = path.join(this.root, name);
+      // THROUGH `statePaths`, LIKE EVERY OTHER ROOT-LEVEL NAME (#665). These
+      // two were joined by hand here, which is the second way of naming a
+      // store-root file that the invariant test's allowlist cannot see.
+      for (const file of [statePaths(this.root).taskStops, statePaths(this.root).subscriptions]) {
         if (fs.existsSync(file)) {
           // Made here rather than up front, for the reason stated above: the
           // per-session copies make their own parents, and this is the only
           // other thing that ever goes in.
           fs.mkdirSync(backup, { recursive: true, mode: 0o700 });
-          if (!fs.existsSync(path.join(backup, name))) fs.copyFileSync(file, path.join(backup, name), fs.constants.COPYFILE_EXCL);
+          const copy = path.join(backup, path.basename(file));
+          if (!fs.existsSync(copy)) fs.copyFileSync(file, copy, fs.constants.COPYFILE_EXCL);
           this.write(file, JSON.parse(fs.readFileSync(file, "utf8")));
         }
       }

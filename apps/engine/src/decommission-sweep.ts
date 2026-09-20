@@ -30,9 +30,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-
-/** The marker, beside the engine root. Its presence is the whole memory. */
-const SWEPT_MARKER = "decommissioned-spool-looms";
+import { statePaths } from "./state";
 
 /** What one directory held, so the deletion can say what it took. TOLERANT BY
  *  DESIGN: a tree being swept is a tree nothing else should be touching, and an
@@ -86,7 +84,7 @@ export type DecommissionSweep = {
  */
 export function sweepSpoolAndLooms(engineRoot: string): DecommissionSweep {
   const resolved = path.resolve(engineRoot);
-  const marker = path.join(resolved, SWEPT_MARKER);
+  const marker = statePaths(resolved).decommissionMarker;
   if (fs.existsSync(marker)) return { removed: [] };
 
   const targets: { what: string; directory: string }[] = [

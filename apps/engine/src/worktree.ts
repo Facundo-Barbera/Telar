@@ -68,6 +68,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ProjectAvailability } from "./volumes";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, type WorktreesRootState } from "./worktrees-location";
+import { detectCacheDedup, type CacheDedupVerdict } from "./package-caches";
 
 export type GitResult = {
   status: number;
@@ -1054,7 +1055,31 @@ export function prepareSessionWorktree(
   const { worktreesRoot: _asked, ...rest } = input;
   const root = rootOf(location);
   const plan = planSessionWorktree({ ...rest, ...(root ? { worktreesRoot: root } : {}) });
-  return { plan, baseSha: resolveWorktreeBase(git, input.projectRoot, input.baseRef) };
+  return {
+    plan,
+    baseSha: resolveWorktreeBase(git, input.projectRoot, input.baseRef),
+    ...(root ? { caches: cacheDedupNotice(root) } : {}),
+  };
+}
+
+/**
+ * WHICH PACKAGE CACHES THIS CHECKOUT CANNOT CLONE FROM — issue #633.
+ *
+ * NOT A REFUSAL, AND DELIBERATELY NOT A WARNING EITHER. A checkout on a drive
+ * and a cache on the internal disk is a perfectly working setup that costs a
+ * full `node_modules` copy per session instead of a clone; the cut must go
+ * ahead, and what a caller does with this is show it once beside the figure
+ * that made somebody ask, not interrupt anybody.
+ *
+ * SILENT ON ONE DISK, which is most people: `same-device` is filtered out here
+ * rather than left for every caller to remember not to draw.
+ *
+ * COMPUTED PER CUT AND NOT PER TURN. It is four `stat`s of directories that do
+ * not move, which is cheap enough at the one moment a checkout's location is
+ * being decided and would be waste on any path that repeats.
+ */
+export function cacheDedupNotice(worktreesRoot: string): CacheDedupVerdict[] {
+  return detectCacheDedup(worktreesRoot).filter((verdict) => verdict.dedup !== "same-device");
 }
 
 /**
