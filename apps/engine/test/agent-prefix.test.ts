@@ -128,6 +128,45 @@ function commonPrefix(a: string, b: string): number {
   return index;
 }
 
+/* ------------------------------------------------------------------ *
+ * What a request really carried — read back off the same bytes.
+ * ------------------------------------------------------------------ *
+ * A SHARED-PREFIX RATIO IS SATISFIED BY TWO PROMPTS THAT ARE BOTH NEARLY
+ * EMPTY, and the failure this file is most likely to misread as a triumph is a
+ * prompt that got shorter because history fell out of it. So every byte claim
+ * below is paired with a COUNT taken from these three, and the counts come from
+ * parsing the bytes that were sent rather than from the runtime's own objects.
+ */
+
+type SentMessage = { role: string; content: string; tool_call_id?: string; tool_calls?: Array<{ id: string }> };
+
+const sentMessages = (body: string): SentMessage[] => (JSON.parse(body) as { messages: SentMessage[] }).messages;
+
+/** Every result in a request, by the call it answers, in the order sent. */
+function resultsIn(body: string): Map<string, string> {
+  const results = new Map<string, string>();
+  for (const message of sentMessages(body)) {
+    if (message.role === "tool" && message.tool_call_id) results.set(message.tool_call_id, message.content);
+  }
+  return results;
+}
+
+/** Every call the assistant asked for, in the order it asked. */
+const callsIn = (body: string): string[] => sentMessages(body).flatMap((message) => (message.tool_calls ?? []).map((call) => call.id));
+
+/**
+ * WHERE ONE RESULT ENDS IN THE RAW BODY. The chat route serialises a result as
+ * `{"role":"tool","content":…,"tool_call_id":"call_N"}`, so this anchor sits
+ * just PAST the content it identifies: a divergence after call N−1's anchor and
+ * before call N's is a divergence inside call N's result, which is how a
+ * divergence gets NAMED here instead of merely measured.
+ */
+function resultAnchor(body: string, id: string): number {
+  const at = body.indexOf(`"tool_call_id":"${id}"`);
+  if (at < 0) throw new Error(`no result for ${id} in this request`);
+  return at;
+}
+
 async function until(check: () => boolean, label: string, ms = 15_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
@@ -148,7 +187,7 @@ async function until(check: () => boolean, label: string, ms = 15_000): Promise<
 async function conversation(options: {
   says: string[];
   lapsPerTurn: number;
-  toolResult?: string;
+  toolResult?: (call: number) => string;
   between?: (agent: AgentRuntime) => void;
 }): Promise<Lap[]> {
   const laps: Lap[] = [];
@@ -164,7 +203,16 @@ async function conversation(options: {
         {
           index: 0,
           message: callTool
-            ? { role: "assistant", content: "Looking.", tool_calls: [{ id: `call_${laps.length}`, type: "function", function: { name: "sessions_list", arguments: "{}" } }] }
+            ? {
+                role: "assistant",
+                content: "Looking.",
+                // THE ARGUMENTS DIFFER PER CALL, and they have to: #608's read
+                // dedup answers a repeat of `tool(args)` with a notice instead
+                // of the tool's own answer, so identical arguments would make
+                // every lap after the first return 150 characters of refusal
+                // and there would be no second RESULT to measure the stub on.
+                tool_calls: [{ id: `call_${laps.length}`, type: "function", function: { name: "sessions_list", arguments: JSON.stringify({ limit: laps.length }) } }],
+              }
             : { role: "assistant", content: "Here is what is running." },
           finish_reason: callTool ? "tool_calls" : "stop",
         },
@@ -177,7 +225,9 @@ async function conversation(options: {
   const engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-prefix-"));
   const answer = options.toolResult;
   const tools = wholeWall().map((tool) =>
-    answer !== undefined && tool.name === "sessions_list" ? { ...tool, run: async () => ({ content: [{ type: "text" as const, text: answer }] }) } : tool,
+    answer !== undefined && tool.name === "sessions_list"
+      ? { ...tool, run: async (args: Record<string, unknown>) => ({ content: [{ type: "text" as const, text: answer(Number(args.limit)) }] }) }
+      : tool,
   );
   const agent = new AgentRuntime({
     engineRoot,
@@ -297,68 +347,132 @@ test("a `remember` between turns moves the system block and nothing before it", 
 });
 
 /* ------------------------------------------------------------------ *
- * 4 — the one thing that rewrites the prompt BACKWARDS.
+ * 4 — the turn boundary, which used to rewrite the prompt BACKWARDS.
  * ------------------------------------------------------------------ */
 
 /**
- * THE FINDING THIS FILE WAS WRITTEN TO CATCH, and it is not fixed here (#563).
+ * THE FINDING THIS FILE WAS WRITTEN TO CATCH, NOW FIXED (#563 step 1).
  *
- * ── WHAT HAPPENS ────────────────────────────────────────────────────────────
- * `compactToolResults` collapses the results of EARLIER LAPS OF THE SAME TURN to
- * one line each, and its turn boundary is the last human message. That scope is
- * deliberate and it is what makes a 16-lap turn affordable. But it means the
- * stubs are scoped to the turn: on the NEXT turn those laps are no longer "this
- * turn's", so their results are sent in FULL again — 5,514 characters where the
- * previous request had 60.
+ * ── WHAT USED TO HAPPEN ─────────────────────────────────────────────────────
+ * `compactToolResults` scoped its stubs to the CURRENT TURN — its lower bound
+ * was the last human message — so on the next turn those results were no longer
+ * "this turn's" and were sent IN FULL AGAIN: 5,514 characters where the previous
+ * request had 79. A prefix cache matches from the front and stops at the first
+ * byte that differs, so re-expanding a stub did not cost the expanded bytes, it
+ * cost EVERY BYTE AFTER THEM. Measured from this socket at byte 17,125 of a
+ * 24,072-byte prompt on turn 2 and 24,241 of 31,192 on turn 3 — 28.9% and 22.3%
+ * of each prompt downstream of a rewrite, with the missed tail roughly constant
+ * (6,947 then 6,951) while the prompt grows.
  *
- * ── WHY THAT IS FATAL RATHER THAN MERELY WASTEFUL ───────────────────────────
- * A prefix cache matches from the front and stops at the first byte that
- * differs. Re-expanding a stub does not cost the expanded bytes; it costs EVERY
- * BYTE AFTER THEM. The rewrite lands at the first tool result of the previous
- * turn — measured at byte 17,125 of a 24,072-byte prompt on turn 2, and 24,241
- * of 31,192 on turn 3 — so roughly a quarter of each prompt is downstream of it
- * and cannot be served from cache no matter how stable everything ahead of it is.
+ * ── WHAT HAPPENS NOW ────────────────────────────────────────────────────────
+ * The lower bound is gone: the scope is "everything but the newest result run",
+ * so a result goes full → stub EXACTLY ONCE, at the lap after the one that read
+ * it, and never back. The two tests below are the two halves of that claim —
+ * the boundary is a pure append, and every divergence that does happen is one
+ * named result flipping, once.
  *
- * THE MISSED TAIL IS ROUGHLY CONSTANT while the prompt grows: 6,947 bytes on
- * turn 2 and 6,951 on turn 3, because what is re-expanded is one turn's worth of
- * results. So the PROPORTION lost improves as a conversation lengthens (28.9%
- * then 22.3%) and the absolute waste does not — which is the shape that decides
- * whether a fix is urgent or tidy.
- *
- * ── WHY IT IS ONLY MEASURED HERE ────────────────────────────────────────────
- * Fixing it changes WHAT THE MODEL CAN READ about earlier turns, which is a
- * behaviour change; this item is a measurement and a reporting change, and the
- * two want different review. The size of the prize is also not yet known — no
- * live cache reading has been taken — so a fix now would be built before the
- * measurement that justifies it. The owner is filing it separately.
- *
- * THE TEST PINS THE BEHAVIOUR AS IT IS, not as it should be, and says so: if a
- * later change makes the stub survive the turn boundary, this fails and is
- * meant to — the number it asserts is the finding.
+ * ── AND IT IS A BEHAVIOUR CHANGE, WHICH IS WHY IT IS SAID OUT LOUD ──────────
+ * A later turn can no longer re-read an earlier turn's full result; it sees the
+ * stub. The stub names the tool and the first three ids, the tool is one call
+ * away, `agent_rows` holds every answer whole and `recall` searches it.
  */
-test("a previous turn's compacted results expand again, rewriting the prompt backwards", async () => {
-  // The size the issue measured for a real `sessions_outline` answer.
-  const wide = JSON.stringify({ sessions: Array.from({ length: 60 }, (_, index) => ({ id: `session_${index}`, title: `a session about something ${index}`, state: "idle", project: "telar" })) });
-  const laps = await conversation({ says: ["what is running?", "and the rail?"], lapsPerTurn: 3, toolResult: wide });
 
+/** The lead every stub carries, and the only thing these tests match on by
+ *  text — everything else is counts and named call ids. */
+const STUB_LEAD = "[earlier lap] sessions_list:";
+
+/**
+ * A result at the size the issue measured for a real `sessions_outline` answer,
+ * and NAMED PER CALL so two of them can be told apart. That is what makes the
+ * #811 rule checkable here: a stub claiming "60 sessions" has to name ids that
+ * were in the result IT replaced, so `s2_0` in call 1's stub would be a stub of
+ * the wrong answer and a passing count would be hiding it.
+ */
+const wideResult = (call: number) =>
+  JSON.stringify({ sessions: Array.from({ length: 60 }, (_, index) => ({ id: `s${call}_${index}`, title: `a session about something ${index}`, state: "idle", project: "telar" })) });
+
+test("a previous turn's results stay stubbed, so the next turn's first lap only appends", async () => {
+  const laps = await conversation({ says: ["what is running?", "and the rail?"], lapsPerTurn: 3, toolResult: wideResult });
   const lastOfFirst = laps.filter((lap) => lap.turn === 1).at(-1)!.body;
   const firstOfSecond = laps.find((lap) => lap.turn === 2)!.body;
 
-  // The turn that just ended sent a STUB for its own first lap …
-  expect(lastOfFirst).toContain("[earlier lap] sessions_list:");
-  // … and the next turn sends that same result in full again.
-  expect(firstOfSecond).not.toContain("[earlier lap] sessions_list:");
+  // COUNTS FIRST, because a prompt that got shorter by losing history reads as
+  // an excellent result on every byte and ratio underneath this.
+  const before = resultsIn(lastOfFirst);
+  const after = resultsIn(firstOfSecond);
+  expect([...before.keys()]).toEqual(["call_1", "call_2"]);
+  expect([...after.keys()]).toEqual(["call_1", "call_2"]);
+  expect(callsIn(firstOfSecond)).toEqual(["call_1", "call_2"]);
+  // AND NOTHING THE ASSISTANT ASKED FOR IS LEFT UNANSWERED. An orphaned call is
+  // a 400 from every route Go serves, not a cheaper prompt — see
+  // `answerOrphanedCalls`, which exists because that happened.
+  for (const id of callsIn(firstOfSecond)) expect(after.get(id)).toBeDefined();
 
+  // THE CHANGE ITSELF: the stub the turn that ended made is the stub the next
+  // turn sends, byte for byte. It used to be the full result again.
+  expect(before.get("call_1")).toStartWith(STUB_LEAD);
+  expect(after.get("call_1")).toBe(before.get("call_1")!);
+  // …and it names ids out of the answer it replaced rather than the other one.
+  expect(after.get("call_1")).toContain("60 sessions: s1_0, s1_1, s1_2 (+57)");
+  expect(after.get("call_1")).not.toContain("s2_");
+  // THE NEWEST RUN IS STILL WHOLE in both — it is the answer to the call the
+  // model made one superstep ago, and stubbing it would be answering with a
+  // summary of the thing it just asked for.
+  expect(after.get("call_2")).toBe(wideResult(2));
+
+  // SO THE DIVERGENCE IS PAST EVERY RESULT ALREADY SENT, named by the call it
+  // is past rather than asserted as a ratio: the later request differs from the
+  // earlier one only where it appends the answer and the new question.
   const shared = commonPrefix(lastOfFirst, firstOfSecond);
-  const missed = firstOfSecond.length - shared;
-  // THE DAMAGE IS THE TAIL, not the expansion: everything after the rewrite
-  // point is a cache miss. Measured at 6,947 bytes of a 24,072-byte prompt.
-  expect(missed).toBeGreaterThan(wide.length);
-  // And the rewrite lands well INSIDE the prompt rather than at its end, which
-  // is what makes it expensive — pinned as a fraction so the assertion survives
-  // the prompt growing.
-  expect(shared / firstOfSecond.length).toBeLessThan(0.85);
-  expect(shared).toBeGreaterThan(firstOfSecond.indexOf('"messages"'));
+  expect(shared).toBeGreaterThan(resultAnchor(firstOfSecond, "call_2"));
+  // Measured at 99.6% of the later prompt, against 71.1% before this change. A
+  // floor, because the tail is allowed to grow — that growth is the new turn.
+  expect(shared / firstOfSecond.length).toBeGreaterThan(0.95);
+});
+
+test("each result flips to its stub exactly once, and the divergence is that result's", async () => {
+  const laps = await conversation({ says: ["what is running?", "and the rail?"], lapsPerTurn: 3, toolResult: wideResult });
+  expect(laps.map((lap) => lap.turn)).toEqual([1, 1, 1, 2, 2, 2]);
+  const bodies = laps.map((lap) => lap.body);
+
+  /**
+   * THE LEDGER EVERY CLAIM BELOW IS READ OFF — which results each request
+   * carried, and which of them were stubs. Written out in full rather than
+   * summarised, because the property is about the WHOLE sequence: a set that
+   * only grows, and an id that never leaves it.
+   */
+  const held = bodies.map(resultsIn);
+  const stubs = held.map((results) => [...results].filter(([, text]) => text.startsWith(STUB_LEAD)).map(([id]) => id));
+  const whole = held.map((results) => [...results].filter(([, text]) => !text.startsWith(STUB_LEAD)).map(([id]) => id));
+
+  expect(stubs).toEqual([[], [], ["call_1"], ["call_1"], ["call_1", "call_2"], ["call_1", "call_2", "call_4"]]);
+  expect(whole).toEqual([[], ["call_1"], ["call_2"], ["call_2"], ["call_4"], ["call_5"]]);
+  // Which says the same thing twice over: every result is present on every lap
+  // after the one that produced it — nothing was DROPPED to make the prompt
+  // small — and exactly one run is whole once there is any result at all.
+  expect(held.map((results) => results.size)).toEqual([0, 1, 2, 2, 3, 4]);
+  for (const [index, body] of bodies.entries()) {
+    for (const id of callsIn(body)) expect(held[index]!.get(id)).toBeDefined();
+  }
+
+  /**
+   * THE TURN BOUNDARY, NAMED. Turn 1's last request had `call_2` whole; turn
+   * 2's SECOND lap is the first request in which `call_2` is a stub, and that
+   * flip is the only difference between them that a cache can see. So the
+   * divergence lands strictly inside `call_2`'s result: past `call_1`'s, which
+   * was already a stub on both sides of the boundary, and before `call_2`'s own
+   * anchor.
+   */
+  const lastOfFirstTurn = bodies[2]!;
+  const secondLapOfSecondTurn = bodies[4]!;
+  const shared = commonPrefix(lastOfFirstTurn, secondLapOfSecondTurn);
+  expect(shared).toBeGreaterThan(resultAnchor(secondLapOfSecondTurn, "call_1"));
+  expect(shared).toBeLessThan(resultAnchor(secondLapOfSecondTurn, "call_2"));
+  // And the flip went the CHEAP way — a stub replacing a result, not a result
+  // replacing a stub.
+  expect(held[2]!.get("call_2")).toBe(wideResult(2));
+  expect(held[4]!.get("call_2")).toStartWith(STUB_LEAD);
+  expect(held[4]!.get("call_2")).toContain("60 sessions: s2_0, s2_1, s2_2 (+57)");
 });
 
 /* ------------------------------------------------------------------ *

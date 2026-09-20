@@ -58,6 +58,15 @@ const asked = (id: string, name: string) => new AIMessage({ content: "", tool_ca
 const answered = (id: string, text: string) => new ToolMessage({ tool_call_id: id, content: text });
 const contentOf = (message: BaseMessage) => String(message.content);
 
+/** Which calls a history ASKS for, and which it ANSWERS. Every byte claim in
+ *  this file is paired with one of these: a compaction that made the prompt
+ *  smaller by losing a result reads as a triumph on size alone, and it is a 400
+ *  from the provider — which is what `answerOrphanedCalls` exists for. */
+const askedCalls = (messages: readonly BaseMessage[]): string[] =>
+  messages.flatMap((message) => (message.getType() === "ai" ? ((message as AIMessage).tool_calls ?? []).map((call) => call.id!) : []));
+const answeredCalls = (messages: readonly BaseMessage[]): string[] =>
+  messages.filter((message) => message.getType() === "tool").map((message) => (message as ToolMessage).tool_call_id);
+
 /* ------------------------------------------------------------------ *
  * Minified on the way in.
  * ------------------------------------------------------------------ */
@@ -126,23 +135,100 @@ test("earlier laps collapse; the newest block is untouched", () => {
   expect(compacted[1]).toBe(messages[1]!);
 });
 
-test("a result from a previous TURN is left alone — older turns are the fold's problem", () => {
-  const big = JSON.stringify({ sessions: [{ id: "session_a" }], note: "y".repeat(2_000) });
+/**
+ * THE SCOPE CHANGE OF #563 STEP 1, AS THE TEST THAT USED TO ASSERT THE OPPOSITE.
+ *
+ * It read "a result from a previous TURN is left alone" and it was deliberate:
+ * the lower bound was the last human message. But a stub scoped to its own turn
+ * is a stub that EXPANDS AGAIN on the next one, and a prefix cache stops at the
+ * first byte that differs — so re-expanding one cost every byte after it,
+ * measured from the socket at 22–29% of each prompt (`agent-prefix.test.ts`).
+ * The bound is gone; a result now goes full → stub once and never back.
+ */
+test("a result from a previous TURN is a stub too — the stub outlives the turn that made it", () => {
+  const big = (name: string) => JSON.stringify({ sessions: [{ id: `session_${name}` }], note: "y".repeat(2_000) });
   const messages = [
     human("first question"),
     asked("call_1", "sessions_find"),
-    answered("call_1", big),
+    answered("call_1", big("a")),
     new AIMessage("here it is"),
     human("second question"),
     asked("call_2", "sessions_find"),
-    answered("call_2", big),
+    answered("call_2", big("b")),
     asked("call_3", "sessions_outline"),
-    answered("call_3", big),
+    answered("call_3", big("c")),
   ];
   const compacted = compactToolResults(messages);
-  expect(contentOf(compacted[2]!)).toBe(big);
-  expect(contentOf(compacted[6]!)).toContain("[earlier lap]");
-  expect(contentOf(compacted[8]!)).toBe(big);
+
+  // EACH STUB NAMES IDS OUT OF THE ANSWER IT REPLACED, which is what stops a
+  // stub of the wrong result — or of an empty one — from passing as a good one.
+  expect(contentOf(compacted[2]!)).toBe("[earlier lap] sessions_find: 1 sessions: session_a");
+  expect(contentOf(compacted[6]!)).toBe("[earlier lap] sessions_find: 1 sessions: session_b");
+  // The newest run survives across a turn boundary exactly as within one.
+  expect(contentOf(compacted[8]!)).toBe(big("c"));
+
+  // AND NOTHING WAS DROPPED TO GET THERE. The saving has to come from results
+  // being shorter, never from results being missing: an unanswered call is a
+  // 400 from every route Go serves, not a cheaper prompt.
+  expect(compacted).toHaveLength(messages.length);
+  expect(answeredCalls(compacted)).toEqual(askedCalls(compacted));
+  expect(answeredCalls(compacted)).toEqual(["call_1", "call_2", "call_3"]);
+});
+
+/**
+ * THE PROPERTY THE SCOPE CHANGE BUYS, over a conversation that grows the way a
+ * real one does: full → stub ONCE, at the lap after the one that read it, and
+ * never back. That is what makes the history append-shaped in the only sense a
+ * prefix cache cares about — `agent-prefix.test.ts` measures the same property
+ * on the bytes a provider would hash; this measures it on the messages.
+ */
+test("a result flips to its stub exactly once and never expands again", () => {
+  const big = (name: string) => JSON.stringify({ sessions: [{ id: `session_${name}` }], note: "z".repeat(1_500) });
+  // Two turns of two laps each, built one message at a time so every prefix of
+  // the conversation is a request that really would have been sent.
+  const conversation: BaseMessage[] = [];
+  const push = (...messages: BaseMessage[]) => conversation.push(...messages);
+  const sends: Array<Map<string, boolean>> = [];
+  const record = () => {
+    const stubbed = new Map<string, boolean>();
+    for (const message of compactToolResults(conversation)) {
+      if (message.getType() !== "tool") continue;
+      stubbed.set((message as ToolMessage).tool_call_id, contentOf(message).startsWith("[earlier lap]"));
+    }
+    sends.push(stubbed);
+  };
+
+  push(human("first question"));
+  record();
+  push(asked("call_1", "sessions_find"), answered("call_1", big("a")));
+  record();
+  push(asked("call_2", "sessions_outline"), answered("call_2", big("b")));
+  record();
+  push(new AIMessage("here it is"), human("second question"));
+  record();
+  push(asked("call_3", "sessions_find"), answered("call_3", big("c")));
+  record();
+  push(asked("call_4", "sessions_answer"), answered("call_4", big("d")));
+  record();
+
+  // THE WHOLE LEDGER, written out rather than summarised, because the property
+  // is about the sequence: `false` is whole, `true` is a stub, and the fourth
+  // row is the TURN BOUNDARY — where `call_1` used to go back to `false`.
+  expect(sends.map((send) => [...send.values()])).toEqual([
+    [],
+    [false],
+    [true, false],
+    [true, false],
+    [true, true, false],
+    [true, true, true, false],
+  ]);
+  // Said as the invariant rather than as the table: once true, always true …
+  for (const id of ["call_1", "call_2", "call_3", "call_4"]) {
+    const seen = sends.map((send) => send.get(id)).filter((state): state is boolean => state !== undefined);
+    expect(seen).toEqual([...seen].sort((a, b) => Number(a) - Number(b)));
+  }
+  // … and no result ever left the conversation to make it shorter.
+  expect(sends.map((send) => send.size)).toEqual([0, 1, 2, 2, 3, 4]);
 });
 
 test("a stub that would be longer than the result it replaces is not applied", () => {
@@ -737,13 +823,55 @@ test("at the size the cluster failed at, everything the prompt sends is still a 
   // And the person's question is still the last thing in it.
   expect(contentOf(sent.messages.at(-1)!)).toBe("Hola, ¿cómo estás?");
 
-  // AT THE MEASURED SIZE, which is what makes this the cluster's fixture rather
-  // than a small hand-made list: a deep fold, and a prompt in the 64k band the
-  // three failures reported against a 120k budget.
-  expect(sent.folded).toBeGreaterThan(25);
-  expect(sent.chars).toBeGreaterThan(50_000);
-  expect(sent.chars).toBeLessThan(80_000);
-  // The trim is a backstop and should not have fired at all — everything the
-  // fold left fits, so nothing fell off the top.
+  /**
+   * WHAT THE MONOTONIC STUB DID TO THIS FIXTURE, which is the clearest number
+   * in the change (#563 step 1).
+   *
+   * This thread is 45 turns of results and it used to arrive at the model at
+   * 127,579 characters — over a 120,000 budget, which is why the fold then ran
+   * 38 turns deep and the prompt landed in the 64k band the three failures
+   * reported. With every result but the newest run stubbed, the same 45 turns
+   * weigh 12,899: the conversation is now UNDER budget by an order of
+   * magnitude, so the fold does not fire and the person's older questions stay
+   * verbatim instead of becoming one line each.
+   *
+   * That is the saving stated honestly: the fold was always going to reduce
+   * these turns; #563 step 1 changes WHEN, and buys back the turns it no longer
+   * has to.
+   */
+  expect(cost(answerOrphanedCalls(messages))).toBeGreaterThan(budgetChars);
+  expect(cost(compactToolResults(answerOrphanedCalls(messages)))).toBeLessThan(budgetChars / 8);
+  expect(sent.folded).toBe(0);
+  expect(sent.chars).toBeGreaterThan(12_000);
+  expect(sent.chars).toBeLessThan(20_000);
+  // The trim is a backstop and should not have fired at all.
   expect(sent.dropped).toBe(0);
+  // AND THE SAVING IS SHORTER RESULTS, NOT FEWER OF THEM: the same 46 calls the
+  // fixture makes, each with its own answer, after three compaction steps.
+  expect(answeredCalls(sent.messages)).toEqual(askedCalls(sent.messages));
+  expect(answeredCalls(sent.messages)).toHaveLength(46);
+});
+
+/**
+ * THE SAME FIXTURE AT A BUDGET IT STILL EXCEEDS, because the test above stopped
+ * exercising the fold the moment compaction became monotonic — and "the repair
+ * survives the fold and the trim" is the claim the cluster's failure was about.
+ *
+ * 10,000 rather than 120,000 is the only change: the fixture, the pre-model
+ * order and the breach are the cluster's own. At that budget the fold runs 43
+ * turns deep, which is deeper than the 38 it reached on the raw thread.
+ */
+test("the repair survives a deep fold, at a budget the compacted thread still exceeds", () => {
+  const budgetChars = 10_000;
+  const reservedChars = AGENT_BRIEFING.length;
+  const messages = threadWithADeadCall();
+
+  const sent = preModel(messages, { repair: true, budgetChars, reservedChars });
+  expect(sent.folded).toBeGreaterThan(25);
+  expect(pairingFault(sent.messages)).toBeUndefined();
+  expect(contentOf(sent.messages.at(-1)!)).toBe("Hola, ¿cómo estás?");
+  // The fold took the drop, so the trim — which is the step that would actually
+  // lose a message — never fired.
+  expect(sent.dropped).toBe(0);
+  expect(sent.chars).toBeLessThan(budgetChars);
 });
