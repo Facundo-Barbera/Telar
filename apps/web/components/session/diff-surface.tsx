@@ -84,7 +84,7 @@ import { useDiffView, type DiffView } from "@/lib/diff-view";
 import { diffBaseFor, scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/diff-scope";
 import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
-import { DiffCodeView } from "@/components/session/diff-code-view";
+import { DiffCodeView, readPatchShape } from "@/components/session/diff-code-view";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -436,11 +436,7 @@ export function ReviewFileRow({
         patch.incomplete ? (
           <>
             <p className="px-4 pb-2 text-2xs text-warning">{INCOMPLETE_PATCH[patch.incomplete]}</p>
-            {patch.patch !== "" && (
-              <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
-                <DiffCodeView patch={patch.patch} layout={view.layout} wrap={view.wrap} />
-              </div>
-            )}
+            {patch.patch !== "" && <PatchBody patch={patch.patch} view={view} />}
           </>
         ) : patch.binary ? (
           <p className="px-4 pb-2 text-2xs text-muted-foreground">Binary file — no textual diff.</p>
@@ -449,16 +445,53 @@ export function ReviewFileRow({
           // its answer is that nothing in this file differs.
           <p className="px-4 pb-2 text-2xs text-muted-foreground">No textual difference.</p>
         ) : (
-          /* THE RENDERER IS NOT OURS ANY MORE (#694) — see diff-code-view.tsx.
-             The row above is still the file header, so the viewer is told not
-             to draw its own; everything inside it is Pierre's, wearing this
-             app's tokens through `.diff-code-view` in globals.css. */
-          <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
-            <DiffCodeView patch={patch.patch} layout={view.layout} wrap={view.wrap} />
-          </div>
+          <PatchBody patch={patch.patch} view={view} />
         ))}
       {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-2xs text-muted-foreground">Renamed from {file.renamedFrom}</p>}
     </div>
+  );
+}
+
+/**
+ * THE PATCH ITSELF, AND WHETHER IT WAS READABLE — issue #694, step 1.
+ *
+ * THE RENDERER IS NOT OURS (see diff-code-view.tsx). The row above is the file
+ * header, so the viewer is told not to draw its own; everything inside it is
+ * Pierre's, wearing this app's tokens through `.diff-code-view` in globals.css.
+ *
+ * WHAT IS OURS IS SAYING WHEN IT DID NOT WORK. The library RECOVERS from a
+ * malformed patch with a `console.error` nobody sees, so a patch cut mid-line,
+ * a truncation marker, or a header it mistook for a rename all drew as a
+ * confident, plausible, wrong answer — and no test could tell that apart from a
+ * correct render. The parse is asked once here and its complaint becomes a band
+ * the reader can act on.
+ *
+ * THE VIEWER IS STILL MOUNTED UNDER THE BAND, because the library's recovery is
+ * usually most of the patch and a warning over real hunks beats an empty box.
+ */
+function PatchBody({ patch, view }: { patch: string; view: DiffView }) {
+  const reading = useMemo(() => readPatchShape(patch), [patch]);
+  return (
+    <>
+      {reading.complaint && (
+        <p className="px-4 pb-2 text-2xs text-warning">
+          This patch did not parse cleanly, so what is drawn below may be wrong or incomplete.{" "}
+          <span className="font-mono text-3xs">{reading.complaint}</span>
+        </p>
+      )}
+      {/* ONE ROW IS ONE FILE. More than one means a pathspec reached a
+          neighbour (#694, §2.6) — the row's name and the hunks under it are
+          then about different files, which is the hardest wrong answer to
+          notice and the reason this is said rather than drawn over. */}
+      {reading.files > 1 && (
+        <p className="px-4 pb-2 text-2xs text-warning">
+          This patch describes {reading.files} files, and this row is one file.
+        </p>
+      )}
+      <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
+        <DiffCodeView patch={patch} layout={view.layout} wrap={view.wrap} />
+      </div>
+    </>
   );
 }
 

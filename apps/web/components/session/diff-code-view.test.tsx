@@ -29,7 +29,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { DiffCodeView } from "./diff-code-view";
+import { DiffCodeView, readPatchShape } from "./diff-code-view";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -189,5 +189,90 @@ describe("the diff viewer", () => {
     const on = await render({ layout: "stacked", wrap: true });
     expect(off.markup).toContain('data-overflow="scroll"');
     expect(on.markup).toContain('data-overflow="wrap"');
+  });
+});
+
+/**
+ * THE SEAM THE REST OF #694's CORRECTNESS PASS IS CHECKED AGAINST.
+ *
+ * Every test above renders a WELL-FORMED patch and finds its lines, and every
+ * defect the investigation listed passes all of them — because the library
+ * recovers from malformed input with a `console.error` nobody sees. These ask
+ * the parser the question directly, in BOTH directions on the same test: a good
+ * patch must produce no complaint, or "there was a complaint" proves nothing.
+ */
+describe("what the parser made of the patch (#694)", () => {
+  test("a well-formed patch reads cleanly, as one file, with its hunks", () => {
+    const reading = readPatchShape(PATCH);
+    expect(reading.complaint).toBeUndefined();
+    expect(reading.files).toBe(1);
+    expect(reading.file?.name).toBe("a.ts");
+    expect(reading.file?.hunks).toBe(1);
+    expect(reading.file?.type).toBe("change");
+  });
+
+  test("a patch cut off mid-hunk is a complaint, not a shorter patch", () => {
+    // What the engine's 1 MiB bound produces, and what used to render as a
+    // complete change: the declared hunk length and the lines present disagree.
+    const reading = readPatchShape(`diff --git a/big.txt b/big.txt
+index 1111111..2222222 100644
+--- a/big.txt
++++ b/big.txt
+@@ -1,9 +1,9 @@
+ const alpha = 1;
+-const beta = 2;
++const beta = 3;
+-const gam`);
+    expect(reading.complaint).toBeDefined();
+    expect(reading.complaint).toContain("hunk");
+  });
+
+  test("a truncation marker inside the patch is a complaint, not a line", () => {
+    // `diff.ts` announced truncation IN the patch, which the old `<pre>` printed
+    // and this parser drops as unreadable — so the marker stopped arriving the
+    // day the renderer changed (#694, §2.5).
+    const reading = readPatchShape(`diff --git a/x.ts b/x.ts
+--- a/x.ts
++++ b/x.ts
+@@ -1,4 +1,4 @@
+-old
++new
+… diff truncated at 12000 characters …`);
+    expect(reading.complaint).toBeDefined();
+  });
+
+  test("a patch that reaches two files is counted as two", () => {
+    // A pathspec that matched a neighbour (#694, §2.6). The engine no longer
+    // produces one; the count is what lets a row SAY SO if anything ever does.
+    const reading = readPatchShape(`diff --git a/brack1.ts b/brack1.ts
+--- a/brack1.ts
++++ b/brack1.ts
+@@ -1 +1,2 @@
+ x
++GLOBBED
+diff --git a/brack[1].ts b/brack[1].ts
+--- a/brack[1].ts
++++ b/brack[1].ts
+@@ -1 +1,2 @@
+ y
++LITERAL
+`);
+    expect(reading.complaint).toBeUndefined();
+    expect(reading.files).toBe(2);
+    expect(reading.file).toBeUndefined();
+  });
+
+  test("the shapes with no hunks are read, not refused", () => {
+    // Mode-only and pure-rename patches are VALID and carry no hunks at all.
+    // A seam that called them malformed would put a warning over every
+    // `chmod +x` in the repository.
+    const mode = readPatchShape("diff --git a/m.sh b/m.sh\nold mode 100644\nnew mode 100755\n");
+    expect(mode.complaint).toBeUndefined();
+    expect(mode.file).toMatchObject({ mode: "100755", prevMode: "100644", hunks: 0 });
+
+    const renamed = readPatchShape("diff --git a/src.txt b/dst.txt\nsimilarity index 100%\nrename from src.txt\nrename to dst.txt\n");
+    expect(renamed.complaint).toBeUndefined();
+    expect(renamed.file).toMatchObject({ name: "dst.txt", prevName: "src.txt", hunks: 0 });
+    expect(renamed.file?.type).toStartWith("rename-");
   });
 });

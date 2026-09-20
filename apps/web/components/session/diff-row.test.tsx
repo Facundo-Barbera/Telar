@@ -111,6 +111,34 @@ describe("a row whose patch is not the whole patch (#694)", () => {
     expect(drawn.viewers).toBe(1);
   });
 
+  test("a patch the parser choked on says so on the row — issue #694", async () => {
+    /**
+     * STEP 1 OF THE CORRECTNESS PASS, and the reason the rest is falsifiable.
+     * `@pierre/diffs` never throws at Telar: it logs to a console nobody reads
+     * and renders what it could recover. So a patch cut mid-hunk drew 24,642
+     * lines of an 80,000-line change and looked entirely reasonable doing it.
+     */
+    const cut = `diff --git a/big.txt b/big.txt
+index 1111111..2222222 100644
+--- a/big.txt
++++ b/big.txt
+@@ -1,9 +1,9 @@
+ const alpha = 1;
+-const beta = 2;
++const beta = 3;
+-const gam`;
+    const drawn = await row({ patch: cut, binary: false });
+    expect(drawn.text).toContain("did not parse cleanly");
+    // The recovery is still drawn under the warning — most of a patch beats an
+    // empty box, as long as nobody is told it is all of it.
+    expect(drawn.viewers).toBe(1);
+
+    // BOTH DIRECTIONS ON THE SAME TEST: a well-formed patch must not wear the
+    // band, or "there was a band" proves nothing at all.
+    const clean = await row({ patch: HUNKS, binary: false });
+    expect(clean.text).not.toContain("did not parse cleanly");
+  });
+
   test("a renamed row asks for the patch with BOTH of its paths — issue #694", async () => {
     /**
      * The row is the only party that holds the pair: the LIST derived it with
