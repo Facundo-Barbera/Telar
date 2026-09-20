@@ -66,7 +66,7 @@ function Samples() {
       {SAMPLES.map(([title, markdown, streaming]) => (
         <section key={title} className="flex min-w-0 flex-col gap-1.5">
           <h3 className="text-xs text-muted-foreground">{title}</h3>
-          <div className="min-w-0 overflow-hidden rounded-md border border-border/60 p-3">
+          <div className="min-w-0 overflow-hidden rounded-md border border-border/60 bg-card p-3">
             <MessageResponse streaming={streaming}>{markdown}</MessageResponse>
           </div>
         </section>

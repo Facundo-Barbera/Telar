@@ -157,11 +157,25 @@ export function reviewUnderFilter(review: SessionReview, filter?: string): Sessi
   };
 }
 
-/** A unified diff, tinted by line. Third copy of this in the app; the next one
- *  should extract it. */
+/**
+ * A unified diff, tinted by line. Third copy of this in the app; the next one
+ * should extract it.
+ *
+ * THE HUNK PAINTS AND THE TINTS SIT ON IT (#691). Both halves were the same
+ * defect. `bg-muted/40` put 40% of a fill over whatever was behind the surface,
+ * which was the panel's `bg-sidebar` until translucency thins it to
+ * --sidebar-wash; `bg-success/10` put 10% of the theme's green over the same
+ * thing, so an added line was a tenth of a hue and nine tenths of the desktop,
+ * with no legibility floor anywhere. A diff hunk is read line by line — a
+ * reading surface, opaque at every slider setting — so it carries --card, and
+ * the two tints mix their colour INTO that card at the floor globals.css sets.
+ * Opaque, themed, and it cannot compound. (Same discipline the reference reaches
+ * for: T3 Code derives every diff colour from its --code-background rather than
+ * stacking alpha on an unknown.)
+ */
 function Patch({ patch }: { patch: string }) {
   return (
-    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-3xs leading-relaxed">
+    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-card p-2 font-mono text-3xs leading-relaxed">
       {patch.split("\n").map((line, index) => {
         const header = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@") || line.startsWith("diff ");
         return (
@@ -172,9 +186,9 @@ function Patch({ patch }: { patch: string }) {
               header
                 ? "text-muted-foreground/70"
                 : line.startsWith("+")
-                  ? "bg-success/10 text-success"
+                  ? "tint-success text-success"
                   : line.startsWith("-")
-                    ? "bg-destructive/10 text-destructive"
+                    ? "tint-destructive text-destructive"
                     : "text-muted-foreground",
             )}
           >
@@ -420,7 +434,15 @@ export function DiffUnknownBand({
     }
   };
   return (
-    <div className="border-b border-warning/30 bg-warning/10 px-4 py-2.5">
+    /* `tint-warning` rather than `bg-warning/10` (#691). This band carries a
+       semantic fill AND semantic ink — `text-warning` sentences on 10% of
+       --warning — so over the wash both ends of the pair were 90% desktop, and
+       the one band whose whole job is to say "this list may be incomplete"
+       became the least legible thing on the surface. Not the same case as
+       ReconciliationBand's `bg-muted/25` above: that is a neutral separator
+       under ordinary ink, which #434's light-under-glass floor already covers.
+       The hairline keeps its alpha — a border is a mark, not a ground. */
+    <div className="border-b border-warning/30 tint-warning px-4 py-2.5">
       {sentences.map((sentence) => (
         <p key={sentence} className="flex gap-1.5 text-2xs leading-relaxed text-warning">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
@@ -622,7 +644,11 @@ function CommitBox({
   return (
     <div className="border-t border-border p-3">
       {result && (
-        <p className={cn("mb-2 rounded-md px-2.5 py-1.5 text-2xs leading-snug", result.ok ? "bg-success/10 text-success" : "bg-muted text-muted-foreground")}>
+        /* `tint-success` rather than `bg-success/10` (#691): a sentence about
+           what git just did, on the panel's own ground. The failure branch was
+           always opaque (`bg-muted`); the success branch was 10% of a colour
+           over the wash, which is the one of the two that could dissolve. */
+        <p className={cn("mb-2 rounded-md px-2.5 py-1.5 text-2xs leading-snug", result.ok ? "tint-success text-success" : "bg-muted text-muted-foreground")}>
           {result.text}
         </p>
       )}

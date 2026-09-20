@@ -876,6 +876,57 @@ html:not(.dark)[data-telar-shell][data-translucent] {
   --sidebar-foreground-wash: color-mix(in oklab, var(--foreground) 30%, var(--sidebar-foreground));
 }
 
+/* ─── A FLOOR UNDER THE SEMANTIC TINTS (#691) ───────────────────────────────
+
+   `bg-success/10` IS NOT A TINT. IT IS AN ALPHA. Tailwind compiles it to
+   `color-mix(in oklab, var(--success) 10%, transparent)` — 10% of a colour the
+   theme chose, and 90% of WHATEVER HAPPENS TO BE BEHIND IT. On an opaque card
+   that reads as a wash of green over the card, which is what was wanted. Over
+   the translucency wash the other 90% is the desktop, so a diff's added line
+   was a tenth of a hue and nine tenths of somebody's wallpaper. #434 put a
+   legibility floor under --muted-foreground for exactly this scene and left the
+   semantic tints with no floor at all; these two classes are that floor.
+
+   MIXED AGAINST THE CARD, NOT AGAINST TRANSPARENT. Each class names the mix the
+   utility was reaching for and supplies the second colour it was missing: the
+   card the tinted row sits on. The result is OPAQUE, so the wash cannot thin
+   it, it cannot compound through nesting (bug 2 in the contract above), and the
+   number is a floor on how much of the semantic colour is PRESENT rather than a
+   ceiling on how much of the scene shows through.
+
+   A CLASS RATHER THAN A UTILITY, for the reason the contract gives at
+   `bg-muted/25`: Tailwind hands `bg-x/NN` exactly one lever — the alpha — and
+   the end of the mix that had to change is the other one. One class string
+   renders in every scene, so the VALUE is the thing that has to stop moving.
+
+   12% IS THE FLOOR AND IT IS ONE NUMBER, in one declaration, so a re-tune
+   cannot leave the tints disagreeing. It replaces 10% of an unknown with 12% of
+   the live token against the live --card, which means both schemes and every
+   Look are already covered — there is nothing scheme-specific to state and so
+   nothing to keep in sync.
+
+   THE INK IS UNTOUCHED. `text-success` on an added line keeps the colour its
+   theme gave it. The wash never retints a mark, and neither does this.
+
+   A RESTING FILL ONLY, AND THAT IS NOT A LIMITATION. There is deliberately no
+   variant-capable form of these: a HOVER tint should compose with whatever it is
+   over — deepening the surface under the pointer — which is exactly what an
+   alpha is for and exactly what an opaque mix cannot do. `hover:bg-warning/15`
+   over a band that now paints is correct as written; the same string over a band
+   that did not paint was the bug, and painting the band is the fix for both. */
+:root {
+  --tint-floor: 12%;
+}
+.tint-success {
+  background-color: color-mix(in oklab, var(--success) var(--tint-floor), var(--card));
+}
+.tint-destructive {
+  background-color: color-mix(in oklab, var(--destructive) var(--tint-floor), var(--card));
+}
+.tint-warning {
+  background-color: color-mix(in oklab, var(--warning) var(--tint-floor), var(--card));
+}
+
 /* ─── THE BACKDROP LAYER (lib/backdrop.ts) ──────────────────────────────────
 
    One fixed div, first child of body, painted entirely from variables the
