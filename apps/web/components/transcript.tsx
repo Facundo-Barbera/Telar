@@ -681,10 +681,10 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
   const { verb, Icon } = sessionWakeLabel(reason);
   const body = itemText(item).trim();
   return (
-    <div className="py-0.5" aria-label="Wake from another session">
+    <div className="min-w-0" aria-label="Wake from another session">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={ROW}
         disabled={!body}
         aria-expanded={body ? open : undefined}
         onClick={() => setOpen((current) => !current)}
@@ -737,6 +737,11 @@ export function notificationLabel(
  * their summaries under the same disclosure rather than earning a second shape:
  * the reader's question ("what happened while I was working") has one answer,
  * however many things are in it.
+ *
+ * ITS RHYTHM IS THE STEP LANE'S, NOT A BUBBLE'S — #577. `ROW` is the shared
+ * constant, so a notification line and a `4 steps · Ran command ×2` line cannot
+ * drift apart; the `py-0.5` wrapper this used to carry made every arrival 4px
+ * taller than the rows around it, for nothing a reader could name.
  */
 export function NotificationRow({ detail, message }: { detail: NonNullable<JournalTurn["notification"]>; message?: string }) {
   const [open, setOpen] = useState(false);
@@ -754,10 +759,10 @@ export function NotificationRow({ detail, message }: { detail: NonNullable<Journ
    */
   const peerMessage = detail.kind === "peer_message" && message && message.trim() !== body ? message.trim() : undefined;
   return (
-    <div className="py-0.5" aria-label="Notification">
+    <div className="min-w-0" aria-label="Notification">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={ROW}
         disabled={!body}
         aria-expanded={body ? open : undefined}
         onClick={() => setOpen((current) => !current)}

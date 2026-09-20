@@ -1028,6 +1028,29 @@ function SessionTurnBody({
   const activity = lastProse === -1 ? answering.items : answering.items.slice(0, lastProse);
   const closing = lastProse === -1 ? [] : answering.items.slice(lastProse);
   const streamedAnswer = closing.some((item) => itemText(item));
+  /**
+   * AN ANSWER AREA WITH NOTHING IN IT IS NOT DRAWN — issue #577.
+   *
+   * The assistant's lane below is unconditional, so a turn that has produced
+   * nothing yet — a wake the engine queued behind the work in flight — still
+   * paid for an empty flex child and the gap above it. Under a one-line
+   * notification row that gap is most of the row's own height, and it read as
+   * an answer that had not loaded.
+   *
+   * IT LISTS WHAT THE LANE DRAWS, and nothing else: add a row down there and it
+   * belongs in this expression too, or a turn will render it invisibly.
+   */
+  const answerLane =
+    live ||
+    requests.length > 0 ||
+    answering.items.length > 0 ||
+    Boolean(turn.resultText) ||
+    Boolean(turn.failure) ||
+    Boolean(turn.usage) ||
+    turn.resumedAfterRateLimit !== undefined ||
+    turn.state === "stopped" ||
+    turn.state === "discarded" ||
+    turn.state === "failed";
 
 
   /**
@@ -1131,6 +1154,7 @@ function SessionTurnBody({
         </div>
       )}
 
+      {answerLane && (
       <Message from="assistant">
         <MessageContent from="assistant">
           {requests.map((request) => (
@@ -1190,6 +1214,7 @@ function SessionTurnBody({
           {turn.state === "failed" && <p className="mt-2 text-sm text-muted-foreground">This turn ended early. Your history is saved; send a new message to continue.</p>}
         </MessageContent>
       </Message>
+      )}
     </div>
   );
 }
