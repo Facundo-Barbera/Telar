@@ -46,8 +46,14 @@ xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
   -derivedDataPath apps/ios/DerivedData CODE_SIGNING_ALLOWED=NO build
 ```
 
-NO SIMULATORS, by decision (2026-09-11): a runtime is 16 GB and the phone is
-the test target. The unit suite runs on a connected device —
+NO SIMULATORS **ON THIS MAC**, by decision (2026-09-11): a runtime is 16 GB and
+the phone is the test target here. That decision is about one machine's disk.
+It was never about CI, and reading it as a rule for CI is what kept the Swift
+suite unrun for as long as it was — GitHub's `macos-26-arm64` image ships iOS
+26.2 / 26.4 / 26.5 preinstalled and destroys the runner after every job, so
+there is nothing to download and nothing that persists. See "In CI" below.
+
+Locally, then, the unit suite runs on a connected device —
 `TELAR_IPHONE_UDID` names it, the same id `phone.sh` installs to:
 
 ```
@@ -65,13 +71,59 @@ override the run replaces the nightly on the phone with a dev-signed build of
 whatever is checked out. The `.dev` id is the one `phone.sh` uses, which iOS
 treats as an unrelated app, so the TestFlight build is left alone.
 
-Since 2026-09-19 this also runs in CI, nightly rather than per-PR:
-`.github/workflows/nightly-ios-tests.yml` on the Mac mini's runner (#675). It
-refuses to run when the phone is not reachable and refuses to report success
-on a run that executed no tests — a green that means "no device" is the one
-outcome worth engineering against.
+### In CI
 
-If a simulator is ever wanted again, `xcodebuild -downloadPlatform iOS`
+`verify.yml`'s `Archive iOS` job runs `TelarMobileTests` on
+`platform=iOS Simulator,name=iPhone 17`, Debug, `-only-testing:TelarMobileTests`,
+on every pull request that touches an iOS path — the same
+`ios-changes` guard that decides whether the job takes a Mac at all, so a pull
+request touching no iOS file still takes a Linux runner and compiles nothing.
+The job archives Release, reports the type-check floor, and then tests, in that
+order.
+
+Two assertions, because `xcodebuild test` can exit 0 having executed nothing —
+a destination that resolved to something empty, a filter matching no target, a
+plan that skipped every suite:
+
+- `passedTests` must be **at least 661**. A floor, not `total > 0`: the check
+  this was lifted from failed on `total == 0` and on `failed`, so a run where
+  every test was *skipped* and none failed exited 0. Raise the floor when tests
+  are added; lowering it to make a red go away is the failure it exists to
+  prevent.
+- `environmentDescription` is printed, so the runtime the run landed on is in
+  the log. That is the cheap way to notice an image change.
+
+#### Why the device nightly is gone
+
+`.github/workflows/nightly-ios-tests.yml` was added 2026-09-19 (#675), parked a
+day later (#755), and deleted 2026-09-20. It is worth knowing why, because the
+file read like coverage and was not:
+
+- **It never ran. Not once.** Its `schedule:` was on `main` from 20:18 UTC on
+  2026-09-19 to 04:47 UTC on 2026-09-20 with a cron of `23 16 * * *`; there is
+  no 16:23 UTC inside that window. GitHub's run count for the workflow was 0
+  for its whole life, against 1162 for `verify.yml`.
+- **It could not have run after CI moved off the Mac mini.** `runs-on:
+  [self-hosted, macOS, ARM64, telar-nightly]` matches no runner registered on
+  this repository, and a dispatch against a label nothing carries queues for
+  ever rather than failing. That is what the `if: false` guard was for.
+- **The arrangement it needed is the one #754 removed** — a machine with a
+  phone cabled to it, which was also a single point of failure for all of CI:
+  53-minute queues, and `main` 27 commits without a green.
+
+Nothing in the suite asserts anything only hardware can produce, so the
+simulator leg is not a weaker substitute — it is the same 661 assertions on a
+runtime that does not depend on a cable. The manual device command above still
+works and stays the answer for anyone who wants the phone in the loop.
+
+**The trigger to revisit is not "more TestFlight users."** More users do not
+make a device necessary, because no test needs one. The trigger is the first
+test that asserts something only hardware produces — real push delivery, a Live
+Activity on the Lock Screen, background execution, thermal behaviour. At that
+point the honest arrangement is a paid device cloud or a human running the
+command above before a release, not a runner on somebody's desk.
+
+If a simulator is ever wanted *on this Mac*, `xcodebuild -downloadPlatform iOS`
 fetches the runtime; delete it with `xcrun simctl runtime delete all`.
 
 The project uses Xcode's file-system-synchronized groups: dropping a

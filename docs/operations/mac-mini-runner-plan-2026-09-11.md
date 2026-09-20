@@ -123,3 +123,11 @@ worth more for a signed public release than for a nightly.
   premise is unchanged and so is the no-simulator decision; what changed is
   that "a local matter" meant the suite was verified only as often as someone
   remembered, which is not a property a test suite can be said to have.
+
+  **The premise above is wrong, and was wrong here too** (2026-09-20, #755).
+  "Without a simulator they need a phone on USB" is true; "and CI cannot have a
+  simulator" was an inference from `apps/ios/README.md`'s note about *this
+  Mac's* 16 GB of disk. A hosted runner is destroyed after the job and ships
+  the runtimes preinstalled. The nightly above never executed a single run
+  before it was deleted; `verify.yml`'s `Archive iOS` job now runs the suite on
+  `platform=iOS Simulator,name=iPhone 17` on every iOS pull request.

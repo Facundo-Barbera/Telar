@@ -78,9 +78,14 @@ Service definition:
    `telar-nightly`. Merged matters, not green — a green PR that has not landed
    leaves `main` still asking for the runner.
 
-2. **`nightly-ios-tests.yml` has an answer.** ✅ Done — parked, see #755
-   following #675. Disabled rather than deleted; it is the one job that cannot
-   move, because it needs a Mac with a phone attached.
+2. **`nightly-ios-tests.yml` has an answer.** ✅ Done — parked 2026-09-20 (#755
+   following #675), then **deleted** the same day once the premise underneath
+   it failed. It was not "the one job that cannot move": the suite needs an iOS
+   runtime, not a phone, and GitHub's macOS image ships three. The 661 tests
+   now run on a simulator inside `verify.yml`'s `Archive iOS` job, on every
+   pull request that touches an iOS path. The file itself had never executed
+   once — its cron never came due inside the 8½ hours its `schedule:` was on
+   `main`. See `apps/ios/README.md` → "Why the device nightly is gone".
 
 3. **The macOS build-and-sign path proven on `macos-latest`.** ✅ Done — probe
    run `35490217749`. The certificate imported, a `Developer ID Application`
