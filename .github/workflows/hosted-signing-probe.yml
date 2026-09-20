@@ -1,0 +1,213 @@
+name: Hosted signing probe
+
+# ════════════════════════════════════════════════════════════════════════════
+# THIS IS A PROBE. IT BUILDS AND SIGNS AND THEN STOPS.
+#
+# It exists to answer one question before the self-hosted runner is removed:
+# does the macOS build-and-sign path work on a GitHub-hosted `macos-latest`?
+# The certificates already come from repository secrets into a temporary
+# per-run keychain, which is good evidence and is not proof — and if signing
+# turns out to fail on hosted AFTER the runner is deregistered, there is
+# nothing to fall back to.
+#
+# WHAT IT DELIBERATELY DOES NOT DO, so nobody later "completes" it:
+#   - it does not publish to R2
+#   - it does not upload to App Store Connect / TestFlight
+#   - it does not notarise (no submission to Apple's notary service)
+#   - it does not create or push a tag
+#
+# DO NOT ADD THOSE STEPS. A probe that publishes is a release, and this file
+# runs on `workflow_dispatch` from any branch — including branches that have
+# not been reviewed. The real workflows are nightly-desktop.yml,
+# release-desktop.yml and nightly-ios.yml.
+#
+# PUBLISHING IS STRUCTURALLY IMPOSSIBLE HERE, not merely omitted: the jobs
+# below are never given the R2 or App Store Connect secrets at all. Adding
+# `--publish-r2` would fail the script's own preflight for want of
+# credentials rather than quietly uploading, and an `xcodebuild` upload has no
+# key to authenticate with. That is the intended barrier — it does not depend
+# on step ordering, and reordering this file cannot turn it into a publisher.
+#
+# TEMPORARY: delete once the runner is gone and a real nightly has run green
+# on hosted.
+# ════════════════════════════════════════════════════════════════════════════
+
+# A branch push, because `workflow_dispatch` only lists workflows that exist on
+# the DEFAULT branch — a probe that has to merge before it can run is no use for
+# deciding whether to merge it. Scoped to this one branch, so it cannot fire
+# anywhere else.
+on:
+  push:
+    branches: ["telar/hosted-signing-probe"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Covers BOTH nightly-desktop.yml and release-desktop.yml: they run the same
+  # scripts/build-desktop.sh behind the same keychain import, differing only in
+  # targets and whether they publish.
+  desktop:
+    name: "macos-latest: build and sign the desktop app"
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+
+      # Byte-for-byte the import from nightly-desktop.yml. If this step is the
+      # thing that breaks on a hosted runner, that is precisely what the probe
+      # is for — do not "simplify" it into something that is not what ships.
+      - name: Import Developer ID certificate into a temporary keychain
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          security list-keychains -d user > "$RUNNER_TEMP/keychain-search-list.txt"
+          KEYCHAIN="$RUNNER_TEMP/signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo -n "$MACOS_CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          security list-keychains -d user -s "$KEYCHAIN"
+
+          rm -f "$CERT_PATH"
+
+      # THE IDENTITY MUST BE THERE BEFORE THE BUILD, because build-desktop.sh
+      # will happily produce an UNSIGNED app when no certificate is present —
+      # its own usage says so. A silent unsigned build is the failure this
+      # probe exists to catch, and catching it here costs seconds rather than
+      # a full build.
+      - name: Confirm a Developer ID identity actually imported
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keychain-db"
+          echo "identities visible to codesign:"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "Developer ID Application"; then
+            echo "::error::no 'Developer ID Application' identity in the CI keychain — the build would produce an UNSIGNED app and look like a success"
+            exit 1
+          fi
+
+      # NO --publish-r2, AND NO R2 SECRETS IN SCOPE. `dir` rather than zip/dmg:
+      # the probe is about whether signing works, and packaging formats add
+      # minutes without adding an answer.
+      - name: Build and sign, without publishing
+        env:
+          CSC_KEYCHAIN: ${{ runner.temp }}/signing-${{ github.run_id }}-${{ github.run_attempt }}.keychain-db
+        run: |
+          set -euo pipefail
+          bash scripts/build-desktop.sh --ref origin/main --targets dir \
+            --channel nightly --out "$RUNNER_TEMP/probe-out"
+
+      # THE ASSERTION THIS PROBE IS FOR. A build step exiting zero proves the
+      # script ran, not that anything got signed — electron-builder falls back
+      # to an ad-hoc signature, which satisfies "is it signed?" and fails on a
+      # real user's machine. So: the app must exist, carry a real signature,
+      # and that signature must be a Developer ID one rather than ad-hoc.
+      - name: Prove the app is actually signed, and signed properly
+        run: |
+          set -euo pipefail
+          APP="$(find "$RUNNER_TEMP/probe-out" -maxdepth 3 -name '*.app' -type d | head -1)"
+          if [ -z "$APP" ]; then
+            echo "::error::no .app was produced; there is nothing to verify"
+            exit 1
+          fi
+          echo "verifying: $APP"
+
+          # 1. A valid, complete signature over the whole bundle.
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          # 2. NOT ad-hoc. An ad-hoc signature passes --verify and is useless.
+          details="$(codesign -dvvv "$APP" 2>&1)"
+          echo "$details"
+          if echo "$details" | grep -qi 'Signature=adhoc'; then
+            echo "::error::the app is AD-HOC signed, not Developer ID signed — Gatekeeper and Squirrel will both reject it"
+            exit 1
+          fi
+
+          # 3. The authority is a Developer ID, which is what ships.
+          if ! echo "$details" | grep -q 'Authority=Developer ID Application'; then
+            echo "::error::signed, but not by a Developer ID Application authority"
+            exit 1
+          fi
+
+          echo "confirmed: Developer ID signed on a hosted macOS runner"
+
+      - name: Restore the keychain search list
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/keychain-search-list.txt" ]; then
+            # shellcheck disable=SC2046
+            security list-keychains -d user -s $(sed -e 's/^[[:space:]]*"//' -e 's/"$//' "$RUNNER_TEMP/keychain-search-list.txt" | tr '\n' ' ')
+          fi
+
+  # nightly-ios.yml is a different shape: signing is cloud-managed, there is no
+  # .p12, and the risk is whether a hosted image's Xcode can archive at all.
+  # Archive only — no export, no upload, no API key in scope.
+  ios:
+    name: "macos-latest: archive the iOS app"
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+
+      # The real workflow refuses a beta Xcode because App Store Connect
+      # rejects its uploads. This probe uploads nothing, but the check is the
+      # point: it tells us whether the HOSTED image would satisfy the real
+      # workflow, which is the question being asked.
+      - name: Report the hosted image's Xcode, and whether the real job would accept it
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          if /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$DEVELOPER_DIR/../Info.plist" | grep -qi beta; then
+            echo "::error::the hosted image's Xcode is a BETA; nightly-ios.yml would refuse it. Pin a release Xcode with maxim-lobanov/setup-xcode before moving that workflow."
+            exit 1
+          fi
+          echo "release Xcode — nightly-ios.yml's guard would pass here"
+
+      # NO SIGNING, NO UPLOAD, NO API KEY. This answers "can a hosted runner
+      # compile and archive this app", which is the part that cannot be
+      # inferred from the secrets being portable. Real signing is cloud-managed
+      # and needs the App Store Connect key, which this job deliberately lacks.
+      - name: Archive without signing
+        run: |
+          set -euo pipefail
+          cd apps/ios
+          xcodebuild archive \
+            -project TelarMobile.xcodeproj -scheme TelarMobile \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/TelarMobile.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Prove an archive was produced
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/TelarMobile.xcarchive/Products/Applications/TelarMobile.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::xcodebuild exited 0 but produced no .app in the archive"
+            ls -R "$RUNNER_TEMP/TelarMobile.xcarchive" || true
+            exit 1
+          fi
+          echo "confirmed: the hosted image archives this app"
