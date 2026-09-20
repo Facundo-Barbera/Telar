@@ -44,6 +44,7 @@ const { resolveHelperExec } = require("./helper-exec");
 const devUpdate = require("./dev-update");
 const updateWatchdog = require("./update-watchdog");
 const serviceWorkerWatchdog = require("./service-worker-watchdog");
+const { createProcessMetricsReader } = require("./process-metrics");
 const { createInstallGate } = require("./update-install");
 const { wireLoginOffer } = require("./login-offer-window");
 const { discoverOpeners, openWith, openersWithIcons, bundleIcon } = require("./workspace-openers");
@@ -2555,6 +2556,53 @@ function startHeapLog() {
 }
 
 /**
+ * EVERY OS pid HOSTING A PAGE ANYBODY CAN SEE — the app's own windows, the
+ * tabs, the DevTools views, the extension popups. A renderer that is not one of
+ * these is showing nothing, which is the whole signal behind #487: Electron
+ * will not tell us a renderer is a service worker (ProcessMetric.type has no
+ * such value), so "hosts no WebContents" is what stands in for it.
+ *
+ * Read by the watchdog, which kills on it, and by the metrics surface (#488),
+ * which draws it — the same sentence about the same pids, said once.
+ */
+function liveRendererProcessIds() {
+  const pids = [];
+  for (const contents of webContents.getAllWebContents()) {
+    if (contents.isDestroyed()) continue;
+    try {
+      const pid = contents.getOSProcessId();
+      if (pid) pids.push(pid);
+    } catch {
+      // A WebContents that will not name its process is one we cannot exclude
+      // by pid; skipping it can only make the watchdog more cautious, never
+      // less.
+    }
+  }
+  return pids;
+}
+
+/**
+ * THE SHELL'S ONE CALLER OF `app.getAppMetrics()` — see process-metrics.js for
+ * why there is exactly one.
+ *
+ * Short version: `percentCPUUsage` averages over the gap since the last call to
+ * the API, not since the last call by THIS caller. Adding the #488 page as a
+ * second, faster caller would have silently retuned the #487 watchdog from a
+ * thirty-second average to a two-second one — turning a kill path designed to
+ * sit through spikes into one that fires on them. Both read this instead.
+ */
+let processMetrics = null;
+function processMetricsReader() {
+  if (!processMetrics) {
+    processMetrics = createProcessMetricsReader({
+      readMetrics: () => app.getAppMetrics(),
+      readLiveProcessIds: liveRendererProcessIds,
+    });
+  }
+  return processMetrics;
+}
+
+/**
  * THE RUNAWAY-RENDERER WATCHDOG — issue #487's consequences. The decisions are
  * in service-worker-watchdog.js, which is pure; this is the three readings it
  * needs and the kill.
@@ -2569,27 +2617,12 @@ function startHeapLog() {
  */
 function startServiceWorkerWatchdog() {
   const watchdog = serviceWorkerWatchdog.createServiceWorkerWatchdog({
-    readMetrics: () => app.getAppMetrics(),
-    // EVERY OS pid HOSTING A PAGE ANYBODY CAN SEE — the app's own windows, the
-    // tabs, the DevTools views, the extension popups. A renderer that is not
-    // one of these is showing nothing, which is the whole signal: Electron
-    // will not tell us a renderer is a service worker (ProcessMetric.type has
-    // no such value), so "hosts no WebContents" is what stands in for it.
-    readLiveProcessIds: () => {
-      const pids = [];
-      for (const contents of webContents.getAllWebContents()) {
-        if (contents.isDestroyed()) continue;
-        try {
-          const pid = contents.getOSProcessId();
-          if (pid) pids.push(pid);
-        } catch {
-          // A WebContents that will not name its process is one we cannot
-          // exclude by pid; skipping it can only make the watchdog more
-          // cautious, never less.
-        }
-      }
-      return pids;
-    },
+    // A RATE OVER AT LEAST TWENTY-FIVE SECONDS, whatever else is sampling. The
+    // watchdog polls every thirty; asking for twenty-five keeps the window it
+    // was tuned for even when a poll lands slightly early, and never widens it
+    // into a different decision than the one #487 shipped.
+    readMetrics: () => processMetricsReader().metricsForWatchdog({ minWindowMs: 25_000 }),
+    readLiveProcessIds: liveRendererProcessIds,
     // Every partition's running workers, each told whether its own origin
     // still has a tab open in that partition.
     readWorkers: () => {
@@ -2966,6 +2999,21 @@ ipcMain.handle("telar:app:relaunch", () => {
 ipcMain.handle("telar:push:provision-relay", async (_event, config) => provisionPushRelay(config));
 
 /**
+ * WHAT THIS APP'S PROCESSES ARE DOING, for the Usage page (#488).
+ *
+ * NOT GUARDED TO THE COCKPIT'S TOP FRAME, unlike the destructive bridges above,
+ * and that is a decision rather than an omission: the answer is CPU
+ * percentages, working-set sizes and pids of THIS app's own processes. It
+ * carries no URL, no origin, no title and no path — a page in the integrated
+ * browser learns from it only that Telar is busy, which it can already tell by
+ * being slow.
+ *
+ * Every window shares one reader, so opening the page in two of them samples
+ * once, not twice.
+ */
+ipcMain.handle("telar:metrics:read", () => processMetricsReader().summary());
+
+/**
  * A SECOND WINDOW ON A PAGE OF THE APP — "Open in a new window", from the
  * session menu (#287). The only thing the web build cannot do for itself, which
  * is why the menu item is absent without this bridge rather than disabled.
@@ -3153,6 +3201,11 @@ if (SMOKE) {
           // to be recognised by, so the scope it names is what picks the host;
           // the focused window is the fallback when no window claims it.
           getBrowserManager: (scopeKey) => managerForScope(browserManagers, scopeKey, browserManager),
+          // And the one reading that is about the app rather than a session's
+          // tabs (#488): the cockpit's server is a sibling process and cannot
+          // call `app.getAppMetrics()` itself, so this is how the Usage page
+          // and anything reaching it remotely get the figures.
+          readProcessMetrics: () => processMetricsReader().summary(),
         });
         let url = OVERRIDE_URL;
         if (!url) {
