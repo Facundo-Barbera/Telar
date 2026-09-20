@@ -74,9 +74,17 @@ export type DictationPhase =
 
 export type DictationState = {
   phase: DictationPhase;
-  /** Why it stopped, or would not start. A sentence: the button's only move is
-   *  to show it to a person. */
-  error?: string;
+  /**
+   * Why it stopped, or would not start. A sentence: the button's only move is
+   * to show it to a person.
+   *
+   * AND WHICH REFUSAL IT IS (#707). The sentence alone is not an identity: two
+   * presses that fail the same way are two pieces of news, and a notice that
+   * hides itself after a few seconds — which is what the toolbar now draws —
+   * would stay hidden for the second one if it keyed on the words. `seq`
+   * counts refusals, so an identical sentence twice is twice.
+   */
+  error?: { text: string; seq: number };
   /** Toggle. Starting while listening stops, which is what pressing the one
    *  button twice has to mean. */
   toggle: () => void;
@@ -146,7 +154,16 @@ export function useDictation(input: {
   onStream?: (stream: MediaStream | undefined) => void;
 }): DictationState {
   const [phase, setPhase] = useState<DictationPhase>("idle");
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<{ text: string; seq: number }>();
+  /** HOW MANY REFUSALS THERE HAVE BEEN, which is what makes two identical
+   *  sentences two pieces of news — see `DictationState.error`. A ref because
+   *  it is never drawn on its own; it only ever rides an error that is. */
+  const refusals = useRef(0);
+  /** EVERY REFUSAL GOES THROUGH HERE, so none of them can forget the counter. */
+  const refuse = useCallback((text: string) => {
+    refusals.current += 1;
+    setError({ text, seq: refusals.current });
+  }, []);
   /** WHERE THE PILL GOES (#561), re-measured whenever words land. State rather
    *  than a ref because it is drawn; `undefined` is "nothing to draw". */
   const [caret, setCaret] = useState<{ rect: DOMRect; language: string }>();
@@ -278,7 +295,7 @@ export function useDictation(input: {
     // screen with no message box on it would both be for nothing.
     const speaking = box.current?.();
     if (!speaking) {
-      setError("No message box is on screen to dictate into.");
+      refuse("No message box is on screen to dictate into.");
       setPhase("idle");
       return;
     }
@@ -383,7 +400,7 @@ export function useDictation(input: {
         // dropping words silently: it has unmounted, or the conversation is not
         // ready, and every following frame would meet the same wall.
         if (refusal && !refusal.ok) {
-          setError(refusal.reason);
+          refuse(refusal.reason);
           teardown();
           return;
         }
@@ -398,7 +415,18 @@ export function useDictation(input: {
         // A WEBSOCKET ERROR EVENT CARRIES NOTHING. The browser deliberately
         // withholds the reason (it would be a cross-origin oracle), so the
         // sentence here is the honest one rather than an invented cause.
-        setError("The connection to the transcription service failed.");
+        //
+        // DEEPGRAM DID SAY WHY, AND THIS TAB WILL NEVER SEE IT (#707). A
+        // refused upgrade is an ordinary HTTP response — `400 Bad Request —
+        // Keyterm limit exceeded` was this bug, and it took a raw TLS
+        // handshake outside the browser to read it (`scripts/probe-deepgram-
+        // listen.ts`). The reason a person can act on lives on the engine,
+        // which holds the key; see the issue for what that would take.
+        //
+        // WHAT IS ADDED IS AN INSTRUCTION, NOT A CAUSE: pressing again is the
+        // one move there is, and the notice that draws this goes away by
+        // itself, so the sentence has to say what to do while it is up.
+        refuse("The connection to the transcription service failed. Press the button to try again.");
         teardown();
       };
 
@@ -407,7 +435,7 @@ export function useDictation(input: {
       // close nobody asked for gets a sentence.
       live.onclose = () => {
         if (socket.current !== live) return;
-        setError("The transcription service closed the connection.");
+        refuse("The transcription service closed the connection. Press the button to try again.");
         teardown();
       };
     } catch (cause) {
@@ -422,10 +450,13 @@ export function useDictation(input: {
       // whatever the browser happened to call them. `microphoneRefusal` is the
       // whole table now, shared with the settings pane's own microphone test so
       // the two surfaces cannot drift: see `refusal.ts`.
-      setError(microphoneRefusal(cause));
+      //
+      // THROUGH `refuse` LIKE EVERY OTHER PATH (#707): the sentence is that
+      // table's, and the only thing added here is which refusal it is.
+      refuse(microphoneRefusal(cause));
       teardown();
     }
-  }, [teardown]);
+  }, [teardown, refuse]);
 
   const toggle = useCallback(() => {
     // STOPPING IS SYNCHRONOUS AND STARTING IS NOT, so a second press during

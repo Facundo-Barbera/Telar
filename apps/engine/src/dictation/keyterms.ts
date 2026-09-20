@@ -42,10 +42,40 @@
  * which is also the real bound: forty session titles can be two thousand
  * characters, so a count never was one.
  *
- *   ~500 TOKENS, counted as four characters to a token — the ordinary
- *   approximation, and deliberately an approximation: the alternative is a
- *   tokenizer on the token-minting path for a cap whose exact edge changes
- *   nothing.
+ * ── AND WHY THE BUDGET IS NOW COUNTED IN BYTES (#707) ───────────────────────
+ * That budget used to be spent against an ESTIMATE — four characters to a
+ * token, the ordinary approximation — and the estimate is what broke dictation
+ * outright. Probed against the real endpoint, a glossary this builder called
+ * 313 tokens was refused:
+ *
+ *   400 Bad Request — Keyterm limit exceeded. The maximum number of tokens
+ *   across all keyterms is 500.
+ *
+ * Four characters to a token is an English figure. A Spanish session title
+ * carrying `·`, `§`, `—` and `#` tokenizes closer to TWO, so the approximation
+ * was wrong by more than half in the one direction that costs the whole
+ * feature: the socket does not open at all, on every press, and the browser
+ * cannot report why (see `use-dictation.ts`). Dropping a term is a degradation;
+ * this was an outage.
+ *
+ * SO THE BUDGET IS SPENT IN UTF-8 BYTES, and the reason is that this is not an
+ * estimate at all. A subword token never covers FEWER than one byte, so a
+ * term's byte length is an upper bound on the tokens it can possibly cost — it
+ * cannot be wrong in the direction that refuses the socket, for any input,
+ * including emoji and scripts nobody here has thought about. It is
+ * conservative: realistic text spends about half the budget it is charged, so a
+ * Mac sends fewer terms than Deepgram would have taken. That is the trade, and
+ * it is the right way round — the terms it costs come off the TAIL, which the
+ * order below already says are the first that should go.
+ *
+ * ── THERE ARE TWO LIMITS HERE, AND THIS ONE IS THE TIGHTER ──────────────────
+ * The second is the size of the request line itself: Deepgram's edge answers a
+ * plain-HTML `400 Bad request` — before it even looks at the credential — once
+ * the query grows past a few kilobytes. It is real, and it was the other
+ * candidate for this bug. It is NOT what is respected here, because it does not
+ * need to be: 500 bytes of keyterms makes a request line well under a kilobyte,
+ * so staying inside the token budget keeps a socket inside the edge's limit by
+ * a wide margin. If the token budget ever rises, that one becomes reachable.
  *
  * WHATEVER DOES NOT FIT IS DROPPED FROM THE TAIL rather than skipped over, so
  * the list is always a PREFIX of the order below. Skipping a long title to fit
@@ -67,11 +97,25 @@ export type DictationContext = {
   branches: readonly string[];
 };
 
-/** Deepgram's own budget for a keyterm prompt, and the only bound there is. */
+/** Deepgram's own budget for a keyterm prompt, and the bound this list is
+ *  built to respect. Their words, quoted by the refusal itself: "The maximum
+ *  number of tokens across all keyterms is 500." */
 export const DEEPGRAM_KEYTERM_TOKEN_BUDGET = 500;
 
-/** The usual approximation, and the reason the budget above is a `~`. */
-const CHARACTERS_PER_TOKEN = 4;
+/** Reused rather than built per term — this runs on the token-minting path,
+ *  which is a press of the mic button. */
+const encoder = new TextEncoder();
+
+/**
+ * THE MOST TOKENS A TERM COULD POSSIBLY COST, which is its UTF-8 byte length.
+ *
+ * NOT AN ESTIMATE, which is the whole point — see the header. A subword token
+ * never covers fewer than one byte, so this can only ever over-charge, and
+ * over-charging costs a term while under-charging costs dictation.
+ */
+function tokenCeiling(term: string): number {
+  return encoder.encode(term).length;
+}
 
 /**
  * A SENTENCE IS NOT A KEYTERM. A conversation can be titled with a whole clause,
@@ -102,7 +146,9 @@ export const TELAR_KEYTERMS: readonly string[] = ["Telar", "Agent", "worktree", 
 /**
  * The `keyterm` values for one socket, in the order they go on the query.
  *
- * THE ORDER IS THE PRIORITY, because both bounds cut from the tail:
+ * THE ORDER IS THE PRIORITY, because the budget cuts from the tail — and now
+ * that the budget is charged in bytes it cuts deeper, so the order matters more
+ * than it did:
  *
  *   1. the person's own terms — they typed them into a box for this, and a list
  *      that dropped them in favour of a branch name would be ignoring the one
@@ -120,7 +166,6 @@ export const TELAR_KEYTERMS: readonly string[] = ["Telar", "Agent", "worktree", 
  * it was cut from, which is the commonest collision here by far.
  */
 export function deepgramKeyterms(input: { vocabulary: readonly string[]; context: DictationContext }): string[] {
-  const budget = DEEPGRAM_KEYTERM_TOKEN_BUDGET * CHARACTERS_PER_TOKEN;
   const kept: string[] = [];
   const seen = new Set<string>();
   let spent = 0;
@@ -141,10 +186,11 @@ export function deepgramKeyterms(input: { vocabulary: readonly string[]; context
     if (seen.has(key)) continue;
     // THE BUDGET STOPS THE LIST rather than skipping this one entry — see the
     // header for why the answer is always a prefix.
-    if (spent + term.length > budget) break;
+    const cost = tokenCeiling(term);
+    if (spent + cost > DEEPGRAM_KEYTERM_TOKEN_BUDGET) break;
     seen.add(key);
     kept.push(term);
-    spent += term.length;
+    spent += cost;
   }
   return kept;
 }

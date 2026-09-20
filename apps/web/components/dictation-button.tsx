@@ -47,6 +47,7 @@ import type { ComposerDictation } from "@/lib/dictation/use-composer-dictation";
 import { keyCapText, useKeyCapPlatform } from "@/lib/key-caps";
 import { useKeymap } from "@/lib/use-command-keys";
 import { DictationCaretPill } from "./dictation-caret-pill";
+import { DictationNotice } from "./dictation-notice";
 import { cn } from "@/lib/utils";
 
 export function DictationButton({ dictation, className }: { dictation: ComposerDictation; className?: string }) {
@@ -76,7 +77,10 @@ export function DictationButton({ dictation, className }: { dictation: ComposerD
   const busy = phase === "starting";
 
   return (
-    <div className={cn("flex min-w-0 items-center gap-1.5", className)}>
+    // RELATIVE, because the notice is anchored over this control rather than
+    // laid out beside it — see `DictationNotice`, and `UpdateToast` before it,
+    // which needs the same of its parent.
+    <div className={cn("relative flex min-w-0 items-center gap-1.5", className)}>
       <button
         type="button"
         aria-label={listening ? "Stop dictating" : "Dictate"}
@@ -110,12 +114,10 @@ export function DictationButton({ dictation, className }: { dictation: ComposerD
       {listening && caret && <DictationCaretPill rect={caret.rect} language={caret.language} />}
       {/* NO CAPTION OF UNCONFIRMED WORDS ANY MORE — they are in the composer,
           rewritten in place as Deepgram revises them. A refusal still needs
-          somewhere to be said, and this is it. */}
-      {error && (
-        <span role="status" className="min-w-0 truncate text-xs text-destructive">
-          {error}
-        </span>
-      )}
+          somewhere to be said, and this is it — ANCHORED OVER THE BUTTON AND
+          GONE BY ITSELF (#707), rather than the red sentence in the toolbar it
+          used to be. `DictationNotice` has the whole argument. */}
+      <DictationNotice error={error} />
     </div>
   );
 }

@@ -494,6 +494,30 @@ describe("the mic button on a composer", () => {
     expect(host.textContent).toContain("did not allow the microphone");
   });
 
+  test("a refusal is a caption over the button, not a red sentence parked in the toolbar", async () => {
+    // THE DISPLAY THE OWNER RAISED SEPARATELY (#707). The alarm colour and the
+    // permanence were both wrong for a socket you can retry by pressing again;
+    // `dictation-notice.test.tsx` holds what the caption then does.
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          const denial = new Error("Permission denied");
+          denial.name = "NotAllowedError";
+          throw denial;
+        },
+      },
+    });
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    const notice = host.querySelector('[data-slot="dictation-notice"]');
+    expect(notice?.textContent).toContain("did not allow the microphone");
+    // ANCHORED OVER THE CONTROL, which needs a positioned parent — the thing
+    // that silently stops working if somebody drops `relative` from the row.
+    expect(micIn(host).parentElement?.className).toContain("relative");
+    expect(notice?.className).toContain("absolute");
+  });
+
   test("a Mac with a provider chosen but no key refuses with the engine's sentence, not a status", async () => {
     // ONLY THE MINT REFUSES. The provider read still answers, because that is
     // the state this Mac is actually in: dictation is switched on, so there IS
