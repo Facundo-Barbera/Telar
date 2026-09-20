@@ -992,6 +992,28 @@ export const Session = z.object({
   /** When the snooze was set — the baseline "what has happened SINCE" is
    *  measured from, which is what makes an early wake possible. */
   snoozedAt: Timestamp.optional(),
+  /**
+   * WHEN THIS CONVERSATION WOKE, DECIDED ONCE BY THE ENGINE — issues #490, #586.
+   *
+   * `wokeAt()` in `./settling.ts` computes the moment; this is where the engine
+   * records the answer, and the recording is the whole point. A snooze expiry is
+   * the one state change in this record with NO WRITE BEHIND IT — the deadline
+   * simply passes — so without this field there is no moment at which a
+   * conversation wakes and nothing can announce one. The row just reappears
+   * whenever something happens to render after the deadline.
+   *
+   * STORED RATHER THAN COMPUTED PER DEVICE, for `lastReadTurnSequence`'s reason
+   * and it is the same reason: "when did this conversation wake" has exactly one
+   * correct answer, so two cockpits must not each decide it against their own
+   * clock. A per-row client timer would light the dot and have two devices
+   * disagree about when the row woke — the same class of bug as two disagreeing
+   * about whether a turn ended.
+   *
+   * IT BELONGS TO THE SNOOZE THAT PRODUCED IT. Setting a new `snoozedUntil`
+   * clears it, or the next wake would have nothing to announce because a stale
+   * one was already sitting there.
+   */
+  wokeAt: Timestamp.optional(),
 
   /** Provider continuity for the NEXT runtime. Opaque; the engine owns it. */
   resumeCursor: z.string().min(1).optional(),
