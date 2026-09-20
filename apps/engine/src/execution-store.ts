@@ -91,6 +91,23 @@ const COMPACT_WATERMARK_PREFIX = "journal-compacted/";
  */
 const USAGE_WATERMARK_PREFIX = "journal-usage-folded/";
 
+/**
+ * WHICH SESSIONS HOLD THEIR ITEMS AS ROWS — issue #658, `metadata`, one row per
+ * session, and the reason a half-migrated store is a CORRECT store rather than
+ * one to be recovered from.
+ *
+ * The read path asks this before it asks anything else, so the answer is never
+ * inferred from whether a document happens to be present. Inferring it is the
+ * variant that cannot tell "migrated, blob deleted" from "never written", and
+ * those two want opposite answers.
+ *
+ * THE MARKER, THE ROWS AND THE DELETED BLOB COMMIT TOGETHER — see
+ * `migrateItemsToRows`. Swept by `deleteSession` beside the two watermarks
+ * above, for their reason: a marker outliving its session would tell a reused
+ * id that its items are rows when the rows went with the session.
+ */
+const ITEMS_ROWS_PREFIX = "items-rows/";
+
 /** How long after opening the first compaction starts. Long enough that the
  *  daemon is answering before housekeeping touches the database, short enough
  *  that a person who launches Telar to reclaim space does not wait on it. */
@@ -616,6 +633,49 @@ export class ExecutionStore {
         PRIMARY KEY(session_id, run_id)
       );
       CREATE INDEX IF NOT EXISTS turn_summaries_outline ON turn_summaries(session_id, sequence);`);
+    /**
+     * ONE ROW PER ITEM, INSTEAD OF ONE BLOB PER SESSION — issue #658.
+     *
+     * `items.json` was re-serialised and re-stored WHOLE on every batch that
+     * touched an item, so the cost of writing one item was proportional to how
+     * many the session already held. Measured at the write seam: 25 items cost
+     * 1.5 MiB of writes to build a 60 KiB document, 800 items cost 1.45 GiB to
+     * build 1.9 MiB — an amplification factor that IS the item count. The file
+     * on disk stayed at 8 MiB throughout, which is why no instrument watching
+     * the file had ever seen it.
+     *
+     * A ROWID TABLE, NOT `WITHOUT ROWID`, and it was measured both ways: 1.70×
+     * the blob at rest against 1.90×, for #646's reason on `events` — large
+     * values spill harder out of a `WITHOUT ROWID` leaf.
+     *
+     * AND IT IS NOT FREE AT REST. The blob is one big TEXT that overflows
+     * predictably; rows of ~2.3 KiB each keep ~1 KiB inline and spill the rest
+     * into a 4 KiB overflow page, which on 4 KiB pages costs ~1.7× the blob for
+     * Telar's item sizes. Dropping the secondary index changes that by 0.01×, so
+     * it is page rounding rather than index overhead. The trade is deliberate:
+     * a bounded one-time increase against an unbounded per-event write cost.
+     *
+     * `ord` IS FIRST-OPEN ORDER, held across updates, because that is what the
+     * blob's array order was — the Map was built in insertion order and every
+     * reader has been handed it that way since. `(session_id, run_id, ord)` is
+     * the window's index: a snapshot chooses TURNS, and an item is wanted
+     * exactly when its turn is.
+     *
+     * ADDITIVE, `user_version` STAYS AT 1, on the terms the two blocks above
+     * argue — with one extra clause that matters more here. An older binary
+     * does not know this table, so it would read a migrated session's items as
+     * ABSENT rather than as stale. That is what the per-session marker is for:
+     * see `itemsAreRows`. The blob and the rows are never both authoritative.
+     */
+    this.db.exec(`CREATE TABLE IF NOT EXISTS items (
+        session_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        ord INTEGER NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY(session_id, item_id)
+      );
+      CREATE INDEX IF NOT EXISTS items_run ON items(session_id, run_id, ord);`);
     /**
      * WHAT THE TURN'S `usage.updated` ROWS ADDED UP TO — issue #697.
      *
@@ -1240,6 +1300,94 @@ export class ExecutionStore {
     const span = row.span;
     return Buffer.isBuffer(span) ? span : Buffer.from(span as Uint8Array);
   }
+
+  /**
+   * ══ ITEMS AS ROWS — issue #658 ══
+   *
+   * The five methods below are the whole of the row shape's surface. Everything
+   * above them still speaks in documents, and a session that has not migrated
+   * still IS a document; `itemsAreRows` is the only thing that decides which.
+   */
+
+  /** Does this session hold its items as rows rather than as a blob? The one
+   *  question the read path asks first — never inferred from a missing
+   *  document, which cannot tell a migrated session from an empty one. */
+  itemsAreRows(sessionId: string): boolean {
+    return this.statement("SELECT 1 FROM metadata WHERE key=? LIMIT 1").get(`${ITEMS_ROWS_PREFIX}${sessionId}`) != null;
+  }
+
+  /**
+   * MOVE ONE SESSION'S ITEMS FROM THE BLOB TO ROWS — ALL OF IT, OR NONE.
+   *
+   * The rows, the deleted documents and the marker commit TOGETHER. This is the
+   * safety property, and the tidier-looking variant is the one that loses a
+   * projection: deleting the blob in a second transaction leaves a kill between
+   * them with rows nobody will read (no marker) and no blob to read instead.
+   *
+   * `ord` is the caller's array order, which is the blob's array order, which is
+   * the order every reader has been handed since items existed.
+   *
+   * `documents` are dropped by KEY rather than by prefix: the session's queue,
+   * metadata and requests live under the same prefix and are not this issue's.
+   */
+  migrateItemsToRows(sessionId: string, rows: ReadonlyArray<{ id: string; runId: string; value: string }>, documents: string[]): void {
+    this.alone(() => {
+      const insert = this.statement("INSERT INTO items(session_id,item_id,run_id,ord,value) VALUES(?,?,?,?,?) "
+        + "ON CONFLICT(session_id,item_id) DO UPDATE SET run_id=excluded.run_id, value=excluded.value");
+      rows.forEach((row, at) => insert.run(sessionId, row.id, row.runId, at + 1, row.value));
+      for (const key of documents) this.statement("DELETE FROM documents WHERE key=?").run(path.relative(this.root, key));
+      this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .run(`${ITEMS_ROWS_PREFIX}${sessionId}`, String(rows.length));
+    });
+  }
+
+  /**
+   * Write the items a batch actually touched, and nothing else.
+   *
+   * `ord` is assigned on FIRST insert and held across every update after it —
+   * an item that completes does not jump to the end of its own conversation.
+   * The subquery is evaluated before the row lands, so several new items in one
+   * call still take consecutive positions.
+   */
+  upsertItems(sessionId: string, rows: ReadonlyArray<{ id: string; runId: string; value: string }>): void {
+    if (rows.length === 0) return;
+    const insert = this.statement("INSERT INTO items(session_id,item_id,run_id,ord,value) "
+      + "VALUES(?,?,?,(SELECT COALESCE(MAX(ord),0)+1 FROM items WHERE session_id=?),?) "
+      + "ON CONFLICT(session_id,item_id) DO UPDATE SET run_id=excluded.run_id, value=excluded.value");
+    for (const row of rows) insert.run(sessionId, row.id, row.runId, sessionId, row.value);
+  }
+
+  /** DOES THIS ITEM EXIST — the streaming path's one question, answered by the
+   *  primary key rather than by materialising a projection to ask a Map. */
+  hasItemRow(sessionId: string, itemId: string): boolean {
+    return this.statement("SELECT 1 FROM items WHERE session_id=? AND item_id=? LIMIT 1").get(sessionId, itemId) != null;
+  }
+
+  /** Every item of a session, in first-open order — the blob's order. */
+  itemRows(sessionId: string): string[] {
+    return this.statement("SELECT value FROM items WHERE session_id=? ORDER BY ord").all(sessionId).map((row) => String(row.value));
+  }
+
+  /**
+   * The items filed under `runIds`, in order — what a WINDOW wants, and the
+   * reason `items_run` exists. This is what replaces the offset index: the
+   * window's rows are chosen by the database rather than by a byte range
+   * computed over the whole document on every write.
+   *
+   * An empty set is an empty answer rather than an unbounded `IN ()`.
+   *
+   * THE SET RIDES AS JSON, not as `IN (?,?,?)` built per call. `statement()`
+   * caches by SQL text and never evicts, so a placeholder list that varies with
+   * the window would leave one prepared statement per distinct window size in
+   * the cache for the life of the daemon. `json_each` keeps the text constant
+   * and the arity free; the two existing dynamic `IN`s in this file get away
+   * with interpolation only because their length is a compile-time constant.
+   */
+  itemRowsForRuns(sessionId: string, runIds: readonly string[]): string[] {
+    if (runIds.length === 0) return [];
+    return this.statement("SELECT value FROM items WHERE session_id=? AND run_id IN (SELECT value FROM json_each(?)) ORDER BY ord")
+      .all(sessionId, JSON.stringify(runIds)).map((row) => String(row.value));
+  }
   /**
    * A WINDOW OF THE JOURNAL, `(after, ...]` in id order — issue #494.
    *
@@ -1656,6 +1804,12 @@ export class ExecutionStore {
       // somehow came back, would skip the whole journal below it.
       this.statement("DELETE FROM metadata WHERE key=?").run(`${COMPACT_WATERMARK_PREFIX}${sessionId}`);
       this.statement("DELETE FROM metadata WHERE key=?").run(`${USAGE_WATERMARK_PREFIX}${sessionId}`);
+      // The items and the marker that says where to look for them, together and
+      // here — a marker left behind would tell a reused id its items are rows
+      // when the rows went with the session, and that reads as an empty
+      // conversation rather than as an error (#658).
+      this.statement("DELETE FROM items WHERE session_id=?").run(sessionId);
+      this.statement("DELETE FROM metadata WHERE key=?").run(`${ITEMS_ROWS_PREFIX}${sessionId}`);
       this.cursors.delete(sessionId);
     });
   }
