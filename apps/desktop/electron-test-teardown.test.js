@@ -28,6 +28,14 @@ const { afterEach, describe, expect, test } = require("bun:test");
 
 const { removeUserData } = require("./electron-test-teardown");
 
+// Root ignores the write bit, so a read-only parent forces nothing there and
+// the real-filesystem case below would fail for the environment rather than
+// for the code. CI is ubuntu-latest and macos-latest, both unprivileged, so it
+// runs where it means something — and the give-up path it exercises is already
+// covered unconditionally by the injected-`rm` case, so nothing load-bearing
+// rides on it.
+const IS_ROOT = typeof process.getuid === "function" && process.getuid() === 0;
+
 const made = [];
 
 function scratch() {
@@ -131,7 +139,7 @@ describe("removeUserData", () => {
     expect(thrown.cause.code).toBe("ENOTEMPTY");
   });
 
-  test("goes red against the real filesystem too, when the directory truly cannot be emptied", async () => {
+  test.skipIf(IS_ROOT)("goes red against the real filesystem too, when the directory truly cannot be emptied", async () => {
     const dir = scratch();
     const locked = path.join(dir, "Partitions");
     fs.mkdirSync(locked, { recursive: true });
