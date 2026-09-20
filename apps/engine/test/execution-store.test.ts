@@ -751,3 +751,133 @@ test("compaction reaches exactly the kinds whose settled row keeps the streamed 
     );
   } finally { store.close(); }
 });
+
+/**
+ * THE TRIP-WIRE AT THE EMITTER SEAM — #686, and the cheap form of it.
+ *
+ * The dangerous change is not a wider guard, it is a NEW EMISSION. The moment a
+ * driver streams a command's output or a tool's result, those deltas become the
+ * only durable copy of anything past the 4,000-character preview — history, not
+ * redundancy — and compaction must go on skipping them. The person that hurts
+ * most is the command-heavy user, who is also the one a "fix" to the guard
+ * would look like it was for.
+ *
+ * SO EVERY MEMBER IS CLASSIFIED, AND MOVING ONE IS A DECISION SOMEBODY MAKES ON
+ * PURPOSE. A sixth member fails here. A member moved between the sets fails
+ * here. Both failures are the prompt to answer one question first: what happens
+ * to those deltas when their turn settles?
+ *
+ * OVER VALUES, NEVER OVER SOURCE TEXT. This repository has shipped a check that
+ * grepped for a test name and therefore passed when the test was skipped; a
+ * grep here would additionally pass through a rename, or through a driver that
+ * emits via a variable rather than a literal.
+ */
+/** Streams whose deltas a settled `item.completed` can account for, because the
+ *  item they open keeps its text at `detail.text`. */
+const COMPACTABLE: ContentStream[] = ["assistant_text", "reasoning_text"];
+/** Streams no driver in this repository emits. Moving one out of here means
+ *  deciding what `compactJournal` should do with its deltas — the answer is
+ *  "keep them", and the reach test above is where that gets written down. */
+const NOT_EMITTED: ContentStream[] = ["command_output", "tool_output", "unknown"];
+
+test("every content stream is classified for compaction, exactly once", () => {
+  const classified = [...COMPACTABLE, ...NOT_EMITTED];
+  // Exhaustive: a new member of the enum belongs to one of the two sets, and
+  // until somebody puts it in one this fails.
+  expect([...classified].sort()).toEqual([...ContentStreamSchema.options].sort());
+  // And to exactly one: a member in both would make the pair agree with the
+  // enum while saying nothing.
+  expect(new Set(classified).size).toBe(classified.length);
+  expect(COMPACTABLE.filter((stream) => NOT_EMITTED.includes(stream))).toEqual([]);
+  // The two numbers #686 measured, held where a change has to walk past them.
+  expect(COMPACTABLE).toHaveLength(2);
+  expect(NOT_EMITTED).toHaveLength(3);
+  // The compactable streams are exactly the reachable kinds that are streamed
+  // into, which is the link between this trip-wire and the reach test above.
+  expect(COMPACTABLE.length).toBe(REACHABLE.filter((kind) => kind !== "user_message").length);
+});
+
+/**
+ * THE SWEEP IS NOT ON THE OPEN PATH, and that is measured rather than tidy.
+ *
+ * Running it in the constructor cost 54 SECONDS on the owner's gigabyte — a
+ * one-time cost, but one-time on the launch right after an update, and a longer
+ * stall than the VACUUM that is deliberately kept behind a button. So the open
+ * returns and the sweep follows it.
+ */
+test("opening the store does not sweep; the sweep follows and says what it took", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-open-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  let store = new ExecutionStore(root);
+  try {
+    const write = journal(root, "session_one", store);
+    for (let turn = 0; turn < 40; turn += 1) {
+      const item = `item_${turn}`;
+      write.start(item);
+      // Enough text that the freed pages are a file-size difference and not a
+      // rounding error; the point of `reclaim` is that the file itself shrinks.
+      for (let chunk = 0; chunk < 40; chunk += 1) write.delta(item, "x".repeat(512));
+      write.complete(item, "x".repeat(512 * 40));
+    }
+    write.endTurn();
+  } finally { store.close(); }
+
+  const told: { deltas: number; starts: number; sessions: number }[] = [];
+  store = new ExecutionStore(root, { onJournalCompacted: (swept) => told.push(swept) });
+  try {
+    // The open itself took nothing away — a person waiting on the daemon is
+    // not waiting on housekeeping.
+    expect(store.housekeeping.journal).toBeUndefined();
+    expect(store.events("session_one").filter((event) => event.type === "content.delta")).toHaveLength(1600);
+
+    // The sweep the timer would run, without waiting five seconds for it.
+    const swept = store.compactJournal();
+    expect(swept.deltas).toBe(1600);
+    expect(swept.starts).toBe(40);
+
+    // AND THE FILE IS EXACTLY AS BIG AS IT WAS. A DELETE moves pages to the
+    // freelist and returns nothing to the filesystem — the whole reason the
+    // button below exists. This is #646's own fact 1, as a test.
+    const file = path.join(root, "execution.sqlite");
+    const afterSweep = fs.statSync(file).size;
+    const reclaimed = store.reclaim();
+    expect(fs.statSync(file).size).toBeLessThan(afterSweep);
+    expect(reclaimed.after).toBeLessThan(reclaimed.before);
+    // Nothing left to compact, so pressing it again moves nothing — which is
+    // what the before/after in Settings is there to show a person.
+    expect(reclaimed.deltas).toBe(0);
+    expect(store.events("session_one").filter((event) => event.type === "item.completed")).toHaveLength(40);
+  } finally { store.close(); }
+
+  // AND THE DAEMON IS TOLD WHEN THE ROWS ACTUALLY GO, not at open: the line is
+  // a callback now, because there is no longer a moment during startup when
+  // the answer is known.
+  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-told-")); homes.push(fresh);
+  fs.mkdirSync(path.join(fresh, "sessions"), { recursive: true });
+  const seen: { deltas: number; starts: number; sessions: number }[] = [];
+  /**
+   * THE DELAY IS INJECTED RATHER THAN SLEPT THROUGH (#706).
+   *
+   * This used to sleep 5,400 ms and then assert the callback had fired — a
+   * four-hundred-millisecond margin against the real five-second timer, on a
+   * machine shared with the rest of the suite. That is not an assertion about
+   * this store; it is an assertion that nothing else was busy. It also could
+   * not pass at all under a bare root-level `bun test`, which gets bun's 5 s
+   * default rather than the suite's `--timeout 20000`.
+   *
+   * Now the sweep is told to run immediately and the test waits for the
+   * CALLBACK. What is asserted is what the sweep removed — the same answer
+   * idle or loaded — and the whole test costs milliseconds.
+   */
+  const announced = new ExecutionStore(fresh, { onJournalCompacted: (swept) => seen.push(swept), compactAfterOpenMs: 1 });
+  try {
+    const write = journal(fresh, "session_one", announced);
+    write.start("item_one");
+    write.delta("item_one", "hello");
+    write.complete("item_one", "hello");
+    write.endTurn();
+    const deadline = Date.now() + 4_000;
+    while (seen.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(seen).toEqual([{ deltas: 1, starts: 1, sessions: 1 }]);
+  } finally { announced.close(); }
+});
