@@ -53,6 +53,7 @@ index 1111111..2222222 100644
 async function row(
   patch: GitFilePatch,
   file: GitFileChange = { path: "big.txt", status: "modified" },
+  witness?: "git" | "journal",
 ): Promise<{ text: string; viewers: number; asked: GitFileChange[] }> {
   const mount = document.createElement("div");
   document.body.appendChild(mount);
@@ -64,7 +65,17 @@ async function row(
     return Promise.resolve({ file: patch });
   };
   await act(async () => {
-    root.render(<ReviewFileRow readPatch={readPatch} file={file} reported view={{ layout: "stacked", wrap: false, ignoreWhitespace: false }} open onToggle={() => {}} />);
+    root.render(
+      <ReviewFileRow
+        readPatch={readPatch}
+        file={file}
+        reported
+        view={{ layout: "stacked", wrap: false, ignoreWhitespace: false }}
+        open
+        onToggle={() => {}}
+        {...(witness ? { witness } : {})}
+      />,
+    );
   });
   // The effect resolves its promise a microtask later, and the viewer tokenises
   // asynchronously after that.
@@ -152,5 +163,72 @@ index 1111111..2222222 100644
     // And the row still says so in words, which is the claim the patch has to
     // agree with.
     expect(drawn.text).toContain("Renamed from src.txt");
+  });
+});
+
+/**
+ * A CHANGE WITH NO HUNKS IS STILL A CHANGE — issue #694, §2.3.
+ *
+ * The patch is non-empty, so the "No textual difference" branch never fires;
+ * `binary` is false, so that one does not either; and the viewer's only place
+ * to draw a mode is the file header Telar disables. The row expanded into
+ * NOTHING: no lines, no explanation, no error, over a `chmod +x` that most
+ * scaffolding runs produce.
+ */
+describe("a patch with no hunks (#694)", () => {
+  test("a mode-only change is a sentence, not an empty box", async () => {
+    const drawn = await row({ patch: "diff --git a/m.sh b/m.sh\nold mode 100644\nnew mode 100755\n", binary: false }, { path: "m.sh", status: "modified" });
+    expect(drawn.text).toContain("100644 → 100755");
+    expect(drawn.text).toContain("No lines differ");
+    // The empty box this replaces: mounting the viewer over zero hunks is what
+    // drew nothing at all.
+    expect(drawn.viewers).toBe(0);
+    // ...and it is not mistaken for a parse failure, which is the other way a
+    // row could have got a sentence out of this patch.
+    expect(drawn.text).not.toContain("did not parse cleanly");
+  });
+
+  test("a pure rename names both paths rather than drawing nothing", async () => {
+    // The shape the engine's rename fix produces. Fixing that without this
+    // would have turned one wrong answer into one blank one.
+    const drawn = await row(
+      { patch: "diff --git a/src.txt b/dst.txt\nsimilarity index 100%\nrename from src.txt\nrename to dst.txt\n", binary: false },
+      { path: "dst.txt", status: "renamed", renamedFrom: "src.txt" },
+    );
+    expect(drawn.text).toContain("Moved from src.txt");
+    expect(drawn.text).toContain("No lines differ");
+    expect(drawn.viewers).toBe(0);
+  });
+
+  test("a patch WITH hunks still draws the viewer, so the sentence is a claim", async () => {
+    const drawn = await row({ patch: HUNKS, binary: false });
+    expect(drawn.text).not.toContain("No lines differ");
+    expect(drawn.viewers).toBe(1);
+  });
+});
+
+/**
+ * THE SENTENCE NAMES THE PARTY THAT WAS ASKED — issue #694, step 3's other half.
+ *
+ * The turn scope never asks git: its patch is the agent's own, already in hand.
+ * A row there that said "git could not read this file's diff" named a witness
+ * that was never consulted — which is #690's defect in miniature, on the one
+ * scope whose design point is that it says which witness it is.
+ */
+describe("which witness a row names (#694)", () => {
+  test("a turn's missing patch does not blame git", async () => {
+    const journal = await row({ patch: "", binary: false, incomplete: "failed" }, { path: "a.ts", status: "modified" }, "journal");
+    expect(journal.text).toContain("This turn reported writing this file without a patch");
+    expect(journal.text).not.toContain("git");
+
+    // The same answer under the git scopes still names git, or the fix would be
+    // a rename of one sentence rather than a distinction between two.
+    const git = await row({ patch: "", binary: false, incomplete: "failed" }, { path: "a.ts", status: "modified" }, "git");
+    expect(git.text).toContain("git could not read this file's diff");
+  });
+
+  test("git is the default, because two of the three scopes are git", async () => {
+    const unset = await row({ patch: "", binary: false, incomplete: "failed" });
+    expect(unset.text).toContain("git could not read this file's diff");
   });
 });

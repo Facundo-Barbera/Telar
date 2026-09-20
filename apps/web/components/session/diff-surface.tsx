@@ -84,7 +84,7 @@ import { useDiffView, type DiffView } from "@/lib/diff-view";
 import { diffBaseFor, scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/diff-scope";
 import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
-import { DiffCodeView, readPatchShape } from "@/components/session/diff-code-view";
+import { DiffCodeView, readPatchShape, type PatchReading } from "@/components/session/diff-code-view";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -216,19 +216,71 @@ export function patchRequestFor(file: GitFileChange, view: DiffView, base: DiffB
 }
 
 /**
+ * WHICH WITNESS A ROW'S PATCH CAME FROM — issue #694, and #741's argument
+ * applied one level down.
+ *
+ * `unstaged` and `branch` ask GIT. `turn` does not ask anything: its patch is
+ * the one the agent's own tool reported, already in hand. So a row in the turn
+ * scope that said "git could not read this file's diff" was naming a party that
+ * was never consulted — #690's defect in miniature, a true-sounding sentence
+ * about the wrong subject, and on the one scope whose whole design point is
+ * that it names its witness.
+ */
+type PatchWitness = "git" | "journal";
+
+/**
  * WHAT EACH WAY OF NOT HAVING THE WHOLE PATCH SAYS — one sentence per member of
- * `GitPatchIncomplete`, so adding a member to the contract makes this fail to
- * compile rather than fall through to the wrong sentence.
+ * `GitPatchIncomplete` per witness, so adding a member to the contract makes
+ * this fail to compile rather than fall through to the wrong sentence.
  *
  * `truncated` IS THE ONE THAT NAMES A SIZE, because it is the only one where
  * hunks are drawn underneath it: the reader has to know that what they are
  * scrolling stops early rather than ends.
  */
-const INCOMPLETE_PATCH: Record<GitPatchIncomplete, string> = {
-  timeout: "git did not answer in time — open it again.",
-  failed: "git could not read this file's diff.",
-  truncated: "The engine stopped reading this patch at its size limit, so what follows may not be the whole change.",
+const INCOMPLETE_PATCH: Record<GitPatchIncomplete, Record<PatchWitness, string>> = {
+  timeout: {
+    git: "git did not answer in time — open it again.",
+    // No read to time out; kept honest rather than clever in case one appears.
+    journal: "This turn's patch for the file did not arrive.",
+  },
+  failed: {
+    git: "git could not read this file's diff.",
+    journal: "This turn reported writing this file without a patch for it.",
+  },
+  truncated: {
+    git: "The engine stopped reading this patch at its size limit, so what follows may not be the whole change.",
+    journal: "This turn's patch was cut short when it was recorded, so what follows may not be the whole change.",
+  },
 };
+
+/**
+ * WHAT A PATCH WITH NO HUNKS IS ABOUT — issue #694, §2.3.
+ *
+ * `chmod +x` on a script an agent just wrote is not exotic; it is most
+ * scaffolding runs. git emits three lines and no hunks, the patch is therefore
+ * NOT empty, and the "No textual difference" branch above never fires — so the
+ * row expanded into nothing at all: no lines, no explanation, no error. The
+ * library had parsed it perfectly (`mode=100755 prevMode=100644 hunks=0`) and
+ * was told not to draw a file header, which is the only place it can say so.
+ *
+ * DRAWN AS A SENTENCE ON TELAR'S ROW rather than by re-enabling that header,
+ * because Telar's argument for `disableFileHeader` still holds: its own row IS
+ * the header, and two headers are two answers to "which file is this".
+ * `old mode 100644 → new mode 100755` is a sentence, not a viewer.
+ *
+ * A PURE RENAME IS THE SAME SHAPE once the engine passes both paths, so fixing
+ * that without this would have turned one wrong answer into one blank one.
+ */
+function noHunkSentence(file: NonNullable<PatchReading["file"]>): string {
+  const parts: string[] = [];
+  if (file.prevName && file.prevName !== file.name) parts.push(`Moved from ${file.prevName}`);
+  if (file.mode && file.prevMode && file.mode !== file.prevMode) parts.push(`Mode ${file.prevMode} → ${file.mode}`);
+  // Neither — a whole-file read whose hunks were all suppressed, which is what
+  // `-w` does to a re-indentation. "Nothing differs" is exactly what the reader
+  // asked to be told, so it is said rather than left as an empty box.
+  if (parts.length === 0) return "No lines differ.";
+  return `${parts.join(" · ")}. No lines differ.`;
+}
 
 /**
  * One changed file. The patch is fetched WHEN OPENED rather than carried on the
@@ -247,6 +299,7 @@ export function ReviewFileRow({
   registration,
   view,
   open,
+  witness = "git",
   onToggle,
   onOpenFile,
   onOpenInNewPanelTab,
@@ -261,6 +314,14 @@ export function ReviewFileRow({
    * hands over the record rather than a path and a flag derived from it.
    */
   readPatch: (file: GitFileChange) => Promise<{ file: GitFilePatch }>;
+  /**
+   * WHO ANSWERED — `git` for the working tree and branch scopes, `journal` for
+   * a turn's own reported patches. Only the sentences about a MISSING patch
+   * depend on it, which is exactly where naming the wrong party is a claim
+   * rather than a wording choice. Defaults to git, because two of the three
+   * scopes are git and a row with no scope is a project's.
+   */
+  witness?: PatchWitness;
   file: GitFileChange;
   reported: boolean;
   /** How this reader likes a diff laid out. Passed down rather than read here
@@ -417,7 +478,13 @@ export function ReviewFileRow({
       </ContextMenu>
       {open &&
         (failed ? (
-          <p className="px-4 pb-2 text-2xs text-muted-foreground">git could not produce a patch for this path.</p>
+          /* The read itself threw — a dead engine, a rejected request. Named by
+             witness for the same reason the band below is (#694): the turn
+             scope resolves its patch from the journal already in hand and never
+             makes a request that could fail this way. */
+          <p className="px-4 pb-2 text-2xs text-muted-foreground">
+            {witness === "git" ? "git could not produce a patch for this path." : "This turn's patch for the file could not be read."}
+          </p>
         ) : patch === undefined ? (
           <p className="flex items-center gap-2 px-4 pb-2 text-2xs text-muted-foreground">
             <Spinner className="size-3" /> reading the diff…
@@ -435,7 +502,7 @@ export function ReviewFileRow({
                other two megabytes are missing would be the opposite mistake. */
         patch.incomplete ? (
           <>
-            <p className="px-4 pb-2 text-2xs text-warning">{INCOMPLETE_PATCH[patch.incomplete]}</p>
+            <p className="px-4 pb-2 text-2xs text-warning">{INCOMPLETE_PATCH[patch.incomplete][witness]}</p>
             {patch.patch !== "" && <PatchBody patch={patch.patch} view={view} />}
           </>
         ) : patch.binary ? (
@@ -471,6 +538,11 @@ export function ReviewFileRow({
  */
 function PatchBody({ patch, view }: { patch: string; view: DiffView }) {
   const reading = useMemo(() => readPatchShape(patch), [patch]);
+  /* A CHANGE WITH NO HUNKS IS STILL A CHANGE — see `noHunkSentence`. Only when
+     the parse was clean and described exactly one file: a complaint means the
+     zero is the parser's failure rather than the file's shape, and the viewer
+     below is then the more honest thing to show. */
+  const noHunks = !reading.complaint && reading.files === 1 && reading.file?.hunks === 0 ? reading.file : undefined;
   return (
     <>
       {reading.complaint && (
@@ -488,9 +560,13 @@ function PatchBody({ patch, view }: { patch: string; view: DiffView }) {
           This patch describes {reading.files} files, and this row is one file.
         </p>
       )}
-      <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
-        <DiffCodeView patch={patch} layout={view.layout} wrap={view.wrap} />
-      </div>
+      {noHunks ? (
+        <p className="px-4 pb-2 text-2xs text-muted-foreground">{noHunkSentence(noHunks)}</p>
+      ) : (
+        <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
+          <DiffCodeView patch={patch} layout={view.layout} wrap={view.wrap} />
+        </div>
+      )}
     </>
   );
 }
@@ -1326,6 +1402,10 @@ export function DiffSurface({
   /** Built once and spread onto both row lists, so the two can never drift
    *  into offering different menus for the same kind of row. */
   const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}), ...(onInsertReference ? { onInsertReference } : {}) };
+  /** Which party a row may name when it has no patch to draw (#694). Decided
+   *  once here, beside `readPatch`, because the two answer the same question
+   *  from the same place. */
+  const witness: PatchWitness = tab.kind === "turn" ? "journal" : "git";
 
   /**
    * "ANY" RATHER THAN "ALL", so the button's two states cover the three real
@@ -1585,6 +1665,7 @@ export function DiffSurface({
                 file={row.file}
                 reported={!framing.journal}
                 view={view}
+                witness={witness}
                 open={openPaths.has(row.file.path)}
                 onToggle={() => toggleRow(row.file.path)}
                 {...(row.registration ? { registration: row.registration } : {})}
@@ -1603,6 +1684,7 @@ export function DiffSurface({
                 file={row.file}
                 reported
                 view={view}
+                witness={witness}
                 open={openPaths.has(row.file.path)}
                 onToggle={() => toggleRow(row.file.path)}
                 {...(row.edits ? { edits: row.edits } : {})}
