@@ -27,15 +27,34 @@ struct TranscriptView: View {
         // A transcript is bounded (and PR 2 windows it further), so paying for
         // real heights up front is what makes the tail a real place.
         VStack(alignment: .leading, spacing: 16) {
-            ForEach(turns) { turn in
-                TurnView(turn: turn)
-                if let receiptMarker, turn.runId == receiptMarker, let onReceiptMarkerVisible {
-                    ReadReceiptMarker(runId: receiptMarker, onVisible: onReceiptMarkerVisible)
+            // CONSECUTIVE ARRIVALS ARE ONE BLOCK — #577. The 16pt above is a
+            // TURN gap, and between two wakes the engine queued back to back
+            // there is no turn: nobody spoke and nothing was answered, two
+            // things merely arrived. A run of them is drawn at the activity
+            // lane's own rhythm instead. A group of one is every other turn in
+            // the conversation, rendered exactly as before.
+            ForEach(groupNotificationTurns(turns).map(TurnGroup.init)) { group in
+                VStack(alignment: .leading, spacing: group.turns.count > 1 ? 2 : 16) {
+                    ForEach(group.turns) { turn in
+                        TurnView(turn: turn)
+                        if let receiptMarker, turn.runId == receiptMarker, let onReceiptMarkerVisible {
+                            ReadReceiptMarker(runId: receiptMarker, onVisible: onReceiptMarkerVisible)
+                        }
+                    }
                 }
             }
         }
         .padding(.horizontal, 12)
     }
+}
+
+/// One block of the transcript: a run of consecutive arrivals, or any other
+/// single turn. Identified by its first turn's run, so loading a page of older
+/// turns above cannot renumber the ones already on screen.
+private struct TurnGroup: Identifiable {
+    let turns: [JournalTurn]
+    init(_ turns: [JournalTurn]) { self.turns = turns }
+    var id: EngineID { turns.first?.runId ?? "" }
 }
 
 /// The end of one answer, as a view.
@@ -253,6 +272,46 @@ func withoutOpeningNotification(_ turn: JournalTurn) -> [JournalItem] {
     guard turn.notification != nil, turn.origin == "session" || turn.origin == "provider" else { return turn.items }
     let drawn = "notification_\(turn.runId)"
     return turn.items.filter { $0.id != drawn }
+}
+
+/// A TURN THAT IS NOTHING BUT AN ARRIVAL — issue #577.
+///
+/// THE QUESTION IS WHAT THIS SCREEN WOULD DRAW, not what the turn is called. A
+/// usage footnote, a failure line, a `Stopped` marker and — on the phone, unlike
+/// the Mac — the `Queued`/`Working` indicator every pending turn carries are all
+/// things a reader sees under the row, and a strip that swallowed one would be
+/// hiding it. Only a turn with literally nothing beneath its row is bare.
+func bareNotificationTurn(_ turn: JournalTurn) -> Bool {
+    guard turn.notification != nil else { return false }
+    guard withoutOpeningNotification(turn).isEmpty else { return false }
+    guard turn.resultText.isEmpty, turn.failure == nil, turn.usage == nil else { return false }
+    guard !turn.state.isActive else { return false }
+    return turn.state != .failed && turn.state != .stopped && turn.state != .discarded
+}
+
+/// CONSECUTIVE ARRIVALS ARE ONE STRIP — issue #577. (The Mac's
+/// `groupNotificationTurns`, 1:1.)
+///
+/// A run of notification turns with nothing between them is ONE thing that
+/// happened to this session while it worked, so it is drawn as one tight block
+/// of one-line rows rather than as N conversations with a turn gap each. The run
+/// ENDS at the first turn that answered: that turn's row still joins the strip —
+/// it is an arrival like the others — and its reply hangs under it at the
+/// ordinary paragraph gap, which is what the reader came for.
+///
+/// EVERY TURN COMES BACK, in order, in exactly one group. A turn that is not an
+/// arrival is a group of one and renders as it always did; so is a lone arrival,
+/// which is the "a group of one is one line" case.
+func groupNotificationTurns(_ turns: [JournalTurn]) -> [[JournalTurn]] {
+    var groups: [[JournalTurn]] = []
+    for turn in turns {
+        if let previous = groups.last?.last, turn.notification != nil, bareNotificationTurn(previous) {
+            groups[groups.count - 1].append(turn)
+        } else {
+            groups.append([turn])
+        }
+    }
+    return groups
 }
 
 func splitAtMessageBoundaries(_ items: [JournalItem]) -> [TurnResponse] {
@@ -880,7 +939,12 @@ struct NotificationRow: View {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(Theme.caption))
                 }
                 .foregroundStyle(Theme.textMuted)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // THE ACTIVITY LANE'S OWN ROW HEIGHT — #577, and the Mac's
+                // shared `ROW`. An arrival is a step-lane line, not a message
+                // block: the same 24pt minimum every fold row has, which is
+                // also the tap target this row was missing.
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             if expanded {
