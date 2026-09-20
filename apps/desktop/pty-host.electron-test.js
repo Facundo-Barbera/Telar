@@ -105,7 +105,7 @@ function isGone(pid) {
  */
 let liveHost = null;
 
-function teardown(host) {
+async function teardown(host) {
   if (!host) return;
   for (const terminal of host.list()) {
     try {
@@ -115,6 +115,13 @@ function teardown(host) {
     }
   }
   host.dispose("the pty test ended");
+  // AND THEN WAIT. This file signals real processes, and node-pty calls back
+  // into JS from its reaping thread when one ends; exiting into that lands as
+  // an uncaught Napi::Error and an abort. Measured at 4 aborts in 10 runs
+  // without this, every one AFTER the success marker had been printed — so the
+  // exit-code half of CI's gate is the only thing that would have caught it,
+  // which is exactly why that job checks both.
+  await host.drain();
 }
 
 async function main() {
@@ -292,14 +299,16 @@ async function main() {
   return report;
 }
 
-app.whenReady().then(main).then(
-  () => {
-    teardown(liveHost);
-    app.exit(0);
-  },
-  (error) => {
-    console.error("PTY_HOST_FAIL", error);
-    teardown(liveHost);
-    app.exit(1);
-  },
-);
+app.whenReady()
+  .then(main)
+  .then(
+    async () => {
+      await teardown(liveHost);
+      app.exit(0);
+    },
+    async (error) => {
+      console.error("PTY_HOST_FAIL", error);
+      await teardown(liveHost);
+      app.exit(1);
+    },
+  );

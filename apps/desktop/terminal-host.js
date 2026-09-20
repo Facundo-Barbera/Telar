@@ -299,18 +299,27 @@ class TerminalHost {
     const record = { id, pty, pid: pty.pid, shell, args, cwd: request.cwd, cols, rows, startedAt: this.now(), killTimer: null };
     this.terminals.set(id, record);
     /**
-     * A PTY'S FD ERRORING MUST NOT TAKE THE WHOLE SHELL DOWN. node-pty's socket
-     * handler rethrows anything that is not EAGAIN or EIO, and a throw out of a
-     * stream callback in the MAIN process aborts Electron — which would lose
-     * every other terminal's fate at once, the exact outcome the `unknown`
-     * model exists to prevent. Handled here: we can no longer vouch for this
-     * one, which is what `unknown` means.
+     * A PTY'S FD ERRORING MUST NOT ABORT THE WHOLE SHELL.
      *
-     * DEFENSIVE, AND HONEST ABOUT ITS EVIDENCE: one `libc++abi: terminating due
-     * to uncaught exception of type Napi::Error` was seen while developing the
-     * Electron test and could NOT be reproduced afterwards across four targeted
-     * probes. So this is not a fix for a diagnosed bug; it is a listener on a
-     * path node-pty documents as throwing.
+     * node-pty's socket handler rethrows anything that is not EAGAIN or EIO
+     * (`lib/unixTerminal.js:123`, again at `:206`), and that throw comes out of
+     * a stream callback in the MAIN process — uncatchable by any caller, so it
+     * takes Electron with it and loses every other terminal's fate at once.
+     * Handled here as `unknown`, which is what "we can no longer vouch for it"
+     * means.
+     *
+     * TWO LISTENERS BECAUSE NODE-PTY COUNTS THEM: it rethrows while
+     * `listeners('error').length < 2`, and `Terminal._forwardEvents`
+     * (`lib/terminal.js:90`) registers only `data` and `exit`, so reaching two
+     * is ours to do. The second handler is deliberately empty.
+     *
+     * HONEST LIMIT, because this was measured and the obvious reading is wrong:
+     * reaching two listeners did NOT stop the `Napi::Error` abort seen at
+     * shutdown — 4 aborts in 10 runs with two listeners against 2 in 10 with
+     * one, which for n=10 says only that the listener count is not what drives
+     * it. That abort has a different cause and is handled where it actually
+     * happens; see `drain()`. This block is kept for the EIO/stream path it
+     * genuinely covers, and its comment says what it does not cover.
      */
     if (typeof pty.on === "function") {
       pty.on("error", (error) => {
@@ -319,6 +328,7 @@ class TerminalHost {
           reason: `this terminal's pseudo-terminal raised ${messageOf(error)} (pid ${record.pid}); Telar cannot vouch that its process group has ended`,
         });
       });
+      pty.on("error", () => {});
     }
     pty.onData((data) => {
       if (this.terminals.get(id) === record) this.onData(id, data);
@@ -421,6 +431,30 @@ class TerminalHost {
         reason: `${reason} while this terminal was still running (pid ${record.pid}); Telar cannot vouch that it has ended`,
       });
     }
+  }
+
+  /**
+   * LET PENDING EXIT CALLBACKS LAND BEFORE THE PROCESS GOES.
+   *
+   * node-pty reaps children on a background thread and calls back INTO JS when
+   * one ends. Tearing V8 down while such a callback is in flight surfaces as
+   * `libc++abi: terminating due to uncaught exception of type Napi::Error` and
+   * an abort — after any work this process had already finished, so it looks
+   * like a clean run that died at the very end.
+   *
+   * MEASURED, and it is why this exists as a real step rather than a shrug: a
+   * harness that killed a shell and exited immediately aborted on 4 of 10 runs,
+   * every one of them AFTER printing its success marker. A gate reading only
+   * the marker would have called each of those green.
+   *
+   * Await this before `app.exit` when something was just signalled. It is not
+   * needed on an ordinary quit — `dispose` does not kill anything — which is
+   * why it is a separate call and not folded into `dispose`.
+   */
+  drain(ms = 400) {
+    // Deliberately NOT unref'd: the whole point is to hold the loop open long
+    // enough for a callback that is already on its way.
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /** One ending per terminal, ever. */

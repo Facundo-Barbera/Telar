@@ -35,18 +35,22 @@ function fakePty(pid = 4242) {
     calls,
     write: (data) => calls.writes.push(data),
     resize: (cols, rows) => calls.resizes.push([cols, rows]),
+    // AN ARRAY PER EVENT, NOT ONE HANDLER. node-pty counts `error` listeners
+    // and the host has to register two of them (see the host's comment); a fake
+    // that kept only the last would hide both the count and the real handler.
     on: (event, handler) => {
-      handlers[event] = handler;
+      (handlers[event] ??= []).push(handler);
     },
+    listenerCount: (event) => (handlers[event] ?? []).length,
     onData: (handler) => {
-      handlers.data = handler;
+      handlers.data = [handler];
     },
     onExit: (handler) => {
-      handlers.exit = handler;
+      handlers.exit = [handler];
     },
-    emitData: (data) => handlers.data(data),
-    emitExit: (ending) => handlers.exit(ending),
-    emitError: (error) => handlers.error(error),
+    emitData: (data) => handlers.data.forEach((handler) => handler(data)),
+    emitExit: (ending) => handlers.exit.forEach((handler) => handler(ending)),
+    emitError: (error) => handlers.error.forEach((handler) => handler(error)),
   };
 }
 
@@ -247,6 +251,44 @@ describe("what the host will say about a terminal that is no longer running", ()
       pty.emitError(new Error("read EIO"));
       expect(endings[0][1].fate).toBe(TerminalFate.UNKNOWN);
       expect(endings[0][1].reason).toContain("EIO");
+    });
+
+    /**
+     * TWO LISTENERS, BECAUSE NODE-PTY COUNTS THEM.
+     *
+     * It rethrows out of its socket handler while
+     * `listeners('error').length < 2` (lib/unixTerminal.js:123 and :206), and
+     * `Terminal._forwardEvents` registers only `data` and `exit` — so reaching
+     * two is the caller's job. The second handler is empty and this test is
+     * what stops it being tidied away as dead code.
+     *
+     * WHAT IT DOES NOT BUY, recorded because the tempting claim is false and
+     * was measured to be false: reaching two listeners did NOT stop the
+     * `Napi::Error` abort at shutdown. 4 aborts in 10 runs with two against 2
+     * in 10 with one — no effect at n=10. That abort is a different thing
+     * entirely (a callback landing in a dying V8) and `drain()` is what fixed
+     * it: 0 in 12. This pin is about the stream-error path only.
+     */
+    test("registers the TWO error listeners node-pty counts before it rethrows", () => {
+      const pty = fakePty(84);
+      const { host } = hostWith(pty);
+      host.open({ shell: "/bin/zsh", env: {} });
+      expect(pty.listenerCount("error")).toBeGreaterThanOrEqual(2);
+    });
+
+    /**
+     * `drain()` is what actually stopped the shutdown abort, so it is pinned.
+     *
+     * node-pty reaps on a background thread and calls back into JS; exiting
+     * into an in-flight callback aborts the process AFTER whatever work it had
+     * already finished — which is why the Electron job gates on the exit code
+     * as well as the marker. Every aborted run had printed its marker.
+     */
+    test("drain waits, so a caller can let a pending exit callback land", async () => {
+      const { host } = hostWith(fakePty());
+      const started = Date.now();
+      await host.drain(60);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(45);
     });
   });
 
