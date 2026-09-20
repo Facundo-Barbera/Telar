@@ -99,7 +99,38 @@ Two specific traps worth naming:
 **If your task's premise turns out to be false, say so and stop.** That is a
 correct outcome, not a failure to deliver. One worker tonight was sent to build
 something that already existed and refused with proof — that was the right call
-and it saved a day.
+and it saved a day. Of seven issues closed on 2026-09-20, **three had a wrong
+premise** — not incomplete, wrong. Reproduce before you fix.
+
+### Instruments lie too, including the ones you build to catch lying reports
+
+This is the harder half. On the same night, three verification instruments
+written specifically to check other people's claims were themselves broken:
+
+- A `grep -E` with `\|` instead of `|` searched for a literal string and
+  reported a PR body as missing four sections that were all present.
+- A modifier-order checker matched on a fixed indent, missed two chains, and
+  raised a false alarm against a worker whose refactor was correct.
+- A CI probe filtered on `SessionView.swift` unanchored — and
+  `NewSessionView.swift` contains it as a substring, so one view's cost was
+  attributed to another.
+
+Each time the artefact was sound and the tool was broken, and each time it was
+caught by looking again rather than by the check passing. **A green check from
+an instrument you just wrote is evidence about the instrument first.**
+
+### Two cheap habits that make a check non-vacuous
+
+**Compare counts, not colours.** `main` had 3516 tests across 276 files; the PR
+had 3533 across 277 — exactly the +17 and +1 it claimed to add. That proves the
+new tests *ran*, where a green suite only proves nothing already there broke.
+
+**A marker string must be unsatisfiable by anything but the thing it marks.**
+`expect(error).toContain("Keychain")` was satisfied by the sentence "the
+credential lives in the macOS Keychain" — a refusal for an entirely different
+reason. Three tests in that file could not fail. If you add a grep-for-a-marker
+guard, exercise **both** directions: it passes on a real run, and it fails when
+the thing it guards did not happen.
 
 ---
 
