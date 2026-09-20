@@ -8,20 +8,35 @@ Two were closed. Twenty-six stay open. The interesting result is the ratio.
 
 ---
 
-## 1. The premise was wrong, and correcting it is the point of this note
+## 1. The finding
 
-This audit was commissioned on the belief that **some open issues are finished
-and nobody went back to close them** — that a list reading 56 open was partly
-stale bookkeeping.
+> **A PR that fixes issue A while crediting issue B leaves A open for ever, and
+> no amount of diligence catches it — because there is nothing to look at.**
 
-**That is not what the list is.** Of twenty-eight issues verified at file and
-line, twenty-six describe work that has genuinely not been done. The two that
-had been done were closed here (#463, #531), and in both cases the reason
-nobody had gone back was the same narrow one: **the PR that fixed it credited a
-different issue**, so no cross-reference existed to follow.
+Two of twenty-eight open issues turned out to be finished. **Both had exactly
+that shape**, and it is the whole explanation for why nobody had gone back to
+them.
 
-The list is not stale. It is a list of real open work — and the failure mode it
-actually has is the opposite of the one suspected:
+The clearest case: **#502 merged 2026-09-14T22:56Z carrying `Closes #499`**. It
+fixed **#463**, filed seventeen hours earlier, and described that defect in its
+own commit message down to the same number the issue quotes — *"re-pulled the
+WHOLE live list — 318 KB on the owner's store"*. #463 stayed open for five days
+with its fix already on `main`. Nothing linked them, so nothing could surface it.
+
+This matters because it replaces a vague complaint with a narrow, fixable one.
+"The list drifts and nobody goes back" is unactionable and implies a diligence
+problem. **A broken cross-reference is a mechanical defect with a mechanical
+fix**, and it is not caught by looking harder — the only thing that finds it is
+someone reading the code an issue is about, which is what this audit did.
+
+### And the premise it corrects
+
+The audit was commissioned on the belief that the open list was partly stale
+bookkeeping. **It is not.** Of twenty-eight issues verified at file and line,
+**twenty-six describe work that has genuinely not been done.**
+
+The list is a list of real open work — and the failure mode it actually has is
+the opposite of the one suspected:
 
 > Several open issues have **adjacent shipped work that resembles them**.
 
@@ -41,6 +56,33 @@ from tonight, in increasing order of how convincing they were:
 **The next person opening this list should assume the issues are real.** Do not
 assume the reverse and go hunting for closures; the hunt is where the mistakes
 come from.
+
+### There are three categories, not two
+
+"Done" and "not done" do not cover the list. A third is real and was met twice
+tonight:
+
+> **An issue that no longer describes the system is its own kind of stale.**
+
+Some part of it was **superseded rather than delivered** — a decision was taken
+later that made the original clause obsolete. It is not unfinished work, and
+treating it as unfinished sends someone to build a thing that was deliberately
+abandoned. But it is not silently closeable either, because a closed issue
+standing as a false description of the system misleads every later reader.
+
+The two instances:
+
+- **#531** specified that *a wake enqueues an Agent turn*. **#541 part A
+  replaced that** with inbox rows — no wake starts an Agent turn now. Closed,
+  with the supersession stated in the closing comment.
+- **#544** asks for *"transcription on the engine"*. **Facundo superseded that
+  on 2026-09-16**: the client streams to the vendor and the engine only mints a
+  token. Still open for other reasons, but that clause must be recorded as
+  abandoned rather than outstanding, or it reads as an unfinished feature to
+  anyone arriving with only the original text.
+
+**The rule: when closing, say which parts were superseded and by what.** The
+supersession is the part that is invisible from the issue itself.
 
 ---
 
@@ -158,7 +200,7 @@ recorded; both held.
 | **#521** Codex + `mac` server | Open | `entities.ts:1393`: `COMPUTER_USE_DRIVERS = ["claude", "opencode"]`. The one-line change was never made. |
 | **#520** delegation not carried forward | Open | No `delegation` on `Turn`, no "delegated this through" wording. `entities.ts:729`'s `z.literal("delegation")` is #378's shelf stamp — a false positive. |
 | **#516** query-based session tools | Open | The `sessions-tools` wall has **none** of the six. `sessions_find` / `_outline` / `_answer` exist only on the Agent's wall; `_step` / `_steps` / `_grep` nowhere. The `turn_summary` projection (`turn-summary.ts`) did land. |
-| **#515** bound every tool answer | Open | Items 1, 2, 3, 4, 6, 7 shipped and tested — `tool-budgets.test.ts` is the exact fixture asked for (500 sessions / 5,000 events / 200 notes) and asserts both the ceiling and that the answer still parses. **Item 5 is incomplete**: it names *"notes, display, warp, browser tools"*, and the 350-char cap is enforced only on the sessions + notes walls (`tool-budgets.test.ts:333`) and browser (`BROWSER_DESCRIPTION_MAX_BYTES`). Measured on `main`: **`display_open` is 655 chars, `warp` is 2,988.** |
+| **#515** bound every tool answer | Open | Items 1, 2, 3, 4, 6, 7 shipped and tested — `tool-budgets.test.ts` is the exact fixture asked for (500 sessions / 5,000 events / 200 notes) and asserts both the ceiling and that the answer still parses. **Item 5 is incomplete**: it names *"notes, display, warp, browser tools"*, and the 350-char cap is enforced only on the sessions + notes walls (`tool-budgets.test.ts:333`) and browser (`BROWSER_DESCRIPTION_MAX_BYTES`). Measured on `main`: **`display_open` is 655 chars, `warp` is 2,988** — against a 350-char cap, so **~3.3 KB sitting in every session's context on every turn, whether or not either tool is called.** That is **one small PR**, not a project: cap the two descriptions and extend the existing `tool-budgets.test.ts` assertion to cover the display and warp walls. |
 | **#490** data loading and storage | Open | The scouting-pass deliverable — a written audit with a ranked list of ten offenders — was never produced; no doc names #490. The three `performance-2026-09-1x.md` docs all predate it. The two commits referencing it are individual fixes, not the deliverable. |
 | **#488** desktop `getAppMetrics()` | Open | `main.js:2549` feeds the #487 watchdog only. No IPC bridge in `preload.js`, no API route, no section on the Usage page. |
 
@@ -172,13 +214,14 @@ do-not-close list; the do-not-close wins.)
 
 ## 5. What to carry forward
 
-1. **Assume an open issue is open.** The base rate measured here is 2 stale out
-   of 28, and both stale ones were only findable because their fix credited
-   another issue — not because they looked done.
-2. **Check the timestamp before closing on a commit.** §2.
-3. **`/usr/bin/grep -a`.** §3.
-4. **A closure names what it does not cover.** Both closing comments here name
-   the remainder and where it went — including, for #531, a design decision the
-   issue specified that was later *superseded* rather than delivered (its wake
-   model, replaced by #541 part A). An issue left standing as a description of
-   current behaviour when it is no longer one is its own kind of stale.
+1. **A fix that credits the wrong issue leaves the right one open for ever.**
+   §1. Both stale issues here had that single shape. Worth a habit on the
+   authoring side, not just the auditing side: when a PR fixes something it was
+   not opened against, say so in the body.
+2. **Assume an open issue is open.** The base rate measured here is 2 stale out
+   of 28, and neither was findable by looking harder at the list.
+3. **Check the timestamp before closing on a commit.** §2.
+4. **`/usr/bin/grep -a`.** §3.
+5. **A closure names what it does not cover, and what was superseded.** The
+   remainder and the supersession are both invisible from the issue text. See
+   the third category in §1.
