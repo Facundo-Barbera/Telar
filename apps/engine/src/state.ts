@@ -710,6 +710,7 @@ const FACET_CACHE_MS = 5 * 60_000;
  * change and 40 imports rewritten is 40 chances to rewrite one wrongly.
  */
 import { statePaths, type EngineStatePaths } from "./state-paths";
+import type { ReapCandidate } from "./node-modules-reap";
 export { statePaths, type EngineStatePaths };
 
 /** Every regular file's size under `root`, one at a time. Iterative for the
@@ -11116,6 +11117,44 @@ export class EngineStore {
    * cannot be asked at all and is skipped rather than waited for. Nothing here
    * may fail a boot — an unlocked worktree is the status quo, not a regression.
    */
+  /**
+   * EVERY SESSION CHECKOUT THE REAP MIGHT TAKE — issue #633.
+   *
+   * It hands out the four facts `reapNodeModules` decides on and nothing else,
+   * so the rule lives in one testable function with no database behind it. The
+   * ARCHIVE FLAG IS NOT FILTERED HERE: the sweep counts what it refused, and a
+   * list pre-filtered to the qualifying rows would make "refused 12 live
+   * sessions" unreportable and the do-nothing direction untestable.
+   *
+   * `live` IS THE SAME QUESTION `settlingActivityOf` ASKS, rather than a second
+   * opinion about it — a turn queued, claimed or running is a turn holding that
+   * directory right now.
+   *
+   * A PROJECT WHOSE DRIVE IS OUT IS DROPPED ENTIRELY, on `releaseWorktree`'s
+   * argument: a filesystem question asked of a disk nobody can read answers
+   * about a disk nobody can read, and on the recreated-empty-mountpoint case it
+   * answers "there is no node_modules here" about a tree that is sitting on the
+   * drive in somebody's bag.
+   */
+  reapableWorktrees(): ReapCandidate[] {
+    const candidates: ReapCandidate[] = [];
+    for (const session of this.allSessions()) {
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      let project: Project;
+      try { project = this.getProject(session.projectId); } catch { continue; }
+      if (this.projectAvailability(project) !== "available") continue;
+      if (!fs.existsSync(session.workspace.path)) continue;
+      const activity = settlingActivityOf(this.executionStore?.sessionRow(session.id) ?? { activity: session.activity });
+      candidates.push({
+        sessionId: session.id,
+        worktree: session.workspace.path,
+        archived: session.state === "archived",
+        live: activity.working === true || activity.waitingOnYou === true,
+      });
+    }
+    return candidates;
+  }
+
   lockLiveWorktrees(): { locked: number } {
     let locked = 0;
     for (const session of this.allSessions()) {

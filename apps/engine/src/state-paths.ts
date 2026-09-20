@@ -209,6 +209,16 @@ export type EngineStatePaths = {
    * shell state does not — different level, different directory.
    */
   diagnostics: string;
+  /**
+   * WHEN THE `node_modules` REAP LAST RAN — issue #633.
+   *
+   * A TIME, NOT A "DONE" FLAG, and that is the difference from
+   * `decommissioned-spool-looms` beside it. That marker records that a home has
+   * been swept forever, which is right for litter with no reader: the Spool is
+   * gone and will not come back. Archived sessions keep arriving, so a
+   * once-ever marker would take today's backlog and then never run again.
+   */
+  nodeModulesReaped: string;
 };
 
 export function statePaths(root: string): EngineStatePaths {
@@ -249,5 +259,6 @@ export function statePaths(root: string): EngineStatePaths {
     decommissionMarker: path.join(resolved, "decommissioned-spool-looms"),
     browserProfiles: path.join(resolved, "browser-profiles"),
     diagnostics: path.join(resolved, "diagnostics"),
+    nodeModulesReaped: path.join(resolved, "node-modules-reaped"),
   };
 }
