@@ -927,6 +927,84 @@ html:not(.dark)[data-telar-shell][data-translucent] {
   background-color: color-mix(in oklab, var(--warning) var(--tint-floor), var(--card));
 }
 
+/* ─── THE DIFF VIEWER, WEARING THIS APP'S TOKENS (#694) ─────────────────────
+
+   The Diff surface renders through `@pierre/diffs`, whose viewer is a CUSTOM
+   ELEMENT WITH A SHADOW ROOT. That sounds like a wall and is the opposite:
+   custom properties inherit straight through a shadow boundary, so the whole
+   of the theming below is ordinary CSS on the host — no !important, no
+   stylesheet injection, nothing reaching inside the component. The library
+   publishes a `-override` name for every colour it computes, which is the
+   supported hook and the one this block uses.
+
+   THE FLOOR ABOVE IS THE FLOOR HERE. An added line's fill is the same
+   expression `.tint-success` is, against the same --card and through the same
+   --tint-floor. That is the point of writing it here rather than in the
+   component: the diff is a reading surface, and a second number for the same
+   idea is how the two drift apart. Re-tune --tint-floor and the diff moves
+   with the rest of the app.
+
+   BOTH ARMS OF EVERY light-dark() GET THE SAME VARIABLE, and that is load-
+   bearing rather than lazy. Pierre's stylesheet sets `color-scheme: light dark`
+   on its own :host, so `light-dark()` inside it follows the SYSTEM scheme —
+   while this app's scheme is the `.dark` class on <html>. A user on a light OS
+   running a dark Look would get the viewer's light arm over a dark card. Two
+   independent fixes, deliberately both: `color-scheme` is set on the host from
+   out here (an outer-tree rule on the host outranks the shadow tree's own
+   :host), and every value this block supplies is a token that ALREADY carries
+   the scheme — so even where the cascade surprises us, both arms agree.
+
+   --card AND NOT --background, unlike the reference's --code-background: this
+   viewer is mounted inside an expanded file row, which is a card. Matching the
+   panel behind it would make the hunk invisible as a body; matching the card
+   is what the hand-rolled <pre> it replaces already did. */
+.diff-code-view {
+  color-scheme: light;
+
+  /* The ground and the ink. */
+  --diffs-light-bg: var(--card);
+  --diffs-dark-bg: var(--card);
+  --diffs-light: var(--card-foreground);
+  --diffs-dark: var(--card-foreground);
+
+  /* The semantic pair, through this app's floor. */
+  --diffs-addition-base: var(--success);
+  --diffs-deletion-base: var(--destructive);
+  --diffs-bg-addition-override: color-mix(in oklab, var(--success) var(--tint-floor), var(--card));
+  --diffs-bg-deletion-override: color-mix(in oklab, var(--destructive) var(--tint-floor), var(--card));
+  /* The emphasis is the WORD that changed inside a changed line, so it has to
+     read as more than the line it sits on: TWICE THE FLOOR, against the same
+     card. Written out rather than mixed against the fill above it so there is
+     one shape here and not two — and so the pair moves together when the floor
+     is re-tuned, which is the whole argument for --tint-floor being one
+     number. */
+  --diffs-bg-addition-emphasis-override: color-mix(in oklab, var(--success) calc(var(--tint-floor) * 2), var(--card));
+  --diffs-bg-deletion-emphasis-override: color-mix(in oklab, var(--destructive) calc(var(--tint-floor) * 2), var(--card));
+
+  /* The neutral chrome inside the viewer: unchanged context, the hunk
+     separator, the gutter. Muted is the app's name for exactly this — a
+     surface that recedes without leaving the card. */
+  --diffs-bg-context-override: var(--card);
+  --diffs-bg-context-gutter-override: var(--card);
+  --diffs-bg-separator-override: var(--muted);
+  --diffs-bg-buffer-override: var(--muted);
+  --diffs-fg-number-override: var(--muted-foreground);
+  --diffs-fg-number-addition-override: var(--success);
+  --diffs-fg-number-deletion-override: var(--destructive);
+
+  /* Type, from the same variables every other mono surface in the app reads —
+     so a hunk and the file viewer beside it are the same size. `--app-font-*`
+     rather than the `--font-*` Tailwind bridge, which is the rule the katex
+     block below states: the setting lives on the former, and these land in
+     Pierre's own plain `font-family` declaration. */
+  --diffs-font-family: var(--app-font-mono);
+  --diffs-header-font-family: var(--app-font-sans);
+  --diffs-font-size: var(--app-font-mono-size, 13px);
+}
+.dark .diff-code-view {
+  color-scheme: dark;
+}
+
 /* ─── THE BACKDROP LAYER (lib/backdrop.ts) ──────────────────────────────────
 
    One fixed div, first child of body, painted entirely from variables the
