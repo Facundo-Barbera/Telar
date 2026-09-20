@@ -61,6 +61,7 @@
       "browser-suggestions.js",
       "browser-tab-preload.js",
       "browser-control-server.js",
+      "run-terminal-server.js",
       "extension-compat.js",
       "extension-host.js",
       "protected-urls.js",

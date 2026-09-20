@@ -20,12 +20,26 @@
  * explicit human act that signals nothing and admits, in the text, that Telar is
  * no longer the one who can stop that process.
  *
- * WE SIGNAL PROCESS GROUPS WE CREATED, AND ONLY WHILE WE HOLD THE CHILD. On
- * POSIX every launch is `detached: true`, so the shell becomes a group leader
- * and `kill(-pid)` reaches the `bun`/`node`/`vite` descendants that a bare
- * `kill(pid)` would strand. The pid is only ever used while our own
- * `ChildProcess` has not yet fired `exit`; once it has, the number is a number,
- * the kernel is free to reuse it, and this module will not aim a signal at it.
+ * WE SIGNAL PROCESS GROUPS WE CREATED, AND ONLY WHILE SOMETHING STILL HOLDS
+ * THEM. On POSIX every launch is a group leader, so one signal reaches the
+ * `bun`/`node`/`vite` descendants a bare `kill(pid)` would strand. This file
+ * used to be able to say "the pid is only ever used while our own
+ * `ChildProcess` has not yet fired `exit`" — and since #198 the process may be
+ * held by the DESKTOP SHELL instead, on a pseudo-terminal, so that sentence had
+ * to be rebuilt rather than restated.
+ *
+ * IT IS REBUILT AS A HANDLE. `launcher.ts` hands back a `RunHandle` that knows
+ * how to stop what it started; nothing here ever receives a pid it could aim at
+ * by itself. Over the wire the handle is a terminal id, which the host honours
+ * only while it still holds what the id names — a pid is reused by the kernel
+ * and an id is not. What the pid IS still used for is one question, asked with
+ * signal 0, which delivers nothing: see `groupVerdict`.
+ *
+ * AND A CHANNEL THAT DIES IS `unknown`, NEVER `exited`. That is the failure the
+ * two-process arrangement adds and the one this whole design is aimed at: a
+ * host that goes quietly while something downstream frees a slot for a dev
+ * server that is still listening. A lost, silent or refused channel settles the
+ * run `unknown` with the slot still held, exactly where a daemon death lands.
  *
  * WHICH OF THOSE MOVES EXIST IS A PROPERTY OF THE OPERATING SYSTEM, NOT OF THIS
  * FILE. `platform.ts` owns both — whether a child is spawned as a group leader,
@@ -52,11 +66,12 @@
  * signalled across a restart; that needs a verification story this milestone
  * does not have.
  */
-import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { nullRunJournal, RunJournalUnreadable, type RunJournal, type RunRecord } from "./journal";
+import { pipeLauncher, type RunHandle, type RunLauncher } from "./launcher";
 import { type GroupLiveness, processGroupFor, type RunKill, type RunProcessGroup } from "./platform";
+import { createPtyRedactor, safeCutBack } from "./pty-stream";
 import { resolveShell } from "./shell";
 import { createOutputSplitter } from "./stream";
 import {
@@ -116,8 +131,12 @@ type LiveRun = {
   exitCode?: number;
   signal?: string;
   error?: string;
-  child?: ChildProcess;
-  /** True once the `exit` event fired. The gate on every signal we send. */
+  /**
+   * Whatever is holding this run's process — a local child, or a terminal the
+   * desktop shell holds for us. NEVER A BARE PID: see `launcher.ts`.
+   */
+  handle?: RunHandle;
+  /** True once an end was reported. The gate on every signal we send. */
   handleClosed: boolean;
   /**
    * True once the run has reached its final answer. Distinct from
@@ -154,6 +173,13 @@ export type RunManagerOptions = {
   platform?: NodeJS.Platform;
   /** The whole group strategy, when a test wants one neither platform ships. */
   processGroup?: RunProcessGroup;
+  /**
+   * HOW A RUN GETS A PROCESS. Defaults to a detached child with pipes, which is
+   * what the engine has under `bun run src/main.ts` where there is no Electron
+   * and therefore no pseudo-terminal to reach. The desktop daemon hands in
+   * `terminalLauncher` instead — see `launcher.ts`.
+   */
+  launcher?: RunLauncher;
   /** Durable record of runs believed live. Omit for a manager that forgets. */
   journal?: RunJournal;
   stopGraceMs?: number;
@@ -196,6 +222,7 @@ export class RunManager {
   private readonly probe: RunProbe;
   private readonly platform: NodeJS.Platform;
   private readonly group: RunProcessGroup;
+  private readonly launcher: RunLauncher;
   private readonly journal: RunJournal;
   private readonly stopGraceMs: number;
   private readonly readyPollMs: number;
@@ -207,6 +234,7 @@ export class RunManager {
     const kill: RunKill = options.kill ?? ((pid, signal) => process.kill(pid, signal));
     this.platform = options.platform ?? process.platform;
     this.group = options.processGroup ?? processGroupFor(this.platform, kill);
+    this.launcher = options.launcher ?? pipeLauncher(this.group);
     this.journal = options.journal ?? nullRunJournal;
     this.stopGraceMs = options.stopGraceMs ?? STOP_GRACE_MS;
     this.readyPollMs = options.readyPollMs ?? READY_POLL_MS;
@@ -400,14 +428,14 @@ export class RunManager {
       if (this.closing) {
         throw new RunError("conflict", "Telar is shutting down, so it did not start this run");
       }
-      this.launch(run);
+      await this.launch(run);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // A LIVE CHILD IS NEVER DISOWNED BY A FAILED BOOKKEEPING STEP. `finish`
       // frees the project's slot, which is the right answer for a launch that
       // never got a process and exactly the wrong one for a launch that did:
       // the next start would collide with a server this one is still running.
-      if (run.child?.pid !== undefined && !run.handleClosed) {
+      if (run.handle?.pid !== undefined && !run.handleClosed) {
         this.markUnknown(
           run,
           `"${run.configName}" was started but Telar hit an error while recording it (${message}), so it can no longer vouch for the process. Check whether it is running, then stop or release this run.`,
@@ -517,7 +545,7 @@ export class RunManager {
     return cwd;
   }
 
-  private launch(run: LiveRun): void {
+  private async launch(run: LiveRun): Promise<void> {
     // `NodeJS.ProcessEnv`, not a plain record: a project that augments
     // ProcessEnv with required keys (Next does) rejects the narrowed type.
     const env: NodeJS.ProcessEnv = { ...process.env };
@@ -536,60 +564,82 @@ export class RunManager {
      * show you (`resolveShell`) rather than something `shell: true` decides
      * privately and differently per platform. Nobody downstream splits a string.
      *
-     * `detached` comes from the platform: a POSIX group leader we can signal
-     * whole, and on Windows nothing of the sort, which is why stopping there is
-     * `taskkill /T` instead. The stdio tuple must stay a tuple or
-     * `stdout`/`stderr` come back nullable under the engine's `@types/node` and
-     * the cockpit's, and this file is compiled by both.
+     * WHICH LAUNCHER RUNS IT IS NOT THIS FILE'S BUSINESS — a detached child
+     * with pipes, or a pseudo-terminal the desktop shell holds. What this file
+     * owns is what each of the four outcomes MEANS for the project's slot, and
+     * that is the same policy either way.
      */
     const launch = resolveShell(run.config, this.platform, process.env);
-    const child = spawn(launch.file, launch.args, {
-      cwd: run.cwd,
-      env,
-      shell: false,
-      detached: this.group.detached,
-      // `cmd.exe` parses its own command line, so node must hand the string
-      // over unquoted; on every other path this is false and ignored.
-      windowsVerbatimArguments: launch.windowsVerbatimArguments,
-      stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
-    });
-    run.child = child;
+    // The capture is registered BEFORE the launch, because the first bytes of a
+    // PTY can arrive inside the call that starts it.
+    const capture = this.capture(run);
+    // Declared before the launch because a launcher may report an end from
+    // inside it — a spawn that threw arrives that way — and the callbacks below
+    // must not reach a binding that does not exist yet.
+    let handle: RunHandle | undefined;
+    handle = await this.launcher.launch(
+      {
+        file: launch.file,
+        args: launch.args,
+        cwd: run.cwd,
+        env,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments,
+      },
+      {
+        output: capture,
+        failed: (reason) => {
+          if (isTerminal(run.status)) return;
+          this.finish(run, "failed", { error: redactText(reason, run.secrets) });
+        },
+        /**
+         * WE STOPPED BEING ABLE TO VOUCH, AND THIS NEVER BECOMES `exited`.
+         *
+         * The group is deliberately NOT asked here, unlike on an observed exit.
+         * A channel that died tells us nothing about the process behind it, and
+         * a `gone` answer from a pid we are no longer entitled to reason about
+         * would free the slot on the strength of a coincidence. The run holds
+         * the project until a human releases it, which is what `unknown` has
+         * always meant.
+         */
+        lost: (reason) => {
+          run.handleClosed = true;
+          if (isTerminal(run.status) || run.settled) return;
+          this.markUnknown(run, reason);
+          run.settled = true;
+          this.wake(run);
+        },
+        exited: (detail) => {
+          run.handleClosed = true;
+          // Nothing awaits this, so a rejection here would be an unhandled one —
+          // i.e. a process exiting would be able to take the daemon down.
+          // Whatever went wrong, the honest answer is a run we cannot vouch for.
+          this.settle(run, handle?.pid, detail).catch((error: unknown) => {
+            if (isTerminal(run.status) || run.status === "unknown") return;
+            this.markUnknown(run, `Telar could not determine how "${run.configName}" ended: ${error instanceof Error ? error.message : String(error)}`);
+            run.settled = true;
+            this.wake(run);
+          });
+        },
+      },
+    );
+    run.handle = handle;
 
-    // LISTENERS FIRST, VERDICT SECOND. A spawn that fails emits `error`
-    // asynchronously, and an `error` on a ChildProcess with no listener is an
-    // unhandled exception that takes the daemon down — so nothing may return
-    // from this function before both handlers are attached.
-    child.on("error", (error) => {
-      if (isTerminal(run.status)) return;
-      this.finish(run, "failed", { error: redactText(error.message, run.secrets) });
-    });
-    child.on("exit", (code, signal) => {
-      run.handleClosed = true;
-      // Nothing awaits this, so a rejection here would be an unhandled one —
-      // i.e. a process exiting would be able to take the daemon down. Whatever
-      // went wrong, the honest answer is a run we can no longer vouch for.
-      this.settle(run, child.pid, code, signal).catch((error: unknown) => {
-        if (isTerminal(run.status) || run.status === "unknown") return;
-        this.markUnknown(run, `Telar could not determine how "${run.configName}" ended: ${error instanceof Error ? error.message : String(error)}`);
-        run.settled = true;
-        this.wake(run);
-      });
-    });
-
-    if (child.pid === undefined) {
+    if (handle.pid === undefined) {
       // No pid means no group to signal. Refuse to hold a slot on a process we
       // never had, rather than inventing an `unknown` out of a failed spawn.
-      this.finish(run, "failed", { error: "the process could not be started (no pid)" });
+      if (!isTerminal(run.status) && run.status !== "unknown") {
+        this.finish(run, "failed", { error: "the process could not be started (no pid)" });
+      }
       return;
     }
+    // A launcher that already settled the run inside `launch` must not have its
+    // verdict overwritten with `running`.
+    if (isTerminal(run.status) || run.status === "unknown") return;
 
     run.status = "running";
-    // EVERYTHING THAT CANNOT FAIL, FIRST. Capture and readiness are pure
-    // registration; the second journal write is disk I/O and can throw, and a
-    // throw between the spawn and these would leave a live process with no
-    // output captured and no readiness poll.
-    this.pump(run, child.stdout, "stdout");
-    this.pump(run, child.stderr, "stderr");
+    // EVERYTHING THAT CANNOT FAIL, FIRST. Readiness is pure registration; the
+    // second journal write is disk I/O and can throw, and a throw between the
+    // spawn and this would leave a live process with no readiness poll.
     if (run.readiness.kind === "pending") this.pollReadiness(run);
 
     // Now there is a pid worth recording — the only thing a human gets to look
@@ -617,7 +667,7 @@ export class RunManager {
    * Survivors are NOT signalled. Our handle is gone, which is precisely when the
    * pid stops being ours to aim at — the group probe is a question, not a shot.
    */
-  private async settle(run: LiveRun, pid: number | undefined, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
+  private async settle(run: LiveRun, pid: number | undefined, detail: { exitCode?: number; signal?: string }): Promise<void> {
     if (run.settled) return;
     // THE GROUP IS ASKED FIRST, EVEN FOR A RUN ALREADY GIVEN UP ON. A stop whose
     // signal failed marks the run `unknown`; if the shell then exits while a
@@ -646,9 +696,10 @@ export class RunManager {
       this.wake(run);
       return;
     }
-    this.finish(run, code === 0 || code === null ? "exited" : "failed", {
-      ...(code === null ? {} : { exitCode: code }),
-      ...(signal ? { signal } : {}),
+    const code = detail.exitCode;
+    this.finish(run, code === 0 || code === undefined ? "exited" : "failed", {
+      ...(code === undefined ? {} : { exitCode: code }),
+      ...(detail.signal ? { signal: detail.signal } : {}),
     });
   }
 
@@ -698,7 +749,7 @@ export class RunManager {
       cwd: hide(run.cwd),
       ...(run.sessionId ? { sessionId: run.sessionId } : {}),
       startedAt: run.startedAt,
-      ...(run.child?.pid !== undefined ? { pid: run.child.pid } : {}),
+      ...(run.handle?.pid !== undefined ? { pid: run.handle.pid } : {}),
     };
   }
 
@@ -718,24 +769,64 @@ export class RunManager {
   }
 
   /**
-   * Capture a stream into lines, WITHOUT trusting the process to send newlines.
+   * Capture what the launcher gives us, WITHOUT trusting the process to send
+   * newlines — and with a different redactor per shape, because the two shapes
+   * are not the same stream wearing different clothes.
    *
-   * A binary blob, a progress bar full of `\r`, or a webpack build dumping a
-   * megabyte before its first `\n` used to grow `carry` without limit: the line
-   * cap only applied once a line existed. So the carry is flushed in fixed-size
-   * slices as it grows.
+   * PIPES keep the line discipline and the line redactor (`stream.ts`). Its
+   * correctness rests on `types.ts` refusing a secret with a line break in it,
+   * so a complete line can never be changed by a later byte. A binary blob or a
+   * webpack build dumping a megabyte before its first `\n` is handled by
+   * flushing the carry in fixed-size slices, each cut where no secret straddles
+   * it.
    *
-   * REDACTION SURVIVES THE CUT, and the rule for that lives in `stream.ts`: the
-   * carry is kept RAW and only released once no later byte could change how it
-   * is scrubbed. Scrubbing it eagerly is what leaked `EFGH` when `ABCD` and
-   * `ABCDEFGH` were both secret and arrived in that order.
+   * A PTY has neither of those. There is no reliable newline and the bytes
+   * carry escape sequences, so `pty-stream.ts` redacts them instead — never
+   * cutting inside a sequence, and replacing a secret with mask cells of the
+   * same width so that cursor-positioned output keeps its columns. The lines
+   * kept here are then a DEGRADED VIEW of that stream, which is honest: a
+   * terminal's output is not a list of lines and the surface that shows it
+   * properly reads the bytes.
+   *
+   * EITHER WAY THE CARRY IS KEPT RAW and only released once no later byte could
+   * change how it is scrubbed. Scrubbing eagerly is what leaked `EFGH` when
+   * `ABCD` and `ABCDEFGH` were both secret and arrived in that order.
+   *
+   * AND A PTY MERGES THE TWO STREAMS. A pseudo-terminal is one device; stdout
+   * and stderr went into the same file descriptor and nothing downstream can
+   * un-merge them, so every line from one is recorded as `stdout`.
    */
-  private pump(run: LiveRun, stream: NodeJS.ReadableStream | null, kind: "stdout" | "stderr"): void {
-    if (!stream) return;
-    const splitter = createOutputSplitter(run.secrets, MAX_LINE_CHARS, (text) => this.log(run, kind, text));
-    stream.setEncoding("utf8");
-    stream.on("data", (chunk: string) => splitter.push(chunk));
-    stream.on("end", () => splitter.end());
+  private capture(run: LiveRun): (stream: "stdout" | "stderr", chunk: string) => void {
+    if (this.launcher.kind === "pipes") {
+      const splitters = new Map<string, ReturnType<typeof createOutputSplitter>>();
+      return (stream, chunk) => {
+        let splitter = splitters.get(stream);
+        if (!splitter) {
+          splitter = createOutputSplitter(run.secrets, MAX_LINE_CHARS, (text) => this.log(run, stream, text));
+          splitters.set(stream, splitter);
+        }
+        splitter.push(chunk);
+      };
+    }
+    // The PTY path: redact the bytes first, then cut the already-safe text into
+    // lines. Nothing is redacted twice and the line cut is escape-aware, so a
+    // wrapped line cannot desync a reader either.
+    let carry = "";
+    const emitLine = (text: string) => this.log(run, "stdout", text);
+    const redactor = createPtyRedactor(run.secrets, (text) => {
+      carry += text;
+      for (let at = carry.indexOf("\n"); at !== -1; at = carry.indexOf("\n")) {
+        emitLine(carry.slice(0, at));
+        carry = carry.slice(at + 1);
+      }
+      while (carry.length > MAX_LINE_CHARS) {
+        const cut = safeCutBack(carry, [], MAX_LINE_CHARS);
+        if (cut <= 0) break;
+        emitLine(carry.slice(0, cut));
+        carry = carry.slice(cut);
+      }
+    });
+    return (_stream, chunk) => redactor.push(chunk);
   }
 
   private log(run: LiveRun, stream: "stdout" | "stderr", text: string): void {
@@ -775,10 +866,10 @@ export class RunManager {
   private async stopRun(run: LiveRun): Promise<LiveRun> {
     if (isTerminal(run.status)) return run;
     if (run.status === "unknown") throw this.unknownConflict(run);
-    if (run.status === "starting" || !run.child) {
+    if (run.status === "starting" || !run.handle) {
       throw new RunError("conflict", "this run is still starting; wait for it to come up before stopping it");
     }
-    const pid = run.child.pid;
+    const pid = run.handle.pid;
     if (pid === undefined || run.handleClosed) {
       // The handle is gone but no exit was recorded: we cannot tell a finished
       // process from a reused pid, so we say so and signal nothing.
@@ -786,10 +877,10 @@ export class RunManager {
       throw this.unknownConflict(run);
     }
 
-    if (!this.stopGroup(run, pid, false)) throw this.unknownConflict(run);
+    if (!this.stopGroup(run, false)) throw this.unknownConflict(run);
     if (await this.waitForExit(run, this.stopGraceMs)) return this.settled(run);
 
-    if (!run.handleClosed && !this.stopGroup(run, pid, true)) throw this.unknownConflict(run);
+    if (!run.handleClosed && !this.stopGroup(run, true)) throw this.unknownConflict(run);
     if (await this.waitForExit(run, this.stopGraceMs)) return this.settled(run);
 
     this.markUnknown(run, "the process did not exit after being killed outright; Telar has stopped tracking it rather than guess");
@@ -808,12 +899,15 @@ export class RunManager {
   /**
    * Stop the whole tree, and only while our handle says it is still ours.
    * `force` is the second, impolite attempt — a signal on POSIX, `taskkill /F`
-   * on Windows; which one this platform means is `platform.ts`'s business.
+   * on Windows, an id the desktop host resolves to a pid it still holds when
+   * the run is on a terminal. Which one applies is the HANDLE's business, and
+   * that is the point: this file never gets to aim at a number by itself.
    */
-  private stopGroup(run: LiveRun, pid: number, force: boolean): boolean {
+  private stopGroup(run: LiveRun, force: boolean): boolean {
     if (run.handleClosed) return true;
+    if (!run.handle) return true;
     try {
-      this.group.stop(pid, force);
+      run.handle.stop(force);
       return true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -980,7 +1074,7 @@ export class RunManager {
       status: run.status,
       readiness: run.readiness,
       ...(run.config.readinessUrl ? { readinessUrl: redactText(run.config.readinessUrl, run.secrets) } : {}),
-      ...(run.child?.pid !== undefined && !run.handleClosed ? { pid: run.child.pid } : {}),
+      ...(run.handle?.pid !== undefined && !run.handleClosed ? { pid: run.handle.pid } : {}),
       startedAt: run.startedAt,
       ...(run.endedAt ? { endedAt: run.endedAt } : {}),
       ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),

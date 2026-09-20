@@ -19,10 +19,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { RunJournalFile } from "./journal";
+import { terminalLauncher } from "./launcher";
 import { RunManager } from "./manager";
 import { matchRunRoute } from "./routes";
 import { RunStore } from "./store";
 import { storeRunCapability, type RunSessionContext } from "./store-capability";
+import { RunTerminalClient, terminalChannelFromEnv } from "./terminal-client";
 import type { RunView } from "./types";
 
 export type RunMount = {
@@ -38,6 +40,8 @@ export type RunMount = {
   handle(method: string, tail: string, input: Record<string, unknown>, context: () => RunSessionContext): Promise<unknown> | undefined;
   /** Runs the last daemon did not see end. Reported, never adopted. */
   recovered: RunView[];
+  /** Whether runs go on a real pseudo-terminal the desktop shell holds. */
+  terminalChannel: boolean;
   shutdown(): Promise<void>;
 };
 
@@ -49,17 +53,33 @@ export type RunMount = {
  * recovers is honest: a run the last daemon did not see end becomes `unknown`,
  * holds its project's slot, and is signalled by nobody.
  */
-export function createRunMount(options: { root: string }): RunMount {
+export function createRunMount(options: { root: string; env?: NodeJS.ProcessEnv }): RunMount {
   const dir = path.join(options.root, "run");
   fs.mkdirSync(dir, { recursive: true });
   const store = new RunStore(dir);
-  const manager = new RunManager({ journal: new RunJournalFile(dir) });
+  /**
+   * A RUN IS A TERMINAL SESSION WHEN THERE IS A TERMINAL TO PUT IT ON.
+   *
+   * The desktop shell exports the channel to its PTY host into this process's
+   * environment, the same way it already exports the browser control port. When
+   * it is absent — `bun run src/main.ts`, a test, a headless deployment — a run
+   * is a detached child with pipes, which is what it was before #198 and is not
+   * a fallback in any apologetic sense: there is genuinely no pseudo-terminal
+   * over there to be a client of.
+   */
+  const channel = terminalChannelFromEnv(options.env ?? process.env);
+  const client = channel ? new RunTerminalClient(channel) : undefined;
+  const manager = new RunManager({
+    journal: new RunJournalFile(dir),
+    ...(client ? { launcher: terminalLauncher(client) } : {}),
+  });
   const recovered = manager.recover();
 
   return {
     store,
     manager,
     recovered,
+    terminalChannel: channel !== undefined,
     handle(method, tail, input, context) {
       const matched = matchRunRoute(method, tail);
       if (!matched) return undefined;
