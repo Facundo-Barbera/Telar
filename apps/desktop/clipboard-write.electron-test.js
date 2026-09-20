@@ -227,10 +227,16 @@ async function clickCopy(webContents, { via = "input" } = {}) {
  * assertion or thrown inside `writeText`, and neither happened.
  *
  * AND IT PRINTS WHAT IT WAITED. The number is the point as much as the wait is:
- * a run that always reports 0 ms says this race was never the mechanism and the
- * search should go elsewhere, and a run that reports tens of milliseconds says
- * it is, and says how wide. Either way the log answers it instead of leaving it
- * to be inferred from a sentinel weeks later.
+ * a tier that always lands on the first read says this race was never the
+ * mechanism and the search should go elsewhere, and one that needs a second
+ * poll says it is, and says how wide. Either way the log answers it instead of
+ * leaving it to be inferred from a sentinel weeks later.
+ *
+ * READ `polls`, NOT `ms`, TO ANSWER THAT. The elapsed figure includes the
+ * duration of the read that succeeded, so a first-read hit reports 0 ms or 1 ms
+ * depending only on how long `readText()` itself took — which is exactly how a
+ * first run of this instrument was nearly misread. `polls: 1` means the
+ * pasteboard already held the text and nothing was waited for at all.
  *
  * IT STILL GOES RED. The budget is bounded, the timeout message keeps the
  * `not the copied text` wording the failures on #789 are recorded under, and
@@ -240,13 +246,13 @@ async function clickCopy(webContents, { via = "input" } = {}) {
  */
 async function clipboardBecomes(expected, { timeoutMs = 5_000, what }) {
   const started = Date.now();
-  for (;;) {
+  for (let polls = 1; ; polls += 1) {
     const text = clipboard.readText();
+    if (text === expected) return { text, polls, waitedMs: Date.now() - started };
     const waitedMs = Date.now() - started;
-    if (text === expected) return { text, waitedMs };
     if (waitedMs >= timeoutMs) {
       throw new Error(
-        `${what}: the clipboard holds ${JSON.stringify(text)}, not the copied text, ${waitedMs} ms after the page's writeText() resolved`,
+        `${what}: the clipboard holds ${JSON.stringify(text)}, not the copied text, ${waitedMs} ms and ${polls} reads after the page's writeText() resolved`,
       );
     }
     // eslint-disable-next-line no-await-in-loop
@@ -290,7 +296,10 @@ async function main() {
       what: "the Copy button resolved but its write never reached the OS pasteboard",
     });
     report.clipboard = report.clipboardWait.text;
-    note(`the OS clipboard holds what the page copied, ${report.clipboardWait.waitedMs} ms after writeText() resolved`);
+    note(
+      `the OS clipboard holds what the page copied, polls=${report.clipboardWait.polls} ` +
+        `(${report.clipboardWait.waitedMs} ms) after writeText() resolved`,
+    );
 
     /* 1. The string Chromium actually sends, and the one it never sends. */
     const strings = [...new Set(live.seen.map((entry) => entry.permission))];
