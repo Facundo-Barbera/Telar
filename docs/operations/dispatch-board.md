@@ -274,6 +274,32 @@ result, and before you free the slot — a batch that counts an unpushed worktre
 as delivered will report itself complete while the work sits on a disk nobody is
 reading.
 
+### A question you cannot see is not a question nobody asked
+
+A question asked through the CLI's own question control resolves **inside the
+turn**. It never becomes an engine request, so it never sets `activity ===
+"blocked"`, never reaches the rail's **Needs you** band, and leaves no trace in
+the journal — before or after. From a coordinator's seat, **"asked and answered"
+and "never asked" are the same picture.**
+
+On #723 a coordinator read a worker's finished turn as having explained the
+decision instead of asking it, and sent it back to park the question as a real
+request. The worker had asked; the owner had answered — which surface the
+control lives on, and what it shows while holding — and the open PR already
+implemented that answer. Only the worker's refusal stopped the owner being asked
+a third time for a decision he had made once, while three other conversations
+wanted the same attention. **"No request parked" is not evidence that nobody
+asked**, and it is the coordinator's inference, not the worker's silence, that
+was wrong.
+
+Two halves, and the second is the one that gets skipped:
+
+- **If a decision needs to be visible to anyone but you, park it as a request.**
+  That is the only form an orchestrator can see, wait on, or resolve.
+- **If you already have an answer, say so in your report, in words.** Nobody can
+  see that you have it, so a report that treats it as shared context reads
+  exactly like one from a worker who never asked.
+
 ---
 
 ## 4. Reporting
