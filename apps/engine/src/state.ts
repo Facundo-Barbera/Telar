@@ -162,6 +162,8 @@ import {
   FIND_SCAN,
   GREP_CONTEXT_CHARS,
   ITEM_TITLE_CHARS,
+  TURN_ANSWER_NONE,
+  TURN_ANSWER_NO_SUCH_RUN,
   WHY_CHARS,
   type OutlineRow,
 } from "./turn-summary";
@@ -595,16 +597,16 @@ export class EngineStateError extends Error {
 }
 
 /**
- * THE TWO WAYS `turnAnswer` MISSES, NAMED RATHER THAN TYPED OUT TWICE (#592).
+ * THE TWO WAYS `turnAnswer` MISSES — declared in `turn-summary.ts` and
+ * re-exported here, where they are thrown (#592, then #516's wall).
  *
- * THEY STAY PLAIN STATEMENTS OF FACT, because the HTTP route serves the same
- * throw and "do not guess another runId" is advice to a language model, not to
- * a browser. The Agent's `sessions_answer` is where that half is added, and it
- * compares against THESE — matching a retyped string literal is how a pairing
- * like that quietly stops working the first time one side is reworded.
+ * The move is about what a module DRAGS: the query wall that pairs a sentence
+ * with each of these is bound inside the out-of-process worker, which holds no
+ * store, and importing them from this file would have put the whole
+ * `EngineStore` in that process to reach two string literals. Every existing
+ * importer of `TURN_ANSWER_NONE` from `./state` is untouched.
  */
-export const TURN_ANSWER_NONE = "this session has no answered turn";
-export const TURN_ANSWER_NO_SUCH_RUN = "turn does not exist";
+export { TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "./turn-summary";
 
 /**
  * How large one attached file may be.
