@@ -405,7 +405,12 @@ describe("outline does not fold the journal", () => {
     // Stated as the two shapes rather than as two milliseconds: whatever the
     // machine is doing, it is doing it to both readings.
     expect(ratio(outline)).toBeLessThan(ratio(fold));
-  });
+    // A CEILING SO THAT A SLOW RUNNER FAILS AS A TIMEOUT AND NOT AS A VERDICT.
+    // This test does thousands of measured calls on purpose; bun's default is
+    // 5 s when a path is typed by hand and 20 s under the preload, and a 5007 ms
+    // failure here would read as "the projection regressed" when it means "the
+    // machine is busy" — the exact misreading `dispatch-board.md` §3 names.
+  }, 120_000);
 });
 
 /**
@@ -430,7 +435,7 @@ describe("the instrument can report a bad result", () => {
     const heavy = measure(() => rounds(HEAVY_ROUNDS));
     expect(heavy).toBeGreaterThan(1);
     expect(heavy).toBeGreaterThan(light * 10);
-  });
+  }, 120_000);
 
   /**
    * AND THE PREDICATE SAYS NO WHEN IT SHOULD.
@@ -473,5 +478,5 @@ describe("the instrument can report a bad result", () => {
     expect(isFlat(honest)).toBe(true);
     expect(isFlat(planted)).toBe(false);
     expect(ratio(planted)).toBeGreaterThanOrEqual(TRACKS_JOURNAL);
-  });
+  }, 120_000);
 });
