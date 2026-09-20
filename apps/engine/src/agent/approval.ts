@@ -141,7 +141,23 @@ export type AgentApprovalDecision = "accept" | "decline";
 const GATED_INTENTS = new Set(["task", "blocker"]);
 
 const REASONS: Record<string, string> = {
-  sessions_create: "This creates a new session — a new row in your rail, and a checkout if it asked for one.",
+  /**
+   * THE CARD NAMES THE ACCESS MODE — issue #541 G1.
+   *
+   * The gate was never bypassed; what it SAID was the problem. A person
+   * approved "create a session" and what they got was a session in `auto`:
+   * file changes and commands inside its checkout accepted without asking
+   * again. Nothing on this card said so, so the approval was for a smaller
+   * thing than the one it authorised.
+   *
+   * IT NAMES `auto` OUTRIGHT rather than deferring to the ceiling, and that is
+   * deliberate: the ceiling caps a session's children at the CREATOR's mode,
+   * and the Agent is a thread rather than a session — it has no runtime mode,
+   * so its creates land on the detached default and this sentence is exactly
+   * true for every card a person will see here.
+   */
+  sessions_create:
+    "This creates a new session — a new row in your rail, and a checkout if it asked for one. It starts in `auto`: it will make file changes and run commands inside its own checkout without asking you again. You can narrow that from the session once it exists.",
   sessions_stop: "This stops another session's work where it stands. Nothing it already wrote is undone.",
   sessions_resolve_request: "This answers another session's open request on your behalf.",
   notes_delete: "This deletes a note from a project's notebook.",

@@ -185,6 +185,53 @@ export const DEFAULT_ATTENDED_RUNTIME_MODE: RuntimeMode = "approval-required";
  *  has a blast radius worth bounding. */
 export const DEFAULT_DETACHED_RUNTIME_MODE: RuntimeMode = "auto";
 
+/**
+ * THE MODES AS A LADDER, NARROWEST FIRST — issue #541 G1.
+ *
+ * The order is not invented here. It is the one `autoResolution` describes in
+ * `./requests.ts` ("approval-required asks about everything except reads …
+ * full-access nothing asks") and the one the cockpit's own access menu lists
+ * them in. Written down as data so a comparison has something to read, because
+ * an ordering that lives only in prose is an ordering every caller re-derives.
+ *
+ * THE PROPERTY THAT MAKES IT A LADDER rather than a list: for every request
+ * kind, a narrower mode never auto-accepts where a wider one parks.
+ * `runtime-ceiling.test.ts` holds that against `autoResolution` itself rather
+ * than against this array, so the two cannot drift into disagreeing.
+ */
+const RUNTIME_MODE_LADDER: readonly RuntimeMode[] = [
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+];
+
+/**
+ * THE PRIVILEGE CEILING, DEFINED ONCE — issue #541 G1.
+ *
+ * Answers whichever of two modes gives away less. It is in the CONTRACT beside
+ * `autoResolution` and for its reason: the engine enforces the ceiling, and a
+ * client has to be able to tell a person what a session it is about to create
+ * will be allowed to do. A settings screen that computed that from its own copy
+ * of the ladder is a settings screen that lies after the first change to it.
+ *
+ * TOTAL AND SYMMETRIC, so a caller cannot get a different answer by arguing in
+ * the other order, and an unrecognised value answers the NARROWEST rather than
+ * the widest — an engine reading a mode written by a newer one must fail
+ * towards asking, never towards acting.
+ */
+export function narrowerRuntimeMode(left: RuntimeMode, right: RuntimeMode): RuntimeMode {
+  const rank = (mode: RuntimeMode): number => {
+    const index = RUNTIME_MODE_LADDER.indexOf(mode);
+    return index === -1 ? -1 : index;
+  };
+  const leftRank = rank(left);
+  const rightRank = rank(right);
+  if (leftRank === -1) return left;
+  if (rightRank === -1) return right;
+  return leftRank <= rightRank ? left : right;
+}
+
 /** Whether a turn may act or is only allowed to propose a plan. */
 export const InteractionMode = z.enum(["default", "plan"]);
 export type InteractionMode = z.infer<typeof InteractionMode>;
