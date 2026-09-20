@@ -170,11 +170,36 @@ jobs:
       #   * strictly lower `run_number` than this run, so the newest always
       #     survives and this run can never cancel itself.
       # A 409 from the cancel is NOT an error: the run left the queue between
-      # the list and the cancel, which is the outcome we wanted anyway. Anything
-      # else fails the step loudly, because a sweeper that fails quietly leaves
-      # the queue unbounded and nobody finds out until 3am. `retries` is there
-      # so a transient 5xx does not redden main on its own.
+      # the list and the cancel, which is the outcome we wanted anyway.
+      # `retries` is there so a transient 5xx does not redden main on its own.
+      #
+      # IT SWEEPS FIRST AND REPORTS LAST, and the split is the point. Both
+      # halves of the obvious design are wrong on their own:
+      #
+      #   * Sweeping here and failing HERE would mean a sweep that cannot reach
+      #     the API destroys the commit's verdict — the job dies before running
+      #     a single test. That is exactly the harm #687 exists to prevent,
+      #     arriving through the mechanism built to prevent it.
+      #   * Sweeping at the END of the job instead would protect the verdict,
+      #     but `always()` does not cover a CANCELLED job, so a cancelled run
+      #     never gets there and never sweeps. Not hypothetical: seven queued
+      #     main runs were cancelled by hand on 2026-09-20.
+      #
+      # So the cancelling happens first, where it always runs, and the verdict
+      # on it is deferred to a final `always()` step. A failed sweep turns the
+      # job red with the surviving run ids — a sweeper that fails quietly
+      # leaves the queue unbounded and nobody finds out until 3am — but the
+      # tests still run and still report. Nothing is caught and swallowed:
+      # the reason is carried to the end in an output, not discarded.
+      #
+      # FIRST ALSO BEATS LAST IF THE RUNNER POOL EVER GROWS. On one runner the
+      # swept set is identical either way, since nothing else can start while
+      # this job holds the only slot. On two, sweeping first frees a superseded
+      # run's slot for a PR check; sweeping last lets the second runner pick
+      # that superseded run up, at which point it is `in_progress` and
+      # correctly spared, having burned four minutes proving a dead commit.
       - name: Cancel superseded main verify runs
+        id: sweep
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/github-script@v7
         with:
@@ -186,55 +211,70 @@ jobs:
             const { owner, repo } = context.repo;
             const selfId = context.runId;
             const selfNumber = context.runNumber;
-
-            // Newest first. One page is ample — the backlog that motivated this
-            // peaked at 15, and a main run 100 merges back is long finished.
-            const { data } = await github.rest.actions.listWorkflowRuns({
-              owner,
-              repo,
-              workflow_id: 'verify.yml',
-              branch: 'main',
-              event: 'push',
-              per_page: 100,
-            });
-
-            // Re-assert every limit the query already applied. If a parameter
-            // is ever dropped or its meaning changes, this is what still stops
-            // the sweep from reaching a pull request or an in-flight run.
-            const superseded = data.workflow_runs.filter((r) =>
-              r.id !== selfId &&
-              r.run_number < selfNumber &&
-              (r.status === 'queued' || r.status === 'pending') &&
-              r.event === 'push' &&
-              r.head_branch === 'main'
-            );
-
-            core.info(
-              `This run is #${selfNumber} (${selfId}). ` +
-              `Superseded main runs still queued: ${superseded.length}.`
-            );
-
             const failures = [];
-            for (const r of superseded) {
-              const label = `#${r.run_number} ${r.head_sha.slice(0, 8)} (${r.id}), queued ${r.created_at}`;
-              try {
-                await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: r.id });
-                core.info(`cancelled ${label}`);
-              } catch (err) {
-                if (err.status === 409) {
-                  core.info(`left the queue on its own, nothing to cancel: ${label}`);
-                  continue;
+
+            // Nothing in here may throw: a throw would fail this step and take
+            // the commit's verification down with it, which is the whole thing
+            // this split exists to avoid. Every reason is collected and handed
+            // to the reporting step at the end of the job instead.
+            try {
+              // Newest first. One page is ample — the backlog that motivated
+              // this peaked at 15, and a main run 100 merges back is long done.
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: 'verify.yml',
+                branch: 'main',
+                event: 'push',
+                per_page: 100,
+              });
+
+              // Re-assert every limit the query already applied. If a parameter
+              // is ever dropped or its meaning changes, this is what still
+              // stops the sweep reaching a pull request or an in-flight run.
+              const superseded = data.workflow_runs.filter((r) =>
+                r.id !== selfId &&
+                r.run_number < selfNumber &&
+                (r.status === 'queued' || r.status === 'pending') &&
+                r.event === 'push' &&
+                r.head_branch === 'main'
+              );
+
+              core.info(
+                `This run is #${selfNumber} (${selfId}). ` +
+                `Superseded main runs still queued: ${superseded.length}.`
+              );
+
+              for (const r of superseded) {
+                const label = `#${r.run_number} ${r.head_sha.slice(0, 8)} (${r.id}), queued ${r.created_at}`;
+                try {
+                  await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: r.id });
+                  core.info(`cancelled ${label}`);
+                } catch (err) {
+                  if (err.status === 409) {
+                    core.info(`left the queue on its own, nothing to cancel: ${label}`);
+                    continue;
+                  }
+                  failures.push(`${label}: ${err.status ?? 'no status'} ${err.message}`);
                 }
-                failures.push(`${label}: ${err.status ?? 'no status'} ${err.message}`);
               }
+            } catch (err) {
+              // The listing itself failed, or the response was not the shape
+              // this expects. Either way no sweep happened at all.
+              failures.push(`the sweep did not run: ${err.status ?? 'no status'} ${err.message}`);
             }
 
             if (failures.length > 0) {
-              core.setFailed(
-                `Could not cancel ${failures.length} superseded main run(s). The ` +
-                `queue is NOT bounded right now and may need a hand sweep:\n` +
-                failures.join('\n')
-              );
+              // `warning` so it is visible the moment it happens; the red comes
+              // from the reporting step once the tests have had their turn.
+              // One line: this is carried through an output and re-emitted as
+              // an `::error::`, and a newline there would truncate it.
+              const reason =
+                `Could not sweep ${failures.length} superseded main run(s). The queue ` +
+                `is NOT bounded right now and may need a hand sweep. ` +
+                failures.join(' | ');
+              core.warning(reason);
+              core.setOutput('failure', reason);
             }
 
       - uses: actions/checkout@v4
@@ -295,6 +335,26 @@ jobs:
       # built bundle, and stay on the mac release path.
       - name: Run the engine-client, env, engine, web, desktop and worker suites
         run: bun run test
+
+      # THE OTHER HALF OF THE SWEEP AT THE TOP OF THIS JOB. The cancelling runs
+      # first so it always runs; the verdict on it lands here so a sweep that
+      # could not reach the API costs main a red run rather than costing this
+      # commit its verification. `always()` so a red test suite above does not
+      # hide an unbounded queue, and the guard means a clean sweep — including
+      # the common one that found nothing to do — skips silently.
+      #
+      # The reason goes through `env:` rather than into the `run:` text.
+      # Interpolating an API error message straight into a shell script is how
+      # a workflow gets an injection, and this one is repeating a string it did
+      # not write.
+      - name: Fail if the queue sweep did not complete
+        if: always() && steps.sweep.outputs.failure != ''
+        env:
+          SWEEP_FAILURE: ${{ steps.sweep.outputs.failure }}
+        run: |
+          set -euo pipefail
+          printf '::error::%s\n' "$SWEEP_FAILURE"
+          exit 1
 
       # DELIBERATELY ABSENT: `next build`. A reader may assume "Verify" proves
       # the app still builds. It does not. See docs/ci-verification.md.
