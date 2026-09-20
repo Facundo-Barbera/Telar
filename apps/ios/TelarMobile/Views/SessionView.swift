@@ -238,10 +238,11 @@ struct SessionView: View {
     // line added to the view moved it closer to the edge on more machines.
     //
     // Each layer below is its own expression with its own explicit `some
-    // View`, so the checker solves four small problems instead of one large
+    // View`, so the checker solves several small problems instead of one large
     // one. Read them OUTSIDE-IN: `body` is the navigation chrome, over the
-    // panel's presentations, over the lifecycle wiring, over the stack. Adding
-    // a modifier is fine; folding the layers back into one is what regressed.
+    // panel's presentations, over three layers of lifecycle wiring, over the
+    // stack. Adding a modifier is fine; folding the layers back into one is
+    // what regressed.
     var body: some View {
         presentations
             .navigationTitle(store.sync.session?.title ?? "Session")
@@ -258,7 +259,7 @@ struct SessionView: View {
     /// transcript, the cover that fills the window, the push at a compact
     /// width — and the watchers that keep exactly one of them raised.
     private var presentations: some View {
-        lifecycle
+        presence
             .environment(\.panel, panel)
             .environment(\.kernelSignals, store.sync.kernelSignals)
             .inspector(isPresented: $inspectorShown) {
@@ -347,34 +348,45 @@ struct SessionView: View {
             .onChange(of: store.sync.displayOpens.count) { watchDisplayOpens() }
     }
 
-    /// What this view owns for the length of a mount: the poll loop, the read
-    /// receipt's courier, the draft on disk, the notifier's idea of which
-    /// session is on screen, and the handoff activity.
-    private var lifecycle: some View {
-        stack
-            .task {
-                store.sync.start()
-                // One courier for the life of the mount. It owns an in-flight
-                // request and a dwell timer, so it is a subscription rather than a
-                // derived value — rebuilding it per render would lose both.
-                if receipt == nil {
-                    let api = self.api
-                    let sync = store.sync
-                    let report = self.onRead
-                    receipt = ReadReceiptCourier(
-                        send: { identity, runId in try await api.markSessionRead(identity.sessionId, runId: runId) },
-                        // BOTH SURFACES, from the one answer. The transcript's own
-                        // copy stops the gate re-firing; the report is what puts the
-                        // sidebar's row right without waiting for its poll.
-                        onRead: { _, session in
-                            sync.applyRead(session)
-                            report?(session)
-                        }
-                    )
-                    sendReceiptIfEarned()
+    /// Coming, going, handing off, and being sent away when the Mac does.
+    ///
+    /// The last of the three lifecycle layers — they are one chain cut into
+    /// three, in the order the modifiers were always applied, because eleven
+    /// of them in a row measured 459 ms against the 500 ms bar #758 argues
+    /// about. Under it, but not by enough to call finished.
+    private var presence: some View {
+        notices
+            .onDisappear {
+                store.sync.stop()
+                receipt?.dispose()
+                receipt = nil
+                if MobileNotifications.shared.visibleSession?.sessionId == sessionId && MobileNotifications.shared.visibleSession?.hostId == hostId {
+                    MobileNotifications.shared.visibleSession = nil
                 }
             }
-            .onChange(of: receiptWorld) { sendReceiptIfEarned() }
+            .userActivity("com.telar.session", isActive: cockpitBaseURL != nil && store.sync.session != nil) { activity in
+                guard let base = cockpitBaseURL, let session = store.sync.session else { return }
+                activity.title = session.title
+                activity.webpageURL = session.cockpitURL(base: base)
+                activity.isEligibleForHandoff = true
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // Poll only while someone is looking.
+                if phase == .active {
+                    store.sync.start()
+                    if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
+                } else { store.sync.stop(); MobileNotifications.shared.visibleSession = nil }
+            }
+            .onChange(of: store.sync.connection) { _, connection in
+                if connection == .gone { dismiss() }
+            }
+    }
+
+    /// What has to be told when this conversation changes: the notifier's idea
+    /// of which session is on screen, the draft on disk, and the composer's
+    /// pending reference.
+    private var notices: some View {
+        polling
             .onAppear {
                 if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
             }
@@ -401,30 +413,34 @@ struct SessionView: View {
             .alert("Live Activity", isPresented: Binding(get: { MobileNotifications.shared.activityError != nil }, set: { if !$0 { MobileNotifications.shared.activityError = nil } })) {
                 Button("OK") { MobileNotifications.shared.activityError = nil }
             } message: { Text(MobileNotifications.shared.activityError ?? "") }
-            .onDisappear {
-                store.sync.stop()
-                receipt?.dispose()
-                receipt = nil
-                if MobileNotifications.shared.visibleSession?.sessionId == sessionId && MobileNotifications.shared.visibleSession?.hostId == hostId {
-                    MobileNotifications.shared.visibleSession = nil
+    }
+
+    /// The poll loop, and the read receipt it feeds.
+    private var polling: some View {
+        stack
+            .task {
+                store.sync.start()
+                // One courier for the life of the mount. It owns an in-flight
+                // request and a dwell timer, so it is a subscription rather than a
+                // derived value — rebuilding it per render would lose both.
+                if receipt == nil {
+                    let api = self.api
+                    let sync = store.sync
+                    let report = self.onRead
+                    receipt = ReadReceiptCourier(
+                        send: { identity, runId in try await api.markSessionRead(identity.sessionId, runId: runId) },
+                        // BOTH SURFACES, from the one answer. The transcript's own
+                        // copy stops the gate re-firing; the report is what puts the
+                        // sidebar's row right without waiting for its poll.
+                        onRead: { _, session in
+                            sync.applyRead(session)
+                            report?(session)
+                        }
+                    )
+                    sendReceiptIfEarned()
                 }
             }
-            .userActivity("com.telar.session", isActive: cockpitBaseURL != nil && store.sync.session != nil) { activity in
-                guard let base = cockpitBaseURL, let session = store.sync.session else { return }
-                activity.title = session.title
-                activity.webpageURL = session.cockpitURL(base: base)
-                activity.isEligibleForHandoff = true
-            }
-            .onChange(of: scenePhase) { _, phase in
-                // Poll only while someone is looking.
-                if phase == .active {
-                    store.sync.start()
-                    if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
-                } else { store.sync.stop(); MobileNotifications.shared.visibleSession = nil }
-            }
-            .onChange(of: store.sync.connection) { _, connection in
-                if connection == .gone { dismiss() }
-            }
+            .onChange(of: receiptWorld) { sendReceiptIfEarned() }
     }
 
     /// The three bands of the conversation, top to bottom.
