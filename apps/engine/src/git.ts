@@ -12,22 +12,63 @@
  * `worktree list`, and a surface that refreshes itself on a timer may call
  * nothing else.
  *
- * THERE IS EXACTLY ONE MUTATION, `commitSessionWork`, and its shape is the rule
- * for any that follow: a human pressed a button, it is additive, and it is
- * recoverable. `git commit` can be undone with a reset; `git restore`,
- * `git checkout <branch>` and a hunk-level index cannot, and a panel that
- * refreshes every fifteen seconds beside an agent that is still writing is the
- * worst possible place to offer them. The frozen cockpit offered all three (see
- * `apps/web_old/components/session/workspace-git-pane.tsx`): a branch list whose
- * rows ran `git checkout` in the tree an agent was working in, with no
- * confirmation. Their absence here is a decision, not a gap.
+ * THERE ARE EXACTLY TWO MUTATIONS, `commitSessionWork` and `pushSessionBranch`,
+ * and the first one's shape is the rule: a human pressed a button, it is
+ * additive, and it is recoverable. `git commit` can be undone with a reset;
+ * `git restore`, `git checkout <branch>` and a hunk-level index cannot, and a
+ * panel that refreshes every fifteen seconds beside an agent that is still
+ * writing is the worst possible place to offer them. The frozen cockpit offered
+ * all three (see `apps/web_old/components/session/workspace-git-pane.tsx`): a
+ * branch list whose rows ran `git checkout` in the tree an agent was working in,
+ * with no confirmation. Their absence here is a decision, not a gap.
+ *
+ * ── `pushSessionBranch` IS THE DELIBERATE NETWORKED EXCEPTION — issue #670 ───
+ *
+ * Every other line in this module is local. `listGitRefs` says so outright —
+ * "ONE `for-each-ref`, NO NETWORK … a listing must never become the thing that
+ * talks to a server" — and that rule is NOT weakened by what follows: nothing
+ * that runs on a timer, on a poll, or on a surface opening may reach the
+ * network. A push runs when, and only when, a person presses a button that says
+ * it will push.
+ *
+ * AND IT IS ONLY AMBIGUOUSLY RECOVERABLE, which is the honest weakening of the
+ * rule above and is written here rather than assumed. A pushed branch can be
+ * deleted; a branch that CI has already picked up, or that somebody has already
+ * pulled, is not undone by deleting it. What keeps this inside the rule is the
+ * other half — it is purely ADDITIVE. The argv is fixed at
+ * `push --set-upstream origin <branch>` and is never composed from a caller:
+ * there is no `--force`, no `--force-with-lease`, no `--delete` and no
+ * `+`-prefixed refspec anywhere in this engine, and `scripts/source-invariants.mjs`
+ * fails the build if one appears. A push that can only ever append commits to a
+ * branch the session itself created is recoverable in the way that matters: it
+ * cannot destroy anything that was already there.
+ *
+ * `--set-upstream` IS REQUIRED, NOT COSMETIC. `createSessionWorktreeAsync` cuts
+ * a branch with `worktree add -b` and sets no tracking ref, so a bare `git push`
+ * in a session's checkout fails on "no upstream branch" unless the machine
+ * happens to have `push.autoSetupRemote` set.
+ *
+ * NO CREDENTIAL CROSSES THIS MODULE. `git` on this machine already has the
+ * user's keychain helper, SSH agent or corporate helper, exactly as `gh` does —
+ * see the header of ./github.ts, whose argument applies here word for word. The
+ * one environment variable this module sets is `GIT_TERMINAL_PROMPT=0`, which
+ * exists to REFUSE a credential prompt rather than to answer one.
  *
  * A PROJECT THAT IS NOT A REPOSITORY IS NOT AN ERROR. `envMode: "local"` exists
  * precisely so an unversioned directory can host sessions, so the overview
  * reports `repository: false` and stops. Throwing here would make the composer's
  * foot a failure state for a configuration the engine supports on purpose.
  */
-import type { GitChangeStatus, GitCommitEntry, GitFileChange, GitFilePatch, ProjectAvailability, SessionDiff } from "@telar/engine-client";
+import type {
+  GitChangeStatus,
+  GitCommitEntry,
+  GitFileChange,
+  GitFilePatch,
+  GitPushRefusal,
+  GitPushResult,
+  ProjectAvailability,
+  SessionDiff,
+} from "@telar/engine-client";
 import type { AsyncGitRunner, GitResult, GitRunner } from "./worktree.js";
 
 export type GitWorktreeEntry = {
@@ -444,6 +485,41 @@ function resolveDiffBase(
 }
 
 /**
+ * WHETHER AN ANCHORED COMMIT IS STILL THERE — issue #741.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * AN ANCHOR DEGRADES; IT MUST NOT LIE. A turn's `before`/`after` are shas the
+ * engine observed while the turn ran, and history moves afterwards. Measured in
+ * throwaway repositories: after `git commit --amend` the pre-amend sha is STILL
+ * a readable object and `git diff <old> <new>` still works; after
+ * `reflog expire --expire-unreachable=now --all && gc --prune=now` it is gone.
+ *
+ * `resolveDiffBase`'S LESSON RUNS THE OTHER WAY HERE, and that is the whole
+ * reason this is a separate function rather than a second call to it. There, a
+ * ref that does not resolve falls back to HEAD, because a *name* the user typed
+ * being wrong is a user error with an obvious recovery. Here the sha was
+ * recorded by the engine, and falling back to HEAD would answer a comparison
+ * NOBODY ASKED FOR with real hunks, and look entirely plausible doing it.
+ * A missing object means the anchor is gone, and the only honest answer is to
+ * say so.
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * `^{commit}` RATHER THAN A BARE SHA, so a sha that happens to name a blob or a
+ * tree is refused rather than fed to `diff` as one side of a range.
+ */
+export function anchorArgs(sha: string): string[] {
+  return ["cat-file", "-e", `${sha}^{commit}`];
+}
+
+/** What `cat-file -e` said about an anchor: present, gone, or unread. */
+export function readAnchorProbe(result: GitResult): { present: boolean; incomplete?: GitReadFailure } {
+  if (result.timedOut) return { present: false, incomplete: "timeout" };
+  // Non-zero from `cat-file -e` is the answer "no such object", which is a FACT
+  // about the repository rather than a failure of the read.
+  return { present: result.status === 0 };
+}
+
+/**
  * THE REVIEW, ASSEMBLED FROM READS THAT EACH MAY HAVE FAILED — issue #654.
  *
  * SHARED BY BOTH RUNNERS so the synchronous and nonblocking reviews can never
@@ -755,6 +831,342 @@ export function commitSessionWork(
   return { committed: true, ...(entry ? { commit: entry } : {}) };
 }
 
+// ── publishing a session's branch ───────────────────────────────────────────
+
+/**
+ * How long a push may take before it is killed.
+ *
+ * LONGER THAN `DEFAULT_GIT_TIMEOUT_MS`, because this is the only git child in
+ * the engine whose wall clock is somebody's upload: a first push of a branch
+ * carrying a few hundred objects over a domestic connection is comfortably past
+ * thirty seconds, and killing it would leave a half-finished push and a person
+ * told "git did not answer" about a command that was working.
+ *
+ * AND STILL BOUNDED, because it holds a slot in the worktree runner's two-slot
+ * pool while it runs — see `defaultWorktreeGitRunner`. A minute of one slot is a
+ * session creation queued behind it for a minute; an unbounded push would be
+ * that slot gone for good.
+ */
+export const PUSH_TIMEOUT_MS = 60_000;
+
+/**
+ * THE ARGV, AS A CONSTANT, so there is exactly one push in this engine and its
+ * shape is readable in one line.
+ *
+ * NOTHING HERE COMES FROM A CALLER EXCEPT THE BRANCH NAME, and the branch name
+ * is the session's own — read off the session record by the store, never off a
+ * request body. See the module header for why there is no force, no delete and
+ * no caller-supplied refspec, and `scripts/source-invariants.mjs` for the check
+ * that keeps a second one from appearing.
+ */
+export function pushArgv(branch: string): string[] {
+  return ["push", "--set-upstream", "origin", branch];
+}
+
+/**
+ * The environment one push runs with.
+ *
+ * `GIT_TERMINAL_PROMPT=0` AND NOTHING ELSE. A push against an HTTPS remote with
+ * no usable credential helper otherwise blocks on "Username for
+ * 'https://github.com':" — a prompt nobody can answer, which burns the whole
+ * timeout and reports a killed child rather than the credential problem it
+ * actually is. Refused, it exits immediately with words `classifyPushFailure`
+ * can name. See `GitRunOptions.env`: this is a channel for refusing a question,
+ * never for answering one.
+ */
+export const PUSH_ENV: Record<string, string> = { GIT_TERMINAL_PROMPT: "0" };
+
+/**
+ * What the engine can see about a session's branch WITHOUT touching the network.
+ *
+ * FIVE LOCAL READS, AND EVERY REFUSAL EITHER ARM MAKES BEFORE IT ACTS IS
+ * DECIDED FROM THEM. That is the same trade `mergePull` makes — four of its
+ * seven answers are facts rather than phrase matches — and it buys the same two
+ * things: a refusal that is certain rather than guessed, and a refusal that
+ * costs nothing on the far side.
+ *
+ * FACTS, NOT A VERDICT. Push and pull-request creation refuse on overlapping but
+ * different grounds, and a shared function that returned "ok" or "no" would have
+ * to speak both their vocabularies. This answers what is true; each arm decides
+ * what that means for it.
+ */
+export type SessionBranchFacts = {
+  repository: boolean;
+  /** A probe was killed rather than answering. Nothing below it is known. */
+  timedOut?: true;
+  /** HEAD's branch. ABSENT on a detached HEAD, which is a real state and not a
+   *  branch called "HEAD". */
+  branch?: string;
+  /** `origin`'s URL, verbatim. Absent when the checkout has no origin. */
+  origin?: string;
+  /** `refs/remotes/origin/<branch>` exists — this branch has been pushed at
+   *  least once, as far as this checkout knows. */
+  upstream?: boolean;
+  /** Commits HEAD has that `origin/<branch>` does not. Absent when there is no
+   *  remote-tracking ref to count against, which is NOT the same as zero. */
+  ahead?: number;
+};
+
+export async function sessionBranchFacts(git: AsyncGitRunner, cwd: string): Promise<SessionBranchFacts> {
+  const inside = await git(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.timedOut) return { repository: false, timedOut: true };
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") return { repository: false };
+
+  const head = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (head.timedOut) return { repository: true, timedOut: true };
+  const raw = head.status === 0 ? head.stdout.trim() : "";
+  // `--abbrev-ref HEAD` answers the literal string "HEAD" on a detached
+  // checkout. Reporting that as a branch name would have this engine push a ref
+  // called HEAD; see `gitOverview`, which drops it for the same reason.
+  const branch = raw && raw !== "HEAD" ? raw : undefined;
+
+  const remote = await git(cwd, ["config", "--get", "remote.origin.url"]);
+  if (remote.timedOut) return { repository: true, timedOut: true, ...(branch ? { branch } : {}) };
+  const origin = remote.status === 0 ? remote.stdout.trim() : "";
+
+  if (!branch || !origin) {
+    return { repository: true, ...(branch ? { branch } : {}), ...(origin ? { origin } : {}) };
+  }
+
+  /**
+   * THE REMOTE-TRACKING REF, NOT A FETCH. This is what the checkout last saw,
+   * which may be older than the remote — and reading it is the difference
+   * between a listing that talks to a server and one that does not. A stale
+   * "nothing to push" is caught anyway: git answers `Everything up-to-date` and
+   * `classifyPushOutcome` reports the same refusal from the push itself.
+   */
+  const tracking = `refs/remotes/origin/${branch}`;
+  const exists = await git(cwd, ["rev-parse", "--verify", "--quiet", tracking]);
+  if (exists.timedOut) return { repository: true, branch, origin, timedOut: true };
+  if (exists.status !== 0) return { repository: true, branch, origin, upstream: false };
+
+  const counted = await git(cwd, ["rev-list", "--count", `${tracking}..HEAD`]);
+  if (counted.timedOut) return { repository: true, branch, origin, upstream: true, timedOut: true };
+  const ahead = counted.status === 0 ? Number.parseInt(counted.stdout.trim(), 10) : Number.NaN;
+  return { repository: true, branch, origin, upstream: true, ...(Number.isFinite(ahead) ? { ahead } : {}) };
+}
+
+/**
+ * Why `git push` refused, when the engine could not already tell.
+ *
+ * MATCHED ON GIT'S OWN WORDS, like `classifyGhFailure` and `classifyMergeFailure`
+ * and for the same reason: git exits 1 for almost all of these, so the status
+ * cannot tell them apart. The fallback is `failed` with the message passed
+ * through, so a phrasing change degrades to "here is what git said" rather than
+ * to a wrong diagnosis.
+ *
+ * ── WHAT SEPARATES THE THREE REFUSALS THAT COULD BE CONFUSED ────────────────
+ *
+ * EVERY ONE OF THEM IS SEPARATED BY TOKENS, NOT BY ORDER — and that is worth
+ * writing down precisely, because the instinct is to reach for order and
+ * because an earlier draft of this comment claimed the opposite. Measured, by
+ * reverting each block in turn:
+ *
+ * `auth` VERSUS `not_permitted`. SSH spells a missing key as "Permission denied
+ * (publickey)" and GitHub spells a 403 as "Permission to owner/repo.git denied
+ * to someone". Both contain the word "permission", which is exactly why neither
+ * block tests for that word alone: `auth` matches `permission denied
+ * (publickey)` and `not_permitted` matches `permission to` / `denied to`, and
+ * no real fixture for either matches the other's set. Drop the publickey token
+ * from `auth` and the missing-key fixture does NOT fall through to
+ * `not_permitted` — it lands on `failed`, which is the honest degradation this
+ * function is built for, and is what the test asserts.
+ *
+ * `not_permitted` VERSUS `rejected`. Measured, a real `pre-receive` decline:
+ *
+ *     ! [remote rejected] main -> main (pre-receive hook declined)
+ *
+ * and a real non-fast-forward:
+ *
+ *     ! [rejected]        main -> main (fetch first)
+ *
+ * `[remote rejected]` does not contain `[rejected]`, so the two token sets are
+ * disjoint and swapping the blocks changes nothing — measured, not assumed.
+ * What the SEPARATION buys is the thing that matters: the first needs a
+ * different branch or a different account, the second needs a pull, and telling
+ * somebody to rebase a branch a hook declined wastes their afternoon. The test
+ * for it asserts the two fixtures land differently, which is the claim; it does
+ * not assert an order that is not doing any work.
+ */
+export function classifyPushFailure(result: Pick<GitResult, "stdout" | "stderr">): { refusal: GitPushRefusal; message?: string } {
+  const text = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  const message = result.stderr.trim() || result.stdout.trim();
+  const carry = message ? { message } : {};
+  if (
+    text.includes("terminal prompts disabled") ||
+    text.includes("could not read username") ||
+    text.includes("could not read password") ||
+    text.includes("authentication failed") ||
+    text.includes("permission denied (publickey)") ||
+    text.includes("invalid username or password") ||
+    text.includes("no supported authentication")
+  ) {
+    return { refusal: "auth", ...carry };
+  }
+  if (
+    text.includes("[remote rejected]") ||
+    text.includes("hook declined") ||
+    text.includes("protected branch") ||
+    text.includes("denied to") ||
+    text.includes("http 403") ||
+    text.includes("error: 403") ||
+    text.includes("write access") ||
+    text.includes("permission to")
+  ) {
+    return { refusal: "not_permitted", ...carry };
+  }
+  if (
+    text.includes("[rejected]") ||
+    text.includes("non-fast-forward") ||
+    text.includes("fetch first") ||
+    text.includes("updates were rejected")
+  ) {
+    return { refusal: "rejected", ...carry };
+  }
+  if (text.includes("does not appear to be a git repository") || text.includes("no such remote") || text.includes("does not exist")) {
+    return { refusal: "no_remote", ...carry };
+  }
+  return { refusal: "failed", ...carry };
+}
+
+/**
+ * GIT EXITED 0 AND STILL MOVED NOTHING, which is a sentence and not a failure.
+ *
+ * The check before the push reads the remote-tracking ref, which is what this
+ * checkout LAST SAW — so a branch somebody else already pushed for us looks
+ * behind when it is level. Git's own answer to that is `Everything up-to-date`
+ * on a successful exit, and reporting "pushed" over it would be this surface
+ * claiming a thing it did not do.
+ *
+ * BOTH STREAMS ARE READ, because which one carries it is a git version detail:
+ * measured on 2.x the phrase arrives on stderr while `--set-upstream`'s own
+ * "branch 'x' set up to track 'origin/x'" arrives on stdout.
+ */
+export function pushMovedNothing(result: Pick<GitResult, "stdout" | "stderr">): boolean {
+  return `${result.stderr}\n${result.stdout}`.toLowerCase().includes("everything up-to-date");
+}
+
+/**
+ * Publish the session's own branch.
+ *
+ * THE SECOND MUTATION IN THIS MODULE AND THE ONLY ONE THAT LEAVES THE MACHINE —
+ * see the module header for the whole argument, including why a push is inside
+ * the "additive and recoverable" rule that governs `commitSessionWork`.
+ *
+ * FIVE REFUSALS ARE DECIDED BEFORE GIT IS ASKED TO PUSH ANYTHING, and the point
+ * is that each one is a fact rather than a phrase match. `local_checkout` costs
+ * no subprocess at all: a `local` session shares the project's checkout with the
+ * user's editor and with every other local session on it, so there is no
+ * session-owned branch here to publish and nothing to look at to find that out.
+ *
+ * `not_session_branch` IS THE GUARD THE ISSUE ASKED FOR, ARRIVING BY ITS HONEST
+ * ROUTE. #670's investigation asked to refuse when "the session's branch is its
+ * base ref". A worktree session's recorded `baseRef` is a COMMIT SHA — see
+ * `SessionWorkspace` — so there is no branch name to compare it against, and a
+ * check written that way would never fire. What the guard was FOR is real: this
+ * button must not push whatever happens to be checked out, because the way that
+ * goes wrong is an agent having run `git checkout main` in the worktree and the
+ * cockpit publishing the base branch. So the comparison is against the branch
+ * the session was cut for, which is recorded, which catches that case and a
+ * detached HEAD with it.
+ */
+export async function pushSessionBranch(
+  git: AsyncGitRunner,
+  input: {
+    cwd: string;
+    /** The session's workspace mode. `local` refuses before anything runs. */
+    mode: "local" | "worktree";
+    /** The branch this session was cut for. A `worktree` session always has
+     *  one; it is read off the session record, never off a request. */
+    branch?: string;
+  },
+): Promise<GitPushResult> {
+  if (input.mode === "local") {
+    return {
+      pushed: false,
+      refusal: "local_checkout",
+      message: "This session works in the project's own checkout, which it shares with your editor. There is no session branch to publish.",
+    };
+  }
+  const branch = input.branch?.trim();
+  if (!branch) {
+    return { pushed: false, refusal: "not_session_branch", message: "This session has no branch of its own recorded." };
+  }
+
+  const facts = await sessionBranchFacts(git, input.cwd);
+  const refusal = refuseFromFacts(facts, branch);
+  if (refusal) return refusal;
+
+  const push = await git(input.cwd, pushArgv(branch), { timeoutMs: PUSH_TIMEOUT_MS, env: PUSH_ENV });
+  // `timedOut` first, because a killed child also carries a non-zero status —
+  // the same ordering `failureOf` states for the reads above.
+  if (push.timedOut) {
+    return { pushed: false, refusal: "timeout", message: `The push did not finish within ${PUSH_TIMEOUT_MS / 1_000}s and was stopped.` };
+  }
+  if (push.status !== 0) return { pushed: false, ...classifyPushFailure(push) };
+  if (pushMovedNothing(push)) {
+    return { pushed: false, refusal: "nothing_to_push", message: `origin already has every commit on ${branch}.` };
+  }
+  return {
+    pushed: true,
+    branch,
+    ...(facts.ahead === undefined ? {} : { commits: facts.ahead }),
+    ...(facts.upstream === false ? { created: true } : {}),
+  };
+}
+
+/**
+ * The refusals both arms share, decided from facts alone.
+ *
+ * SHARED SO THE TWO ARMS CANNOT DISAGREE about whether this checkout is in a
+ * state worth acting on — which is the failure a second hand-written copy of
+ * these four `if`s would produce on the first one somebody edits.
+ */
+function refuseFromFacts(facts: SessionBranchFacts, branch: string): { pushed: false; refusal: GitPushRefusal; message: string } | undefined {
+  // NOT "not a git repository" — a killed probe is a machine under load, and
+  // telling somebody their checkout is unversioned sends them looking for a
+  // problem that is not there. Same judgement as `commitSessionWork`'s.
+  if (facts.timedOut) return { pushed: false, refusal: "timeout", message: "git did not answer in time — try again." };
+  if (!facts.repository) return { pushed: false, refusal: "not_repository", message: "This session's workspace is not a git repository." };
+  if (!facts.origin) {
+    return { pushed: false, refusal: "no_remote", message: "This checkout has no origin, so there is nowhere to push it." };
+  }
+  if (facts.branch !== branch) {
+    return {
+      pushed: false,
+      refusal: "not_session_branch",
+      message: facts.branch
+        ? `This checkout is on ${facts.branch}, not on this session's branch ${branch}.`
+        : `This checkout is not on a branch, so ${branch} is not what would be pushed.`,
+    };
+  }
+  if (facts.upstream === true && facts.ahead === 0) {
+    return { pushed: false, refusal: "nothing_to_push", message: `origin already has every commit on ${branch}.` };
+  }
+  return undefined;
+}
+
+/**
+ * Whether the pull-request arm may act, from the same facts.
+ *
+ * SEPARATE FROM THE PUSH'S because the two arms genuinely disagree about one
+ * thing: a branch with no upstream is exactly what the push arm exists for and
+ * is the one state a pull request cannot be opened on. #670's investigation is
+ * explicit that these must not be one button, and this is where that stops being
+ * a UI opinion and becomes a rule.
+ */
+export function pullRequestBlockedBy(facts: SessionBranchFacts, branch: string): { refusal: GitPushRefusal; message: string } | undefined {
+  const shared = refuseFromFacts(facts, branch);
+  if (shared) {
+    // `nothing_to_push` does not block a pull request — a branch level with its
+    // upstream is a branch that is fully published, which is the readiest a
+    // pull request can be.
+    if (shared.refusal === "nothing_to_push") return undefined;
+    return { refusal: shared.refusal, message: shared.message };
+  }
+  return undefined;
+}
+
 /** The base-ref picker's menu can only be so long before it stops being a
  *  menu; newest-first means what falls off is what nobody was reaching for. */
 const MAX_REFS = 200;
@@ -962,8 +1374,8 @@ export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
 }
 
 /** Nonblocking read counterpart; uses the same parsers and fallback semantics above. */
-export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string; baseRef?: string }): Promise<SessionDiff> {
-  const { cwd, baseRef } = input;
+export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string; baseRef?: string; to?: string }): Promise<SessionDiff> {
+  const { cwd, baseRef, to } = input;
   const inside = await git(cwd, ["rev-parse", "--is-inside-work-tree"]);
   refuseTimedOutProbe(inside, "Git review");
   if (inside.status !== 0 || inside.stdout.trim() !== "true") {
@@ -973,31 +1385,70 @@ export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string
   const head = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const { base, baseUnverified } = resolveDiffBase(baseRef, baseRef ? await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
   const against = base ?? "HEAD";
+  /**
+   * A RANGE, OR A REF AGAINST THE WORKING TREE — issue #741.
+   *
+   * `[against]` is `git diff <base> --`: one ref against whatever is on the
+   * disk right now. `[against, to]` is `git diff <base> <to>`: two commits,
+   * an answer nothing on the disk can change. The turn scope needs the second
+   * and there was no way to ask for it.
+   */
+  const range = to ? [against, to] : [against];
 
   return assembleDiff(cwd, {
     head,
     ...(base ? { base } : {}),
     ...(baseUnverified ? { baseUnverified } : {}),
-    numstat: await git(cwd, ["diff", "-z", "--numstat", "--find-renames", against, "--"]),
-    nameStatus: await git(cwd, ["diff", "-z", "--name-status", "--find-renames", against, "--"]),
-    status: await git(cwd, ["status", "--porcelain", "-z", "-uall"]),
-    ...(base ? { log: await git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${base}..HEAD`]) } : {}),
+    numstat: await git(cwd, ["diff", "-z", "--numstat", "--find-renames", ...range, "--"]),
+    nameStatus: await git(cwd, ["diff", "-z", "--name-status", "--find-renames", ...range, "--"]),
+    /**
+     * THE UNTRACKED READ IS DROPPED OVER A RANGE, and this is the line that
+     * matters. An untracked file is in no commit, so it is in no
+     * commit-to-commit comparison — carrying `status -uall` into one would put
+     * working-tree rows, possibly written long after the range ended, under a
+     * heading that says what a turn did. That is #690's defect by a third
+     * door, and it is refused HERE rather than left to each caller.
+     *
+     * `ok("")` rather than skipping the field: `assembleDiff` reads a failed
+     * status as a reason to mark the list incomplete, and "there are no
+     * untracked files in a range" is an answer, not a read that went wrong.
+     */
+    status: to ? { status: 0, stdout: "", stderr: "" } : await git(cwd, ["status", "--porcelain", "-z", "-uall"]),
+    ...(base ? { log: await git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${base}..${to ?? "HEAD"}`]) } : {}),
     tracking: await git(cwd, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]),
   });
 }
 
 export async function sessionFilePatchAsync(
   git: AsyncGitRunner,
-  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean; renamedFrom?: string },
+  input: { cwd: string; baseRef?: string; to?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean; renamedFrom?: string },
 ): Promise<GitFilePatch> {
   const { cwd, baseRef, path: target } = input;
   const { base } = resolveDiffBase(baseRef, baseRef ? await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
   const against = base ?? "HEAD";
   const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
-  return input.untracked
+  /**
+   * OVER A RANGE THERE IS NO UNTRACKED ARM AT ALL — issue #741. `--no-index`
+   * compares a working file against `/dev/null`, which is a statement about the
+   * disk; asking it inside a commit-to-commit comparison would answer a
+   * different question from the list the row sits in. The range wins, and a row
+   * that reached here marked untracked over one is a row the list should not
+   * have produced.
+   */
+  const range = input.to ? [against, input.to] : [against];
+  return input.untracked && !input.to
     ? assemblePatch(await git(cwd, [...RAW_PATHS, "diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
     : assemblePatch(
-        await git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, ...renameArgs(input.renamedFrom), against, "--", ...paths(target, input.renamedFrom)]),
+        await git(cwd, [
+          ...RAW_PATHS,
+          "diff",
+          "--unified=3",
+          ...ignoring,
+          ...renameArgs(input.renamedFrom),
+          ...range,
+          "--",
+          ...paths(target, input.renamedFrom),
+        ]),
         { noIndex: false },
       );
 }

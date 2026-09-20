@@ -62,10 +62,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArrowUpFromLineIcon,
   ChevronDownIcon,
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   GitBranchIcon,
+  GitPullRequestArrowIcon,
   HardDriveIcon,
   GitCommitHorizontalIcon,
   ListFilterIcon,
@@ -76,8 +78,22 @@ import {
   WrapTextIcon,
   XIcon,
 } from "lucide-react";
-import type { DiffBaseOption, FilePatchOptions, GitFilePatch, GitFileChange, GitPatchIncomplete, GitRefEntry, SessionDiff, TurnState } from "@telar/engine-client";
+import type {
+  DiffBaseOption,
+  FilePatchOptions,
+  GitFilePatch,
+  GitFileChange,
+  GitHubPullCreateRefusal,
+  GitHubPullCreateResult,
+  GitPatchIncomplete,
+  GitPushRefusal,
+  GitPushResult,
+  GitRefEntry,
+  SessionDiff,
+  TurnState,
+} from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { PULL_CREATE_REFUSAL, PUSH_REFUSAL } from "@/lib/github-forge";
 import { fmtAgo } from "@/lib/format";
 import { describeReview, reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
 import { useDiffView, type DiffView } from "@/lib/diff-view";
@@ -185,6 +201,45 @@ export function reviewUnderFilter(review: SessionReview, filter?: string): Sessi
     linesAdded: rows.reduce((total, row) => total + (row.file.linesAdded ?? 0), 0),
     linesRemoved: rows.reduce((total, row) => total + (row.file.linesRemoved ?? 0), 0),
   };
+}
+
+/**
+ * WHICH WITNESS A TURN'S FIGURES COME FROM — issue #741, in four sentences
+ * rather than one.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE ONE SENTENCE THIS REPLACES SAID "the agent's own patches, not the
+ * checkout", which was true of every turn when #694 wrote it and is now true of
+ * some of them. A surface that went on saying it over a real git range would be
+ * #690's defect committed a third time — a sentence true of one mode stated
+ * over another — so each state says what it actually is.
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * AND THE SHARED-CHECKOUT CAVEAT RIDES THE ANCHORED ARM, because that is the
+ * only arm it is about. In a `local` session `before..after` is "what the
+ * REPOSITORY did while this turn ran", not "what this turn did": agents commit
+ * under the owner's own identity, so an author filter decides nothing and a
+ * timestamp filter is a guess wearing a number. `SessionDiff.shared` is already
+ * set for exactly this mode (#690) and is reused rather than re-derived — and
+ * it says the OTHER half too, which the single sentence could not: in a
+ * worktree session the range is as close to "this turn's work" as anything in
+ * this repository gets.
+ */
+function turnNote(turn: DiffTurn, diff: SessionDiff | undefined): string {
+  const anchored = Boolean(turn.anchor?.before && turn.anchor.after);
+  if (anchored) {
+    const committed = turn.anchor?.before !== turn.anchor?.after;
+    const range = committed
+      ? "What git says changed between where this turn started and where it ended."
+      : "This turn committed nothing, so this is what git says changed since it started — including anything written after it ended.";
+    return diff?.shared === true
+      ? `${range} This checkout is shared with your editor and with every other local session on it, so some of this may not be this turn's.`
+      : `${range} This session owns its checkout, so this is as close to one turn's work as git can say.`;
+  }
+  if (turn.anchor?.read) {
+    return "Where the repository stood when this turn ran was never read, so this is the agent's own reported patches rather than git.";
+  }
+  return "What this turn reported writing — the agent's own patches, not the checkout. Git may disagree, and the working-tree scope is where you would see it.";
 }
 
 /**
@@ -1164,6 +1219,301 @@ function CommitBox({
   );
 }
 
+/**
+ * THE TWO PUBLISHING ARMS — issue #670.
+ *
+ * ── WHY TWO, AND WHY THEY ARE NOT ONE BUTTON ────────────────────────────────
+ * They are two capabilities with two different portability stories. `git push`
+ * needs git and a remote — any remote: GitLab, Gitea, a bare repository on a
+ * NAS. `gh pr create` needs `gh` and a GitHub one. Folding them into a single
+ * "publish" gesture would make the portable half hostage to the unportable one:
+ * a GitLab user who can push perfectly well would get one button that cannot
+ * work in place of one that can. So push is offered wherever it is possible,
+ * and the pull-request arm is simply ABSENT — not disabled, not broken —
+ * wherever `gh` has nothing to offer.
+ *
+ * ── ARM, THEN CONFIRM, AND THE SECOND PRESS SPELLS IT OUT ───────────────────
+ * The merge footer's template, for the merge footer's reason: this is an
+ * outward-facing act in a panel somebody is dragging tabs around in, and a
+ * single-press primary button is a mis-click away from publishing a branch.
+ * The armed sentence names the branch, the remote and the count, so the thing
+ * being confirmed is the thing that will happen.
+ *
+ * ── WHAT IS NOT HERE ────────────────────────────────────────────────────────
+ * No force, no `--delete`, no "push all branches", and no offer to force after
+ * a `rejected` refusal — the sentence for that one names a pull instead. The
+ * engine cannot do any of them (`apps/engine/src/git.ts` fixes the argv and
+ * `scripts/source-invariants.mjs` fails the build on a second one), and this
+ * surface does not ask.
+ */
+export function PublishBox({
+  sendPush,
+  sendPullRequest,
+  github,
+  branch,
+  /** Commits this branch has that its upstream does not. ABSENT means there is
+   *  no upstream at all — a branch nobody has published yet, which is a
+   *  different sentence from "nothing to push" and the common case here. */
+  ahead,
+  /** Commits since the session's base, as a floor for the first-push sentence
+   *  when there is no upstream to count against. */
+  commitsSinceBase,
+  busy,
+  onPublished,
+  suggestion,
+}: {
+  /**
+   * THE TWO VERBS, HANDED IN RATHER THAN REACHED FOR.
+   *
+   * This component decides what a reader sees and when an outward-facing act is
+   * allowed to happen; which HTTP route carries it is `DiffSurface`'s business,
+   * and it already holds the session id this needs. Taking them as props is the
+   * same split `diff-unknown.test.tsx` names — the half that decides is the
+   * half handed the answer — and it is what lets the arm-then-confirm rule be
+   * tested by watching a call list rather than by replacing the engine client
+   * for every other test sharing this process.
+   */
+  sendPush: () => Promise<GitPushResult>;
+  sendPullRequest: (input: { title: string; body?: string }) => Promise<GitHubPullCreateResult>;
+  /**
+   * Whether `gh` has anything to offer for this project — the whole of what
+   * decides if the second arm exists.
+   *
+   * `undefined` IS "NOBODY HAS ASKED YET" AND THE ARM STAYS HIDDEN THROUGH IT.
+   * A button that appears a second after the panel settles is worse than one
+   * that appears with it, and the read behind this is a `gh` round trip (see
+   * `DiffSurface`, which owns it for the same reason it owns the ref read).
+   *
+   * ONE BOOLEAN RATHER THAN THE FIVE REASONS. `not_installed`,
+   * `not_authenticated`, `not_github` and `no_repository` mean four different
+   * things on the forge panel, where those four sentences belong. They mean one
+   * thing here: there is no pull request to open.
+   */
+  github?: boolean;
+  branch: string;
+  ahead?: number;
+  commitsSinceBase: number;
+  busy: boolean;
+  onPublished: () => void;
+  /** The session title, as the default pull-request title — the same default
+   *  and the same reasoning as the commit box's. */
+  suggestion: string;
+}) {
+  const [armed, setArmed] = useState<"push" | "pull">();
+  const [working, setWorking] = useState(false);
+  const [pushProblem, setPushProblem] = useState<{ refusal: GitPushRefusal; message?: string }>();
+  const [pullProblem, setPullProblem] = useState<{ refusal: GitHubPullCreateRefusal; message?: string; url?: string }>();
+  const [opened, setOpened] = useState<{ url: string; number?: number }>();
+  const [title, setTitle] = useState(suggestion);
+  const [body, setBody] = useState("");
+
+  const published = ahead !== undefined;
+  const pushable = !published || ahead > 0;
+  const count = published ? ahead : commitsSinceBase;
+
+  const push = async () => {
+    setWorking(true);
+    setPushProblem(undefined);
+    try {
+      const result = await sendPush();
+      if (result.pushed) {
+        setArmed(undefined);
+        onPublished();
+        return;
+      }
+      setPushProblem({ refusal: result.refusal, ...(result.message ? { message: result.message } : {}) });
+    } catch (cause) {
+      setPushProblem({ refusal: "failed", message: cause instanceof EngineApiError ? cause.message : "The push could not be sent." });
+    } finally {
+      setWorking(false);
+      setArmed(undefined);
+    }
+  };
+
+  const openPull = async () => {
+    setWorking(true);
+    setPullProblem(undefined);
+    try {
+      const result = await sendPullRequest({ title, ...(body.trim() ? { body } : {}) });
+      if (result.opened) {
+        setArmed(undefined);
+        setOpened({ url: result.url, ...(result.number ? { number: result.number } : {}) });
+        onPublished();
+        return;
+      }
+      setPullProblem({
+        refusal: result.refusal,
+        ...(result.message ? { message: result.message } : {}),
+        ...(result.url ? { url: result.url } : {}),
+      });
+    } catch (cause) {
+      setPullProblem({
+        refusal: "failed",
+        message: cause instanceof EngineApiError ? cause.message : "The pull request could not be sent.",
+      });
+    } finally {
+      setWorking(false);
+      setArmed(undefined);
+    }
+  };
+
+  return (
+    <div className="border-t border-border px-3 py-2">
+      <p className="mb-1.5 truncate font-mono text-4xs tracking-[0.08em] text-muted-foreground uppercase">publish {branch}</p>
+
+      {/* A LINK, NOT A SENTENCE ABOUT A LINK. The pull request exists; the only
+          useful thing left on this surface is the way to it. */}
+      {opened && (
+        <p className="mb-2 flex items-start gap-1.5 rounded-md tint-success px-2.5 py-1.5 text-2xs leading-snug text-success">
+          <GitPullRequestArrowIcon className="mt-0.5 size-3.5 shrink-0" />
+          <a href={opened.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 break-all underline underline-offset-2">
+            {opened.number ? `Opened #${opened.number}` : "Pull request opened"}
+          </a>
+        </p>
+      )}
+
+      {pushProblem && (
+        <PublishProblem onDismiss={() => setPushProblem(undefined)}>
+          {PUSH_REFUSAL[pushProblem.refusal]}
+          {pushProblem.message && <span className="block text-muted-foreground">{pushProblem.message}</span>}
+        </PublishProblem>
+      )}
+      {pullProblem && (
+        <PublishProblem onDismiss={() => setPullProblem(undefined)}>
+          {PULL_CREATE_REFUSAL[pullProblem.refusal]}
+          {pullProblem.url && (
+            <a href={pullProblem.url} target="_blank" rel="noreferrer" className="block break-all underline underline-offset-2">
+              {pullProblem.url}
+            </a>
+          )}
+          {pullProblem.message && !pullProblem.url && <span className="block text-muted-foreground">{pullProblem.message}</span>}
+        </PublishProblem>
+      )}
+
+      {armed === "push" ? (
+        <div className="flex flex-col gap-2">
+          <p className="text-2xs leading-snug">
+            Push <span className="font-mono">{branch}</span> to <span className="font-mono">origin</span>
+            {count > 0 ? ` — ${count} ${count === 1 ? "commit" : "commits"}` : ""}?{" "}
+            <span className="text-muted-foreground">
+              {published
+                ? "This appends to a branch the remote already has."
+                : "This publishes the branch for the first time. Telar never force-pushes."}
+            </span>
+          </p>
+          <div className="flex items-center gap-1.5">
+            <Button type="button" size="xs" variant="ghost" onClick={() => setArmed(undefined)} disabled={working}>
+              Cancel
+            </Button>
+            <Button type="button" size="xs" onClick={() => void push()} disabled={working}>
+              {working ? <Spinner className="size-3" /> : <ArrowUpFromLineIcon className="size-3" />}
+              {working ? "Pushing…" : "Push"}
+            </Button>
+          </div>
+        </div>
+      ) : armed === "pull" ? (
+        <div className="flex flex-col gap-2">
+          <input
+            type="text"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            aria-label="Pull request title"
+            autoFocus
+            className="w-full rounded-md border border-input bg-background p-2 text-xs outline-none focus-visible:border-ring"
+          />
+          <textarea
+            value={body}
+            onChange={(event) => setBody(event.target.value)}
+            rows={3}
+            aria-label="Pull request description"
+            placeholder="Description (optional)"
+            className="w-full resize-none rounded-md border border-input bg-background p-2 text-xs outline-none focus-visible:border-ring"
+          />
+          <p className="text-2xs leading-snug text-muted-foreground">
+            This happens on GitHub and cannot be undone from Telar. The description carries this session&rsquo;s id, so the conversation
+            behind it is findable.
+          </p>
+          <div className="flex items-center gap-1.5">
+            <Button type="button" size="xs" variant="ghost" onClick={() => setArmed(undefined)} disabled={working}>
+              Cancel
+            </Button>
+            <Button type="button" size="xs" onClick={() => void openPull()} disabled={working || !title.trim()}>
+              {working ? <Spinner className="size-3" /> : <GitPullRequestArrowIcon className="size-3" />}
+              {working ? "Opening…" : "Open pull request"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          <p className="text-2xs leading-snug text-muted-foreground">
+            {!published
+              ? `origin has never seen this branch${commitsSinceBase > 0 ? ` — ${commitsSinceBase} ${commitsSinceBase === 1 ? "commit" : "commits"} to publish` : ""}.`
+              : ahead > 0
+                ? `${ahead} ${ahead === 1 ? "commit" : "commits"} not on origin yet.`
+                : "origin has every commit on this branch."}
+          </p>
+          {/* TWO ARMS ON ONE ROW, and the left one is available in states the
+              right one is not. That is the whole shape of #670's answer. */}
+          <div className="flex items-center gap-1.5">
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              disabled={busy || !pushable}
+              title={busy ? "A turn is running — the agent may be mid-write" : undefined}
+              onClick={() => {
+                setPushProblem(undefined);
+                setArmed("push");
+              }}
+            >
+              <ArrowUpFromLineIcon className="size-3" />
+              Push
+            </Button>
+            {/* ABSENT RATHER THAN DISABLED where gh has nothing to offer — a
+                greyed-out button is a promise this machine cannot keep, and the
+                reader has no way to find out why from here. Hidden once a pull
+                request has been opened too: the link above is what is left to
+                do with it. */}
+            {github === true && !opened && (
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                disabled={busy || !published}
+                title={!published ? "Push the branch first — a pull request needs a branch the remote has" : undefined}
+                onClick={() => {
+                  setPullProblem(undefined);
+                  setTitle(suggestion);
+                  setArmed("pull");
+                }}
+              >
+                <GitPullRequestArrowIcon className="size-3" />
+                Pull request
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One refusal, in the grammar the merge footer already uses: the sentence, the
+ *  detail underneath it, and a way to put it away. */
+function PublishProblem({ children, onDismiss }: { children: React.ReactNode; onDismiss: () => void }) {
+  return (
+    <div className="mb-2 flex items-start gap-2 text-2xs leading-snug">
+      <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+      <span className="min-w-0 flex-1">
+        {children}
+        <Button type="button" size="xs" variant="ghost" className="mt-1.5" onClick={onDismiss}>
+          Dismiss
+        </Button>
+      </span>
+    </div>
+  );
+}
+
 export function DiffSurface({
   sessionId,
   /** Present always; used when there is no session yet. */
@@ -1259,10 +1609,31 @@ export function DiffSurface({
    * sending none is what every reader of this surface got before the selector
    * existed. `branch` sends the chosen ref, or none to mean the session's own.
    */
-  const base = diffBaseFor(tab);
+  /** The turn this tab is showing, and whether the one it named is still here.
+   *  A named turn can genuinely go — the window slid past it — and falling back
+   *  to the newest beats a surface that renders nothing and explains nothing. */
+  const turn = useMemo(() => turnFor(turns ?? [], tab.turn), [turns, tab.turn]);
+
+  /**
+   * WHAT THIS TAB ASKS GIT FOR — or `undefined` when git cannot be asked.
+   *
+   * `undefined` IS ONLY EVER THE TURN SCOPE, and only a turn with no usable
+   * anchor: one that ran before #741, one whose probe never answered, one in a
+   * repository with no commits. Those keep the journal witness they always had.
+   * An ANCHORED turn is a range, and everything below routes to git for it —
+   * which is what #741 is.
+   */
+  const base = diffBaseFor(tab, turn?.anchor);
+  /** Whether this tab's answer comes from git at all. One decision, read by the
+   *  patch reader, the review fold and the framing, so the three cannot drift
+   *  into describing different witnesses. */
+  const fromGit = base !== undefined;
   const load = useCallback(async () => {
     try {
-      if (sessionId) setDiff((await api.sessionDiff(sessionId, base)).diff);
+      // AN UNANCHORED TURN MAKES NO GIT READ AT ALL, so the list it draws stays
+      // the journal's — see `diffBaseFor`. Reading the session's own base here
+      // would put a whole-session file list under a heading naming one turn.
+      if (sessionId) setDiff((await api.sessionDiff(sessionId, base ?? {})).diff);
       // A CANVAS HAS NO BASE TO OVERRIDE. Its project read is already
       // `HEAD…worktree` — the `unstaged` question — so there is nothing for a
       // scope to change and nothing to send.
@@ -1274,12 +1645,8 @@ export function DiffSurface({
     }
     // `base` is rebuilt each render; its CONTENTS are what matter to the read.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, projectId, base.base]);
+  }, [sessionId, projectId, base?.base, base?.to]);
 
-  /** The turn this tab is showing, and whether the one it named is still here.
-   *  A named turn can genuinely go — the window slid past it — and falling back
-   *  to the newest beats a surface that renders nothing and explains nothing. */
-  const turn = useMemo(() => turnFor(turns ?? [], tab.turn), [turns, tab.turn]);
 
   /**
    * THE BASES, READ ONLY WHEN SOMEBODY IS CHOOSING ONE.
@@ -1314,6 +1681,39 @@ export function DiffSurface({
   }, [tab.kind, refs, projectId]);
 
   /**
+   * WHETHER `gh` HAS ANYTHING TO OFFER FOR THIS PROJECT (#670), read ONCE and
+   * NOT ON A TIMER — the same shape and the same reasoning as the ref read
+   * above, and owned here for the same reason: it is a SUBPROCESS, and putting
+   * a `gh` round trip behind every Diff tab anybody opens would be a network
+   * call for a button most of them never press. Whether this checkout is on
+   * GitHub does not change every fifteen seconds.
+   *
+   * ASKED ONLY WHERE THE ARM COULD EXIST. A canvas has no session to publish
+   * and a `local` session has no branch of its own, so neither asks — and the
+   * engine caches the answer per project, so a reader who has had the forge
+   * panel open pays nothing for it.
+   */
+  const [github, setGithub] = useState<boolean>();
+  const publishable = Boolean(sessionId) && diff?.shared !== true && Boolean(diff?.branch);
+  useEffect(() => {
+    if (!publishable || !projectId || github !== undefined) return;
+    let cancelled = false;
+    void api
+      .projectGitHub(projectId)
+      .then((answer) => {
+        if (!cancelled) setGithub(answer.github.unavailable === undefined);
+      })
+      .catch(() => {
+        // A read that failed is not evidence that `gh` works, and the arm it
+        // would enable is the outward-facing one. Absent is the honest answer.
+        if (!cancelled) setGithub(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [publishable, projectId, github]);
+
+  /**
    * IGNORING WHITESPACE IS PART OF THE REQUEST, not part of the rendering
    * (#694) — git decides which hunks exist. So the toggle is in this callback's
    * dependencies, and an open row re-reads when it flips: see the effect in
@@ -1329,7 +1729,7 @@ export function DiffSurface({
    */
   const readPatch = useCallback(
     (file: GitFileChange): Promise<{ file: GitFilePatch }> => {
-      if (tab.kind === "turn") {
+      if (tab.kind === "turn" && !fromGit) {
         const reported = turn?.patches.get(file.path);
         return Promise.resolve({
           file: reported
@@ -1341,11 +1741,11 @@ export function DiffSurface({
             : { patch: "", binary: false, incomplete: "failed" as const },
         });
       }
-      const options = patchRequestFor(file, view, base);
+      const options = patchRequestFor(file, view, base ?? {});
       return sessionId ? api.sessionFilePatch(sessionId, file.path, options) : api.projectFilePatch(projectId!, file.path, options);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionId, projectId, view.ignoreWhitespace, base.base, tab.kind, turn],
+    [sessionId, projectId, view.ignoreWhitespace, base?.base, base?.to, fromGit, tab.kind, turn],
   );
 
   useEffect(() => {
@@ -1375,9 +1775,18 @@ export function DiffSurface({
    *
    * `linesAdded`/`linesRemoved` ARE THE TURN'S OWN, so the headline above the
    * rows counts the same things the rows do.
+   *
+   * ── AND SINCE #741 THE TURN SCOPE CAN BE GIT'S TOO ──────────────────────────
+   *
+   * An ANCHORED turn is a range of commits, so its list comes back from
+   * `sessionDiff` like any other and gets `reconcileReview` like any other —
+   * which is the point: the journal's account and git's can now DISAGREE inside
+   * the turn scope, and the disagreement is the thing worth seeing. An
+   * unanchored turn keeps the fold below, because for it the journal is still
+   * the only witness there is.
    */
   const review = useMemo(() => {
-    if (tab.kind === "turn") {
+    if (tab.kind === "turn" && !fromGit) {
       if (!turn) return { rows: [], unreported: [], settled: [], filesChanged: 0, linesAdded: 0, linesRemoved: 0 } satisfies SessionReview;
       return {
         rows: turn.files.map((file) => ({ file, reported: true })),
@@ -1389,7 +1798,7 @@ export function DiffSurface({
       } satisfies SessionReview;
     }
     return diff ? reconcileReview(diff, reported) : undefined;
-  }, [tab.kind, turn, diff, reported]);
+  }, [tab.kind, fromGit, turn, diff, reported]);
   /**
    * WHAT THIS TAB IS A REVIEW OF. Everything on screen below the commit box is
    * read out of this rather than out of `review`: the headline, the
@@ -1502,12 +1911,7 @@ export function DiffSurface({
    * is not the same as what is on disk, and this is the only place a reader
    * would find that out.
    */
-  const turnFraming = turn
-    ? {
-        headline: `${describeReview(shown)} — ${turnLabel(turn)}`,
-        note: "What this turn reported writing — the agent's own patches, not the checkout. Git may disagree, and the working-tree scope is where you would see it.",
-      }
-    : undefined;
+  const turnFraming = tab.kind === "turn" && turn ? { headline: `${describeReview(shown)} — ${turnLabel(turn)}`, note: turnNote(turn, diff) } : undefined;
 
   return (
     <div className="flex min-h-full flex-col">
@@ -1548,10 +1952,10 @@ export function DiffSurface({
             files" and takes it for the answer. WHOSE figure it is comes from
             the fold (#690); how COMPLETE it is stays here, being a property of
             the read rather than of the checkout. */}
-        <p className={cn("mt-1 text-sm font-medium tabular-nums", !turnFraming && diff.filesIncomplete && "text-warning")}>
+        <p className={cn("mt-1 text-sm font-medium tabular-nums", fromGit && diff.filesIncomplete && "text-warning")}>
           {turnFraming?.headline ?? framing.headline}
           {/* A GIT DOUBT, so it is silent over a list git did not produce. */}
-          {!turnFraming && diff.filesIncomplete && <span className="ml-1.5 text-2xs font-normal">· incomplete</span>}
+          {fromGit && diff.filesIncomplete && <span className="ml-1.5 text-2xs font-normal">· incomplete</span>}
         </p>
         <p className="mt-0.5 text-2xs leading-snug text-muted-foreground">
           {/* WHICH QUESTION THESE FIGURES ANSWER — `reviewFraming`. Without a
@@ -1569,8 +1973,8 @@ export function DiffSurface({
               explain why it disagrees with the one beside it. */}
           {trimmed ? ` Filtered to ${trimmed} — ${review.filesChanged} ${review.filesChanged === 1 ? "file" : "files"} in all.` : ""}
           {/* Both are facts about the git read, so both go quiet over a turn. */}
-          {!turnFraming && diff.ahead !== undefined && diff.ahead > 0 ? ` ${diff.ahead} ahead of upstream.` : ""}
-          {!turnFraming && diff.truncated ? " The list below is capped; the figures above are not." : ""}
+          {fromGit && tab.kind !== "turn" && diff.ahead !== undefined && diff.ahead > 0 ? ` ${diff.ahead} ahead of upstream.` : ""}
+          {fromGit && diff.truncated ? " The list below is capped; the figures above are not." : ""}
         </p>
         {/* THE FIELD IS THE INSTANCE'S IDENTITY, so it sits in the header where
             a tab's subject belongs — beside the branch it is a review of, not
@@ -1618,7 +2022,13 @@ export function DiffSurface({
           about a comparison this scope did not make. Showing them would attach
           git's doubts to the journal's list — the exact conflation #690 was
           about, in the other direction. */}
-      {!turnFraming && (
+      {/* THE BANDS REPORT ON A GIT READ, so they follow the READ rather than the
+          scope (#741). An anchored turn IS a git read — `git diff before after`
+          — so what git failed to answer and where the transcript disagrees with
+          the disk are live questions for it, and they come back. An unanchored
+          one makes no git read at all, and attaching git's doubts to a journal
+          list would be #690 inverted: a true statement about the wrong subject. */}
+      {fromGit && (
         <>
           {/* FIRST OF THE BANDS, because it is the only one that can make
               everything under it untrustworthy — including the other band's
@@ -1704,9 +2114,10 @@ export function DiffSurface({
 
       <div className="mt-auto">
         {sessionId ? (
-          /* `review`, NOT `shown`: the commit takes the whole tree, so the
+          <>
+          {/* `review`, NOT `shown`: the commit takes the whole tree, so the
              count on the button is the whole tree's even when the list above
-             is filtered. See the note on `shown`. */
+             is filtered. See the note on `shown`. */}
           <CommitBox
           sessionId={sessionId}
           suggestion={suggestion}
@@ -1716,6 +2127,28 @@ export function DiffSurface({
           workspacePath={diff.workspacePath}
           onCommitted={() => void load()}
           />
+          {/* PUBLISHING IS FOR A SESSION'S OWN BRANCH AND NOTHING ELSE (#670).
+              `shared` is the engine's own word for a `local` session, which
+              works in the PROJECT's checkout beside the user's editor — there
+              is no session branch there to publish, and the engine refuses it
+              with `local_checkout` if anything asks anyway. The `turn` scope is
+              a different witness entirely (see `turnFraming`), and its figures
+              are the agent's reported patches rather than the repository's, so
+              a publish region reading them would be counting the wrong thing. */}
+          {diff.branch && diff.shared !== true && tab.kind !== "turn" && (
+            <PublishBox
+              sendPush={() => api.pushSessionBranch(sessionId)}
+              sendPullRequest={(input) => api.openSessionPullRequest(sessionId, input)}
+              {...(github === undefined ? {} : { github })}
+              branch={diff.branch}
+              {...(diff.ahead === undefined ? {} : { ahead: diff.ahead })}
+              commitsSinceBase={diff.commits.length}
+              busy={active === "running" || active === "claimed"}
+              suggestion={suggestion}
+              onPublished={() => void load()}
+            />
+          )}
+          </>
         ) : (
           /* No session, no commit. Committing a project's existing uncommitted
              work from a canvas would be snapshotting somebody else's work under

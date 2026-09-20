@@ -6,7 +6,8 @@
  * either tells a reader what to do or wastes their afternoon.
  */
 import { describe, expect, test } from "bun:test";
-import { MAX_COMMENT_BODY } from "@telar/engine-client";
+import { MAX_COMMENT_BODY, MAX_PULL_TITLE } from "@telar/engine-client";
+import { parseSessionAttribution } from "../src/github-attribution";
 import {
   classifyCommentFailure,
   classifyDetailFailure,
@@ -20,6 +21,8 @@ import {
   MAX_FACET_VALUES,
   MAX_THREAD_COMMENTS,
   mergePull,
+  openPullRequest,
+  parsePullNumber,
   parseCheckLog,
   parseChecks,
   parseComments,
@@ -69,12 +72,42 @@ function verbRunner(replies: Record<string, GhResult | GhResult[]>, seen?: strin
 }
 
 describe("classifyGhFailure", () => {
-  test("tells the four kinds of nothing apart", () => {
-    // They need four different responses from a human, and the third is usually
-    // "nothing, that is fine". One grey empty list would earn none of them.
+  test("tells the five kinds of nothing apart", () => {
+    // They need five different responses from a human, and two of them are
+    // usually "nothing, that is fine". One grey empty list would earn none.
     expect(classifyGhFailure(failed("", 127)).unavailable).toBe("not_installed");
     expect(classifyGhFailure(failed("gh: To get started with GitHub CLI, please run: gh auth login")).unavailable).toBe("not_authenticated");
     expect(classifyGhFailure(failed("failed to run git: fatal: not a git repository")).unavailable).toBe("no_repository");
+    expect(classifyGhFailure(failed("failed to run git: no git remotes found")).unavailable).toBe("no_repository");
+  });
+
+  test("A REPOSITORY THAT IS NOT ON GITHUB IS NOT A MISSING REPOSITORY — #670", () => {
+    /**
+     * `gh`'s real sentence for a GitLab or Gitea checkout, and the reason this
+     * test asserts the ORDER of the classifier rather than one value:
+     *
+     *   none of the git remotes configured for this repository point to a known
+     *   GitHub host. To tell gh about a new GitHub host, please use
+     *   `gh auth login`
+     *
+     * It ends with "gh auth login", which the `not_authenticated` test matches
+     * outright, and it contains "repository", which `no_repository` would have
+     * taken next. Read in the old order, somebody on GitLab was told nobody had
+     * signed in on this machine and handed a command that would change nothing.
+     */
+    const real = failed(
+      "none of the git remotes configured for this repository point to a known GitHub host. " +
+        "To tell gh about a new GitHub host, please use `gh auth login`",
+    );
+    expect(classifyGhFailure(real).unavailable).toBe("not_github");
+    // And the neighbours it was tested in front of still answer for themselves.
+    expect(classifyGhFailure(failed("gh: To get started with GitHub CLI, please run: gh auth login")).unavailable).toBe("not_authenticated");
+    expect(classifyGhFailure(failed("failed to run git: fatal: not a git repository")).unavailable).toBe("no_repository");
+  });
+
+  test("the split reaches a detail read too, which shares the classifier", () => {
+    const real = failed("none of the git remotes configured for this repository point to a known GitHub host.");
+    expect(classifyDetailFailure(real).unavailable).toBe("not_github");
   });
 
   test("an unrecognised failure keeps gh's own words rather than guessing", () => {
@@ -1806,5 +1839,143 @@ describe("comment attribution", () => {
     expect(result).toMatchObject({ posted: true, url: "#7", attribution: { sessionId: SESSION } });
     expect(parseCommentUrl("Comment created.\n")).toBeUndefined();
     expect(parseCommentUrl("https://example.invalid/x\n")).toBe("https://example.invalid/x");
+  });
+});
+
+/**
+ * OPENING A PULL REQUEST — issue #670.
+ *
+ * THE ARM THAT NEEDS `gh`, tested on the axis that matters: what it refuses
+ * without asking GitHub, and whether its refusals name something a person can
+ * act on. Every `gh` string below is `gh`'s own.
+ *
+ * NO TEST HERE CREATES A PULL REQUEST. The runner is a spy; the assertion for
+ * the refusals decided from data is that the spy's call list is EMPTY.
+ */
+describe("openPullRequest", () => {
+  const SESSION_ID = "session_db5cb38d5339445aa30d5d1b2fdd71a2";
+  const HEAD = "telar/670-push";
+  const BASE = "main";
+  const OPENED = "https://github.com/Facundo-Barbera/Telar/pull/812";
+
+  const open = (
+    replies: Record<string, GhResult | GhResult[]>,
+    calls?: string[][],
+    input: Partial<Parameters<typeof openPullRequest>[2]> = {},
+  ) =>
+    openPullRequest(verbRunner(replies, calls), "/repo", {
+      head: HEAD,
+      base: BASE,
+      title: "Push and PR creation from the cockpit",
+      body: "What changed, and why.",
+      sessionId: SESSION_ID,
+      ...input,
+    });
+
+  test("the argv names both ends explicitly, and carries nothing else", async () => {
+    const calls: string[][] = [];
+    await open({ "pr create": ok(`${OPENED}\n`) }, calls);
+    const [argv] = calls;
+    expect(argv?.slice(0, 6)).toEqual(["pr", "create", "--head", HEAD, "--base", BASE]);
+    // `--draft`, `--fill` and `--web` are each a decision this surface does not
+    // ask for; asserting the whole argv is how they stay out of it.
+    expect(argv).toHaveLength(10);
+    expect(argv).not.toContain("--draft");
+    expect(argv).not.toContain("--fill");
+    expect(argv).not.toContain("--web");
+  });
+
+  test("success carries the url and the number read out of it", async () => {
+    expect(await open({ "pr create": ok(`${OPENED}\n`) })).toEqual({
+      opened: true,
+      url: OPENED,
+      number: 812,
+      attribution: { sessionId: SESSION_ID },
+    });
+  });
+
+  test("the body reaches gh stamped with the session, and the marker parses back off the argv", async () => {
+    // The round trip, for `commentOn`'s reason: a check against a hand-built
+    // body proves only that the test author can type the marker.
+    const calls: string[][] = [];
+    await open({ "pr create": ok(`${OPENED}\n`) }, calls);
+    const body = calls[0]?.[calls[0].indexOf("--body") + 1] ?? "";
+    expect(body).toContain("What changed, and why.");
+    expect(parseSessionAttribution(body)).toEqual({ sessionId: SESSION_ID });
+  });
+
+  test("A PULL REQUEST THAT IS ALREADY OPEN IS A LINK, NOT AN ERROR", async () => {
+    // `gh`'s real refusal. The URL is on its own line inside the message, where
+    // `parseCommentUrl`'s last-line rule would not find it — so it is lifted
+    // out and the surface can offer it.
+    const real = failed(`a pull request for branch "${HEAD}" into branch "${BASE}" already exists:\n${OPENED}`);
+    expect(await open({ "pr create": real })).toMatchObject({ opened: false, refusal: "exists", url: OPENED });
+  });
+
+  test("gh's other refusals are named, and an unfamiliar one keeps gh's words", async () => {
+    expect(await open({ "pr create": failed("pull request create failed: GraphQL: No commits between main and main (createPullRequest)") })).toMatchObject({
+      opened: false,
+      refusal: "nothing_to_compare",
+    });
+    expect(await open({ "pr create": failed("GraphQL: must have admin rights to Repository. (createPullRequest)") })).toMatchObject({
+      opened: false,
+      refusal: "not_permitted",
+    });
+    expect(await open({ "pr create": failed("HTTP 403: Resource not accessible by integration") })).toMatchObject({
+      opened: false,
+      refusal: "not_permitted",
+    });
+    expect(await open({ "pr create": failed("something entirely new") })).toMatchObject({
+      opened: false,
+      refusal: "failed",
+      message: "something entirely new",
+    });
+  });
+
+  test("head === base is refused HERE, and GitHub is not asked at all", async () => {
+    const calls: string[][] = [];
+    expect(await open({}, calls, { base: HEAD })).toMatchObject({ opened: false, refusal: "nothing_to_compare" });
+    // The assertion that distinguishes "refused" from "tried and happened to
+    // fail" — the same one `mergePull`'s four data-decided refusals carry.
+    expect(calls).toEqual([]);
+  });
+
+  test("an empty or oversized title is refused before gh is asked", async () => {
+    const empty: string[][] = [];
+    expect(await open({}, empty, { title: "   " })).toMatchObject({ opened: false, refusal: "invalid_title" });
+    expect(empty).toEqual([]);
+
+    const long: string[][] = [];
+    const result = await open({}, long, { title: "x".repeat(MAX_PULL_TITLE + 1) });
+    expect(result).toMatchObject({ opened: false, refusal: "invalid_title" });
+    expect(result).toHaveProperty("message", `That title is ${MAX_PULL_TITLE + 1} characters; GitHub takes at most ${MAX_PULL_TITLE}.`);
+    expect(long).toEqual([]);
+  });
+
+  test("a title exactly at the ceiling is allowed through", async () => {
+    expect(await open({ "pr create": ok(`${OPENED}\n`) }, undefined, { title: "x".repeat(MAX_PULL_TITLE) })).toMatchObject({ opened: true });
+  });
+
+  test("an unpublishable session id is a typed refusal rather than a throw across the store", async () => {
+    const calls: string[][] = [];
+    expect(await open({}, calls, { sessionId: "../../etc/passwd" })).toMatchObject({ opened: false, refusal: "failed" });
+    expect(calls).toEqual([]);
+  });
+
+  test("A PULL REQUEST THAT OPENED WITHOUT A READABLE URL IS STILL OPEN", async () => {
+    // Reporting a refusal because this engine could not read gh's output would
+    // send somebody to press the button again and open a second one — worse
+    // than the comment's version of this failure, because a duplicate pull
+    // request has to be closed by hand.
+    const result = await open({ "pr create": ok("Creating pull request for telar/670-push into main\n") });
+    expect(result).toMatchObject({ opened: true, attribution: { sessionId: SESSION_ID } });
+    expect(result).not.toHaveProperty("number");
+  });
+
+  test("a number is read out of a url or left absent, never guessed", () => {
+    expect(parsePullNumber(OPENED)).toBe(812);
+    expect(parsePullNumber(`${OPENED}/files`)).toBe(812);
+    expect(parsePullNumber("https://github.com/Facundo-Barbera/Telar/issues/670")).toBeUndefined();
+    expect(parsePullNumber("telar/670-push → main")).toBeUndefined();
   });
 });

@@ -4744,6 +4744,30 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, store.commitSessionWork(session.sessionId, stringValue(input.message, "commit message")!));
           return;
         }
+        if (request.method === "POST" && session.tail === "/git/push") {
+          /**
+           * NO BODY IS READ, and that is the whole security posture of this
+           * route: the branch, the checkout and the remote come off the session
+           * record. A refusal is a 200 with a reason, like the commit's — "this
+           * checkout has no origin" is an answer about the repository, not a
+           * failure of the request.
+           */
+          writeJson(response, 200, await store.pushSessionBranch(session.sessionId));
+          return;
+        }
+        if (request.method === "POST" && session.tail === "/github/pull") {
+          const input = await body(request);
+          writeJson(
+            response,
+            200,
+            await store.openSessionPullRequest(session.sessionId, {
+              title: stringValue(input.title, "pull request title")!,
+              ...(typeof input.body === "string" ? { body: input.body } : {}),
+              ...(typeof input.base === "string" && input.base.trim() ? { base: input.base } : {}),
+            }),
+          );
+          return;
+        }
         if (request.method === "GET" && session.tail === "/browser") {
           writeJson(response, 200, {
             browser: await store.browserState(session.sessionId, {

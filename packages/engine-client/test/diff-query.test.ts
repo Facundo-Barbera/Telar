@@ -40,6 +40,32 @@ describe("the base, which has three states and not two", () => {
     expect(parseDiffBaseQuery(new URLSearchParams("base="))).not.toEqual(parseDiffBaseQuery(new URLSearchParams("")));
   });
 
+  test("a RANGE has a right-hand side, and absent is still the working tree — issue #741", () => {
+    /**
+     * Every comparison this contract could express was one ref against the
+     * working tree. A turn is a range, and there was no way to say its second
+     * half — so `to` is declared here, in the one file a diff parameter may be
+     * declared in, rather than at a call site.
+     *
+     * NO `null` STATE, unlike `base`: "compare against the working tree" is
+     * what absent already means, so a second spelling of it would be the very
+     * ambiguity `base` needs three states to avoid.
+     */
+    expect(diffBaseQuery({ base: "aaa", to: "bbb" })).toBe("base=aaa&to=bbb");
+    expect(parseDiffBaseQuery(new URLSearchParams("base=aaa&to=bbb"))).toEqual({ base: "aaa", to: "bbb" });
+
+    // Absent stays absent — the ordinary read is the bare URL it always was.
+    expect(diffBaseQuery({ base: "aaa" })).toBe("base=aaa");
+    expect(parseDiffBaseQuery(new URLSearchParams("base=aaa")).to).toBeUndefined();
+    expect(diffBaseQuery({})).toBe("");
+
+    // A `to` with no base is a request somebody can make: the session's own
+    // base, up to that commit. So it is read whether or not a base is present.
+    expect(parseDiffBaseQuery(new URLSearchParams("to=bbb"))).toEqual({ to: "bbb" });
+    // ...and a blank one is not a third meaning nobody declared.
+    expect(parseDiffBaseQuery(new URLSearchParams("to=%20%20")).to).toBeUndefined();
+  });
+
   test("a ref is that ref, and survives the characters a ref name has", () => {
     expect(parseDiffBaseQuery(new URLSearchParams(diffBaseQuery({ base: "origin/main" })))).toEqual({ base: "origin/main" });
     expect(parseDiffBaseQuery(new URLSearchParams(diffBaseQuery({ base: "feature/a+b" })))).toEqual({ base: "feature/a+b" });

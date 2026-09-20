@@ -17,8 +17,10 @@ import type {
   GitHubComment,
   GitHubDetailUnavailable,
   GitHubMergeRefusal,
+  GitHubPullCreateRefusal,
   GitHubPullDetail,
   GitHubReview,
+  GitPushRefusal,
 } from "@telar/engine-client";
 
 /**
@@ -77,8 +79,17 @@ export const UNAVAILABLE: Record<GitHubDetailUnavailable, { title: string; detai
     detail: "Run gh auth login on this machine. Sign-in lives outside Telar, the same as it does for Claude and Codex.",
   },
   no_repository: {
-    title: "No GitHub remote",
-    detail: "This project is not a GitHub repository, which is a perfectly ordinary thing for a project to be.",
+    title: "Not a repository",
+    detail: "There is no git repository here — or one with no remotes at all — so there is nothing for gh to read.",
+  },
+  /** SPLIT OUT OF `no_repository` (#670). The two were one sentence, and for a
+   *  GitLab or Gitea checkout that sentence was false: the repository exists,
+   *  it is simply not on a host gh serves. Everything that is not
+   *  GitHub-specific — committing, pushing — still works, and saying "not a
+   *  repository" sent people looking for a problem that was not there. */
+  not_github: {
+    title: "Not on GitHub",
+    detail: "This repository's remote is not a GitHub host, so gh has nothing to show. Committing and pushing are unaffected.",
   },
   not_found: {
     title: "Not in this repository",
@@ -101,6 +112,49 @@ export const MERGE_REFUSAL: Record<GitHubMergeRefusal, string> = {
   head_moved: "A commit landed on this branch after this page was read, so nothing was merged. Re-read it and look at what changed before merging.",
   method_not_allowed: "This repository does not allow that kind of merge. Try one of the other two.",
   not_permitted: "The account gh is signed in as cannot merge here.",
+  failed: "GitHub refused, and not for a reason this cockpit recognises.",
+};
+
+/**
+ * What a push refusal means — issue #670.
+ *
+ * TEN SENTENCES, and only two of them are about something being wrong. Five are
+ * decided before anything runs, and three of THOSE are ordinary states a
+ * perfectly healthy project is in: a local session, a repository with no remote,
+ * a branch already published. Written so the sentence itself says which kind it
+ * is, because the same red banner for all ten is how a reader learns to stop
+ * reading it.
+ *
+ * NOTHING HERE SUGGESTS A FORCE PUSH, for `rejected` least of all. The remedy
+ * for a diverged branch is a pull, and a cockpit that named the other option
+ * would be offering something this engine deliberately cannot do.
+ */
+export const PUSH_REFUSAL: Record<GitPushRefusal, string> = {
+  not_repository: "This session's checkout is not a git repository, so there is nothing to push.",
+  local_checkout: "This session works in the project's own checkout, which it shares with your editor. There is no session branch to publish.",
+  no_remote: "This checkout has no origin, so there is nowhere to push it. Add a remote in a terminal and this becomes available.",
+  not_session_branch: "The checkout is not on this session's own branch, so Telar will not push whatever is there instead.",
+  nothing_to_push: "Nothing to push — the remote already has every commit on this branch.",
+  not_permitted: "The credentials git uses on this machine cannot write to that repository.",
+  rejected: "The remote has commits this branch does not. Pull or rebase in a terminal first — Telar will not force a push.",
+  auth: "Git needed a credential and there was nobody to ask. Sign in the way you normally would in a terminal, then try again.",
+  timeout: "The push did not finish in time and was stopped. The machine or the connection was busy; try it again.",
+  failed: "Git refused, and not for a reason this cockpit recognises.",
+};
+
+/**
+ * What a pull-request refusal means — issue #670.
+ *
+ * `not_pushed` IS THE ONE WITH A REMEDY ON THE SAME SURFACE, and the sentence
+ * names it: the other arm is three centimetres away. `exists` is not a failure
+ * at all — the thing you asked for is already there and the surface links it.
+ */
+export const PULL_CREATE_REFUSAL: Record<GitHubPullCreateRefusal, string> = {
+  not_pushed: "This branch is not on the remote yet. Push it first, and this becomes available.",
+  exists: "A pull request for this branch is already open.",
+  nothing_to_compare: "There is nothing to review — this branch has no commits the base branch does not already have.",
+  invalid_title: "A pull request needs a title.",
+  not_permitted: "The account gh is signed in as cannot open a pull request here.",
   failed: "GitHub refused, and not for a reason this cockpit recognises.",
 };
 

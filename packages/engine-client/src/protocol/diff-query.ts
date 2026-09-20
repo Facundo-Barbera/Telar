@@ -40,6 +40,33 @@
  */
 export type DiffBaseOption = {
   base?: string | null;
+  /**
+   * THE RIGHT-HAND SIDE, WHEN THERE IS ONE — issue #741.
+   *
+   * Every comparison this contract could express until now was one ref against
+   * the WORKING TREE: `git diff <base> --`. A turn is a RANGE — where the
+   * repository stood when it started, and where it stood when it ended — and
+   * there was no way to say the second half.
+   *
+   * ABSENT IS THE WORKING TREE, which is what every existing caller means and
+   * still gets. Present is `git diff <base> <to>`, a comparison of two commits
+   * that nothing on the disk can change.
+   *
+   * ── AND IT SUPPRESSES THE UNTRACKED READ, which is not a detail ──
+   *
+   * An untracked file is in no commit, so it is in no commit-to-commit
+   * comparison either. The review's file list is three reads and one of them is
+   * `status --porcelain -uall`; carrying it into a range would put working-tree
+   * rows — files nobody has committed, possibly written after the turn ended —
+   * under a heading that says "what this turn did". That is #690's defect
+   * arriving by a third door, so the engine drops that read when `to` is set
+   * rather than leaving it to each caller to remember.
+   *
+   * NO `null` STATE, unlike `base`. "Compare against the working tree" is what
+   * absent already means, so a second spelling of it would be the ambiguity
+   * `base` needs three states to avoid, invented where it is not needed.
+   */
+  to?: string;
 };
 
 export type FilePatchOptions = DiffBaseOption & {
@@ -80,6 +107,10 @@ export type FilePatchOptions = DiffBaseOption & {
  */
 function appendBase(query: URLSearchParams, options: DiffBaseOption): URLSearchParams {
   if (options.base !== undefined) query.set("base", options.base ?? "");
+  // `to` HAS NO EMPTY STATE to preserve — absent already means the working
+  // tree — so a blank one is simply not sent rather than becoming a third
+  // meaning nobody declared.
+  if (options.to) query.set("to", options.to);
   return query;
 }
 
@@ -107,9 +138,14 @@ export function filePatchQuery(path: string, options: FilePatchOptions): string 
  * are the two different requests this whole module exists to keep apart.
  */
 export function parseDiffBaseQuery(params: URLSearchParams): DiffBaseOption {
-  if (!params.has("base")) return {};
+  // `to` IS READ WHETHER OR NOT THERE IS A BASE, because the two are
+  // independent halves of one comparison: `?to=<sha>` alone is "the session's
+  // own base, up to that commit", which is a request somebody can make.
+  const raw = params.get("to")?.trim();
+  const to = raw ? { to: raw } : {};
+  if (!params.has("base")) return to;
   const base = params.get("base")?.trim() ?? "";
-  return { base: base === "" ? null : base };
+  return { ...to, base: base === "" ? null : base };
 }
 
 /** The file-patch half, including the base. `path` is NOT read here: it selects

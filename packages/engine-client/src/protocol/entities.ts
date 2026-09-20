@@ -2019,6 +2019,25 @@ export const NotificationDetail = z.object({
 });
 export type NotificationDetail = z.infer<typeof NotificationDetail>;
 
+/**
+ * WHY A GIT READ IS NOT AN ANSWER — issue #650, and the vocabulary #654 reuses.
+ *
+ * `timeout` is a child the engine killed at its bound, and it is the case this
+ * exists for: on a loaded machine git exits non-zero without having looked, and
+ * every field it feeds used to become a FACT — no branches, a clean tree, no
+ * worktrees, no changes. Retrying is the honest offer. `failed` is everything
+ * else, where it usually is not.
+ *
+ * DECLARED HERE, ABOVE EVERY READER THAT NEEDS IT. It arrived beside the ref
+ * listing because that is where the bug was found, but the distinction is not
+ * the picker's — `SessionDiff` says the same thing about its own sub-reads,
+ * and `Turn.anchor` (#741) says it about a probe that never answered. It sits
+ * above `Turn` because a `const` referenced before its line is a temporal dead
+ * zone at module load, not a hoist.
+ */
+export const GitReadFailure = z.enum(["timeout", "failed"]);
+export type GitReadFailure = z.infer<typeof GitReadFailure>;
+
 export const Turn = z.object({
   /**
    * CLIENT-SUPPLIED IDEMPOTENCY KEY, kept from v1. Submitting the same runId
@@ -2299,6 +2318,56 @@ export const Turn = z.object({
       reason: z.enum(["engine_restart", "worker_unavailable", "session_paused"]),
     })
     .optional(),
+
+  /**
+   * WHERE THE REPOSITORY STOOD WHEN THIS TURN STARTED AND WHEN IT ENDED —
+   * issue #741.
+   *
+   * ────────────────────────────────────────────────────────────────────────
+   * WHY A SHA AND NOT THE AGENT'S OWN ACCOUNT. #694's third Diff scope renders
+   * `FileChangeDetail.unifiedDiff`: the patch the agent's tool reported. That
+   * witness cannot see a write that did not come from a file tool — a
+   * formatter, a codemod, `sed -i`, `bun install` — cannot see a later
+   * overwrite, and is a Claude-only answer, because Codex emits `file_change`
+   * without a patch and OpenCode emits none at all. A commit id is not
+   * authored by the thing being reviewed and is not reused, so a turn anchored
+   * to one can be asked of GIT instead of taken on trust.
+   * ────────────────────────────────────────────────────────────────────────
+   *
+   * STAMPED BY THE ENGINE, NEVER SUPPLIED BY A WORKER. The precedent is
+   * `createSession`, which resolves `rev-parse HEAD` once for a `local` session
+   * and stores it, with the note *"resolved at creation and stored, because
+   * HEAD moves — reading it later would answer a different question every
+   * time."* This is that sentence one level down.
+   *
+   * ABSENT ON EVERY TURN THAT RAN BEFORE THIS EXISTED, and a client must draw
+   * absent as "not anchored" rather than as "no commits": nothing observed a
+   * sha for a turn that ran last week, and inventing one would be a claim about
+   * a comparison nobody made.
+   *
+   * `before === after` IS THE ORDINARY CASE and is not a failure — it says the
+   * turn committed nothing, which is true of most turns. What the anchor is
+   * worth there is the comparison it still licenses: the journal says the turn
+   * wrote these lines, and `git diff <before> -- <path>` says how the file
+   * differs from where the turn started.
+   */
+  anchor: z
+    .object({
+      /** HEAD when the turn began. Absent in a repository with no commits yet,
+       *  which `rev-parse --verify HEAD` reports by exiting non-zero — a real
+       *  state, and not one to paper over with the empty-tree sha. */
+      before: z.string().min(1).optional(),
+      /** HEAD when the turn reached a terminal state. */
+      after: z.string().min(1).optional(),
+      /**
+       * THE PROBE DID NOT ANSWER, so the sha above it is absent rather than
+       * wrong. Set means "nobody looked"; absent with no sha means "there was
+       * nothing to see". #654's distinction, on a field small enough that the
+       * two would otherwise be indistinguishable.
+       */
+      read: GitReadFailure.optional(),
+    })
+    .optional(),
 });
 export type Turn = z.infer<typeof Turn>;
 
@@ -2333,23 +2402,6 @@ export type GitWorktreeEntry = z.infer<typeof GitWorktreeEntry>;
 export const GitChangeStatus = z.enum(["added", "modified", "deleted", "renamed", "untracked"]);
 export type GitChangeStatus = z.infer<typeof GitChangeStatus>;
 
-/**
- * WHY A GIT READ IS NOT AN ANSWER — issue #650, and the vocabulary #654 reuses.
- *
- * `timeout` is a child the engine killed at its bound, and it is the case this
- * exists for: on a loaded machine git exits non-zero without having looked, and
- * every field it feeds used to become a FACT — no branches, a clean tree, no
- * worktrees, no changes. Retrying is the honest offer. `failed` is everything
- * else, where it usually is not.
- *
- * DECLARED HERE, ABOVE BOTH READERS THAT NEED IT. It arrived beside the ref
- * listing because that is where the bug was found, but the distinction is not
- * the picker's — `SessionDiff` below says the same thing about its own
- * sub-reads.
- */
-export const GitReadFailure = z.enum(["timeout", "failed"]);
-export type GitReadFailure = z.infer<typeof GitReadFailure>;
-
 export const GitFileChange = z.object({
   path: z.string().min(1),
   status: GitChangeStatus,
@@ -2374,6 +2426,83 @@ export const GitCommitEntry = z.object({
   author: z.string(),
 });
 export type GitCommitEntry = z.infer<typeof GitCommitEntry>;
+
+/**
+ * Why a session's branch was not pushed — issue #670.
+ *
+ * TEN ANSWERS, AND THE FIRST FIVE NEVER TOUCH THE NETWORK. `not_repository`,
+ * `local_checkout`, `no_remote`, `not_session_branch` and `nothing_to_push` are
+ * decided from what the engine can already see, the way `mergePull` decides four
+ * of its seven refusals before GitHub is asked: they are facts rather than phrase
+ * matches, and a refusal that costs nothing on the far side is a refusal nobody
+ * has to apologise for. The rest are `git push`'s own stderr, classified.
+ *
+ * `nothing_to_push` IS NOT AN ERROR, the same judgement `commitSessionWork`
+ * makes about a clean tree. A branch level with its upstream is the ordinary
+ * state after a push, and a red failure for it would teach the reader to
+ * distrust the button.
+ */
+export const GitPushRefusal = z.enum([
+  /** The session's checkout is not a git repository. */
+  "not_repository",
+  /**
+   * A `local` session shares the PROJECT's checkout with the user's editor and
+   * with every other local session on it. This button publishes a session's own
+   * branch; there is no such branch here to publish.
+   */
+  "local_checkout",
+  /** The checkout has no `origin`. Nothing to push to — and plenty of
+   *  repositories are like this on purpose. */
+  "no_remote",
+  /**
+   * The checkout is not on the branch this session was cut for: somebody ran
+   * `git checkout`, or HEAD is detached. Pushing whatever happens to be checked
+   * out — the base branch, most likely — is not what this button means.
+   */
+  "not_session_branch",
+  /** The branch is level with its upstream. Not an error; see above. */
+  "nothing_to_push",
+  /** The remote refused: this account cannot write to that repository. */
+  "not_permitted",
+  /** Non-fast-forward. Somebody else pushed to this branch, and the fix is a
+   *  pull or a rebase — never a force, which this engine does not offer. */
+  "rejected",
+  /** Git wanted a credential and there was nobody to ask. `GIT_TERMINAL_PROMPT=0`
+   *  turns the prompt that would have hung into this. */
+  "auth",
+  /** The push outran its bound and was killed. The one refusal for which "try
+   *  again" is the honest offer — see `GitReadFailure`. */
+  "timeout",
+  /** Anything else. `message` is git's own words, never invented. */
+  "failed",
+]);
+export type GitPushRefusal = z.infer<typeof GitPushRefusal>;
+
+/**
+ * What a push attempt answers.
+ *
+ * A REFUSAL IS DATA, NOT AN EXCEPTION — the same shape as the merge's, and for
+ * the same reason: "git would not push this, and here is which of the ten
+ * reasons" is something a surface has to render.
+ *
+ * SUCCESS CARRIES THE COUNT IT PUSHED, so the surface can say what happened
+ * rather than "done". It is measured before the push, from the local
+ * remote-tracking ref.
+ */
+export const GitPushResult = z.union([
+  z.object({
+    pushed: z.literal(true),
+    branch: z.string().min(1),
+    /** Commits the branch had that `origin/<branch>` did not. Absent when there
+     *  was no remote-tracking ref to count against — a branch being published
+     *  for the first time. */
+    commits: z.number().int().nonnegative().optional(),
+    /** This branch had never been on the remote before. */
+    created: z.boolean().optional(),
+  }),
+  z.object({ pushed: z.literal(false), refusal: GitPushRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitPushResult = z.infer<typeof GitPushResult>;
 
 /**
  * WHAT THIS SESSION HAS DONE TO THE REPOSITORY, committed and uncommitted
