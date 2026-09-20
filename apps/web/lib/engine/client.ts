@@ -56,6 +56,9 @@ import type {
   SessionDefaults,
   SidebarLayout,
   JournalReclaim,
+  JournalRetirement,
+  RetentionBucket,
+  RetentionPolicy,
   StorageReport,
   TextGenPolicy,
   WorktreeMoveResult,
@@ -662,6 +665,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  the database under a lock. It drops rows a settled turn has superseded
      *  and never a turn, an item or an answer. */
     reclaimJournal: () => request<{ reclaimed: JournalReclaim }>(fetcher, "POST", "/api/storage/journal/reclaim", {}),
+    /** The retention window in force, and what each candidate window would take
+     *  on THIS store — see `RetentionBucket`. Read-only: nothing is deleted to
+     *  answer it. `bytes` costs a scan of every qualifying row's text where the
+     *  counts beside it are index ranges, so ask only when a person is looking
+     *  at the figure, and never on a timer (#629). */
+    retention: (options: { bytes?: boolean } = {}) =>
+      request<{ retention: RetentionPolicy; buckets: RetentionBucket[] }>(fetcher, "GET", `/api/storage/retention${options.bytes ? "?bytes=1" : ""}`),
+    /** Set the window, or turn it off with `idleAfterDays: null`. A window with
+     *  no export destination is refused — the copy comes before the delete. */
+    setRetention: (patch: { idleAfterDays?: number | null; exportTo?: string | null }) =>
+      request<{ retention: RetentionPolicy }>(fetcher, "PUT", "/api/storage/retention", patch),
+    /** Sweep now — the distinct visible act, not something startup does quietly.
+     *  SLOW on a backlog, and it returns COUNTS: a delete moves pages to the
+     *  freelist, so the store weighs the same until Reclaim rewrites it. */
+    sweepRetention: () => request<{ swept: JournalRetirement }>(fetcher, "POST", "/api/storage/retention/sweep", {}),
     /** Where session checkouts go on this install — see `WorktreesRoot`. */
     worktreesRoot: () => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "GET", "/api/worktrees-root"),
     /** Put them somewhere else from the next cut on; `null` restores the

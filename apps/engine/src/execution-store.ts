@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { EngineEvent } from "@telar/engine-client";
+import { EngineEvent, idleSince, isShelved, settlingActivityOf } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
 import type { TurnSummary } from "./turn-summary";
 
@@ -65,6 +65,28 @@ const RECEIPT_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000;
 const TERMINAL_TURN_TYPES = ["turn.completed", "turn.failed", "turn.stopped", "turn.ambiguous", "turn.discarded"] as const;
 
 /**
+ * THE SAME FIVE ENDINGS AS `turn_summaries` RECORDS THEM — retention's guard.
+ *
+ * One list per side because they are different vocabularies: the journal names
+ * an EVENT (`turn.completed`) and a summary row carries the turn's own STATE
+ * (`completed`). `steered` is absent from both for the same reason
+ * `turn.steered` is absent above — it moves a turn's words into another run
+ * rather than ending one, and counting it on one side and not the other would
+ * make the guard refuse every steered session forever.
+ */
+const TERMINAL_TURN_STATES = ["completed", "failed", "stopped", "ambiguous", "discarded"] as const;
+
+/**
+ * HOW MANY EVENTS A PER-SESSION EXPORT HOLDS IN MEMORY AT ONCE.
+ *
+ * The point of the paging, not a tuning knob: `exportLegacy` reads a session's
+ * whole journal as one array, which on the owner's largest session is 62,000
+ * records of conversation text. A page is written and dropped, so resident
+ * memory is flat whatever the session's size.
+ */
+const EXPORT_PAGE = 1_000;
+
+/**
  * WHERE THE COMPACTION OF ONE SESSION GOT TO — `metadata`, one row per session.
  *
  * The sweep is incremental because the alternative is re-examining a million
@@ -107,6 +129,41 @@ const USAGE_WATERMARK_PREFIX = "journal-usage-folded/";
  * id that its items are rows when the rows went with the session.
  */
 const ITEMS_ROWS_PREFIX = "items-rows/";
+
+/**
+ * THE HIGHEST EVENT ID A SESSION EVER HELD, kept once its journal is gone.
+ *
+ * Ids are handed out as `cursor(sessionId) + 1`, and `cursor` is
+ * `COALESCE(MAX(id),0)` over the rows that are still there. Nothing could empty
+ * a session before retention: compaction always leaves `item.completed` and the
+ * terminal turn events behind, so the sequence never restarted.
+ *
+ * RETIRING A JOURNAL CHANGES THAT, AND THE FAILURE IS INVISIBLE UNTIL A
+ * RESTART. In memory the cached cursor holds, so nothing breaks while the
+ * daemon is up; after a restart the next event on that session gets id 1 again.
+ * Everything holding an old cursor — an open cockpit tab, a phone that synced,
+ * an MCP caller's `after`, a subscription — then asks for `id > 900` and is
+ * told there is nothing, forever, while new events accumulate below it. The
+ * compaction watermark would also sit above every new id, so that session would
+ * never be compacted again either.
+ *
+ * So the floor is written in the SAME transaction as the delete, and `cursor`
+ * takes the max of the two. Mirrors `COMPACT_WATERMARK_PREFIX` exactly, and is
+ * deleted with the session for the same reason that one is.
+ */
+const JOURNAL_FLOOR_PREFIX = "journal-floor/";
+
+/**
+ * HOW FAR DURABILITY HAS REACHED — the row the device barrier commits, #632.
+ *
+ * The barrier needs a page to write, because a commit with nothing in it
+ * produces no WAL frame and therefore nothing to sync: an empty transaction at
+ * `synchronous=FULL` is a barrier that never happens. So it writes the id of
+ * the terminal turn event it is persisting, which is both a changed page and
+ * the only durable answer to "where did the last barrier land" — worth having
+ * in a diagnostic, and the reason this is a real row rather than a dummy one.
+ */
+const DURABILITY_BARRIER_KEY = "durability-barrier";
 
 /** How long after opening the first compaction starts. Long enough that the
  *  daemon is answering before housekeeping touches the database, short enough
@@ -389,6 +446,30 @@ export type ExecutionStoreOptions = {
    *  prints it; a test asserts on it without waiting on a timer. */
   onJournalCompacted?: (swept: { deltas: number; starts: number; sessions: number }) => void;
   /**
+   * CALLED ONCE PER DEVICE BARRIER ACTUALLY ISSUED — issue #632, and it counts
+   * the real one rather than replacing it.
+   *
+   * The claim this feature makes is "a barrier per settled turn and none per
+   * delta", and the only assertion that can hold it is a COUNT: a marker string
+   * is printed by a barrier that did nothing, and a timing is an assertion about
+   * the runner's disk. This fires after the barrier's own commit returns, so a
+   * barrier that threw is not counted — which is the direction that matters,
+   * since the failure state must not look like the success one.
+   */
+  onDurabilityBarrier?: (at: { sessionId: string; eventId: number }) => void;
+  /**
+   * RUN THE RETENTION SWEEP ON THIS STORE'S OWN HOUSEKEEPING CADENCE — #542.
+   *
+   * A callback rather than a method because the ELIGIBILITY needs a document
+   * this object does not read: the window and the export destination live in
+   * `retention.json`, which is the state layer's. What lives here is the
+   * mechanism — the predicate, the guards, the floor — so the two halves meet
+   * at one function and neither grows a second opinion about the other.
+   *
+   * Never on the open path. See the compaction timer in the constructor.
+   */
+  onRetentionSweep?: () => void;
+  /**
    * How long after opening the first sweep starts. Defaults to
    * `COMPACT_AFTER_OPEN_MS`; nothing in production passes it.
    *
@@ -472,6 +553,18 @@ export class ExecutionStore {
    *  A callback rather than a return because the sweep no longer happens while
    *  anybody is waiting on the open — see the constructor. */
   private readonly onJournalCompacted?: (swept: { deltas: number; starts: number; sessions: number }) => void;
+  private readonly onDurabilityBarrier?: (at: { sessionId: string; eventId: number }) => void;
+  private readonly onRetentionSweep?: () => void;
+  /**
+   * THE TERMINAL TURN EVENT THIS WRITE SCOPE APPENDED, if it appended one.
+   *
+   * Set by `append`, read and cleared by `maybeBarrier` once the scope commits.
+   * A number rather than a boolean because the barrier writes it down: see
+   * `DURABILITY_BARRIER_KEY`. Cleared by a rollback too — a turn that did not
+   * commit has nothing to persist, and issuing a barrier for it would be
+   * claiming a settlement that never happened.
+   */
+  private barrierDue?: { sessionId: string; eventId: number };
   /**
    * WHAT THE HOUSEKEEPING ON OPEN REMOVED — issue #457, step 4.
    *
@@ -499,6 +592,8 @@ export class ExecutionStore {
     this.receiptRetentionMs = Math.max(0, options.receiptRetentionMs ?? RECEIPT_RETENTION_MS);
     this.legacyBackupRetentionMs = Math.max(0, options.legacyBackupRetentionMs ?? LEGACY_BACKUP_RETENTION_MS);
     if (options.onJournalCompacted) this.onJournalCompacted = options.onJournalCompacted;
+    if (options.onDurabilityBarrier) this.onDurabilityBarrier = options.onDurabilityBarrier;
+    if (options.onRetentionSweep) this.onRetentionSweep = options.onRetentionSweep;
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
     this.db = process.versions.bun ? new native.Database(file) : new native.DatabaseSync(file);
@@ -519,6 +614,32 @@ export class ExecutionStore {
      * The trade is the same one the delta buffer above already makes, one layer
      * down: the tail of a conversation may not survive the machine losing power.
      * A checkpoint still fsyncs, so the database file itself is never at risk.
+     *
+     * ══ AND `checkpoint_fullfsync=ON`, WHICH CLOSES A RUNTIME DIVERGENCE ══
+     *
+     * On macOS `fsync(2)` is not a device barrier. Its own man page says so —
+     * "the drive itself may not physically write the data to the platters for
+     * quite some time… this is not a theoretical edge case" — and `F_FULLFSYNC`
+     * is the call that asks the drive to flush its own cache. `checkpoint_
+     * fullfsync` is what makes sqlite use the second one when it checkpoints.
+     *
+     * IT WAS ON HERE AND OFF IN THE SHIPPED APP, BY ACCIDENT (#632). The dev
+     * stack runs `bun:sqlite` over Apple's system libsqlite3, which is compiled
+     * with `DEFAULT_CKPTFULLFSYNC`, so every measurement this repository has
+     * ever taken was on a connection that already had it. The packaged app runs
+     * the engine under Electron-as-Node on `node:sqlite`, whose bundled
+     * amalgamation is not — so the build a person actually uses issued NO
+     * device barrier anywhere at steady state, and the one developers use did.
+     * Setting it explicitly makes the two the same, in the stronger direction.
+     *
+     * WHAT IT COSTS, MEASURED RATHER THAN ASSUMED (`bench:durability`, on the
+     * shipped `node:sqlite`): a long streaming session checkpoints once every
+     * ~3,840 events, and the barrier adds 10–27 ms per checkpoint on this Mac's
+     * internal SSD and 211–281 ms on a USB enclosure. At the measured streaming
+     * peak of 133 deltas/s that is one checkpoint every ~29 s, so the worst disk
+     * measured pays under 1% of the event loop for it. Frequency is the half
+     * that was missing when this was written up, and it is the half that makes
+     * the answer yes.
      */
     // BUSY TIMEOUT FIRST, and the order is the whole point. `journal_mode=WAL`
     // takes a brief exclusive lock, so it is the statement most likely to meet
@@ -527,7 +648,12 @@ export class ExecutionStore {
     // budget running without one: a second opener (the export script, a second
     // daemon) got SQLITE_BUSY instantly instead of waiting out the handful of
     // milliseconds the first connection needed to finish closing.
-    this.db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+    //
+    // `synchronous` AFTER `journal_mode`, and it is not decoration: entering WAL
+    // resets the level to the build's `DEFAULT_WAL_SYNCHRONOUS` unless one has
+    // been set, which is 1 under bun and 2 under node. Spelling it here is what
+    // stops the shipped app paying an fsync per commit nobody asked it for.
+    this.db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA checkpoint_fullfsync=ON;");
     const version = Number(this.db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
     if (version > 1) throw new Error("execution database requires a newer Telar version");
     this.db.exec(`CREATE TABLE IF NOT EXISTS documents (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -792,6 +918,12 @@ export class ExecutionStore {
       const folded = this.foldJournalUsage();
       if (folded.turns > 0 || folded.refused > 0) this.housekeeping.usage = folded;
     } catch { /* as above */ }
+    // AND A THIRD, for the same independence. Retention is the only one of the
+    // three that can DELETE something a reader would miss, and it is the only
+    // one that does nothing at all unless somebody configured it — so it must
+    // not be the reason the two lossless sweeps stop running, and they must not
+    // be the reason it never does.
+    try { this.onRetentionSweep?.(); } catch { /* as above */ }
   }
 
   /**
@@ -1136,6 +1268,292 @@ export class ExecutionStore {
     };
   }
 
+  /**
+   * ══════════════ RETENTION — issues #542 and #646 ══════════════
+   *
+   * WHAT THIS IS AND IS NOT. It drops a settled session's raw `events` and
+   * NOTHING ELSE. The five `documents` a session owns stay, and `session.json`
+   * in particular is untouchable: `sessionIds()` reads the `sessions` table out
+   * of that key, and `reconcileSessionRows` deletes every row it cannot find a
+   * document for — so a sweep that took it would quietly remove the session
+   * from the rail, from search and from the outline on the NEXT engine start,
+   * with no error and no log line. That is the exact four things this promises
+   * to keep, and it is why the range delete `deleteSession` uses is not reused
+   * here.
+   *
+   * WHAT A PERSON LOSES is `sessions_read(mode: "events")`, `sessions_step` and
+   * — the one the design's survives-list forgets — `sessions_grep`, which reads
+   * raw event text. The transcript, the rail, `find`, the outline and the full
+   * answer text are all backed by documents and `turn_summaries`, so none of
+   * them moves.
+   *
+   * AND IT RETURNS NO BYTES ON ITS OWN. A DELETE moves pages to sqlite's
+   * freelist; the file shrinks when somebody presses Reclaim. Said here because
+   * the first run otherwise reports "freed 0 B" and reads as broken.
+   */
+
+  /** Every session row, archived included — `liveSessionRows` deliberately
+   *  seeks past the archived ones, and an archived session is ELIGIBLE here. */
+  private allSessionRows(): SessionIndexRow[] {
+    return this.statement("SELECT * FROM sessions").all().map(rowFromColumns);
+  }
+
+  /**
+   * WHICH SESSIONS A WINDOW WOULD TAKE — the one predicate, used by the preview
+   * and by the sweep so the two cannot drift.
+   *
+   * ══ THE CLOCK IS `idleSince`, NOT "SETTLED" ══
+   *
+   * `settled_at` is stamped only by an EXPLICIT settle — a human pin or a
+   * delegation settle — so a session shelved by the inactivity clock has none,
+   * and a window keyed on it would skip nearly every session the rail calls
+   * settled. Worse, "settled" is not a durable fact at all: it is a live
+   * function of `autoSettleAfterHours`, a per-reader preference that accepts
+   * `null` meaning *nothing ever ages out*. A person who turned that off would
+   * enable retention and have it delete nothing, forever, with no explanation.
+   *
+   * So retention reads `idleSince()` — `max(updatedAt, readAt, snoozedUntil)`,
+   * the clock's own baseline, present on every row — against its OWN window.
+   * That also gives it the behaviour a person would expect for free: opening a
+   * session resets its retention age, because `readAt` is a human's read
+   * receipt and is not stamped by an agent calling `sessions_read`.
+   *
+   * ══ THE EXEMPTIONS ARE `isShelved`'s, BY CALLING IT ══
+   *
+   * A retention sweep with its own opinion about what may be shelved would be a
+   * third dialect beside the engine's and the cockpit's. So this calls the
+   * shared function — with its window set to ZERO, which neutralises the clause
+   * retention is replacing and leaves exactly the guards that sit ABOVE the
+   * clock: a live turn, a parked request, `settledOverride: "active"`, a live
+   * snooze, an unread result, and a draft. An archived session is not exempt;
+   * `isSettled` shelves it outright, which is the intended answer here.
+   */
+  private retirable(window: { idleBefore: number; now: number }): SessionIndexRow[] {
+    return this.allSessionRows().filter(
+      (row) =>
+        idleSince(row) < window.idleBefore &&
+        isShelved({ ...row }, settlingActivityOf(row), { now: window.now, autoSettleAfterHours: 0 }),
+    );
+  }
+
+  /**
+   * WHAT A WINDOW WOULD TAKE, WITHOUT TAKING IT — issue #542, step 1.
+   *
+   * COUNTS ARE CHEAP AND BYTES ARE NOT, and the shape says so. Rows per session
+   * is a range on the `events` primary key `(session_id, id)`;
+   * `SUM(LENGTH(value))` has to read the rows themselves, which on a gigabyte
+   * is a real scan. So bytes are an explicit ask and never on a polling path
+   * (#629 is open because four timers in the rail cost ~97,000 requests a day).
+   *
+   * THE PREVIEW AND THE SWEEP ARE ONE QUERY, which is the property worth
+   * protecting: a preview computed separately from the sweep is a number that
+   * will drift and be believed. Both go through `retirable` above.
+   */
+  retentionPreview(window: { idleBefore: number; now: number }, options: { bytes?: boolean } = {}): { sessions: number; events: number; bytes?: number } {
+    const rows = this.retirable(window);
+    let events = 0;
+    let bytes = 0;
+    for (const row of rows) {
+      events += Number(this.statement("SELECT COUNT(*) AS count FROM events WHERE session_id=?").get(row.id)?.count ?? 0);
+      if (options.bytes)
+        bytes += Number(this.statement("SELECT COALESCE(SUM(LENGTH(CAST(value AS BLOB))),0) AS bytes FROM events WHERE session_id=?").get(row.id)?.bytes ?? 0);
+    }
+    return { sessions: rows.length, events, ...(options.bytes ? { bytes } : {}) };
+  }
+
+  /**
+   * ONE SESSION, WRITTEN OUT IN `exportLegacy`'s SHAPE — issue #542, step 2.
+   *
+   * The format is not invented here: `exportLegacy` already writes a store as
+   * its documents plus `sessions/<id>/events.ndjson`, skips the derived
+   * `.index.json` files, and refuses a destination that exists. This is that,
+   * for one session, so a caller gets the same directory a whole-store export
+   * would have produced.
+   *
+   * PAGED, AND THAT IS THE POINT. `exportLegacy` calls `this.events(id)`
+   * UNBOUNDED, materialising every event of a session as one JS array — fine
+   * for a migration escape hatch, not fine for the path retention is about to
+   * make load-bearing on a 62,000-event session. This uses the bounded
+   * `events(id, after, limit)` and appends, so resident memory is one page.
+   *
+   * RETURNS THE LINE COUNT, because that is what the retirement guard compares
+   * against the rows it is about to delete. A number, not a promise.
+   *
+   * `mode: 0o700` IS IGNORED ON WINDOWS, so an export of raw conversation
+   * history there inherits the parent directory's ACL. The flow that calls this
+   * should say where it is putting it rather than pretend otherwise.
+   */
+  exportSession(sessionId: string, destination: string): { documents: number; events: number } {
+    if (fs.existsSync(destination)) throw new Error("Export destination must not already exist");
+    // Held deltas belong in the database before anything reads them out: an
+    // export short by the tail is an export the retirement guard would refuse,
+    // which is the safe direction but the wrong answer.
+    this.flush();
+    const directory = path.join(destination, "sessions", sessionId);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const [low, high] = prefixRange(`sessions/${sessionId}/`);
+    let documents = 0;
+    for (const row of this.statement("SELECT key,value FROM documents WHERE key >= ? AND key < ? ORDER BY key").all(low, high)) {
+      // The offset indexes describe THIS store's compact text and an export
+      // pretty-prints, so carrying them over would ship offsets into bytes the
+      // exported file does not have. Derived: the next write rebuilds them.
+      if (String(row.key).endsWith(".index.json")) continue;
+      atomicWrite(path.join(destination, String(row.key)), JSON.parse(String(row.value)));
+      documents += 1;
+    }
+    /**
+     * AND THE ITEMS, WHEREVER #658 PUT THEM. A migrated session has no
+     * `items.json` row to have been copied above — its items are rows — so an
+     * export that only walked `documents` would write a session directory with
+     * the conversation's own item projection missing, silently, and only for
+     * sessions that had been migrated. Written back in the blob's shape,
+     * which is the shape `exportLegacy` has always produced and the one an
+     * older build could read.
+     */
+    if (this.itemsAreRows(sessionId)) {
+      const rows = this.itemRows(sessionId);
+      fs.writeFileSync(path.join(directory, "items.json"), `{"items":[${rows.join(",")}]}`, { mode: 0o600 });
+      documents += 1;
+    }
+    const file = path.join(directory, "events.ndjson");
+    const handle = fs.openSync(file, "w", 0o600);
+    let events = 0;
+    try {
+      let after = 0;
+      for (;;) {
+        const page = this.events(sessionId, after, EXPORT_PAGE);
+        if (page.length === 0) break;
+        fs.writeSync(handle, page.map((event) => `${JSON.stringify(event)}\n`).join(""));
+        events += page.length;
+        after = page[page.length - 1]!.id;
+        if (page.length < EXPORT_PAGE) break;
+      }
+    } finally { fs.closeSync(handle); }
+    return { documents, events };
+  }
+
+  /**
+   * DROP ONE SETTLED SESSION'S JOURNAL, AFTER PROVING THE TIER THAT SURVIVES IT
+   * ACTUALLY HOLDS THE CONVERSATION — issues #542 and #646.
+   *
+   * ══ THREE REFUSALS, AND EACH ONE SKIPS RATHER THAN THROWS ══
+   *
+   * 1. THE SUMMARIES ARE ALL THERE. `COUNT(DISTINCT runId)` over the terminal
+   *    turn events in the journal must equal the number of `turn_summaries`
+   *    rows this session has in a terminal state. This is not a formality:
+   *    `backfillTurnSummaries` SWALLOWS an unreadable queue and moves on, so a
+   *    session whose summaries were never built is exactly the case that must
+   *    not be swept — and it is invisible from anywhere else.
+   * 2. `items.json` PARSES. The transcript is drawn from it; a session whose
+   *    item projection is unreadable has nothing behind its summaries, and
+   *    dropping its journal would leave a titled conversation with no turns in
+   *    it and nothing able to rebuild them.
+   * 3. THE EXPORT IS COMPLETE. The NDJSON line count must equal the row count
+   *    about to be deleted, checked inside the transaction. This is the
+   *    strongest "lossless by construction" available when the thing being
+   *    dropped has no surviving copy to compare against: the export IS the copy
+   *    and the count is the comparison. An export that came up short deletes
+   *    nothing.
+   *
+   * A REFUSAL IS COUNTED, NEVER LOGGED. A retired session and a skipped one
+   * print the same session id, so a grep keyed on it is satisfied by either —
+   * which is the vacuous-guard shape this repository has already shipped once.
+   * `{ retired, skipped, events }` distinguishes the states; a string does not.
+   *
+   * ONE TRANSACTION PER SESSION, reusing `compactSession`'s argument verbatim:
+   * the first run after enabling is the whole backlog, and a single transaction
+   * across it would stall the streaming path behind housekeeping.
+   */
+  retireSession(sessionId: string, options: { exportTo: string }): { retired: boolean; events: number; refused?: "summaries" | "items" | "export" } {
+    const held = Number(this.statement("SELECT COUNT(*) AS count FROM events WHERE session_id=?").get(sessionId)?.count ?? 0);
+    // Already empty — retired by an earlier sweep, or a session that never
+    // journalled. Nothing to do and nothing to refuse.
+    if (held === 0 && this.held().every((event) => event.sessionId !== sessionId)) return { retired: false, events: 0 };
+
+    const summaries = this.turnSummaryStates(sessionId).filter((row) => (TERMINAL_TURN_STATES as readonly string[]).includes(row.state)).length;
+    const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
+    const ended = Number(
+      this.statement(
+        `SELECT COUNT(DISTINCT json_extract(value,'$.runId')) AS count FROM events
+          WHERE session_id=? AND json_extract(value,'$.type') IN (${placeholders})`,
+      ).get(sessionId, ...TERMINAL_TURN_TYPES)?.count ?? 0,
+    );
+    if (summaries !== ended) return { retired: false, events: 0, refused: "summaries" };
+    try {
+      /**
+       * WHEREVER #658 PUT THEM. A session's items are a blob or a table of
+       * rows, and `itemsAreRows` is the only thing that decides which — never
+       * the presence of the document, which cannot tell "migrated, blob
+       * deleted" from "never written". Asking the wrong side would refuse every
+       * migrated session forever, or pass every one of them without looking.
+       *
+       * Either way the question is the same and it is asked in sqlite:
+       * `json_valid` over the rows, `json_array_length` over the blob. An
+       * `items.json` has been measured at 17 MiB, and parsing it in JavaScript
+       * to learn whether it parses is the cost this guard must not have.
+       */
+      const readable = this.itemsAreRows(sessionId)
+        ? this.statement("SELECT COUNT(*) AS bad FROM items WHERE session_id=? AND json_valid(value)=0").get(sessionId)?.bad === 0
+        : (() => {
+            const blob = this.statement("SELECT json_array_length(value,'$.items') AS count FROM documents WHERE key=?")
+              .get(`sessions/${sessionId}/items.json`);
+            // No document and no rows is a session that never wrote an item,
+            // which is readable in the only sense that matters here.
+            return blob === undefined || blob.count !== null;
+          })();
+      if (!readable) return { retired: false, events: 0, refused: "items" };
+    } catch { return { retired: false, events: 0, refused: "items" }; }
+
+    /**
+     * AN EXPORT THAT WILL NOT WRITE REFUSES THE SESSION, IT DOES NOT STOP THE
+     * SWEEP. A document that no longer parses, a destination already there from
+     * an interrupted run, a full disk — each of those is a reason to leave ONE
+     * conversation exactly as it was, and none of them is a reason for the other
+     * four hundred to go unswept. It is counted as a refusal, which is the same
+     * signal every other guard here produces.
+     */
+    let exported: { documents: number; events: number };
+    try {
+      exported = this.exportSession(sessionId, path.join(options.exportTo, sessionId));
+    } catch { return { retired: false, events: 0, refused: "export" }; }
+    let outcome: { retired: boolean; events: number; refused?: "export" } = { retired: false, events: 0, refused: "export" };
+    this.alone(() => {
+      this.drain(this.depth > 0);
+      const rows = Number(this.statement("SELECT COUNT(*) AS count FROM events WHERE session_id=?").get(sessionId)?.count ?? 0);
+      // A turn that landed between the export and here makes the copy short.
+      // Refuse and leave it: the next sweep exports again.
+      if (rows !== exported.events) return;
+      const high = Number(this.statement("SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=?").get(sessionId)?.id ?? 0);
+      this.statement("DELETE FROM events WHERE session_id=?").run(sessionId);
+      // IN THE SAME TRANSACTION AS THE DELETE — see `JOURNAL_FLOOR_PREFIX`.
+      // Written unconditionally rather than only when the journal is emptied,
+      // because this delete always empties it.
+      this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .run(`${JOURNAL_FLOOR_PREFIX}${sessionId}`, String(Math.max(high, this.cursors.get(sessionId) ?? 0)));
+      outcome = { retired: true, events: rows };
+    });
+    return outcome;
+  }
+
+  /**
+   * THE SWEEP — every session a window takes, one transaction each.
+   *
+   * ON THE EXISTING HOUSEKEEPING CADENCE AND NEVER ON THE OPEN PATH. #661
+   * measured the first compaction at 54 seconds when it ran in the constructor,
+   * and a retention backlog is larger work than a compaction backlog. The first
+   * run after somebody enables this is a distinct visible act with a count in
+   * front of it, not something the next startup does quietly.
+   */
+  retireJournal(window: { idleBefore: number; now: number }, options: { exportTo: string }): { retired: number; skipped: number; events: number } {
+    const total = { retired: 0, skipped: 0, events: 0 };
+    for (const row of this.retirable(window)) {
+      const went = this.retireSession(row.id, options);
+      if (went.retired) { total.retired += 1; total.events += went.events; }
+      else if (went.refused) total.skipped += 1;
+    }
+    return total;
+  }
+
   /** The database and the files sqlite keeps beside it, as they are right now. */
   private journalBytes(): number {
     const file = path.join(this.root, "execution.sqlite");
@@ -1418,13 +1836,25 @@ export class ExecutionStore {
   cursor(sessionId: string): number {
     const known = this.cursors.get(sessionId);
     if (known !== undefined) return known;
-    const stored = Number(this.statement("SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=?").get(sessionId)?.id ?? 0);
+    const rows = Number(this.statement("SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=?").get(sessionId)?.id ?? 0);
+    // THE MAX OF THE ROWS AND THE FLOOR — see `JOURNAL_FLOOR_PREFIX`. Retention
+    // can empty a session's journal, and `MAX(id)` over no rows is 0: without
+    // this the sequence restarts at 1 after the next restart and every client
+    // holding an older cursor goes permanently deaf to that session.
+    const floor = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(`${JOURNAL_FLOOR_PREFIX}${sessionId}`)?.value ?? 0);
+    const stored = Math.max(rows, Number.isFinite(floor) ? floor : 0);
     const head = this.held().reduce((highest, event) => event.sessionId === sessionId && event.id > highest ? event.id : highest, stored);
     this.cursors.set(sessionId, head);
     return head;
   }
   append(event: EngineEvent): void {
     this.cursors.set(event.sessionId, Math.max(event.id, this.cursors.get(event.sessionId) ?? 0));
+    // A TURN THAT ENDED IS THE ONE QUIESCENCE POINT THIS STORE HAS — see
+    // `barrier`. The last terminal event of the scope wins, because one barrier
+    // persists everything committed before it on the same device; a scope that
+    // ends two turns pays once, not twice.
+    if ((TERMINAL_TURN_TYPES as readonly string[]).includes(event.type))
+      this.barrierDue = { sessionId: event.sessionId, eventId: event.id };
     if (event.type !== "content.delta") {
       // Nothing may reach the disk ahead of a buffered delta; see `buffered`.
       // Outside a transaction that has to be ONE of them, or the batch this
@@ -1811,6 +2241,10 @@ export class ExecutionStore {
       // conversation rather than as an error (#658).
       this.statement("DELETE FROM items WHERE session_id=?").run(sessionId);
       this.statement("DELETE FROM metadata WHERE key=?").run(`${ITEMS_ROWS_PREFIX}${sessionId}`);
+      // And the retention floor, for the same reason: it describes a journal
+      // that no longer exists, and on a session id that somehow came back it
+      // would start the sequence above every event that session ever has.
+      this.statement("DELETE FROM metadata WHERE key=?").run(`${JOURNAL_FLOOR_PREFIX}${sessionId}`);
       this.cursors.delete(sessionId);
     });
   }
@@ -1846,8 +2280,100 @@ export class ExecutionStore {
       // rather than lose it to a failure that came after.
       this.buffered.unshift(...settled.filter((event) => !this.buffered.includes(event)));
       this.cursors.clear();
+      this.barrierDue = undefined;
       throw error;
     } finally { this.depth -= 1; }
+    this.maybeBarrier();
+  }
+
+  /**
+   * ONE DEVICE BARRIER PER SETTLED TURN — issue #632, change 3.
+   *
+   * ══ WHY IT IS A SECOND COMMIT AND NOT A PRAGMA AROUND THE FIRST ══
+   *
+   * The design this comes from says to raise `synchronous=FULL` immediately
+   * before the turn's own `COMMIT` and restore it after. **Sqlite refuses**:
+   * `PRAGMA synchronous` inside an open transaction throws "Safety level may
+   * not be changed inside a transaction", on both runtimes. And the flag this
+   * reads is only known once `operation()` has run, which is after `BEGIN` — so
+   * there is no moment at which the intended spelling is legal.
+   *
+   * What is legal, and is what the guarantee actually needs, is the amortised
+   * pattern `fcntl(2)` documents in so many words: *"as this drains the entire
+   * queue of the device and acts as a barrier, data that had been fsync'd on
+   * the same device before is guaranteed to be persisted when this call
+   * returns."* So the turn commits at NORMAL, and a second, one-row commit at
+   * `FULL` + `fullfsync=ON` immediately after is the barrier for it and for
+   * every delta underneath it. Measured (`bench:durability`, `node:sqlite`):
+   * 78–82 ms per barrier on a USB enclosure, once per turn, against turns
+   * measured in seconds to minutes.
+   *
+   * ══ BEFORE THE DAEMON ANSWERS ══
+   *
+   * This runs inside `transaction()`, before it returns — so the reply that
+   * says a turn completed goes out after the barrier, not before it. That is
+   * the ordering choice, and it is the one that lets Telar mean "on the
+   * platter" when it says a turn is settled. It is also why nothing here is a
+   * setting: a barrier the person can turn off is a claim that is sometimes
+   * true.
+   *
+   * ══ WHAT IT DOES NOT CLAIM ══
+   *
+   * That the drive obeyed. `fcntl(2)` is explicit that some drives ignore the
+   * request. The claim is exactly: Telar issued the call Apple documents as
+   * flushing the drive's cache, and issued it before acknowledging the turn.
+   *
+   * A FAILURE HERE DOES NOT FAIL THE TURN. The transaction is already
+   * committed; throwing now would report a command as failed that succeeded.
+   * What a failure costs is the stronger guarantee, leaving the NORMAL one the
+   * store had before — and it is uncounted, so a test asserting the count
+   * cannot mistake it for success.
+   */
+  private maybeBarrier(): void {
+    const due = this.barrierDue;
+    this.barrierDue = undefined;
+    if (!due || this.closed) return;
+    try {
+      this.db.exec("PRAGMA synchronous=FULL; PRAGMA fullfsync=ON;");
+      try {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+          this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            .run(DURABILITY_BARRIER_KEY, `${due.sessionId}:${due.eventId}`);
+          this.db.exec("COMMIT");
+        } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+      } finally { this.db.exec("PRAGMA synchronous=NORMAL; PRAGMA fullfsync=OFF;"); }
+    } catch { return; }
+    this.onDurabilityBarrier?.(due);
+  }
+
+  /**
+   * THE DURABILITY PRAGMAS IN EFFECT ON THIS CONNECTION, READ BACK — #632.
+   *
+   * A pragma is per connection, so nothing outside this object can observe the
+   * ones it set: a test that opened the same file would be asserting about its
+   * own connection's defaults. This is the only honest way to hold the
+   * constructor to what its comment says, and it answers with VALUES because
+   * the alternative — grepping the source for the pragma text — passes on a
+   * line that was never executed.
+   *
+   * NOTE WHAT IT CANNOT PROVE. Under `bun:sqlite` `checkpoint_fullfsync` is
+   * already 1 before anything sets it, so an assertion here is vacuous for the
+   * packaged app, which runs `node:sqlite` where the default is 0. That gap is
+   * what `scripts/durability-pragmas.mjs` exists to close.
+   */
+  durabilityPragmas(): { synchronous: number; checkpointFullfsync: number; fullfsync: number } {
+    const read = (name: string): number => Number(Object.values(this.db.prepare(`PRAGMA ${name}`).get() ?? {})[0] ?? 0);
+    return { synchronous: read("synchronous"), checkpointFullfsync: read("checkpoint_fullfsync"), fullfsync: read("fullfsync") };
+  }
+
+  /** `<sessionId>:<eventId>` of the last turn a device barrier persisted, or
+   *  `undefined` on a store no turn has ended on. See `DURABILITY_BARRIER_KEY`:
+   *  it is the barrier's own write, so its presence is the evidence that the
+   *  barrier's commit produced a WAL frame to sync rather than nothing. */
+  barrierWatermark(): string | undefined {
+    const row = this.statement("SELECT value FROM metadata WHERE key=?").get(DURABILITY_BARRIER_KEY);
+    return row ? String(row.value) : undefined;
   }
   /** Store what is held, in a transaction of its own — or, inside one already,
    *  as part of it. `transaction` flushes what is settled before it begins. */
@@ -1882,6 +2408,9 @@ export class ExecutionStore {
     const changesBefore = Number(this.statement("SELECT total_changes() AS count").get()?.count ?? 0);
     this.db.exec("BEGIN IMMEDIATE");
     this.depth += 1;
+    /** Assigned by every path that reaches the barrier below; the catch throws
+     *  and the replay returns, so the two paths that skip it never read it. */
+    let settled!: T;
     try {
       // A receipt id this call just minted cannot already be on file, so the
       // lookup is skipped entirely unless a CALLER supplied the id — which is
@@ -1890,6 +2419,9 @@ export class ExecutionStore {
       if (known) {
         if (known.command !== command) throw new Error("command id was already used for a different command");
         this.db.exec("COMMIT");
+        // NO BARRIER ON A REPLAY, and it is not an oversight: `operation` never
+        // ran, so nothing was appended and the turn this is re-answering was
+        // barriered when it actually happened.
         return JSON.parse(String(known.result)).value as T;
       }
       const result = operation();
@@ -1902,9 +2434,14 @@ export class ExecutionStore {
           JSON.stringify(commandId === undefined ? {} : { value: result }), this.now());
       this.db.exec("COMMIT");
       this.settle();
-      return result;
+      settled = result;
     } catch (error) { this.db.exec("ROLLBACK"); this.revert(); throw error; }
     finally { this.depth -= 1; }
+    // OUTSIDE THE TRANSACTION AND BEFORE THE RETURN — the barrier needs the
+    // first because sqlite refuses its pragmas inside one, and the second
+    // because the point is that the daemon answers after it. See `maybeBarrier`.
+    this.maybeBarrier();
+    return settled;
   }
   /** The deltas appended in the transaction that just committed are now this
    *  store's to answer for, and the ones it wrote are the disk's. */
@@ -1921,6 +2458,9 @@ export class ExecutionStore {
    *  it had written on an earlier transaction's behalf. */
   private revert(): void {
     this.pending = [];
+    // A turn that rolled back did not settle, so there is nothing to persist
+    // and nothing to claim: see `barrierDue`.
+    this.barrierDue = undefined;
     if (this.writtenAhead.length) {
       this.buffered.unshift(...this.writtenAhead);
       this.writtenAhead = [];

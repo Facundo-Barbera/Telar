@@ -76,6 +76,7 @@ const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.Plu
 const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
 const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
 const StorageSection = dynamic(() => import("./storage-section").then((mod) => mod.StorageSection));
+const RetentionSection = dynamic(() => import("./retention-section").then((mod) => mod.RetentionSection));
 const WorktreesRootSection = dynamic(() => import("./worktrees-root-section").then((mod) => mod.WorktreesRootSection));
 const WorktreeListSection = dynamic(() => import("./worktree-list-section").then((mod) => mod.WorktreeListSection));
 const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
@@ -394,6 +395,15 @@ export function SettingsPage() {
       {active === "storage" && (
         <>
           <StorageSection />
+          {/* AND THEN HOW LONG ANY OF IT IS KEPT (#542). It reads directly
+              under the figures for the same reason the checkout list does:
+              somebody reads "Turn journal — 695 MB", and the next question is
+              whether all of it has to be. The flow deliberately ends back at
+              the Reclaim button above — a retention sweep frees pages inside
+              the database and returns no bytes to the disk, and a person who
+              deleted their history and then saw the same number would have been
+              given the worst possible outcome. */}
+          <RetentionSection />
           {/* THE REPRODUCIBLE HALF BEFORE THE WHOLE (#642 part 2). Moving only
               the checkouts leaves Telar able to start without the drive;
               moving the store does not. The cheaper, safer choice should be

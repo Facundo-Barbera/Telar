@@ -2543,6 +2543,52 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * WHAT A RETENTION WINDOW WOULD TAKE, AND THE WINDOW ITSELF — #542, #646.
+       *
+       * READ-ONLY, AND THE NUMBERS ARE THE READER'S OWN. That is the whole
+       * point of the preview: a fixed default window is what destroys the store
+       * whose oldest session is a week old, and "1 session, 340 events, 2.1 MiB"
+       * in front of somebody is the defence no cleverer default provides.
+       *
+       * `?bytes=1` COSTS A SCAN. Session and event counts are index ranges; the
+       * byte sum reads every row's text. Like `?refresh=1` next door it is an
+       * explicit ask, and like everything on this surface it is never polled
+       * (#629).
+       */
+      if (request.method === "GET" && url.pathname === "/v2/storage/retention") {
+        writeJson(response, 200, {
+          retention: store.getRetentionPolicy(),
+          buckets: store.retentionPreview(url.searchParams.get("bytes") === "1" ? { bytes: true } : {}),
+        });
+        return;
+      }
+      if (request.method === "PUT" && url.pathname === "/v2/storage/retention") {
+        const input = (await body(request)) as { idleAfterDays?: unknown; exportTo?: unknown };
+        // Validated in `setRetentionPolicy`, beside the schema that states the
+        // bound — including the refusal of a window with nowhere to export to,
+        // which is the approved design's export-before-delete written as a
+        // precondition rather than as a hope.
+        writeJson(response, 200, { retention: store.setRetentionPolicy(input) });
+        return;
+      }
+      /**
+       * RUN IT NOW — the distinct visible act #542 asks for.
+       *
+       * The first sweep after somebody enables a window is the whole backlog,
+       * and the approved design is explicit that it must not be something the
+       * next startup does quietly. So there is a button, it reports counts, and
+       * the timer picks up the steady state afterwards.
+       *
+       * IT DROPS THE CACHED MEASUREMENT for the same reason Reclaim does: the
+       * figures the pane is showing describe a store this just changed.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/storage/retention/sweep") {
+        const swept = store.sweepRetention();
+        storageCache.report = undefined;
+        writeJson(response, 200, { swept });
+        return;
+      }
+      /**
        * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
        *
        * NO `restartRequired`, and that is a finding rather than an omission.

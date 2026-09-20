@@ -21,6 +21,14 @@ import {
   AgentOrientation as AgentOrientationSchema,
   DEFAULT_AGENT_ORIENTATION,
   DEFAULT_INBOX_POLICY,
+  DEFAULT_RETENTION_POLICY,
+  RetentionPolicy as RetentionPolicySchema,
+  type RetentionPolicy,
+  type RetentionBucket,
+  type JournalRetirement,
+  RETENTION_BUCKET_DAYS,
+  MIN_RETENTION_DAYS,
+  MAX_RETENTION_DAYS,
   DEFAULT_SESSION_DEFAULTS,
   DEFAULT_SIDEBAR_LAYOUT,
   DEFAULT_TEXT_GEN_POLICY,
@@ -756,6 +764,15 @@ export type EngineStatePaths = {
    */
   inbox: string;
   /**
+   * How long the raw turn journal is kept — see `RetentionPolicy`.
+   *
+   * BESIDE `inbox.json` RATHER THAN INSIDE IT, though both are standing rules
+   * about sessions. `inbox.json` decides what a list SHOWS; this one decides
+   * what the store KEEPS, and folding a delete into the document that bands a
+   * sidebar is how somebody changes a window and loses history.
+   */
+  retention: string;
+  /**
    * Whether Telar may tell an agent where it is — see `AgentOrientation`.
    *
    * ENVIRONMENT-SCOPED, beside inbox.json and for the sharper version of its
@@ -888,6 +905,9 @@ export function statePaths(root: string): EngineStatePaths {
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
+    /** How long the raw turn journal is kept — see `RetentionPolicy`. Default
+     *  never, so this document does not exist on a store nobody configured. */
+    retention: path.join(resolved, "retention.json"),
     orientation: path.join(resolved, "orientation.json"),
     usageLimitSources: path.join(resolved, "usage-limit-sources.json"),
     usageLimitSecrets: path.join(resolved, "usage-limit-secrets.json"),
@@ -3126,6 +3146,104 @@ export class EngineStore {
   }
 
   /**
+   * HOW LONG THE RAW TURN JOURNAL IS KEPT — issues #542, #646.
+   *
+   * Same never-throws rule as `getInboxPolicy`, and here it is the difference
+   * between a preference and a deletion: a document somebody hand-edited into
+   * nonsense must fall back to the shipped default, and the shipped default is
+   * `never`. There is no reading of a broken file that starts removing history.
+   */
+  getRetentionPolicy(): RetentionPolicy {
+    try {
+      const parsed = RetentionPolicySchema.safeParse(this.readDocument(this.paths.retention));
+      return parsed.success ? parsed.data : { ...DEFAULT_RETENTION_POLICY };
+    } catch {
+      return { ...DEFAULT_RETENTION_POLICY };
+    }
+  }
+
+  /**
+   * TAKES `unknown` AND VALIDATES HERE, like `setInboxPolicy`: the bound belongs
+   * next to the schema that states it, not spelled again in whatever route
+   * happens to be the way in today.
+   *
+   * A WINDOW WITHOUT A DESTINATION IS REFUSED, rather than accepted and then
+   * quietly never swept. Export before delete is the approved design; a setting
+   * that looked enabled and did nothing would be the worst version of it.
+   */
+  setRetentionPolicy(patch: { idleAfterDays?: unknown; exportTo?: unknown }): RetentionPolicy {
+    const next: RetentionPolicy = { ...this.getRetentionPolicy() };
+    if (patch.idleAfterDays !== undefined) {
+      if (patch.idleAfterDays === null) next.idleAfterDays = null;
+      else {
+        const parsed = RetentionPolicySchema.shape.idleAfterDays.safeParse(patch.idleAfterDays);
+        if (!parsed.success)
+          throw new EngineStateError(
+            "invalid_request",
+            `a retention window must be a whole number of days between ${MIN_RETENTION_DAYS} and ${MAX_RETENTION_DAYS}, or null`,
+          );
+        next.idleAfterDays = parsed.data;
+      }
+    }
+    if (patch.exportTo !== undefined) {
+      if (patch.exportTo === null) next.exportTo = null;
+      else {
+        if (typeof patch.exportTo !== "string" || !patch.exportTo.trim() || !path.isAbsolute(patch.exportTo.trim()))
+          throw new EngineStateError("invalid_request", "an export destination must be an absolute path");
+        next.exportTo = patch.exportTo.trim();
+      }
+    }
+    if (next.idleAfterDays !== null && !next.exportTo)
+      throw new EngineStateError("invalid_request", "choose where the journal is exported before setting a retention window");
+    this.writeDocument(this.paths.retention, { version: STATE_VERSION, ...next });
+    return { ...next };
+  }
+
+  /**
+   * WHAT EACH WINDOW WOULD TAKE, ON THIS STORE — issue #542, step 1.
+   *
+   * THE NUMBERS ARE THE PERSON'S OWN, which is the entire point: a fixed
+   * default window is what destroys the store whose oldest session is a week
+   * old, and "1 session, 340 events, 2.1 MiB" in front of them is the defence
+   * no cleverer default provides.
+   *
+   * `bytes` IS AN EXPLICIT ASK. Counts are index ranges; the byte sum reads the
+   * rows. Never put either on a timer (#629).
+   */
+  retentionPreview(options: { bytes?: boolean } = {}): RetentionBucket[] {
+    const store = this.executionStore;
+    if (!store) return [];
+    const now = this.now();
+    return RETENTION_BUCKET_DAYS.map((days) => ({
+      days,
+      ...store.retentionPreview({ idleBefore: now - days * 24 * 60 * 60 * 1000, now }, options),
+    }));
+  }
+
+  /**
+   * RUN THE SWEEP THE POLICY ASKS FOR — the timer's call and the button's.
+   *
+   * NOTHING HAPPENS WITHOUT BOTH HALVES. No window, or no export destination,
+   * and this returns zeroes without reading a session: on a fresh install that
+   * is one document read that finds nothing, which is the cost of shipping this
+   * to somebody who will never use it.
+   *
+   * IT RETURNS COUNTS AND WRITES NO LOG LINE. See `retireSession` — a retired
+   * session and a skipped one are indistinguishable in a log and distinct in
+   * these three numbers.
+   */
+  sweepRetention(): JournalRetirement {
+    const store = this.executionStore;
+    const policy = this.getRetentionPolicy();
+    if (!store || policy.idleAfterDays === null || !policy.exportTo) return { retired: 0, skipped: 0, events: 0 };
+    const now = this.now();
+    return store.retireJournal(
+      { idleBefore: now - policy.idleAfterDays * 24 * 60 * 60 * 1000, now },
+      { exportTo: policy.exportTo },
+    );
+  }
+
+  /**
    * Whether Telar may tell an agent where it is — see `AgentOrientation`.
    *
    * Same never-throws rule as `getInboxPolicy`, and here it decides what every
@@ -4491,6 +4609,10 @@ export class EngineStore {
       // path (#646). `onExecutionHousekeeping` is the daemon's line.
       this.executionStore = new ExecutionStore(root, {
         onJournalCompacted: (swept) => options.onExecutionHousekeeping?.({ journal: swept }),
+        // RETENTION RIDES THE SAME CADENCE AND NEVER THE OPEN PATH (#542). The
+        // store owns the mechanism and this owns the policy document, so the
+        // sweep is a call rather than a second implementation of "settled".
+        onRetentionSweep: () => { this.sweepRetention(); },
       });
       // `ingestObservations` is NOT here: it wraps itself, because a batch of
       // nothing but deltas writes no document at all and must not open a
