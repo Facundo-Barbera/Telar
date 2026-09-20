@@ -1,22 +1,27 @@
 /**
- * A NOTIFICATION TURN'S VERTICAL RHYTHM — issue #577.
+ * CONSECUTIVE ARRIVALS ARE ONE STRIP — issue #577.
  *
  * ── THE BUG ─────────────────────────────────────────────────────────────────
  * The owner's screenshot: "Session finished a turn", "A session sent a result",
- * "A session assigned work", each one line of text and each drawn as a message
- * block — a row 4px taller than the activity lane it sits in, and an EMPTY
- * assistant lane under every one that had not been answered yet. In his words:
- * "I don't like the line breaks from sessions results and that kinda things."
+ * "A session assigned work", each one line of text and each drawn as its own
+ * turn — a `gap-8` turn gap above and below, a row 4px taller than the activity
+ * lane it sits in, and an EMPTY assistant lane under every one that had not
+ * been answered yet. Two wakes and a one-line reply took half the viewport. In
+ * his words: "I don't like the line breaks from sessions results and that kinda
+ * things."
  *
  * ── MEASURED, on the real components with the app's own stylesheet ──────────
- * A notification row was 28px tall where the `4 steps · Ran command ×2` row
- * beside it is 24px, and a turn with no answer still paid 8px for the empty
- * lane and the gap above it — 12px of chrome on a 24px line.
+ *   before: row 28px (the `4 steps · Ran command ×2` row beside it is 24px),
+ *           40px of nothing between two of them, 192px for two wakes + a result
+ *           + its one-line reply.
+ *   after:  24px, 2px, 104px.
+ * Those three numbers are the issue's three requirements: the row's own rhythm,
+ * the gap between two of them, and what the run costs on screen.
  *
  * ── WHAT THESE PIN ──────────────────────────────────────────────────────────
- * That the row IS the lane's row rather than merely resembling it, and that the
- * answer area is drawn only when there is an answer. Pixel heights are not
- * available to a server render, so the first is pinned where it is actually
+ * The grouping rule, the emptiness rule that lets a strip BE tight, and the
+ * row's rhythm against the step row it is meant to match. Pixel heights are not
+ * available to a server render, so the last is pinned where it is actually
  * decided: one shared `ROW` constant, which neither side can pad alone.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
@@ -24,7 +29,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";
 import { SessionTurn } from "../session-cockpit";
-import { ActivityGroup, NotificationRow } from "../transcript";
+import { ActivityGroup, bareNotificationTurn, groupNotificationTurns, NotificationRow } from "../transcript";
 import { ROW } from "../transcript-fold";
 import type { JournalItem, JournalTurn } from "@/lib/engine/journal";
 
@@ -91,6 +96,45 @@ const wakeTurn = (runId: string, over: Partial<JournalTurn> = {}): JournalTurn =
 
 const render = (subject: JournalTurn, live = false) =>
   renderToStaticMarkup(<SessionTurn turn={subject} requests={[]} sending={false} live={live} onDecide={() => {}} onRetry={() => {}} />);
+
+const ids = (groups: readonly (readonly JournalTurn[])[]) => groups.map((group) => group.map((member) => member.runId));
+
+describe("two consecutive notifications are one group", () => {
+  test("two queued wakes group; the turn that answered ends the run", () => {
+    const groups = groupNotificationTurns([
+      wakeTurn("run_1"),
+      wakeTurn("run_2"),
+      // A peer's result this session actually answered. Its ROW joins the strip
+      // — it is an arrival like the others — and the run stops after it, so the
+      // reply hangs under the block rather than inside it.
+      turn({ runId: "run_3", prompt: "Three commits landed.", sender: { sessionId: WORKER }, notification: peerDetail("run_3"), items: [openingItem("run_3", peerDetail("run_3"))], resultText: "Noted." }),
+      wakeTurn("run_4"),
+    ]);
+    expect(ids(groups)).toEqual([["run_1", "run_2", "run_3"], ["run_4"]]);
+  });
+
+  test("A GROUP OF ONE IS ONE LINE, and every turn comes back exactly once, in order", () => {
+    const typed = turn({ runId: "run_typed", origin: "user", prompt: "look at the failing test", resultText: "Looking." });
+    expect(ids(groupNotificationTurns([typed, wakeTurn("run_1"), typed, wakeTurn("run_2")]))).toEqual([["run_typed"], ["run_1"], ["run_typed"], ["run_2"]]);
+  });
+
+  test("a turn with something UNDER its row ends the run, because a strip would hide it", () => {
+    // Each of these draws a line beneath the notification. A block that
+    // swallowed one would be tightening the transcript by deleting from it.
+    expect(bareNotificationTurn(wakeTurn("run_1"))).toBe(true);
+    expect(bareNotificationTurn(wakeTurn("run_1", { resultText: "Nothing to do." }))).toBe(false);
+    expect(bareNotificationTurn(wakeTurn("run_1", { usage: { tokens: { input: 10, output: 2 } } as JournalTurn["usage"] }))).toBe(false);
+    expect(bareNotificationTurn(wakeTurn("run_1", { failure: "the provider hung up" }))).toBe(false);
+    expect(bareNotificationTurn(wakeTurn("run_1", { state: "stopped" }))).toBe(false);
+    expect(bareNotificationTurn({ ...wakeTurn("run_1"), items: [openingItem("run_1", wakeDetail("child_run_1")), command("cmd_1", "run_1")] })).toBe(false);
+    // Not an arrival at all: a person's turn is never a strip's member.
+    expect(bareNotificationTurn(turn({ runId: "run_typed", origin: "user", prompt: "hi" }))).toBe(false);
+  });
+
+  test("the LIVE turn is never a strip's middle — its working indicator hangs under its row", () => {
+    expect(ids(groupNotificationTurns([wakeTurn("run_live"), wakeTurn("run_next")], "run_live"))).toEqual([["run_live"], ["run_next"]]);
+  });
+});
 
 describe("a notification turn's vertical rhythm", () => {
   test("no answer area under a turn that produced no text", () => {
