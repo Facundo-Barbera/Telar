@@ -1779,6 +1779,22 @@ function isDeltaOnlyBatch(observations: unknown[]): boolean {
  */
 export type AgentWake = { notification: NotificationDetail };
 
+/**
+ * How to read ONE file's patch — the two questions that change what git prints
+ * rather than which file it prints it for.
+ *
+ * Named rather than inlined at four call sites because the session read, the
+ * project read and their two synchronous twins have to agree: a flag one of
+ * them accepted and another silently dropped would be a toolbar toggle that
+ * worked on a session and did nothing on a canvas.
+ */
+export type FilePatchOptions = {
+  /** Untracked files are in no diff at all — see `sessionFilePatch`. */
+  untracked?: boolean;
+  /** Re-indentation and blank lines are not changes worth reading (#694). */
+  ignoreWhitespace?: boolean;
+};
+
 export class EngineStore {
   private executionStore?: ExecutionStore;
   private commandDepth = 0;
@@ -5768,26 +5784,33 @@ export class EngineStore {
     ).then((value) => EngineStore.sharedCheckout(value, session));
   }
 
-  projectFilePatchAsync(projectId: string, target: string, options: { untracked?: boolean } = {}): Promise<GitFilePatch> {
+  projectFilePatchAsync(projectId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {
     const project = this.getProject(projectId);
     return this.readFilePatchAsync(project.root, target, options);
   }
 
-  sessionFilePatchAsync(sessionId: string, target: string, options: { untracked?: boolean } = {}): Promise<GitFilePatch> {
+  sessionFilePatchAsync(sessionId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {
     const session = this.getSession(sessionId);
     return this.readFilePatchAsync(workspaceRootOf(session), target, options, workspaceBaseRef(session.workspace));
   }
 
-  private readFilePatchAsync(cwd: string, target: string, options: { untracked?: boolean }, baseRef?: string): Promise<GitFilePatch> {
+  private readFilePatchAsync(cwd: string, target: string, options: FilePatchOptions, baseRef?: string): Promise<GitFilePatch> {
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     const resolved = path.resolve(cwd, target);
     const prefix = cwd.endsWith(path.sep) ? cwd : `${cwd}${path.sep}`;
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the workspace");
-    return this.cachedGitRead(`patch:${cwd}:${baseRef ?? ""}:${resolved}:${!!options.untracked}`, () => sessionFilePatchAsync(this.asyncGit, {
+    // `ignoreWhitespace` IS PART OF THE KEY, not a variation on one answer: the
+    // two reads run different git commands and return different hunks for the
+    // same path, so sharing a cache entry would serve whichever the reader
+    // happened to ask for first and go on serving it after they flipped the
+    // toggle — a toolbar control that works once per file per cache window.
+    const key = `patch:${cwd}:${baseRef ?? ""}:${resolved}:${!!options.untracked}:${!!options.ignoreWhitespace}`;
+    return this.cachedGitRead(key, () => sessionFilePatchAsync(this.asyncGit, {
       cwd,
       path: path.relative(cwd, resolved),
       ...(baseRef ? { baseRef } : {}),
       ...(options.untracked ? { untracked: true } : {}),
+      ...(options.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
     }));
   }
 
@@ -6160,7 +6183,7 @@ export class EngineStore {
   }
 
   /** One file's patch in a project's own checkout, for the same surface. */
-  projectFilePatch(projectId: string, target: string, options: { untracked?: boolean } = {}): GitFilePatch {
+  projectFilePatch(projectId: string, target: string, options: FilePatchOptions = {}): GitFilePatch {
     const project = this.getProject(projectId);
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     // Fenced exactly as the session read is: a pathspec is a file read, and a
@@ -6172,6 +6195,7 @@ export class EngineStore {
       cwd: project.root,
       path: path.relative(project.root, resolved),
       ...(options.untracked ? { untracked: true } : {}),
+      ...(options.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
     });
   }
 

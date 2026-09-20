@@ -567,6 +567,70 @@ describe("git did not answer about the diff", () => {
   });
 });
 
+/**
+ * IGNORING WHITESPACE IS A DIFFERENT COMMAND, NOT A DIFFERENT RENDERING — #694.
+ *
+ * The toolbar toggle looks like a view option and is not one: git decides which
+ * hunks exist before any of the patch reaches a client, so the flag has to be on
+ * the command. These assert the ARGUMENT, because that is the whole of the
+ * change and the only part a fixture can see.
+ */
+describe("sessionFilePatch, ignoring whitespace", () => {
+  /** Records what git was asked, and answers a patch to every diff. */
+  function recording(): { runner: GitRunner; calls: string[][] } {
+    const calls: string[][] = [];
+    const runner: GitRunner = (_cwd, args) => {
+      calls.push(args);
+      if (args[0] === "rev-parse") return ok("");
+      return ok("@@ -1 +1 @@\n-a\n+b\n");
+    };
+    return { runner, calls };
+  }
+
+  test("off by default — the ordinary read is unchanged", () => {
+    const { runner, calls } = recording();
+    sessionFilePatch(runner, { cwd: "/repo", path: "src/a.ts" });
+    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "HEAD", "--", "src/a.ts"]);
+  });
+
+  test("on, the command carries -w AND --ignore-blank-lines", () => {
+    // Either alone leaves the toggle half-true: `-w` keeps a hunk whose only
+    // change is an inserted blank line, which is the same noise to the person
+    // who asked for the noise to go.
+    const { runner, calls } = recording();
+    sessionFilePatch(runner, { cwd: "/repo", path: "src/a.ts", ignoreWhitespace: true });
+    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "-w", "--ignore-blank-lines", "HEAD", "--", "src/a.ts"]);
+  });
+
+  test("an untracked file ignores whitespace too, against /dev/null", () => {
+    // The `--no-index` branch is a whole separate command line, so it is the
+    // one that quietly keeps working while doing nothing.
+    const { runner, calls } = recording();
+    sessionFilePatch(runner, { cwd: "/repo", path: "dist/app.js", untracked: true, ignoreWhitespace: true });
+    expect(calls.at(-1)).toEqual(["diff", "--no-index", "--unified=3", "-w", "--ignore-blank-lines", "--", "/dev/null", "dist/app.js"]);
+  });
+
+  test("the flag goes AFTER --unified=3 and BEFORE the base, so the base is still a base", () => {
+    // `git diff [options] <commit> -- <path>`: an option between the commit and
+    // the pathspec separator would be parsed as a second revision.
+    const { runner, calls } = recording();
+    sessionFilePatch(runner, { cwd: "/repo", baseRef: "abc1234", path: "src/a.ts", ignoreWhitespace: true });
+    const args = calls.at(-1)!;
+    expect(args.indexOf("-w")).toBeLessThan(args.indexOf("abc1234"));
+    expect(args.indexOf("abc1234")).toBeLessThan(args.indexOf("--"));
+  });
+
+  test("the async twin sends the same argument list", async () => {
+    const sync = recording();
+    const async = recording();
+    const asyncRunner: AsyncGitRunner = async (cwd, args) => async.runner(cwd, args);
+    const input = { cwd: "/repo", path: "src/a.ts", ignoreWhitespace: true } as const;
+    sessionFilePatch(sync.runner, input);
+    await sessionFilePatchAsync(asyncRunner, input);
+    expect(async.calls).toEqual(sync.calls);
+  });
+});
+
 describe("commitSessionWork", () => {
   test("stages everything, then commits, and reports the new commit", () => {
     const calls: string[][] = [];

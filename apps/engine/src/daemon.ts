@@ -53,7 +53,17 @@ import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-
 import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
 import { createLoginGrantStore } from "./secrets/login-grants";
 import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
-import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier, type StoppedClaim } from "./state";
+import {
+  acquireDaemonLock,
+  EngineStateError,
+  EngineStore,
+  migrateLegacyEngineRoot,
+  statePaths,
+  engineRootFromEnv,
+  type EngineNotifier,
+  type FilePatchOptions,
+  type StoppedClaim,
+} from "./state";
 import { KernelHost } from "./ds/kernel-host";
 import { bundledPlugins } from "./plugins/bundled";
 import { PluginHost } from "./plugins/host";
@@ -506,6 +516,22 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
   const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
+}
+
+/**
+ * `?path=…&untracked=1&ignoreWhitespace=1` — how one file's patch is read.
+ *
+ * SHARED BY THE SESSION AND PROJECT ROUTES, which is the whole reason it is a
+ * function: they serve the same surface (`diff-surface.tsx` switches between
+ * them on whether there is a session yet), so a parameter one parsed and the
+ * other ignored would be a toolbar control that worked in a conversation and
+ * did nothing on a canvas.
+ */
+function filePatchOptions(url: URL): FilePatchOptions {
+  return {
+    untracked: url.searchParams.get("untracked") === "1",
+    ignoreWhitespace: url.searchParams.get("ignoreWhitespace") === "1",
+  };
 }
 
 /**
@@ -2828,7 +2854,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const target = url.searchParams.get("path");
         if (target) {
           writeJson(response, 200, {
-            file: await store.projectFilePatchAsync(projectId, target, { untracked: url.searchParams.get("untracked") === "1" }),
+            file: await store.projectFilePatchAsync(projectId, target, filePatchOptions(url)),
           });
           return;
         }
@@ -4128,7 +4154,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const target = url.searchParams.get("path");
           if (target) {
             writeJson(response, 200, {
-              file: await store.sessionFilePatchAsync(session.sessionId, target, { untracked: url.searchParams.get("untracked") === "1" }),
+              file: await store.sessionFilePatchAsync(session.sessionId, target, filePatchOptions(url)),
             });
             return;
           }

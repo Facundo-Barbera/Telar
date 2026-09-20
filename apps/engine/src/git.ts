@@ -565,19 +565,48 @@ function assembleDiff(
  * An UNTRACKED file has no diff — git will not compare it to anything — so it is
  * diffed against `/dev/null` explicitly. `--no-index` exits 1 when the files
  * differ, which is the successful case here and the reason this accepts 1.
+ *
+ * IGNORING WHITESPACE IS GIT'S JOB, NOT THE VIEWER'S — issue #694.
+ *
+ * The toolbar's toggle could not be a render option: the renderer is handed a
+ * patch that git has already decided the shape of, and a hunk that exists only
+ * because a line was re-indented is a hunk before any of it reaches the client.
+ * Hiding those rows in the browser would leave the file's OWN header counting
+ * them, which is the kind of disagreement this surface exists to catch rather
+ * than to produce. So the flag goes where the decision is made.
  */
-export function sessionFilePatch(git: GitRunner, input: { cwd: string; baseRef?: string; path: string; untracked?: boolean }): GitFilePatch {
+export function sessionFilePatch(
+  git: GitRunner,
+  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean },
+): GitFilePatch {
   const { cwd, baseRef, path: target } = input;
   // Same corroboration as the review's — see `resolveDiffBase`. A killed verify
   // must not quietly re-point this patch at HEAD, which would draw real hunks
   // against the wrong starting point and look entirely plausible doing it.
   const { base } = resolveDiffBase(baseRef, baseRef ? git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
   const against = base ?? "HEAD";
+  const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
   return assemblePatch(
     input.untracked
-      ? git(cwd, ["diff", "--no-index", "--unified=3", "--", "/dev/null", target])
-      : git(cwd, ["diff", "--unified=3", against, "--", target]),
+      ? git(cwd, ["diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target])
+      : git(cwd, ["diff", "--unified=3", ...ignoring, against, "--", target]),
   );
+}
+
+/**
+ * `-w` AND `--ignore-blank-lines` TOGETHER, because either alone leaves the
+ * toggle half-true. `-w` drops a hunk whose only change is indentation; a hunk
+ * whose only change is a blank line inserted between two untouched statements
+ * survives it, and that is the same kind of noise to the person who asked for
+ * the noise to go away.
+ *
+ * NEVER `--ignore-all-space` ON ITS OWN FOR A WHOLE-FILE READ: git still emits
+ * the file's `diff --git`/`index` header when every hunk is suppressed, and the
+ * renderer is happy to show a file with no hunks. That reads as "nothing
+ * differs here", which is exactly what the reader asked to be told.
+ */
+function patchWhitespaceArgs(ignoreWhitespace: boolean | undefined): string[] {
+  return ignoreWhitespace ? ["-w", "--ignore-blank-lines"] : [];
 }
 
 /**
@@ -881,15 +910,16 @@ export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string
 
 export async function sessionFilePatchAsync(
   git: AsyncGitRunner,
-  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean },
+  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean },
 ): Promise<GitFilePatch> {
   const { cwd, baseRef, path: target } = input;
   const { base } = resolveDiffBase(baseRef, baseRef ? await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
   const against = base ?? "HEAD";
+  const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
   return assemblePatch(
     input.untracked
-      ? await git(cwd, ["diff", "--no-index", "--unified=3", "--", "/dev/null", target])
-      : await git(cwd, ["diff", "--unified=3", against, "--", target]),
+      ? await git(cwd, ["diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target])
+      : await git(cwd, ["diff", "--unified=3", ...ignoring, against, "--", target]),
   );
 }
 
