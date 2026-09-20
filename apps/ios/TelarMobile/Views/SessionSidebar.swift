@@ -1,5 +1,38 @@
 import SwiftUI
 
+// THIS VIEW IS CUT INTO LAYERS ON PURPOSE. DO NOT FOLD THEM BACK (#764).
+//
+// `body` was one 497-line view-builder chain and CI's type-check floor read it
+// at 3703–6337 ms — 7.4× to 12.7× the 500 ms bar. The Swift constraint solver
+// is superlinear in expression size, so N small solves are cheaper than one
+// solve of the combined expression on EVERY machine, slow or fast. That is
+// also why the cure is structural and not a compiler flag: #758 tried raising
+// the solver's limits twice and the second attempt ground for thirteen minutes
+// before failing.
+//
+// THE RULE, and it is the same one `SessionView.swift` carries after #768:
+// adding a modifier is fine, and adding a band is fine. Folding two layers
+// into one is what regressed. Two properties have to survive any edit here:
+//
+//   1. THE MODIFIER SEQUENCE IS ONE UNBROKEN ORDER. Read inside-out,
+//      `sessionList` receives `chrome`'s 1–5, `navigation`'s 6–9,
+//      `presentations`' 10–11, `lifecycle`'s 12–14 and `body`'s 15–17. Order
+//      is semantic in SwiftUI — `.background` before versus after
+//      `.safeAreaInset` is a different view — so a modifier moved across a
+//      boundary is a behaviour change wearing a refactor's clothes.
+//
+//   2. ONE STATEMENT PER MEMBER, so the `@ViewBuilder` arity is unchanged at
+//      every level and the `TupleView` the `List` sees keeps its element
+//      count. Two siblings folded into one member changes the structural path
+//      of every row under it, and row identity is what `List(selection:)`
+//      reads. This is why the two `shelf(...)` calls are still inline.
+//
+// THERE IS NO MILLISECOND GATE, deliberately. `DataframeGrid.body` measured
+// below 500, then 518, then 658 ms on byte-identical source — a 500 ms
+// threshold would have been green, red, red with no commit in between. A gate
+// becomes safe because the numbers get small, not because it gets tuned; when
+// every declaration is ten times under the floor, failing on PRESENCE at 500
+// is a clean gate and a number is still weather.
 struct SessionSidebar: View {
     let settings: AppSettings
     let inbox: MergedInbox
@@ -74,289 +107,275 @@ struct SessionSidebar: View {
             .contains { $0.localizedStandardContains(query) }
     }
 
+    /// THE LAST THREE MODIFIERS, and the outermost layer of five (#764).
+    ///
+    /// `body` was one 497-line view-builder chain and the Swift constraint
+    /// solver is superlinear in expression size, so it read 3703–6337 ms on
+    /// CI's own type-check floor — 7.4× to 12.7× the 500 ms bar, against a
+    /// population that spans 1.48× on byte-identical source. N small solves are
+    /// cheaper than one solve of the combined expression on EVERY machine, slow
+    /// or fast, because what is removed is combinatorial rather than constant.
+    /// That is what makes the split a fix and not a tuning.
+    ///
+    /// THE LAYERS ARE CONTIGUOUS SLICES OF ONE UNCHANGED SEQUENCE. Modifier
+    /// order is semantic in SwiftUI — `.background` before versus after
+    /// `.safeAreaInset` is a different view — so the boundaries fall between
+    /// adjacent modifiers and never reorder two. Reading inside-out,
+    /// `sessionList` receives 1–5 in `chrome`, 6–9 in `navigation`, 10–11 in
+    /// `presentations`, 12–14 in `lifecycle` and 15–17 here: seventeen, in the
+    /// order they were in before.
     var body: some View {
-        List(selection: $selection) {
-            ForEach(inbox.failures) { failure in
-                Label(failure.needsPairing ? "\(hostName(failure.hostId)) needs pairing" : "\(hostName(failure.hostId)) is offline · showing saved sessions", systemImage: failure.needsPairing ? "lock" : "wifi.slash")
-                    .font(.caption).foregroundStyle(Theme.statusAmber)
+        lifecycle
+            .sheet(item: $snoozing) { row in snoozeSheet(row) }
+            // RENAME IS AN ALERT, NOT A SHEET. One field and two buttons is the
+            // alert's whole shape, and a sheet for it would cost a push and a
+            // dismiss to type a title.
+            .alert("Rename session", isPresented: presenting($renaming)) {
+                TextField("Title", text: $renameDraft)
+                Button("Rename") {
+                    guard let row = renaming else { return }
+                    let title = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    renaming = nil
+                    guard !title.isEmpty, title != row.session.title else { return }
+                    Task { await patch(row, SessionPatch(title: title)) }
+                }
+                Button("Cancel", role: .cancel) { renaming = nil }
             }
-            if let layoutError { Text(layoutError).font(.caption).foregroundStyle(Theme.statusRed) }
+            // THE CONFIRMATION SAYS WHAT IT TAKES rather than asking "are you
+            // sure": the engine deletes the transcript with the session and there
+            // is no undo, so the sentence is the only place that can be said.
+            .confirmationDialog(
+                deleting.map { "Delete “\($0.session.title.isEmpty ? "Untitled session" : $0.session.title)”?" } ?? "Delete session?",
+                isPresented: presenting($deleting),
+                titleVisibility: .visible
+            ) {
+                Button("Delete session", role: .destructive) {
+                    guard let row = deleting else { return }
+                    deleting = nil
+                    Task { await remove(row) }
+                }
+                Button("Cancel", role: .cancel) { deleting = nil }
+            } message: {
+                Text("The conversation and everything it holds go with it. This cannot be undone.")
+            }
+    }
+
+    /// Modifiers 12–14: the bottom inset, and the two that drive the list's own
+    /// lifecycle.
+    private var lifecycle: some View {
+        presentations
+            // AN ICON ROW, NOT A SENTENCE. The desktop's footer
+            // (app-sidebar-footer.tsx) is a row of muted glyphs on the left, and
+            // that is the right shape for a destination you reach twice a week: a
+            // full-width tinted "Settings" was the loudest thing on the rail,
+            // reading as the sidebar's primary action directly beneath the work
+            // that actually is.
+            //
+            // SETTINGS FIRST, THEN USAGE — the desktop's order and its reason
+            // (app-sidebar-footer.tsx, #389): Settings is the one a person reaches
+            // for, Usage is the one they look at. The phone drew only the gear
+            // because there was no usage screen to open; there is one now (#404), so
+            // the footer is the pair it is over there.
+            //
+            // The desktop's update control has no counterpart here — this app
+            // updates through TestFlight, which is the App Store's job and not a
+            // button's.
+            //
+            // The glyphs keep the web's size and the tap targets do not: 32pt is a
+            // mouse target, and a finger is owed the full 44.
+            //
+            // BOTH GLYPHS BELOW SCALE WITH THEIR OWN SQUARE (#674). 17-in-44 is
+            // the proportion at every text size, not just the default one — see
+            // `scaledGlyphBox`.
+            .safeAreaInset(edge: .bottom) {
+                HStack(spacing: 0) {
+                    Button(action: openSettings) {
+                        Image(systemName: "gearshape")
+                            .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
+                    }
+                    .keyboardShortcut(",", modifiers: .command)
+                    .accessibilityLabel("Settings")
+                    Button { showUsage = true } label: {
+                        Image(systemName: "chart.bar")
+                            .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Usage")
+                    .disabled(settings.hosts.isEmpty)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(Theme.textMuted)
+                .padding(.horizontal, 8)
+                .background(Theme.sheet)
+            }
+            // NO SEPARATE LAYOUT READ ANY MORE. The arrangement rides each Mac's
+            // live read (InboxStore), so refreshing the inbox refreshes where
+            // things sit — and the rail learns about a drag made on the Mac on the
+            // next poll instead of only when it is opened again.
+            .refreshable { await inbox.refresh() }
+            .task {
+                collapsed = Set(savedCollapsed.split(separator: "\n").map(String.init))
+            }
+    }
+
+    /// Modifiers 10–11: the two sheets whose subject is not a row.
+    private var presentations: some View {
+        navigation
+            // A REGISTRATION IS A PUSH INSIDE A SHEET, not a push onto the rail: the
+            // browser walks the MAC's folders and a person who gets lost in it wants
+            // one dismissal, not a stack of them to unwind.
+            .sheet(item: $addingTo) { target in
+                NavigationStack {
+                    AddProjectView(api: target.api) { _ in
+                        addingTo = nil
+                        Task { await inbox.refresh() }
+                    }
+                    .navigationTitle("Add project")
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { addingTo = nil } } }
+                }
+            }
+            .sheet(isPresented: $showUsage) {
+                NavigationStack {
+                    UsageView(settings: settings, hostId: inbox.filter ?? settings.hosts.first?.id)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showUsage = false } } }
+                }
+            }
+    }
+
+    /// Modifiers 6–9: the title, the search field and the bar.
+    private var navigation: some View {
+        chrome
+            .navigationTitle("Telar")
+            // LARGE AT BOTH WIDTHS. The sidebar column defaults to an inline title,
+            // which is what put "Telar" on the same line as the two toolbar buttons
+            // on the iPad and left the search field to collapse into the bar beside
+            // them. Asking for the large title gives the phone's arrangement back:
+            // the buttons on their own row, the title under them, and — because a
+            // navigation-bar DRAWER is a drawer under the title rather than a slot
+            // inside the bar — the search field under that.
+            .navigationBarTitleDisplayMode(.large)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions, projects, Macs")
+            // THE HEADER'S VERBS, THE DESKTOP'S SET — issue #404. The rail there is
+            // a search field with Add project and New conversation at its right
+            // (app-sidebar.tsx), and the phone had only the compose button.
+            //
+            // ADD PROJECT IS A VERB, NOT A SETTING. Registering a folder used to be
+            // reachable only from the new-conversation flow, which is the wrong way
+            // round: you add a project in order to start conversations in it, so the
+            // one that comes first cannot be behind the one that follows.
+            //
+            // THE PROJECT PICKER IS GONE, and the Mac filter stays. The desktop
+            // dropped its "All projects ▾" row (#400) because the rail is already
+            // grouped by project and the field already narrows it — a filter for the
+            // same fact, spending a control. The Mac filter has no desktop
+            // counterpart to drop: which machine a row is on is a fact only a phone
+            // holding several Macs has to ask about.
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    addProject
+                    Button("New conversation", systemImage: "square.and.pencil", action: newSession).keyboardShortcut("n", modifiers: .command)
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Picker("Mac", selection: Bindable(inbox).filter) {
+                            Text("All Macs").tag(nil as HostID?)
+                            ForEach(settings.hosts) { Text($0.name).tag(Optional($0.id)) }
+                        }
+                    } label: { Label(inbox.filter.map(hostName) ?? "All Macs", systemImage: "line.3.horizontal.decrease") }
+                }
+            }
+    }
+
+    /// Modifiers 1–5: what the list itself looks like.
+    private var chrome: some View {
+        sessionList
+            // ONE LIST STYLE, SO THERE IS ONE SIDEBAR.
+            //
+            // `.sidebar` is not a look, it is TWO looks: in a compact width it
+            // falls back to inset-grouped, and in the split view's sidebar column
+            // it renders flat. So the phone drew every band as its own rounded card
+            // — the pinned pair as one card with a hairline between the rows, each
+            // project group as a card, the Settled shelf as a card — while the iPad
+            // drew the same rows directly on the column with SPACING as the only
+            // grouping cue. Same file, same sections, two different products, and
+            // the reported preference was for the phone's: a card is a visible
+            // boundary, and a gap is a boundary you have to infer.
+            //
+            // `.insetGrouped` renders the same at both widths, so the cards are now
+            // the grouping cue everywhere. Nothing about the CONTENT changes: the
+            // section spacing, the 30pt row floor, and the card/slim row variants
+            // are all untouched — this only decides what encloses them.
+            .listStyle(.insetGrouped)
+            .listSectionSpacing(12)
+            // A ONE-LINE ROW CANNOT BE ONE LINE TALL while the list floors every
+            // row at the standard 44pt touch target. The slim rows are the whole
+            // point of the two volumes, so the floor comes down to meet them; a
+            // card is taller than either number and is unaffected, and a row is
+            // still a comfortable tap because its content is a full line of text
+            // plus the list's own padding.
+            .environment(\.defaultMinListRowHeight, 30)
+            // THE PAGE STAYS OURS AT BOTH WIDTHS, and that is a deliberate choice
+            // against letting the iPad's floating sidebar panel show its own
+            // material through.
+            //
+            // A card reads as a card because of what is BEHIND it. On the phone
+            // that is `Theme.sheet` with the system's grouped-secondary fill on top
+            // — a fixed, known contrast, in both appearances. The panel's material
+            // is translucent and takes its colour from whatever the window happens
+            // to be showing underneath, so the same card would separate cleanly
+            // over a dark transcript and nearly vanish over a light one. Trading a
+            // dependable boundary for a prettier backdrop is the wrong way round
+            // when the boundary is the entire point of this change.
+            //
+            // `scrollContentBackground(.hidden)` hides the SCROLL VIEW's fill only;
+            // the cells keep the system's grouped-secondary background, which is
+            // why the cards still look like system cards rather than like our
+            // colour twice.
+            .scrollContentBackground(.hidden)
+            .background(Theme.sheet)
+    }
+
+    /// The list itself, with no modifier on it at all.
+    ///
+    /// ONE STATEMENT PER MEMBER, AND THE ARITY IS THE PROOF. Four
+    /// statements at the top level and seven in the `else` arm, before
+    /// and after. `some View` erases to its underlying type and
+    /// `buildBlock` of a single statement is identity, so no wrapper is
+    /// introduced — the `TupleView` the `List` sees keeps its element
+    /// count and only the element types become opaque. That is what keeps
+    /// row identity, and therefore `List(selection:)`, intact.
+    ///
+    /// The two `shelf(...)` calls stay inline for the same rule: they are
+    /// two sibling statements and folding them into one `shelves` member
+    /// would take the arm from seven children to six.
+    private var sessionList: some View {
+        List(selection: $selection) {
+            failureBanners
+            layoutErrorLine
             if !query.isEmpty {
+                // ONE FILTER, NOT TWO. This arm ran `all.filter(matches)` once
+                // to draw the rows and again to ask whether there were any, so
+                // every keystroke walked every session on every Mac twice and
+                // called `localizedStandardContains` up to three times per row
+                // on each pass. Binding it is not an optimisation of the
+                // matcher; it is not doing the same work twice.
+                let found = all.filter(matches)
                 // A SEARCH RESULT IS ALREADY THE ANSWER to a question you
                 // asked, so every row in it is equally relevant and density
                 // beats detail — the desktop's rule, same reason.
-                ForEach(all.filter(matches)) { row in sessionRow(row, variant: .slim) }
+                ForEach(found) { row in sessionRow(row, variant: .slim) }
                 // THE DESKTOP'S WORDS, because a reader who has both open
                 // should not have to work out that two different sentences are
                 // the same answer (`SidebarEmpty`, app-sidebar.tsx). The detail
                 // line is the part that earns its space: it says what to try.
-                if all.filter(matches).isEmpty {
+                if found.isEmpty {
                     ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
                 }
             } else {
-                // EACH MAC'S BUILT-IN AGENT, above everything (#531) —
-                // experimental, and absent on every phone whose Macs have never
-                // switched one on.
-                //
-                // ONE ROW PER MAC, and nothing is looked up in that Mac's
-                // sessions to draw it. The Main band this replaces had to find a
-                // designated conversation among the rows, so it appeared a beat
-                // late on a Mac still answering its first poll and not at all if
-                // the conversation had fallen off the page. The Agent is not a
-                // session: one flag decides, and the row is there the moment the
-                // Mac says it is.
-                //
-                // FIRST, AND OUTSIDE SEARCH, for the desktop's reason: it is not
-                // a band and not an entry in the list, it is the row that is
-                // always in the same place. A search is a question about the
-                // whole list and flattens every band — and this row is not in
-                // the list to be found, so it simply goes.
-                //
-                // A DIRECT DESTINATION rather than a `NavigationLink(value:)`.
-                // The value form resolves against the destinations registered
-                // for session ids, and an Agent has no id in that namespace —
-                // there is nothing to register it under.
-                let agentRows = inbox.agents
-                if !agentRows.isEmpty {
-                    Section {
-                        ForEach(agentRows) { row in
-                            NavigationLink {
-                                if let api = settings.api(for: row.hostId) {
-                                    AgentView(hostId: row.hostId, api: api)
-                                } else {
-                                    // A Mac whose client cannot be built is one
-                                    // this phone is no longer paired with. The
-                                    // sentence is better than a blank screen.
-                                    ContentUnavailableView(
-                                        "That Mac is not connected",
-                                        systemImage: "sparkles",
-                                        description: Text("Pair with it again to reach its Agent.")
-                                    )
-                                }
-                            } label: {
-                                // A TALLER ROW WITH ONE STATUS LINE (#539). It
-                                // was a single line the height of a conversation,
-                                // on the argument that it only answers "where do
-                                // I go to coordinate". The owner's first night
-                                // says half of that was wrong: "is it working, is
-                                // it waiting for me" is a question this row has,
-                                // and answering nothing made the one
-                                // always-present entry the least informative
-                                // thing on the sidebar.
-                                Label {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Text("Agent").font(.subheadline)
-                                            // WHAT CAME IN WHILE THE SCREEN WAS
-                                            // SHUT (#541 A). A wake no longer
-                                            // starts a turn, so without this the
-                                            // sidebar cannot say anything
-                                            // arrived. A COUNT and never a tone:
-                                            // whether any of it is waiting on a
-                                            // person is the status line's job,
-                                            // one line down, and two things
-                                            // competing to signal urgency on one
-                                            // row is how neither gets read.
-                                            if let badge = row.badge {
-                                                Text(badge)
-                                                    .font(Theme.monoSmall)
-                                                    .monospacedDigit()
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 1)
-                                                    .background(Theme.surface, in: Capsule())
-                                                    .foregroundStyle(Theme.textMuted)
-                                                    .accessibilityLabel("\(badge) unread")
-                                            }
-                                            // WHICH MAC, and only when there is more
-                                            // than one to tell apart — the rule
-                                            // `HostLabel` applies to every other row
-                                            // on this sidebar.
-                                            if settings.hosts.count > 1, let name = settings.host(row.hostId)?.name {
-                                                Text(name).font(.caption).foregroundStyle(Theme.textMuted)
-                                            }
-                                        }
-                                        .lineLimit(1)
-                                        agentStatusLine(row.status)
-                                    }
-                                } icon: {
-                                    Image(systemName: "sparkles")
-                                }
-                                .padding(.vertical, 4)
-                            }
-                        }
-                    } header: {
-                        // A GLYPH BEFORE THE WORD, the treatment "Needs you"
-                        // gets and for the same reason: it says this band is
-                        // different before the word is read. No count — one Mac
-                        // has at most one Agent, so a number here would only
-                        // ever say how many Macs are paired.
-                        HStack(spacing: 6) {
-                            Image(systemName: "sparkles")
-                            Text(agentRows.count > 1 ? "Agents" : "Agent")
-                        }
-                        .bandCaption()
-                        .accessibilityElement(children: .combine)
-                    }
-                }
-                ForEach(MobileDrafts.shared.drafts.filter { draft in
-                    settings.host(draft.hostId) != nil && (inbox.filter == nil || inbox.filter == draft.hostId)
-                }) { draft in
-                    Button { resumeDraft(draft) } label: {
-                        Label(draft.title.isEmpty ? String(draft.prompt.prefix(60)) : draft.title, systemImage: "pencil")
-                            .font(.subheadline).lineLimit(1)
-                    }.contextMenu {
-                        Button("Discard draft", role: .destructive) { MobileDrafts.shared.remove(host: draft.hostId, project: draft.project.id) }
-                    }
-                }
-                let attention = model.attention.filter(matches)
-                if !attention.isEmpty {
-                    Section {
-                        ForEach(attention) { row in sessionRow(row) }
-                    } header: {
-                        // NOT `Section("Needs you")`. A plain string header is
-                        // the system's generic caption, and this is the one
-                        // band on the rail that is ASKING FOR SOMETHING — the
-                        // desktop gives it a dot and a count for exactly that
-                        // reason (app-sidebar.tsx). The dot says "this band is
-                        // different" before the word is read, and the count
-                        // says how much of it there is without opening it.
-                        HStack(spacing: 6) {
-                            Circle().fill(Theme.statusRed).frame(width: 6, height: 6)
-                            Text("Needs you")
-                            Spacer(minLength: 4)
-                            Text("\(attention.count)").monospacedDigit()
-                        }
-                        .bandCaption()
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel("Needs you, \(attention.count)")
-                    }
-                }
-                let pinnedRows = model.pinned.filter(matches)
-                if !pinnedRows.isEmpty {
-                    Section {
-                        ForEach(pinnedRows) { row in sessionRow(row) }
-                            .onMove { offsets, destination in
-                                Task { await reorder(pinnedRows, offsets: offsets, to: destination, key: .pinned) }
-                            }
-                    }
-                }
-                ForEach(model.projects) { group in
-                    Section {
-                        if !collapsed.contains(group.id) {
-                            // SLIM: the header above already names the project,
-                            // and a card's status and branch lines are mostly
-                            // empty on an idle row — so the card was spending
-                            // three lines to restate the header.
-                            // ONE ROW PER CONVERSATION — issue #381. A session
-                            // somebody delegated to used to draw indented under
-                            // the one that delegated, which read as a sub-agent
-                            // of it. It is a conversation; it draws like one.
-                            let drawn = group.sessions
-                            // THE HEADER'S BADGES ARE THE ROW'S CONTEXT. One
-                            // place above and the header has already answered
-                            // "which Mac"; two and it has only listed them.
-                            ForEach(drawn) { row in sessionRow(row, variant: .slim, placesAbove: group.places.count) }
-                                .onMove { offsets, destination in
-                                    Task { await reorder(drawn, offsets: offsets, to: destination, key: .group(group.layoutKey)) }
-                                }
-                        }
-                    } header: {
-                        Button {
-                            if collapsed.contains(group.id) { collapsed.remove(group.id) } else { collapsed.insert(group.id) }
-                            savedCollapsed = collapsed.sorted().joined(separator: "\n")
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
-                                    .font(.caption).foregroundStyle(Theme.textMuted)
-                                ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, mark: group.mark, api: settings.api(for: group.hostId), size: groupMark)
-                                // A HEADER IS A HEADER BY ITS WEIGHT. In
-                                // `textMuted` at body size this named the
-                                // project more quietly than the rows it was
-                                // heading, so a group read as a list with a
-                                // label rather than as a project with its
-                                // conversations under it. The desktop's ratio
-                                // (project-group.tsx) is the row's own size at
-                                // semibold, near-full strength.
-                                Text(group.name).font(Theme.groupHeader).foregroundStyle(Theme.text.opacity(0.9))
-                                    .lineLimit(1).truncationMode(.tail)
-                                // THE DRIVE IS AWAY — issue #534. The same muted
-                                // chip the host badges below use, and never a
-                                // warning colour: a project on an external drive
-                                // is unreadable whenever the drive is elsewhere,
-                                // which is the ordinary state of an external
-                                // drive. Nothing here is broken and nothing needs
-                                // fixing but a cable.
-                                if let away = group.awayLabel {
-                                    Text(away).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
-                                        .lineLimit(1).padding(.horizontal, 4)
-                                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
-                                }
-                                // ONE HEADER, EVERY MAC IT LIVES ON — the
-                                // desktop's rule (project-group.tsx). A group on
-                                // one Mac wears a badge only when there is more
-                                // than one Mac to tell apart; the moment a group
-                                // SPANS two, both are named regardless, because
-                                // then which Mac a row is on is the one thing
-                                // the reader cannot infer from the group.
-                                if group.places.count > 1 || settings.hosts.count > 1 {
-                                    ForEach(group.places) { place in
-                                        Text(hostName(place.hostId)).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
-                                            .lineLimit(1).padding(.horizontal, 4)
-                                            .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
-                                    }
-                                }
-                                Spacer(minLength: 4)
-                                // HOW MANY ARE IN HERE, which a collapsed group
-                                // otherwise cannot say at all — and which an
-                                // open one still answers without counting rows.
-                                Text("\(group.sessions.count)").font(Theme.metaSmall).foregroundStyle(Theme.textMuted).monospacedDigit()
-                            }
-                        }
-                        .accessibilityLabel("\(group.name), \(group.sessions.count) shown, \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
-                        .contextMenu {
-                            // THE DESKTOP'S HOVER "+", WHICH TOUCH HAS NO ROOM
-                            // FOR. A pointer can reveal a control on approach
-                            // and give the space back; a finger cannot hover,
-                            // so a permanent button would cost every header a
-                            // slot to serve the rare press. The long-press menu
-                            // is where this platform already keeps a row's
-                            // secondary verbs, so it goes there — the
-                            // affordance differs because the input does, the
-                            // action is the same one.
-                            newConversation(group)
-                            Divider()
-                            // THE VERB EXISTS, THE MENU JUST DID NOT OFFER IT
-                            // (#327). Tapping the header already collapses the
-                            // group, so this row is not new capability — it is
-                            // the one place a reader who long-pressed can find
-                            // out that the gesture exists, and the only way to
-                            // reach "Collapse others" at all.
-                            Button(collapsed.contains(group.id) ? "Expand" : "Collapse",
-                                   systemImage: collapsed.contains(group.id) ? "chevron.down" : "chevron.right") {
-                                setCollapsed(collapsed.symmetricDifference([group.id]))
-                            }
-                            Button("Collapse others", systemImage: "arrow.down.right.and.arrow.up.left") {
-                                setCollapsed(ProjectHeaderMenu.collapseOthers(all: model.projects.map(\.id), keeping: group.id))
-                            }
-                            Divider()
-                            // MOVE UP AND MOVE DOWN ARE THE HEADER'S REORDER, and
-                            // on this platform they are the whole of it (#348).
-                            //
-                            // The header carried a `.draggable` and it could never
-                            // be lifted by touch: the long press is the menu's,
-                            // and the drag never began. `.onMove` cannot replace
-                            // it either — a header is a section, not a row in a
-                            // `ForEach`, and the List reorders rows. So the drag
-                            // is gone rather than left as an affordance that does
-                            // nothing, and these two do the work on every input.
-                            // They write the same document a drop would have
-                            // (`saveOrder`), including for a group that lives on
-                            // two Macs.
-                            Button("Move up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
-                            Button("Move down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
-                        }
-                    }
-                }
+                agentBand
+                draftRows
+                attentionBand
+                pinnedBand
+                projectBands
                 shelf("Snoozed", rows: inbox.sections.snoozed.sorted { ($0.session.snoozedUntil ?? 0) < ($1.session.snoozedUntil ?? 0) }, open: $snoozedOpen)
                 // THE ROWS ARE NOT HERE UNTIL THIS IS OPENED (#457): the Macs
                 // answer the unsettled list and say how many they kept, which
@@ -369,206 +388,329 @@ struct SessionSidebar: View {
                     onOpen: { await inbox.showSettled() }
                 )
             }
-            // THE DESKTOP'S TWO SENTENCES, NOT ONE THAT COVERS BOTH — #357's
-            // copy audit (`SidebarEmpty`, app-sidebar.tsx). "Your work starts
-            // here / Start a conversation or pick up work from your Mac" was a
-            // welcome, and it was the same welcome whether the Mac had fifty
-            // projects and a quiet week or no registry at all — which are two
-            // different situations with two different next steps. An empty
-            // registry says so and names the verb that fixes it; an empty list
-            // points at the button that fills it.
-            if inbox.loaded && all.isEmpty {
-                if inbox.hasProjects {
-                    ContentUnavailableView("No sessions yet", systemImage: "text.bubble", description: Text("Start one from the button above."))
-                } else {
-                    ContentUnavailableView("No projects yet", systemImage: "folder.badge.plus", description: Text("Register a project to start a session."))
-                }
-            }
+            emptyState
         }
-        // ONE LIST STYLE, SO THERE IS ONE SIDEBAR.
+    }
+
+    /// The Macs this phone cannot reach, above everything else on the rail.
+    private var failureBanners: some View {
+        ForEach(inbox.failures) { failure in
+            Label(failure.needsPairing ? "\(hostName(failure.hostId)) needs pairing" : "\(hostName(failure.hostId)) is offline · showing saved sessions", systemImage: failure.needsPairing ? "lock" : "wifi.slash")
+                .font(.caption).foregroundStyle(Theme.statusAmber)
+        }
+    }
+
+    /// The one line a layout read can fail with.
+    @ViewBuilder
+    private var layoutErrorLine: some View {
+        if let layoutError { Text(layoutError).font(.caption).foregroundStyle(Theme.statusRed) }
+    }
+
+    /// Each Mac's built-in Agent (#531).
+    @ViewBuilder
+    private var agentBand: some View {
+        // EACH MAC'S BUILT-IN AGENT, above everything (#531) —
+        // experimental, and absent on every phone whose Macs have never
+        // switched one on.
         //
-        // `.sidebar` is not a look, it is TWO looks: in a compact width it
-        // falls back to inset-grouped, and in the split view's sidebar column
-        // it renders flat. So the phone drew every band as its own rounded card
-        // — the pinned pair as one card with a hairline between the rows, each
-        // project group as a card, the Settled shelf as a card — while the iPad
-        // drew the same rows directly on the column with SPACING as the only
-        // grouping cue. Same file, same sections, two different products, and
-        // the reported preference was for the phone's: a card is a visible
-        // boundary, and a gap is a boundary you have to infer.
+        // ONE ROW PER MAC, and nothing is looked up in that Mac's
+        // sessions to draw it. The Main band this replaces had to find a
+        // designated conversation among the rows, so it appeared a beat
+        // late on a Mac still answering its first poll and not at all if
+        // the conversation had fallen off the page. The Agent is not a
+        // session: one flag decides, and the row is there the moment the
+        // Mac says it is.
         //
-        // `.insetGrouped` renders the same at both widths, so the cards are now
-        // the grouping cue everywhere. Nothing about the CONTENT changes: the
-        // section spacing, the 30pt row floor, and the card/slim row variants
-        // are all untouched — this only decides what encloses them.
-        .listStyle(.insetGrouped)
-        .listSectionSpacing(12)
-        // A ONE-LINE ROW CANNOT BE ONE LINE TALL while the list floors every
-        // row at the standard 44pt touch target. The slim rows are the whole
-        // point of the two volumes, so the floor comes down to meet them; a
-        // card is taller than either number and is unaffected, and a row is
-        // still a comfortable tap because its content is a full line of text
-        // plus the list's own padding.
-        .environment(\.defaultMinListRowHeight, 30)
-        // THE PAGE STAYS OURS AT BOTH WIDTHS, and that is a deliberate choice
-        // against letting the iPad's floating sidebar panel show its own
-        // material through.
+        // FIRST, AND OUTSIDE SEARCH, for the desktop's reason: it is not
+        // a band and not an entry in the list, it is the row that is
+        // always in the same place. A search is a question about the
+        // whole list and flattens every band — and this row is not in
+        // the list to be found, so it simply goes.
         //
-        // A card reads as a card because of what is BEHIND it. On the phone
-        // that is `Theme.sheet` with the system's grouped-secondary fill on top
-        // — a fixed, known contrast, in both appearances. The panel's material
-        // is translucent and takes its colour from whatever the window happens
-        // to be showing underneath, so the same card would separate cleanly
-        // over a dark transcript and nearly vanish over a light one. Trading a
-        // dependable boundary for a prettier backdrop is the wrong way round
-        // when the boundary is the entire point of this change.
-        //
-        // `scrollContentBackground(.hidden)` hides the SCROLL VIEW's fill only;
-        // the cells keep the system's grouped-secondary background, which is
-        // why the cards still look like system cards rather than like our
-        // colour twice.
-        .scrollContentBackground(.hidden)
-        .background(Theme.sheet)
-        .navigationTitle("Telar")
-        // LARGE AT BOTH WIDTHS. The sidebar column defaults to an inline title,
-        // which is what put "Telar" on the same line as the two toolbar buttons
-        // on the iPad and left the search field to collapse into the bar beside
-        // them. Asking for the large title gives the phone's arrangement back:
-        // the buttons on their own row, the title under them, and — because a
-        // navigation-bar DRAWER is a drawer under the title rather than a slot
-        // inside the bar — the search field under that.
-        .navigationBarTitleDisplayMode(.large)
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions, projects, Macs")
-        // THE HEADER'S VERBS, THE DESKTOP'S SET — issue #404. The rail there is
-        // a search field with Add project and New conversation at its right
-        // (app-sidebar.tsx), and the phone had only the compose button.
-        //
-        // ADD PROJECT IS A VERB, NOT A SETTING. Registering a folder used to be
-        // reachable only from the new-conversation flow, which is the wrong way
-        // round: you add a project in order to start conversations in it, so the
-        // one that comes first cannot be behind the one that follows.
-        //
-        // THE PROJECT PICKER IS GONE, and the Mac filter stays. The desktop
-        // dropped its "All projects ▾" row (#400) because the rail is already
-        // grouped by project and the field already narrows it — a filter for the
-        // same fact, spending a control. The Mac filter has no desktop
-        // counterpart to drop: which machine a row is on is a fact only a phone
-        // holding several Macs has to ask about.
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                addProject
-                Button("New conversation", systemImage: "square.and.pencil", action: newSession).keyboardShortcut("n", modifiers: .command)
-            }
-            ToolbarItem(placement: .topBarLeading) {
-                Menu {
-                    Picker("Mac", selection: Bindable(inbox).filter) {
-                        Text("All Macs").tag(nil as HostID?)
-                        ForEach(settings.hosts) { Text($0.name).tag(Optional($0.id)) }
+        // A DIRECT DESTINATION rather than a `NavigationLink(value:)`.
+        // The value form resolves against the destinations registered
+        // for session ids, and an Agent has no id in that namespace —
+        // there is nothing to register it under.
+        let agentRows = inbox.agents
+        if !agentRows.isEmpty {
+            Section {
+                ForEach(agentRows) { row in
+                    NavigationLink {
+                        if let api = settings.api(for: row.hostId) {
+                            AgentView(hostId: row.hostId, api: api)
+                        } else {
+                            // A Mac whose client cannot be built is one
+                            // this phone is no longer paired with. The
+                            // sentence is better than a blank screen.
+                            ContentUnavailableView(
+                                "That Mac is not connected",
+                                systemImage: "sparkles",
+                                description: Text("Pair with it again to reach its Agent.")
+                            )
+                        }
+                    } label: {
+                        // A TALLER ROW WITH ONE STATUS LINE (#539). It
+                        // was a single line the height of a conversation,
+                        // on the argument that it only answers "where do
+                        // I go to coordinate". The owner's first night
+                        // says half of that was wrong: "is it working, is
+                        // it waiting for me" is a question this row has,
+                        // and answering nothing made the one
+                        // always-present entry the least informative
+                        // thing on the sidebar.
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text("Agent").font(.subheadline)
+                                    // WHAT CAME IN WHILE THE SCREEN WAS
+                                    // SHUT (#541 A). A wake no longer
+                                    // starts a turn, so without this the
+                                    // sidebar cannot say anything
+                                    // arrived. A COUNT and never a tone:
+                                    // whether any of it is waiting on a
+                                    // person is the status line's job,
+                                    // one line down, and two things
+                                    // competing to signal urgency on one
+                                    // row is how neither gets read.
+                                    if let badge = row.badge {
+                                        Text(badge)
+                                            .font(Theme.monoSmall)
+                                            .monospacedDigit()
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 1)
+                                            .background(Theme.surface, in: Capsule())
+                                            .foregroundStyle(Theme.textMuted)
+                                            .accessibilityLabel("\(badge) unread")
+                                    }
+                                    // WHICH MAC, and only when there is more
+                                    // than one to tell apart — the rule
+                                    // `HostLabel` applies to every other row
+                                    // on this sidebar.
+                                    if settings.hosts.count > 1, let name = settings.host(row.hostId)?.name {
+                                        Text(name).font(.caption).foregroundStyle(Theme.textMuted)
+                                    }
+                                }
+                                .lineLimit(1)
+                                agentStatusLine(row.status)
+                            }
+                        } icon: {
+                            Image(systemName: "sparkles")
+                        }
+                        .padding(.vertical, 4)
                     }
-                } label: { Label(inbox.filter.map(hostName) ?? "All Macs", systemImage: "line.3.horizontal.decrease") }
-            }
-        }
-        // A REGISTRATION IS A PUSH INSIDE A SHEET, not a push onto the rail: the
-        // browser walks the MAC's folders and a person who gets lost in it wants
-        // one dismissal, not a stack of them to unwind.
-        .sheet(item: $addingTo) { target in
-            NavigationStack {
-                AddProjectView(api: target.api) { _ in
-                    addingTo = nil
-                    Task { await inbox.refresh() }
                 }
-                .navigationTitle("Add project")
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { addingTo = nil } } }
-            }
-        }
-        .sheet(isPresented: $showUsage) {
-            NavigationStack {
-                UsageView(settings: settings, hostId: inbox.filter ?? settings.hosts.first?.id)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showUsage = false } } }
-            }
-        }
-        // AN ICON ROW, NOT A SENTENCE. The desktop's footer
-        // (app-sidebar-footer.tsx) is a row of muted glyphs on the left, and
-        // that is the right shape for a destination you reach twice a week: a
-        // full-width tinted "Settings" was the loudest thing on the rail,
-        // reading as the sidebar's primary action directly beneath the work
-        // that actually is.
-        //
-        // SETTINGS FIRST, THEN USAGE — the desktop's order and its reason
-        // (app-sidebar-footer.tsx, #389): Settings is the one a person reaches
-        // for, Usage is the one they look at. The phone drew only the gear
-        // because there was no usage screen to open; there is one now (#404), so
-        // the footer is the pair it is over there.
-        //
-        // The desktop's update control has no counterpart here — this app
-        // updates through TestFlight, which is the App Store's job and not a
-        // button's.
-        //
-        // The glyphs keep the web's size and the tap targets do not: 32pt is a
-        // mouse target, and a finger is owed the full 44.
-        //
-        // BOTH GLYPHS BELOW SCALE WITH THEIR OWN SQUARE (#674). 17-in-44 is
-        // the proportion at every text size, not just the default one — see
-        // `scaledGlyphBox`.
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 0) {
-                Button(action: openSettings) {
-                    Image(systemName: "gearshape")
-                        .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
+            } header: {
+                // A GLYPH BEFORE THE WORD, the treatment "Needs you"
+                // gets and for the same reason: it says this band is
+                // different before the word is read. No count — one Mac
+                // has at most one Agent, so a number here would only
+                // ever say how many Macs are paired.
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                    Text(agentRows.count > 1 ? "Agents" : "Agent")
                 }
-                .keyboardShortcut(",", modifiers: .command)
-                .accessibilityLabel("Settings")
-                Button { showUsage = true } label: {
-                    Image(systemName: "chart.bar")
-                        .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
+                .bandCaption()
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    /// Saved but unsent prompts, which are work in progress and go first.
+    @ViewBuilder
+    private var draftRows: some View {
+        ForEach(MobileDrafts.shared.drafts.filter { draft in
+            settings.host(draft.hostId) != nil && (inbox.filter == nil || inbox.filter == draft.hostId)
+        }) { draft in
+            Button { resumeDraft(draft) } label: {
+                Label(draft.title.isEmpty ? String(draft.prompt.prefix(60)) : draft.title, systemImage: "pencil")
+                    .font(.subheadline).lineLimit(1)
+            }.contextMenu {
+                Button("Discard draft", role: .destructive) { MobileDrafts.shared.remove(host: draft.hostId, project: draft.project.id) }
+            }
+        }
+    }
+
+    /// The "Needs you" band.
+    @ViewBuilder
+    private var attentionBand: some View {
+        let attention = model.attention.filter(matches)
+        if !attention.isEmpty {
+            Section {
+                ForEach(attention) { row in sessionRow(row) }
+            } header: {
+                // NOT `Section("Needs you")`. A plain string header is
+                // the system's generic caption, and this is the one
+                // band on the rail that is ASKING FOR SOMETHING — the
+                // desktop gives it a dot and a count for exactly that
+                // reason (app-sidebar.tsx). The dot says "this band is
+                // different" before the word is read, and the count
+                // says how much of it there is without opening it.
+                HStack(spacing: 6) {
+                    Circle().fill(Theme.statusRed).frame(width: 6, height: 6)
+                    Text("Needs you")
+                    Spacer(minLength: 4)
+                    Text("\(attention.count)").monospacedDigit()
                 }
-                .accessibilityLabel("Usage")
-                .disabled(settings.hosts.isEmpty)
-                Spacer(minLength: 0)
+                .bandCaption()
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Needs you, \(attention.count)")
             }
-            .foregroundStyle(Theme.textMuted)
-            .padding(.horizontal, 8)
-            .background(Theme.sheet)
         }
-        // NO SEPARATE LAYOUT READ ANY MORE. The arrangement rides each Mac's
-        // live read (InboxStore), so refreshing the inbox refreshes where
-        // things sit — and the rail learns about a drag made on the Mac on the
-        // next poll instead of only when it is opened again.
-        .refreshable { await inbox.refresh() }
-        .task {
-            collapsed = Set(savedCollapsed.split(separator: "\n").map(String.init))
-        }
-        .sheet(item: $snoozing) { row in snoozeSheet(row) }
-        // RENAME IS AN ALERT, NOT A SHEET. One field and two buttons is the
-        // alert's whole shape, and a sheet for it would cost a push and a
-        // dismiss to type a title.
-        .alert("Rename session", isPresented: presenting($renaming)) {
-            TextField("Title", text: $renameDraft)
-            Button("Rename") {
-                guard let row = renaming else { return }
-                let title = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                renaming = nil
-                guard !title.isEmpty, title != row.session.title else { return }
-                Task { await patch(row, SessionPatch(title: title)) }
+    }
+
+    /// The pinned rows, and their drag.
+    @ViewBuilder
+    private var pinnedBand: some View {
+        let pinnedRows = model.pinned.filter(matches)
+        if !pinnedRows.isEmpty {
+            Section {
+                ForEach(pinnedRows) { row in sessionRow(row) }
+                    .onMove { offsets, destination in
+                        Task { await reorder(pinnedRows, offsets: offsets, to: destination, key: .pinned) }
+                    }
             }
-            Button("Cancel", role: .cancel) { renaming = nil }
         }
-        // THE CONFIRMATION SAYS WHAT IT TAKES rather than asking "are you
-        // sure": the engine deletes the transcript with the session and there
-        // is no undo, so the sentence is the only place that can be said.
-        .confirmationDialog(
-            deleting.map { "Delete “\($0.session.title.isEmpty ? "Untitled session" : $0.session.title)”?" } ?? "Delete session?",
-            isPresented: presenting($deleting),
-            titleVisibility: .visible
-        ) {
-            Button("Delete session", role: .destructive) {
-                guard let row = deleting else { return }
-                deleting = nil
-                Task { await remove(row) }
+    }
+
+    /// One card per project group, each with its header and its drag.
+    @ViewBuilder
+    private var projectBands: some View {
+        ForEach(model.projects) { group in
+            Section {
+                if !collapsed.contains(group.id) {
+                    // SLIM: the header above already names the project,
+                    // and a card's status and branch lines are mostly
+                    // empty on an idle row — so the card was spending
+                    // three lines to restate the header.
+                    // ONE ROW PER CONVERSATION — issue #381. A session
+                    // somebody delegated to used to draw indented under
+                    // the one that delegated, which read as a sub-agent
+                    // of it. It is a conversation; it draws like one.
+                    let drawn = group.sessions
+                    // THE HEADER'S BADGES ARE THE ROW'S CONTEXT. One
+                    // place above and the header has already answered
+                    // "which Mac"; two and it has only listed them.
+                    ForEach(drawn) { row in sessionRow(row, variant: .slim, placesAbove: group.places.count) }
+                        .onMove { offsets, destination in
+                            Task { await reorder(drawn, offsets: offsets, to: destination, key: .group(group.layoutKey)) }
+                        }
+                }
+            } header: {
+                Button {
+                    if collapsed.contains(group.id) { collapsed.remove(group.id) } else { collapsed.insert(group.id) }
+                    savedCollapsed = collapsed.sorted().joined(separator: "\n")
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
+                            .font(.caption).foregroundStyle(Theme.textMuted)
+                        ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, mark: group.mark, api: settings.api(for: group.hostId), size: groupMark)
+                        // A HEADER IS A HEADER BY ITS WEIGHT. In
+                        // `textMuted` at body size this named the
+                        // project more quietly than the rows it was
+                        // heading, so a group read as a list with a
+                        // label rather than as a project with its
+                        // conversations under it. The desktop's ratio
+                        // (project-group.tsx) is the row's own size at
+                        // semibold, near-full strength.
+                        Text(group.name).font(Theme.groupHeader).foregroundStyle(Theme.text.opacity(0.9))
+                            .lineLimit(1).truncationMode(.tail)
+                        // THE DRIVE IS AWAY — issue #534. The same muted
+                        // chip the host badges below use, and never a
+                        // warning colour: a project on an external drive
+                        // is unreadable whenever the drive is elsewhere,
+                        // which is the ordinary state of an external
+                        // drive. Nothing here is broken and nothing needs
+                        // fixing but a cable.
+                        if let away = group.awayLabel {
+                            Text(away).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
+                                .lineLimit(1).padding(.horizontal, 4)
+                                .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                        }
+                        // ONE HEADER, EVERY MAC IT LIVES ON — the
+                        // desktop's rule (project-group.tsx). A group on
+                        // one Mac wears a badge only when there is more
+                        // than one Mac to tell apart; the moment a group
+                        // SPANS two, both are named regardless, because
+                        // then which Mac a row is on is the one thing
+                        // the reader cannot infer from the group.
+                        if group.places.count > 1 || settings.hosts.count > 1 {
+                            ForEach(group.places) { place in
+                                Text(hostName(place.hostId)).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
+                                    .lineLimit(1).padding(.horizontal, 4)
+                                    .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                            }
+                        }
+                        Spacer(minLength: 4)
+                        // HOW MANY ARE IN HERE, which a collapsed group
+                        // otherwise cannot say at all — and which an
+                        // open one still answers without counting rows.
+                        Text("\(group.sessions.count)").font(Theme.metaSmall).foregroundStyle(Theme.textMuted).monospacedDigit()
+                    }
+                }
+                .accessibilityLabel("\(group.name), \(group.sessions.count) shown, \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
+                .contextMenu {
+                    // THE DESKTOP'S HOVER "+", WHICH TOUCH HAS NO ROOM
+                    // FOR. A pointer can reveal a control on approach
+                    // and give the space back; a finger cannot hover,
+                    // so a permanent button would cost every header a
+                    // slot to serve the rare press. The long-press menu
+                    // is where this platform already keeps a row's
+                    // secondary verbs, so it goes there — the
+                    // affordance differs because the input does, the
+                    // action is the same one.
+                    newConversation(group)
+                    Divider()
+                    // THE VERB EXISTS, THE MENU JUST DID NOT OFFER IT
+                    // (#327). Tapping the header already collapses the
+                    // group, so this row is not new capability — it is
+                    // the one place a reader who long-pressed can find
+                    // out that the gesture exists, and the only way to
+                    // reach "Collapse others" at all.
+                    Button(collapsed.contains(group.id) ? "Expand" : "Collapse",
+                           systemImage: collapsed.contains(group.id) ? "chevron.down" : "chevron.right") {
+                        setCollapsed(collapsed.symmetricDifference([group.id]))
+                    }
+                    Button("Collapse others", systemImage: "arrow.down.right.and.arrow.up.left") {
+                        setCollapsed(ProjectHeaderMenu.collapseOthers(all: model.projects.map(\.id), keeping: group.id))
+                    }
+                    Divider()
+                    // MOVE UP AND MOVE DOWN ARE THE HEADER'S REORDER, and
+                    // on this platform they are the whole of it (#348).
+                    //
+                    // The header carried a `.draggable` and it could never
+                    // be lifted by touch: the long press is the menu's,
+                    // and the drag never began. `.onMove` cannot replace
+                    // it either — a header is a section, not a row in a
+                    // `ForEach`, and the List reorders rows. So the drag
+                    // is gone rather than left as an affordance that does
+                    // nothing, and these two do the work on every input.
+                    // They write the same document a drop would have
+                    // (`saveOrder`), including for a group that lives on
+                    // two Macs.
+                    Button("Move up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
+                    Button("Move down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
+                }
             }
-            Button("Cancel", role: .cancel) { deleting = nil }
-        } message: {
-            Text("The conversation and everything it holds go with it. This cannot be undone.")
+        }
+    }
+
+    /// The two sentences an empty rail can say.
+    @ViewBuilder
+    private var emptyState: some View {
+        // THE DESKTOP'S TWO SENTENCES, NOT ONE THAT COVERS BOTH — #357's
+        // copy audit (`SidebarEmpty`, app-sidebar.tsx). "Your work starts
+        // here / Start a conversation or pick up work from your Mac" was a
+        // welcome, and it was the same welcome whether the Mac had fifty
+        // projects and a quiet week or no registry at all — which are two
+        // different situations with two different next steps. An empty
+        // registry says so and names the verb that fixes it; an empty list
+        // points at the button that fills it.
+        if inbox.loaded && all.isEmpty {
+            if inbox.hasProjects {
+                ContentUnavailableView("No sessions yet", systemImage: "text.bubble", description: Text("Start one from the button above."))
+            } else {
+                ContentUnavailableView("No projects yet", systemImage: "folder.badge.plus", description: Text("Register a project to start a session."))
+            }
         }
     }
 

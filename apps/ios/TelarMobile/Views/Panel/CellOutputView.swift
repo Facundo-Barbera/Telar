@@ -171,31 +171,21 @@ private struct DataframeGrid: View {
     @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 34
     @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 24
 
+    /// THE SECOND DECLARATION ON #764's LIST, and the one that shows why a
+    /// millisecond threshold would not have worked. This body is byte-identical
+    /// across three CI archives that measured it below 500 ms, then 518 ms, then
+    /// 658 ms — green, red, red on unchanged source with no commit in between.
+    /// Doubly-nested `ForEach(Array(…enumerated()), id: \.offset)` with
+    /// literal-heavy `.frame`/`.padding` is a small expression that the solver
+    /// is nonetheless slow on, and it sits inside the measurement's own error
+    /// bars. Cutting it takes it off the list rather than out of the noise.
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ScrollView(.horizontal, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 0) {
-                        ForEach(Array(columns.enumerated()), id: \.offset) { i, column in
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(column).font(.system(Theme.caption, weight: .semibold)).lineLimit(1)
-                                if let dtype = dtypes[safe: i] { Text(dtype).font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted) }
-                            }
-                            .padding(.horizontal, 6).frame(width: columnWidth, height: headerHeight, alignment: .leading)
-                        }
-                    }
-                    .background(Theme.subtle)
+                    headerRow
                     ForEach(Array(rows.prefix(50).enumerated()), id: \.offset) { r, row in
-                        HStack(spacing: 0) {
-                            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                                Text(cellString(cell))
-                                    .font(.system(Theme.caption, design: .monospaced))
-                                    .foregroundStyle(cell == .null ? Theme.textMuted : Theme.text)
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 6).frame(width: columnWidth, height: rowHeight, alignment: .leading)
-                            }
-                        }
-                        .background(r % 2 == 0 ? Color.clear : Theme.subtle.opacity(0.4))
+                        dataRow(row, index: r)
                     }
                 }
             }
@@ -203,6 +193,35 @@ private struct DataframeGrid: View {
             Text("\(shape.first ?? rows.count) × \(shape.last ?? columns.count)\(truncated ? " · preview" : "")")
                 .font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
         }
+    }
+
+    /// The column names and their dtypes.
+    private var headerRow: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(columns.enumerated()), id: \.offset) { i, column in
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(column).font(.system(Theme.caption, weight: .semibold)).lineLimit(1)
+                    if let dtype = dtypes[safe: i] { Text(dtype).font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted) }
+                }
+                .padding(.horizontal, 6).frame(width: columnWidth, height: headerHeight, alignment: .leading)
+            }
+        }
+        .background(Theme.subtle)
+    }
+
+    /// One row of cells. `index` is the row's offset, and it is here for the
+    /// banding — the zebra fill is a function of the position, not of the data.
+    private func dataRow(_ row: [JSONValue], index: Int) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                Text(cellString(cell))
+                    .font(.system(Theme.caption, design: .monospaced))
+                    .foregroundStyle(cell == .null ? Theme.textMuted : Theme.text)
+                    .lineLimit(1)
+                    .padding(.horizontal, 6).frame(width: columnWidth, height: rowHeight, alignment: .leading)
+            }
+        }
+        .background(index % 2 == 0 ? Color.clear : Theme.subtle.opacity(0.4))
     }
 
     private func cellString(_ cell: JSONValue) -> String {
