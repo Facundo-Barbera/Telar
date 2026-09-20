@@ -51,6 +51,7 @@ import {
   BIG_JOURNAL,
   BIG_SESSION,
   CONTROL_SESSION,
+  ITEMS_PER_TURN,
   JOURNAL_GROWTH,
   MEASURED_TURNS,
   OUTLINE_BATCH,
@@ -365,6 +366,57 @@ describe("#516's tools, on the same 300-session fixture", () => {
     table.push({ answer: "tool sessions_grep", bytes: Buffer.byteLength(text, "utf8"), note: "default limit 20, 200 chars of context each" });
     expect(text.length).toBeLessThanOrEqual(12_000);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
+  });
+
+  /**
+   * EVERY BYTE IN THE TABLE IS A BYTE OF AN ANSWER — the assertion without which
+   * the six numbers above are not measurements.
+   *
+   * THE GAP THIS CLOSES, NAMED PLAINLY. Each byte test above asserts a CEILING
+   * and that the text parses. Both of those are satisfied by an answer that is
+   * correctly shaped and says nothing: `{"matches":[],"more":false}` is 30
+   * bytes, parses, and is comfortably under every ceiling here — so a `grep`
+   * that silently matched nothing would not fail, and its byte number would go
+   * into the issue's table looking like an unusually good result. The route half
+   * of this file has had a `bytes > 100` floor since it was written; the tool
+   * half never got one, and a floor on bytes would not have caught that example
+   * anyway.
+   *
+   * SO THE CHECK IS ON COUNTS AND CONTENT, not on size. Each answer must carry
+   * the rows it claims to have counted, at the number the fixture put there —
+   * quantities an empty or wrongly-filtered answer cannot produce, which is the
+   * distinction `docs/operations/dispatch-board.md` §3 draws between a check and
+   * a check-shaped thing.
+   *
+   * `grep` CARRIES THE SHARPEST ONE: a full page of 20, and every context
+   * actually containing the pattern. An answer built from the wrong rows passes
+   * a count and fails that.
+   */
+  test("every byte in the table is a byte of an ANSWER — the six carry the rows they counted", async () => {
+    const body = async <T>(name: string, args: Record<string, unknown>): Promise<T> =>
+      JSON.parse(await call(name, args)) as T;
+
+    const outline = await body<{ turns: unknown[]; total: number }>("sessions_outline", { sessionId: BIG_SESSION });
+    expect(outline.turns.length).toBeGreaterThan(1);
+    expect(outline.total).toBe(MEASURED_TURNS + 1);
+
+    const find = await body<{ sessions: unknown[] }>("sessions_find", { q: "appearance" });
+    expect(find.sessions.length).toBe(10);
+
+    const answered = await body<{ text: string; totalChars: number }>("sessions_answer", { sessionId: BIG_SESSION });
+    expect(answered.totalChars).toBe(ANSWER_CHARS);
+    expect(answered.text.length).toBeGreaterThan(0);
+
+    const steps = await body<{ items: unknown[] }>("sessions_steps", { sessionId: BIG_SESSION, runId: "run_0" });
+    expect(steps.items.length).toBe(ITEMS_PER_TURN);
+
+    const step = await body<{ text: string; index: number }>("sessions_step", { sessionId: BIG_SESSION, runId: "run_0", step: 0 });
+    expect(step.index).toBe(0);
+    expect(step.text.length).toBeGreaterThan(0);
+
+    const grep = await body<{ matches: Array<{ context: string }> }>("sessions_grep", { sessionId: BIG_SESSION, pattern: "index.lock" });
+    expect(grep.matches.length).toBe(20);
+    expect(grep.matches.filter((match) => match.context.toLowerCase().includes("index.lock"))).toHaveLength(20);
   });
 
   /**
