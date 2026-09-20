@@ -119,7 +119,7 @@ Each time the artefact was sound and the tool was broken, and each time it was
 caught by looking again rather than by the check passing. **A green check from
 an instrument you just wrote is evidence about the instrument first.**
 
-### Two cheap habits that make a check non-vacuous
+### Cheap habits that make a check non-vacuous
 
 **Compare counts, not colours.** `main` had 3516 tests across 276 files; the PR
 had 3533 across 277 — exactly the +17 and +1 it claimed to add. That proves the
@@ -155,6 +155,16 @@ gh run view <run-id> --log --job <job-id>
 then grep for `Ran N tests across M files`. Two PRs whose counts were sitting
 right there would have been reported as unverifiable on the strength of that
 empty result.
+
+**Before you treat a discrepancy as damage, check that both numbers measure the
+same thing.** Characters are not bytes — a 44-byte gap between python's `len()`
+and `wc -c`, on a file carrying multibyte quotes and dashes, read exactly like a
+stale-base clobber of someone else's commit. A share of the qualifying rows is
+not a share of the file — journal compaction reported as "11% instead of 57%"
+was two figures that were **both true**, with different denominators. In each
+case the artefacts themselves settled it (diff the live file against the intended
+one), because from the number alone both stories are equally credible: reasoning
+produces whichever one you went looking for.
 
 ---
 
