@@ -44,6 +44,26 @@ export const GitHubLabel = z.object({ name: z.string(), color: z.string().option
 export type GitHubLabel = z.infer<typeof GitHubLabel>;
 
 /**
+ * Where an author's face is.
+ *
+ * DERIVED, NOT READ, AND `gh` IS THE REASON. There is no avatar field to ask for:
+ * `--json author` answers `{id, is_bot, login, name}` on every list and detail
+ * read, and a comment's author answers `{login}` alone — measured. So no field set
+ * in the engine could have carried this, and the engine builds the URL from the
+ * login instead. See `apps/engine/src/github.ts` for the measurement and for the
+ * one case it cannot get right.
+ *
+ * NO SIZE ON IT. `github.com/<login>.png` takes a `?size=` and the size is the
+ * renderer's business — a 16px row glyph and a 40px comment face are the same
+ * fact at two scales. Clients append their own; the engine has no business
+ * guessing.
+ *
+ * ABSENT IS ORDINARY, not a failure: a bot has no such page, and a surface draws
+ * a monogram rather than a broken image.
+ */
+const authorAvatarField = { authorAvatar: z.string().min(1).optional() };
+
+/**
  * Which rows a list read asks for.
  *
  * TWO ENUMS, NOT ONE, because `merged` is not a state an issue can be in and
@@ -142,6 +162,7 @@ export type GitHubFacets = z.infer<typeof GitHubFacets>;
  */
 const forgeRowFields = {
   author: z.string().optional(),
+  ...authorAvatarField,
   labels: z.array(GitHubLabel),
   /** Logins, not names: a bot has a login and no name. */
   assignees: z.array(z.string()),
@@ -250,6 +271,7 @@ export type GitHubSnapshot = z.infer<typeof GitHubSnapshot>;
  */
 export const GitHubComment = z.object({
   author: z.string().optional(),
+  ...authorAvatarField,
   /** GitHub's own word for how the author relates to the repository — `OWNER`,
    *  `MEMBER`, `CONTRIBUTOR`, `NONE`. Passed through, not mapped: which of these
    *  is worth a badge is a display decision. */
@@ -296,6 +318,7 @@ export type GitHubComment = z.infer<typeof GitHubComment>;
  */
 export const GitHubReview = z.object({
   author: z.string().optional(),
+  ...authorAvatarField,
   /** `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, `PENDING`. */
   state: z.string(),
   body: z.string(),

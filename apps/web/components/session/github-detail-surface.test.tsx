@@ -100,7 +100,16 @@ describe("the opening post", () => {
     const markup = renderToStaticMarkup(<ForgeFacts thing={issue()} />);
     expect(markup).toContain("Facundo-Barbera");
     expect(markup).toContain("opened this");
-    expect(markup.split("Facundo-Barbera").length - 1).toBe(1);
+    // ONE MENTION IN TEXT. The avatar's `title` carries the login too — it is how a
+    // monogram says whose letter it is — so the count is of the visible name.
+    expect(markup.split(">Facundo-Barbera<").length - 1).toBe(1);
+  });
+
+  test("and carries the author's face, so the opening post is marked like every reply", () => {
+    // #790: the thread's one attribution had no face while the replies below it did,
+    // which made the opening post the odd row out in its own thread.
+    const markup = renderToStaticMarkup(<ForgeFacts thing={issue({ authorAvatar: "https://github.com/Facundo-Barbera.png" })} />);
+    expect(markup).toContain("https://github.com/Facundo-Barbera.png?size=48");
   });
 });
 
@@ -124,6 +133,38 @@ describe("a reply's author bar", () => {
   test("a review still says its verdict, and a plain comment still says nothing", () => {
     expect(bar({ kind: "review", state: "APPROVED" })).toContain("approved");
     expect(bar()).not.toContain("commented");
+  });
+
+  /**
+   * THE FACE — issue #790, and this bar is the reason the feature exists.
+   *
+   * A face is decoration on a repository with twelve contributors. Here nearly every
+   * comment is an agent under one account, so the author bar is a column of identical
+   * logins and the face is the only mark in it a reader recognises without reading.
+   */
+  test("draws the author's face at the head of the bar, before the name", () => {
+    const markup = bar({ avatar: "https://github.com/Facundo-Barbera.png" });
+    // The size travels with the request and not with the record — one size for
+    // every placement, which is what keeps a forty-comment thread to one fetch.
+    expect(markup).toContain("https://github.com/Facundo-Barbera.png?size=48");
+    // Before the name, not after it: the face is what the eye lands on.
+    expect(markup.indexOf("size=48")).toBeLessThan(markup.indexOf("Facundo-Barbera<"));
+  });
+
+  test("an author with no face gets a LETTER, not a blank circle or a broken image", () => {
+    // Absent is ordinary: a bot has no derived URL at all. A broken-image glyph
+    // would read as the renderer being broken, and an empty circle says nothing.
+    const markup = bar({ author: "app/renovate", avatar: undefined });
+    expect(markup).not.toContain("<img");
+    expect(markup).toContain(">R<");
+  });
+
+  test("the face is decorative, so a screen reader hears the name once", () => {
+    // The login is right beside it in text. An `alt` naming the author again would
+    // make every card in the thread say who wrote it twice.
+    const markup = bar({ avatar: "https://github.com/ada.png" });
+    expect(markup).toContain('alt=""');
+    expect(markup).toContain('aria-hidden="true"');
   });
 });
 

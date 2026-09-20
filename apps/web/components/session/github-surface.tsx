@@ -82,6 +82,7 @@ import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { filterChips, issueStatus, offersMerge, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeFilterChip, type ForgeStatus } from "@/lib/github-forge";
 import { insertReference, issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
+import { GitHubAvatar } from "@/components/session/github-avatar";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import { issueSessionStart } from "@/lib/issue-session";
 import { canvasHref } from "@/lib/session-list";
@@ -247,6 +248,7 @@ function ForgeRow({
   url,
   when,
   author,
+  authorAvatar,
   assignees,
   labels,
   milestone,
@@ -264,6 +266,7 @@ function ForgeRow({
   url: string;
   when: number;
   author?: string;
+  authorAvatar?: string;
   assignees: readonly string[];
   labels: readonly { name: string; color?: string }[];
   milestone?: string;
@@ -306,10 +309,24 @@ function ForgeRow({
           {/* The facts line: status in words, then who opened it, then when. */}
           <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-3xs text-muted-foreground">
             <span className={tone}>{STATUS_LABEL[status]}</span>
-            {author && <span>· {author}</span>}
+            {/* WHO FILED IT, WITH A FACE (#790). The face is beside the login and
+                does not replace it: a login is still the thing you would say out
+                loud, and this row is scanned for its status glyph first — which is
+                why the avatar rides the facts line rather than taking the leading
+                edge the glyph earns. */}
+            {author && (
+              <span className="inline-flex items-center gap-1">
+                ·
+                <GitHubAvatar login={author} {...(authorAvatar ? { src: authorAvatar } : {})} className="size-3" />
+                {author}
+              </span>
+            )}
             <span>· {fmtAgo(when)}</span>
-            {/* WHO HAS IT. An avatar stack would be prettier and needs a network
-                round trip per person; a login is the thing you would say out loud. */}
+            {/* WHO HAS IT, AS LOGINS AND NOT AS A STACK OF FACES. Not a cost
+                argument any more — #790 established that an avatar costs no `gh`
+                call — but a width one: three faces and an overflow count in a
+                320px row would push the labels onto a fourth line for names the
+                reader would then have to hover to read. */}
             {assignees.length > 0 && (
               <span className="inline-flex items-center gap-0.5 text-foreground" title={`Assigned to ${assignees.join(", ")}`}>
                 <UserRoundIcon className="size-2.5" />
@@ -418,6 +435,7 @@ function IssueRow({ issue, open, onOpen, busy, onStart }: { issue: GitHubIssue; 
       url={issue.url}
       when={issue.updatedAt}
       {...(issue.author ? { author: issue.author } : {})}
+      {...(issue.authorAvatar ? { authorAvatar: issue.authorAvatar } : {})}
       assignees={issue.assignees}
       labels={issue.labels}
       {...(issue.milestone ? { milestone: issue.milestone } : {})}
@@ -446,6 +464,7 @@ export function PullRow({ pull, mine, open, onOpen }: { pull: GitHubPullRequest;
       url={pull.url}
       when={pull.updatedAt}
       {...(pull.author ? { author: pull.author } : {})}
+      {...(pull.authorAvatar ? { authorAvatar: pull.authorAvatar } : {})}
       assignees={pull.assignees}
       labels={pull.labels}
       {...(pull.milestone ? { milestone: pull.milestone } : {})}

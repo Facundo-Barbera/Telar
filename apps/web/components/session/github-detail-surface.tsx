@@ -87,6 +87,7 @@ import {
   type ForgeEntry,
 } from "@/lib/github-forge";
 import { checkReference, failingChecksReference, issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
+import { GitHubAvatar } from "@/components/session/github-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -336,7 +337,15 @@ export function EntryCard({ entry }: { entry: ForgeEntry }) {
   return (
     <div className="min-w-0 overflow-hidden rounded-md border border-border bg-card">
       {entry.kind !== "body" && (
-        <div className="flex min-w-0 items-baseline gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-3xs text-muted-foreground">
+        /* `items-center` RATHER THAN `items-baseline` NOW THERE IS A FACE IN IT
+           (#790): a circle has no baseline, so on the baseline it sat a pixel low
+           against the name and the badge beside it. Everything on this bar is one
+           line of the same size, so centring changes nothing else. */
+        <div className="flex min-w-0 items-center gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-3xs text-muted-foreground">
+          {/* THE FACE, THEN THE NAME. This is the bar the avatar exists for — see
+              `GitHubAvatar` on why a column of identical logins is the case where
+              one earns its pixels. */}
+          <GitHubAvatar {...(entry.author ? { login: entry.author } : {})} {...(entry.avatar ? { src: entry.avatar } : {})} className="size-4" />
           <span className="min-w-0 truncate font-medium text-foreground">{entry.author ?? "someone"}</span>
           {entry.association && (
             <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
@@ -911,6 +920,13 @@ export function ForgeFacts({
   return (
     <div className="flex flex-col gap-1.5 px-3 py-2.5">
       <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-2xs text-muted-foreground">
+        {/* The thread's one attribution gets the face too, so the opening post is
+            marked the same way every reply below it is. */}
+        <GitHubAvatar
+          {...(thing.author ? { login: thing.author } : {})}
+          {...(thing.authorAvatar ? { src: thing.authorAvatar } : {})}
+          className="size-4"
+        />
         <span className="font-medium text-foreground">{thing.author ?? "someone"}</span>
         <span title={when(openedAt)}>opened this {fmtAgo(openedAt)}</span>
         {thing.updatedAt > openedAt && <span>· updated {fmtAgo(thing.updatedAt)}</span>}
@@ -1093,6 +1109,7 @@ export function ForgeDetailSurface({
   const timeline = buildForgeTimeline({
     body: thing.body,
     ...(thing.author ? { author: thing.author } : {}),
+    ...(thing.authorAvatar ? { authorAvatar: thing.authorAvatar } : {}),
     createdAt: openedAt,
     comments: thing.comments,
     ...(pull ? { reviews: pull.reviews } : {}),

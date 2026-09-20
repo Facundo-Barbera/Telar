@@ -110,6 +110,9 @@ describe("parseIssues", () => {
       title: "Navigation freezes",
       state: "OPEN",
       author: "ada",
+      // DERIVED FROM THE LOGIN, because `gh` sends no avatar field at ALL — the
+      // author object above is everything it sends, and it has no URL in it (#790).
+      authorAvatar: "https://github.com/ada.png",
       // A label with no name is dropped rather than rendered as an empty chip, and
       // so is an assignee with no login.
       labels: [{ name: "bug", color: "d73a4a" }],
@@ -134,6 +137,82 @@ describe("parseIssues", () => {
 
   test("a row without a number is not a row", () => {
     expect(parseIssues(JSON.stringify([{ title: "orphan" }]))).toEqual([]);
+  });
+});
+
+const DAY = "2026-08-01T00:00:00Z";
+
+/**
+ * THE AUTHOR'S FACE — issue #790.
+ *
+ * THE PREMISE HAD TO BE CORRECTED AND THAT IS WHAT THESE PIN. #790 reads as "these
+ * fields are not in `github.ts`'s `gh` field sets"; for the issue↔PR link that is
+ * exactly right, and for the avatar there is NO FIELD TO ADD. Measured against this
+ * repository: `--json author` answers `{id, is_bot, login, name}` and `--json
+ * comments` answers `author: {login}`. So these tests are about a DERIVATION, and the
+ * one below about the field sets is about `author` — because if `author` ever left a
+ * field set, both the login and the face would go with it and no avatar test would
+ * notice.
+ */
+describe("the author's face", () => {
+  const rowWith = (author: unknown) =>
+    parseIssues(JSON.stringify([{ number: 1, title: "t", state: "OPEN", url: "u", updatedAt: DAY, author }]))[0]!;
+
+  test("comes from the login, because gh sends no avatar field to read", () => {
+    expect(rowWith({ login: "ada", name: "Ada L", id: "MDQ6VXNlcjE=", is_bot: false })).toMatchObject({
+      author: "ada",
+      // GitHub's own redirect: measured, `github.com/<login>.png?size=64` answers
+      // 302 to `avatars.githubusercontent.com/u/…?s=64`. No size here — that is the
+      // renderer's, so one shared size keeps a thread to one fetch.
+      authorAvatar: "https://github.com/ada.png",
+    });
+    expect(rowWith({ login: "ada" }).authorAvatar).not.toContain("size=");
+  });
+
+  test("A BOT GETS NO FACE, because the derived URL is WRONG for one rather than slow", () => {
+    /**
+     * Measured, in both the shapes `gh` uses. A list or detail author carries the
+     * flag and the prefix — `{is_bot: true, login: "app/renovate"}`, against
+     * renovatebot/renovate — and `github.com/app/renovate.png` is not a user page.
+     * Either signal alone is enough, so an author object that dropped one still
+     * lands here.
+     */
+    expect(rowWith({ login: "app/renovate", is_bot: true }).authorAvatar).toBeUndefined();
+    expect(rowWith({ login: "app/renovate" }).authorAvatar).toBeUndefined();
+    expect(rowWith({ login: "renovate", is_bot: true }).authorAvatar).toBeUndefined();
+    // …and the login still travels. A bot's comment must still say who wrote it.
+    expect(rowWith({ login: "app/renovate", is_bot: true }).author).toBe("app/renovate");
+  });
+
+  test("no author at all is no face, not a URL with a hole in it", () => {
+    // `gh` sends `author: null` for a deleted account — a URL built from that would
+    // be `github.com/.png`, which is a 404 this engine would have invented.
+    expect(rowWith(null).authorAvatar).toBeUndefined();
+    expect(rowWith({ login: "" }).authorAvatar).toBeUndefined();
+  });
+
+  test("a login is escaped into the URL rather than pasted into it", () => {
+    // No GitHub login contains a slash or a space, so nothing here exercises it in
+    // the wild — which is exactly why it is pinned: the one shape that DOES reach
+    // this is a bot's `app/renovate`, and it is excluded one line above by a rule
+    // somebody could remove.
+    expect(rowWith({ login: "a b/c" }).authorAvatar).toBe("https://github.com/a%20b%2Fc.png");
+  });
+
+  test("a comment and a review carry it the same way a row does", () => {
+    // One helper for all three, so a thread cannot show a face on the opening post
+    // and none on the replies.
+    const thread = parseComments([{ url: "c1", body: "b", createdAt: DAY, author: { login: "grace" } }]);
+    expect(thread.comments[0]).toMatchObject({ author: "grace", authorAvatar: "https://github.com/grace.png" });
+    const reviews = parseReviews([{ author: { login: "alan" }, state: "APPROVED", body: "", submittedAt: DAY }]);
+    expect(reviews[0]).toMatchObject({ author: "alan", authorAvatar: "https://github.com/alan.png" });
+  });
+
+  test("a DETAIL read carries it too, through the same row parser", () => {
+    const issue = parseIssueDetail(JSON.stringify({ number: 7, title: "t", state: "OPEN", url: "u", createdAt: DAY, author: { login: "ada" } }), 1);
+    expect(issue.authorAvatar).toBe("https://github.com/ada.png");
+    const pull = parsePullDetail(JSON.stringify({ number: 8, title: "t", state: "OPEN", url: "u", createdAt: DAY, author: { login: "ada" } }), 1);
+    expect(pull.authorAvatar).toBe("https://github.com/ada.png");
   });
 });
 
@@ -278,6 +357,46 @@ describe("which rows a list read asks for", () => {
     );
     expect(snapshot.issueFilter).toEqual({ state: "all", milestone: "v2", assignee: "ada", labels: ["bug"] });
     expect(snapshot.pullFilter).toEqual({ state: "closed", labels: [] });
+  });
+});
+
+/**
+ * WHAT THE FOUR FIELD SETS ASK FOR — the half a parser test cannot reach.
+ *
+ * A PARSER ONLY EVER SEES WHAT WAS ASKED FOR, and a parser test hands it JSON
+ * directly. So every test above would go on passing with `author` deleted from
+ * `ISSUE_FIELDS`: the rows would arrive authorless, the faces with them, and the
+ * suite would be green. These four reads are the only place the `--json` argument is
+ * observable, so this is where the field sets get pinned.
+ *
+ * `author` IS THE AVATAR'S FIELD, which is the whole reason it is asserted here. The
+ * face is derived from the login (#790) — there is no avatar field in `gh` to ask
+ * for — so `author` leaving a field set is the one edit that silently removes it.
+ */
+describe("what the field sets ask gh for", () => {
+  /** The `--json` value of each read, keyed by the `gh` verb it was asked with. */
+  async function fieldsFor(read: (gh: GhRunner) => Promise<unknown>) {
+    const asked = new Map<string, string>();
+    await read(async (_cwd, args) => {
+      const at = args.indexOf("--json");
+      if (at !== -1) asked.set(`${args[0]} ${args[1]}`, args[at + 1] ?? "");
+      return ok(args[0] === "repo" ? JSON.stringify({ nameWithOwner: "o/r" }) : "[]");
+    });
+    return asked;
+  }
+
+  test("every one of the four asks for the author, which is what the face is built from", async () => {
+    // `skipProjects` because the board call is ALSO `issue list`, with
+    // `number,projectItems` for its fields — and it would be the last write under
+    // that key, so this would read the board's field list and not the row's.
+    const list = await fieldsFor((gh) => readGitHub(gh, "/repo", () => 1, { skipProjects: true }));
+    expect(list.get("issue list")).toContain("author");
+    expect(list.get("pr list")).toContain("author");
+
+    const issue = await fieldsFor((gh) => readIssue(gh, "/repo", 7, () => 1, { skipProjects: true }));
+    expect(issue.get("issue view")).toContain("author");
+    const pull = await fieldsFor((gh) => readPull(gh, "/repo", 7, () => 1, { skipProjects: true }));
+    expect(pull.get("pr view")).toContain("author");
   });
 });
 
@@ -579,8 +698,10 @@ describe("parseReviews", () => {
       { author: { login: "a" }, state: "CHANGES_REQUESTED", body: "no", submittedAt: iso(1) },
     ]);
     expect(reviews).toEqual([
-      { author: "a", state: "CHANGES_REQUESTED", body: "no", submittedAt: Date.parse(iso(1)) },
-      { author: "b", state: "APPROVED", body: "lgtm", submittedAt: Date.parse(iso(2)) },
+      // …and its face, derived from that login: a review card sits in the same
+      // timeline as a comment card and must not be the one without one (#790).
+      { author: "a", authorAvatar: "https://github.com/a.png", state: "CHANGES_REQUESTED", body: "no", submittedAt: Date.parse(iso(1)) },
+      { author: "b", authorAvatar: "https://github.com/b.png", state: "APPROVED", body: "lgtm", submittedAt: Date.parse(iso(2)) },
     ]);
   });
 

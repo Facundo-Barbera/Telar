@@ -125,6 +125,28 @@ describe("a pull-request row", () => {
     expect(markup).toContain("whether GitHub will");
   });
 
+  test("wears the author's face beside the login, not instead of it (#790)", () => {
+    // A login is still the thing you would say out loud; the face is what makes a
+    // column of them scannable. Both, on the facts line — and NOT at the row's
+    // leading edge, which the status glyph earns because it decides whether the rest
+    // of the row is worth reading at all.
+    const markup = row({ author: "Facundo-Barbera", authorAvatar: "https://github.com/Facundo-Barbera.png" });
+    expect(markup).toContain("https://github.com/Facundo-Barbera.png?size=48");
+    expect(markup).toContain("Facundo-Barbera");
+    // The glyph is still first: the status label precedes the author on the line.
+    expect(markup.indexOf("open<")).toBeLessThan(markup.indexOf("size=48"));
+  });
+
+  test("and a row whose author has no face still says who filed it, over a letter", () => {
+    // A bot is the ordinary no-face case. The login is the answer to "who", and the
+    // monogram is what keeps the row's shape identical to every row around it —
+    // without it the names in a mixed list would not line up.
+    const markup = row({ author: "app/renovate" });
+    expect(markup).not.toContain("<img");
+    expect(markup).toContain("app/renovate");
+    expect(markup).toContain(">R<");
+  });
+
   test("and is silent wherever the footer would be disabled or absent", () => {
     // A sign on a door that does not open teaches the capability by showing it
     // broken, which is worse than the silence it replaced.

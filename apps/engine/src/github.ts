@@ -126,6 +126,72 @@ function login(value: unknown): string | undefined {
   return name || undefined;
 }
 
+/**
+ * Whether this author is a GitHub App rather than a person.
+ *
+ * TWO SIGNALS, BECAUSE `gh` SENDS DIFFERENT ONES IN DIFFERENT PLACES — both
+ * measured. A list or detail author carries the flag outright:
+ * `{is_bot: true, login: "app/renovate"}`. The `app/` prefix is `gh`'s own
+ * rendering of the GraphQL `Bot` actor and is checked too, so an author object
+ * that dropped the flag still lands here.
+ */
+function isBot(value: unknown): boolean {
+  const record = value as { is_bot?: unknown; login?: unknown } | null;
+  if (record?.is_bot === true) return true;
+  return typeof record?.login === "string" && record.login.startsWith("app/");
+}
+
+/**
+ * Where this author's face is, when this engine can honestly say.
+ *
+ * `gh` HAS NO AVATAR FIELD AT ALL, which is the finding that shaped this. #790
+ * reads as "these fields are not in the `gh` field sets"; for the issue↔PR link
+ * that is exactly right, and for avatars there is no field to add. Measured
+ * against this repository: `--json author` answers `{id, is_bot, login, name}` on
+ * every list and detail read, and `--json comments` answers `author: {login}`
+ * alone. Widening a field set reaches nothing, so the URL is DERIVED.
+ *
+ * `github.com/<login>.png` IS GITHUB'S OWN REDIRECT and it costs this engine
+ * nothing: measured, `https://github.com/Facundo-Barbera.png?size=64` answers 302
+ * to `avatars.githubusercontent.com/u/51800760?s=64&v=4`. The client's own image
+ * request follows it, so a fifty-row list adds no `gh` call and no engine round
+ * trip — which is the only reason avatars are affordable here at all. The row
+ * comment this replaces said an avatar "needs a network round trip per person",
+ * and that is true of `gh api users/<login>` and false of this.
+ *
+ * A BOT GETS NOTHING, because for a bot the derived URL is wrong rather than
+ * slow: `github.com/app/renovate.png` is not a user page. Absent is the honest
+ * answer — "this engine has no URL for this author" — and the surface draws a
+ * monogram, which beats a broken image.
+ *
+ * THE ONE CASE THIS CANNOT GET RIGHT, named because it is invisible otherwise. A
+ * COMMENT's author carries neither signal: measured, a Renovate comment answers
+ * `{login: "renovate"}` with no prefix and no flag, so a bot commenting is
+ * indistinguishable from a person. Usually that degrades to a 404 and a monogram
+ * — `github.com/github-actions.png` is a 404, and `github-actions` is the only bot
+ * commenting in this repository. It misleads only when a bot's bare slug is also a
+ * real account: `github.com/dependabot.png` answers 302 to `u/27347476`, a
+ * different account from the Dependabot App, so a Dependabot comment would wear a
+ * stranger's face. Fixing that means a second read per thread for
+ * `user.avatar_url` (`gh api repos/{owner}/{repo}/issues/<n>/comments`), which is
+ * the `readBoards` pattern and its own change.
+ */
+function avatar(value: unknown): string | undefined {
+  const name = login(value);
+  if (!name || isBot(value)) return undefined;
+  return `https://github.com/${encodeURIComponent(name)}.png`;
+}
+
+/** The author and their face, as every row, comment and review carries them. */
+function authorOf(value: unknown) {
+  const name = login(value);
+  const face = avatar(value);
+  return {
+    ...(name ? { author: name } : {}),
+    ...(face ? { authorAvatar: face } : {}),
+  };
+}
+
 /** Labels, minus the ones with no name — an unnamed label is an empty chip. */
 function labels(value: unknown) {
   if (!Array.isArray(value)) return [];
@@ -161,7 +227,10 @@ function milestone(value: unknown): string | undefined {
  */
 function rowFields(row: Record<string, unknown>) {
   return {
-    ...(login(row.author) ? { author: login(row.author)! } : {}),
+    // The author AND their face, from one helper: `login` on its own structurally
+    // discarded everything else on the author object, so widening a field set here
+    // would never have reached a surface (#790).
+    ...authorOf(row.author),
     labels: labels(row.labels),
     assignees: logins(row.assignees),
     ...(milestone(row.milestone) ? { milestone: milestone(row.milestone)! } : {}),
@@ -240,6 +309,7 @@ export function parsePulls(stdout: string): GitHubPullRequest[] {
  * omitting the field. Measured against this machine's own `gh`, whose token has
  * `repo` and not `read:project`: putting it here would blank the Issues list for
  * anybody on a default token. It gets its own call.
+
  */
 const ISSUE_FIELDS = "number,title,state,stateReason,labels,author,assignees,milestone,updatedAt,url";
 const PULL_FIELDS = "number,title,state,isDraft,author,assignees,milestone,labels,headRefName,updatedAt,url,reviewDecision,mergedAt";
@@ -532,7 +602,9 @@ function comment(entry: unknown): GitHubComment | undefined {
   const body = text(row.body);
   const attribution = parseSessionAttribution(body);
   return {
-    ...(login(row.author) ? { author: login(row.author)! } : {}),
+    // A comment's author is `{login}` and nothing else — see `avatar` for what that
+    // costs and for the one case it gets wrong.
+    ...authorOf(row.author),
     ...(text(row.authorAssociation) ? { authorAssociation: text(row.authorAssociation) } : {}),
     body: attribution ? stripSessionMarker(body) : body,
     createdAt: epoch(row.createdAt),
@@ -574,7 +646,7 @@ export function parseReviews(value: unknown): GitHubReview[] {
       if (!state) return [];
       return [
         {
-          ...(login(row.author) ? { author: login(row.author)! } : {}),
+          ...authorOf(row.author),
           state,
           body: text(row.body),
           submittedAt: epoch(row.submittedAt),
