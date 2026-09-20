@@ -89,12 +89,34 @@ it.** `git show origin/main:path` rather than the PR's file list. The run's step
 rather than the job's colour. The current issue body rather than your memory of
 it.
 
-Two specific traps worth naming:
+Four specific traps worth naming:
 
 - A **cancelled** CI run is not a failed one, and is not a passed one either.
 - `bun test <path>` from the root uses bun's **5-second** default. CI runs
   `bun run test:<suite>`, which carries `--timeout 20000` from the workspace's
   `package.json`. A 5007 ms failure is the clock, not the code.
+
+  **That sentence was false for about three hours on 2026-09-20**, and this is
+  the entry worth reading twice. #740 moved the ceiling from the script's flag to
+  a bunfig `preload`, and **a preload's `setDefaultTimeout` does not reach every
+  file** — reproduced on bun 1.3.11 with three identical 6 s files: `1 pass, 2
+  fail`, both deaths at ~5000 ms. So 181 of the engine suite's 182 files were
+  back on the 5 s default. #810 put the flag back on every script and the
+  sentence is true again.
+
+  What it cost: a coordinator copied the sentence **verbatim into three worker
+  briefs** while it was false. This document's own §3 is about relying on
+  something after it stops being true, and it happened *in* §3. A load-bearing
+  factual claim here is a measurement with a date on it, not a fact. If one
+  decides your diagnosis, re-run it.
+
+- **A `pull_request` run does not test your branch.** It tests your branch merged
+  with current `main`. So a test-count baseline a coordinator hands you is a
+  measurement of a moment, and comparing a `pull_request` run against a `push
+  main` run from a different head produces a wrong delta **that looks precise**.
+  One PR on 2026-09-20 read as +42 against its own base and +16 against the main
+  it was actually merged with; +16 was what it added. Compare like with like, and
+  say which head each number came from.
 
 **If your task's premise turns out to be false, say so and stop.** That is a
 correct outcome, not a failure to deliver. One worker tonight was sent to build
@@ -424,6 +446,19 @@ Filed as #807.
   recommended cut; he has not taken it.
 - **#760** — which tests earn their place. The analysis is done; what to delete
   is a judgement about risk appetite, not a measurement.
+- **#791's remaining half** — making agents produce attribution markers
+  *routinely*. What shipped works on any comment that carries a marker and needs
+  no decision. Coverage needs either a `github_comment` tool on the session wall,
+  which reverses the read-only posture `github_status` was built under and adds a
+  write verb to every session, or a line in the session briefing, which is cheap
+  and reversible and strictly a claim. The worker shipped neither on purpose,
+  because both change every session's wall or prompt.
+
+  Keep the scope straight either way: the marker claims *"this body claims
+  session X"*, never *"session X wrote this"* — a model shelling out `gh` can
+  type any marker, including one copied off another session's public comment. The
+  panel draws it as a link to go and check, never a badge, and nothing
+  authorises on it.
 
 Anything else that reaches "this needs him" goes here rather than into a
 message.
