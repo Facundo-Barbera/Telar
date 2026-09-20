@@ -6,6 +6,7 @@ import {
   captureLook,
   lookAppearance,
   lookFilename,
+  lookTintMessage,
   MAX_LOOKS,
   parseLook,
   parseLookFile,
@@ -377,6 +378,33 @@ describe("wearing", () => {
     const patches: unknown[] = [];
     applyLook(look({ accent: "moss" }), (patch) => void patches.push(patch));
     expect((patches[0] as { accent: string }).accent).toBe("moss");
+  });
+
+  /**
+   * THE REPAIR IS SILENT; ONLY ITS FAILURE IS NEWS (#705).
+   *
+   * A card the semantic tints can survive — or one the ink repair can answer —
+   * costs nothing to wear and says nothing, because moving `--success` changes
+   * a colour nobody chose. A card sitting on the ink's own LIGHTNESS is
+   * different: the fill has nowhere to go, `compileComposition` deliberately
+   * changes nothing, and a tone stays hard to read. That is the one case the
+   * wearer has to hear about.
+   */
+  test("wearing a look whose card strands the tints says so, and only then", () => {
+    const rescuable = look({ id: "dark-card", composition: composition({ light: { base: "#ffffff", layers: [], overrides: { card: "#111111" } } }) });
+    expect(applyLook(rescuable, () => {}), "a card the ink repair can answer is not news").toBeUndefined();
+
+    const stranded = look({ id: "mid-green", composition: composition({ light: { base: "#ffffff", layers: [], overrides: { card: "oklch(0.50 0.10 162)" } } }) });
+    const notice = applyLook(stranded, () => {});
+    expect(notice).toBe(lookTintMessage(["success", "warning", "destructive"]));
+    // It names the tones rather than gesturing at "some colours".
+    for (const tone of ["success", "warning", "destructive"]) expect(notice).toContain(tone);
+  });
+
+  test("a stranded card and a refused image are both reported, not ranked", () => {
+    expect(lookTintMessage(["destructive"])).toContain("destructive");
+    expect(lookTintMessage(["destructive"])).not.toContain(" and ");
+    expect(lookTintMessage(["success", "destructive"])).toContain("success and destructive");
   });
 });
 

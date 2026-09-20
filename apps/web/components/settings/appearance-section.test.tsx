@@ -25,6 +25,8 @@ import { createRoot } from "react-dom/client";
 import { SlidersHorizontalIcon } from "lucide-react";
 import { Row, SettingsGroup, SettingsShell } from "./settings-shell";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
+import { TELAR_DARK, TELAR_LIGHT } from "@telar/engine-client";
+import { STATE_INK, TINT_FLOOR, tintCost } from "@/lib/tint-separation";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -261,6 +263,46 @@ describe("the Composer group", () => {
     // has answered, not the thing that greets you.
     expect(details?.hasAttribute("open")).toBe(false);
     expect(details?.querySelector("summary")?.textContent).toContain("Adjust colours");
+  });
+
+  /**
+   * THE CARD ROW CARRIES A NUMBER NOW, AND IT IS THE TINTS' (#705).
+   *
+   * Every other row here is a foreground judged against its surface; the card
+   * is a surface, so the pairing table had nothing for it and the row showed
+   * nothing — while being the one token that decides whether `.tint-success`
+   * and friends can be read. The figure is the REPAIRED one, because
+   * `compileComposition` moves the state ink when this card requires it and a
+   * row must show what the window will paint, not what it would have painted.
+   *
+   * The expected value is computed through the same module the row uses, so
+   * this cannot drift from globals.css; what it pins is that the row asks the
+   * tint question at all, and that a surface with no question still shows
+   * nothing.
+   */
+  test("the card row reports what the card costs the semantic tints", () => {
+    const rows = composerGroup()?.querySelector("details");
+    const card = rows?.querySelector('label[title="--card"]');
+    expect(card).not.toBeNull();
+    const shown = [...(card?.querySelectorAll("span") ?? [])].find((span) => /^\d+\.\d$/.test(span.textContent ?? ""));
+    expect(shown, "the card row shows a ratio").not.toBeUndefined();
+
+    // WHICH HALF IS ON SCREEN is the window's colour scheme, so the pane's own
+    // switch is asked rather than assumed — the state ink differs between the
+    // two and a test that guessed would pass for the wrong reason.
+    const showing = [...(composerGroup()?.querySelectorAll("button[aria-pressed]") ?? [])].find((button) => button.getAttribute("aria-pressed") === "true");
+    const dark = showing?.textContent?.toLowerCase().includes("dark") ?? false;
+    const expected = tintCost(dark ? TELAR_DARK.card : TELAR_LIGHT.card, dark ? STATE_INK.dark : STATE_INK.light, TINT_FLOOR);
+    expect(shown?.textContent).toBe(expected.readability.toFixed(1));
+    expect(shown?.getAttribute("title")).toContain(`.tint-${expected.tone}`);
+    // Telar's own card clears the bar, so the figure is quiet rather than red.
+    expect(expected.readability).toBeGreaterThanOrEqual(4.5);
+    expect(shown?.className).not.toContain("text-destructive");
+
+    // And a surface with no question still shows no answer: `--popover` is
+    // judged by `--popover-foreground`, not the other way round.
+    const popover = rows?.querySelector('label[title="--popover"]');
+    expect([...(popover?.querySelectorAll("span") ?? [])].some((span) => /^\d+\.\d$/.test(span.textContent ?? ""))).toBe(false);
   });
 
   test("every token row says where it paints, not just what it is called", () => {

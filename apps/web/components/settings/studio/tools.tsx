@@ -47,6 +47,7 @@ import {
   type ThemeToken,
 } from "@/lib/theme-palettes";
 import { contrastRatio, parseVsCodeColor } from "@/lib/vscode-theme-import";
+import { STATE_INK, TINT_FLOOR, tintCost } from "@/lib/tint-separation";
 import type { CompositionMode } from "@/lib/composition";
 import { cn } from "@/lib/utils";
 import { CheckIcon, RotateCcwIcon } from "lucide-react";
@@ -124,13 +125,37 @@ const SURFACE_OF: Partial<Record<ThemeToken, ThemeToken>> = Object.fromEntries(F
  *  decision and the studio's job is to say what it costs. */
 const READABLE = 4.5;
 
-function ratioFor(half: ThemeHalf, token: ThemeToken): number | undefined {
+/** What a row's number is ABOUT, so the tooltip can say it rather than leave
+ *  the reader to guess which pairing produced a figure. */
+type RowRatio = { value: number; about: string };
+
+/**
+ * THE NUMBER BESIDE A ROW, and why the CARD now has one (#705).
+ *
+ * Every other row here is a foreground judged against its surface. The card is
+ * a surface, so `SURFACE_OF` has nothing for it and the row showed no number at
+ * all — while being the one token in the palette that decides whether the
+ * semantic tints read. `.tint-success` is 12% of `--success` mixed INTO this
+ * card, and `text-success` stands on the result; a card that lands near the
+ * state vocabulary strands the ink on its own fill.
+ *
+ * THE REPAIRED NUMBER, NOT THE RAW ONE. `compileComposition` moves the state
+ * ink when this card requires it, so the raw ratio is about a colour the window
+ * will not paint. The only honest figure for a row to show is the one it is
+ * about to render — which means this goes red exactly when the repair could not
+ * help, and that is the single fact a person here has to know.
+ */
+function ratioFor(half: ThemeHalf, token: ThemeToken, mode: CompositionMode): RowRatio | undefined {
+  if (token === "card") {
+    const { readability, tone } = tintCost(half.card, STATE_INK[mode], TINT_FLOOR);
+    return { value: readability, about: `for text-${tone} on .tint-${tone}, the worst of the three semantic tints on this card` };
+  }
   const surfaceToken = SURFACE_OF[token];
   if (!surfaceToken) return undefined;
   const fg = parseVsCodeColor(cssColorToHex(half[token]));
   const bg = parseVsCodeColor(cssColorToHex(half[surfaceToken]));
   if (!fg || !bg) return undefined;
-  return contrastRatio(fg, bg);
+  return { value: contrastRatio(fg, bg), about: `against ${THEME_TOKEN_LABELS[surfaceToken].toLowerCase()}` };
 }
 
 /**
@@ -217,6 +242,7 @@ export function ColourTool({
   half,
   derived,
   overrides,
+  mode,
   onToken,
 }: {
   /** What this state actually paints: the derivation with the hand-set values
@@ -226,6 +252,8 @@ export function ColourTool({
   derived: ThemeHalf;
   /** Which tokens are hand-set. Sparse: absent means "follows the base". */
   overrides: Partial<ThemeHalf>;
+  /** Which scheme's vocabulary the card row is judged against — the state ink
+   *  differs between light and dark, so the tint number does too. */
   mode: CompositionMode;
   /** `undefined` clears the override and hands the token back to the base. */
   onToken: (token: ThemeToken, value: string | undefined) => void;
@@ -242,7 +270,7 @@ export function ColourTool({
       <div className="flex flex-col gap-0.5">
         {THEME_TOKENS.map((token) => {
           const hex = cssColorToHex(half[token]);
-          const ratio = ratioFor(half, token);
+          const ratio = ratioFor(half, token, mode);
           const set = overrides[token] !== undefined;
           return (
             <label key={token} className="flex items-center gap-2 py-0.5 text-xs" title={`--${token}`}>
@@ -259,10 +287,10 @@ export function ColourTool({
               </span>
               {ratio !== undefined && (
                 <span
-                  className={cn("shrink-0 font-mono text-4xs tabular-nums", ratio < READABLE ? "font-semibold text-destructive" : "text-muted-foreground/60")}
-                  title={`${ratio.toFixed(1)}:1 against its surface (4.5:1 reads comfortably)`}
+                  className={cn("shrink-0 font-mono text-4xs tabular-nums", ratio.value < READABLE ? "font-semibold text-destructive" : "text-muted-foreground/60")}
+                  title={`${ratio.value.toFixed(1)}:1 ${ratio.about} (4.5:1 reads comfortably)`}
                 >
-                  {ratio.toFixed(1)}
+                  {ratio.value.toFixed(1)}
                 </span>
               )}
               <HexField value={hex} label={THEME_TOKEN_LABELS[token]} onCommit={(next) => onToken(token, hexToCssColor(next))} />

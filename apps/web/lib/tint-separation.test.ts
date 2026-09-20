@@ -24,9 +24,28 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { THEME_TOKENS } from "@telar/engine-client";
 import { BUILT_IN_LOOKS } from "./built-in-looks";
 import { compositionHalf } from "./composition";
-import { deltaEOk, measureTint, TINT_ELEVATION, TINT_READABLE, tintOf, TONE_JND, toneSeparation } from "./tint-separation";
+import { halfFromBase } from "./palette-from-image";
+import {
+  deltaEOk,
+  measureTint,
+  oklabToRgb,
+  paintsAsMeasured,
+  repairInk,
+  rgbToOklab,
+  STATE_INK,
+  TINT_ELEVATION,
+  TINT_FLOOR,
+  TINT_READABLE,
+  TINT_TONES,
+  tintCost,
+  tintOf,
+  toOklab,
+  TONE_JND,
+  toneSeparation,
+} from "./tint-separation";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const css = fs.readFileSync(path.join(here, "..", "app", "globals.css"), "utf8");
@@ -240,5 +259,270 @@ describe("the semantic tints, on every scheme and Look we ship", () => {
 
     const deepGreen = measureTint(INK.dark.destructive, "oklch(0.26 0.06 162)", floor);
     expect(deepGreen.readability, "a deep-green dark card strands text-destructive").toBeLessThan(TINT_READABLE);
+  });
+});
+
+/**
+ * THE REPAIR — the ink moves, the card never does (#705).
+ *
+ * WHY THIS IS THE END OF THE MIX THAT MAY BE REWRITTEN, in one sentence: the
+ * card is a colour somebody chose, and the state vocabulary is a colour nobody
+ * can choose. The first test below is that premise as an assertion, because
+ * every other test here is worthless if it stops being true.
+ *
+ * TWO DOMAINS, AND THEY ANSWER DIFFERENT QUESTIONS. The BASE-REACHABLE set is
+ * every card this build can derive from the composer's own control — generated
+ * from the hue/saturation domain of a colour picker and pushed through the real
+ * `halfFromBase`, never written down — and the answer there is that the repair
+ * never fires. The sRGB GRID is every card a VS Code import, a Look file or a
+ * hand override can reach, and the answer there is what the repair does when it
+ * does fire. A guard over only the first would pass forever without exercising
+ * a line of the search.
+ */
+describe("repairing the ink", () => {
+  /** Every base a person can pick, as the picker's own hue × saturation grid.
+   *  GENERATED, so raising MAX_TINT or letting `retint` touch lightness moves
+   *  what this covers instead of leaving a stale list behind. */
+  const BASES: string[] = (() => {
+    const channel = (value: number) => Math.round(value * 255).toString(16).padStart(2, "0");
+    const fromHsl = (hue: number, saturation: number) => {
+      const chroma = saturation; // at lightness 0.5, (1 − |2L − 1|)·s is just s
+      const second = chroma * (1 - Math.abs(((hue / 60) % 2) - 1));
+      const lift = 0.5 - chroma / 2;
+      const [r, g, b] = [
+        [chroma, second, 0],
+        [second, chroma, 0],
+        [0, chroma, second],
+        [0, second, chroma],
+        [second, 0, chroma],
+        [chroma, 0, second],
+      ][Math.floor(hue / 60) % 6]!;
+      return `#${channel(r + lift)}${channel(g + lift)}${channel(b + lift)}`;
+    };
+    const bases: string[] = [];
+    for (let hue = 0; hue < 360; hue += 2) for (let step = 0; step <= 40; step += 1) bases.push(fromHsl(hue, step / 40));
+    return bases;
+  })();
+
+  /** Every card an IMPORT or a hand override can reach: sRGB at six levels per
+   *  channel. Coarse on purpose — the search is two thousand evaluations deep
+   *  and this is multiplied by two schemes and three tones. */
+  const SRGB: string[] = (() => {
+    const cards: string[] = [];
+    const levels = [0, 51, 102, 153, 204, 255];
+    for (const r of levels) for (const g of levels) for (const b of levels) cards.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
+    return cards;
+  })();
+
+  /** The search is two thousand evaluations deep and four tests below walk the
+   *  same grid. One answer per (scheme, card, tone), computed once. */
+  const answers = new Map<string, ReturnType<typeof repairInk>>();
+  const repaired = (mode: Mode, card: string, tone: (typeof TINT_TONES)[number]) => {
+    const key = `${mode}|${card}|${tone}`;
+    const cached = answers.get(key);
+    if (cached) return cached;
+    const answer = repairInk(STATE_INK[mode][tone], card, floor);
+    answers.set(key, answer);
+    return answer;
+  };
+
+  test("the whole argument's premise: no Look can set a state colour", () => {
+    /**
+     * THE LOAD-BEARING FACT. Repairing `--success` is only safe because there is
+     * no way for anybody to have chosen it — it is not in the sixteen a Look
+     * carries, so no import, no Look file, no picker and no migration can write
+     * one. Put `success` in THEME_TOKENS and this fails, which is correct: the
+     * rule would have to be reconsidered from the start.
+     */
+    for (const tone of TINT_TONES) expect(THEME_TOKENS as readonly string[], `--${tone} must stay out of the themable vocabulary`).not.toContain(tone);
+
+    // And the copy this module carries is the stylesheet's, character for
+    // character — the repair runs in a browser, where there is no globals.css
+    // to read, so the copy exists and must not be allowed to drift.
+    expect(TINT_FLOOR).toBe(floor);
+    for (const mode of MODES) {
+      for (const tone of TINT_TONES) {
+        expect(STATE_INK[mode][tone], `--${tone} in ${mode}`).toBe(token(mode === "light" ? ":root" : ".dark", tone));
+      }
+    }
+  });
+
+  test("no base colour makes the repair fire — it is a fixed point on everything the composer can derive", () => {
+    /**
+     * 14,760 CARDS, and the point is that not one of them needs repairing.
+     *
+     * `halfFromBase` carries Telar's lightness spine across verbatim and
+     * rewrites only chroma and hue, capped at MAX_TINT × the card's weight — so
+     * the card's LIGHTNESS is pinned and its chroma is tiny. Both facts are
+     * asserted rather than assumed: let `retint` rewrite lightness and the
+     * spine check fails, raise MAX_TINT far enough and the separations do.
+     */
+    const spine = { light: "1", dark: "0.2" } as const;
+    const offSpine: string[] = [];
+    const broken: string[] = [];
+    const moved: string[] = [];
+    for (const mode of MODES) {
+      for (const base of BASES) {
+        const card = halfFromBase(base, mode).card;
+        const lightness = /^oklch\(([\d.]+)\s/.exec(card)?.[1];
+        if (lightness !== spine[mode]) offSpine.push(`${mode} base ${base} derived ${card}`);
+        for (const tone of TINT_TONES) {
+          const { elevation, readability } = measureTint(STATE_INK[mode][tone], card, floor);
+          if (elevation < TINT_ELEVATION || readability < TINT_READABLE) {
+            broken.push(`${mode} base ${base} card ${card} tint-${tone}: ${elevation.toFixed(4)}:1 elevation, ${readability.toFixed(3)}:1 readability`);
+          }
+          const repair = repairInk(STATE_INK[mode][tone], card, floor);
+          if (repair.outcome !== "holds") moved.push(`${mode} base ${base} card ${card} tint-${tone}: ${repair.outcome}`);
+        }
+      }
+    }
+    expect(BASES.length * MODES.length).toBe(14_760);
+    expect(offSpine.slice(0, 5), "a derived card must keep the spine's lightness").toEqual([]);
+    expect(broken.slice(0, 5), "no base colour may break either separation").toEqual([]);
+    expect(moved.slice(0, 5), "and so the repair must be a fixed point on every one of them").toEqual([]);
+  });
+
+  test("every Look this build ships is a fixed point too", () => {
+    const moved: string[] = [];
+    for (const { label, mode, card } of surfaces) {
+      for (const tone of TINT_TONES) {
+        const repair = repairInk(STATE_INK[mode][tone], card, floor);
+        if (repair.outcome !== "holds") moved.push(`${label} ${mode} tint-${tone}: ${repair.outcome}`);
+      }
+      expect(tintCost(card, STATE_INK[mode], floor).stranded, `${label} ${mode} strands nothing`).toEqual([]);
+    }
+    expect(moved).toEqual([]);
+  });
+
+  test("it answers BOTH separations, not the one that happened to fail", () => {
+    /**
+     * A READABILITY-ONLY RULE IS WRONG AND THE sRGB DOMAIN PROVES IT. #705's
+     * investigation expected elevation to be dominated — never failing while
+     * readability holds — and over the cards a BASE can derive that is exactly
+     * true. Over the cards an IMPORT can reach it is not: a near-black card
+     * fails elevation with readability at 8:1, because a fill made of 12% ink
+     * over black has nowhere to go.
+     *
+     * Measured, not asserted: five such pairings in the grid below. Repair
+     * readability alone and `#000011` comes back "holds" with its fill still
+     * invisible.
+     */
+    const elevationOnly: string[] = [];
+    for (const mode of MODES) {
+      for (const card of SRGB) {
+        for (const tone of TINT_TONES) {
+          const { elevation, readability } = measureTint(STATE_INK[mode][tone], card, floor);
+          if (elevation >= TINT_ELEVATION || readability < TINT_READABLE) continue;
+          elevationOnly.push(`${mode} ${card} tint-${tone}`);
+          const repair = repaired(mode, card, tone);
+          expect(repair.outcome, `${mode} ${card} tint-${tone} fails elevation at ${elevation.toFixed(4)}:1 — it cannot be left alone`).not.toBe("holds");
+        }
+      }
+    }
+    expect(elevationOnly.length, "the grid must contain the elevation-only case this guard is about").toBeGreaterThan(0);
+
+    // And nothing the search RETURNS as repaired may fail either bar.
+    const failed: string[] = [];
+    for (const mode of MODES) {
+      for (const card of SRGB) {
+        for (const tone of TINT_TONES) {
+          const repair = repaired(mode, card, tone);
+          if (repair.outcome !== "repaired") continue;
+          const { elevation, readability } = measureTint(repair.ink, card, floor);
+          if (elevation < TINT_ELEVATION || readability < TINT_READABLE) {
+            failed.push(`${mode} ${card} tint-${tone} → ${repair.ink}: ${elevation.toFixed(4)} / ${readability.toFixed(3)}`);
+          }
+        }
+      }
+    }
+    expect(failed.slice(0, 5)).toEqual([]);
+  });
+
+  test("a card no lightness can rescue is REPORTED, and nothing moves", () => {
+    /**
+     * The mid-green card from the measurement above: it sits on the ink's own
+     * lightness, so ELEVATION is what fails and no ink can answer that — the
+     * fill has nowhere to go. The right outcome is to change nothing and say
+     * so. Let the search return its best failing attempt and this fails with
+     * the moved colour in hand.
+     */
+    for (const tone of TINT_TONES) {
+      const repair = repairInk(STATE_INK.light[tone], "oklch(0.50 0.10 162)", floor);
+      expect(repair.outcome, `tint-${tone} on a card at the ink's own lightness`).toBe("stranded");
+      expect(repair.ink, "a stranded tone keeps the shipped colour exactly").toBe(STATE_INK.light[tone]);
+    }
+    expect(tintCost("oklch(0.50 0.10 162)", STATE_INK.light, floor).stranded).toEqual([...TINT_TONES]);
+
+    // The pale-mint card is the other arm: readability fails, and a tenth of a
+    // step of lightness answers it.
+    const mint = repairInk(STATE_INK.light.success, "oklch(0.95 0.05 162)", floor);
+    expect(mint.outcome).toBe("repaired");
+    expect(mint.outcome === "repaired" && mint.moved, "the smallest move that works, not the first one found").toBeLessThan(0.05);
+  });
+
+  test("moving the ink does not spend the separation between added and removed", () => {
+    /**
+     * THE COST THE OBVIOUS ALTERNATIVE PAYS. Readability is a contrast ratio, and
+     * chroma moves it too — so "reduce the chroma until the ink reads" is a
+     * rule somebody will propose. It merges added with removed: `tint-success`
+     * and `tint-destructive` are told apart almost entirely by a and b, and
+     * draining chroma is draining exactly that. Repair by chroma instead of
+     * lightness and the worst case here falls to 0.0185, under the JND.
+     *
+     * Held BOTH ways: an absolute floor at the JND, and a no-meaningful-
+     * regression bar against what the shipped vocabulary already had. The
+     * second is the sharper one — the measured worst is 0.9955 of the shipped
+     * separation, so a rule that spent even a twentieth of it would fail here
+     * long before the absolute floor noticed.
+     */
+    const shipped = { light: toneSeparation(STATE_INK.light.success, STATE_INK.light.destructive, floor), dark: toneSeparation(STATE_INK.dark.success, STATE_INK.dark.destructive, floor) };
+    let fired = 0;
+    const merged: string[] = [];
+    for (const mode of MODES) {
+      for (const card of SRGB) {
+        const success = repaired(mode, card, "success");
+        const destructive = repaired(mode, card, "destructive");
+        if (success.outcome === "holds" && destructive.outcome === "holds") continue;
+        fired += 1;
+        const apart = toneSeparation(success.ink, destructive.ink, floor);
+        if (apart < TONE_JND) merged.push(`${mode} ${card}: ${apart.toFixed(5)} apart, under the JND`);
+        else if (apart < shipped[mode] * 0.99) merged.push(`${mode} ${card}: ${apart.toFixed(5)}, down from ${shipped[mode].toFixed(5)}`);
+      }
+    }
+    expect(fired, "the grid must actually make the repair fire").toBeGreaterThan(0);
+    expect(merged.slice(0, 5)).toEqual([]);
+  });
+
+  test("what it emits is what a screen paints", () => {
+    /**
+     * THE TRAP UNDER THE WHOLE MEASUREMENT. `oklabToRgb` clamps each channel on
+     * its own; a browser handed an out-of-gamut `oklch()` reduces CHROMA
+     * instead. The difference is invisible while every colour measured came in
+     * as sRGB — and the repair is the first thing here that INVENTS one.
+     *
+     * #705's investigation proposed moving Nord's `--destructive` to
+     * `oklch(0.943 0.19 25.5)`. That colour is 0.145 ΔE-Oklab — seven JND —
+     * from what any screen would show for it, so the 4.5:1 it was credited with
+     * was a ratio for a colour nobody would ever see. Drop this check and that
+     * class of answer comes back.
+     */
+    const stray: string[] = [];
+    for (const mode of MODES) {
+      for (const card of SRGB) {
+        for (const tone of TINT_TONES) {
+          const repair = repaired(mode, card, tone);
+          if (repair.outcome !== "repaired") continue;
+          const asked = toOklab(repair.ink);
+          const painted = rgbToOklab(oklabToRgb(asked));
+          const drift = deltaEOk(asked, painted);
+          if (drift > TONE_JND) stray.push(`${mode} ${card} tint-${tone} → ${repair.ink} paints ${drift.toFixed(4)} away`);
+        }
+      }
+    }
+    expect(stray.slice(0, 5)).toEqual([]);
+    // The specific colour the investigation proposed, named so the number is
+    // checked rather than quoted.
+    expect(paintsAsMeasured(toOklab("oklch(0.943 0.19 25.5)")), "the investigation's Nord repair is not a colour a screen can show").toBe(false);
+    for (const mode of MODES) for (const tone of TINT_TONES) expect(paintsAsMeasured(toOklab(STATE_INK[mode][tone])), `the shipped --${tone} is`).toBe(true);
   });
 });

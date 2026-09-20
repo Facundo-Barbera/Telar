@@ -47,7 +47,7 @@ import { ChevronRightIcon } from "lucide-react";
 import { accentPrimary } from "@/lib/accent-colours";
 import { useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
-import { detachFromHost } from "@/lib/host-follow";
+import { detachFromHost, useFollowNotice } from "@/lib/host-follow";
 import { applyLook, readLooks as readLooksNow, writeLooks, type Look } from "@/lib/looks";
 import {
   compositionHalf,
@@ -83,6 +83,9 @@ export function AppearanceSection() {
   // answer rather than flashing a control that then disappears.
   const [windowSupported, setWindowSupported] = useState(false);
   const [notice, setNotice] = useState<string>();
+  /** What the last automatic wear of the host's look cost, if anything — see
+   *  the strip below and lib/host-follow.ts. */
+  const followNotice = useFollowNotice();
 
   /**
    * WHICH STATE YOU ARE LOOKING AT — and therefore editing.
@@ -198,6 +201,12 @@ export function AppearanceSection() {
     <div className="flex min-h-0 flex-1 flex-col">
       {notice && <p className="mb-3 text-xs text-warning">{notice}</p>}
       {homeNotice && <p className="mb-3 text-xs text-warning">{homeNotice}</p>}
+      {/* WHAT THE LAST AUTOMATIC WEAR COST (#705). The follower wears a host's
+          Look with nobody in the loop, so its `applyLook` message has no press
+          to be shown beside; it is parked in lib/host-follow.ts and surfaces
+          here, above the row that says where the look came from. Cleared by the
+          next wear that has nothing to report. */}
+      {followNotice && <p className="mb-3 text-xs text-warning">{followNotice}</p>}
 
       <LooksSection onWear={wear} />
 

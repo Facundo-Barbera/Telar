@@ -42,7 +42,7 @@
 import { useSyncExternalStore } from "react";
 import { parseLook as parseLookValue, type Composition, type Look } from "@telar/engine-client";
 import { parseAppearance, type Appearance } from "./appearance";
-import { currentComposition, writeComposition } from "./composition";
+import { currentComposition, strandedTones, writeComposition } from "./composition";
 import { SCENE_PRESETS } from "./scene-composer";
 
 export { parseThemeHalf, type Look, type LookBackdrop } from "@telar/engine-client";
@@ -198,17 +198,39 @@ export function lookAppearance(look: Look): LookAppearance {
 export const LOOK_QUOTA_MESSAGE = "This look's layer images would not fit in storage; everything else was applied.";
 
 /**
+ * THE OTHER THING A WEAR CAN COST, and the only one the wearer must hear about
+ * (#705).
+ *
+ * A Look's card is mixed into every semantic tint, and the ink standing on that
+ * fill is made of the same token. `compileComposition` moves the ink when the
+ * card requires it — invisibly, and correctly, because nobody chose the ink —
+ * so a repaired tone is NOT news. What is news is a card sitting on the ink's
+ * own lightness: there the fill has nowhere to go, the repair changes nothing
+ * on purpose, and a tone stays hard to read. That is worth a sentence, and it
+ * is the only case that gets one.
+ */
+export function lookTintMessage(tones: readonly string[]): string {
+  const named = tones.length === 1 ? tones[0] : `${tones.slice(0, -1).join(", ")} and ${tones[tones.length - 1]}`;
+  return `This look's card sits too close to the ${named} colour${tones.length === 1 ? "" : "s"}, so ${tones.length === 1 ? "that tint" : "those tints"} will be hard to read. Nothing was changed for ${tones.length === 1 ? "it" : "them"}.`;
+}
+
+/**
  * Wear a Look: the composition, then everything beside it.
  *
- * Returns a message when part of it could not be worn — in practice layer
- * images that will not fit the quota, which leaves the composition it came with
- * unwritten and the previous one standing. Everything else still applies: a
- * look is worth wearing without its wallpaper.
+ * Returns a message when part of it could not be worn — layer images that will
+ * not fit the quota, which leaves the composition it came with unwritten and
+ * the previous one standing (everything else still applies: a look is worth
+ * wearing without its wallpaper), and a card the tint repair could not answer.
+ * Both can be true at once, so they are joined rather than ranked.
  */
 export function applyLook(look: Look, setAppearance: (patch: LookAppearance) => void): string | undefined {
   const stored = writeComposition(look.composition, look.images);
   setAppearance(lookAppearance(look));
-  return stored ? undefined : LOOK_QUOTA_MESSAGE;
+  const notices: string[] = [];
+  if (!stored) notices.push(LOOK_QUOTA_MESSAGE);
+  const stranded = strandedTones(look.composition);
+  if (stranded.length > 0) notices.push(lookTintMessage(stranded));
+  return notices.length > 0 ? notices.join(" ") : undefined;
 }
 
 /** Does the window have this look's colours on? Compared by the COMPOSITION

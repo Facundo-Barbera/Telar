@@ -26,10 +26,12 @@ import {
   patchOverride,
   patchState,
   pruneCompositionImages,
+  strandedTones,
   THEME_CSS_KEY,
   writeComposition,
   writeDerived,
 } from "./composition";
+import { BUILT_IN_LOOKS } from "./built-in-looks";
 import { BACKDROP_CSS_KEY, notifyBackdropCss, parseBackdropCss, subscribeBackdropCss } from "./backdrop";
 import { composeGradient, GRADIENT_STARTERS } from "./gradient-starters";
 import { splitTopLevel } from "./scene-composer";
@@ -84,8 +86,71 @@ describe("compileComposition", () => {
   test("each state writes the selector that outranks the authored tokens", () => {
     const both = patchOverride(patchOverride(composition(), "light", "card", "#111111"), "dark", "card", "#222222");
     const css = compileComposition(both);
-    expect(css).toContain("html:root { --card: #111111; }");
+    // A near-black LIGHT card also draws the repaired state vocabulary (#705),
+    // so the block carries more than the token that was set — which is why this
+    // pins the selector and the declaration rather than the whole block. The
+    // dark half of the same pair needs no repair and shows the plain shape.
+    expect(css).toContain("html:root { --card: #111111; ");
     expect(css).toContain("html:root.dark { --card: #222222; }");
+  });
+});
+
+/**
+ * THE STATE VOCABULARY, REPAIRED FOR A HOSTILE CARD — and for nothing else
+ * (#705).
+ *
+ * The rule's whole claim is that it is INVISIBLE to a Look that merely reads:
+ * `repairInk` returns the shipped ink unchanged when the shipped ink already
+ * clears both separations, so the compiled stylesheet for everything this build
+ * ships is byte-for-byte what it was before the rule existed. The first test is
+ * that proof, and the way it fails is the way it has to fail — make the repair
+ * fire when readability already holds and the identity composition stops
+ * compiling to nothing.
+ */
+describe("compileComposition repairs the ink, never the card", () => {
+  const TONES = ["success", "warning", "destructive"] as const;
+  const stateDeclarations = (css: string) => TONES.filter((tone) => css.includes(`--${tone}:`));
+
+  test("nothing this build ships draws a single state declaration", () => {
+    expect(compileComposition(DEFAULT_COMPOSITION)).toBe("");
+    for (const look of BUILT_IN_LOOKS) {
+      expect(stateDeclarations(compileComposition(look.composition)), `look ${look.id}`).toEqual([]);
+    }
+    expect(BUILT_IN_LOOKS.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * A near-black LIGHT card: the fill is a tenth of the ink over black, so the
+   * ink is stranded on its own tint while the card is perfectly legitimate.
+   * All three tones move, and the ONE thing that must not move is the card —
+   * which is the title of this whole issue, so it is asserted rather than
+   * described.
+   */
+  test("a card that strands the ink draws the ink, and leaves the card alone", () => {
+    const hostile = patchOverride(composition(), "light", "card", "#111111");
+    const css = compileComposition(hostile);
+    expect(stateDeclarations(css)).toEqual([...TONES]);
+    // The card is emitted EXACTLY as authored, and appears once.
+    expect(css.match(/--card: [^;]+;/g)).toEqual(["--card: #111111;"]);
+    expect(compositionHalf(hostile, "light").card).toBe("#111111");
+    // Every declaration it drew is a state token and nothing else.
+    for (const declaration of css.replace(/^html:root \{ | \}$/g, "").split(" ").filter((part) => part.startsWith("--"))) {
+      expect(["--card:", ...TONES.map((tone) => `--${tone}:`)]).toContain(declaration);
+    }
+    // And the dark half, which this card did not touch, contributes nothing.
+    expect(css).not.toContain("html:root.dark");
+  });
+
+  test("a card no lightness can rescue draws nothing, and names what it cost", () => {
+    // The mid-green card from tint-separation.test.ts: it sits on the ink's own
+    // lightness, so ELEVATION is what fails and the fill has nowhere to go.
+    const unrescuable = patchOverride(composition(), "light", "card", "oklch(0.50 0.10 162)");
+    expect(stateDeclarations(compileComposition(unrescuable))).toEqual([]);
+    expect(strandedTones(unrescuable)).toEqual([...TONES]);
+    // Nothing this build ships strands anything, which is what makes the notice
+    // a report about somebody else's Look rather than about ours.
+    expect(strandedTones(DEFAULT_COMPOSITION)).toEqual([]);
+    for (const look of BUILT_IN_LOOKS) expect(strandedTones(look.composition), `look ${look.id}`).toEqual([]);
   });
 });
 

@@ -6,8 +6,10 @@
  * lib/host-follow.ts; this is the loop that asks the engine and puts the
  * answer on.
  *
- * IT WEARS THROUGH `applyLook`, the one function that puts an appearance on
- * (lib/looks.ts) — the same path Apply and Wear take on the Settings pane, so
+ * IT WEARS THROUGH `wearPublication`, which is `applyLook` — the one function
+ * that puts an appearance on (lib/looks.ts) — plus the one thing this loop
+ * cannot do for itself: keep what the wear cost, for a window with nobody
+ * watching it (#705). Same path Apply and Wear take on the Settings pane, so
  * what a remote window ends up wearing is exactly what opening the host's
  * card and pressing Apply would have produced. Then the scheme: a Look carries
  * both halves and the publication says which one the host is looking at.
@@ -25,9 +27,8 @@
 import { useEffect } from "react";
 import { createEngineApi } from "@/lib/engine/client";
 import { useAppearance } from "@/lib/appearance";
-import { decideFollow, readAppliedStamp, useFollowHost, writeAppliedStamp } from "@/lib/host-follow";
+import { decideFollow, readAppliedStamp, useFollowHost, wearPublication, writeAppliedStamp } from "@/lib/host-follow";
 import { isHostWindow } from "@/lib/host-window";
-import { applyLook } from "@/lib/looks";
 import { useTheme } from "@/components/theme-provider";
 
 const api = createEngineApi();
@@ -54,10 +55,15 @@ export function HostLookFollower(): null {
         if (!live) return;
         if (decideFollow({ mode: "follow", isHost: false, applied: readAppliedStamp(), answer }) !== "apply") return;
         const published = answer.appearance!;
-        // The quota message is swallowed: a look worth wearing is worth
-        // wearing without its wallpaper, and a remote window has nobody to
-        // tell. Everything else applied.
-        applyLook(published.look, setAppearance);
+        // WHAT THE WEAR COST IS PARKED, NOT DROPPED (#705). This line used to
+        // be a bare `applyLook(...)` that discarded the return value, on the
+        // grounds that a remote window has nobody to tell — which made an
+        // automatically-worn Look the one path where "this look's card leaves
+        // the tints unreadable" could happen with nothing anywhere saying so.
+        // `wearPublication` is that wear plus the parking, and it lives in
+        // lib/host-follow.ts with the rest of the follow protocol so the rule
+        // is a unit test rather than a second machine.
+        wearPublication(published.look, setAppearance);
         setTheme(published.scheme);
         writeAppliedStamp(answer.updatedAt);
       } catch {
@@ -79,8 +85,8 @@ export function HostLookFollower(): null {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-    // The effect re-arms only when following starts or stops: `applyLook`
-    // writes the composition store directly rather than through anything this
+    // The effect re-arms only when following starts or stops: the wear writes
+    // the composition store directly rather than through anything this
     // component renders, so there is nothing else here that could go stale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
