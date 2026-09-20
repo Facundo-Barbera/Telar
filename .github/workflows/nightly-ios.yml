@@ -54,8 +54,18 @@ jobs:
     # Only trusted release triggers use the personal Mac.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     # NEEDS macOS, NOT THIS PARTICULAR MAC — moved to hosted 2026-09-20 with
-    # the rest of CI. Signing here is cloud-managed (no .p12 to import), so
-    # nothing about credentials had to change.
+    # the rest of CI. Nothing about credentials had to change: the certificate
+    # comes from repository secrets into a temporary per-run keychain, which is
+    # already the hosted-runner pattern.
+    #
+    # THIS COMMENT SAID "signing here is cloud-managed (no .p12 to import)"
+    # AND THAT WAS WRONG — the step below imports IOS_DIST_CERT_P12_BASE64, and
+    # cloud-managed signatures are exactly what Apple's validator refuses
+    # (90035). I wrote it from the old file header, which said the same thing
+    # and has since been corrected above. It is named here rather than quietly
+    # replaced because it was reasoned from twice: it is why the hosted probe
+    # archived WITHOUT signing rather than proving the real signing path, so
+    # the iOS signing route on a hosted runner is still unproven. #757.
     #
     # ⚠ KNOWN RED ON ARRIVAL, and moving it is not what broke it. Two separate
     # faults, both pre-dating the move:
