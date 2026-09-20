@@ -37,6 +37,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Segmented } from "@/components/settings/settings-shell";
 import { UsageChart, type ChartSeries } from "@/components/usage/usage-chart";
 import { UsageLimitsSection } from "@/components/usage/usage-limits";
+import { ProcessMetricsSection } from "@/components/usage/process-metrics";
 import {
   DRIVER_LABEL,
   foldUsage,
@@ -188,6 +189,15 @@ export function UsagePage() {
               `fold && !empty` gate deliberately: a machine that ran nothing
               locally can still be pooling accounts that are nearly out. */}
           <UsageLimitsSection />
+          {/* THE PRESENT TENSE, ABOVE THE HISTORY — issue #488. What this
+              machine is burning RIGHT NOW decides whether to go looking for a
+              runaway; what it spent last week does not, and a person who came
+              here because the fans are loud should not have to scroll past
+              ninety days of token charts to find out why. Outside the
+              `fold && !empty` gate for the same reason Limits is: an install
+              that has run nothing locally can still have a renderer pinned.
+              Draws nothing at all outside the desktop app. */}
+          <ProcessMetricsSection />
           {!report && loading && <p role="status" className="text-sm text-muted-foreground">Loading usage history…</p>}
           {empty && <p className="text-sm text-muted-foreground">No activity in this window.</p>}
 
