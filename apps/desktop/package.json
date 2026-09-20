@@ -28,6 +28,7 @@
     "test:desktop:extension-boot": "env -u ELECTRON_RUN_AS_NODE electron ./extension-boot.electron-test.js",
     "test:desktop:webauthn": "env -u ELECTRON_RUN_AS_NODE electron ./webauthn-fixture.electron-test.js",
     "test:desktop:clipboard": "env -u ELECTRON_RUN_AS_NODE electron ./clipboard-write.electron-test.js",
+    "test:desktop:metrics": "env -u ELECTRON_RUN_AS_NODE electron ./process-metrics.electron-test.js",
     "smoke": "bun run test:desktop:smoke",
     "pack": "bash ../../scripts/package-desktop.sh",
     "package:local": "bash ../../scripts/package-desktop.sh",

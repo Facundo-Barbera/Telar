@@ -346,7 +346,7 @@ jobs:
 
   # THE ELECTRON SUITE, WHICH NOTHING RAN UNTIL NOW (#622).
   #
-  # Eleven `*.electron-test.js` files drive a REAL Electron against real pages,
+  # Twelve `*.electron-test.js` files drive a REAL Electron against real pages,
   # the real OS clipboard and real popups. They are the only proof of several
   # browser behaviours — #618 and #621 both landed verified by nothing else —
   # and because no workflow invoked them and `test:desktop:unit` does not match
@@ -401,7 +401,7 @@ jobs:
       # a tier that cannot fail is the same bug as a tier that never runs.
       #
       # THE LOOP DOES NOT STOP AT THE FIRST FAILURE. One red test must not hide
-      # the state of the other seven; "what else is broken" is the question you
+      # the state of the other eight; "what else is broken" is the question you
       # ask next. Same reason `fail-fast: false` is on the matrix above.
       - name: Run the Electron tests, and prove each one reached its end
         working-directory: apps/desktop
@@ -432,6 +432,14 @@ jobs:
           run_case host-header     HOST_HEADER_OK
           run_case popup-geometry  POPUP_GEOMETRY_OK
           run_case clipboard       "CLIPBOARD OK"
+          # #488: the per-process-type surface. Here rather than only in the
+          # unit suite because everything load-bearing about it is a question
+          # about a REAL Electron — whether `cumulativeCPUUsage` is reported at
+          # all (the whole design rests on it), whether the rate maths agrees
+          # with real cumulative readings, and whether `getAppMetrics()` pids
+          # and `webContents.getOSProcessId()` line up, which is the join the
+          # #487 signal is made of.
+          run_case metrics         PROCESS_METRICS_OK
 
           # THE THREE THAT ARE NOT HERE, AND WHY — all one reason: they need
           # 1Password's official extension package, which is proprietary, is not
