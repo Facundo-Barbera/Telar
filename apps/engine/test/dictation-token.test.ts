@@ -31,7 +31,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { stubModels } from "./stub-models";
 import { DEEPGRAM_MAX_TTL_SECONDS, DICTATION_TTL_SECONDS, grantDictationToken } from "../src/dictation/token";
 import { dictationKeyFile, readDictationKey, writeDictationKey } from "../src/dictation/credentials";
-import { DEEPGRAM_KEYTERM_TOKEN_BUDGET, TELAR_KEYTERMS } from "../src/dictation/keyterms";
+import { DEEPGRAM_KEYTERM_BYTE_BUDGET, TELAR_KEYTERMS } from "../src/dictation/keyterms";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -452,7 +452,7 @@ test("the list stays bounded however many conversations are open", async () => {
   // than it was and is never illegal. Sixty of these titles no longer all fit,
   // and that is the trade: fewer terms is a degradation, over the limit is an
   // outage.
-  expect(new TextEncoder().encode(keyterms.join("")).length).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
+  expect(new TextEncoder().encode(keyterms.join("")).length).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_BYTE_BUDGET);
   // STILL WELL PAST NOTHING, and still a prefix of what was offered — the cut
   // comes off the tail rather than choosing by length.
   expect(keyterms.length).toBeGreaterThan(TELAR_KEYTERMS.length);

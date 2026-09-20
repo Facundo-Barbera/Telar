@@ -50,6 +50,7 @@
  */
 
 import { DEEPGRAM_LANGUAGES, DICTATION_LANGUAGE_DEFAULT, deepgramLanguage } from "./deepgram-languages";
+import { fitDeepgramKeyterms } from "./fit";
 import { deepgramKeyterms, type DictationContext } from "./keyterms";
 import { grantDictationToken, type DictationToken } from "./token";
 
@@ -126,8 +127,30 @@ const DEEPGRAM: DictationProvider = {
   // omission. The glossary is the same move one step further out: the engine
   // hands over names, and `deepgramKeyterms` is what makes them this vendor's
   // parameter (#581).
-  mintToken: ({ language, vocabulary, context, ...rest }) =>
-    grantDictationToken({ ...rest, language: deepgramLanguage(language), keyterms: deepgramKeyterms({ vocabulary, context }) }),
+  //
+  // ── AND THE GLOSSARY IS CONFIRMED, NOT ASSUMED (#712) ─────────────────────
+  // `deepgramKeyterms` builds to a MEASURED bound; `fitDeepgramKeyterms` asks
+  // Deepgram whether that list is actually accepted and shortens it when the
+  // answer is no. Why here rather than in a browser: the client cannot read the
+  // refusal at all — a WebSocket error event carries no reason by design — and
+  // this engine holds the key, builds the list, and is one place instead of
+  // three. See `fit.ts`.
+  //
+  // IN PARALLEL WITH THE GRANT, which is what keeps it free. Both are round
+  // trips to Deepgram with the same key and neither needs the other's answer,
+  // so a press waits for the slower rather than the sum. The fit NEVER THROWS
+  // — every failure in it is a shorter list — so this `Promise.all` can only
+  // ever reject for the grant's own reasons, and those are the ones the route
+  // already turns into a sentence.
+  mintToken: async ({ language, vocabulary, context, ...rest }) => {
+    const wire = deepgramLanguage(language);
+    const built = deepgramKeyterms({ vocabulary, context });
+    const [minted, keyterms] = await Promise.all([
+      grantDictationToken({ ...rest, language: wire, keyterms: built }),
+      fitDeepgramKeyterms({ ...rest, language: wire, keyterms: built }),
+    ]);
+    return { ...minted, keyterms };
+  },
 };
 
 /** Chosen but not transcribing. It has no `mintToken`, which is what makes the

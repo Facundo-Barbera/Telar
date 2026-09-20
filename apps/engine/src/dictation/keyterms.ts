@@ -62,20 +62,52 @@
  * estimate at all. A subword token never covers FEWER than one byte, so a
  * term's byte length is an upper bound on the tokens it can possibly cost — it
  * cannot be wrong in the direction that refuses the socket, for any input,
- * including emoji and scripts nobody here has thought about. It is
- * conservative: realistic text spends about half the budget it is charged, so a
- * Mac sends fewer terms than Deepgram would have taken. That is the trade, and
- * it is the right way round — the terms it costs come off the TAIL, which the
- * order below already says are the first that should go.
+ * including emoji and scripts nobody here has thought about.
  *
- * ── THERE ARE TWO LIMITS HERE, AND THIS ONE IS THE TIGHTER ──────────────────
+ * ── AND WHY THE BOUND IS 700 AND NOT 500 (#712) ─────────────────────────────
+ * One byte per token is the PATHOLOGICAL case, not the ordinary one, so #707's
+ * ceiling gave up most of the budget: 470 bytes of this Mac's real glossary is
+ * seventeen terms out of a list of forty-odd. How much it gave up was not
+ * knowable by argument — nobody outside Deepgram has nova-3's tokenizer — so it
+ * was MEASURED, by walking a glossary up against the live endpoint until it was
+ * refused (`scripts/probe-deepgram-keyterm-bound.ts`, 2026-09-19):
+ *
+ *   slug content     `telar/690-diff-miente-en-sesiones-local-3a-89157c`
+ *                    opens at 24 terms / 848 B, refused at 892 B  → 1.70 B/token
+ *   spanish content  `#974 revisión: Creatio sin ruta OData + pgTAP…`
+ *                    opens at 34 terms / 1414 B, refused at 1463 B → 2.83 B/token
+ *
+ * THE SPREAD IS THE FINDING, and it points the opposite way from the obvious
+ * guess. ASCII does not tokenize better here: a branch slug is 52 plain bytes
+ * and about thirty tokens, because every hyphen, digit and hex suffix takes
+ * one, while the Spanish title it was cut from is 63 bytes and about
+ * twenty-two. So "English is ~4 bytes per token" is not a safe premise for this
+ * list, and a bound near 1000 would be comfortable for titles and REFUSED for a
+ * glossary whose tail is branches.
+ *
+ * 700 sits 18% under the worst shape that could be built out of real material
+ * and 40% above the provable floor. It is also not reachable by the worst shape
+ * in practice: branches come from the same unsettled conversations as the
+ * titles, and titles are ordered ahead of them below, so a real prefix always
+ * leads with the better-tokenizing words. The one input that could be pure slug
+ * is the person's own `vocabulary`, and 700 survives that too.
+ *
+ * ── THE FLOOR IS WHAT MAKES RAISING IT SAFE ─────────────────────────────────
+ * 700 is measured rather than proved, and a measurement is about the words that
+ * were measured. So it is not load-bearing: `fit.ts` asks Deepgram whether the
+ * list it built is actually accepted, shrinks it when the answer is no, and
+ * falls back to `DEEPGRAM_KEYTERM_PROVABLE_BYTES` — which cannot be refused for
+ * any input — whenever it cannot get an answer at all. Being wrong about 700
+ * costs a round trip and some terms. It cannot cost dictation.
+ *
+ * ── THERE ARE TWO LIMITS HERE, AND THIS ONE IS STILL THE TIGHTER ────────────
  * The second is the size of the request line itself: Deepgram's edge answers a
  * plain-HTML `400 Bad request` — before it even looks at the credential — once
  * the query grows past a few kilobytes. It is real, and it was the other
- * candidate for this bug. It is NOT what is respected here, because it does not
- * need to be: 500 bytes of keyterms makes a request line well under a kilobyte,
- * so staying inside the token budget keeps a socket inside the edge's limit by
- * a wide margin. If the token budget ever rises, that one becomes reachable.
+ * candidate for #707's bug. It is NOT what is respected here, because it does
+ * not need to be: 700 bytes of keyterms makes a request line around a kilobyte,
+ * and the edge was measured refusing at 38 KB. The margin narrowed when the
+ * bound rose and it is still wide.
  *
  * WHATEVER DOES NOT FIT IS DROPPED FROM THE TAIL rather than skipped over, so
  * the list is always a PREFIX of the order below. Skipping a long title to fit
@@ -97,10 +129,27 @@ export type DictationContext = {
   branches: readonly string[];
 };
 
-/** Deepgram's own budget for a keyterm prompt, and the bound this list is
- *  built to respect. Their words, quoted by the refusal itself: "The maximum
- *  number of tokens across all keyterms is 500." */
+/** Deepgram's own budget for a keyterm prompt. Their words, quoted by the
+ *  refusal itself: "The maximum number of tokens across all keyterms is 500." */
 export const DEEPGRAM_KEYTERM_TOKEN_BUDGET = 500;
+
+/**
+ * THE LIST THAT CANNOT BE REFUSED, WHATEVER IS IN IT.
+ *
+ * Equal to the token budget, and equal for a reason rather than by coincidence:
+ * a subword token never covers fewer than one byte, so N bytes can never cost
+ * more than N tokens. A prefix this long is inside the budget for any input in
+ * any script — which is what makes it the floor every failure in `fit.ts` ends
+ * at, and why that floor is never asked about.
+ */
+export const DEEPGRAM_KEYTERM_PROVABLE_BYTES = DEEPGRAM_KEYTERM_TOKEN_BUDGET;
+
+/**
+ * WHAT THE LIST IS BUILT TO — measured, not proved, and safe to be because of
+ * the floor above. See the header for the probe and the 1.70-vs-2.83 spread
+ * that sets it here.
+ */
+export const DEEPGRAM_KEYTERM_BYTE_BUDGET = 700;
 
 /** Reused rather than built per term — this runs on the token-minting path,
  *  which is a press of the mic button. */
@@ -165,7 +214,15 @@ export const TELAR_KEYTERMS: readonly string[] = ["Telar", "Agent", "worktree", 
  * "Telar" and the constant "Telar" are one term; so are a branch and the title
  * it was cut from, which is the commonest collision here by far.
  */
-export function deepgramKeyterms(input: { vocabulary: readonly string[]; context: DictationContext }): string[] {
+export function deepgramKeyterms(input: {
+  vocabulary: readonly string[];
+  context: DictationContext;
+  /** How many BYTES the list may weigh. Defaults to the measured bound above,
+   *  and is a parameter for one reason: the probe that measures the real
+   *  boundary has to build lists past it. */
+  budgetBytes?: number;
+}): string[] {
+  const budget = input.budgetBytes ?? DEEPGRAM_KEYTERM_BYTE_BUDGET;
   const kept: string[] = [];
   const seen = new Set<string>();
   let spent = 0;
@@ -187,7 +244,7 @@ export function deepgramKeyterms(input: { vocabulary: readonly string[]; context
     // THE BUDGET STOPS THE LIST rather than skipping this one entry — see the
     // header for why the answer is always a prefix.
     const cost = tokenCeiling(term);
-    if (spent + cost > DEEPGRAM_KEYTERM_TOKEN_BUDGET) break;
+    if (spent + cost > budget) break;
     seen.add(key);
     kept.push(term);
     spent += cost;

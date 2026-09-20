@@ -121,7 +121,7 @@ const PROVIDER_HINT: Record<DictationProviderId, string> = {
 };
 
 export function DictationSection() {
-  const { provider, configured, language, languages, vocabulary, loading, save, error } = useDictationSettings();
+  const { provider, configured, language, languages, vocabulary, keyterms, loading, save, error } = useDictationSettings();
   const [key, setKey] = useState("");
   const [keySaved, setKeySaved] = useState(false);
   /**
@@ -294,7 +294,27 @@ export function DictationSection() {
                   onBlur={() => void saveTerms()}
                 />
               }
-            />
+            >
+              {/* WHEN NOT ALL OF IT FITS, SAY SO (#712).
+                  Deepgram's glossary has a token budget, the engine builds up to
+                  a measured bound and asks, and a list over the budget is
+                  shortened from the tail rather than refused — which is the
+                  right trade, and exactly the kind of thing that goes unnoticed
+                  for a month. It is said HERE and not on the composer: a shrink
+                  is a standing property of this Mac's glossary rather than an
+                  event, it stays true until the list changes, and this is the
+                  screen somebody would be on to do something about it.
+                  Interrupting a press to report a degradation nobody can act on
+                  mid-sentence would be the worse version. */}
+              {keyterms && keyterms.sent < keyterms.built && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {`Deepgram took ${keyterms.sent} of the ${keyterms.built} words Telar sent it last time. `}
+                  {keyterms.reason === "refused"
+                    ? "The rest were over its budget. What goes is the end of the list — branch names first, then project names, then your oldest open conversations. The words in this box are never the ones dropped."
+                    : "Deepgram could not be asked which would fit, so Telar sent the number it can prove is safe. The next press tries the full list again."}
+                </p>
+              )}
+            </Row>
             {/* "HOW IT WORKS" STOOD HERE (#643) — ~300 characters of manual on a
                 row with nothing to change. The live demo in the group below shows
                 the half of it worth knowing, which is what earned the deletion

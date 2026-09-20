@@ -47,6 +47,12 @@ export type DictationSettingsHandle = {
    *  Mac is about and puts the result on the token — so it is here for the box
    *  that edits it. */
   vocabulary: string[];
+  /** WHAT THE LAST PRESS ACTUALLY SENT (#712), when the engine has minted
+   *  anything since it started. The provider shortens the glossary to fit its
+   *  own budget, and this pane is where a person would come about it — see the
+   *  note the Vocabulary row draws. Absent on an engine that predates the
+   *  field, which `adopt` leaves alone rather than guessing at. */
+  keyterms?: { built: number; sent: number; reason?: "refused" | "unconfirmed" };
   /** True until the engine has answered once. The row keeps its controls
    *  disabled until then rather than offering one that might be wrong. */
   loading: boolean;
