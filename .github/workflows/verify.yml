@@ -285,6 +285,113 @@ jobs:
             exit 1
           fi
 
+  # THE ELECTRON SUITE, WHICH NOTHING RAN UNTIL NOW (#622).
+  #
+  # Eleven `*.electron-test.js` files drive a REAL Electron against real pages,
+  # the real OS clipboard and real popups. They are the only proof of several
+  # browser behaviours — #618 and #621 both landed verified by nothing else —
+  # and because no workflow invoked them and `test:desktop:unit` does not match
+  # their name, they could rot silently. One had: `browser-persistence` had been
+  # asserting a partition name the registry stopped minting in `3f750551`, and
+  # sat green for days because green is what a test nobody runs looks like.
+  #
+  # macOS, NOT ubuntu + xvfb, and this was weighed rather than assumed:
+  #
+  #   - `clipboard-write` asserts Chromium's FOCUS GATE — that an unfocused
+  #     document is refused before our permission handler is consulted. That is
+  #     a real window-server question. Under xvfb with no window manager there
+  #     is nothing to grant focus, so the test would fail for the environment
+  #     rather than for the code — the precise failure mode this job exists to
+  #     avoid creating.
+  #   - `popup-geometry` clamps a popup to a display's work area, and
+  #     `browser-persistence` reads pixels back out of the compositor, which
+  #     needs frames a never-composited X server does not produce.
+  #   - The product ships macOS-only (`build.mac` is the only target), so a
+  #     macOS runner is the platform these behaviours are claimed about.
+  #
+  # The cost is macOS runner minutes, already accepted by the `macos` job above.
+  # If that ever becomes the binding constraint, the honest move is to drop test
+  # files from the list below with a reason, NOT to move the job to a display
+  # that cannot answer what these tests ask.
+  #
+  # ONE JOB, NOT A MATRIX. Unlike the `test` matrix, each leg here would re-pay
+  # a ~100 MB Electron download for one or two seconds of test; the whole list
+  # is about 35 seconds serially.
+  electron:
+    name: Test the Electron suite (real Electron, real pages)
+    runs-on: macos-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      # THE ONE INSTALL IN THIS FILE THAT DOES NOT SET
+      # ELECTRON_SKIP_BINARY_DOWNLOAD, and that is the whole point of this job:
+      # every other job here wants the package and not the 100 MB executable.
+      # This one runs the executable. Setting it would leave `electron` a stub
+      # and every step below would fail on a missing binary.
+      - name: Install dependencies, Electron binary included
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+      # AND PROVE EACH ONE ACTUALLY RAN. Two independent gates per test, because
+      # they catch different things: the exit code (every file ends `app.exit(0)`
+      # on success and `app.exit(1)` on a thrown assertion), AND the success
+      # marker the file prints last. The marker is what catches an Electron that
+      # never got a window and a harness that exits clean without asserting —
+      # a tier that cannot fail is the same bug as a tier that never runs.
+      #
+      # THE LOOP DOES NOT STOP AT THE FIRST FAILURE. One red test must not hide
+      # the state of the other seven; "what else is broken" is the question you
+      # ask next. Same reason `fail-fast: false` is on the matrix above.
+      - name: Run the Electron tests, and prove each one reached its end
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          failed=0
+          run_case() {
+            script="$1"
+            marker="$2"
+            log="/tmp/electron-${script}.log"
+            echo "::group::test:desktop:${script}"
+            if ! bun run "test:desktop:${script}" > "$log" 2>&1; then
+              echo "::error::test:desktop:${script} exited non-zero"
+              failed=1
+            elif ! grep -q "$marker" "$log"; then
+              echo "::error::test:desktop:${script} exited 0 but never printed '${marker}' — it did not run to the end, so this job proved nothing about it"
+              failed=1
+            fi
+            cat "$log"
+            echo "::endgroup::"
+          }
+
+          run_case browser         BROWSER_REGRESSION_OK
+          run_case popup           BROWSER_POPUP_OK
+          run_case fit-zoom        BROWSER_FIT_ZOOM_OK
+          run_case persistence     BROWSER_PERSISTENCE_OK
+          run_case profile-cookies PROFILE_COOKIES_OK
+          run_case host-header     HOST_HEADER_OK
+          run_case popup-geometry  POPUP_GEOMETRY_OK
+          run_case clipboard       "CLIPBOARD OK"
+
+          # THE THREE THAT ARE NOT HERE, AND WHY — all one reason: they need
+          # 1Password's official extension package, which is proprietary, is not
+          # in this repository, and cannot be committed to it.
+          #
+          #   extension-boot, webauthn  — REFUSE to start without TELAR_1P_CRX
+          #     pointing at a cached copy. Not broken; unrunnable here.
+          #   extension                 — falls back to DOWNLOADING the CRX from
+          #     clients2.google.com. It passes today, and that is exactly why it
+          #     is excluded: a per-PR gate that fetches a third-party binary from
+          #     a CDN goes red for rate limits and version bumps that have
+          #     nothing to do with this code, and a gate people learn to ignore
+          #     is worth less than no gate.
+          #
+          # All three still run locally via their `test:desktop:*` scripts. If a
+          # cached CRX is ever available to CI as a secret, they belong here.
+          [ "$failed" -eq 0 ] || exit 1
+          echo "every Electron test ran to its end and passed"
+
   # THE SINGLE CHECK, so the set above can change without renaming a required
   # check every time.
   #
@@ -307,7 +414,7 @@ jobs:
     name: Verify passed
     runs-on: ubuntu-latest
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    needs: [source, typecheck, lint, test, macos]
+    needs: [source, typecheck, lint, test, macos, electron]
     timeout-minutes: 5
     steps:
       - name: Report the aggregate
