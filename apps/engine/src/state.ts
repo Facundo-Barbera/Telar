@@ -13717,11 +13717,12 @@ export class EngineStore {
    * to answer one question: does this delta's item exist. On a session holding
    * 327 items that read was most of the 1.57 ms a streamed chunk cost.
    *
-   * Sound for the same reason the queue's is: one writer, in this process,
-   * dropped by `writeItems` rather than replaced. The entries are SHARED — a
-   * caller gets a Map of its own over the same `Item` objects — which every
-   * caller already respects by replacing an item (`items.set(id, {...old})`)
-   * rather than editing one in place. Nothing here may edit an `Item` in place.
+   * Sound for the same reason the queue's is: one writer, in this process, and
+   * REPLACED by `writeItems` rather than dropped — see the note there. The
+   * entries are SHARED — a caller gets a Map of its own over the same `Item`
+   * objects — which every caller already respects by replacing an item
+   * (`items.set(id, {...old})`) rather than editing one in place. Nothing here
+   * may edit an `Item` in place.
    *
    * BOUNDED, unlike the queue's, which prunes itself against the live index:
    * there is no equivalent index for items, and one entry per session ever read
@@ -13730,6 +13731,19 @@ export class EngineStore {
    */
   private readonly itemsCache = new Map<string, Map<string, Item>>();
   private static readonly ITEMS_CACHE_LIMIT = 8;
+
+  /** Hold a projection, evicting the oldest entry when the cap is reached.
+   *  Both doors into the cache come through here — the read that parsed it and
+   *  the write that produced it — so the bound holds whichever filled it.
+   *  A session already held is REPLACED, never counted as a new entry: that
+   *  would evict a streaming neighbour to make room for a row already there. */
+  private cacheItems(sessionId: string, items: Map<string, Item>): void {
+    if (!this.itemsCache.has(sessionId) && this.itemsCache.size >= EngineStore.ITEMS_CACHE_LIMIT) {
+      const oldest = this.itemsCache.keys().next();
+      if (!oldest.done) this.itemsCache.delete(oldest.value);
+    }
+    this.itemsCache.set(sessionId, items);
+  }
 
   /** THE CACHED PROJECTION ITSELF — read-only, and never handed to a caller.
    *  Keyed rather than listed so the one question the streaming path asks can be
@@ -13752,7 +13766,7 @@ export class EngineStore {
      * span there is: the ingest path reads items once per batch and parses
      * every row through `ItemSchema`. It was counted only from `windowedItems`,
      * so the read this cache exists to spare was invisible to the one
-     * instrument built to price reads — which is how the projection can be
+     * instrument built to price reads — which is how the projection could be
      * thrown away once per item event without any measurement noticing.
      *
      * Here rather than at the call sites, for the reason `readQueue` gives:
@@ -13766,12 +13780,8 @@ export class EngineStore {
     this.readAccounting.itemParses += 1;
     const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
-    if (this.itemsCache.size >= EngineStore.ITEMS_CACHE_LIMIT) {
-      const oldest = this.itemsCache.keys().next();
-      if (!oldest.done) this.itemsCache.delete(oldest.value);
-    }
     const items = new Map(parsed.data.map((item) => [item.id, item]));
-    this.itemsCache.set(sessionId, items);
+    this.cacheItems(sessionId, items);
     return items;
   }
 
@@ -13802,7 +13812,27 @@ export class EngineStore {
       // is wanted exactly when its turn is.
       rows.map((item) => ({ key: item.runId })),
     );
-    this.itemsCache.delete(sessionId);
+    /**
+     * AND THE PROJECTION STAYS, instead of being thrown away — issue #658.
+     *
+     * This line used to be `itemsCache.delete`, which meant every item event
+     * discarded the map this process had just finished writing. The next touch
+     * — on a streaming turn, the next delta — re-read the document, re-parsed
+     * it and re-validated every row through `ItemSchema.array()`: 0.21 ms per
+     * item event on a 100-item session, 11.75 ms on a 7000-item one, on the
+     * thread streaming tokens. The cache exists to spare exactly that read, and
+     * dropping it here put the cost back once per item event.
+     *
+     * Safe to KEEP rather than only safe to drop, because the one way the entry
+     * could come to disagree with sqlite is a rollback, and `executeCommand`
+     * already clears the whole cache when a command throws. The store is the
+     * single writer; nothing else can move the document underneath this.
+     *
+     * A COPY of the caller's map, not the map itself: `readItems` handed that
+     * one out to be mutated, and aliasing it here would let the next caller's
+     * edits reach the cache before a write agreed to them.
+     */
+    this.cacheItems(sessionId, new Map(items));
   }
 
   /**
