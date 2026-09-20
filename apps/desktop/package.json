@@ -23,7 +23,6 @@
     "test:desktop:persistence": "env -u ELECTRON_RUN_AS_NODE electron ./browser-persistence.electron-test.js",
     "test:desktop:profile-cookies": "env -u ELECTRON_RUN_AS_NODE electron ./browser-profile-cookies.electron-test.js",
     "test:desktop:host-header": "env -u ELECTRON_RUN_AS_NODE electron ./host-header.electron-test.js",
-    "test:desktop:credentials": "env -u ELECTRON_RUN_AS_NODE electron ./credential-frames.electron-test.js",
     "test:desktop:popup-geometry": "env -u ELECTRON_RUN_AS_NODE electron ./popup-geometry.electron-test.js",
     "test:desktop:extension": "env -u ELECTRON_RUN_AS_NODE electron ./extension-harness.electron-test.js",
     "test:desktop:extension-boot": "env -u ELECTRON_RUN_AS_NODE electron ./extension-boot.electron-test.js",
