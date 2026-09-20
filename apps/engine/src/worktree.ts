@@ -63,7 +63,7 @@
  * path would trade a data-loss bug for a leak-forever one.
  */
 import crypto from "node:crypto";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { ProjectAvailability } from "./volumes";
@@ -75,6 +75,15 @@ export type GitResult = {
   stderr: string;
   /** Set when the child was killed for outrunning its bound rather than exiting on its own. */
   timedOut?: true;
+  /**
+   * The pid of the child this runner killed, on the timeout path of the
+   * synchronous runner — absent everywhere else, including when the spawn itself
+   * failed and there was no child. It exists so "the child was killed rather than
+   * orphaned" can be checked without the child having to write its own pid
+   * somewhere first, which is what #748 was: a race between the fixture's startup
+   * and the bound under test.
+   */
+  killedPid?: number;
 };
 export type GitRunOptions = {
   /** Wall-clock bound for this one invocation; the runner's default otherwise. */
@@ -121,34 +130,64 @@ export type GitRunnerDeps = {
   defaultTimeoutMs?: number;
 };
 
+/**
+ * `spawnSync`, NOT `execFileSync`, FOR ONE REASON: IT RETURNS THE PID (#748).
+ *
+ * Both block, both kill at `timeout`, both reap the direct child before they
+ * return. What `execFileSync` cannot do is say WHICH process it killed, and
+ * without that the only way to check a stalled child was actually killed rather
+ * than abandoned was to have the child write its own pid to a file and read it
+ * back afterwards — which made the test's bound double as the child's startup
+ * deadline. The pid file existed only if `sh` reached its first line inside the
+ * same 1,500 ms the runner was being measured against, so the test passed at
+ * 1503 ms and failed at 1507 ms four minutes later, with `ENOENT` meaning the
+ * shell never started rather than that a write was lost.
+ *
+ * Reporting the pid removes the file, the race and the `ENOENT` together: the
+ * pid exists because the spawn happened, not because the child cooperated.
+ * `killedPid` is set only on the timeout path, so it means exactly what it says —
+ * the process this runner killed — and it goes into the message too, where a log
+ * naming the pid it killed is worth more than one that does not.
+ */
 export function createGitRunner(deps: GitRunnerDeps = {}): GitRunner {
   const gitBin = deps.gitBin ?? "git";
   return (cwd, args, options) => {
     const timeout = Math.max(1, options?.timeoutMs ?? deps.defaultTimeoutMs ?? gitTimeoutFromEnv());
-    try {
-      const stdout = execFileSync(gitBin, args, {
-        cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout,
-        // SIGKILL, NOT SIGTERM: the stall this guards against is a child stuck
-        // in a syscall, and a signal git may handle politely is a signal it may
-        // never get around to handling.
-        killSignal: "SIGKILL",
-      });
-      return { status: 0, stdout, stderr: "" };
-    } catch (error) {
-      const failure = error as { code?: string; signal?: string | null; status?: number | null; stdout?: string; stderr?: string };
-      if (failure.code === "ETIMEDOUT" || (failure.status == null && failure.signal === "SIGKILL")) {
-        return {
-          status: GIT_TIMEOUT_STATUS,
-          stdout: failure.stdout ?? "",
-          stderr: `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed`,
-          timedOut: true,
-        };
-      }
-      return { status: failure.status ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr || String(error) };
+    const run = spawnSync(gitBin, args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout,
+      // SIGKILL, NOT SIGTERM: the stall this guards against is a child stuck
+      // in a syscall, and a signal git may handle politely is a signal it may
+      // never get around to handling.
+      killSignal: "SIGKILL",
+    });
+    const failure = run.error as { code?: string } | undefined;
+    // The second clause is the one `execFileSync` used to need and is kept: a
+    // child that died on SIGKILL with no status is one this runner killed, even
+    // where the platform did not also hand back an ETIMEDOUT.
+    if (failure?.code === "ETIMEDOUT" || (run.status == null && run.signal === "SIGKILL")) {
+      const killed = typeof run.pid === "number" && run.pid > 0 ? run.pid : undefined;
+      return {
+        status: GIT_TIMEOUT_STATUS,
+        stdout: run.stdout ?? "",
+        stderr:
+          `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed` +
+          (killed === undefined ? "" : ` (pid ${killed})`),
+        timedOut: true,
+        killedPid: killed,
+      };
     }
+    if (run.status === 0) return { status: 0, stdout: run.stdout ?? "", stderr: "" };
+    return {
+      status: run.status ?? 1,
+      stdout: run.stdout ?? "",
+      // `spawnSync` reports a failure to START in `error` with no stderr at all —
+      // a missing binary arrives as ENOENT and `stderr: null` — so the error is
+      // what stands in for a message the child never got to write.
+      stderr: run.stderr || (run.error ? String(run.error) : `git ${args.join(" ")} in ${cwd} exited with status ${run.status}`),
+    };
   };
 }
 
