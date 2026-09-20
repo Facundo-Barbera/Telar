@@ -4600,7 +4600,7 @@ export class EngineStore {
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
-    const migrated = fs.existsSync(path.join(root, "execution-store.json")) || fs.existsSync(path.join(root, "execution.sqlite"));
+    const migrated = fs.existsSync(this.paths.executionStore) || fs.existsSync(path.join(root, "execution.sqlite"));
     if (migrated && options.executionStorage === "json") throw new Error("this engine home has migrated to SQLite; restore a backup to downgrade");
     if (migrated || options.executionStorage === "sqlite") {
       // The journal sweep says what it removed when it removes it, which is
@@ -13370,7 +13370,7 @@ export class EngineStore {
     }
     const deliveries = this.readTaskStopDeliveries();
     const remaining = deliveries.filter((delivery) => delivery.workerId !== workerId);
-    if (remaining.length !== deliveries.length) this.writeDocument(path.join(this.paths.root, "task-stops.json"), remaining);
+    if (remaining.length !== deliveries.length) this.writeDocument(this.paths.taskStops, remaining);
     return { stopped };
   }
 
@@ -14380,14 +14380,14 @@ export class EngineStore {
       if (workerId) deliveries.push({ deliveryId: `stop_${crypto.randomUUID().replaceAll("-", "")}`, sessionId,
         providerTaskId: task.providerTaskId, workerId, driver });
     }
-    this.writeDocument(path.join(this.paths.root, "task-stops.json"), deliveries);
+    this.writeDocument(this.paths.taskStops, deliveries);
     if (pending.size > 0) this.pendingStopTasks.set(sessionId, pending);
     this.touchSession(sessionId, at);
     return closed.length;
   }
 
   private readTaskStopDeliveries(): Array<{ deliveryId: string; sessionId: string; providerTaskId: string; workerId: string; driver: ProviderDriverKind }> {
-    const value = this.readDocument(path.join(this.paths.root, "task-stops.json")) ?? [];
+    const value = this.readDocument(this.paths.taskStops) ?? [];
     if (!Array.isArray(value) || value.some((row) => !row || typeof row.deliveryId !== "string" || typeof row.sessionId !== "string" ||
       typeof row.providerTaskId !== "string" || typeof row.workerId !== "string" || !["claude", "codex", "opencode"].includes(row.driver)))
       throw new EngineStateError("invalid_request", "invalid task-stop delivery store");
@@ -14398,7 +14398,7 @@ export class EngineStore {
     const pending = this.readTaskStopDeliveries();
     const ack = new Set(acknowledged);
     const remaining = pending.filter((delivery) => delivery.workerId !== workerId || !ack.has(delivery.deliveryId));
-    if (remaining.length !== pending.length) this.writeDocument(path.join(this.paths.root, "task-stops.json"), remaining);
+    if (remaining.length !== pending.length) this.writeDocument(this.paths.taskStops, remaining);
     return remaining.filter((delivery) => delivery.workerId === workerId).map(({ workerId: _owner, ...delivery }) => delivery);
   }
 

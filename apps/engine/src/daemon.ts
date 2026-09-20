@@ -1031,7 +1031,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   void syncOrientationSkill();
   /** The per-transcript parse cache behind /v2/usage — beside the rates
    *  snapshot it prices with. See usage.ts. */
-  const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
+  const usageScanCachePath = store.paths.usageScanCache;
   /**
    * THE LAST THING THE HUBS SAID, and when.
    *
@@ -2719,7 +2719,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, {
           usage: await readUsageReport(
             { sinceMs, untilMs, resolution, timeZone },
-            { ratesCachePath: path.join(store.paths.root, "usage-model-rates.json"), scanCachePath: usageScanCachePath },
+            { ratesCachePath: store.paths.usageModelRates, scanCachePath: usageScanCachePath },
           ),
         });
         return;
@@ -5194,7 +5194,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const { BrowserRuntime, BrowserRouter, desktopBrowserFromEnv } = await import("./browser");
       // Persistent per-session profiles, under the engine's own state root:
       // a login the human helped with on Tuesday still holds on Thursday.
-      browser = new BrowserRuntime({ profileRoot: path.join(store.paths.root, "browser-profiles") });
+      browser = new BrowserRuntime({ profileRoot: store.paths.browserProfiles });
       /**
        * THE SHARED BROWSER (§6 of the plan): when the desktop shell exported
        * its control server, calls route to the Electron-hosted tabs the human

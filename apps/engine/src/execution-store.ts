@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { EngineEvent, idleSince, isShelved, settlingActivityOf } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import { statePaths } from "./state-paths";
 import type { TurnSummary } from "./turn-summary";
 
 type Statement = { run(...args: unknown[]): unknown; get(...args: unknown[]): Record<string, unknown> | undefined; all(...args: unknown[]): Array<Record<string, unknown>> };
@@ -861,7 +862,7 @@ export class ExecutionStore {
     if (!this.db.prepare("PRAGMA table_info(receipts)").all().some((column) => String(column.name) === "at"))
       this.db.exec("ALTER TABLE receipts ADD COLUMN at INTEGER NOT NULL DEFAULT 0");
     if (!this.db.prepare("SELECT value FROM metadata WHERE key='imported'").get()) this.importLegacy();
-    atomicWrite(path.join(root, "execution-store.json"), { version: 1, backend: "sqlite" });
+    atomicWrite(statePaths(root).executionStore, { version: 1, backend: "sqlite" });
     // A previous binary must fail closed instead of reading stale JSON state.
     for (const sessionId of this.sessionIds()) this.fenceLegacy(sessionId);
     this.housekeeping.receipts = this.pruneReceipts();
@@ -2537,14 +2538,17 @@ export class ExecutionStore {
           }
         }
       }
-      for (const name of ["task-stops.json", "subscriptions.json"]) {
-        const file = path.join(this.root, name);
+      // THROUGH `statePaths`, LIKE EVERY OTHER ROOT-LEVEL NAME (#665). These
+      // two were joined by hand here, which is the second way of naming a
+      // store-root file that the invariant test's allowlist cannot see.
+      for (const file of [statePaths(this.root).taskStops, statePaths(this.root).subscriptions]) {
         if (fs.existsSync(file)) {
           // Made here rather than up front, for the reason stated above: the
           // per-session copies make their own parents, and this is the only
           // other thing that ever goes in.
           fs.mkdirSync(backup, { recursive: true, mode: 0o700 });
-          if (!fs.existsSync(path.join(backup, name))) fs.copyFileSync(file, path.join(backup, name), fs.constants.COPYFILE_EXCL);
+          const copy = path.join(backup, path.basename(file));
+          if (!fs.existsSync(copy)) fs.copyFileSync(file, copy, fs.constants.COPYFILE_EXCL);
           this.write(file, JSON.parse(fs.readFileSync(file, "utf8")));
         }
       }

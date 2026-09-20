@@ -23,6 +23,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { statePaths } from "./state";
 
 /** The only fields that cross. Anything else a caller passes is dropped. */
 export type WorkerDiagnostic = {
@@ -78,7 +79,7 @@ export function sanitizeDiagnostic(workerId: string, at: string, fields: WorkerD
  * cap. Returns a function shaped exactly like `EngineWorkerOptions.onDiagnostic`.
  */
 export function createWorkerDiagnostics(root: string, workerId: string, now: () => number = Date.now): (fields: WorkerDiagnostic) => void {
-  const directory = path.join(root, "diagnostics");
+  const directory = statePaths(root).diagnostics;
   const file = path.join(directory, "worker.jsonl");
   const previous = `${file}.1`;
   return (fields) => {
