@@ -66,6 +66,7 @@ import {
 import type {
   GitHubCheck,
   GitHubIssueDetail,
+  GitHubLink,
   GitHubMergeMethod,
   GitHubMergeRefusal,
   GitHubPullDetail,
@@ -911,10 +912,17 @@ export function ForgeFacts({
   thing,
   pull,
   mine,
+  onOpenLinked,
 }: {
   thing: GitHubIssueDetail | GitHubPullDetail;
   pull?: GitHubPullDetail;
   mine?: boolean;
+  /**
+   * Open the other end of the issue↔PR link, here in the panel (#790). Absent
+   * leaves every link a plain link out — which is what a caller with no panel to
+   * jump in should get, and what a cross-repository reference gets regardless.
+   */
+  onOpenLinked?: (link: GitHubLink) => void;
 }) {
   const openedAt = thing.createdAt;
   return (
@@ -971,6 +979,89 @@ export function ForgeFacts({
       )}
 
       {/**
+       * THE OTHER END OF THE LINK — issue #790, and #49's design calls it "the
+       * single most useful thing on a GitHub issue page and we do not have it".
+       *
+       * DIRECTLY UNDER THE ATTRIBUTION, which is where github.com puts it: beside
+       * the state badge, and again in a Development sidebar. §5 of the design rules
+       * out that sidebar at panel width, so it becomes one line of the facts region
+       * — the same grammar the branch pair and the chips line already use.
+       *
+       * AND IT IS A JUMP, not a link out, whenever it can be. The evidence #790 was
+       * filed on is that reading this repository meant asking "is this closed, and
+       * by which PR" and answering it with `gh` by hand. A URL to github.com would
+       * be a fourth way to leave the cockpit; opening #786 in the Pull requests
+       * surface is the answer arriving where the question was asked.
+       *
+       * THROUGH THE DOOR THAT ALREADY EXISTS. `onOpenLinked` ends at the cockpit's
+       * `showPanelTab("pull:786")` — the same verb a GitHub link in a message and a
+       * restored layout both use, which reads the number back out and opens it
+       * INSIDE the list surface (components/right-panel.tsx, `pullPanelTab`). #49 §2
+       * notes this becomes a jump within ONE surface once Issues and pull requests
+       * collapse together; until then it is a jump between two, and it is the
+       * cockpit's existing one rather than a second route cut for this line.
+       *
+       * ABSENT WHEN THERE IS NO LINK, unlike the chips line below it. An unlinked
+       * issue is the common case and "no linked pull request" is not a fact worth a
+       * row on every issue in the repository — where the chips line earns its
+       * always-drawn state because an empty chips line and a failed read look
+       * identical, this cannot be mistaken for a failure: the field travels with the
+       * rows, so a read that drew this header got this field too.
+       */}
+      {(() => {
+        const links = pull ? pull.linkedIssues : (thing as GitHubIssueDetail).linkedPulls;
+        if (links.length === 0) return null;
+        const Glyph = pull ? CircleDotIcon : GitPullRequestIcon;
+        /**
+         * WHAT TO CALL IT, AND WHY THE ISSUE SIDE NEEDS TWO WORDINGS. A pull
+         * request's `closingIssuesReferences` is a declaration in its own body, so
+         * "closes" is true the moment it is written. An issue's
+         * `closedByPullRequestsReferences` is NOT an outcome — measured against
+         * cli/cli, an open issue answers a reference to a pull request that closed
+         * without merging — so "closed by" would claim a merge on an open issue that
+         * may never get one.
+         */
+        const label = pull ? "closes" : thing.state.toUpperCase() === "CLOSED" ? "closed by" : "will close with";
+        return (
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-2xs text-muted-foreground">
+            <Glyph className="size-3 shrink-0" />
+            <span>{label}</span>
+            {links.map((link) =>
+              /**
+               * A CROSS-REPOSITORY REFERENCE IS A LINK OUT AND SAYS WHOSE. The panel's
+               * Pull requests surface can only open THIS repository's numbers, so a
+               * jump here would land on a different #768 entirely — see
+               * `GitHubLink.repository`, which is present only in that case.
+               */
+              link.repository || !onOpenLinked ? (
+                <a
+                  key={link.url}
+                  href={link.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={link.repository ? `Open ${link.repository}#${link.number} on GitHub` : `Open #${link.number} on GitHub`}
+                  className="inline-flex items-center gap-0.5 font-mono tabular-nums text-foreground underline-offset-2 hover:underline"
+                >
+                  {link.repository ? `${link.repository}#${link.number}` : `#${link.number}`}
+                  <ExternalLinkIcon className="size-2.5" />
+                </a>
+              ) : (
+                <button
+                  key={link.url}
+                  type="button"
+                  onClick={() => onOpenLinked(link)}
+                  title={`Open #${link.number} here`}
+                  className="font-mono tabular-nums text-foreground underline-offset-2 hover:underline"
+                >
+                  #{link.number}
+                </button>
+              ),
+            )}
+          </p>
+        );
+      })()}
+
+      {/**
        * THE CHIPS LINE, DRAWN EVEN WHEN IT IS EMPTY. Labels, then the milestone, then
        * the boards — the same order and the same shapes the list row uses.
        *
@@ -1018,11 +1109,20 @@ export function ForgeDetailSurface({
   projectId,
   /** The session's own branch, so its pull request can say it is this one's. */
   branch,
+  /**
+   * Open the OTHER kind at a number (#790) — an issue's closing pull request, or
+   * the issue a pull request closes. The kind is flipped here rather than by the
+   * caller: this surface is the one that knows which end of the link it is looking
+   * at, and a caller that had to work it out would be a second place to get it
+   * backwards.
+   */
+  onOpenForge,
 }: {
   kind: "issue" | "pull";
   number: number;
   projectId?: string;
   branch?: string;
+  onOpenForge?: (kind: "issue" | "pull", number: number) => void;
 }) {
   const [issue, setIssue] = useState<GitHubIssueDetail>();
   const [pull, setPull] = useState<GitHubPullDetail>();
@@ -1131,7 +1231,14 @@ export function ForgeDetailSurface({
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <ForgeFacts thing={thing} {...(pull ? { pull } : {})} mine={mine} />
+        <ForgeFacts
+          thing={thing}
+          {...(pull ? { pull } : {})}
+          mine={mine}
+          // An issue's link points at a pull request and a pull request's at an
+          // issue, always — the relation has exactly two ends.
+          {...(onOpenForge ? { onOpenLinked: (link: GitHubLink) => onOpenForge(kind === "issue" ? "pull" : "issue", link.number) } : {})}
+        />
 
         {/**
          * THE BODY IS THE FIRST CARD, not a bare block above the conversation.

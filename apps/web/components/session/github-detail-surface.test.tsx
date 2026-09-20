@@ -17,7 +17,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { GitHubIssueDetail, GitHubPullDetail } from "@telar/engine-client";
+import type { GitHubIssueDetail, GitHubLink, GitHubPullDetail } from "@telar/engine-client";
 import { EntryCard, ForgeFacts, MergeFooter } from "./github-detail-surface";
 import { buildForgeTimeline, type ForgeEntry } from "@/lib/github-forge";
 
@@ -37,6 +37,7 @@ const issue = (over: Partial<GitHubIssueDetail> = {}): GitHubIssueDetail =>
     assignees: [],
     labels: [],
     projects: [],
+    linkedPulls: [],
     comments: [],
     olderComments: 0,
     ...over,
@@ -48,6 +49,7 @@ const pull = (over: Partial<GitHubPullDetail> = {}): GitHubPullDetail =>
     number: 700,
     url: "https://github.com/o/r/pull/700",
     isDraft: false,
+    linkedIssues: [],
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
     mergeMethods: ["squash"],
@@ -185,6 +187,87 @@ describe("the chips line", () => {
     const markup = renderToStaticMarkup(<ForgeFacts thing={issue({ milestone: "Wave 1", projects: ["Telar"] })} />);
     expect(markup).toContain("Wave 1");
     expect(markup).toContain("Telar");
+  });
+});
+
+/**
+ * THE ISSUE↔PR LINK — issue #790. #49's design: "the single most useful thing on a
+ * GitHub issue page and we do not have it."
+ *
+ * `lib/github-forge.test.ts` and the engine's `github.test.ts` hold the DATA; these
+ * are the claims about the line — what it is called in each direction, that it is a
+ * jump rather than a fourth way out of the cockpit, and that a cross-repository
+ * reference is the one case where it must not be.
+ */
+describe("the line that names the other end of the link", () => {
+  const link = (number: number, over: Partial<GitHubLink> = {}): GitHubLink => ({
+    number,
+    url: `https://github.com/o/r/pull/${number}`,
+    ...over,
+  });
+  const facts = (thing: GitHubIssueDetail | GitHubPullDetail, onOpenLinked?: (link: GitHubLink) => void) =>
+    renderToStaticMarkup(<ForgeFacts thing={thing} {...(("mergeable" in thing) ? { pull: thing as GitHubPullDetail } : {})} {...(onOpenLinked ? { onOpenLinked } : {})} />);
+
+  test("a CLOSED issue says which pull request closed it", () => {
+    // The evidence #790 was filed on: reading this repository meant asking "is this
+    // closed, and by which PR" and answering it with `gh` by hand.
+    const markup = facts(issue({ state: "CLOSED", linkedPulls: [link(786)] }));
+    expect(markup).toContain("closed by");
+    expect(markup).toContain("#786");
+  });
+
+  test("an OPEN issue does NOT say it was closed by anything", () => {
+    /**
+     * The reference is the RELATION, not the outcome — measured against cli/cli, an
+     * open issue answers a reference to a pull request that closed without merging.
+     * "closed by" on an open issue would claim a merge that may never happen.
+     */
+    const markup = facts(issue({ state: "OPEN", linkedPulls: [link(786)] }));
+    expect(markup).toContain("will close with");
+    expect(markup).not.toContain("closed by");
+  });
+
+  test("a pull request says which issues it closes, which is a declaration and always true", () => {
+    const markup = facts(pull({ linkedIssues: [link(488)] }));
+    expect(markup).toContain("closes");
+    expect(markup).toContain("#488");
+  });
+
+  test("IT IS A BUTTON, so following it stays in the cockpit", () => {
+    // A URL to github.com would be a fourth way to leave. The jump ends at the
+    // cockpit's own `showPanelTab("pull:786")` — the door a GitHub link in a message
+    // already uses.
+    const markup = facts(issue({ state: "CLOSED", linkedPulls: [link(786)] }), () => {});
+    expect(markup).toContain('title="Open #786 here"');
+    expect(markup).not.toContain('href="https://github.com/o/r/pull/786"');
+  });
+
+  test("A CROSS-REPOSITORY REFERENCE IS A LINK OUT, and says whose repository it is", () => {
+    // The panel's Pull requests surface can only open THIS repository's numbers, so
+    // a jump here would land on a different #768 entirely.
+    const markup = facts(issue({ state: "CLOSED", linkedPulls: [link(768, { repository: "other/repo", url: "https://github.com/other/repo/pull/768" })] }), () => {});
+    expect(markup).toContain("other/repo#768");
+    expect(markup).toContain('href="https://github.com/other/repo/pull/768"');
+    expect(markup).not.toContain("Open #768 here");
+  });
+
+  test("with nowhere to jump to, it is still a link rather than dead text", () => {
+    // A caller with no panel — the detail rendered outside one — must still be able
+    // to follow it.
+    const markup = facts(issue({ state: "CLOSED", linkedPulls: [link(786)] }));
+    expect(markup).toContain('href="https://github.com/o/r/pull/786"');
+  });
+
+  test("and the line is ABSENT on the unlinked issue, which is most of them", () => {
+    // Unlike the chips line below it, which is drawn empty because an unlabelled
+    // issue and a failed read look identical. This field rides the row read, so a
+    // header that drew at all had it — there is no failure to distinguish.
+    const markup = facts(issue());
+    expect(markup).not.toContain("will close with");
+    expect(markup).not.toContain("closed by");
+    // The row still drew, so the assertions above are about the line and not about
+    // a render that threw its way to an empty string.
+    expect(markup).toContain("opened this");
   });
 });
 

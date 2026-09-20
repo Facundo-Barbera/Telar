@@ -30,6 +30,7 @@ import {
   parseProjectItems,
   parsePullDetail,
   parsePulls,
+  parseRepoFromUrl,
   parseReviews,
   readCheckLog,
   readForgeFacets,
@@ -121,6 +122,9 @@ describe("parseIssues", () => {
       // EMPTY UNTIL THE BOARD CALL FILLS IT IN. `projectItems` needs a scope this
       // query does not have, so it is read separately — see the board tests below.
       projects: [],
+      // Nothing is linked to close this one, and that IS the answer — unlike
+      // `projects`, this field rides the row read, so a row that arrived has it.
+      linkedPulls: [],
       updatedAt: Date.parse("2026-08-08T18:54:57Z"),
       url: "https://github.com/o/r/issues/82",
     });
@@ -208,11 +212,120 @@ describe("the author's face", () => {
     expect(reviews[0]).toMatchObject({ author: "alan", authorAvatar: "https://github.com/alan.png" });
   });
 
-  test("a DETAIL read carries it too, through the same row parser", () => {
+  test("a DETAIL read carries the face too, through the same row parser", () => {
     const issue = parseIssueDetail(JSON.stringify({ number: 7, title: "t", state: "OPEN", url: "u", createdAt: DAY, author: { login: "ada" } }), 1);
     expect(issue.authorAvatar).toBe("https://github.com/ada.png");
     const pull = parsePullDetail(JSON.stringify({ number: 8, title: "t", state: "OPEN", url: "u", createdAt: DAY, author: { login: "ada" } }), 1);
     expect(pull.authorAvatar).toBe("https://github.com/ada.png");
+  });
+});
+
+/**
+ * THE ISSUE↔PR LINK — issue #790, and #49's design calls it "the single most useful
+ * thing on a GitHub issue page and we do not have it".
+ *
+ * MEASURED SHAPES THROUGHOUT. `gh` sends each reference as
+ * `{ id, number, url, repository: { id, name, owner: { id, login } } }` — taken off
+ * `gh issue view 488 --json closedByPullRequestsReferences` and
+ * `gh pr view 786 --json closingIssuesReferences` against this repository, which is
+ * the real 488 ↔ 786 pair. No title and no STATE, which is why the field is named
+ * for the relation rather than for an outcome.
+ */
+describe("the issue↔PR link", () => {
+  /** One reference, in `gh`'s own shape. */
+  const ref = (number: number, owner = "Facundo-Barbera", name = "Telar", kind = "pull") => ({
+    id: `PR_${number}`,
+    number,
+    url: `https://github.com/${owner}/${name}/${kind}/${number}`,
+    repository: { id: "R_1", name, owner: { id: "U_1", login: owner } },
+  });
+
+  const issueWith = (refs: unknown, url = "https://github.com/Facundo-Barbera/Telar/issues/488") =>
+    parseIssues(JSON.stringify([{ number: 488, title: "t", state: "CLOSED", url, updatedAt: DAY, closedByPullRequestsReferences: refs }]))[0]!;
+  const pullWith = (refs: unknown, url = "https://github.com/Facundo-Barbera/Telar/pull/786") =>
+    parsePulls(JSON.stringify([{ number: 786, title: "t", state: "MERGED", url, updatedAt: DAY, closingIssuesReferences: refs }]))[0]!;
+
+  test("an issue names the pull requests linked to close it", () => {
+    expect(issueWith([ref(786)]).linkedPulls).toEqual([{ number: 786, url: "https://github.com/Facundo-Barbera/Telar/pull/786" }]);
+  });
+
+  test("and a pull request names the issues it closes — the same relation, other end", () => {
+    expect(pullWith([ref(488, "Facundo-Barbera", "Telar", "issues")]).linkedIssues).toEqual([
+      { number: 488, url: "https://github.com/Facundo-Barbera/Telar/issues/488" },
+    ]);
+  });
+
+  test("THE SAME REPOSITORY CARRIES NO `repository`, AND THAT IS THE JUMPABLE SIGNAL", () => {
+    // The panel's Pull requests surface can only open THIS repository's numbers, so
+    // absence is what a jump is allowed to key on. Present means "link out".
+    expect(issueWith([ref(786)]).linkedPulls[0]!.repository).toBeUndefined();
+  });
+
+  test("ANOTHER repository keeps its name, so a jump cannot open the wrong #768", () => {
+    /**
+     * A pull request in another repository closing an issue here is a real GitHub
+     * feature, and `gh` sends the repository on every reference — which it would not
+     * need to do if it were always the reading one. Without this the panel would
+     * open ITS OWN #768, which is a different pull request entirely.
+     */
+    const linked = issueWith([ref(768, "other", "repo")]).linkedPulls[0]!;
+    expect(linked).toEqual({ number: 768, url: "https://github.com/other/repo/pull/768", repository: "other/repo" });
+  });
+
+  test("a URL this engine cannot read makes every link a link OUT, not a wrong jump", () => {
+    // `parseRepoFromUrl` is the only place a read says which repository it came
+    // from. Unparseable — an enterprise host with a different path shape, a row whose
+    // url `gh` omitted — and nothing matches, so every reference keeps its repository
+    // and the surface links out. The fail-safe direction is the one that cannot land
+    // on somebody else's number.
+    expect(parseRepoFromUrl("https://github.com/o/r/issues/7")).toBe("o/r");
+    expect(parseRepoFromUrl("https://github.com/o/r/pull/7")).toBe("o/r");
+    expect(parseRepoFromUrl("")).toBeUndefined();
+    expect(parseRepoFromUrl("#488")).toBeUndefined();
+    expect(issueWith([ref(786)], "").linkedPulls[0]!.repository).toBe("Facundo-Barbera/Telar");
+  });
+
+  test("a reference with no number is dropped, the way a row with no number is", () => {
+    expect(issueWith([{ url: "u" }, ref(786)]).linkedPulls.map((link) => link.number)).toEqual([786]);
+    // An absent field and a field that is not an array both mean "no links".
+    expect(issueWith(undefined).linkedPulls).toEqual([]);
+    expect(issueWith(null).linkedPulls).toEqual([]);
+    expect(issueWith("nonsense").linkedPulls).toEqual([]);
+  });
+
+  test("a reference gh sent without a url still identifies itself by number", () => {
+    // Never observed; pinned because the surface renders `url` as a React key and an
+    // empty one would collide across two such references.
+    expect(issueWith([{ number: 786 }]).linkedPulls).toEqual([{ number: 786, url: "#786" }]);
+  });
+
+  test("a DETAIL read carries the link, so it cannot disagree with the row you clicked", () => {
+    // A detail is its own `gh` call with its own field list — the one way these two
+    // CAN diverge — so both field sets ask for it and both parsers read it.
+    const issue = parseIssueDetail(
+      JSON.stringify({
+        number: 488,
+        title: "t",
+        state: "CLOSED",
+        url: "https://github.com/Facundo-Barbera/Telar/issues/488",
+        createdAt: DAY,
+        closedByPullRequestsReferences: [ref(786)],
+      }),
+      1,
+    );
+    expect(issue.linkedPulls.map((link) => link.number)).toEqual([786]);
+    const pull = parsePullDetail(
+      JSON.stringify({
+        number: 786,
+        title: "t",
+        state: "MERGED",
+        url: "https://github.com/Facundo-Barbera/Telar/pull/786",
+        createdAt: DAY,
+        closingIssuesReferences: [ref(488, "Facundo-Barbera", "Telar", "issues")],
+      }),
+      1,
+    );
+    expect(pull.linkedIssues.map((link) => link.number)).toEqual([488]);
   });
 });
 
@@ -397,6 +510,29 @@ describe("what the field sets ask gh for", () => {
     expect(issue.get("issue view")).toContain("author");
     const pull = await fieldsFor((gh) => readPull(gh, "/repo", 7, () => 1, { skipProjects: true }));
     expect(pull.get("pr view")).toContain("author");
+  });
+
+  test("and for the issue↔PR link, under the name gh has for it on THAT verb", async () => {
+    /**
+     * THE TWO NAMES ARE NOT INTERCHANGEABLE AND THAT IS WHAT THIS PINS. An issue
+     * takes `closedByPullRequestsReferences`, a pull request `closingIssuesReferences`,
+     * and each verb REJECTS the other outright — measured, `gh issue list --json
+     * closingIssuesReferences` exits with "Unknown JSON field". Swapped, the list
+     * would not render one issue: the whole `--json` query fails, and the surface
+     * would report GitHub as broken.
+     */
+    const list = await fieldsFor((gh) => readGitHub(gh, "/repo", () => 1, { skipProjects: true }));
+    expect(list.get("issue list")).toContain("closedByPullRequestsReferences");
+    expect(list.get("issue list")).not.toContain("closingIssuesReferences");
+    expect(list.get("pr list")).toContain("closingIssuesReferences");
+    expect(list.get("pr list")).not.toContain("closedByPullRequestsReferences");
+
+    // AND ON THE DETAIL READS, which are separate `gh` calls with separate field
+    // lists — the one way a detail could quietly disagree with its own row.
+    const issue = await fieldsFor((gh) => readIssue(gh, "/repo", 7, () => 1, { skipProjects: true }));
+    expect(issue.get("issue view")).toContain("closedByPullRequestsReferences");
+    const pull = await fieldsFor((gh) => readPull(gh, "/repo", 7, () => 1, { skipProjects: true }));
+    expect(pull.get("pr view")).toContain("closingIssuesReferences");
   });
 });
 

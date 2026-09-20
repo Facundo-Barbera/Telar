@@ -69,6 +69,7 @@ import {
   GitPullRequestClosedIcon,
   GitPullRequestDraftIcon,
   GitPullRequestIcon,
+  LinkIcon,
   ListFilterIcon,
   MilestoneIcon,
   RotateCwIcon,
@@ -77,7 +78,7 @@ import {
   UserRoundIcon,
   XIcon,
 } from "lucide-react";
-import type { GitHubFacets, GitHubIssue, GitHubIssueFilter, GitHubPullFilter, GitHubPullRequest, GitHubSnapshot } from "@telar/engine-client";
+import type { GitHubFacets, GitHubIssue, GitHubIssueFilter, GitHubLink, GitHubPullFilter, GitHubPullRequest, GitHubSnapshot } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { filterChips, issueStatus, offersMerge, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeFilterChip, type ForgeStatus } from "@/lib/github-forge";
@@ -253,6 +254,7 @@ function ForgeRow({
   labels,
   milestone,
   projects,
+  links,
   extra,
   action,
   open,
@@ -271,6 +273,9 @@ function ForgeRow({
   labels: readonly { name: string; color?: string }[];
   milestone?: string;
   projects: readonly string[];
+  /** The other end of the issue↔PR link: what closes this row, or what this row
+   *  closes. Empty on the overwhelming majority of rows. */
+  links: readonly GitHubLink[];
   /** Row-specific badges — a pull request's review decision, its branch. */
   extra?: React.ReactNode;
   /** A control in the row's trailing gutter, beside the GitHub link — the issue
@@ -339,8 +344,40 @@ function ForgeRow({
           {/* Chips, and only when there are some. Labels first because they are
               the repository's own taxonomy; then the milestone and the boards,
               which are where the work has been placed. */}
-          {(labels.length > 0 || milestone || projects.length > 0) && (
+          {(labels.length > 0 || milestone || projects.length > 0 || links.length > 0) && (
             <span className="mt-1 flex flex-wrap items-center gap-1">
+              {/**
+               * WHAT CLOSES THIS, OR WHAT THIS CLOSES — issue #790.
+               *
+               * FIRST ON THE CHIPS LINE, because on a list of closed issues it is the
+               * chip somebody is actually scanning for: the evidence #790 was filed on
+               * is that reading this repository meant asking "is this closed, and by
+               * which PR" over and over and answering it with `gh` by hand.
+               *
+               * NOT A CONTROL, and that is not a shortcut. The row is already a
+               * `<button>`, and a nested one is not parseable — the parser closes the
+               * outer button at the inner tag, so every row's server markup and its
+               * hydrated DOM would disagree (see `StartSessionAction`, which is a
+               * `span[role=button]` for exactly this). The jump lives one click away in
+               * the detail, where the link has room to say which repository it is in;
+               * what a ROW needed was the number, and this is the number.
+               */}
+              {links.slice(0, 2).map((link) => (
+                <Badge
+                  key={link.url}
+                  variant="outline"
+                  className="gap-0.5 px-1 py-0 font-mono text-4xs font-normal tabular-nums"
+                  title={
+                    link.repository
+                      ? `Linked to ${link.repository}#${link.number} — open this row to follow it`
+                      : `Linked to #${link.number} — open this row to follow it`
+                  }
+                >
+                  <LinkIcon className="size-2.5" />
+                  {link.repository ? `${link.repository}#${link.number}` : `#${link.number}`}
+                </Badge>
+              ))}
+              {links.length > 2 && <span className="text-4xs text-muted-foreground">+{links.length - 2}</span>}
               {labels.slice(0, 3).map((label) => (
                 <Badge key={label.name} variant="outline" className="px-1 py-0 text-4xs font-normal">
                   {label.name}
@@ -440,6 +477,7 @@ function IssueRow({ issue, open, onOpen, busy, onStart }: { issue: GitHubIssue; 
       labels={issue.labels}
       {...(issue.milestone ? { milestone: issue.milestone } : {})}
       projects={issue.projects}
+      links={issue.linkedPulls}
       open={open}
       onOpen={onOpen}
       // Absent without a project to cut in — see `GitHubSurface`. A control that
@@ -469,6 +507,7 @@ export function PullRow({ pull, mine, open, onOpen }: { pull: GitHubPullRequest;
       labels={pull.labels}
       {...(pull.milestone ? { milestone: pull.milestone } : {})}
       projects={pull.projects}
+      links={pull.linkedIssues}
       open={open}
       onOpen={onOpen}
       extra={
@@ -558,6 +597,18 @@ export function GitHubSurface({
    * `startSession`.
    */
   onInsertReference,
+  /**
+   * OPEN THE OTHER END OF THE ISSUE↔PR LINK (#790).
+   *
+   * Passed straight through to the detail rather than handled here, and it leaves
+   * this surface because the other end is the other KIND: an issue's closing pull
+   * request belongs to the Pull requests surface, not to this one's sub-strip. The
+   * panel maps it onto the cockpit's own `showPanelTab("pull:786")` — the door a
+   * GitHub link in a message already goes through. #49 §2 has this becoming a jump
+   * within one surface once the two lists collapse; this is the same gesture
+   * arriving early, through the existing route.
+   */
+  onOpenForge,
 }: {
   kind: "issues" | "pulls";
   projectId?: string;
@@ -566,6 +617,7 @@ export function GitHubSurface({
   onOpenChange?: (next: ForgeOpen) => void;
   hostId?: string;
   onInsertReference?: (text: string) => void;
+  onOpenForge?: (kind: "issue" | "pull", number: number) => void;
 }) {
   const [snapshot, setSnapshot] = useState<GitHubSnapshot>();
   const [error, setError] = useState<string>();
@@ -1203,6 +1255,7 @@ export function GitHubSurface({
             number={detail}
             {...(projectId ? { projectId } : {})}
             {...(one === "pull" && branch ? { branch } : {})}
+            {...(onOpenForge ? { onOpenForge } : {})}
           />
         )}
       </div>

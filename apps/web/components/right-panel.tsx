@@ -1676,6 +1676,17 @@ export function PanelSurface({
         // where this panel is already on that canvas.
         {...(hostId ? { hostId } : {})}
         {...(onInsertReference ? { onInsertReference } : {})}
+        /**
+         * THE ISSUE↔PR LINK'S JUMP (#790), through the door that already exists.
+         *
+         * `issuePanelTab`/`pullPanelTab` is the SAME id a GitHub link in a message
+         * and a layout saved before #693 both hand to `onOpenTab`, and the cockpit's
+         * `showPanelTab` reads the number back out and opens it inside the matching
+         * list surface. So the jump from an issue to its closing pull request costs
+         * nothing but the mapping on this line — no second route, and no way for the
+         * two paths to disagree about where `pull:786` lands.
+         */
+        onOpenForge={(one, number) => onOpenTab(one === "issue" ? issuePanelTab(number) : pullPanelTab(number))}
       />
     );
   if (kind === "agents")

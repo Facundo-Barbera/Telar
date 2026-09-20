@@ -44,6 +44,39 @@ export const GitHubLabel = z.object({ name: z.string(), color: z.string().option
 export type GitHubLabel = z.infer<typeof GitHubLabel>;
 
 /**
+ * One end of GitHub's issue↔pull-request link.
+ *
+ * THE RELATION, NOT AN OUTCOME. `gh` exposes it from both sides — an issue's
+ * `closedByPullRequestsReferences` and a pull request's
+ * `closingIssuesReferences` — and neither carries the other end's STATE. Measured
+ * against cli/cli: an OPEN issue answers a reference to a pull request that was
+ * closed without merging. So this is "these two are linked, and merging closes
+ * the issue", which is also how github.com words it ("Successfully merging a pull
+ * request may close this issue"). Naming it `closedBy` would claim a merge that
+ * may never happen.
+ *
+ * NO TITLE, because `gh` does not send one. The reference is a number, a URL and
+ * a repository, which is all a jump needs — and asking for the title would mean a
+ * second read per link.
+ */
+export const GitHubLink = z.object({
+  number: z.number().int().positive(),
+  url: z.string().min(1),
+  /**
+   * `owner/name`, and ONLY when it is a DIFFERENT repository from the one this
+   * was read out of.
+   *
+   * ABSENT IS THE JUMPABLE CASE, which is the whole reason this field exists. A
+   * pull request in another repository can close an issue here, and the panel's
+   * own Pull requests surface can only reach this repository's — so a jump that
+   * ignored this would open the wrong #768. Absent means "same repository, go
+   * ahead"; present means "this one is only a link out, and here is whose".
+   */
+  repository: z.string().min(1).optional(),
+});
+export type GitHubLink = z.infer<typeof GitHubLink>;
+
+/**
  * Where an author's face is.
  *
  * DERIVED, NOT READ, AND `gh` IS THE REASON. There is no avatar field to ask for:
@@ -189,6 +222,22 @@ export const GitHubIssue = z.object({
    *  as the detail, because a list that includes closed issues is a list where
    *  "was this done?" is the question every row raises. */
   stateReason: z.string().min(1).optional(),
+  /**
+   * The pull requests linked to close this issue.
+   *
+   * ON THE ROW, WHICH IS A COST DECISION AND WAS MEASURED. github.com puts this
+   * beside the state badge because "is this closed, and by which pull request" is
+   * the question an issue raises — and answering it by hand with `gh` was the
+   * evidence #790 was filed on. It rides the LIST field set because it is cheap and
+   * unprivileged, unlike the two fields that are deliberately absent above: 0.75s
+   * → 0.88s and 25KB → 32KB against fifty issues, on a token carrying `repo` and
+   * no `read:project`. `comments` costs 2.81s and 245KB; `projectItems` fails the
+   * whole query without its scope. This does neither.
+   *
+   * EMPTY MEANS NO LINK, and there is no third answer to tell apart — the field
+   * travels with the rows, so a read that got rows got this too.
+   */
+  linkedPulls: z.array(GitHubLink),
   ...forgeRowFields,
 });
 export type GitHubIssue = z.infer<typeof GitHubIssue>;
@@ -209,6 +258,10 @@ export const GitHubPullRequest = z.object({
   /** Set when it landed. `state: "MERGED"` says the same thing, and this says
    *  WHEN — which is what a row full of closed pull requests is sorted by. */
   mergedAt: Timestamp.optional(),
+  /** The issues this pull request closes when it merges — the same link
+   *  `GitHubIssue.linkedPulls` carries, seen from the other end, and on the row
+   *  for the same measured reason. */
+  linkedIssues: z.array(GitHubLink),
   ...forgeRowFields,
 });
 export type GitHubPullRequest = z.infer<typeof GitHubPullRequest>;

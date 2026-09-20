@@ -47,11 +47,12 @@ const ISSUE = {
   labels: [],
   assignees: [],
   projects: [],
+  linkedPulls: [],
   updatedAt: 1_700_000_000_000,
   url: "https://github.com/o/r/issues/695",
 };
 
-const PULL = { ...ISSUE, number: 700, title: "The thread reads", isDraft: false, headRefName: "telar/thread" };
+const PULL = { ...ISSUE, number: 700, title: "The thread reads", isDraft: false, headRefName: "telar/thread", linkedIssues: [] };
 
 /** What `projectGit` answers. Reassigned per test; `undefined` makes it fail. */
 let checkout: Record<string, unknown> | undefined;

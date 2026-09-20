@@ -109,6 +109,7 @@ describe("a pull-request row", () => {
     labels: [],
     assignees: [],
     projects: [],
+    linkedIssues: [],
     updatedAt: Date.now(),
     url: "https://github.com/o/r/pull/700",
     ...over,
@@ -145,6 +146,33 @@ describe("a pull-request row", () => {
     expect(markup).not.toContain("<img");
     expect(markup).toContain("app/renovate");
     expect(markup).toContain(">R<");
+  });
+
+  /**
+   * THE ISSUE↔PR LINK, ON THE ROW — issue #790.
+   *
+   * A chip rather than a control, and deliberately: the row is already a `<button>`
+   * and a nested one is not parseable, which is why `StartSessionAction` next door is
+   * a `span[role=button]`. What a row needed was the NUMBER — "is this closed, and by
+   * which PR" answered without a click at all — and the jump lives in the detail.
+   */
+  test("names what it closes, as a chip and not a second control", () => {
+    const markup = row({ linkedIssues: [{ number: 488, url: "https://github.com/o/r/issues/488" }] });
+    expect(markup).toContain("#488");
+    // No nested interactive element: the only `<a>` on the row is the GitHub link
+    // that has always been there, and no second `<button>` was added inside the row's.
+    expect(markup.split("<button").length - 1).toBe(1);
+  });
+
+  test("and a cross-repository link says whose repository, because #768 there is not #768 here", () => {
+    const markup = row({ linkedIssues: [{ number: 768, url: "https://github.com/other/repo/issues/768", repository: "other/repo" }] });
+    expect(markup).toContain("other/repo#768");
+  });
+
+  test("silent on the row that closes nothing, which is most of them", () => {
+    const markup = row();
+    expect(markup).toContain("#700");
+    expect(markup).not.toContain("Linked to");
   });
 
   test("and is silent wherever the footer would be disabled or absent", () => {

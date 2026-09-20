@@ -37,6 +37,7 @@ import type {
   GitHubIssueDetail,
   GitHubIssueFilter,
   GitHubIssueRead,
+  GitHubLink,
   GitHubMergeMethod,
   GitHubMergeRefusal,
   GitHubMergeResult,
@@ -192,6 +193,53 @@ function authorOf(value: unknown) {
   };
 }
 
+/**
+ * `owner/repo` out of a github.com issue or pull-request URL.
+ *
+ * SO A LINK CAN SAY WHETHER IT IS REACHABLE. `gh` sends each linked reference with
+ * its own repository, and the panel's Pull requests surface can only open THIS
+ * repository's numbers — so the two have to be compared, and the row's own `url` is
+ * the only place the read says which repository it came from. A URL this cannot
+ * parse answers nothing, which makes every link read as cross-repository: a link
+ * out where a jump was possible, rather than a jump to the wrong #768.
+ */
+export function parseRepoFromUrl(url: string): string | undefined {
+  const match = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+)\/(?:issues|pull)\//.exec(url);
+  return match ? `${match[1]}/${match[2]}` : undefined;
+}
+
+/**
+ * The issue↔pull-request link, from either end.
+ *
+ * ONE PARSER FOR BOTH, because `closedByPullRequestsReferences` and
+ * `closingIssuesReferences` are the same relation seen from two sides and `gh`
+ * gives them the same shape — `{ number, url, repository: { name, owner: { login } } }`,
+ * measured. A reference with no number is dropped, the way a row with no number is.
+ *
+ * `self` IS THE READING REPOSITORY, and `repository` survives on the reference only
+ * when it differs — see the field's own note in the contract for why absence is the
+ * load-bearing case.
+ */
+function links(value: unknown, self: string | undefined): GitHubLink[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const row = entry as Record<string, unknown>;
+    const number = typeof row.number === "number" ? row.number : 0;
+    if (number <= 0) return [];
+    const repo = row.repository as { name?: unknown; owner?: { login?: unknown } } | null;
+    const owner = text(repo?.owner?.login);
+    const name = text(repo?.name);
+    const where = owner && name ? `${owner}/${name}` : "";
+    return [
+      {
+        number,
+        url: text(row.url) || `#${number}`,
+        ...(where && where !== self ? { repository: where } : {}),
+      },
+    ];
+  });
+}
+
 /** Labels, minus the ones with no name — an unnamed label is an empty chip. */
 function labels(value: unknown) {
   if (!Array.isArray(value)) return [];
@@ -255,6 +303,7 @@ function issueRow(row: Record<string, unknown>): GitHubIssue | undefined {
     title: text(row.title),
     state: text(row.state) || "OPEN",
     ...(text(row.stateReason) ? { stateReason: text(row.stateReason) } : {}),
+    linkedPulls: links(row.closedByPullRequestsReferences, parseRepoFromUrl(text(row.url))),
     ...rowFields(row),
   };
 }
@@ -273,6 +322,7 @@ function pullRow(row: Record<string, unknown>): GitHubPullRequest | undefined {
     // `epoch` answers 0 for an absent date, and an open pull request has no merge
     // time — 0 would render as January 1970.
     ...(mergedAt ? { mergedAt } : {}),
+    linkedIssues: links(row.closingIssuesReferences, parseRepoFromUrl(text(row.url))),
     ...rowFields(row),
   };
 }
@@ -311,8 +361,9 @@ export function parsePulls(stdout: string): GitHubPullRequest[] {
  * anybody on a default token. It gets its own call.
 
  */
-const ISSUE_FIELDS = "number,title,state,stateReason,labels,author,assignees,milestone,updatedAt,url";
-const PULL_FIELDS = "number,title,state,isDraft,author,assignees,milestone,labels,headRefName,updatedAt,url,reviewDecision,mergedAt";
+const ISSUE_FIELDS = "number,title,state,stateReason,labels,author,assignees,milestone,updatedAt,url,closedByPullRequestsReferences";
+const PULL_FIELDS =
+  "number,title,state,isDraft,author,assignees,milestone,labels,headRefName,updatedAt,url,reviewDecision,mergedAt,closingIssuesReferences";
 
 /**
  * Which boards each row is on, keyed by number.
@@ -870,9 +921,19 @@ export function parsePullDetail(
   };
 }
 
-const ISSUE_DETAIL_FIELDS = "number,title,state,stateReason,author,body,labels,assignees,milestone,comments,createdAt,updatedAt,url,closedAt";
+/**
+ * What a DETAIL read asks for.
+ *
+ * THE LINK IS ON BOTH, and it has to be on the detail as well as the row even
+ * though `issueRow` and `pullRow` parse it: a detail read is its own `gh` call with
+ * its own field list, so a field absent here arrives as `[]` and the detail would
+ * quietly disagree with the row you clicked to reach it — the exact failure the
+ * shared row parsers exist to prevent.
+ */
+const ISSUE_DETAIL_FIELDS =
+  "number,title,state,stateReason,author,body,labels,assignees,milestone,comments,createdAt,updatedAt,url,closedAt,closedByPullRequestsReferences";
 const PULL_DETAIL_FIELDS =
-  "number,title,state,isDraft,author,body,labels,assignees,baseRefName,headRefName,headRefOid,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,comments,reviews,statusCheckRollup,createdAt,updatedAt,url,mergedAt,mergedBy";
+  "number,title,state,isDraft,author,body,labels,assignees,baseRefName,headRefName,headRefOid,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,comments,reviews,statusCheckRollup,createdAt,updatedAt,url,mergedAt,mergedBy,closingIssuesReferences";
 
 /**
  * Which kind of nothing a DETAIL read is.
