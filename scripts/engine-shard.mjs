@@ -103,6 +103,50 @@ export function shardArguments(files, ceilingMs) {
   return ["test", "--timeout", String(ceilingMs), ...files];
 }
 
+/**
+ * HOW LONG ONE SHARD GETS BEFORE IT IS CALLED HUNG — #849.
+ *
+ * The whole suite runs in about 230 s on one runner, so a third of it is under
+ * 120 s. Eight minutes is four times that and still well inside the job's
+ * `timeout-minutes: 20`, which is the number that matters: a shard the WRAPPER
+ * ends reports `hung` and names what was holding it open, while a shard the JOB
+ * ends is twenty minutes of nothing and a red X that cannot say whether it hung
+ * or went red. The point of the budget is that it fires first.
+ */
+export const SHARD_BUDGET_MS = 8 * 60_000;
+
+/**
+ * THE SHARD RUNS THROUGH THE BOUNDED WRAPPER — #849, and #841 is why it did
+ * not. That PR moved `Test engine` onto this script, which spawned `bun test`
+ * directly and was bounded only by the job's `timeout-minutes: 20`. So CI got
+ * the sharding and LOST the thing #807/#844 built: the ability to tell a hang
+ * from a red. Both are non-zero exits, and a job killed at its own timeout
+ * prints neither a tally nor a reason.
+ *
+ * Going through the wrapper restores four distinguishable outcomes — 0 passed,
+ * 1 failed, 2 hung, 3 unknown — and, since #849's other half, a shard that
+ * leaves processes behind now names them. Per shard, so the answer to "which
+ * third of the suite leaks" comes out of an ordinary CI run rather than a
+ * bisect: 194 files narrowed to ~65 without reading any of them.
+ *
+ * THE ARITHMETIC STILL HAPPENS HERE. The wrapper TEES its child's output to its
+ * own stdout, so bun's `Ran N tests across M files.` line survives the extra
+ * hop and `filesReportedIn` reads it exactly as before. That check is the one
+ * that catches a shard silently dropping files, which looks like a fast green
+ * run, and it must not be traded for the hang detection.
+ */
+export function wrappedShardCommand(files, ceilingMs, budgetMs = SHARD_BUDGET_MS) {
+  return [
+    "bun",
+    join(ROOT, "scripts/test-engine-bounded.mjs"),
+    "--budget-ms",
+    String(budgetMs),
+    "--",
+    "bun",
+    ...shardArguments(files, ceilingMs),
+  ];
+}
+
 /** `Ran 3004 tests across 190 files.` — bun's own count, which is the thing worth checking. */
 export function filesReportedIn(output) {
   const reported = /Ran \d+ tests? across (\d+) files?\./.exec(output);
@@ -128,10 +172,14 @@ async function main(argv) {
   }
 
   const ceilingMs = await testCeilingMs();
-  console.log(`engine shard ${index}/${total}: ${files.length} files, --timeout ${ceilingMs}`);
+  const command = wrappedShardCommand(files, ceilingMs);
+  console.log(
+    `engine shard ${index}/${total}: ${files.length} files, --timeout ${ceilingMs}, ` +
+      `bounded at ${SHARD_BUDGET_MS}ms by scripts/test-engine-bounded.mjs`,
+  );
 
   let captured = "";
-  const child = spawn("bun", shardArguments(files, ceilingMs), { cwd: join(ROOT, ENGINE_DIR), stdio: ["inherit", "pipe", "pipe"] });
+  const child = spawn(command[0], command.slice(1), { cwd: join(ROOT, ENGINE_DIR), stdio: ["inherit", "pipe", "pipe"] });
   for (const stream of [child.stdout, child.stderr]) {
     stream.on("data", (chunk) => {
       captured += chunk;
@@ -140,24 +188,56 @@ async function main(argv) {
   }
   const status = await new Promise((resolve) => child.on("close", (code) => resolve(code ?? 1)));
 
+  const verdict = shardVerdict({ status, output: captured, handed: files.length, label: `shard ${index}/${total}` });
+  if (verdict.error) console.error(verdict.error);
+  return verdict.code;
+}
+
+/**
+ * WHAT A SHARD'S EXIT CODE MEANS, decided in one pure place so it can be
+ * asserted rather than described. Four inputs, one answer — and every branch is
+ * reachable from a test, which is the reason this is not inline in `main`.
+ */
+export function shardVerdict({ status, output, handed, label = "this shard" }) {
+  /**
+   * THE WRAPPER'S VERDICT COMES FIRST, AND IS PASSED THROUGH UNCHANGED. 2 is
+   * `hung` and 3 is `unknown`; both mean the run never reached its own tally,
+   * so the file-count arithmetic below has nothing to check — and its message
+   * ("a shard that cannot say what it ran has not proved it ran") would replace
+   * a precise diagnosis with a vague one. The whole reason for routing through
+   * the wrapper is that those two stop being indistinguishable from a red test,
+   * which is what #841 gave up when it moved CI off the wrapper.
+   */
+  if (status === 2 || status === 3) {
+    return {
+      code: status,
+      error:
+        `${label}: the bounded wrapper reported ${status === 2 ? "HUNG" : "UNKNOWN"} rather than a test failure. Its ` +
+        "lines above carry the log path, the last line the run printed, and — when it found any — the pid, ppid and " +
+        "command line of everything still in the run's process group.",
+    };
+  }
+
   // THE ARITHMETIC, IN BAND. Not "did it pass" — how many files it opened.
-  const reported = filesReportedIn(captured);
+  const reported = filesReportedIn(output);
   if (reported === null) {
-    console.error(
-      `shard ${index}/${total} never printed bun's \`Ran N tests across M files.\` line, so nothing here knows how ` +
-        "many files it opened. Treating that as a failure: a shard that cannot say what it ran has not proved it ran.",
-    );
-    return status === 0 ? 1 : status;
+    return {
+      code: status === 0 ? 1 : status,
+      error:
+        `${label} never printed bun's \`Ran N tests across M files.\` line, so nothing here knows how many files it ` +
+        "opened. Treating that as a failure: a shard that cannot say what it ran has not proved it ran.",
+    };
   }
-  if (reported !== files.length) {
-    console.error(
-      `shard ${index}/${total} handed bun ${files.length} paths and bun ran ${reported} files. A shard that drops ` +
-        "files is a fast green job that tested less than it claims, which is the whole risk of splitting this suite. " +
-        "Check whether a path was renamed, or whether two paths now match one another as filters.",
-    );
-    return status === 0 ? 1 : status;
+  if (reported !== handed) {
+    return {
+      code: status === 0 ? 1 : status,
+      error:
+        `${label} handed bun ${handed} paths and bun ran ${reported} files. A shard that drops files is a fast green ` +
+        "job that tested less than it claims, which is the whole risk of splitting this suite. Check whether a path " +
+        "was renamed, or whether two paths now match one another as filters.",
+    };
   }
-  return status;
+  return { code: status, error: null, reported };
 }
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2)));
