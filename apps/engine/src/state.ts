@@ -163,6 +163,7 @@ import {
 import { TELAR_ORIENTATION } from "./orientation";
 import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
+import { lastKeytermFit, type KeytermFit } from "./dictation/fit";
 import { dictationLanguages, isDictationLanguage, isDictationProviderId, type DictationLanguage, type DictationProviderId } from "./dictation/provider";
 import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings } from "./dictation/settings";
 import type { DictationContext } from "./dictation/keyterms";
@@ -3050,13 +3051,28 @@ export class EngineStore {
     language: string;
     languages: readonly DictationLanguage[];
     vocabulary: string[];
+    keyterms?: KeytermFit;
   } {
     // `languages` RIDES THE SAME ANSWER rather than getting a route of its own
     // (#560). It is the vocabulary the `language` beside it is written in, and
     // a client that had to fetch the two separately could draw a picker with
     // nothing in it, or with the stored code missing from the list. One
     // document, one moment.
-    return { ...readDictationSettings(this.dictationDir), ...this.dictationCredential(), languages: dictationLanguages() };
+    //
+    // AND SO DOES WHAT THE LAST MINT ACTUALLY SENT (#712), for a different
+    // reason: it is not a setting, it is what HAPPENED to the setting. The
+    // provider may shorten the glossary to fit its own budget, and the pane
+    // that holds the vocabulary box is the one place a person would go about
+    // it. NOT STORED — see `lastKeytermFit`: it describes this engine's current
+    // glossary, and a value that outlived a restart would be a claim about a
+    // list nobody has checked.
+    const fit = lastKeytermFit();
+    return {
+      ...readDictationSettings(this.dictationDir),
+      ...this.dictationCredential(),
+      languages: dictationLanguages(),
+      ...(fit ? { keyterms: fit } : {}),
+    };
   }
 
   /** Choose a provider, or switch dictation off. The only writer, so `off` is

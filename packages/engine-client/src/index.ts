@@ -511,6 +511,31 @@ export type DictationAnswer = {
      * provider makes of it.
      */
     vocabulary: string[];
+    /**
+     * WHETHER THE LAST PRESS SENT THE WHOLE GLOSSARY, AND WHY NOT (#712).
+     *
+     * The engine builds a list, asks the provider whether it fits, and shortens
+     * it when the answer is no. That is a degradation rather than a failure —
+     * the words that go are the branch slugs at the tail, by design — so it
+     * does not interrupt anybody mid-sentence. But it must not be SILENT: a
+     * glossary quietly half the size it looks is how #581 became invisible the
+     * first time, and this is where somebody would come to do something about
+     * it.
+     *
+     * ABSENT UNTIL SOMETHING HAS BEEN MINTED, which is every engine that has
+     * not been dictated to since it started. `built === sent` is the ordinary
+     * answer and means nothing was dropped.
+     */
+    keyterms?: {
+      /** What the engine assembled for this Mac. */
+      built: number;
+      /** What the provider actually took. Never more than `built`. */
+      sent: number;
+      /** `refused` — the provider said the list was over its budget.
+       *  `unconfirmed` — it could not be asked, so the provably-safe prefix
+       *  went instead. Absent when nothing was dropped. */
+      reason?: "refused" | "unconfirmed";
+    };
   };
 };
 
