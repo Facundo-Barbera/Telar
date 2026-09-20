@@ -21,6 +21,7 @@ its own rationale**, kept when the generated 2026-07-17 doc set was cleared:
 | `engine-contract-v2.md` | `packages/engine-client/src/protocol/index.ts` |
 | `command-keys-web-port.md` | `apps/web/lib/command-keys.ts` |
 | `page-api.md` | `apps/web/lib/page-api.ts` |
+| `worktrees-indexing.md` | `apps/engine/src/worktrees-location.ts` |
 
 Those modules deliberately hold point-of-use notes only and defer the long
 reasoning to these pages, so deleting one silently strips the explanation for
