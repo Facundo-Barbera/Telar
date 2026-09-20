@@ -117,20 +117,21 @@ describe("withComputerUse — who gets it", () => {
     updatedAt: 0,
   });
 
-  test("both backends go to Claude and OpenCode — the providers with no desktop of their own", () => {
+  test("both backends go to every provider Telar drives", () => {
     for (const resolved of [cua, sky]) {
       expect(withComputerUse([], [], "claude", resolved).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
       expect(withComputerUse([], [], "opencode", resolved).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
     }
   });
 
-  test("Codex gets neither, whatever is installed — it ships its own provider (#368)", () => {
-    // It used to get cua, with the Codex driver switching Codex's native
-    // computer use off to stop the model seeing two desktops. Withholding is
-    // the same outcome without the workaround, and it is what the Agent tools
-    // pane now says.
-    expect(withComputerUse([], [], "codex", cua)).toEqual([]);
-    expect(withComputerUse([], [], "codex", sky)).toEqual([]);
+  test("Codex gets it too, whatever the backend (#521)", () => {
+    // #368 withheld it, reasoning that Codex ships its own provider and a second
+    // desktop under a second name is the thing to avoid. The second desktop was
+    // never the risk the withholding removed — the driver already switches the
+    // native feature off whenever a `mac` server is in the claim — and what the
+    // withholding did remove was the only desktop a Codex session had.
+    expect(withComputerUse([], [], "codex", cua).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
+    expect(withComputerUse([], [], "codex", sky).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
   });
 
   test("an uninstalled machine injects nothing, silently", () => {
