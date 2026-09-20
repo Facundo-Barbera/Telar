@@ -866,6 +866,88 @@ test("a timed-out read frees its slot while its child's helper still holds the p
 }, 20_000);
 
 /**
+ * THE HELPER IS REAPED, NOT JUST GIT — issue #771, and the point of the test.
+ *
+ * A test that only asserted the CHILD died would pass against the unfixed
+ * timeout path: `child.kill("SIGKILL")` always killed git. The grandchild is the
+ * entire content of the issue, so this captures the helper's own pid and asserts
+ * that pid is gone. Falsified both ways before being believed — with the group
+ * kill removed, and with `detached` removed so the group kill raises `ESRCH` —
+ * and it fails on this assertion in both.
+ *
+ * REAL GIT AND A REAL CLEAN FILTER, because the mechanism is git's: the filter
+ * inherits git's stderr, and `close` (like `execFile`'s callback before it)
+ * fires on stdio EOF rather than on process exit. A synthetic child reproduces
+ * the process shape and not the reason anyone cares about it.
+ *
+ * THE FILTER BLOCKS INSTEAD OF PASSING CONTENT THROUGH, so the read reaches its
+ * deadline with the helper already up rather than racing it. A deadline that
+ * fired first would find no helper to kill and the test would pass for the wrong
+ * reason — hence `toBeGreaterThan(0)` below, which is the assertion that this
+ * test is testing anything at all.
+ */
+test("a timed-out read reaps the helper git spawned, not only git", async () => {
+  const root = tmp("telar-git-group-");
+  const pidFile = path.join(root, "helpers.pid");
+  const filterPidFile = path.join(root, "filters.pid");
+  const filter = path.join(root, "slow-clean.sh");
+  /**
+   * `>>`, not `>`: git may invoke a clean filter more than once, and a lost pid
+   * is a process this test would leak while claiming it reaps them.
+   *
+   * `wait`, not a second `sleep`: it gives the script exactly one child, so the
+   * two pids it records are the whole of what it started. The first draft
+   * blocked on its own `sleep`, which nothing recorded — and the falsification
+   * run, where nothing is reaped, duly leaked it.
+   */
+  fs.writeFileSync(filter, `#!/bin/sh
+sleep 30 </dev/null >/dev/null &
+echo $! >> ${JSON.stringify(pidFile)}
+echo $$ >> ${JSON.stringify(filterPidFile)}
+wait
+`);
+  fs.chmodSync(filter, 0o755);
+
+  const projectRoot = repo();
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // Local `false` beats whatever the machine running this has globally: an
+  // fsmonitor daemon is a long-running process and this test starts none.
+  git("config", "core.fsmonitor", "false");
+  git("config", "filter.slow.clean", filter);
+  fs.writeFileSync(path.join(projectRoot, ".gitattributes"), "README.md filter=slow\n");
+  fs.writeFileSync(path.join(projectRoot, "README.md"), "hello\nchanged\n");
+
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const readPids = (file: string) =>
+    (fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(Number) : []);
+
+  const run = createAsyncGitRunner({ concurrency: 1 });
+  const timedOut = run(projectRoot, ["diff", "-z", "--numstat"], { timeoutMs: 5_000 });
+  try {
+    // Non-vacuity: a count the "the deadline beat the filter" state cannot
+    // produce. The helper's own bound, never the read's — see `until`.
+    expect(await until(() => readPids(pidFile).length > 0, 4_500)).toBe(true);
+
+    const result = await timedOut;
+    expect(result.timedOut).toBe(true);
+    expect(result.killedPid).toBeGreaterThan(0);
+
+    // A SIGKILLed process answers `kill(pid, 0)` until init reaps the zombie, so
+    // this is a bound rather than an instant.
+    const helpers = readPids(pidFile);
+    await until(() => helpers.every(pid => !alive(pid)), 5_000);
+    expect(helpers.filter(alive)).toEqual([]);
+  } finally {
+    await timedOut;
+    // Both files, so a run where nothing was reaped still leaves nothing behind.
+    for (const pid of [...readPids(pidFile), ...readPids(filterPidFile)]) {
+      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  }
+}, 30_000);
+
+/**
  * A POOL OF ITS OWN, NOT THE SINGLETON. What this test asserts is that the
  * async readers agree with the synchronous ones — nothing about
  * `defaultAsyncGitRunner`. Sharing it made this test's 22 reads queue behind
