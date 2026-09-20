@@ -222,9 +222,15 @@ export const READ_BUDGET = 2;
  * `/bootstrap` is the read that IS the click. Everything else the budget
  * governs is a poll on a timer nobody pressed — and a poll landing a
  * microsecond earlier was enough to put the one read a person is waiting on
- * third in a queue of two. That is the "opening a conversation takes three
- * serial round trips" in #490's audit: the wait was not the engine answering,
- * it was this gate deciding the rail's housekeeping went first.
+ * third in a queue of two. That is "opening a conversation takes three serial
+ * round trips": the wait was not the engine answering, it was this gate
+ * deciding the rail's housekeeping went first.
+ *
+ * THE ATTRIBUTION HAS BEEN DROPPED, NOT THE CLAIM. This cited "#490's audit",
+ * which was never produced (`docs/investigations/closure-audit-2026-09-19.md`)
+ * — so it pointed at nothing a reader could check. The mechanism does not need
+ * it: three reads against a budget of two is arithmetic over `READ_BUDGET`
+ * above, and `client.test.ts` exercises it in a fixture.
  *
  * ONE, NOT MORE, AND SEPARATE RATHER THAN RESERVED. Separate because a slot
  * carved out of the two would halve ordinary read throughput for the whole life

@@ -601,11 +601,38 @@ function snapshotWindowParam(url: URL): SessionBootstrapWindow | undefined {
 /**
  * HOW MANY JOURNAL ROWS ONE `GET /v2/sessions/:id/events` MAY ANSWER WITH.
  *
- * 200 is the tail a cockpit actually folds per tick, and the size the #490
- * audit measured at 185 KB / 106 ms against 36.5 MB / 2.48 s for the same
- * session unpaged. A client that wants fewer says so; one that wants more is
- * capped, because the cap is what stops a caller from asking for the run back
- * in one piece and reinstating the cost this page size exists to remove.
+ * 200 is the tail a cockpit actually folds per tick. A client that wants fewer
+ * says so; one that wants more is capped, because the cap is what stops a
+ * caller from asking for the run back in one piece and reinstating the cost
+ * this page size exists to remove.
+ *
+ * WHAT THAT IS WORTH, from `bench/events-page.ts` — run it rather than trusting
+ * this. At 2,000-character bodies a 200-row page is **206 KB and stays 206 KB**
+ * at 40, 120, 200 and 400 turns, which is the whole point of a cap: the answer
+ * is the page, not the conversation. Folding the same journal whole costs
+ * 826 KB over 5 round trips at 40 turns and 4,138 KB over 21 at 200 — it grows
+ * with the session because it is the session.
+ *
+ * THIS COMMENT USED TO CITE "185 KB / 106 ms against 36.5 MB / 2.48 s for the
+ * same session unpaged", attributed to #490's audit. That audit was never
+ * produced (`docs/investigations/closure-audit-2026-09-19.md`), so the figure
+ * had no invocation behind it. Re-measured, the 185 KB holds — 206 KB here, and
+ * the gap is body size. The other two do not survive as stated: 106 ms is 1.7 ms
+ * at 40 turns and 10.7 ms at 400 at the ENGINE boundary, so whatever it measured
+ * was end-to-end through a route handler and is not checkable from here; and
+ * "the same session unpaged" cannot be measured at all any more, because
+ * `EVENT_PAGE_MAX` below means the route will not serve a journal unpaged. That
+ * number describes the world before this cap existed.
+ *
+ * One thing the bench shows that nobody has explained: the page's SIZE is flat
+ * across session lengths and its TIME is not — 1.7 ms at 40 turns, 10.7 ms at
+ * 400, for the identical 206 KB answer. The query is a `(session_id, id)`
+ * primary-key range scan with a `LIMIT` and `requireSession` reads only
+ * constant-size metadata, so the obvious candidates are excluded; B-tree depth
+ * and page-cache pressure both fit the sub-linear shape, and neither has been
+ * confirmed. **Recorded as an observation, not a diagnosis.** At 10 ms it is
+ * nobody's user-visible latency — it is a note for whoever touches the journal
+ * read next, not a defect to chase.
  *
  * A LIMIT THAT IS NOT A NUMBER IS A BUG IN THE CALLER, not a reason to serve
  * the whole journal — it is refused rather than defaulted, the same way an
