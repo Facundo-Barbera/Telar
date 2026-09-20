@@ -136,25 +136,111 @@ the thing it resembles.
 
 ## 3. The tooling hazard: `grep` here is not `/usr/bin/grep`
 
-In this repo `grep` resolves to a **shell function wrapping `ugrep`**, and it
-**silently reports "no matches" on files it classifies as binary.** Several
-engine sources trip that classification on a stray byte.
+In this environment `grep` resolves to a **shell function wrapping `ugrep`**:
 
-An absence then reads as an answer, which is the worst possible failure for an
-audit: every argument of the form *"this was never built"* rests on a grep
-returning nothing.
+```sh
+ARGV0=ugrep "$_cc_bin" -G --ignore-files --hidden -I \
+  --exclude-dir=.git --exclude-dir=.svn --exclude-dir=.hg \
+  --exclude-dir=.bzr --exclude-dir=.jj --exclude-dir=.sl "$@"
+```
 
-It produced two false negatives here before it was caught:
+Two flags there silently suppress matches, and **an absence then reads as an
+answer** — the worst possible failure for an audit, because every argument of
+the form *"this was never built"* rests on a grep returning nothing.
 
-- `apps/engine/src/provider-instances.ts` — a search for `OWNED_ENV` and the
-  `configured` rule returned nothing. Both are present, at `:92` and `:129`,
-  which is the whole of #594.
-- The same file under `/usr/bin/grep` without `-a` reports only
-  `Binary file … matches`.
+### `-I` — skip anything it calls binary
 
-**Use `/usr/bin/grep -a` for anything an argument rests on.** The `#634` and
-`#632` conclusions in the table below were re-run under it before being
-recorded; both held.
+Several engine sources trip that classification on a stray byte. It produced two
+false negatives here before it was caught, both on the same file:
+`apps/engine/src/provider-instances.ts`, where a search for `OWNED_ENV` and the
+`configured` rule returned nothing. **Both are present, at `:92` and `:129` —
+which is the entirety of #594.** Under plain `/usr/bin/grep` the same file
+reports only `Binary file … matches`.
+
+### `--ignore-files` — honour `.gitignore`, so `node_modules` is invisible
+
+**This is the more dangerous half**, and it is not what the flag name suggests.
+Reproduced deliberately: a directory named in `.gitignore`, containing a file
+with the search term.
+
+```
+wrapped grep -rl NEEDLE .   ->  visible.js
+/usr/bin/grep -ral NEEDLE . ->  ./visible.js
+                                ./ignored/dep.js
+```
+
+"Misses some binary files" sounds like it applies to nothing anyone cares
+about. **"Any conclusion about what a dependency does or does not expose is
+unsound"** is a different claim entirely — *"the library has no API for this"*
+is exactly what someone reads out of a directory the tool refuses to open, and
+then designs around.
+
+### A third route, which is not the wrapper's fault at all
+
+```
+(eval):1: no matches found: --include=*.js
+```
+
+**zsh globs an unquoted `--include=*.ts` before the command ever runs**, so the
+command does not run. The result is empty output — indistinguishable from a
+clean absence, and arriving by neither the binary skip nor `.gitignore`. It
+happened in this audit, on the very first search of the first issue.
+
+**Quote your globs.** `--include="*.ts"`.
+
+### The rule, and the general defence
+
+**Any conclusion resting on an absence uses `/usr/bin/grep -a`. Where the check
+is load-bearing, do it in-process** — `fs.readFileSync` + `matchAll`, or a
+`node -e` one-liner — **rather than shelling out at all.** The two measurements
+in this note that had to be exact (`display_open` at 655 chars, `warp` at 2,988)
+were taken that way.
+
+But flag-by-flag defences only cover the three routes known today. The general
+one:
+
+> **Treat every empty result as a claim that needs a positive control.** Run the
+> same pattern, through the same command, against something you *know* contains
+> it. If the control also comes back empty, **the command is broken rather than
+> the codebase clean.**
+
+That catches all three routes and the fourth nobody has found yet, and it costs
+one extra line. Worked example from the #531 re-check: before recording *"no
+`watch` tool on the Agent's wall"*, the same grep was run for `github_status`,
+`remember` and `sessions_find` against the same file — all three returned, so
+the empty answer for `watch` was the codebase talking and not the tool.
+
+### What was re-verified, and the one correction
+
+**Every absence claim in §4 was re-run under `/usr/bin/grep -a`, with positive
+controls, after the hazard was found. No verdict flipped.** That includes #632,
+#633, #543, #520, #577, #622, #516, #541, #488, #665, #490, #587, #594, #547,
+#660 and #634 — and the five claims written into **#531's closing comment**
+(`unwatch`, `deadlineMs`, `policy_timeout`, project `core`, fan-out cap), which
+were re-checked specifically because a closure rests on them. All five hold:
+`Project` carries `id`, `environmentId`, `name`, `root`, `createdAt`,
+`updatedAt` and no `core`; the Agent's wall has `github_status`, `remember` and
+`sessions_find` but no `watch`.
+
+**Two supporting details were wrong and are corrected here.** Neither changes a
+verdict, and both were found only by re-running:
+
+- **#665** — reported as *"the only project mutation in settings is
+  `RemoveProjectSection`"*. **False**: `api.updateProject` exists and
+  `projects-page.tsx` calls it at `:407` and `:634`. The verdict is unchanged
+  and the issue is in fact *better* answered — see the row in §4.
+- **#586** — reported as *"one `text/event-stream` in the whole engine"*. There
+  are **two**: the Agent's SSE route at `daemon.ts:1968`, and an outbound
+  `accept:` header at `mcp-oauth.ts:279`. Only the first is a route the engine
+  *serves*, so "no session-event feed, no `/v2/sessions/stream`" stands — but
+  the count was wrong, and the wrapped grep is why.
+
+**A scope limit worth stating plainly:** `node_modules` is **not installed in
+this worktree at all**, so no claim in this note covers dependency internals.
+Nothing here asserts what a library does or does not do. #632 and #633 are the
+two issues where that boundary matters — both are settled on Telar's own source
+and on measurements already recorded in the issues, not on reading `bun`'s
+implementation.
 
 ---
 
@@ -189,7 +275,7 @@ recorded; both held.
 | **#632** no fsync | Open | `atomic.ts:32-37` is `writeFileSync` + `renameSync`. Zero `fsyncSync\|fdatasync\|F_FULLFSYNC` across `apps/engine/src`, `apps/desktop`, `packages/`. |
 | **#633** bun hardlinking | Open | No `backend` key in any `bunfig.toml`, no `--backend` anywhere. |
 | **#658** `items.json` whole-rewrite | Open | `state.ts:12422` `writeItems` still opens `const rows = [...items.values()]` and stores the whole array. Quadratic intact. |
-| **#665** storage has no shape | Open | No bulk-project tool, no re-point verb; the only project mutation in settings is `RemoveProjectSection`. A design pass, not a feature — nothing could have closed it accidentally. |
+| **#665** storage has no shape | Open | No bulk-project tool and **no re-point verb: `root` is not patchable by any route.** `api.updateProject` (engine-client `index.ts:965`) takes `name`, `iconName`, `iconEmoji`, `defaultModel`, `envMode`, `dataScience`, `latex`, `plugins` — and not `root`. That settles the issue's own open question: a registration holds all eight of those, so deregister-and-re-add loses every one. A design pass, not a feature. |
 | **#563** Agent turn cost | Open | Item 3 (prompt caching) shipped in #612 + #613. **Items 1 and 2 remain**, partly overtaken by #603/#607/#608. |
 | **#587** 700k context | Open | No compaction pressure, no concurrency cap; `opus[1m]` still the default. Its own body: *"Filed to track. No work planned yet."* |
 | **#577** notification row grouping | Open | No grouping of consecutive notification turns in `transcript.tsx`. `NotificationRow` exists from #572/#575 — that is item 4 (the row's *contents*); items 1–3 absent. |
@@ -221,7 +307,10 @@ do-not-close list; the do-not-close wins.)
 2. **Assume an open issue is open.** The base rate measured here is 2 stale out
    of 28, and neither was findable by looking harder at the list.
 3. **Check the timestamp before closing on a commit.** §2.
-4. **`/usr/bin/grep -a`.** §3.
+4. **Treat every empty result as a claim needing a positive control.** §3. Three
+   separate routes produce a false absence here — the binary skip, `.gitignore`,
+   and a shell error that eats the command — and the control catches all three
+   plus the next one.
 5. **A closure names what it does not cover, and what was superseded.** The
    remainder and the supersession are both invisible from the issue text. See
    the third category in §1.
