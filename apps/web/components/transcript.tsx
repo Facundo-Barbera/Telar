@@ -681,10 +681,10 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
   const { verb, Icon } = sessionWakeLabel(reason);
   const body = itemText(item).trim();
   return (
-    <div className="py-0.5" aria-label="Wake from another session">
+    <div className="min-w-0" aria-label="Wake from another session">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={ROW}
         disabled={!body}
         aria-expanded={body ? open : undefined}
         onClick={() => setOpen((current) => !current)}
@@ -737,6 +737,11 @@ export function notificationLabel(
  * their summaries under the same disclosure rather than earning a second shape:
  * the reader's question ("what happened while I was working") has one answer,
  * however many things are in it.
+ *
+ * ITS RHYTHM IS THE STEP LANE'S, NOT A BUBBLE'S — #577. `ROW` is the shared
+ * constant, so a notification line and a `4 steps · Ran command ×2` line cannot
+ * drift apart; the `py-0.5` wrapper this used to carry made every arrival 4px
+ * taller than the rows around it, for nothing a reader could name.
  */
 export function NotificationRow({ detail, message }: { detail: NonNullable<JournalTurn["notification"]>; message?: string }) {
   const [open, setOpen] = useState(false);
@@ -754,10 +759,10 @@ export function NotificationRow({ detail, message }: { detail: NonNullable<Journ
    */
   const peerMessage = detail.kind === "peer_message" && message && message.trim() !== body ? message.trim() : undefined;
   return (
-    <div className="py-0.5" aria-label="Notification">
+    <div className="min-w-0" aria-label="Notification">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={ROW}
         disabled={!body}
         aria-expanded={body ? open : undefined}
         onClick={() => setOpen((current) => !current)}
@@ -1086,6 +1091,59 @@ export function withoutOpeningNotification(turn: Pick<JournalTurn, "runId" | "or
   if (!turn.notification || (turn.origin !== "session" && turn.origin !== "provider")) return turn.items;
   const drawn = `notification_${turn.runId}`;
   return turn.items.filter((item) => item.id !== drawn);
+}
+
+/**
+ * A TURN THAT IS NOTHING BUT AN ARRIVAL — issue #577.
+ *
+ * Two wakes and a peer's result land while the session is working, and the
+ * engine queues one turn each. Nobody typed them and none of them has an answer
+ * yet, so all three draw a single row and an EMPTY assistant lane under it —
+ * which the transcript then separates with a full turn gap, as though a
+ * conversation had happened between them. Three lines of text, half a viewport.
+ *
+ * THE QUESTION IS WHAT WOULD BE DRAWN, not what the turn is called. A usage
+ * footnote, a failure line, a `stopped` marker and a request card are all things
+ * a reader sees under the row, and a strip that swallowed one would be hiding
+ * it. Only a turn with literally nothing beneath its row is bare.
+ */
+export function bareNotificationTurn(turn: JournalTurn): boolean {
+  if (!turn.notification) return false;
+  if (withoutOpeningNotification(turn).length > 0) return false;
+  if (turn.resultText || turn.failure || turn.usage) return false;
+  if (turn.resumedAfterRateLimit !== undefined) return false;
+  return turn.state !== "failed" && turn.state !== "stopped" && turn.state !== "discarded";
+}
+
+/**
+ * CONSECUTIVE ARRIVALS ARE ONE STRIP — issue #577, and the rule both clients
+ * read the turn list through.
+ *
+ * A run of notification turns with nothing between them is ONE thing that
+ * happened to this session while it worked, so it is drawn as one tight block of
+ * one-line rows rather than as N conversations. The run ENDS at the first turn
+ * that answered: that turn's row still joins the strip — it is an arrival like
+ * the others — and its reply hangs under it at the ordinary paragraph gap, which
+ * is what the reader came for.
+ *
+ * EVERY TURN COMES BACK, in order, in exactly one group. A turn that is not a
+ * notification is a group of one and renders as it always did — so is a lone
+ * arrival, which is the "group of one is one line" case.
+ *
+ * THE LIVE TURN IS NEVER A STRIP'S MIDDLE. It is still being written and carries
+ * a working indicator under its row; grouping the rows after it around that
+ * would put the indicator inside the block.
+ */
+export function groupNotificationTurns(turns: readonly JournalTurn[], activeRunId?: string): readonly (readonly JournalTurn[])[] {
+  const groups: JournalTurn[][] = [];
+  for (const turn of turns) {
+    const open = groups.at(-1);
+    const previous = open?.at(-1);
+    const joins = open && previous && turn.notification && bareNotificationTurn(previous) && previous.runId !== activeRunId;
+    if (joins) open.push(turn);
+    else groups.push([turn]);
+  }
+  return groups;
 }
 
 export function splitAtMessageBoundaries(items: readonly JournalItem[]): TurnResponse[] {

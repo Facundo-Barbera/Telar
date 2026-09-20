@@ -61,7 +61,7 @@ import { Composer, MAX_ATTACHMENTS } from "./composer";
 // turn header here. It is now an adapter onto `notificationLabel`, which is the
 // one function every notification verb in this app comes from (#572) — so this
 // header cannot name a happening differently from the row below it.
-import { ActivityGroup, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
+import { ActivityGroup, groupNotificationTurns, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
@@ -1028,6 +1028,29 @@ function SessionTurnBody({
   const activity = lastProse === -1 ? answering.items : answering.items.slice(0, lastProse);
   const closing = lastProse === -1 ? [] : answering.items.slice(lastProse);
   const streamedAnswer = closing.some((item) => itemText(item));
+  /**
+   * AN ANSWER AREA WITH NOTHING IN IT IS NOT DRAWN — issue #577.
+   *
+   * The assistant's lane below is unconditional, so a turn that has produced
+   * nothing yet — a wake the engine queued behind the work in flight — still
+   * paid for an empty flex child and the gap above it. Under a one-line
+   * notification row that gap is most of the row's own height, and it read as
+   * an answer that had not loaded.
+   *
+   * IT LISTS WHAT THE LANE DRAWS, and nothing else: add a row down there and it
+   * belongs in this expression too, or a turn will render it invisibly.
+   */
+  const answerLane =
+    live ||
+    requests.length > 0 ||
+    answering.items.length > 0 ||
+    Boolean(turn.resultText) ||
+    Boolean(turn.failure) ||
+    Boolean(turn.usage) ||
+    turn.resumedAfterRateLimit !== undefined ||
+    turn.state === "stopped" ||
+    turn.state === "discarded" ||
+    turn.state === "failed";
 
 
   /**
@@ -1131,6 +1154,7 @@ function SessionTurnBody({
         </div>
       )}
 
+      {answerLane && (
       <Message from="assistant">
         <MessageContent from="assistant">
           {requests.map((request) => (
@@ -1190,6 +1214,7 @@ function SessionTurnBody({
           {turn.state === "failed" && <p className="mt-2 text-sm text-muted-foreground">This turn ended early. Your history is saved; send a new message to continue.</p>}
         </MessageContent>
       </Message>
+      )}
     </div>
   );
 }
@@ -3813,7 +3838,14 @@ export function SessionCockpit({
                 temp directory (#354). One fact about the session, stated once,
                 rather than a prop on every row that never uses it. */}
             <TranscriptWorkspace path={session ? workspacePath(session.workspace) : undefined}>
-            {shown.map((turn) => (
+            {/* CONSECUTIVE ARRIVALS ARE ONE BLOCK — #577. The lane's `gap-8` is
+                a TURN gap, and between two queued wakes there is no turn: a run
+                of notification rows is one thing that happened, and it is drawn
+                at the activity lane's own `gap-0.5`. A group of one is every
+                other turn in the conversation, rendered exactly as before.
+                See `groupNotificationTurns`. */}
+            {groupNotificationTurns(shown, active?.runId).map((group) => {
+              const turns = group.map((turn) => (
               /* THE END OF THIS ANSWER, when it is the newest one — the
                  position a read receipt is about. Inside the list rather than
                  after it, so a turn that started AFTER the answer (a running
@@ -3842,7 +3874,15 @@ export function SessionCockpit({
                   thing that must not be reported as seen. */}
               {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}
               </Fragment>
-            ))}
+              ));
+              return group.length === 1 ? (
+                <Fragment key={group[0]!.runId}>{turns}</Fragment>
+              ) : (
+                <div key={group[0]!.runId} className="flex flex-col gap-0.5" data-notification-strip={group.length}>
+                  {turns}
+                </div>
+              );
+            })}
             </TranscriptWorkspace>
           </ConversationContent>
           <ConversationScrollButton />
