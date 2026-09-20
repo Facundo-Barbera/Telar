@@ -63,19 +63,22 @@ const fixture = (body: string): string => {
  * preload has to read it back from.
  */
 const runFromRepoRoot = (
-  file: string,
+  files: string | string[],
   { ceiling, flag }: { ceiling?: string; flag?: string } = {},
 ): { output: string; status: number | null } => {
   const environment = { ...process.env };
   delete environment.TELAR_TEST_TIMEOUT_MS;
   if (ceiling !== undefined) environment.TELAR_TEST_TIMEOUT_MS = ceiling;
-  const run = spawnSync(process.execPath, ["test", ...(flag ? ["--timeout", flag] : []), file], {
+  const run = spawnSync(process.execPath, ["test", ...(flag ? ["--timeout", flag] : []), ...(Array.isArray(files) ? files : [files])], {
     cwd: REPO_ROOT,
     encoding: "utf8",
     env: environment,
   });
   return { output: `${run.stdout ?? ""}${run.stderr ?? ""}`, status: run.status };
 };
+
+/** How many times the child reported a death at this bound. */
+const deaths = (output: string, ms: number): number => output.split(`timed out after ${ms}ms`).length - 1;
 
 const sleeps = (ms: number): string => `import { test, expect } from "bun:test";
 test("sleeps ${ms}ms and declares no ceiling of its own", async () => {
@@ -165,6 +168,59 @@ test("sleeps 400ms under its own 120ms ceiling", async () => {
   expect(status).not.toBe(0);
 }, 60_000);
 
+/**
+ * THE HALF #740 NEVER RAN, AND THE REASON #792 EXISTS.
+ *
+ * Every case above hands the child ONE file, which is the only arrangement in
+ * which a preload's `setDefaultTimeout` holds for the whole run. Measured on
+ * bun 1.3.11: it reaches the first test file a run loads and no other. #740
+ * removed `--timeout 20000` from the workspace `test` scripts on the strength
+ * of this file, so the 182-file engine suite ran at bun's 5 s default for 181
+ * of them — with `__telarTestCeilingMs` reporting 20 000 in every one, which is
+ * why a preload's self-report is corroboration and never proof.
+ *
+ * BOTH FIXTURES SLEEP THE SAME. Bun's order over two paths is not something to
+ * depend on, and a pair where only one sleeps would pass whenever the sleeper
+ * happened to load first — green exactly when the run is safe, silent when it
+ * is not.
+ */
+test("a preload's ceiling stops at the first file — which is why the flag is back on the test scripts", () => {
+  // 120 ms is a number only the preload can produce, and 400 ms is comfortably
+  // under bun's own 5 s: one death is the preload reaching one file, and the
+  // survivor is the file it did not reach.
+  const { output } = runFromRepoRoot([fixture(sleeps(400)), fixture(sleeps(400))], { ceiling: "120" });
+  expect(deaths(output, 120)).toBe(1);
+  expect(output).toContain("1 pass");
+  // If this ever reads 2, bun has started applying a preload's ceiling to every
+  // file and the --timeout on each workspace's `test` script may be retired —
+  // see scripts/test-ceiling.mjs and the `test-ceiling-is-registered` invariant.
+}, 60_000);
+
+test("an explicit --timeout reaches EVERY file, which is what the workspace test scripts rely on", () => {
+  // The same pair, the same 120 ms, asked for the way a test script asks for
+  // it. Both must die: a flag that only reached the first file would leave the
+  // second one passing, exactly as the preload does above.
+  const { output, status } = runFromRepoRoot([fixture(sleeps(400)), fixture(sleeps(400))], { flag: "120" });
+  expect(deaths(output, 120)).toBe(2);
+  expect(output).toContain("0 pass");
+  expect(status).not.toBe(0);
+}, 60_000);
+
+/**
+ * AND THE SUITE CI ACTUALLY RUNS CARRIES ONE. The behaviour above is about
+ * `--timeout` in general; this is about the engine's own script having it, read
+ * off package.json rather than typed here — a number written twice can agree
+ * with itself while disagreeing with what CI runs. `test-ceiling-is-registered`
+ * holds the same line for every other workspace.
+ */
+test("this suite's own `test` script carries the ceiling, not just the preload", async () => {
+  const { TEST_CEILING_MS, timeoutFlagIn } = await import("../../../scripts/test-ceiling.mjs");
+  const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "apps/engine/package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+  };
+  expect(timeoutFlagIn(manifest.scripts.test ?? "")).toBe(TEST_CEILING_MS);
+});
+
 test("the flag is read out of a real command line, in either spelling, without false positives", async () => {
   const { timeoutFlagIn, ownCommandLine } = await import("../../../scripts/test-ceiling.mjs");
   const samples: Array<{ reads: number | null; why: string; line: string }> = [
@@ -185,4 +241,18 @@ test("the flag is read out of a real command line, in either spelling, without f
   const line = ownCommandLine();
   expect(typeof line).toBe("string");
   expect(line).toContain("bun");
+});
+
+test("the path arguments are read off a command line without a table of which flags take a value", async () => {
+  const { pathArgumentsIn } = await import("../../../scripts/test-ceiling.mjs");
+  const samples: Array<{ reads: string[]; why: string; line: string }> = [
+    { reads: ["one.test.ts"], why: "the single-file run the preload can cover", line: "bun test one.test.ts" },
+    { reads: ["a.test.ts", "b.test.ts"], why: "two files, which it cannot", line: "bun test a.test.ts b.test.ts" },
+    { reads: [], why: "a bare sweep of the whole workspace", line: "bun test" },
+    { reads: ["THE", "STORE", "PASSES", "one.test.ts"], why: "a filter's value is left in — the filesystem drops it, not a flag table", line: "bun test -t THE STORE PASSES one.test.ts" },
+    { reads: ["20000", "one.test.ts"], why: "a flag's number survives here too, and is dropped by the same stat", line: "bun test --timeout 20000 one.test.ts" },
+    { reads: ["apps/engine/test"], why: "a directory reads as one argument, and is not a file", line: "bun test apps/engine/test" },
+  ];
+  const wrong = samples.filter((sample) => JSON.stringify(pathArgumentsIn(sample.line)) !== JSON.stringify(sample.reads));
+  expect(wrong.map((sample) => `${sample.why}: ${sample.line}`)).toEqual([]);
 });
