@@ -76,7 +76,13 @@ export function sweepLabel(swept: JournalRetirement): string {
   const skipped = swept.skipped === 0
     ? ""
     : ` ${swept.skipped.toLocaleString()} ${swept.skipped === 1 ? "was" : "were"} left alone, because what survives the journal did not yet account for it.`;
-  return `${retired}${skipped} The database holds less; press Reclaim above to give the space back to the disk.`;
+  // TWO STEPS, BOTH NAMED, AND IN ORDER (#542). "Freed" means two different
+  // things here and a person who reads only the first will conclude the sweep
+  // did nothing: the rows leave the database and the file weighs the same until
+  // Reclaim rewrites it, and the bytes are still on the disk until they delete
+  // the exports, because retention MOVES the journal rather than destroying it.
+  // Saying only "press Reclaim" would promise space that does not arrive.
+  return `${retired}${skipped} The exports are yours to keep or delete — the disk gets the space back when you delete them, and the database shrinks when you press Reclaim above.`;
 }
 
 export function RetentionSection() {
@@ -163,7 +169,7 @@ export function RetentionSection() {
         label="Export retired journals to"
         hint={
           policy?.exportTo
-            ? `${policy.exportTo} — a folder per conversation, in the same shape a whole-store export writes. Nothing is dropped from the database until its copy is written and counted.`
+            ? `${policy.exportTo} — a folder per conversation, in the same shape a whole-store export writes. Nothing is dropped from the database until its copy is written and counted, so retiring MOVES a journal rather than destroying it: the disk gets that space back when you delete the exports.`
             : "Choose a folder first. Telar will not delete a journal it has not written out, so a window cannot be set until there is somewhere to put the copy."
         }
         {...(failure ? { error: failure } : {})}
