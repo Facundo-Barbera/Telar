@@ -69,6 +69,13 @@ const runFromRepoRoot = (
   const environment = { ...process.env };
   delete environment.TELAR_TEST_TIMEOUT_MS;
   if (ceiling !== undefined) environment.TELAR_TEST_TIMEOUT_MS = ceiling;
+  // BELT, WITH BRACES BELOW. On the runner the child's failure reporting comes
+  // out doubled (see `tally`), and bun's GitHub-Actions reporter is the likely
+  // cause — likely, not established: setting GITHUB_ACTIONS, CI, or both on
+  // this Mac reproduces none of it, so this line is a plausible remedy that
+  // could not be falsified where it was written. `tally` is what the
+  // assertions actually stand on, and it holds whether or not this helps.
+  delete environment.GITHUB_ACTIONS;
   const run = spawnSync(process.execPath, ["test", ...(flag ? ["--timeout", flag] : []), ...(Array.isArray(files) ? files : [files])], {
     cwd: REPO_ROOT,
     encoding: "utf8",
@@ -77,8 +84,32 @@ const runFromRepoRoot = (
   return { output: `${run.stdout ?? ""}${run.stderr ?? ""}`, status: run.status };
 };
 
-/** How many times the child reported a death at this bound. */
-const deaths = (output: string, ms: number): number => output.split(`timed out after ${ms}ms`).length - 1;
+/**
+ * WHAT THE CHILD COUNTED, NOT HOW MANY TIMES IT SAID SO.
+ *
+ * The obvious reading of a two-file run is to count `timed out after Nms` in
+ * the child's output. That instrument was green on a Mac and came back
+ * 2-where-1 and 4-where-2 on the runner — every count exactly DOUBLED, which is
+ * what a failure reported twice looks like and is not what a child that ran
+ * extra files would produce. It is the mirror image of the `(pass) …` grep #740
+ * rejected for reading zero locally, and it was caught by the runner rather
+ * than by the check passing.
+ *
+ * WHY THIS IS NOT THE SAME BET AGAIN. The doubling could not be reproduced
+ * here — GITHUB_ACTIONS and CI, alone and together, leave this Mac's output
+ * single — so anything the reporter prints once per failure is a quantity whose
+ * meaning depends on where it is read. The end-of-run tallies are not: bun
+ * writes `N pass` and `N fail` once, which is why the single-file cases above
+ * have asserted `1 pass` through CI since #740 and never doubled. And the three
+ * states a two-file run can be in — both covered, one covered, neither — are
+ * three different pairs rather than a shared substring, so a wrong answer names
+ * itself in the failure instead of merely disagreeing with a number.
+ */
+const tally = (output: string): string => {
+  const passed = /^\s*(\d+) pass$/m.exec(output)?.[1];
+  const failed = /^\s*(\d+) fail$/m.exec(output)?.[1];
+  return `${passed ?? "?"} pass, ${failed ?? "?"} fail`;
+};
 
 const sleeps = (ms: number): string => `import { test, expect } from "bun:test";
 test("sleeps ${ms}ms and declares no ceiling of its own", async () => {
@@ -186,14 +217,14 @@ test("sleeps 400ms under its own 120ms ceiling", async () => {
  */
 test("a preload's ceiling stops at the first file — which is why the flag is back on the test scripts", () => {
   // 120 ms is a number only the preload can produce, and 400 ms is comfortably
-  // under bun's own 5 s: one death is the preload reaching one file, and the
-  // survivor is the file it did not reach.
+  // under bun's own 5 s: the death is the file the preload reached, and the
+  // survivor is the one it did not.
   const { output } = runFromRepoRoot([fixture(sleeps(400)), fixture(sleeps(400))], { ceiling: "120" });
-  expect(deaths(output, 120)).toBe(1);
-  expect(output).toContain("1 pass");
-  // If this ever reads 2, bun has started applying a preload's ceiling to every
-  // file and the --timeout on each workspace's `test` script may be retired —
-  // see scripts/test-ceiling.mjs and the `test-ceiling-is-registered` invariant.
+  expect(output).toContain("timed out after 120ms");
+  // If this ever reads "0 pass, 2 fail", bun has started applying a preload's
+  // ceiling to every file and the --timeout on each workspace's `test` script
+  // may be retired — see scripts/test-ceiling.mjs and `test-ceiling-is-registered`.
+  expect(tally(output)).toBe("1 pass, 1 fail");
 }, 60_000);
 
 test("an explicit --timeout reaches EVERY file, which is what the workspace test scripts rely on", () => {
@@ -201,8 +232,8 @@ test("an explicit --timeout reaches EVERY file, which is what the workspace test
   // it. Both must die: a flag that only reached the first file would leave the
   // second one passing, exactly as the preload does above.
   const { output, status } = runFromRepoRoot([fixture(sleeps(400)), fixture(sleeps(400))], { flag: "120" });
-  expect(deaths(output, 120)).toBe(2);
-  expect(output).toContain("0 pass");
+  expect(output).toContain("timed out after 120ms");
+  expect(tally(output)).toBe("0 pass, 2 fail");
   expect(status).not.toBe(0);
 }, 60_000);
 
