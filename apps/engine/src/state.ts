@@ -6314,10 +6314,22 @@ export class EngineStore {
      * read is the PROJECT's, not the workspace path's: the worktree directory is
      * perfectly readable while every git command inside it fails.
      */
+    /**
+     * A RANGE IS READ WHERE IT STILL RESOLVES — issue #741.
+     *
+     * An anchored turn outlives its checkout, because worktrees share one
+     * object database. So a comparison of two commits runs in the session's
+     * directory when it is there and in the PROJECT ROOT when it is not,
+     * rather than failing on a `.git` pointer into a worktree somebody removed.
+     * The working-tree reads keep the checkout: there is no working tree to
+     * read anywhere else.
+     */
+    const cwd = options.to ? this.anchorReadRoot(session) ?? workspaceRootOf(session) : workspaceRootOf(session);
     return this.withAvailability(
-      this.cachedGitRead(`diff:${workspaceRootOf(session)}:${base ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
-        cwd: workspaceRootOf(session),
+      this.cachedGitRead(`diff:${cwd}:${base ?? ""}:${options.to ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
+        cwd,
         ...(base ? { baseRef: base } : {}),
+        ...(options.to ? { to: options.to } : {}),
       })),
       this.projectOfSession(session),
       // Outside the cached read, like the availability above it: two local
@@ -6341,7 +6353,8 @@ export class EngineStore {
      * row whose ± counts came from a different comparison, and neither figure
      * would be wrong on its own.
      */
-    return this.readFilePatchAsync(workspaceRootOf(session), target, options, resolveRequestedBase(options, workspaceBaseRef(session.workspace)));
+    const cwd = options.to ? this.anchorReadRoot(session) ?? workspaceRootOf(session) : workspaceRootOf(session);
+    return this.readFilePatchAsync(cwd, target, options, resolveRequestedBase(options, workspaceBaseRef(session.workspace)));
   }
 
   private readFilePatchAsync(cwd: string, target: string, options: FilePatchOptions, baseRef?: string): Promise<GitFilePatch> {
@@ -6364,11 +6377,14 @@ export class EngineStore {
     // `renamedFrom` IS PART OF THE KEY for the reason `ignoreWhitespace` is: it
     // changes the git command, so the two reads return different patches for
     // the same path — one of them saying the file is new.
-    const key = `patch:${cwd}:${baseRef ?? ""}:${resolved}:${!!options.untracked}:${!!options.ignoreWhitespace}:${renamedFrom ?? ""}`;
+    // `to` IS PART OF THE KEY for the reason every other option here is: it
+    // changes the git command, so one path answers two different comparisons.
+    const key = `patch:${cwd}:${baseRef ?? ""}:${options.to ?? ""}:${resolved}:${!!options.untracked}:${!!options.ignoreWhitespace}:${renamedFrom ?? ""}`;
     return this.cachedGitRead(key, () => sessionFilePatchAsync(this.asyncGit, {
       cwd,
       path: path.relative(cwd, resolved),
       ...(baseRef ? { baseRef } : {}),
+      ...(options.to ? { to: options.to } : {}),
       ...(options.untracked ? { untracked: true } : {}),
       ...(options.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
       ...(renamedFrom ? { renamedFrom } : {}),

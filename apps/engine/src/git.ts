@@ -444,6 +444,41 @@ function resolveDiffBase(
 }
 
 /**
+ * WHETHER AN ANCHORED COMMIT IS STILL THERE — issue #741.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * AN ANCHOR DEGRADES; IT MUST NOT LIE. A turn's `before`/`after` are shas the
+ * engine observed while the turn ran, and history moves afterwards. Measured in
+ * throwaway repositories: after `git commit --amend` the pre-amend sha is STILL
+ * a readable object and `git diff <old> <new>` still works; after
+ * `reflog expire --expire-unreachable=now --all && gc --prune=now` it is gone.
+ *
+ * `resolveDiffBase`'S LESSON RUNS THE OTHER WAY HERE, and that is the whole
+ * reason this is a separate function rather than a second call to it. There, a
+ * ref that does not resolve falls back to HEAD, because a *name* the user typed
+ * being wrong is a user error with an obvious recovery. Here the sha was
+ * recorded by the engine, and falling back to HEAD would answer a comparison
+ * NOBODY ASKED FOR with real hunks, and look entirely plausible doing it.
+ * A missing object means the anchor is gone, and the only honest answer is to
+ * say so.
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * `^{commit}` RATHER THAN A BARE SHA, so a sha that happens to name a blob or a
+ * tree is refused rather than fed to `diff` as one side of a range.
+ */
+export function anchorArgs(sha: string): string[] {
+  return ["cat-file", "-e", `${sha}^{commit}`];
+}
+
+/** What `cat-file -e` said about an anchor: present, gone, or unread. */
+export function readAnchorProbe(result: GitResult): { present: boolean; incomplete?: GitReadFailure } {
+  if (result.timedOut) return { present: false, incomplete: "timeout" };
+  // Non-zero from `cat-file -e` is the answer "no such object", which is a FACT
+  // about the repository rather than a failure of the read.
+  return { present: result.status === 0 };
+}
+
+/**
  * THE REVIEW, ASSEMBLED FROM READS THAT EACH MAY HAVE FAILED — issue #654.
  *
  * SHARED BY BOTH RUNNERS so the synchronous and nonblocking reviews can never
@@ -962,8 +997,8 @@ export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
 }
 
 /** Nonblocking read counterpart; uses the same parsers and fallback semantics above. */
-export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string; baseRef?: string }): Promise<SessionDiff> {
-  const { cwd, baseRef } = input;
+export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string; baseRef?: string; to?: string }): Promise<SessionDiff> {
+  const { cwd, baseRef, to } = input;
   const inside = await git(cwd, ["rev-parse", "--is-inside-work-tree"]);
   refuseTimedOutProbe(inside, "Git review");
   if (inside.status !== 0 || inside.stdout.trim() !== "true") {
@@ -973,31 +1008,70 @@ export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string
   const head = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const { base, baseUnverified } = resolveDiffBase(baseRef, baseRef ? await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
   const against = base ?? "HEAD";
+  /**
+   * A RANGE, OR A REF AGAINST THE WORKING TREE — issue #741.
+   *
+   * `[against]` is `git diff <base> --`: one ref against whatever is on the
+   * disk right now. `[against, to]` is `git diff <base> <to>`: two commits,
+   * an answer nothing on the disk can change. The turn scope needs the second
+   * and there was no way to ask for it.
+   */
+  const range = to ? [against, to] : [against];
 
   return assembleDiff(cwd, {
     head,
     ...(base ? { base } : {}),
     ...(baseUnverified ? { baseUnverified } : {}),
-    numstat: await git(cwd, ["diff", "-z", "--numstat", "--find-renames", against, "--"]),
-    nameStatus: await git(cwd, ["diff", "-z", "--name-status", "--find-renames", against, "--"]),
-    status: await git(cwd, ["status", "--porcelain", "-z", "-uall"]),
-    ...(base ? { log: await git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${base}..HEAD`]) } : {}),
+    numstat: await git(cwd, ["diff", "-z", "--numstat", "--find-renames", ...range, "--"]),
+    nameStatus: await git(cwd, ["diff", "-z", "--name-status", "--find-renames", ...range, "--"]),
+    /**
+     * THE UNTRACKED READ IS DROPPED OVER A RANGE, and this is the line that
+     * matters. An untracked file is in no commit, so it is in no
+     * commit-to-commit comparison — carrying `status -uall` into one would put
+     * working-tree rows, possibly written long after the range ended, under a
+     * heading that says what a turn did. That is #690's defect by a third
+     * door, and it is refused HERE rather than left to each caller.
+     *
+     * `ok("")` rather than skipping the field: `assembleDiff` reads a failed
+     * status as a reason to mark the list incomplete, and "there are no
+     * untracked files in a range" is an answer, not a read that went wrong.
+     */
+    status: to ? { status: 0, stdout: "", stderr: "" } : await git(cwd, ["status", "--porcelain", "-z", "-uall"]),
+    ...(base ? { log: await git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${base}..${to ?? "HEAD"}`]) } : {}),
     tracking: await git(cwd, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]),
   });
 }
 
 export async function sessionFilePatchAsync(
   git: AsyncGitRunner,
-  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean; renamedFrom?: string },
+  input: { cwd: string; baseRef?: string; to?: string; path: string; untracked?: boolean; ignoreWhitespace?: boolean; renamedFrom?: string },
 ): Promise<GitFilePatch> {
   const { cwd, baseRef, path: target } = input;
   const { base } = resolveDiffBase(baseRef, baseRef ? await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]) : undefined);
   const against = base ?? "HEAD";
   const ignoring = patchWhitespaceArgs(input.ignoreWhitespace);
-  return input.untracked
+  /**
+   * OVER A RANGE THERE IS NO UNTRACKED ARM AT ALL — issue #741. `--no-index`
+   * compares a working file against `/dev/null`, which is a statement about the
+   * disk; asking it inside a commit-to-commit comparison would answer a
+   * different question from the list the row sits in. The range wins, and a row
+   * that reached here marked untracked over one is a row the list should not
+   * have produced.
+   */
+  const range = input.to ? [against, input.to] : [against];
+  return input.untracked && !input.to
     ? assemblePatch(await git(cwd, [...RAW_PATHS, "diff", "--no-index", "--unified=3", ...ignoring, "--", "/dev/null", target]), { noIndex: true })
     : assemblePatch(
-        await git(cwd, [...RAW_PATHS, "diff", "--unified=3", ...ignoring, ...renameArgs(input.renamedFrom), against, "--", ...paths(target, input.renamedFrom)]),
+        await git(cwd, [
+          ...RAW_PATHS,
+          "diff",
+          "--unified=3",
+          ...ignoring,
+          ...renameArgs(input.renamedFrom),
+          ...range,
+          "--",
+          ...paths(target, input.renamedFrom),
+        ]),
         { noIndex: false },
       );
 }
