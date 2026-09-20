@@ -2183,8 +2183,19 @@ export class EngineStore {
    * rows on the indexed one. Public because that difference is the fix, and a
    * claim that a 120-turn session now costs its tail is only worth making if
    * something can fail when it stops being true.
+   *
+   * AND IT NOW SEES `readQueue`, WHICH IT DID NOT — issue #547. `accountWholeRead`
+   * was called from the two windowed reads alone, so every whole-queue read the
+   * activity fold and the thirteen transitions make counted nothing: the
+   * counters read 0 before and 0 after a change that doubled the wall time, and
+   * anyone proving a fold improvement with them would have read 0 = 0 as
+   * success. The accounting lives in `readQueue` itself now, so all forty-odd
+   * call sites are covered by construction rather than by remembering.
+   *
+   * `queueParses` COUNTS WHOLE-DOCUMENT QUEUE PARSES, which is the number #547
+   * is about rather than the bytes — a byte total moves for a cache hit too.
    */
-  readonly readAccounting = { documentBytes: 0, documentReads: 0 };
+  readonly readAccounting = { documentBytes: 0, documentReads: 0, queueParses: 0 };
 
   /**
    * Write a document and the offset index that lets its tail be read alone.
@@ -8283,8 +8294,9 @@ export class EngineStore {
     const file = sessionQueueFile(this.paths, sessionId);
     const index = this.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
     if (!index) {
+      // `readQueue` accounts for itself now (#547), so the explicit call that
+      // used to be here would double this read.
       const all = this.readQueue(sessionId).turns;
-      this.accountWholeRead(file);
       const plan = planWindow(all.map((turn) => ({ key: turn.runId, tag: turn.state })), window);
       return { turns: all.filter((turn) => plan.chosen.has(turn.runId)), page: plan.page };
     }
@@ -13020,9 +13032,24 @@ export class EngineStore {
     return index;
   }
 
+  /**
+   * THE WHOLE QUEUE, PARSED — and accounted for, which it was not (#547).
+   *
+   * `accountWholeRead` here rather than at the forty-odd call sites: this is
+   * the one door every whole-queue read goes through, and an instrument a new
+   * caller can forget to reach for is the instrument that read 0 = 0 while the
+   * wall time doubled. `windowedTurns`' fallback used to account for itself and
+   * no longer does, because this would then count it twice.
+   */
   private readQueue(sessionId: string): SessionQueue {
-    const stored = this.readDocument(sessionQueueFile(this.paths, sessionId));
+    const file = sessionQueueFile(this.paths, sessionId);
+    const stored = this.readDocument(file);
+    // An absent document is an empty queue, not a read: nothing was fetched and
+    // nothing parsed, and counting it would put a floor under every measurement
+    // taken on a session that has never been written to.
     if (stored === undefined) return emptyQueue(sessionId);
+    this.accountWholeRead(file);
+    this.readAccounting.queueParses += 1;
     return parseQueue(stored, sessionId);
   }
 
