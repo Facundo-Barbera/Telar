@@ -64,6 +64,33 @@ async function testFilesUnder(directory) {
 /** The one file the per-test ceiling lives in, repo-relative (#740). */
 const CEILING_PRELOAD = "scripts/test-ceiling.mjs";
 
+/** The one file an engine test's wait budget lives in, repo-relative (#760). */
+const SHARED_WAIT_MODULE = "apps/engine/test/wait.ts";
+
+/**
+ * One engine test file's wait budget against its own tightest per-test ceiling,
+ * or `null` when the pair is sound or there is nothing to compare.
+ *
+ * Pure, and separate from the check that walks the tree, so the samples proving
+ * it fires live in a check of their own rather than in a paragraph.
+ */
+function waitBudgetFailure(name, source, sharedBudgetMs) {
+  const budgets = [...source.matchAll(/(?:ms|timeoutMs|deadlineMs) = ([0-9_]+)/g)].map((m) => Number(m[1].replace(/_/g, "")));
+  const importsShared = /from "\.\/wait"/.test(source);
+  if (importsShared) budgets.push(sharedBudgetMs);
+  const ceilings = [...source.matchAll(/^\}, *([0-9_]+)\);/gm)].map((m) => Number(m[1].replace(/_/g, "")));
+  if (budgets.length === 0 || ceilings.length === 0) return null;
+  const budget = Math.max(...budgets);
+  const ceiling = Math.min(...ceilings);
+  if (budget < ceiling) return null;
+  const whose = budget === sharedBudgetMs && importsShared ? ` (${SHARED_WAIT_MODULE}'s WAIT_BUDGET_MS)` : "";
+  return (
+    `apps/engine/test/${name}: a wait budget of ${budget}ms${whose} runs under a per-test ceiling of ${ceiling}ms. ` +
+    "The test dies before the wait can report, so the real reason is discarded and the run only says it timed out. " +
+    "Lower the budget below every ceiling in this file, or raise the ceiling above the budget."
+  );
+}
+
 /**
  * Every directory a bunfig.toml would be read from: the repo root and each
  * workspace. Enumerated rather than listed, so a workspace added next year is
@@ -1200,24 +1227,72 @@ const CHECKS = [
    *
    * A file with no per-test ceiling is fine — it inherits the suite's 20 s,
    * which every helper here is already well under.
+   *
+   * AND A BUDGET CAN NOW LIVE IN ANOTHER FILE — #760. The helpers were 26
+   * private copies; one shared module replaced the copies in the files that
+   * import it, and a budget that has moved out of the file is a budget this scan
+   * stops seeing. That is how a guard is disabled without anyone deciding to:
+   * the check goes on printing `ok` about a pairing it can no longer read. So a
+   * file that imports the shared module is checked against the shared module's
+   * own default as well as against whatever it still declares locally.
    */
   {
     name: "test-wait-fits-its-ceiling",
-    protects: "engine test timeouts (#706): a wait's budget is strictly under the ceiling of the test running it",
+    protects: "engine test timeouts (#706, #760): a wait's budget — its own or the shared helper's — is strictly under the ceiling of the test running it",
     async run() {
+      const shared = await read(SHARED_WAIT_MODULE).catch(() => null);
+      if (shared === null) {
+        return [
+          `${SHARED_WAIT_MODULE} is missing. It is where the one wait budget lives (#760); without it this check ` +
+            "cannot tell what budget the files importing it are running under, and must not pretend otherwise.",
+        ];
+      }
+      const declared = /export const WAIT_BUDGET_MS = ([0-9_]+);/.exec(shared);
+      if (!declared) {
+        return [
+          `${SHARED_WAIT_MODULE} no longer declares \`export const WAIT_BUDGET_MS = <number>\` as a plain literal, so ` +
+            "this check cannot read the shared budget. Restore the declaration, or teach this check where it moved to.",
+        ];
+      }
+      const sharedBudgetMs = Number(declared[1].replace(/_/g, ""));
+
       const failures = [];
       const files = (await readdir(join(ROOT, "apps/engine/test"))).filter((name) => name.endsWith(".test.ts"));
       for (const name of files) {
-        const source = await read(join("apps/engine/test", name));
-        const budgets = [...source.matchAll(/(?:ms|timeoutMs|deadlineMs) = ([0-9_]+)/g)].map((m) => Number(m[1].replace(/_/g, "")));
-        const ceilings = [...source.matchAll(/^\}, *([0-9_]+)\);/gm)].map((m) => Number(m[1].replace(/_/g, "")));
-        if (budgets.length === 0 || ceilings.length === 0) continue;
-        const budget = Math.max(...budgets);
-        const ceiling = Math.min(...ceilings);
-        if (budget < ceiling) continue;
-        failures.push(
-          `apps/engine/test/${name}: a wait budget of ${budget}ms runs under a per-test ceiling of ${ceiling}ms. The test dies before the wait can report, so the real reason is discarded and the run only says it timed out. Lower the helper's default below every ceiling in this file, or raise the ceiling above the budget.`,
-        );
+        const failure = waitBudgetFailure(name, await read(join("apps/engine/test", name)), sharedBudgetMs);
+        if (failure) failures.push(failure);
+      }
+      return failures;
+    },
+  },
+
+  /**
+   * #721's standard, applied to the scan above: one that has never been shown to
+   * fail has demonstrated nothing. The sample that matters is the third — a file
+   * whose budget is entirely in the shared module, which is the exact shape the
+   * old scan read as "no budget here" and passed.
+   */
+  {
+    name: "test-wait-scan-self-test",
+    protects: "#706/#760: the wait-budget scan still sees an inverted pair through the shared helper, and stays quiet on a correct one",
+    async run() {
+      const ceiling = (ms) => `test("x", async () => {\n  await eventually(() => {});\n}, ${ms});\n`;
+      const importsShared = 'import { eventually } from "./wait";\n';
+      const localBudget = "const deadlineMs = 15_000;\n";
+      const samples = [
+        { fires: true, why: "the original #706 shape: a local 15s budget under a 10s ceiling", source: localBudget + ceiling(10_000) },
+        { fires: true, why: "equal is a coin toss, not a pass", source: localBudget + ceiling(15_000) },
+        { fires: true, why: "the budget moved into the shared module and the ceiling did not move with it", source: importsShared + ceiling(10_000) },
+        { fires: false, why: "the shared budget under the suite ceiling", source: importsShared + ceiling(20_000) },
+        { fires: false, why: "a local budget under its ceiling", source: localBudget + ceiling(20_000) },
+        { fires: false, why: "no ceiling at all inherits the suite's 20s", source: importsShared },
+        { fires: false, why: "a file with neither a budget nor an import", source: ceiling(10_000) },
+      ];
+      const failures = [];
+      for (const { fires, why, source } of samples) {
+        const failure = waitBudgetFailure("sample.test.ts", source, 15_000);
+        if (fires && failure === null) failures.push(`the scan MISSED a sample it must catch (${why}).`);
+        if (!fires && failure !== null) failures.push(`the scan FIRED on a sample it must ignore (${why}): ${failure}`);
       }
       return failures;
     },
