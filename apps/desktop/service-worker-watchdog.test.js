@@ -109,6 +109,73 @@ describe("what a poll decides (#487)", () => {
   });
 });
 
+/**
+ * WHAT A PERSON IS TOLD, AND WHEN — issue #787.
+ *
+ * #488 put these figures on the Usage page and nowhere else, so the honest
+ * answer to "would it have caught the 96%-for-seven-minutes" was "only if
+ * somebody had that page open". The notices below are the watchdog's OWN
+ * decision handed out — not a second threshold — which is what keeps the thing
+ * a person is shown from disagreeing with the thing that gets killed.
+ *
+ * COUNTS AND FIELDS, never "a notice appeared". A surface that reported every
+ * hot renderer, or every renderer, would satisfy a presence check.
+ */
+describe("what a poll would tell somebody (#787)", () => {
+  test("a kill is announced, with the load and the origins it was decided against", () => {
+    const workers = [worker("https://github.com/")];
+    const first = decideTerminations({ metrics: [runaway()], workers });
+    // ONE POLL SAYS NOTHING, which is the same evidence bar the kill uses: a
+    // spike is a worker waking for a push, and a surface that fired on those
+    // is one people turn off.
+    expect(first.notices).toEqual([]);
+
+    const second = decideTerminations({ metrics: [runaway()], workers, previous: first.hot });
+    expect(second.notices).toHaveLength(1);
+    expect(second.notices[0]).toMatchObject({ pid: 318, percent: 100, polls: 2, killed: true });
+    expect(second.notices[0].origins).toEqual(["https://github.com"]);
+  });
+
+  test("THE KILL THIS WATCHDOG REFUSES IS ANNOUNCED TOO, and keeps being announced", () => {
+    // The case #787 names as the worst: sustained, page-less, and deliberately
+    // NOT killed because no worker is running without a tab to name it as. It
+    // persists indefinitely, and before this nothing said anything at all.
+    const workers = [worker("https://github.com/", true)];
+    let previous = new Map();
+    const polls = [];
+    for (let poll = 0; poll < 4; poll += 1) {
+      const decision = decideTerminations({ metrics: [runaway()], workers, previous });
+      expect(decision.kill).toEqual([]);
+      polls.push(decision.notices);
+      previous = decision.hot;
+    }
+    // Silent on the first poll, then every poll after: a live indicator must not
+    // go quiet while the core is still burning.
+    expect(polls.map((notices) => notices.length)).toEqual([0, 1, 1, 1]);
+    expect(polls[3][0]).toMatchObject({ pid: 318, killed: false, polls: 4 });
+    expect(polls[3][0].origins).toEqual([]);
+  });
+
+  test("a hot renderer WITH a page is never announced, however long it burns", () => {
+    // Not a runaway. A page doing real work is a page doing real work, and
+    // without this the notice would be "some renderer is busy" — true of a
+    // browser, and therefore worth nothing.
+    const workers = [worker("https://github.com/")];
+    let previous = new Map();
+    for (let poll = 0; poll < 5; poll += 1) {
+      const decision = decideTerminations({ metrics: [runaway()], liveProcessIds: [318], workers, previous });
+      expect(decision.notices).toEqual([]);
+      previous = decision.hot;
+    }
+  });
+
+  test("a quiet app announces nothing at all", () => {
+    const decision = decideTerminations({ metrics: [idle(318), idle(319)], workers: [worker("https://github.com/")] });
+    expect(decision.notices).toEqual([]);
+  });
+
+});
+
 describe("a scope's origin", () => {
   test("is the origin, and an unparseable scope answers null rather than guessing", () => {
     expect(originOfScope("https://github.com/assets/")).toBe("https://github.com");
@@ -202,5 +269,57 @@ describe("the poll loop", () => {
     h.watchdog.stop();
     h.watchdog.poll();
     expect(h.killed).toEqual([]);
+  });
+
+  /* ── what reaches a person, issue #787 ─────────────────────────────────── */
+
+  test("hands the notices out every poll, empty ones included", () => {
+    const seen = [];
+    const h = harness({ onNotice: (notices) => seen.push(notices) });
+    h.watchdog.poll();
+    h.watchdog.poll();
+    // THE EMPTY ARRAY IS A REAL ANSWER and has to arrive: it is what takes an
+    // indicator back down once the renderer is gone. A callback that only fired
+    // on trouble would leave the cockpit warning about a process that no longer
+    // exists.
+    expect(seen.map((notices) => notices.length)).toEqual([0, 1]);
+    expect(seen[1][0]).toMatchObject({ pid: 318, killed: true });
+    h.metrics = [];
+    h.watchdog.poll();
+    expect(seen).toHaveLength(3);
+    expect(seen[2]).toEqual([]);
+  });
+
+  test("a poll that could not be taken says NOTHING, rather than saying all-clear", () => {
+    // The one direction this surface must not get wrong. A failed reading that
+    // reported an empty list would clear a warning on the strength of an error,
+    // which is indistinguishable from the problem having gone away.
+    const seen = [];
+    const h = harness({
+      readMetrics: () => { throw new Error("no metrics"); },
+      onNotice: (notices) => seen.push(notices),
+    });
+    expect(h.watchdog.poll().notices).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("a notice callback that throws does not cost the kill", () => {
+    const h = harness({ onNotice: () => { throw new Error("the cockpit is gone"); } });
+    h.watchdog.poll();
+    expect(() => h.watchdog.poll()).not.toThrow();
+    expect(h.killed).toEqual([318]);
+  });
+
+  test("the refused kill reaches the shell log once, not once every thirty seconds", () => {
+    const h = harness();
+    // Every running worker's origin still has a tab, so nothing can be named
+    // and nothing is killed — and the renderer stays hot for as long as it likes.
+    h.workers = [worker("https://github.com/", true)];
+    for (let poll = 0; poll < 4; poll += 1) h.watchdog.poll();
+    expect(h.killed).toEqual([]);
+    const refusals = h.lines.filter((line) => line.includes("not killed"));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toContain("pid 318");
+    expect(refusals[0]).toContain("100% CPU");
   });
 });

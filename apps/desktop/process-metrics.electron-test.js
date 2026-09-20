@@ -45,6 +45,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createProcessMetricsReader } = require("./process-metrics");
+const serviceWorkerWatchdog = require("./service-worker-watchdog");
 const { startBrowserControlServer } = require("./browser-control-server");
 const { removeUserData } = require("./electron-test-teardown");
 
@@ -318,7 +319,122 @@ async function main() {
     );
     note(`control server answered ${overWire.totals.processes} processes`);
 
-    console.log("PROCESS_METRICS_OK");
+    // ── 5. the ambient runaway notice, on REAL readings ──────────────────
+    //
+    // THE VACUITY THIS SECTION EXISTS TO PREVENT — issue #787. A test that
+    // asserts "the indicator appeared" passes just as well against a fixture
+    // that never went near `app.getAppMetrics()`, and the whole claim of #787
+    // is that a real runaway becomes visible without the Usage page open. So
+    // both directions below are driven by the real metrics array and the real
+    // `webContents.getOSProcessId()` join, and the pid asserted on is one
+    // Electron minted rather than one this file wrote down.
+    at("deciding a runaway notice from real metrics");
+    const realMetrics = app.getAppMetrics();
+
+    // THE TRUE NEGATIVE FIRST, on this machine's actual state: at the shipped
+    // threshold an idle test app has nothing sustained and page-less, so two
+    // consecutive polls of real readings must produce no notice at all. If this
+    // ever fires it is telling you something real about the fixture.
+    let previous = new Map();
+    let quiet = null;
+    for (let poll = 0; poll < 2; poll += 1) {
+      quiet = serviceWorkerWatchdog.decideTerminations({
+        metrics: app.getAppMetrics(),
+        liveProcessIds: liveRendererProcessIds(),
+        workers: [],
+        previous,
+      });
+      previous = quiet.hot;
+    }
+    assert(
+      quiet.notices.length === 0,
+      `two polls of real metrics on an idle fixture produced ${quiet.notices.length} runaway notice(s) — the surface would cry wolf on every launch`,
+    );
+
+    // AND THE TRUE POSITIVE, with the threshold dropped to zero and the live
+    // pids withheld so a REAL renderer qualifies. Nothing about the decision is
+    // stubbed: the pid, the type and the CPU reading are Electron's.
+    previous = new Map();
+    let loud = null;
+    for (let poll = 0; poll < 2; poll += 1) {
+      loud = serviceWorkerWatchdog.decideTerminations({
+        metrics: realMetrics,
+        liveProcessIds: [],
+        workers: [],
+        previous,
+        thresholdPercent: 0,
+      });
+      previous = loud.hot;
+    }
+    assert(loud.kill.length === 0, "a kill was decided with no candidate origin to name it as");
+    const named = loud.notices.find((notice) => notice.pid === rendererPid);
+    assert(
+      named,
+      `the notice path did not name pid ${rendererPid}, which getAppMetrics() reports as a renderer — the surface is not reading real processes`,
+    );
+    assert(named.killed === false && named.origins.length === 0, "a notice with no candidate origin claimed a kill");
+
+    // AND THE SAME READING, WITH THE PAGE JOIN RESTORED, must NOT name it: the
+    // window is plainly showing a page. This is the pair that makes the
+    // assertion above mean something rather than "some pid appeared".
+    previous = new Map();
+    let joined = null;
+    for (let poll = 0; poll < 2; poll += 1) {
+      joined = serviceWorkerWatchdog.decideTerminations({
+        metrics: realMetrics,
+        liveProcessIds: liveRendererProcessIds(),
+        workers: [],
+        previous,
+        thresholdPercent: 0,
+      });
+      previous = joined.hot;
+    }
+    assert(
+      !joined.notices.some((notice) => notice.pid === rendererPid),
+      `pid ${rendererPid} is hosting a page and was still announced as a runaway — the join #487 rests on is not reaching the notice`,
+    );
+    note(`notice named pid ${named.pid} at ${Math.round(named.percent)}% with the page join off, and not with it on`);
+
+    // ── 6. and out to a real renderer over the real preload bridge ────────
+    at("pushing the notice to a real renderer");
+    const pushed = { at: Date.now(), renderers: [{ pid: named.pid, percent: named.percent, polls: named.polls, killed: false, origins: [] }] };
+    const subscribed = await window.webContents.executeJavaScript(`
+      (function () {
+        if (!window.telarDesktop || !window.telarDesktop.metrics || !window.telarDesktop.metrics.onRunaway) return "no-bridge";
+        window.__telarRunaway = null;
+        window.telarDesktop.metrics.onRunaway(function (notice) { window.__telarRunaway = notice; });
+        return "subscribed";
+      })()
+    `);
+    assert(subscribed === "subscribed", `preload.js exposed no telarDesktop.metrics.onRunaway to a real renderer (${subscribed})`);
+    window.webContents.send("telar:metrics:runaway", pushed);
+    let delivered = null;
+    for (let attempt = 0; attempt < 40 && delivered === null; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      delivered = await window.webContents.executeJavaScript("window.__telarRunaway");
+    }
+    assert(delivered !== null, "the runaway notice never reached a real renderer within four seconds");
+    assert(
+      Array.isArray(delivered.renderers) && delivered.renderers.length === 1 && delivered.renderers[0].pid === named.pid,
+      `the notice crossed the bridge as ${JSON.stringify(delivered)} — the cockpit reads .renderers[].pid`,
+    );
+    assert(
+      delivered.renderers[0].killed === false,
+      "`killed` did not survive the structured clone — the cockpit branches on it, and false and undefined are different sentences",
+    );
+
+    /**
+     * THE MARKER IS A COUNT AND A PAIR OF OPPOSITE ANSWERS, not a name — the
+     * `pty` case's idiom, adopted here because this file grew a section and a
+     * guard that keeps reporting the same string through that is not a guard.
+     * A test-name grep is the dangerous version: a SKIPPED test prints its own
+     * name. `6/6` is emitted only after every section has passed, and
+     * `orphan=named page=not-named` carries the two OPPOSITE answers the same
+     * real metrics array produced with the page join off and on.
+     *
+     * THE NUMBER IS MEANT TO BE EDITED when a section is added.
+     */
+    console.log("PROCESS_METRICS_OK 6/6 orphan=named page=not-named");
   } finally {
     at("tearing down");
     ipcMain.removeHandler("telar:metrics:read");

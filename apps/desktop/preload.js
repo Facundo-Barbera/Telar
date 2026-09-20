@@ -237,6 +237,22 @@ contextBridge.exposeInMainWorld("telarDesktop", {
    */
   metrics: {
     read: () => ipcRenderer.invoke("telar:metrics:read"),
+    /**
+     * A RUNAWAY RENDERER WITHOUT THE USAGE PAGE OPEN — issue #787.
+     *
+     * PUSHED FROM THE WATCHDOG'S OWN DECISION, so the cockpit adds no timer and
+     * no second caller of `app.getAppMetrics()` (which would be a correctness
+     * problem, not a cost — see the note above). The shell speaks every thirty
+     * seconds whether or not anything is wrong, because "nothing is hot" is what
+     * takes an indicator back down.
+     *
+     * `runaway()` is the last thing it said, for a window that mounted between
+     * polls — the same pairing as `updates.status()` beside `updates.onStatus`,
+     * and for the same reason: a push alone loses the one state that matters to
+     * a renderer that was not there to hear it.
+     */
+    runaway: () => ipcRenderer.invoke("telar:metrics:runaway"),
+    onRunaway: (listener) => on("telar:metrics:runaway", listener),
   },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),

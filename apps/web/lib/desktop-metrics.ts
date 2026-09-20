@@ -62,7 +62,41 @@ export type ProcessMetricsSummary = {
   busiest: ProcessMetricRow[];
 };
 
-type MetricsBridge = { read: () => Promise<ProcessMetricsSummary> };
+/**
+ * ONE RENDERER THE SHELL'S WATCHDOG IS WORRIED ABOUT — issue #787.
+ *
+ * Not a second reading of anything. This is `service-worker-watchdog.js`'s own
+ * per-poll decision, pushed out of the main process: a renderer at or above the
+ * kill threshold, hosting no page, for two consecutive polls.
+ */
+export type RunawayRenderer = {
+  pid: number;
+  /** Percent of ONE core, over the watchdog's own ~30 s window. */
+  percent: number;
+  /** How many consecutive polls it has been hot for. */
+  polls: number;
+  /** Whether the shell killed it on this poll. `false` is the case #787 names
+   *  as the worst: sustained, page-less, and deliberately NOT killed because no
+   *  service worker is running without a tab to name it as — so it persists. */
+  killed: boolean;
+  /** The origins that could have been it. Candidates, never an identification —
+   *  Electron gives a service-worker renderer no origin. Empty when none. */
+  origins: string[];
+};
+
+export type RunawayNotice = {
+  /** The shell's clock when the poll was taken. `0` means the shell has not
+   *  polled yet, which is not the same as "nothing is hot". */
+  at: number;
+  renderers: RunawayRenderer[];
+};
+
+type MetricsBridge = {
+  read: () => Promise<ProcessMetricsSummary>;
+  /** Absent on a shell too old to push. See `useRunawayNotice`. */
+  runaway?: () => Promise<RunawayNotice>;
+  onRunaway?: (listener: (notice: RunawayNotice) => void) => () => void;
+};
 
 export function desktopMetrics(): MetricsBridge | undefined {
   if (typeof window === "undefined") return undefined;
@@ -210,4 +244,60 @@ export function useProcessMetrics(intervalMs = 2_000): MetricsState {
   }, [refresh, intervalMs]);
 
   return { summary, error, supported, refresh: () => void refresh() };
+}
+
+/**
+ * THE AMBIENT HALF — issue #787.
+ *
+ * `useProcessMetrics` above polls every two seconds and ONLY while its page is
+ * visible, which is right for a page of live figures and is exactly why #488 did
+ * not close #787: it draws nothing anywhere else, so the runaway is legible only
+ * to somebody already looking at it.
+ *
+ * SO THIS ONE NEVER POLLS. The shell's watchdog is already deciding "hot, with
+ * no page, for two consecutive polls" every thirty seconds in order to kill; the
+ * decision is pushed here. No timer, no interval, no `visibilitychange` — and
+ * crucially no second caller of `app.getAppMetrics()`, which is a CORRECTNESS
+ * constraint rather than a cost (`apps/desktop/process-metrics.js`: the API's
+ * baseline is per-API, so a second caller silently retunes the watchdog's
+ * thirty-second average).
+ *
+ * THE SEED IS WHY A MOUNT IS NOT BLIND. A renderer that arrived between polls
+ * asks for the last thing the shell said rather than waiting up to thirty
+ * seconds for the next one.
+ *
+ * `undefined` MEANS NOTHING HAS BEEN SAID — an older shell with no bridge, a
+ * browser tab, or a shell that has not completed its first poll. It is NOT the
+ * same as an empty `renderers`, which is a poll that ran and found nothing, and
+ * the two must not draw the same thing for the reason the whole issue exists:
+ * a surface that cannot tell "quiet" from "not listening" is one people learn
+ * to ignore.
+ */
+export function useRunawayNotice(): RunawayNotice | undefined {
+  const [notice, setNotice] = useState<RunawayNotice>();
+
+  useEffect(() => {
+    const bridge = desktopMetrics();
+    if (!bridge?.onRunaway) return;
+    let live = true;
+    // Seed first, then subscribe. The other order can drop a poll that lands
+    // between the two calls; this one can only ever replace it with a newer
+    // reading, because the push always carries the shell's latest.
+    void bridge.runaway?.().then((seed) => {
+      // A push that already landed is newer than the seed the shell answered
+      // with, so it is never overwritten by it.
+      if (live) setNotice((held) => (held === undefined ? seed : held));
+    }).catch(() => {
+      /* a shell that cannot answer says nothing, which is what `undefined` is */
+    });
+    const stop = bridge.onRunaway((next) => {
+      if (live) setNotice(next);
+    });
+    return () => {
+      live = false;
+      stop();
+    };
+  }, []);
+
+  return notice;
 }

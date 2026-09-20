@@ -458,7 +458,14 @@ jobs:
           # with real cumulative readings, and whether `getAppMetrics()` pids
           # and `webContents.getOSProcessId()` line up, which is the join the
           # #487 signal is made of.
-          run_case metrics         PROCESS_METRICS_OK
+          # The marker is a COUNT and a pair of OPPOSITE answers, like `pty`
+          # below and for the same reason: #787 added a section to this file,
+          # and a guard that keeps matching the same bare name through that
+          # proves nothing about what was added. `orphan=named page=not-named`
+          # are the two answers the SAME real metrics array produced with the
+          # page join off and on, so a run that dropped either arm matches
+          # nothing. The number is meant to be edited when a section is added.
+          run_case metrics         "PROCESS_METRICS_OK 6/6 orphan=named page=not-named"
           # THE MARKER IS A COUNT AND A PAIR OF OPPOSITE ANSWERS, not a name.
           #
           # A test-name grep is the dangerous idiom here — a SKIPPED test prints
