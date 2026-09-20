@@ -279,6 +279,53 @@ test("a tool call opens a row and its result closes the SAME row", async () => {
   expect(completed?.kind === "item.completed" && completed.detail?.type === "command_execution" && completed.detail.command.outputPreview).toBe("a\nb");
 });
 
+/**
+ * WHAT THE PREVIEW TRUNCATES IS GONE, AND THIS IS THE ASSERTION SAYING SO —
+ * issue #686.
+ *
+ * `outputPreview` used to be documented as a transport convenience, with "the
+ * full text streams as `command_output` deltas" beside it. It does not: nothing
+ * emits that stream. So the cap is not a display choice, it is where the output
+ * ENDS, and the comment that said otherwise is the one that would talk a future
+ * implementer into comparing a 4 KB preview against a 200 KB streamed output
+ * and calling the result a compaction guard.
+ *
+ * Both halves are checked against the run rather than against the comment: the
+ * preview is the first 4,000 characters and an ellipsis, and the 1,001 the cap
+ * removed appear in NO observation this turn produced — which is every row the
+ * engine has to journal for it.
+ */
+test("a tool output past the preview cap is truncated, and the remainder is journalled nowhere", async () => {
+  const kept = "a".repeat(4_000);
+  const cut = `TAIL${"b".repeat(997)}`;
+  const output = kept + cut;
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_big", name: "Bash", input: { command: "bun test" } }] } };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_big", content: output }] } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+
+  const completed = sink.observations.find((o) => o.kind === "item.completed");
+  const preview = completed?.kind === "item.completed" && completed.detail?.type === "command_execution"
+    ? completed.detail.command.outputPreview
+    : undefined;
+  expect(preview).toBe(`${kept}…`);
+  expect(preview).toHaveLength(4_001);
+  expect(output).toHaveLength(5_001);
+
+  // AND NOTHING ELSE CARRIES THE OTHER 1,001. Asserted over the emitted values,
+  // not over the source: a check that read driver.ts would pass just as happily
+  // if a driver started streaming through a variable instead of a literal.
+  expect(JSON.stringify(sink.observations)).not.toContain(cut);
+  expect(sink.observations.filter((o) => o.kind === "content.delta")).toHaveLength(0);
+  // One row holds the output at all, and it holds 4,000 of its 5,001 characters.
+  expect(sink.observations.filter((o) => JSON.stringify(o).includes(kept.slice(0, 64)))).toHaveLength(1);
+});
+
 test("a failed tool result marks its row failed rather than complete", async () => {
   const driver = createClaudeDriver(async () => ({
     async *query() {
