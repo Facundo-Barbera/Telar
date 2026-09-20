@@ -1345,6 +1345,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // than latched — see `stopSession`.
       stop: async (sessionId) => store.stopSession(sessionId, "agent"),
       settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
+      // The bounds are the store's, like every member here — see #723.
+      setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
       diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
       unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
@@ -4684,6 +4686,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               ...(input.settledOverride === undefined ? {} : { settledOverride: input.settledOverride as "settled" | "active" | null }),
               ...(input.snoozedUntil === undefined ? {} : { snoozedUntil: input.snoozedUntil as number | null }),
               ...(input.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: input.resumeAfterRateLimit as boolean | null }),
+              // The report window, same reasoning again — the bounds are the
+              // store's, so an in-process caller cannot set a window this hop
+              // would have refused (#723).
+              ...(input.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: input.reportWindowMinutes as number | null }),
             }),
           });
           return;

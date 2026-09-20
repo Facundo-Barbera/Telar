@@ -2313,6 +2313,10 @@ export class EngineClient {
       /** Sit out a usage limit and carry on. `null` returns the session to the
        *  driver's default — see `Session.resumeAfterRateLimit`. */
       resumeAfterRateLimit?: boolean | null;
+      /** Hold routine peer reports and deliver them together on this cadence.
+       *  `null` returns the session to arrival delivery — see
+       *  `Session.reportWindowMinutes`. */
+      reportWindowMinutes?: number | null;
     },
   ): Promise<{ session: Session }> {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
@@ -2326,6 +2330,19 @@ export class EngineClient {
    */
   settleSession(sessionId: string, settled: boolean): Promise<{ session: Session }> {
     return this.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
+  }
+
+  /**
+   * THE SECOND FIELD OF `updateSession` A WORKER MAY TOUCH, on the same terms as
+   * `settleSession` above and for the same reason — issue #723.
+   *
+   * A session asks for its OWN report cadence through this; the narrow verb is
+   * what keeps `sessions_report_window` from carrying the title, the model and
+   * the runtime mode along with it. `null` returns the session to arrival
+   * delivery.
+   */
+  setSessionReportWindow(sessionId: string, minutes: number | null): Promise<{ session: Session }> {
+    return this.updateSession(sessionId, { reportWindowMinutes: minutes });
   }
 
   session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot> {

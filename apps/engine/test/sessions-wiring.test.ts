@@ -160,6 +160,7 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_subscriptions",
     "sessions_requests",
     "sessions_resolve_request",
+    "sessions_report_window",
     "warp",
   ]);
 
@@ -270,8 +271,12 @@ test("the worker cannot archive, delete or accept anything — the client it hol
     // wall can answer "what happened lately" from one page rather than by
     // walking 61,933 events to reach the end. A READ, like every other member
     // that is not one of the five verbs.
+    // `setReportWindow` joined with #723, and it is the narrowest member here:
+    // one field of `updateSession`, on the CALLER's own session, reached through
+    // `setSessionReportWindow` rather than by widening the Pick to the whole
+    // patch — the same treatment `settle` already gets.
     expect(surface).toEqual([
-      "create", "cursor", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "cursor", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
       expect(surface).not.toContain(forbidden);

@@ -137,7 +137,7 @@ It is not this CLI's own notion of a session, and not a chat thread.
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
 \`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,
 \`sessions_subscribe\`, \`sessions_unsubscribe\`, \`sessions_subscriptions\`,
-\`sessions_requests\`, \`sessions_resolve_request\`.
+\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_report_window\`.
 
 ### Reading a peer without spending your context on it
 
@@ -162,6 +162,23 @@ name the exact next call.
   the answer, and a peer's message in full — and long ones come back in verbatim
   slices on \`resultAfter\` / \`messageAfter\` that concatenate exactly. Fetch when
   it matters; skip when it does not.
+
+### Being told on a clock instead of one at a time
+
+With several peers reporting, the interleaving is what becomes unreadable, not
+the size of any one message. \`sessions_report_window(minutes)\` holds ROUTINE
+traffic — a \`report\`, and a \`result\` nobody subscribed for — and delivers
+whatever piled up as ONE notification at most that often. \`minutes: null\` goes
+back to being told as each arrives.
+
+- It is YOUR OWN cadence. There is no session argument, and no session can set
+  another's.
+- A \`task\`, a \`blocker\` and a \`result\` you subscribed to are never held.
+- Nothing is lost while it waits: \`sessions_status\` lists what is held and the
+  window it is waiting on. A window that closes with nothing in it costs nothing
+  and delivers nothing.
+- Set it when you are about to dispatch several peers, not after they start
+  talking.
 
 ### What a coordinating session can and cannot do
 

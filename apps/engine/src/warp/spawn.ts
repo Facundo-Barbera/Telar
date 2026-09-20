@@ -129,8 +129,10 @@ export type WarpSpawnEnvironment = {
  *     sessions would spend the engine's live-session budget from inside a
  *     concurrency gate that is counting `claude` processes and knows nothing
  *     about sessions, and each one it made would outlive the run with nothing
- *     in the roster pointing at it. The other five `sessions_*` tools go with
- *     it rather than only the create verb: steering, reading and stopping a
+ *     in the roster pointing at it. EVERY other `sessions_*` tool goes with it
+ *     rather than only the create verb, and the count is deliberately not named
+ *     here — the wall's own test walks the wall and fails a new tool until it is
+ *     denied too: steering, reading and stopping a
  *     session from inside a fan-out is parallelism expressed outside the
  *     script, which is the same rule as fan-out in a different hat again.
  *
@@ -176,6 +178,7 @@ export const WARP_CHILD_DISALLOWED_TOOLS = [
   "mcp__telar__sessions_subscriptions",
   "mcp__telar__sessions_requests",
   "mcp__telar__sessions_resolve_request",
+  "mcp__telar__sessions_report_window",
   // The SAME wall under its HTTP key (`sessions-tools/run-socket.ts`). A warp
   // child is Claude-run and the worker leases the socket to Codex turns only,
   // so today these names are unreachable twice over — listed for the same
@@ -194,6 +197,7 @@ export const WARP_CHILD_DISALLOWED_TOOLS = [
   "mcp__telar-sessions__sessions_subscriptions",
   "mcp__telar-sessions__sessions_requests",
   "mcp__telar-sessions__sessions_resolve_request",
+  "mcp__telar-sessions__sessions_report_window",
 ] as const;
 
 const userMessage = (text: string): WarpUserMessage => ({

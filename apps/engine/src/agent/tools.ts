@@ -983,9 +983,24 @@ export type AgentWalls = {
  * reads them in that order and picks the one whose scope matches its question,
  * which is exactly the choice #570 is about.
  */
+/**
+ * THE ONE SESSIONS TOOL THE AGENT IS NOT GIVEN — `sessions_report_window` (#723).
+ *
+ * NOT A BUDGET DECISION, though it saves the bytes. The window holds routine
+ * peer reports in a SESSION'S MAILBOX until its cadence comes round, and the
+ * Agent has neither: it is a LangGraph thread, not a session — no queue, no
+ * run, no claim token, which is the same reason `submitAgentTurn` knows it by
+ * name rather than by proof. There is no box to hold anything in and no id
+ * `updateSession` would find, so the tool could only ever fail here.
+ *
+ * WITHHELD BY ABSENCE, which is the rule the wall already follows: a model with
+ * no such tool says it has none, rather than calling one that refuses.
+ */
+const NOT_ON_THE_AGENTS_WALL = new Set(["sessions_report_window"]);
+
 export function collectAgentTools(walls: AgentWalls): SocketTool[] {
   return [
-    ...collectTools(sessionsTools as never, walls.sessions as never),
+    ...collectTools(sessionsTools as never, walls.sessions as never).filter((tool) => !NOT_ON_THE_AGENTS_WALL.has(tool.name)),
     ...collectTools(agentQueryTools as never, walls.query as never),
     ...(walls.fleet ? collectTools(agentFleetTools as never, walls.fleet as never) : []),
     ...collectTools(notesTools as never, walls.notes as never),

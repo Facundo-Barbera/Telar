@@ -81,6 +81,7 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
+import { MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES } from "@telar/engine-client";
 
 /**
  * What the toolkit may do.
@@ -177,6 +178,16 @@ export type SessionsCapability = {
    * needs when a peer it started has finished and is now only clutter.
    */
   settle(sessionId: string, settled: boolean): Promise<Session>;
+  /**
+   * HOW OFTEN THIS SESSION IS TOLD ABOUT ROUTINE PEER REPORTS — issue #723.
+   *
+   * THE CALLER'S OWN SESSION, ALWAYS. It takes an id because the store does,
+   * and `sessions_report_window` passes `self` and nothing else: a session
+   * setting ANOTHER session's cadence would be one peer deciding how another is
+   * allowed to be interrupted, which is a relationship conferring behaviour —
+   * exactly what #199 spent a milestone refusing.
+   */
+  setReportWindow(sessionId: string, minutes: number | null): Promise<Session>;
   diff(sessionId: string): Promise<SessionDiff>;
   /**
    * WHO IS ASKING — present inside a turn, ABSENT on the outward socket. A
@@ -283,6 +294,8 @@ const STATUS = `Working, waiting on a person, or idle, and how recent turns ende
 const STOP = `Stop a session's work now: the running turn ends where it stands and the queue is settled. Nothing is undone — what it wrote stays written and a command it ran may have finished. Then idle, not paused.`;
 
 const SETTLE = `Shelve a session out of the active list, or settled: false to bring it back. Nothing is deleted and a new message lifts it back. Housekeeping, not acceptance.`;
+
+const REPORT_WINDOW = `Be told about routine reports on a clock instead of one at a time: minutes holds them and delivers the batch as one notification, null goes back to arrival. Sets YOUR OWN cadence, nobody else's. A task, a blocker and a result you subscribed to still arrive at once.`;
 
 /**
  * THE `filesIncomplete` CLAUSE COSTS 45 OF THE 47 CHARACTERS the wide tool wall
@@ -1357,13 +1370,25 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
            * "we stopped pushing" only holds together if there is a pull.
            */
           ...(pending.length > 0 ? { pendingNotifications: pending.map((detail) => detail.summary) } : {}),
+          /**
+           * AND WHETHER IT ASKED TO BE TOLD ON A CLOCK — issue #723.
+           *
+           * Reported wherever the held list is, because the two facts only mean
+           * anything together: mail waiting on a session with a window is mail
+           * that will arrive, and the whole risk of this feature is a held report
+           * being indistinguishable from a lost one. That was #631 part 2's bug
+           * and it must not be reintroduced by the cure.
+           */
+          ...(session.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: session.reportWindowMinutes }),
           note:
             session.activity === "blocked"
               ? "It is WAITING ON A PERSON — a request is open and only a human can answer it. Nothing you send will unblock it."
               : live.length > 0
                 ? `A turn is in flight. Read it with sessions_read, or stop it with sessions_stop.${pending.length > 0 ? ` ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting for it to finish.` : ""}`
                 : pending.length > 0
-                  ? `Nothing is running, and ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting to be delivered.`
+                  ? `Nothing is running, and ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting to be delivered${
+                      session.reportWindowMinutes === undefined ? "" : `, at most every ${session.reportWindowMinutes} minute${session.reportWindowMinutes === 1 ? "" : "s"}`
+                    }.`
                   : "Nothing is running.",
         });
       },
@@ -1701,6 +1726,47 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           });
         } catch (error) {
           return err(`Could not resolve request "${requestId}" on "${sessionId}": ${failure(error)}`);
+        }
+      },
+    ),
+    /**
+     * THE CADENCE — issue #723. Appended last, after the subscription tools, so
+     * the pinned name list in the tests grows rather than reorders.
+     *
+     * IT TAKES NO `sessionId`, AND THAT IS THE DESIGN RATHER THAN A SHORTCUT. A
+     * session setting another session's cadence would be one peer deciding how
+     * another may be interrupted — a relationship conferring behaviour, which is
+     * the thing #199 spent a milestone refusing. `self` is the only session this
+     * can name, so there is nothing here to point at somebody else.
+     */
+    tool(
+      "sessions_report_window",
+      REPORT_WINDOW,
+      {
+        minutes: z
+          .number()
+          .int()
+          .min(MIN_REPORT_WINDOW_MINUTES)
+          .max(MAX_REPORT_WINDOW_MINUTES)
+          .nullable()
+          .describe("Minutes to hold routine reports for, or null to be told as each one arrives."),
+      },
+      async (args) => {
+        if (!capability.self) return err(NO_SELF);
+        const minutes = args.minutes === null ? null : Number(args.minutes);
+        try {
+          const session = await capability.setReportWindow(capability.self.sessionId, minutes);
+          const set = session.reportWindowMinutes;
+          return json({
+            sessionId: session.id,
+            reportWindowMinutes: set ?? null,
+            note:
+              set === undefined
+                ? "Routine reports now reach you as they arrive, each as its own turn."
+                : `Routine reports — a report, and a result nobody is waiting on — are now held and delivered together at most every ${set} minute${set === 1 ? "" : "s"}. Nothing is lost while they wait: sessions_status lists what is held. A task, a blocker and a result you subscribed to still reach you at once, and a window that closes with nothing in it delivers nothing.`,
+          });
+        } catch (error) {
+          return err(`Could not set this session's report window: ${failure(error)}`);
         }
       },
     ),
