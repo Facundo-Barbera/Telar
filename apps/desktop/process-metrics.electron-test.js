@@ -46,6 +46,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { createProcessMetricsReader } = require("./process-metrics");
 const { startBrowserControlServer } = require("./browser-control-server");
+const { removeUserData } = require("./electron-test-teardown");
 
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), "telar-process-metrics-"));
 app.setPath("userData", userData);
@@ -326,7 +327,7 @@ async function main() {
     // anyway, the process is about to exit and the port goes with it.
     await Promise.race([control.close(), new Promise((resolve) => setTimeout(resolve, 2_000))]);
     window.destroy();
-    fs.rmSync(userData, { recursive: true, force: true });
+    await removeUserData(userData);
   }
 }
 

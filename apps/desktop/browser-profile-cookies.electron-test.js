@@ -32,6 +32,7 @@ const path = require("node:path");
 const { DesktopBrowserManager } = require("./browser-manager");
 const { createTabStore } = require("./browser-tab-store");
 const { readProfileRegistry } = require("./browser-profiles");
+const { removeUserData } = require("./electron-test-teardown");
 
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), "telar-profile-cookies-"));
 app.setPath("userData", userData);
@@ -184,7 +185,7 @@ async function main() {
     try { manager.destroy(); } catch {}
     window.destroy();
     await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(userData, { recursive: true, force: true });
+    await removeUserData(userData);
   }
 }
 

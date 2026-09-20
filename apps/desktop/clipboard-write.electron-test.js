@@ -21,7 +21,9 @@
  *   3. THE CONTROL ARM. The same page, same click, with only that one
  *      permission forced back to denied, fails with `Write permission denied` —
  *      so this test is sensitive to the bug it is here to catch, rather than
- *      passing for some unrelated reason.
+ *      passing for some unrelated reason. It carries a second control (#789):
+ *      the bounded pasteboard wait below is pointed at that denied arm's
+ *      clipboard, which can never receive the text, and must go red there.
  *   4. CHROMIUM'S OWN GATE IS THE FOCUSED DOCUMENT, and it is checked BEFORE
  *      our handler is consulted: an unfocused view gets `Document is not
  *      focused` even fully granted, and the permission handler is never called.
@@ -134,7 +136,18 @@ function handlersFor(partition, { answer = "block", denySanitizedWrite = false }
   return { asked, seen, store };
 }
 
-/** A tab in the host window, loaded and (optionally) focused within it. */
+/**
+ * A tab in the host window, loaded and (optionally) focused within it.
+ *
+ * THE FOCUSED CASE WAITS FOR FOCUS (#789), it does not only sleep towards it.
+ * `webContents.focus()` is a request to the window server, and 300 ms is a
+ * guess about how long that takes on a runner doing something else. The sleep
+ * stays — it is what lets the view settle, and removing it would be a
+ * different change — but a tab that is not focused when it ends is now given a
+ * bounded chance to become focused, and says so by name if it never does.
+ * The unfocused case keeps the plain sleep: it is about to assert the OPPOSITE,
+ * and waiting for focus there would be waiting for the thing it wants absent.
+ */
 async function openTab(host, partition, base, { focus }) {
   const view = new WebContentsView({
     webPreferences: { partition, contextIsolation: true, nodeIntegration: false, sandbox: true },
@@ -144,6 +157,19 @@ async function openTab(host, partition, base, { focus }) {
   await view.webContents.loadURL(base);
   if (focus) view.webContents.focus();
   await sleep(300);
+  if (focus) {
+    const started = Date.now();
+    // eslint-disable-next-line no-await-in-loop
+    while (!(await view.webContents.executeJavaScript("document.hasFocus()"))) {
+      if (Date.now() - started >= 3_000) {
+        throw new Error(
+          `the fixture tab never took focus: document.hasFocus() was still false ${Date.now() - started} ms after webContents.focus()`,
+        );
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(50);
+    }
+  }
   return view;
 }
 
@@ -183,6 +209,51 @@ async function clickCopy(webContents, { via = "input" } = {}) {
   throw new Error("the Copy button never settled — the click did not reach the page");
 }
 
+/**
+ * WAIT FOR THE PASTEBOARD RATHER THAN ASSUMING IT (#789).
+ *
+ * `clickCopy` returns when the RENDERER's `navigator.clipboard.writeText()`
+ * promise settled, and that is not the same event as the OS pasteboard holding
+ * the text. Blink posts the write to the browser process over the ClipboardHost
+ * pipe and resolves; the browser process performs the NSPasteboard write after
+ * that. The poll that reads `window.__write` back travels over a different
+ * pipe, so nothing orders it behind the write. Reading `clipboard.readText()`
+ * on the next line therefore asks the OS a question it may not have been told
+ * the answer to yet.
+ *
+ * That is the shape of run `35496800735`: `write.ok` was true — the page
+ * believed it had succeeded — and the pasteboard still held the pre-click
+ * sentinel. A lost focus race would have failed the `document.hasFocus()`
+ * assertion or thrown inside `writeText`, and neither happened.
+ *
+ * AND IT PRINTS WHAT IT WAITED. The number is the point as much as the wait is:
+ * a run that always reports 0 ms says this race was never the mechanism and the
+ * search should go elsewhere, and a run that reports tens of milliseconds says
+ * it is, and says how wide. Either way the log answers it instead of leaving it
+ * to be inferred from a sentinel weeks later.
+ *
+ * IT STILL GOES RED. The budget is bounded, the timeout message keeps the
+ * `not the copied text` wording the failures on #789 are recorded under, and
+ * case 3 points this same function at a clipboard that can never receive the
+ * text — so a wait that had quietly become unfailable is caught here rather
+ * than by someone trusting a green tier.
+ */
+async function clipboardBecomes(expected, { timeoutMs = 5_000, what }) {
+  const started = Date.now();
+  for (;;) {
+    const text = clipboard.readText();
+    const waitedMs = Date.now() - started;
+    if (text === expected) return { text, waitedMs };
+    if (waitedMs >= timeoutMs) {
+      throw new Error(
+        `${what}: the clipboard holds ${JSON.stringify(text)}, not the copied text, ${waitedMs} ms after the page's writeText() resolved`,
+      );
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(25);
+  }
+}
+
 async function main() {
   const server = http.createServer((_request, response) => {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -215,9 +286,11 @@ async function main() {
     note(`writeText → ${JSON.stringify(report.write)}`);
     assert(report.write.ok, `the Copy button failed: ${report.write.name}: ${report.write.message}`);
 
-    report.clipboard = clipboard.readText();
-    assert(report.clipboard === COPIED, `the clipboard holds ${JSON.stringify(report.clipboard)}, not the copied text`);
-    note("the OS clipboard holds what the page copied");
+    report.clipboardWait = await clipboardBecomes(COPIED, {
+      what: "the Copy button resolved but its write never reached the OS pasteboard",
+    });
+    report.clipboard = report.clipboardWait.text;
+    note(`the OS clipboard holds what the page copied, ${report.clipboardWait.waitedMs} ms after writeText() resolved`);
 
     /* 1. The string Chromium actually sends, and the one it never sends. */
     const strings = [...new Set(live.seen.map((entry) => entry.permission))];
@@ -254,6 +327,28 @@ async function main() {
       /permission denied/i.test(report.control.message),
       `the control arm failed for the wrong reason: ${report.control.message}`,
     );
+    // AND THE CONTROL ARM FOR THE WAIT ITSELF (#789). A denied write can never
+    // reach the pasteboard, so this is a clipboard that genuinely never
+    // receives the text: `clipboardBecomes` must spend its budget here and
+    // throw. That is what stops the bounded wait added for #789 from turning a
+    // real failure into a slow pass — and it is also the honest version of the
+    // assertion below, since half a second of watching answers "the denied
+    // write did not arrive late" that one immediate read cannot.
+    let waitOnDenied = null;
+    try {
+      await clipboardBecomes(COPIED, { timeoutMs: 500, what: "the control arm's clipboard" });
+    } catch (error) {
+      waitOnDenied = error;
+    }
+    assert(
+      waitOnDenied,
+      "the bounded clipboard wait RETURNED for a clipboard that never received the text — it can no longer go red, so it has replaced a real failure with a slow pass",
+    );
+    assert(
+      /not the copied text/.test(waitOnDenied.message),
+      `the bounded wait gave up for the wrong reason: ${waitOnDenied.message}`,
+    );
+    note(`the bounded wait still fails when the write never lands → ${waitOnDenied.message}`);
     assert(clipboard.readText() === "telar-614-control-arm", "a denied write reached the clipboard anyway");
     closeTab(host, denied);
 

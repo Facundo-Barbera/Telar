@@ -25,6 +25,7 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const { DesktopBrowserManager } = require("./browser-manager");
+const { removeUserData } = require("./electron-test-teardown");
 
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "telar-browser-regression-")));
 
@@ -287,7 +288,7 @@ async function main() {
     }
     window.destroy();
     await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(app.getPath("userData"), { recursive: true, force: true });
+    await removeUserData(app.getPath("userData"));
   }
 }
 

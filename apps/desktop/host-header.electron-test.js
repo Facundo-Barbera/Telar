@@ -34,6 +34,7 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const { HOST_HEADER, attachHostHeader } = require("./host-header");
+const { removeUserData } = require("./electron-test-teardown");
 
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), "telar-host-header-"));
 app.setPath("userData", userData);
@@ -133,7 +134,7 @@ async function main() {
     window.destroy();
     await new Promise((resolve) => own.server.close(resolve));
     await new Promise((resolve) => other.server.close(resolve));
-    fs.rmSync(userData, { recursive: true, force: true });
+    await removeUserData(userData);
   }
 }
 
