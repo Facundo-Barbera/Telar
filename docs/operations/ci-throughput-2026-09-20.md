@@ -6,9 +6,11 @@ green. Every number here was measured on the night it was written; none is
 carried over from an earlier estimate. Where a figure contradicts something
 previously believed, it is called out.
 
-**This document does not decide anything.** It ends with the two open decisions
-and what each costs, because both are the owner's: one moves work off his
-machine, and one changes what is verified before a merge.
+**This document did not decide anything — it was written to put the numbers in
+front of the owner.** Both decisions have since been made, the same night, and
+each is recorded at the section that framed it. The measurements are left
+exactly as they were taken: they are what the decisions were made on, and
+rewriting them afterwards would destroy the only record of why.
 
 ---
 
@@ -228,7 +230,15 @@ safe form of the same saving.
 
 ---
 
-## Decision 1 — where `Verify` runs. Owner's call.
+## Decision 1 — where `Verify` runs. **DECIDED: hosted.**
+
+> **Decided 2026-09-20.** Facundo: *"Si lo que dices de los minutos es cierto,
+> entonces no hay debate. Hay que quitar el runner del Mac mini y usar el de
+> GitHub."* — and further, that the runner be removed from the machine
+> entirely. Shipped in #754 (`Verify`) and #756 (the other five workflows).
+> `Verify` now runs in **96 seconds wall** against 206s plus up to 53 minutes of
+> queue. The iOS device tests are the one casualty and were parked knowingly
+> (#755). The analysis below is what that decision was made on.
 
 **Staying on the Mac** costs nothing in money and everything in throughput: one
 runner, one job at a time, a 3m35s job, and the queue waits measured above. Six
@@ -257,7 +267,14 @@ four performance cores. Expect more of exactly that failure, not a clean 2×.
 Hosted runners give the same throughput multiplier with no contention and no
 machine of his involved.
 
-## Decision 2 — what is verified before a merge. Owner's call.
+## Decision 2 — what is verified before a merge. **DECIDED: no split.**
+
+> **Decided 2026-09-20.** Everything stays pre-merge. The two-tier split was
+> asked for because the full suite was in the way; hosted removed the thing it
+> was in the way of, so the trade stopped being worth making. The evidence
+> against splitting is in the section above this one: all three `Verify`
+> failures in the last hundred runs were TEST failures, so the cheap gate that
+> was proposed would have caught none of them.
 
 Note first: **the `main` ruleset has only `deletion` and `non_fast_forward`
 rules, and no branch-protection object. There are no required status checks.**
