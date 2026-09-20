@@ -283,7 +283,11 @@ jobs:
       - name: Report the aggregate
         run: |
           set -euo pipefail
-          results='${{ join(needs.*.result, " ") }}'
+          # SINGLE QUOTES INSIDE THE EXPRESSION. GitHub's expression language
+          # has no double-quoted string literal, and the whole workflow fails
+          # to load if you use one — a jobless failed run with no annotation
+          # anywhere in the API, which is a slow thing to diagnose.
+          results='${{ join(needs.*.result, ' ') }}'
           echo "upstream results: $results"
           failed=0
           for result in $results; do
