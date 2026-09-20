@@ -2297,8 +2297,15 @@ export class EngineStore {
    * cache hit also moves. The counts themselves live in
    * `test/queue-write-path.test.ts`, where they are a ratchet: fifteen per turn
    * survive this issue, and #547 is the argument that fifteen is too many.
+   *
+   * `itemParses` IS THE SAME NUMBER FOR `items.json` — issue #658, and the same
+   * argument one document over. The write path read the whole projection once
+   * per batch and that read was counted nowhere, so the instrument reported the
+   * same total for an engine that rebuilt the projection per item event as for
+   * one that read it once. Bytes alone cannot say it either: they move when a
+   * WINDOW reads a span, and the thing under test is whole-document parses.
    */
-  readonly readAccounting = { documentBytes: 0, documentReads: 0, queueParses: 0 };
+  readonly readAccounting = { documentBytes: 0, documentReads: 0, queueParses: 0, itemParses: 0 };
 
   /**
    * Write a document and the offset index that lets its tail be read alone.
@@ -8464,8 +8471,8 @@ export class EngineStore {
     const file = itemsFile(this.paths, sessionId);
     const index = this.documentIndex(file, itemsIndexFile(this.paths, sessionId));
     if (!index) {
+      // `itemsById` counts this read itself now — see the note there.
       const all = [...this.readItems(sessionId).values()];
-      this.accountWholeRead(file);
       return all.filter((item) => chosen.has(item.runId));
     }
     const span = this.readIndexedRows(file, index.rows.filter((row) => chosen.has(row.key)));
@@ -13710,11 +13717,12 @@ export class EngineStore {
    * to answer one question: does this delta's item exist. On a session holding
    * 327 items that read was most of the 1.57 ms a streamed chunk cost.
    *
-   * Sound for the same reason the queue's is: one writer, in this process,
-   * dropped by `writeItems` rather than replaced. The entries are SHARED — a
-   * caller gets a Map of its own over the same `Item` objects — which every
-   * caller already respects by replacing an item (`items.set(id, {...old})`)
-   * rather than editing one in place. Nothing here may edit an `Item` in place.
+   * Sound for the same reason the queue's is: one writer, in this process, and
+   * REPLACED by `writeItems` rather than dropped — see the note there. The
+   * entries are SHARED — a caller gets a Map of its own over the same `Item`
+   * objects — which every caller already respects by replacing an item
+   * (`items.set(id, {...old})`) rather than editing one in place. Nothing here
+   * may edit an `Item` in place.
    *
    * BOUNDED, unlike the queue's, which prunes itself against the live index:
    * there is no equivalent index for items, and one entry per session ever read
@@ -13724,22 +13732,56 @@ export class EngineStore {
   private readonly itemsCache = new Map<string, Map<string, Item>>();
   private static readonly ITEMS_CACHE_LIMIT = 8;
 
+  /** Hold a projection, evicting the oldest entry when the cap is reached.
+   *  Both doors into the cache come through here — the read that parsed it and
+   *  the write that produced it — so the bound holds whichever filled it.
+   *  A session already held is REPLACED, never counted as a new entry: that
+   *  would evict a streaming neighbour to make room for a row already there. */
+  private cacheItems(sessionId: string, items: Map<string, Item>): void {
+    if (!this.itemsCache.has(sessionId) && this.itemsCache.size >= EngineStore.ITEMS_CACHE_LIMIT) {
+      const oldest = this.itemsCache.keys().next();
+      if (!oldest.done) this.itemsCache.delete(oldest.value);
+    }
+    this.itemsCache.set(sessionId, items);
+  }
+
   /** THE CACHED PROJECTION ITSELF — read-only, and never handed to a caller.
    *  Keyed rather than listed so the one question the streaming path asks can be
    *  answered without building anything: see `hasItem`. */
   private itemsById(sessionId: string): Map<string, Item> {
     const cached = this.itemsCache.get(sessionId);
     if (cached) return cached;
-    const stored = this.readDocument(itemsFile(this.paths, sessionId));
+    const file = itemsFile(this.paths, sessionId);
+    const stored = this.readDocument(file);
+    // An absent document is an empty projection, not a read — `readQueue`'s
+    // rule, for the same reason: counting it would put a floor under every
+    // measurement taken on a session that has never written an item.
     if (stored === undefined) return new Map();
+    /**
+     * COUNTED HERE, WHERE THE WHOLE DOCUMENT IS ACTUALLY PARSED — issue #658,
+     * and #547's argument one document over.
+     *
+     * `readAccounting` says it measures "the span of `queue.json` /
+     * `items.json` that reached `JSON.parse`", and this is the largest such
+     * span there is: the ingest path reads items once per batch and parses
+     * every row through `ItemSchema`. It was counted only from `windowedItems`,
+     * so the read this cache exists to spare was invisible to the one
+     * instrument built to price reads — which is how the projection could be
+     * thrown away once per item event without any measurement noticing.
+     *
+     * Here rather than at the call sites, for the reason `readQueue` gives:
+     * this is the one door every whole-projection read goes through, and an
+     * instrument a new caller can forget to reach for is the instrument that
+     * reads 0 = 0. `windowedItems`' own `accountWholeRead` went when this
+     * arrived: its fallback reaches this read through `readItems`, and counting
+     * it in both places would charge one parse twice.
+     */
+    this.accountWholeRead(file);
+    this.readAccounting.itemParses += 1;
     const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
-    if (this.itemsCache.size >= EngineStore.ITEMS_CACHE_LIMIT) {
-      const oldest = this.itemsCache.keys().next();
-      if (!oldest.done) this.itemsCache.delete(oldest.value);
-    }
     const items = new Map(parsed.data.map((item) => [item.id, item]));
-    this.itemsCache.set(sessionId, items);
+    this.cacheItems(sessionId, items);
     return items;
   }
 
@@ -13770,7 +13812,27 @@ export class EngineStore {
       // is wanted exactly when its turn is.
       rows.map((item) => ({ key: item.runId })),
     );
-    this.itemsCache.delete(sessionId);
+    /**
+     * AND THE PROJECTION STAYS, instead of being thrown away — issue #658.
+     *
+     * This line used to be `itemsCache.delete`, which meant every item event
+     * discarded the map this process had just finished writing. The next touch
+     * — on a streaming turn, the next delta — re-read the document, re-parsed
+     * it and re-validated every row through `ItemSchema.array()`: 0.21 ms per
+     * item event on a 100-item session, 11.75 ms on a 7000-item one, on the
+     * thread streaming tokens. The cache exists to spare exactly that read, and
+     * dropping it here put the cost back once per item event.
+     *
+     * Safe to KEEP rather than only safe to drop, because the one way the entry
+     * could come to disagree with sqlite is a rollback, and `executeCommand`
+     * already clears the whole cache when a command throws. The store is the
+     * single writer; nothing else can move the document underneath this.
+     *
+     * A COPY of the caller's map, not the map itself: `readItems` handed that
+     * one out to be mutated, and aliasing it here would let the next caller's
+     * edits reach the cache before a write agreed to them.
+     */
+    this.cacheItems(sessionId, new Map(items));
   }
 
   /**
