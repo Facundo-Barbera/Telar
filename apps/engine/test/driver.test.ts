@@ -1526,7 +1526,7 @@ test("the browser socket registers as its own http server, ALONGSIDE the in-proc
     headers: { Authorization: "Bearer tok_abc" },
   });
   // …and the in-process server holds NO browser tools any more: `warp` only,
-  // on a turn with no spool. One tool surface per capability, not two.
+  // on a turn carrying nothing else. One tool surface per capability, not two.
   const telar = servers?.telar as { tools?: { name?: string }[] } | undefined;
   expect((telar?.tools ?? []).map((tool) => tool.name)).toEqual(["warp"]);
 });
@@ -1550,7 +1550,7 @@ test("a turn with no browser socket registers no telar-browser server", async ()
 test("canUseTool waves the browser socket's tools through, and ONLY those", async () => {
   // THE SOCKET IS THE DECIDER for its own tools — its per-lease gate already
   // asked the engine. Answering again in `canUseTool` would put two cards in
-  // front of one click. The spool tool alongside it is the anti-vacuity: the
+  // front of one click. The sessions tool alongside it is the anti-vacuity: the
   // skip is per-server, never a blanket allow.
   const asked: string[] = [];
   const answers: unknown[] = [];
@@ -1564,7 +1564,7 @@ test("canUseTool waves the browser socket's tools through, and ONLY those", asyn
     }) {
       const opts = { signal: new AbortController().signal, toolUseID: "toolu_1" };
       answers.push(await input.options.canUseTool!("mcp__telar-browser__browser_click", {}, opts));
-      answers.push(await input.options.canUseTool!("mcp__telar__spool_create_item", {}, opts));
+      answers.push(await input.options.canUseTool!("mcp__telar__sessions_create", {}, opts));
       yield { type: "result", subtype: "success" };
     },
   });
@@ -1576,16 +1576,16 @@ test("canUseTool waves the browser socket's tools through, and ONLY those", asyn
     },
   }).result;
   expect(answers).toEqual([{ behavior: "allow" }, { behavior: "allow" }]);
-  // The engine heard about the spool call and ONLY the spool call.
-  expect(asked).toEqual(["mcp__telar__spool_create_item"]);
+  // The engine heard about the sessions call and ONLY the sessions call.
+  expect(asked).toEqual(["mcp__telar__sessions_create"]);
 });
 
-test("the spool registers under the SAME one server, and only when the turn carries one", async () => {
-  // THE SEAM, not the toolkit — `spool-tools.test.ts` owns what the four tools
+test("a toolkit registers under the SAME one server, and only when the turn carries one", async () => {
+  // THE SEAM, not the toolkit — `sessions-tools.test.ts` owns what the verbs
   // do. What this pins is that they reach the model at all, under `telar` like
-  // every other Telar capability, and that a turn without a spool gets no spool
-  // tools rather than empty ones. A model handed a tool that answers "no items"
-  // for a store it cannot see would report that as the truth.
+  // every other Telar capability, and that a turn without the capability gets
+  // no tools rather than empty ones. A model handed a tool that answers "no
+  // sessions" for an engine it cannot see would report that as the truth.
   const seen: { serverKeys?: string[] } = {};
   const names: string[] = [];
   const sdk = async () => ({
@@ -1600,41 +1600,28 @@ test("the spool registers under the SAME one server, and only when the turn carr
     },
   });
 
-  const spool = {
-    project: "aurora",
-    snapshot: async () => ({ lanes: [], rows: [], desk: [], unreadable: [], totalItems: 0, agentsAdded: 0 }),
-    item: async () => null,
-    create: async () => ({ id: "i-1", title: "x", provenance: "session", captured: "Tue 16:42", schemaVersion: 1 }),
-    update: async () => ({ id: "i-1", title: "x", provenance: "session", captured: "Tue 16:42", schemaVersion: 1 }),
-    consult: async () => ({ ok: false as const, reason: "not in this test" }),
-  };
-  await run(createClaudeDriver(sdk), { spool }).result;
+  const sessions = { list: async () => ({ sessions: [], projects: [] }) };
+  await run(createClaudeDriver(sdk), { sessions }).result;
   expect(seen.serverKeys).toEqual(["telar"]);
   expect(names).toEqual([
-    "spool_list_items",
-    "spool_list_lanes",
-    "spool_create_item",
-    "spool_update_item",
-    "spool_consult_expert",
-    "spool_list_threads",
-    "spool_open_question",
-    "spool_mark_waiting",
-    "spool_answer_question",
-    "spool_settle_thread",
-    "spool_set_focus",
-    "spool_end_focus",
-    "spool_look",
-    "spool_pin",
-    "spool_set_area_permits",
-    "spool_set_terrain",
-    "spool_set_subject_identity",
-    "spool_shelf",
-    "spool_write_note",
-    "spool_search",
+    "sessions_list",
+    "sessions_create",
+    "sessions_send",
+    "sessions_read",
+    "sessions_status",
+    "sessions_stop",
+    "sessions_settle",
+    "sessions_diff",
+    "sessions_subscribe",
+    "sessions_unsubscribe",
+    "sessions_subscriptions",
+    "sessions_requests",
+    "sessions_resolve_request",
+    "sessions_report_window",
     "warp",
   ]);
 
-  // …and without one, the spool tools are GONE while `warp` stays — it is
+  // …and without one, those tools are GONE while `warp` stays — it is
   // unconditional by design, which is also what keeps this from passing for the
   // trivial reason that nothing registers at all.
   names.length = 0;
@@ -2280,27 +2267,26 @@ test("no Claude Code on this machine fails the turn with what to install", async
   await expect(run(driver).result).rejects.toThrow(ProviderUnavailableError);
 });
 
-describe("the Spool's reads are reads", () => {
-  test("listing your own spool is a file_read, so the front door does not park on it", () => {
+describe("Telar's own reads are reads", () => {
+  test("a read-shaped core tool is a file_read, so the front door does not park on it", () => {
     /**
-     * FOUND BY DRIVING THE MASTER CHAT. The front door opened, the assistant
-     * reached for `spool_list_items` to answer "where did I stop?", and the turn
-     * parked asking the user to approve reading their own task list.
-     *
      * `approval-required` auto-accepts `file_read` and parks everything else, so
      * classifying these correctly is what lets the existing ladder work. This is
      * not a bypass: no mode's decision is skipped, a read simply stops being
      * declared an action.
+     *
+     * `display_open` is not literally a read, but it is read-SHAPED: it writes
+     * nothing, spends nothing, and its whole effect is a panel opening on the
+     * human's own screen — which they watch happen.
      */
-    expect(requestKindForTool(qualifyTelarTool("spool_list_items"))).toBe("file_read");
-    expect(requestKindForTool(qualifyTelarTool("spool_list_lanes"))).toBe("file_read");
-    expect(requiresHuman("approval-required", requestKindForTool(qualifyTelarTool("spool_list_items")))).toBe(false);
+    expect(requestKindForTool(qualifyTelarTool("display_open"))).toBe("file_read");
+    expect(requiresHuman("approval-required", requestKindForTool(qualifyTelarTool("display_open")))).toBe(false);
   });
 
   test("everything that writes or spends still parks, in every attended mode", () => {
-    // The half that makes the classification defensible. Two of these write to
-    // the user's store and the third spends money on a model turn.
-    for (const tool of ["spool_create_item", "spool_update_item", "spool_consult_expert"]) {
+    // The half that makes the classification defensible. The list is EXPLICIT,
+    // never a prefix match, so a name that merely sounds like a read still asks.
+    for (const tool of ["sessions_create", "sessions_send", "notes_write"]) {
       expect(requestKindForTool(qualifyTelarTool(tool))).toBe("tool_call");
       expect(requiresHuman("approval-required", requestKindForTool(qualifyTelarTool(tool)))).toBe(true);
       expect(requiresHuman("auto-accept-edits", requestKindForTool(qualifyTelarTool(tool)))).toBe(true);
@@ -2310,8 +2296,8 @@ describe("the Spool's reads are reads", () => {
   test("a stranger's server cannot inherit the engine's posture by naming a tool the same", () => {
     // The reason the check is on (server, tool) and not on the bare name: a
     // user-configured MCP server called anything else must not get a free read.
-    expect(requestKindForTool("mcp__notmine__spool_list_items")).toBe("tool_call");
-    expect(requestKindForTool("spool_list_items")).toBe("tool_call");
+    expect(requestKindForTool("mcp__notmine__display_open")).toBe("tool_call");
+    expect(requestKindForTool("display_open")).toBe("tool_call");
   });
 });
 
@@ -2470,6 +2456,118 @@ describe("a person's message is stamped as one, and nothing else is", () => {
     expect(
       (await seenFor([{ text: "a peer reports in", sender: { sessionId: "session_peer" } }, "and the person weighs in"]))[1]?.origin,
     ).toEqual({ kind: "human" });
+  });
+});
+
+/**
+ * #550 — A NOTIFICATION REACHES CLAUDE ON A CHANNEL THAT IS NOT THE PERSON'S.
+ *
+ * The block above proves a person is stamped and nobody else is. Absence is not
+ * a role, though: a peer's report still went down the user channel, and the only
+ * thing separating it from an instruction was prose at the top of the text.
+ * These pin the two mechanisms that replace that prose — the SDK's own `origin`,
+ * and the `<system-reminder>` wrapper that survives a CLI which drops an origin
+ * kind it does not know.
+ */
+describe("a notification is delivered as system-authored, stamped with its real provenance", () => {
+  const peer = {
+    kind: "peer_message" as const,
+    sessionId: "session_peer",
+    runId: "run_x",
+    intent: "report" as const,
+    summary: "[agent message · report] from session session_peer",
+    fetch: { sessionId: "session_me", runId: "run_x" },
+    body: "[agent message · report] from session session_peer (run run_x, 12 chars)",
+  };
+  const wake = { ...peer, kind: "wake" as const, wakeKind: "turn_completed" as const, body: "[wake: completed] Session session_peer — turn run_x completed." };
+
+  const deliver = async (extra: Record<string, unknown>) => {
+    const seen: Array<Record<string, unknown>> = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+        for await (const message of prompt) {
+          seen.push(message);
+          yield { type: "result", subtype: "success" };
+          return;
+        }
+      },
+    }) as never);
+    await run(driver, extra).result;
+    return seen[0]!;
+  };
+
+  test("a peer's message is stamped `peer` and wrapped as system-authored", async () => {
+    const message = await deliver({ prompt: peer.body, notification: peer });
+    expect(message.origin).toEqual({ kind: "peer", from: "session_peer", fromSession: "session_peer" });
+    // NOT the person's, even though the wire's role field says "user" — the SDK
+    // has no other role, which is exactly why the content half exists.
+    expect(message.origin).not.toEqual({ kind: "human" });
+    const content = (message.message as { content: string }).content;
+    expect(content).toStartWith("<system-reminder>");
+    expect(content).toContain(peer.body);
+    expect(content).toEndWith("</system-reminder>");
+  });
+
+  test("a wake is stamped `task-notification` — the engine reporting, not a peer speaking", async () => {
+    const message = await deliver({ prompt: wake.body, notification: wake });
+    expect(message.origin).toEqual({ kind: "task-notification" });
+    expect((message.message as { content: string }).content).toContain("[wake: completed]");
+  });
+
+  test("a send from the outward socket names no session it cannot name", async () => {
+    const { sessionId: _omitted, ...anonymous } = peer;
+    const message = await deliver({ prompt: peer.body, notification: anonymous });
+    // `from` is required by the SDK and `fromSession` is a navigation target; an
+    // agent outside any session has no id, so neither is invented.
+    expect(message.origin).toEqual({ kind: "peer", from: "sessions-socket" });
+  });
+
+  test("a person's prompt is untouched by any of this", async () => {
+    const message = await deliver({ prompt: "please fix the editor", promptFromHuman: true });
+    expect(message.origin).toEqual({ kind: "human" });
+    expect((message.message as { content: string }).content).toBe("please fix the editor");
+  });
+
+  test("a steered batch of only notifications goes in system-authored too", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+        for await (const message of prompt) {
+          seen.push(message);
+          if (seen.length < 2) continue;
+          yield { type: "result", subtype: "success" };
+          return;
+        }
+      },
+    }) as never);
+    const steer = new SteerMailbox();
+    steer.push({ text: "the body", sender: { sessionId: "session_peer" }, notification: peer });
+    await run(driver, { steer }).result;
+    expect(seen[1]?.origin).toEqual({ kind: "peer", from: "session_peer", fromSession: "session_peer" });
+    expect((seen[1]?.message as { content: string }).content).toStartWith("<system-reminder>");
+    // TIMING DOES NOT CHANGE THE ROLE — the same happening arriving on an idle
+    // session and on a busy one is delivered the same way.
+    expect((seen[1]?.message as { content: string }).content).toContain(peer.body);
+  });
+
+  test("a batch mixing a notification with typed words stays the person's", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+        for await (const message of prompt) {
+          seen.push(message);
+          if (seen.length < 2) continue;
+          yield { type: "result", subtype: "success" };
+          return;
+        }
+      },
+    }) as never);
+    const steer = new SteerMailbox();
+    steer.push({ text: "the body", sender: { sessionId: "session_peer" }, notification: peer });
+    steer.push("and the person weighs in");
+    await run(driver, { steer }).result;
+    expect(seen[1]?.origin).toEqual({ kind: "human" });
+    expect((seen[1]?.message as { content: string }).content).not.toContain("<system-reminder>");
   });
 });
 

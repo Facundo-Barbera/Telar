@@ -1,7 +1,7 @@
 /**
  * THE SESSIONS SOCKET — the `sessions` toolkit as an OUTWARD MCP server.
  *
- * The same door the Spool opened (`../spool/socket.ts`), for a different wall:
+ * The same door `../mcp-socket.ts` opens, for this wall:
  * any LLM client the user owns — Claude Desktop, an agent in another repo,
  * anything that can `claude mcp add` — drives Telar sessions through EXACTLY
  * the tool wall a Telar session gets. That symmetry is the feature. "A session
@@ -25,7 +25,7 @@
  * secret holds the sessions wall and nothing else — it cannot archive, delete
  * or accept anything, because no such tool exists to hold. Minted once,
  * persisted at `<engine root>/sessions-mcp-secret.json`, mode 0600, and
- * distinct from the spool socket's: two doors, two keys, so revoking one chat
+ * distinct from the notes socket's: two doors, two keys, so revoking one chat
  * client's access to sessions does not revoke everything.
  */
 import path from "node:path";

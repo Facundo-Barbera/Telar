@@ -160,6 +160,7 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_subscriptions",
     "sessions_requests",
     "sessions_resolve_request",
+    "sessions_report_window",
     "warp",
   ]);
 
@@ -241,6 +242,14 @@ test("a running turn is handed the toolkit, and what it creates is stamped as an
   // tool shape carries it.
   expect(made!.origin).toBe("session");
   expect(made!.envMode).toBe("worktree");
+  // THE CHECKOUT ARRIVES AFTER THE ROW DOES (#496). The tool answers the agent
+  // as soon as the session exists — the row says `preparing` — and the cut
+  // lands behind it, which is the whole reason creating one no longer stalls
+  // every other session on the machine.
+  expect(made!.preparation).toMatchObject({ state: "preparing" });
+  for (let i = 0; i < 400 && !fs.existsSync(path.join(made!.workspace.path, "README.md")); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
   expect(fs.existsSync(path.join(made!.workspace.path, "README.md"))).toBe(true);
 
   // The engine agrees, read back through the ordinary API.
@@ -258,8 +267,16 @@ test("the worker cannot archive, delete or accept anything — the client it hol
   // because a Pick widened by accident is exactly the change nobody notices.
   const { sawCapability } = await turnWith(async (sessions) => {
     const surface = Object.keys(sessions).sort();
+    // `cursor` joined the list with #515: the journal's last event id, so the
+    // wall can answer "what happened lately" from one page rather than by
+    // walking 61,933 events to reach the end. A READ, like every other member
+    // that is not one of the five verbs.
+    // `setReportWindow` joined with #723, and it is the narrowest member here:
+    // one field of `updateSession`, on the CALLER's own session, reached through
+    // `setSessionReportWindow` rather than by widening the Pick to the whole
+    // patch — the same treatment `settle` already gets.
     expect(surface).toEqual([
-      "create", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "cursor", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
       expect(surface).not.toContain(forbidden);
@@ -303,11 +320,16 @@ test("a turn's capability knows who it is, and a subscription made mid-turn wake
   const wake = turns.find((turn) => turn.origin === "session");
   expect(wake).toBeDefined();
   expect(wake!.wakeReason).toEqual({ kind: "turn_completed", sessionId: made!.id, runId: "run_made" });
-  expect(wake!.input).toContain("[wake: completed]");
+  // #550: the engine's prose rides the notification over the wire, and `input`
+  // is the machine label — so a client cannot draw it as the person's bubble
+  // by reading the field it always read.
+  expect(wake!.notification!.kind).toBe("wake");
+  expect(wake!.notification!.body).toContain("[wake: completed]");
+  expect(wake!.input).toStartWith("[notification: wake");
   // A PING OVER THE WIRE TOO: the answer is not in the notice, the run-scoped
   // read that fetches it is.
-  expect(wake!.input).not.toContain("all done here");
-  expect(wake!.input).toContain(`runId: "run_made"`);
+  expect(wake!.notification!.body).not.toContain("all done here");
+  expect(wake!.notification!.body).toContain(`runId: "run_made"`);
   // A REAL TURN: the worker on this daemon may already have claimed and run
   // it by the time we look — which is the point. Queued or done, never lost.
   expect(["queued", "claimed", "running", "completed"]).toContain(wake!.state);
@@ -414,14 +436,16 @@ test("sessions_send from a turn is stamped with the sender over the wire, and th
     await Bun.sleep(5);
   }
   expect(prompts).toHaveLength(1);
-  expect(prompts[0]).toStartWith(`[agent message from session ${hostId}]`);
-  expect(prompts[0]).toContain("carries no human authorization");
+  // #550: the prose frame that used to precede this was standing in for a role
+  // the channel could not express. The notice goes over as written, and the
+  // role rides the notification item and the driver's own channel.
+  expect(prompts[0]).toStartWith("[agent message · task]");
   /**
    * AND THE PROVIDER IS HANDED THE NOTICE, NOT THE BODY — end to end, over the
    * real HTTP surface and a real worker, which is the only place the whole
    * chain (tool → `/turns/agent` → store → claim → `framedTurnInput`) is
-   * exercised at once. A task's notice carries its opening paragraph and names
-   * the read; the RECORD still holds the message exactly as sent.
+   * exercised at once. A task's notice says it IS a task and names the read;
+   * the RECORD still holds the message exactly as sent.
    */
   expect(prompts[0]).toContain(`[agent message · task] session ${hostId} ASSIGNED this session work (run run_peer, 22 chars).`);
   expect(prompts[0]).toContain(`sessions_read(sessionId: "${made!.id}", runId: "run_peer")`);
@@ -430,12 +454,12 @@ test("sessions_send from a turn is stamped with the sender over the wire, and th
 
 test("a LONG task is handed to the provider as the assignment notice, with the body withheld", async () => {
   /**
-   * The test above sends 22 characters, for which "the opening paragraph" and
-   * "the whole body" are the same string — so it can pin the ASSIGNMENT WORDING
-   * but not the withholding, which is the half the branch exists for. This one
-   * sends a task nobody would want quoted in full and pins both: the provider
-   * hears that it was assigned work and where to read it, the bulk never
-   * reaches the prompt, and the record still holds every byte.
+   * The test above sends 22 characters, so a notice that leaked the whole body
+   * would still look small — it can pin the ASSIGNMENT WORDING but not the
+   * withholding, which is the half the branch exists for. This one sends a task
+   * nobody would want quoted and pins both: the provider hears that it was
+   * assigned work and where to read it, not one word of the message reaches the
+   * prompt, and the record still holds every byte.
    */
   const brief = `Rewrite the parser's error recovery.\nIt currently swallows the column.\n\n${"Background nobody needs up front. ".repeat(100)}`;
   let made: Session | undefined;
@@ -464,11 +488,12 @@ test("a LONG task is handed to the provider as the assignment notice, with the b
   // investigation found missing: without it a peer's `intent: "task"` reads as
   // a suggestion the model is free to park on the human.
   expect(prompts[0]).toContain(`[agent message · task] session ${hostId} ASSIGNED this session work (run run_brief,`);
-  expect(prompts[0]).toContain("It opens: \"Rewrite the parser's error recovery.");
-  expect(prompts[0]).toContain(`Read the whole thing with sessions_read(sessionId: "${made!.id}", runId: "run_brief") before acting on it.`);
-  // AND THE BODY IS NOT THERE — the measurement, not the adjective.
+  expect(prompts[0]).toContain(`Read it with sessions_read(sessionId: "${made!.id}", runId: "run_brief") before acting on it.`);
+  // AND NO PART OF THE BODY IS THERE — not the bulk, and since #631 not the
+  // opening either. The measurement, not the adjective.
   expect(prompts[0]).not.toContain("Background nobody needs up front.");
-  expect(prompts[0]!.length).toBeLessThan(brief.length / 3);
+  expect(prompts[0]).not.toContain("Rewrite the parser's error recovery.");
+  expect(prompts[0]!.length).toBeLessThan(brief.length / 8);
   // The record keeps what the notice stands in for, unabridged.
   expect((await client.session(made!.id)).turns[0]?.input).toBe(brief);
 });

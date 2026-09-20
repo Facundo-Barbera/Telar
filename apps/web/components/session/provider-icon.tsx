@@ -1,15 +1,23 @@
+import type { ProviderDriverKind } from "@telar/engine-client";
 import { cn } from "@/lib/utils";
-import { ConnectionIcon } from "@/components/session/connection-icon";
+import { MarkIcon, OPENCODE_MARK } from "@/components/session/connection-icon";
 
 /**
  * Real brand marks, inlined so the app doesn't carry a heavy icon dependency
  * just for two logos. Claude: Anthropic's mark, `claude@15` from simple-icons
  * (CC0-1.0), brand #D97757. Codex: OpenAI's published Codex mark, taken
  * verbatim from `@lobehub/icons-static-svg` (MIT) and tinted to the current
- * text colour so it reads in both themes. OpenCode: the project's own mark as
- * models.dev publishes it (see connection-icon.tsx), replacing the "OC"
- * monogram placeholder. Both paths were re-verified byte-for-byte against
- * those sources for issue #398; neither is a redrawing.
+ * text colour so it reads in both themes. Both paths were re-verified
+ * byte-for-byte against those sources for issue #398; neither is a redrawing.
+ *
+ * OPENCODE WORE OPENCODE ZEN'S LOGO UNTIL ISSUE #655. This file used to reach
+ * for `ConnectionIcon connection="opencode"`, and models.dev's `opencode`
+ * entry is not the OpenCode project — it is **OpenCode Zen**, one account type
+ * under this provider, drawn as a blocky Z beside `opencode-go`'s blocky G. A
+ * provider mark and an account mark are two different things, and the code did
+ * not distinguish them at all; `OPENCODE_MARK` is that distinction, and the
+ * asset swap falls out of it. Every OpenCode row — Bedrock-routed, Copilot-
+ * routed, Zen-routed — used to answer "who serves this?" with "Zen".
  *
  * SIZED IN WHOLE PIXELS BY INLINE STYLE (issue #398), for the reason
  * connection-icon.tsx spells out: `width`/`height` attributes alone lose to
@@ -32,11 +40,11 @@ export function ProviderIcon({
   className,
   size = 14,
 }: {
-  provider: "claude" | "codex" | "opencode";
+  provider: ProviderDriverKind;
   className?: string;
   size?: number;
 }) {
-  if (provider === "opencode") return <ConnectionIcon connection="opencode" size={size} className={cn("text-foreground/80", className)} />;
+  if (provider === "opencode") return <MarkIcon mark={OPENCODE_MARK} size={size} className={cn("text-foreground/80", className)} />;
   if (provider === "codex") {
     return (
       <svg
@@ -71,7 +79,7 @@ export function ProviderIcon({
   );
 }
 
-export const PROVIDER_LABEL: Record<"claude" | "codex" | "opencode", string> = {
+export const PROVIDER_LABEL: Record<ProviderDriverKind, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",

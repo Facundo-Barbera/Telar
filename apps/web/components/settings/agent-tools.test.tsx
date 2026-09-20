@@ -64,13 +64,18 @@ test("the security semantics survive the copy edit", () => {
 test("the Computer use row says WHOSE sessions it governs, in one line", () => {
   /**
    * #368. The row measured a macOS grant and named no provider, which reads as
-   * "all of them" — and a Codex session's Grant access does nothing, because
-   * Codex ships its own computer-use provider and Telar withholds this one.
+   * "all of them". Since #521 every provider Telar drives does get this
+   * desktop, so "all of them" is now TRUE — the row names them anyway, because
+   * a reader cannot tell a silent promise from a silent assumption, and this
+   * row has already been wrong in both directions.
    */
   const html = renderToStaticMarkup(<ComputerUseProviders />);
   expect(html).toContain("Claude");
+  expect(html).toContain("Codex");
   expect(html).toContain("OpenCode");
-  expect(html).toContain("Codex uses its own");
+  // Nobody is on the "uses its own" side today. Asserted as absent rather than
+  // dropped: that half must reappear the moment a provider stops taking ours.
+  expect(html).not.toContain("uses its own");
   // The engine's own list decides — not a hand-kept copy that can drift from
   // what a claim actually folds in.
   expect(permissions).toContain("driverTakesComputerUse");

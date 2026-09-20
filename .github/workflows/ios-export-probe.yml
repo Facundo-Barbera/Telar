@@ -1,0 +1,184 @@
+name: iOS export probe
+
+# PERMANENT, DESPITE THE NAME. This is not leftover scaffolding from the #757
+# investigation and it is not waiting to be tidied away — it is the only way to
+# run the iOS pipeline's export step without publishing a build to real people.
+# Deleting it puts that condition back.
+#
+# The condition cost four nights. #757 was four consecutive red nightlies in
+# which the ARCHIVE succeeded and the EXPORT died — `error: exportArchive Copy
+# failed`, exit 70 — and nobody could test a candidate fix, because the only
+# workflow reaching the export is the one that uploads to TestFlight internal
+# testers on its way past. A step you can only exercise by doing the
+# irreversible thing is a step that goes unverified until it breaks in public.
+#
+# So: archive, export, STOP. `nightly.sh --export-only` is that stopping point,
+# and the value here is that it runs the PRODUCTION script rather than a copy
+# of its commands — a copy would only ever test the copy.
+#
+# The name was considered and kept: renaming cannot break the trigger below
+# (the glob matches BRANCH names, not this filename), but it would break the
+# continuity of this workflow's run history, which is where the evidence for
+# #757 lives — run 35492067186 among them. The header is what keeps it alive,
+# not the filename.
+#
+# ─── HOW TO RUN IT ────────────────────────────────────────────────────────
+#   By hand:    the Actions tab → "iOS export probe" → Run workflow, on any
+#               ref. That is `workflow_dispatch` below.
+#   By push:    push to a branch named `telar/*-probe-*` touching this file,
+#               apps/ios/nightly.sh, or apps/ios/ExportOptions.plist.
+#
+# DORMANT BY DESIGN. No schedule, no altool, no TestFlight, no tag — it cannot
+# publish anything, so it is safe to run as often as the answer is wanted, and
+# it costs nothing while nobody asks. nightly-ios.yml is what has to be green;
+# this is what you reach for when it is not.
+on:
+  workflow_dispatch:
+  # OPT IN BY BRANCH NAME. An earlier version fired on every `telar/757-*`
+  # push that touched these paths, which spent a 15-minute hosted macOS job on
+  # commits that were only editing a comment. Push to a `telar/*-probe-*`
+  # branch when the answer is wanted; otherwise dispatch it by hand.
+  push:
+    branches: ['telar/*-probe-*']
+    paths:
+      - '.github/workflows/ios-export-probe.yml'
+      - 'apps/ios/nightly.sh'
+      - 'apps/ios/ExportOptions.plist'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-export-probe
+  cancel-in-progress: false
+
+jobs:
+  export:
+    # HOSTED, because that is where the nightly runs now. #757 was diagnosed
+    # and fixed on the Mac mini, and the fix is a PATH order — exactly the kind
+    # of thing that is true on one machine and vacuous on another. Proving it
+    # on the Mac would prove nothing about the runner we moved to.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode
+        run: xcodebuild -version
+
+      # WHAT THE FIX IS ABOUT, measured here rather than assumed. xcodebuild
+      # stages the exported app with `/usr/bin/rsync -8aPhhE`; openrsync spells
+      # its own `-E` as `--extended-attributes` when it launches the SERVER half
+      # of the copy, and finds that half on PATH. Any rsync 3.x answering there
+      # calls the flag `--xattrs` instead, refuses the option and takes the
+      # export down with it — reported only as `Copy failed`.
+      #
+      # If this step reports no rsync ahead of /usr/bin, the pin in nightly.sh
+      # is a no-op HERE and the export below passes for its own reasons. That is
+      # a real and useful answer; it is not evidence the pin is unnecessary,
+      # because the runner's PATH is not ours to fix.
+      - name: Which rsync would the export find?
+        run: |
+          set -uo pipefail
+          echo "PATH=$PATH"
+          echo "--- rsync on PATH, in order:"
+          which -a rsync || echo "(none)"
+          echo "--- /usr/bin/rsync:"
+          /usr/bin/rsync --version 2>&1 | head -2
+          echo "--- the staging copy, run exactly as xcodebuild runs it:"
+          SRC=$(mktemp -d)/Probe.app; DST=$(mktemp -d)
+          mkdir -p "$SRC/Contents"; echo probe > "$SRC/Contents/f"
+          xattr -w com.apple.probe 1 "$SRC/Contents/f" || true
+          /usr/bin/rsync -8aPhhE "$SRC" "$DST/" >/dev/null 2>"$RUNNER_TEMP/rsync.err"
+          echo "exit=$?"
+          [ -s "$RUNNER_TEMP/rsync.err" ] && cat "$RUNNER_TEMP/rsync.err"
+          echo "staged: $(ls "$DST")"
+
+      - name: Materialize the App Store Connect API key
+        env:
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          echo -n "$APPLE_API_KEY_P8_BASE64" | base64 --decode -o "$RUNNER_TEMP/apple_api_key.p8"
+
+      # Same temp-keychain dance as nightly-ios.yml, and for the same reason:
+      # the export re-signs to Apple Distribution from a real certificate,
+      # because Apple's validator refuses cloud-managed signatures (90035).
+      - name: Import the distribution certificate into a temporary keychain
+        env:
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo -n "$IOS_DIST_CERT_P12_BASE64" | base64 --decode -o "$RUNNER_TEMP/dist.p12"
+          security create-keychain -p ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KEYCHAIN" -P "$IOS_DIST_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k ci "$KEYCHAIN" >/dev/null
+          IFS=$'\n' read -rd '' -a EXISTING < <(security list-keychains -d user | sed 's/[" ]//g') || true
+          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
+          rm -f "$RUNNER_TEMP/dist.p12"
+
+      # THIS NEEDS #758 FIXED TO REACH THE EXPORT AT ALL. SessionView.body
+      # exceeds the Swift type checker's budget and fails the ARCHIVE on a
+      # hosted runner before the export is ever run.
+      #
+      # Raising the solver's budget to buy past it was tried and does NOT work,
+      # recorded here so nobody spends the runs again: run 35491585777 raised
+      # the scope and time thresholds, run 35491754583 raised all four to 20M,
+      # and SessionView.swift:515 failed both times — the second after grinding
+      # thirteen minutes on that one expression. The flags reach the module;
+      # they are in its swiftc command line. The budget is simply not the lever.
+      - name: Archive and export, stopping before the upload
+        env:
+          TELAR_ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          TELAR_ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER }}
+          TELAR_ASC_KEY_PATH: ${{ runner.temp }}/apple_api_key.p8
+        run: apps/ios/nightly.sh --export-only
+
+      # AN IPA EXISTING IS NOT AN IPA SIGNED RIGHT, and this repository has
+      # already paid for that distinction once: on 2026-09-01 the export
+      # produced a perfectly good file carrying the archive's DEVELOPMENT
+      # signature, and Apple refused it with 90035 at upload — the step after
+      # this one. `export` + `signingCertificate: Apple Distribution` exists to
+      # re-sign, so assert the re-sign happened rather than trusting exit 0.
+      #
+      # Asserts rather than prints: the authority line carries the account
+      # holder's name, and this repository is public.
+      - name: Assert the exported IPA is signed for distribution
+        run: |
+          set -euo pipefail
+          IPA=$(ls apps/ios/DerivedData-nightly/export-*/TelarMobile.ipa)
+          WORK=$(mktemp -d)
+          unzip -q "$IPA" -d "$WORK"
+          APP=$(ls -d "$WORK"/Payload/*.app)
+          if codesign -dvv "$APP" 2>&1 | grep -q '^Authority=Apple Distribution'; then
+            echo "signed by Apple Distribution — the re-sign happened"
+          else
+            echo "::error::exported IPA is NOT Apple Distribution signed; altool would refuse it (90035)"
+            exit 1
+          fi
+
+      # The export writes its real reasons into an xcdistributionlogs bundle and
+      # tells xcodebuild only "Copy failed" — which is why #757 took four nights
+      # to read. Surface the reasons on failure, FILTERED: this repository is
+      # public, and those logs carry profile and certificate names. Error lines
+      # only, capped, and never the plists themselves.
+      - name: Say what the export actually complained about
+        if: failure()
+        run: |
+          set -uo pipefail
+          for B in "${TMPDIR:-/tmp}"/TelarMobile_*.xcdistributionlogs; do
+            [ -d "$B" ] || continue
+            echo "=== $(basename "$B")"
+            /usr/bin/grep -a -h -i -E "error|fail|unknown option|unrecognized|rsync" \
+              "$B"/*.log 2>/dev/null | tail -40
+          done
+
+      - name: Clean up the API key and keychain
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/apple_api_key.p8"
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

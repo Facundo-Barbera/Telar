@@ -26,6 +26,10 @@ struct FilesSurface: View {
     /// inspector wide enough for both would have been split anyway. 220 for
     /// the tree plus a body still worth reading is the line.
     @State private var width: CGFloat = 0
+    /// The tree's disclosure column, off the chevron's own style (#674). One
+    /// metric for the chevron and for the blank a file row puts in its place,
+    /// so the two cannot drift apart.
+    @ScaledMetric(relativeTo: .caption2) private var chevronColumn: CGFloat = 10
 
     enum SaveState { case saving, problem }
 
@@ -67,10 +71,10 @@ struct FilesSurface: View {
             Button {
                 panel.setTreeShown(!panel.editor.treeShown)
             } label: {
+                // The toggle's square scales with its glyph (#674).
                 Image(systemName: panel.editor.treeShown ? "sidebar.left" : "sidebar.leading")
-                    .font(.system(size: 12))
                     .foregroundStyle(Theme.textMuted)
-                    .frame(width: 28, height: 28)
+                    .scaledGlyphBox(28, glyph: 12)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(panel.editor.treeShown ? "Hide tree" : "Show tree")
@@ -80,7 +84,7 @@ struct FilesSurface: View {
                         let isActive = file.path == panel.editor.activePath
                         HStack(spacing: 4) {
                             Text((file.path as NSString).lastPathComponent)
-                                .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                                .font(.system(Theme.footnote, weight: isActive ? .medium : .regular))
                                 .italic(!file.pinned)
                                 .foregroundStyle(isActive ? Theme.text : Theme.textMuted)
                                 .lineLimit(1)
@@ -90,14 +94,14 @@ struct FilesSurface: View {
                                 Button {
                                     panel.closeFile(file.path)
                                 } label: {
-                                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.textMuted)
+                                    Image(systemName: "xmark").font(.system(Theme.captionTiny, weight: .semibold)).foregroundStyle(Theme.textMuted)
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("Close \((file.path as NSString).lastPathComponent)")
                             }
                         }
                         .padding(.horizontal, 8)
-                        .frame(height: 26)
+                        .scaledHeight(26, relativeTo: .footnote)
                         .background(isActive ? Theme.subtleStrong : .clear, in: RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
                         .onTapGesture { panel.activateFile(file.path) }
@@ -109,7 +113,7 @@ struct FilesSurface: View {
             }
         }
         .padding(.horizontal, 4)
-        .frame(height: 34)
+        .scaledHeight(34, relativeTo: .footnote)
         .background(Theme.sheet)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
     }
@@ -150,9 +154,9 @@ struct FilesSurface: View {
     private var treeColumn: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Image(systemName: "magnifyingglass").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 TextField("Search files", text: $query)
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .onChange(of: query) { _, next in
@@ -160,13 +164,13 @@ struct FilesSurface: View {
                         if next.isEmpty { searched = false }
                     }
                 Button { Task { await load() } } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Image(systemName: "arrow.clockwise").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Refresh files")
             }
             .padding(.horizontal, 10)
-            .frame(height: 32)
+            .scaledHeight(32, relativeTo: .footnote)
             .contentShape(Rectangle())
             // The desktop puts Refresh and Collapse all on the header and on
             // the tree's empty space; the header is the part of that a phone
@@ -229,24 +233,28 @@ struct FilesSurface: View {
             HStack(spacing: 5) {
                 if node.isDirectory {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(Theme.captionTiny, weight: .semibold))
                         .rotationEffect(.degrees(isOpen ? 90 : 0))
                         .foregroundStyle(Theme.textMuted.opacity(0.7))
-                        .frame(width: 10)
-                    Image(systemName: isOpen ? "folder.fill" : "folder").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        .frame(width: chevronColumn)
+                    Image(systemName: isOpen ? "folder.fill" : "folder").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 } else {
-                    Spacer().frame(width: 10)
-                    Image(systemName: fileGlyph(node.path)).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    // The blank that stands in for a missing chevron takes the
+                    // SAME metric, not a matching literal — a file indented by
+                    // 10 under a folder indented by more is the alignment bug
+                    // this column exists to prevent.
+                    Spacer().frame(width: chevronColumn)
+                    Image(systemName: fileGlyph(node.path)).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 }
                 Text(node.name)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(Theme.footnote, design: .monospaced))
                     .foregroundStyle(panel.editor.activePath == node.path ? Theme.text : Theme.textMuted)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
                 if let status {
                     Text(statusLetter(status))
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .font(.system(Theme.caption, design: .monospaced, weight: .bold))
                         .foregroundStyle(statusColor(status))
                 } else if dirty && !isOpen {
                     Circle().fill(Theme.statusAmber).frame(width: 5, height: 5)
@@ -254,7 +262,7 @@ struct FilesSurface: View {
             }
             .padding(.leading, CGFloat(row.depth) * 12 + 8)
             .padding(.trailing, 10)
-            .frame(height: 26)
+            .scaledHeight(26, relativeTo: .footnote)
             .background(panel.editor.activePath == node.path ? Theme.subtleStrong : .clear)
             .contentShape(Rectangle())
         }
@@ -309,7 +317,7 @@ struct FilesSurface: View {
             Text(dropped > 0
                  ? "First \(maxSearchMatches) matches; \(dropped) more not shown."
                  : "\(listing.files.count) files\(listing.truncated ? " (capped)" : "") · \(listing.source == .git ? "tracked and unignored, from git" : "walked — not a repository")")
-                .font(.system(size: 10))
+                .font(.system(Theme.caption))
                 .foregroundStyle(Theme.textMuted)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)

@@ -27,6 +27,13 @@ export const DRIVER_LABEL: Record<ProviderDriverKind, string> = {
   opencode: "OpenCode",
 };
 
+/**
+ * THE PANE'S OWN LIST, AND `telar` IS NOT ON IT. This drives "add a login",
+ * and there is nothing to add: the engine's loop has one slot, no config
+ * folder and no second account. Its row is reached from the Main pane, where
+ * the setting that turns it on lives. `DRIVER_LABEL` still carries it, because
+ * a row that EXISTS has to be drawable.
+ */
 export const DRIVERS: readonly ProviderDriverKind[] = ["claude", "codex", "opencode"];
 
 /**

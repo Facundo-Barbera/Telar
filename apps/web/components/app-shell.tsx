@@ -1,10 +1,31 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { APP_SIDEBAR_STORAGE_KEY } from "@/lib/sidebar-width";
-import { AppSidebar } from "./app-sidebar";
+import { installNavigationMarks, isMeasuredHref, markNavigation, startNavigation } from "@/lib/perf-marks";
+import { installPageApi } from "@/lib/page-api";
+
+/**
+ * THE RAIL IS A SEPARATE CHUNK, because this file is in the ROOT LAYOUT and the
+ * rail is the largest thing in the app (#492).
+ *
+ * A static import here put `app-sidebar.tsx` — and the command palette and the
+ * project palette it pulls in behind it — into the one bundle every route in the
+ * cockpit loads, INCLUDING the routes three lines below that decide not to draw
+ * it. Settings paid for a rail it renders `false` for; so did `/pair`, and the
+ * not-found page. That is the "even an empty page takes a long time" in #490,
+ * measured: `scripts/route-bytes.mjs` reads it off a build.
+ *
+ * SERVER RENDERING IS KEPT (no `ssr: false`). The rail is real chrome, not a
+ * widget behind a click: a settings route never asks for this chunk at all, and
+ * a cockpit route asks for it in the same payload that renders it, so the split
+ * costs that route nothing it can see. `ssr: false` would have bought a little
+ * more and paid for it with a frame of missing rail on every conversation.
+ */
+const AppSidebar = dynamic(() => import("./app-sidebar").then((mod) => mod.AppSidebar));
 
 /**
  * SETTINGS SCREENS CARRY NO APP RAIL. They bring a full-height side-nav of
@@ -16,6 +37,26 @@ import { AppSidebar } from "./app-sidebar";
  */
 function isSettingsRoute(pathname: string): boolean {
   return pathname === "/settings" || /^\/projects\/[^/]+\/settings(\/|$)/.test(pathname);
+}
+
+/**
+ * A CONVERSATION ON ITS OWN CARRIES NO APP RAIL EITHER (#576).
+ *
+ * The headset opens this address in a second WebView to render one transcript,
+ * and a rail there is not merely unwanted chrome: it is the largest chunk in
+ * the app, fetched into a device that is already simulating a room and running
+ * other browsers. COLLAPSING IT IS NOT ENOUGH, which is why this is a path and
+ * not a `?solo=1` — a collapsed rail is still mounted, still in the layout and
+ * still downloaded. Skipped through the same `dynamic()` import the settings
+ * routes skip it through, so a solo route never asks for the chunk at all.
+ *
+ * Both families, because a session on a paired Mac is the same screen at an
+ * address that names the Mac:
+ *   /projects/:projectId/sessions/:sessionId/solo
+ *   /hosts/:hostId/projects/:projectId/sessions/:sessionId/solo
+ */
+function isSoloRoute(pathname: string): boolean {
+  return /^(?:\/hosts\/[^/]+)?\/projects\/[^/]+\/sessions\/[^/]+\/solo\/?$/.test(pathname);
 }
 
 /**
@@ -38,12 +79,51 @@ function isSettingsRoute(pathname: string): boolean {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const settings = isSettingsRoute(pathname);
+  /** The routes that draw no app rail. ONE FLAG FOR BOTH, so "this route has no
+   *  rail" stays a single mechanism — the rail is skipped and the inset takes
+   *  its own left margin back, and neither can be arranged without the other. */
+  const railless = settings || isSoloRoute(pathname);
+  /**
+   * THE CLOCK, FITTED WHERE EVERY ROUTE PASSES (#492).
+   *
+   * This is the one client component the whole cockpit renders, which makes it
+   * the only place `window.telarNavTimings()` can be promised from — a packaged
+   * build opened straight onto Settings used to have no reader at all, because
+   * the two components that fitted one (the front door, the cockpit) are not on
+   * that screen. See lib/perf-marks.ts.
+   *
+   * BOTH CALLS ARE IDEMPOTENT AND THAT IS THE POINT. `startNavigation` keeps
+   * the earlier stamp when a press already began this opening, so a cold load
+   * gets a clock without a click losing its own; and child effects run before
+   * parent ones, so on a conversation the cockpit's `commit` — the same commit,
+   * measured by the component that knows what landed in it — is still the one
+   * recorded, and this is a no-op.
+   */
+  /**
+   * `window.telar`, FITTED IN THE SAME PLACE AND FOR THE SAME REASON (#548).
+   *
+   * An external client — the Quest cockpit, which runs this app in a WebView
+   * and can only run JavaScript in the page — has to find the three calls
+   * whatever route the window opened on, and on EVERY host: this is the web
+   * app, not the desktop shell, so gating it on `window.telarDesktop` would
+   * hide it from the one client that asked for it. Idempotent, so mounting
+   * this shell again costs nothing. See lib/page-api.ts.
+   */
+  useEffect(() => {
+    installPageApi();
+  }, []);
+  useEffect(() => {
+    installNavigationMarks();
+    if (!isMeasuredHref(pathname)) return;
+    startNavigation(pathname, "route");
+    markNavigation("commit", pathname);
+  }, [pathname]);
   return (
     // `app-ground`: the wrapper is the GROUND — solid `bg-sidebar` in an
     // opaque window, transparent under the translucent shell so the body's
     // single wash shows through (globals.css). The islands paint on top of it.
     <SidebarProvider storageKey={APP_SIDEBAR_STORAGE_KEY} className="app-ground bg-sidebar">
-      {!settings && <AppSidebar />}
+      {!railless && <AppSidebar />}
       <SidebarInset
         className={cn(
           "flex h-dvh min-w-0 flex-col",
@@ -64,7 +144,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           // The inset itself must not clip either, or the cards' rings lose
           // their outer edge against the gutter.
           "md:has-[[data-surfaces]]:overflow-visible",
-          settings
+          // WITH NO RAIL THERE IS NO PEER to be collapsed, so the variant below
+          // can never match and the inset would sit flush against the window.
+          railless
             ? "md:ml-[var(--app-island-inset)]"
             : "md:ml-0 md:peer-data-[state=collapsed]:ml-[var(--app-island-inset)]",
         )}

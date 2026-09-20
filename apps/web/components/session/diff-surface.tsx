@@ -62,18 +62,38 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ChevronDownIcon,
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
   GitBranchIcon,
+  HardDriveIcon,
   GitCommitHorizontalIcon,
   ListFilterIcon,
+  PilcrowIcon,
+  RefreshCwIcon,
   RotateCwIcon,
   TriangleAlertIcon,
+  WrapTextIcon,
   XIcon,
 } from "lucide-react";
-import type { GitFileChange, SessionDiff, TurnState } from "@telar/engine-client";
+import type { GitFilePatch, GitFileChange, GitRefEntry, SessionDiff, TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
-import { describeReview, reconcileReview, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
+import { describeReview, reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
+import { useDiffView, type DiffView } from "@/lib/diff-view";
+import { diffBaseFor, scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/diff-scope";
+import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
+import { DiffCodeView } from "@/components/session/diff-code-view";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -90,6 +110,18 @@ const api = createEngineApi();
  * enough not to be a lie. Fast enough to be current, slow enough to be free.
  */
 const REFRESH_MS = 15_000;
+
+/**
+ * HOW LONG THE SCOPE PICKER'S TWO LISTS GET.
+ *
+ * Both are menus inside a panel, and a menu you scroll to reach the thing you
+ * wanted is a menu that should have been a search field — which is a bigger
+ * control than either list earns. The refs the engine hands over are newest
+ * first and already capped on its side; the turns are newest first and the one
+ * anybody wants is at the top, because the question is "what did it JUST do".
+ */
+const MAX_BASE_REFS = 12;
+const MAX_TURN_OPTIONS = 12;
 
 const STATUS_TONE: Record<GitFileChange["status"], PanelTone> = {
   added: "done",
@@ -155,35 +187,6 @@ export function reviewUnderFilter(review: SessionReview, filter?: string): Sessi
   };
 }
 
-/** A unified diff, tinted by line. Third copy of this in the app; the next one
- *  should extract it. */
-function Patch({ patch }: { patch: string }) {
-  return (
-    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-3xs leading-relaxed">
-      {patch.split("\n").map((line, index) => {
-        const header = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@") || line.startsWith("diff ");
-        return (
-          <span
-            key={index}
-            className={cn(
-              "block whitespace-pre-wrap break-words",
-              header
-                ? "text-muted-foreground/70"
-                : line.startsWith("+")
-                  ? "bg-success/10 text-success"
-                  : line.startsWith("-")
-                    ? "bg-destructive/10 text-destructive"
-                    : "text-muted-foreground",
-            )}
-          >
-            {line || " "}
-          </span>
-        );
-      })}
-    </pre>
-  );
-}
-
 /**
  * One changed file. The patch is fetched WHEN OPENED rather than carried on the
  * review, because a two-hundred-file review with every patch is a megabyte on a
@@ -195,15 +198,31 @@ function ReviewFileRow({
   reported,
   edits,
   registration,
+  view,
+  open,
+  onToggle,
   onOpenFile,
   onOpenInNewPanelTab,
   onInsertReference,
 }: {
   /** Session-scoped or project-scoped — the row does not care which, which is
    *  what lets one surface serve a conversation and a canvas. */
-  readPatch: (path: string, untracked: boolean) => Promise<{ file: { patch: string; binary: boolean } }>;
+  readPatch: (path: string, untracked: boolean) => Promise<{ file: GitFilePatch }>;
   file: GitFileChange;
   reported: boolean;
+  /** How this reader likes a diff laid out. Passed down rather than read here
+   *  so every open row in the list answers one toolbar, not its own. */
+  view: DiffView;
+  /**
+   * WHETHER THIS ROW IS OPEN LIVES ON THE SURFACE (#694), not in the row.
+   *
+   * It was local state until the toolbar grew "collapse all" / "expand all" —
+   * and a button that has to reach into forty children to close them is the
+   * signal that the children were holding somebody else's state. The surface
+   * owns the set; a row is told.
+   */
+  open: boolean;
+  onToggle: () => void;
   /** How many times the journal saw this path written, when that is more than
    *  once — the one thing the old Changes tab knew that git does not. */
   edits?: number;
@@ -225,9 +244,22 @@ function ReviewFileRow({
    *  and the same `fileReference` the row's own DRAG already carries. */
   onInsertReference?: (text: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [patch, setPatch] = useState<string>();
-  const [failed, setFailed] = useState(false);
+  /**
+   * THE WHOLE ANSWER, not just its text — `patch: ""` alone could not say
+   * whether this file is binary, identical, or unread (#654).
+   *
+   * STAMPED WITH THE READER THAT PRODUCED IT, because `readPatch` changes
+   * identity when the whitespace toggle does: the flag is on the git command
+   * (#694), so a patch in hand is an answer to the old question the moment it
+   * flips. Holding the two together means the stale answer is DISCARDED IN THE
+   * SAME EXPRESSION that notices it is stale — the "adjust state while
+   * rendering" shape React documents for exactly this, rather than an effect
+   * that repaints once with hunks nobody asked for any more.
+   */
+  const [answer, setAnswer] = useState<{ reader: typeof readPatch; patch?: GitFilePatch; failed: boolean }>({ reader: readPatch, failed: false });
+  const current = answer.reader === readPatch ? answer : { reader: readPatch, failed: false };
+  if (current !== answer) setAnswer(current);
+  const { patch, failed } = current;
   const cut = file.path.lastIndexOf("/");
 
   useEffect(() => {
@@ -235,10 +267,10 @@ function ReviewFileRow({
     let cancelled = false;
     void readPatch(file.path, file.status === "untracked")
       .then((result) => {
-        if (!cancelled) setPatch(result.file.binary ? "" : result.file.patch);
+        if (!cancelled) setAnswer({ reader: readPatch, patch: result.file, failed: false });
       })
       .catch(() => {
-        if (!cancelled) setFailed(true);
+        if (!cancelled) setAnswer({ reader: readPatch, failed: true });
       });
     return () => {
       cancelled = true;
@@ -251,7 +283,7 @@ function ReviewFileRow({
        file rows in right-panel.tsx. */
     <div draggable onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(file.path))}>
       {/* THE TRIGGER IS INSIDE THE DRAGGABLE, wrapping only the row's own
-          content — the board card's rule in `spool/idiom.test.ts`, and for its
+          content — the app's trigger-inside rule, and for its
           reason: a right-click on the drag handle would race the drag.
 
           STAGE, UNSTAGE AND REVERT ARE NOT HERE, and their absence is the same
@@ -265,7 +297,7 @@ function ReviewFileRow({
           type="button"
           className="flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs hover:bg-muted/60"
           aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
+          onClick={onToggle}
           title={file.renamedFrom ? `${file.renamedFrom} → ${file.path}` : file.path}
         >
           {/* Git's own letter, so anyone who has run `git status` needs no
@@ -322,7 +354,7 @@ function ReviewFileRow({
             <ContextMenuItem onClick={() => onInsertReference(fileReference(file.path).text)}>Insert as reference</ContextMenuItem>
           )}
           <ContextMenuSeparator />
-          <ContextMenuItem onClick={() => setOpen((current) => !current)}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>
+          <ContextMenuItem onClick={onToggle}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
       {open &&
@@ -332,12 +364,425 @@ function ReviewFileRow({
           <p className="flex items-center gap-2 px-4 pb-2 text-2xs text-muted-foreground">
             <Spinner className="size-3" /> reading the diff…
           </p>
-        ) : patch === "" ? (
+        ) : /* GIT DID NOT ANSWER IS NOT A FACT ABOUT THE FILE — issue #654. An
+               unread patch arrived here as the empty string and this branch
+               rendered "Binary file", which is a specific, confident and wrong
+               claim about the contents. */
+        patch.incomplete ? (
+          <p className="px-4 pb-2 text-2xs text-warning">
+            {patch.incomplete === "timeout" ? "git did not answer in time — open it again." : "git could not read this file's diff."}
+          </p>
+        ) : patch.binary ? (
           <p className="px-4 pb-2 text-2xs text-muted-foreground">Binary file — no textual diff.</p>
+        ) : patch.patch === "" ? (
+          // The third case the old `patch === ""` swallowed: git answered, and
+          // its answer is that nothing in this file differs.
+          <p className="px-4 pb-2 text-2xs text-muted-foreground">No textual difference.</p>
         ) : (
-          <Patch patch={patch} />
+          /* THE RENDERER IS NOT OURS ANY MORE (#694) — see diff-code-view.tsx.
+             The row above is still the file header, so the viewer is told not
+             to draw its own; everything inside it is Pierre's, wearing this
+             app's tokens through `.diff-code-view` in globals.css. */
+          <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
+            <DiffCodeView patch={patch.patch} layout={view.layout} wrap={view.wrap} />
+          </div>
         ))}
       {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-2xs text-muted-foreground">Renamed from {file.renamedFrom}</p>}
+    </div>
+  );
+}
+
+/** What each scope is called, and the one-line answer to "what am I looking
+ *  at" — read by the picker's rows and by nothing else. */
+const SCOPE_LABEL: Record<DiffScopeKind, string> = {
+  unstaged: "Working tree",
+  branch: "Since a base",
+  turn: "One turn",
+};
+
+const SCOPE_BLURB: Record<DiffScopeKind, string> = {
+  unstaged: "Everything uncommitted in this checkout, right now",
+  branch: "Everything since a commit you choose",
+  turn: "What one turn reported writing — the agent's own patches",
+};
+
+/**
+ * WHICH QUESTION THIS TAB IS ASKING — issue #694, and the fix for #690 at the
+ * root rather than at the sentence.
+ *
+ * THE DEFAULT IS THE WORKING TREE, and that is the whole point. The surface
+ * used to answer one question — the session's own base — and print it as
+ * "everything this session changed", which is false in a `local` session
+ * sharing the checkout with an editor and three other sessions. #690 made the
+ * sentence honest; this makes the DEFAULT QUESTION one whose honest answer is
+ * the same in both modes, so there is nothing left to apologise for.
+ *
+ * A MENU RATHER THAN A SEGMENTED CONTROL, unlike Stacked|Split in the toolbar
+ * below, and the difference is that two of these three carry an argument: a
+ * base, or a turn. A segment cannot hold one, and the width of the panel is
+ * not going to change its mind about that.
+ */
+function DiffScopePicker({
+  tab,
+  onTabChange,
+  hasSession,
+  refs,
+  turns,
+  sessionBase,
+}: {
+  tab: DiffTab;
+  onTabChange?: (tab: DiffTab) => void;
+  hasSession: boolean;
+  refs?: readonly GitRefEntry[];
+  turns?: readonly DiffTurn[];
+  /** The session's own recorded base, for naming the default `branch` choice
+   *  as what it is rather than as a blank. */
+  sessionBase?: string;
+}) {
+  const offered = scopesFor(hasSession);
+  /** What the trigger says. The scope's name, and then its ARGUMENT when it has
+   *  one — a picker reading "Since a base" over a list built from `origin/main`
+   *  makes the reader open the menu to find out what they are looking at. */
+  const summary =
+    tab.kind === "branch"
+      ? tab.base ?? (sessionBase ? `${sessionBase.slice(0, 8)} — where this session started` : SCOPE_LABEL.branch)
+      : tab.kind === "turn"
+        ? turnLabel(turnFor(turns ?? [], tab.turn) ?? { runId: "", at: 0, files: [], patches: new Map() })
+        : SCOPE_LABEL.unstaged;
+
+  if (!onTabChange) return <span className="min-w-0 truncate text-muted-foreground">{summary}</span>;
+
+  const chosenTurn = turnFor(turns ?? [], tab.turn);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <button
+            type="button"
+            aria-label="What this Diff is looking at"
+            title="What this Diff is looking at"
+            className="-ml-1 flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-left text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-muted"
+          />
+        }
+      >
+        <span className="min-w-0 truncate">{summary}</span>
+        <ChevronDownIcon className="size-3 shrink-0" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-72">
+        {/* EVERY LABEL INSIDE ITS GROUP — the house rule `dropdown-menu.test.ts`
+            enforces, and the reason is the one it gives: a label dropped
+            straight into the content is announced as an item. */}
+        <DropdownMenuRadioGroup value={tab.kind} onValueChange={(next) => onTabChange({ ...tab, kind: next as DiffScopeKind })}>
+          <DropdownMenuLabel>Looking at</DropdownMenuLabel>
+          {offered.map((kind) => (
+            <DropdownMenuRadioItem key={kind} value={kind} className="items-start">
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span>{SCOPE_LABEL[kind]}</span>
+                <span className="text-2xs text-muted-foreground">{SCOPE_BLURB[kind]}</span>
+              </span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        {/* THE ARGUMENT FOR THE CHOSEN SCOPE, in the same menu rather than a
+            second one: picking "since a base" and then having to find where to
+            say WHICH base is two gestures for one decision. */}
+        {tab.kind === "branch" && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuRadioGroup value={tab.base ?? ""} onValueChange={(next) => onTabChange({ ...tab, base: next })}>
+              <DropdownMenuLabel>Base</DropdownMenuLabel>
+              {/* EMPTY IS THE SESSION'S OWN BASE, which is a real choice and not
+                  a blank: it is the comparison this surface made before the
+                  selector existed, and the one a reader coming back for "what
+                  has this session done" wants. A canvas has no such base, so
+                  the row is not offered there rather than being offered and
+                  answering the same as the working tree. */}
+              {hasSession && (
+                <DropdownMenuRadioItem value="">
+                  <span className="truncate">
+                    Where this session started
+                    {sessionBase ? <span className="ml-1.5 font-mono text-2xs text-muted-foreground">{sessionBase.slice(0, 8)}</span> : null}
+                  </span>
+                </DropdownMenuRadioItem>
+              )}
+              {(refs ?? []).slice(0, MAX_BASE_REFS).map((ref) => (
+                <DropdownMenuRadioItem key={ref.name} value={ref.name}>
+                  <span className="truncate font-mono text-2xs">{ref.name}</span>
+                </DropdownMenuRadioItem>
+              ))}
+              {refs !== undefined && refs.length === 0 && <DropdownMenuLabel>No other refs to compare against.</DropdownMenuLabel>}
+            </DropdownMenuRadioGroup>
+          </>
+        )}
+        {tab.kind === "turn" && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuRadioGroup value={chosenTurn?.runId ?? ""} onValueChange={(next) => onTabChange({ ...tab, turn: next })}>
+              <DropdownMenuLabel>Turn</DropdownMenuLabel>
+              {(turns ?? []).slice(0, MAX_TURN_OPTIONS).map((option) => (
+                <DropdownMenuRadioItem key={option.runId} value={option.runId}>
+                  <span className="min-w-0 flex-1 truncate">{turnLabel(option)}</span>
+                  <span className="ml-2 shrink-0 text-2xs text-muted-foreground">{fmtAgo(option.at)}</span>
+                </DropdownMenuRadioItem>
+              ))}
+              {turns !== undefined && turns.length === 0 && <DropdownMenuLabel>No turn has reported writing a file yet.</DropdownMenuLabel>}
+            </DropdownMenuRadioGroup>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * HOW THE PATCHES BELOW ARE DRAWN — issue #694.
+ *
+ * SEPARATE FROM THE FILTER FIELD ABOVE IT, and the split is the point. The
+ * filter says WHICH review this tab is; these say how this person reads one.
+ * The first belongs to the tab and is persisted with the panel's arrangement;
+ * the second belongs to the reader and is persisted once for the app (see
+ * lib/diff-view.ts). Putting them in one strip would be two contracts in one
+ * row, which is the mistake this issue's design refuses elsewhere.
+ *
+ * STACKED | SPLIT IS NOT GATED ON WIDTH. The instinct was to hide split below
+ * some number of pixels; the reference does not, and is right. Wrapping is off
+ * by default so a long line scrolls, and the measured line lengths in this
+ * repository (p50 49, p90 82, p99 136) are documentation of what you will see
+ * at a given width rather than a threshold that refuses you a layout you asked
+ * for.
+ *
+ * COLLAPSE / EXPAND ALL IS ONE BUTTON, not two, because the two are never both
+ * useful: with anything open the thing you want is to close it, and with
+ * nothing open the only move left is to open. A pair would spend half its width
+ * on a disabled control.
+ */
+export function DiffToolbar({
+  view,
+  setView,
+  anyOpen,
+  onToggleAll,
+  expandable,
+}: {
+  view: DiffView;
+  setView: (patch: Partial<DiffView>) => void;
+  anyOpen: boolean;
+  onToggleAll: () => void;
+  /** No rows, nothing to collapse — the control goes rather than greys out. */
+  expandable: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1 border-b border-border px-3 py-1.5">
+      {/* A SEGMENTED CONTROL, which is what two exclusive layouts are. Written
+          as a radiogroup rather than two buttons so the pair is one stop in the
+          tab order and arrow keys move between them. */}
+      <div role="radiogroup" aria-label="Diff layout" className="flex items-center rounded-md border border-input p-0.5">
+        {(["stacked", "split"] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            role="radio"
+            aria-checked={view.layout === option}
+            onClick={() => setView({ layout: option })}
+            className={cn(
+              "rounded-[0.25rem] px-2 py-0.5 text-2xs capitalize transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              view.layout === option ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+      <DiffToolbarToggle
+        label="Word wrap"
+        icon={<WrapTextIcon className="size-3.5" />}
+        pressed={view.wrap}
+        onPressedChange={(next) => setView({ wrap: next })}
+      />
+      <DiffToolbarToggle
+        label="Ignore whitespace"
+        // `¶` is the mark for the thing being ignored, and it is the same glyph
+        // every editor puts on this control.
+        icon={<PilcrowIcon className="size-3.5" />}
+        pressed={view.ignoreWhitespace}
+        onPressedChange={(next) => setView({ ignoreWhitespace: next })}
+      />
+      {expandable && (
+        <button
+          type="button"
+          onClick={onToggleAll}
+          className="ml-auto flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-2xs text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {anyOpen ? <ChevronsDownUpIcon className="size-3.5" /> : <ChevronsUpDownIcon className="size-3.5" />}
+          {anyOpen ? "Collapse all" : "Expand all"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** One of the toolbar's two on/off marks. `aria-pressed` rather than a checkbox
+ *  because these change how the page is drawn, not what will be submitted. */
+function DiffToolbarToggle({
+  label,
+  icon,
+  pressed,
+  onPressedChange,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  pressed: boolean;
+  onPressedChange: (next: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={pressed}
+      title={label}
+      onClick={() => onPressedChange(!pressed)}
+      className={cn(
+        "flex shrink-0 items-center rounded-md p-1 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        pressed ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {icon}
+    </button>
+  );
+}
+
+/**
+ * WHAT GIT DID NOT ANSWER, IN THE ONE PLACE IT CHANGES A DECISION — issue #654.
+ *
+ * THE ENGINE FIX ALONE DOES NOT FIX THIS BUG, which is #650's lesson repeated:
+ * `filesIncomplete` arriving on the answer is worth nothing while this surface
+ * draws a review that timed out exactly as it draws a session that changed
+ * nothing. An empty Diff panel is how a person decides a session did no work
+ * and archives it — there is no search box to blame here and no short list to
+ * look suspicious, so the surface has to say it out loud or nobody will know.
+ *
+ * ABOVE THE ROWS, NEVER IN PLACE OF THEM. The files that did arrive are real
+ * changes, still worth reading and still about to be in the commit; replacing
+ * them with an error would trade a misleading review for a useless one.
+ *
+ * THREE SENTENCES BECAUSE THEY ARE THREE DIFFERENT DOUBTS, and the point of the
+ * engine carrying three flags rather than one is that a reader should distrust
+ * the half of the screen that is actually unknown — a `git log` that was killed
+ * says nothing whatever about the file list under it.
+ *
+ * "ASK GIT AGAIN" IS THE OFFER FOR A TIMEOUT, because that is the failure that
+ * goes away on its own: the machine was busy. It is this surface's own refresh
+ * rerun rather than a new request. A failure for another reason keeps the
+ * button — it costs one read — but says what it is, so somebody who presses it
+ * twice to no effect knows this is not a busy machine.
+ */
+export function DiffUnknownBand({
+  diff,
+  onRetry,
+}: {
+  diff: Pick<SessionDiff, "filesIncomplete" | "commitsIncomplete" | "baseUnverified">;
+  onRetry?: () => void | Promise<void>;
+}) {
+  const [retrying, setRetrying] = useState(false);
+  const sentences: string[] = [];
+  if (diff.filesIncomplete) {
+    sentences.push(
+      diff.filesIncomplete === "timeout"
+        ? "git did not answer in time, so this list may be missing files and the counts may be low — it is not the whole change."
+        : "git could not read this checkout's changes, so this list may be missing files and the counts may be low.",
+    );
+  }
+  if (diff.commitsIncomplete) {
+    sentences.push(
+      diff.commitsIncomplete === "timeout"
+        ? "git did not answer in time for this session's commits, so work it has already committed may not be listed."
+        : "git could not read this session's commits, so work it has already committed may not be listed.",
+    );
+  }
+  if (diff.baseUnverified) {
+    sentences.push("Nothing confirmed the starting point below — it is the one recorded when this checkout was cut.");
+  }
+  if (sentences.length === 0) return null;
+  const retry = async () => {
+    if (!onRetry || retrying) return;
+    setRetrying(true);
+    try {
+      await onRetry();
+    } finally {
+      setRetrying(false);
+    }
+  };
+  return (
+    /* `tint-warning` rather than `bg-warning/10` (#691). This band carries a
+       semantic fill AND semantic ink — `text-warning` sentences on 10% of
+       --warning — so over the wash both ends of the pair were 90% desktop, and
+       the one band whose whole job is to say "this list may be incomplete"
+       became the least legible thing on the surface. Not the same case as
+       ReconciliationBand's `bg-muted/25` above: that is a neutral separator
+       under ordinary ink, which #434's light-under-glass floor already covers.
+       The hairline keeps its alpha — a border is a mark, not a ground. */
+    <div className="border-b border-warning/30 tint-warning px-4 py-2.5">
+      {sentences.map((sentence) => (
+        <p key={sentence} className="flex gap-1.5 text-2xs leading-relaxed text-warning">
+          <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+          <span>{sentence}</span>
+        </p>
+      ))}
+      {onRetry && (
+        <button
+          type="button"
+          onClick={() => void retry()}
+          disabled={retrying}
+          className="mt-1 flex items-center gap-1 rounded-md px-1 py-0.5 text-2xs font-medium text-warning transition-colors outline-none hover:bg-warning/15 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+        >
+          <RefreshCwIcon className={cn("size-3 shrink-0", retrying && "animate-spin")} />
+          {retrying ? "Asking git again…" : "Ask git again"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * WHY THIS LIST IS EMPTY — three different claims that were one sentence.
+ *
+ * A FILTER THAT MATCHES NOTHING IS NOT AN EMPTY REVIEW: saying "nothing differs"
+ * over a tree with forty changed files would send somebody looking for a bug in
+ * git. And "nothing differs" is itself a CLAIM ABOUT THE CHECKOUT (#654), safe
+ * only when the reads that would have contradicted it actually answered — this
+ * is the exact conflation #650 found in the base picker's `"No matching refs."`,
+ * arriving on the surface where it costs the most, because an empty review is
+ * how somebody decides a session did no work.
+ */
+export function ReviewEmptyState({
+  review,
+  trimmed,
+  filesIncomplete,
+}: {
+  review: SessionReview;
+  /** The filter as it MEANS, not as the field holds it. */
+  trimmed?: string;
+  filesIncomplete?: SessionDiff["filesIncomplete"];
+}) {
+  return (
+    <div className="px-4 py-6 text-center text-2xs text-muted-foreground">
+      {trimmed ? (
+        <>
+          {/* "differs" is the claim; "was listed" is all that can be said over a
+              read that was cut short — the filter's own sentence has to give way
+              on the same word the unfiltered one does. */}
+          Nothing under <span className="font-mono">{trimmed}</span> {filesIncomplete ? "was listed" : "differs"}.
+          {review.rows.length > 0 && ` The rest of the review has ${review.rows.length} ${review.rows.length === 1 ? "file" : "files"}.`}
+        </>
+      ) : filesIncomplete ? (
+        // The band above owns the explanation; this line only has to stop
+        // repeating the claim underneath it.
+        <>Nothing was listed — and with git not answering in full, that is not the same as nothing having changed.</>
+      ) : (
+        <>
+          Nothing differs from where this session started.
+          {review.settled.length > 0 && " Everything it wrote has been put back or committed."}
+        </>
+      )}
     </div>
   );
 }
@@ -348,24 +793,32 @@ function ReviewFileRow({
  * Rendered only when there is something to say, and stated as a fact rather
  * than an alarm: side effects are normal — installs, builds, formatters — and
  * the point is that you should know they are in the commit before you make it.
+ *
+ * THE WARNING HALF IS GONE ON A SHARED CHECKOUT (#690) — see `reviewFraming`.
+ * "The transcript never mentioned this" is evidence of nothing in a tree the
+ * editor and every other local session also write to, and the band stated it as
+ * an accusation. The SETTLED half stays: the journal claiming a write that the
+ * diff does not have is the journal's own testimony about itself, and sharing
+ * the checkout with somebody else does not weaken it.
  */
-function ReconciliationBand({ review }: { review: SessionReview }) {
-  if (review.unreported.length === 0 && review.settled.length === 0) return null;
+function ReconciliationBand({ review, journal }: { review: SessionReview; journal: boolean }) {
+  const unreported = journal ? review.unreported : [];
+  if (unreported.length === 0 && review.settled.length === 0) return null;
   return (
     <div className="border-b border-border bg-muted/25 px-4 py-2.5 text-2xs leading-relaxed">
-      {review.unreported.length > 0 && (
+      {unreported.length > 0 && (
         <p className="flex gap-1.5 text-foreground">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-warning" />
           <span>
             <span className="font-medium">
-              {review.unreported.length} {review.unreported.length === 1 ? "file" : "files"} the transcript never mentioned
+              {unreported.length} {unreported.length === 1 ? "file" : "files"} the transcript never mentioned
             </span>{" "}
             — an install, a build, or a formatter.
           </span>
         </p>
       )}
       {review.settled.length > 0 && (
-        <p className={cn("text-muted-foreground", review.unreported.length > 0 && "mt-1.5")}>
+        <p className={cn("text-muted-foreground", unreported.length > 0 && "mt-1.5")}>
           {review.settled.length} {review.settled.length === 1 ? "file the session wrote is" : "files the session wrote are"} back to how
           {review.settled.length === 1 ? " it" : " they"} started.
         </p>
@@ -424,6 +877,7 @@ function CommitBox({
   sessionId,
   suggestion,
   files,
+  countIncomplete,
   busy,
   workspacePath,
   onCommitted,
@@ -431,6 +885,17 @@ function CommitBox({
   sessionId: string;
   suggestion: string;
   files: number;
+  /**
+   * `files` IS A FLOOR, NOT THE COUNT — issue #654.
+   *
+   * This button runs `git add -A`, so it commits the real tree whatever this
+   * surface managed to read. A label reading "Commit 3 files" over a review
+   * whose file list was cut short by a timeout would commit forty-eight — the
+   * same lie the note on `shown` forbids for the filter, arriving by a different
+   * door. And `files === 0` must not disable it, because zero here may only mean
+   * nobody could look.
+   */
+  countIncomplete?: boolean;
   busy: boolean;
   /** Named in full, because the next thing a reader does is `cd` to it. */
   workspacePath: string;
@@ -465,7 +930,11 @@ function CommitBox({
   return (
     <div className="border-t border-border p-3">
       {result && (
-        <p className={cn("mb-2 rounded-md px-2.5 py-1.5 text-2xs leading-snug", result.ok ? "bg-success/10 text-success" : "bg-muted text-muted-foreground")}>
+        /* `tint-success` rather than `bg-success/10` (#691): a sentence about
+           what git just did, on the panel's own ground. The failure branch was
+           always opaque (`bg-muted`); the success branch was 10% of a colour
+           over the wash, which is the one of the two that could dissolve. */
+        <p className={cn("mb-2 rounded-md px-2.5 py-1.5 text-2xs leading-snug", result.ok ? "tint-success text-success" : "bg-muted text-muted-foreground")}>
           {result.text}
         </p>
       )}
@@ -482,7 +951,7 @@ function CommitBox({
           <div className="flex items-center gap-2">
             <Button type="button" size="xs" disabled={working || !message.trim()} onClick={() => void commit()}>
               {working ? <Spinner className="size-3" /> : <GitCommitHorizontalIcon />}
-              Commit {files} {files === 1 ? "file" : "files"}
+              {countIncomplete ? "Commit everything in the checkout" : `Commit ${files} ${files === 1 ? "file" : "files"}`}
             </Button>
             <Button type="button" size="xs" variant="ghost" disabled={working} onClick={() => setOpen(false)}>
               Cancel
@@ -494,7 +963,7 @@ function CommitBox({
           type="button"
           size="xs"
           variant="outline"
-          disabled={busy || files === 0}
+          disabled={busy || (files === 0 && !countIncomplete)}
           title={busy ? "A turn is running — the agent may be mid-write" : undefined}
           onClick={() => {
             setMessage(suggestion);
@@ -527,8 +996,9 @@ export function DiffSurface({
   suggestion,
   /** A turn is running. Only used to hold the commit button. */
   active,
-  filter,
-  onFilterChange,
+  tab,
+  onTabChange,
+  turns,
   onOpenFile,
   onOpenInNewPanelTab,
   onInsertReference,
@@ -539,20 +1009,30 @@ export function DiffSurface({
   suggestion: string;
   active?: TurnState;
   /**
-   * THIS INSTANCE'S FILTER — a folder or one file, and the whole of what makes
-   * two Diff tabs different (#335).
+   * THIS INSTANCE, WHOLE — the scope it is looking at, the base and turn it
+   * remembers, and its filter (#694, #335).
    *
    * IT LIVES IN THE TAB'S PARAMS, NOT IN THIS COMPONENT, which is what makes it
-   * an instance rather than a mood: the strip reads it for the label
-   * ("Diff · src/"), the panel persists it with the rest of the arrangement, and
-   * a surface remounted by a session switch comes back filtered the same way.
-   * Local state here would be none of those things.
+   * an instance rather than a mood: the strip reads the filter for the label
+   * ("Diff · src/"), the panel persists the lot with the rest of the
+   * arrangement, and a surface remounted by a session switch comes back looking
+   * at the same thing. Local state here would be none of those things — and
+   * because each panel holds its own `PanelTabState`, two windows on one
+   * session keep their own scope, the same way #715's open issues do.
+   *
+   * ONE OBJECT RATHER THAN A FIELD PER PARAM, because `setPanelTabParams` is a
+   * REPLACE: a handler writing `{ filter }` would erase the scope and one
+   * writing `{ scope }` would erase the filter, and neither would look broken
+   * until somebody typed in the filter field.
    */
-  filter?: string;
-  /** Rewrite the filter. An EMPTY string clears the param entirely — see the
-   *  cockpit's handler — so a cleared field leaves a tab that reads "Diff".
-   *  Absent hides the field, for a caller that has no params to keep. */
-  onFilterChange?: (filter: string) => void;
+  tab: DiffTab;
+  /** Rewrite this instance. Absent hides every control that would write one,
+   *  for a caller with no params to keep. */
+  onTabChange?: (tab: DiffTab) => void;
+  /** The turns that reported writing something, newest first — the `turn`
+   *  scope's whole source. Empty on a canvas, which is why that scope is not
+   *  offered there. */
+  turns?: readonly DiffTurn[];
   /** A changed file's row can open the file the Editor already draws — the
    *  panel derives this from its own `onOpenTab`, exactly as it does for
    *  LatexSurface, so no second route into the Editor is created here. */
@@ -567,6 +1047,23 @@ export function DiffSurface({
   const [diff, setDiff] = useState<SessionDiff>();
   const [error, setError] = useState<string>();
   const [refreshing, setRefreshing] = useState(false);
+  const { view, setView } = useDiffView();
+  /**
+   * WHICH ROWS ARE OPEN, held here rather than in the rows (#694) — "collapse
+   * all" is a button that has to close forty children, and a button that reaches
+   * into its children is the signal the children were holding the wrong state.
+   *
+   * BY PATH RATHER THAN BY INDEX, so a refresh that adds a file above an open
+   * one does not silently move the open patch to a different row.
+   */
+  const [openPaths, setOpenPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleRow = useCallback((path: string) => {
+    setOpenPaths((current) => {
+      const next = new Set(current);
+      if (!next.delete(path)) next.add(path);
+      return next;
+    });
+  }, []);
 
   /**
    * A CANVAS REVIEWS ITS PROJECT.
@@ -577,23 +1074,95 @@ export function DiffSurface({
    * an agent at it. Same surface, same rows, one scope narrower: `HEAD…worktree`
    * instead of `base…worktree`, which the headline already knows how to say.
    */
+  /**
+   * THE BASE IS THE SCOPE (#694). `unstaged` sends an EMPTY base — "compare
+   * against nothing" — which is a different request from sending none, and
+   * sending none is what every reader of this surface got before the selector
+   * existed. `branch` sends the chosen ref, or none to mean the session's own.
+   */
+  const base = diffBaseFor(tab);
   const load = useCallback(async () => {
     try {
-      if (sessionId) setDiff((await api.sessionDiff(sessionId)).diff);
+      if (sessionId) setDiff((await api.sessionDiff(sessionId, base)).diff);
+      // A CANVAS HAS NO BASE TO OVERRIDE. Its project read is already
+      // `HEAD…worktree` — the `unstaged` question — so there is nothing for a
+      // scope to change and nothing to send.
       else if (projectId) setDiff((await api.projectDiff(projectId)).diff);
       else return;
       setError(undefined);
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause.message : "The engine did not answer.");
     }
-  }, [sessionId, projectId]);
+    // `base` is rebuilt each render; its CONTENTS are what matter to the read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, projectId, base.base]);
 
+  /** The turn this tab is showing, and whether the one it named is still here.
+   *  A named turn can genuinely go — the window slid past it — and falling back
+   *  to the newest beats a surface that renders nothing and explains nothing. */
+  const turn = useMemo(() => turnFor(turns ?? [], tab.turn), [turns, tab.turn]);
+
+  /**
+   * THE BASES, READ ONLY WHEN SOMEBODY IS CHOOSING ONE.
+   *
+   * Not threaded down from the panel like the turns are, because the two are
+   * different kinds of thing: the turns are a fold of a journal the panel
+   * already holds, and this is a SUBPROCESS — `git for-each-ref` in the
+   * project's checkout. Fetching it on every mount would put a git read behind
+   * every Diff tab anybody opens, for a menu most of them never touch.
+   *
+   * ONCE, AND NOT ON A TIMER. Refs move when somebody branches or fetches,
+   * which is not something this surface should be discovering every fifteen
+   * seconds — and the picker is re-read on the next scope change anyway.
+   */
+  const [refs, setRefs] = useState<readonly GitRefEntry[]>();
+  useEffect(() => {
+    if (tab.kind !== "branch" || refs !== undefined || !projectId) return;
+    let cancelled = false;
+    void api
+      .projectGit(projectId)
+      .then((answer) => {
+        if (!cancelled) setRefs(answer.git.refs ?? []);
+      })
+      .catch(() => {
+        // The picker keeps its "where this session started" row and says
+        // nothing about refs, which is the honest smaller menu.
+        if (!cancelled) setRefs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab.kind, refs, projectId]);
+
+  /**
+   * IGNORING WHITESPACE IS PART OF THE REQUEST, not part of the rendering
+   * (#694) — git decides which hunks exist. So the toggle is in this callback's
+   * dependencies, and an open row re-reads when it flips: see the effect in
+   * `ReviewFileRow` that watches this function's identity. The BASE is in them
+   * for the same reason: a row's patch read against a different base from the
+   * list above it would put plausible hunks under wrong counts.
+   *
+   * THE TURN SCOPE NEVER ASKS GIT. Its patch is the one the agent's own tool
+   * reported, already in hand — so this resolves it rather than fetching, and
+   * a path the tool wrote without producing a patch says so through the same
+   * `incomplete` channel a git failure uses, because "there is no patch for
+   * this" is the same fact either way.
+   */
   const readPatch = useCallback(
-    (path: string, untracked: boolean) =>
-      sessionId
-        ? api.sessionFilePatch(sessionId, path, untracked ? { untracked: true } : {})
-        : api.projectFilePatch(projectId!, path, untracked ? { untracked: true } : {}),
-    [sessionId, projectId],
+    (path: string, untracked: boolean): Promise<{ file: GitFilePatch }> => {
+      if (tab.kind === "turn") {
+        const patch = turn?.patches.get(path);
+        return Promise.resolve({ file: patch ? { patch, binary: false } : { patch: "", binary: false, incomplete: "failed" } });
+      }
+      const options = {
+        ...(untracked ? { untracked: true } : {}),
+        ...(view.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+        ...base,
+      };
+      return sessionId ? api.sessionFilePatch(sessionId, path, options) : api.projectFilePatch(projectId!, path, options);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionId, projectId, view.ignoreWhitespace, base.base, tab.kind, turn],
   );
 
   useEffect(() => {
@@ -609,7 +1178,35 @@ export function DiffSurface({
     };
   }, [load, active]);
 
-  const review = useMemo(() => (diff ? reconcileReview(diff, reported) : undefined), [diff, reported]);
+  /**
+   * THE REVIEW THE ROWS COME FROM — git's, or the turn's.
+   *
+   * THE TWO ARE DIFFERENT WITNESSES AND THIS IS THE SEAM BETWEEN THEM. For
+   * `unstaged` and `branch` it is `reconcileReview`: git's file list, joined
+   * against the journal so the rows nobody narrated are called out. For `turn`
+   * it is the journal ALONE — the agent's reported writes, with its own
+   * reported patches — and there is nothing to reconcile, because the journal
+   * cannot disagree with itself. Every row is `reported: true` for that reason,
+   * not as a convenience: the question "did the transcript mention this" has
+   * one answer in a list built from the transcript.
+   *
+   * `linesAdded`/`linesRemoved` ARE THE TURN'S OWN, so the headline above the
+   * rows counts the same things the rows do.
+   */
+  const review = useMemo(() => {
+    if (tab.kind === "turn") {
+      if (!turn) return { rows: [], unreported: [], settled: [], filesChanged: 0, linesAdded: 0, linesRemoved: 0 } satisfies SessionReview;
+      return {
+        rows: turn.files.map((file) => ({ file, reported: true })),
+        unreported: [],
+        settled: [],
+        filesChanged: turn.files.length,
+        linesAdded: turn.files.reduce((total, file) => total + (file.linesAdded ?? 0), 0),
+        linesRemoved: turn.files.reduce((total, file) => total + (file.linesRemoved ?? 0), 0),
+      } satisfies SessionReview;
+    }
+    return diff ? reconcileReview(diff, reported) : undefined;
+  }, [tab.kind, turn, diff, reported]);
   /**
    * WHAT THIS TAB IS A REVIEW OF. Everything on screen below the commit box is
    * read out of this rather than out of `review`: the headline, the
@@ -621,15 +1218,30 @@ export function DiffSurface({
    * button reading "Commit 3 files" that committed forty-eight would be the
    * worst kind of lie this surface could tell.
    */
-  const shown = useMemo(() => (review ? reviewUnderFilter(review, filter) : undefined), [review, filter]);
+  const shown = useMemo(() => (review ? reviewUnderFilter(review, tab.filter) : undefined), [review, tab.filter]);
   /** The filter as it MEANS rather than as the field holds it — whitespace
    *  alone is not a filter, and neither is an empty string. Shown as typed
    *  otherwise, so the prose below and the tab's own label agree. */
-  const trimmed = filter?.trim() || undefined;
+  const trimmed = tab.filter?.trim() || undefined;
 
   /** Built once and spread onto both row lists, so the two can never drift
    *  into offering different menus for the same kind of row. */
   const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}), ...(onInsertReference ? { onInsertReference } : {}) };
+
+  /**
+   * "ANY" RATHER THAN "ALL", so the button's two states cover the three real
+   * ones. With some rows open, what you want is to close them; only a list
+   * where nothing is open has "expand" as its obvious next move.
+   *
+   * COUNTED OVER THE ROWS THIS TAB SHOWS, so "expand all" in a tab filtered to
+   * `apps/web` does not quietly open forty files in `apps/engine` that this
+   * reader cannot see and will not close.
+   */
+  const shownPaths = shown?.rows.map((row) => row.file.path) ?? [];
+  const anyOpen = shownPaths.some((path) => openPaths.has(path));
+  /** Plain, not memoised: it is handed to the toolbar's one button, never to
+   *  the forty rows, so a fresh identity each render costs nothing. */
+  const toggleAll = () => setOpenPaths((current) => (shownPaths.some((path) => current.has(path)) ? new Set() : new Set(shownPaths)));
 
   if (!sessionId && !projectId) {
     return (
@@ -652,6 +1264,30 @@ export function DiffSurface({
       </p>
     );
   }
+  /**
+   * THE DRIVE IS AWAY — issue #534, and it is checked BEFORE `repository`.
+   *
+   * `git` answers "not a git repository" for a path it cannot read, so an
+   * unplugged drive landed on the empty state below and this panel read CLEAN:
+   * no diff, nothing to review, as if the work had been finished. It had not
+   * been looked at. The engine stamps what its own probe found on this answer
+   * (see `SessionDiff.availability`), which is the only way this surface can
+   * tell "no changes" from "nobody could look".
+   */
+  if (diff.availability === "unmounted") {
+    return (
+      <PanelEmpty icon={<HardDriveIcon />} title="The drive is not connected">
+        This project lives on a drive that is not plugged in, so there is nothing to read — not nothing to review. Reconnect it and this comes back as it was.
+      </PanelEmpty>
+    );
+  }
+  if (diff.availability === "missing") {
+    return (
+      <PanelEmpty icon={<HardDriveIcon />} title="The project folder is gone">
+        {diff.workspacePath} is not on this machine any more.
+      </PanelEmpty>
+    );
+  }
   if (!diff.repository) {
     return (
       <PanelEmpty icon={<GitBranchIcon />} title="Not a git repository">
@@ -660,17 +1296,48 @@ export function DiffSurface({
     );
   }
 
+  /**
+   * WHOSE CHANGES THESE ARE, decided once and read by the headline, the band
+   * and the row lists — the three places that disagreed (#690). A plain fold
+   * rather than a memo: it is three comparisons and a string, and every reader
+   * of it is in the JSX below.
+   */
+  const framing = reviewFraming(diff, shown, Boolean(sessionId));
+  /**
+   * THE TURN SCOPE IS A DIFFERENT WITNESS AND THE SURFACE SAYS SO — #694.
+   *
+   * `reviewFraming` speaks for git: whose changes these are, and how much of
+   * them git managed to report. Neither question applies to a list built from
+   * the transcript, and answering them anyway would be #690's defect committed
+   * a second time — a sentence that is true of one mode stated over another.
+   * So the turn scope supplies its own pair, and the word doing the work is
+   * "reported": the patches below are the ones the agent's tool produced, which
+   * is not the same as what is on disk, and this is the only place a reader
+   * would find that out.
+   */
+  const turnFraming = turn
+    ? {
+        headline: `${describeReview(shown)} — ${turnLabel(turn)}`,
+        note: "What this turn reported writing — the agent's own patches, not the checkout. Git may disagree, and the working-tree scope is where you would see it.",
+      }
+    : undefined;
+
   return (
     <div className="flex min-h-full flex-col">
       {/* THE HEADLINE ANSWERS THE QUESTION IN ONE LINE: how far back the
           comparison reaches, and how big the answer is. */}
       <div className="border-b border-border px-4 py-2.5">
         <div className="flex items-baseline gap-2 text-2xs">
-          <span className="text-muted-foreground">since</span>
-          <span className="font-mono text-foreground">{diff.base ? diff.base.slice(0, 8) : "the last commit"}</span>
-          {diff.branch && (
+          <DiffScopePicker
+            tab={tab}
+            {...(onTabChange ? { onTabChange } : {})}
+            hasSession={Boolean(sessionId)}
+            {...(refs ? { refs } : {})}
+            {...(turns ? { turns } : {})}
+            sessionBase={diff.base}
+          />
+          {diff.branch && tab.kind !== "turn" && (
             <>
-              <span className="text-border">on</span>
               <GitBranchIcon className="size-3 shrink-0 text-muted-foreground" />
               <span className="min-w-0 truncate font-mono">{diff.branch}</span>
             </>
@@ -688,49 +1355,63 @@ export function DiffSurface({
             <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
           </button>
         </div>
-        <p className="mt-1 text-sm font-medium tabular-nums">{describeReview(shown)}</p>
+        {/* THE FIGURE IS THE FIRST THING READ, so it is the first thing that has
+            to stop being a fact when it is a floor (#654). The band below says
+            why; this only has to make sure nobody's eye lands on a bold "0
+            files" and takes it for the answer. WHOSE figure it is comes from
+            the fold (#690); how COMPLETE it is stays here, being a property of
+            the read rather than of the checkout. */}
+        <p className={cn("mt-1 text-sm font-medium tabular-nums", !turnFraming && diff.filesIncomplete && "text-warning")}>
+          {turnFraming?.headline ?? framing.headline}
+          {/* A GIT DOUBT, so it is silent over a list git did not produce. */}
+          {!turnFraming && diff.filesIncomplete && <span className="ml-1.5 text-2xs font-normal">· incomplete</span>}
+        </p>
         <p className="mt-0.5 text-2xs leading-snug text-muted-foreground">
-          {/* WITHOUT A BASE THIS IS A SMALLER QUESTION, and saying so is the
-              difference between an honest figure and a wrong one: a session
-              that committed its work would otherwise review as having done
-              nothing at all. */}
-          {!sessionId
-            ? "Everything uncommitted in this project right now."
-            : diff.base
-              ? "Everything this session changed, committed and uncommitted."
-              : "No starting commit was recorded, so this counts only what is uncommitted."}
+          {/* WHICH QUESTION THESE FIGURES ANSWER — `reviewFraming`. Without a
+              base it is a smaller question; over a read git cut short it is "as
+              much as git reported" rather than "everything" (#654); and on a
+              SHARED checkout it is a question about the checkout rather than
+              about this session (#690), so the sentence says so instead of
+              claiming work the session may never have done. The TURN scope
+              answers none of those questions and says which witness it is
+              instead (#694). */}
+          {turnFraming?.note ?? framing.note}
           {/* THE FILTER IS SAID OUT LOUD, because the figure above it is a
               count of a SUBSET and everything else on this line describes the
               whole. A tab you came back to an hour later has to be able to
               explain why it disagrees with the one beside it. */}
           {trimmed ? ` Filtered to ${trimmed} — ${review.filesChanged} ${review.filesChanged === 1 ? "file" : "files"} in all.` : ""}
-          {diff.ahead !== undefined && diff.ahead > 0 ? ` ${diff.ahead} ahead of upstream.` : ""}
-          {diff.truncated ? " The list below is capped; the figures above are not." : ""}
+          {/* Both are facts about the git read, so both go quiet over a turn. */}
+          {!turnFraming && diff.ahead !== undefined && diff.ahead > 0 ? ` ${diff.ahead} ahead of upstream.` : ""}
+          {!turnFraming && diff.truncated ? " The list below is capped; the figures above are not." : ""}
         </p>
         {/* THE FIELD IS THE INSTANCE'S IDENTITY, so it sits in the header where
             a tab's subject belongs — beside the branch it is a review of, not
             buried in a menu. Typing writes straight through to the tab's
             params: there is no local copy to fall out of step with the label,
             and clearing the field clears the param. */}
-        {onFilterChange && (
+        {onTabChange && (
           <div className="mt-2 flex items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1 focus-within:border-ring">
             <ListFilterIcon className="size-3 shrink-0 text-muted-foreground" />
             <input
               type="text"
-              value={filter ?? ""}
-              onChange={(event) => onFilterChange(event.target.value)}
+              value={tab.filter ?? ""}
+              /* THROUGH THE WHOLE TAB, never `{ filter }` alone: params are a
+                 REPLACE, so a partial write here would silently reset the scope
+                 and the base this reader chose two clicks ago. */
+              onChange={(event) => onTabChange({ ...tab, filter: event.target.value })}
               placeholder="Filter by folder or file"
               aria-label="Filter this review by path"
               spellCheck={false}
               autoComplete="off"
               className="min-w-0 flex-1 bg-transparent font-mono text-2xs outline-none placeholder:font-sans placeholder:text-muted-foreground"
             />
-            {filter && (
+            {tab.filter && (
               <button
                 type="button"
                 aria-label="Clear the filter"
                 title="Clear the filter"
-                onClick={() => onFilterChange("")}
+                onClick={() => onTabChange({ ...tab, filter: "" })}
                 className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
               >
                 <XIcon className="size-3" />
@@ -740,37 +1421,60 @@ export function DiffSurface({
         )}
       </div>
 
-      {/* The reconciliation needs a TRANSCRIPT to disagree with. A canvas has
-          none, so the band would be reporting every file as "never mentioned"
-          by a session that has not said anything yet. */}
-      {sessionId && <ReconciliationBand review={shown} />}
-      <CommitList commits={diff.commits} />
+      {/* HOW THE PATCHES ARE DRAWN, under the header that says WHICH review this
+          is and above the bands that say how much to trust it. */}
+      <DiffToolbar view={view} setView={setView} anyOpen={anyOpen} onToggleAll={toggleAll} expandable={shownPaths.length > 0} />
+
+      {/* EVERY BAND BELOW REPORTS ON THE GIT READ, so all three go quiet over a
+          turn (#694): what git failed to answer, where the transcript and the
+          disk disagree, and which commits the session made are three facts
+          about a comparison this scope did not make. Showing them would attach
+          git's doubts to the journal's list — the exact conflation #690 was
+          about, in the other direction. */}
+      {!turnFraming && (
+        <>
+          {/* FIRST OF THE BANDS, because it is the only one that can make
+              everything under it untrustworthy — including the other band's
+              own figures. */}
+          <DiffUnknownBand diff={diff} onRetry={load} />
+          {/* The reconciliation needs a TRANSCRIPT to disagree with. A canvas
+              has none, so the band would be reporting every file as "never
+              mentioned" by a session that has not said anything yet — and a
+              shared checkout has one that cannot speak for the tree (#690,
+              `framing.journal`). */}
+          {sessionId && <ReconciliationBand review={shown} journal={framing.journal} />}
+          <CommitList commits={diff.commits} />
+        </>
+      )}
 
       {shown.rows.length === 0 ? (
-        <div className="px-4 py-6 text-center text-2xs text-muted-foreground">
-          {/* A FILTER THAT MATCHES NOTHING IS NOT AN EMPTY REVIEW, and saying
-              "nothing differs" over a tree with forty changed files would send
-              somebody looking for a bug in git. */}
-          {trimmed ? (
-            <>
-              Nothing under <span className="font-mono">{trimmed}</span> differs.
-              {review.rows.length > 0 && ` The rest of the review has ${review.rows.length} ${review.rows.length === 1 ? "file" : "files"}.`}
-            </>
-          ) : (
-            <>
-              Nothing differs from where this session started.
-              {review.settled.length > 0 && " Everything it wrote has been put back or committed."}
-            </>
-          )}
-        </div>
+        turnFraming ? (
+          <div className="px-4 py-6 text-center text-2xs text-muted-foreground">
+            {/* THREE DIFFERENT EMPTIES, and only the first is about this turn:
+                a turn that read and reasoned and wrote nothing is ordinary, a
+                filter that matches none of its files is not a claim about the
+                turn, and a session that has not written anything yet has no
+                turn to show. */}
+            {turns && turns.length === 0
+              ? "No turn in this conversation has reported writing a file yet."
+              : trimmed
+                ? `This turn reported nothing under ${trimmed}.`
+                : "This turn reported writing nothing."}
+          </div>
+        ) : (
+          <ReviewEmptyState review={review} trimmed={trimmed} filesIncomplete={diff.filesIncomplete} />
+        )
       ) : (
         <div className="flex flex-col">
           {/* Unreported rows lead. They are the ones a reviewer has not seen,
               and burying them in alphabetical order defeats the point. On a
               canvas there is no transcript, so NOTHING is unreported — badging
               every row would be reporting a disagreement with a conversation
-              that has not happened. */}
-          {sessionId && shown.rows.filter((row) => !row.reported).length > 0 && shown.rows.some((row) => row.reported) && (
+              that has not happened. A SHARED CHECKOUT is the same case for a
+              different reason (#690): the transcript is real, but it was never
+              the only thing writing to this tree, so its silence about a row
+              accuses nobody. */}
+          {framing.journal && shown.rows.filter((row) => !row.reported).length > 0 && shown.rows.some((row) => row.reported) && (
             <PanelDivider label="not in the transcript" />
           )}
           {shown.rows
@@ -780,18 +1484,31 @@ export function DiffSurface({
                 key={row.file.path}
                 readPatch={readPatch}
                 file={row.file}
-                reported={!sessionId}
+                reported={!framing.journal}
+                view={view}
+                open={openPaths.has(row.file.path)}
+                onToggle={() => toggleRow(row.file.path)}
                 {...(row.registration ? { registration: row.registration } : {})}
                 {...rowMenu}
               />
             ))}
-          {sessionId && shown.rows.some((row) => row.reported) && shown.rows.some((row) => !row.reported) && (
+          {framing.journal && shown.rows.some((row) => row.reported) && shown.rows.some((row) => !row.reported) && (
             <PanelDivider label="the session wrote these" />
           )}
           {shown.rows
             .filter((row) => row.reported)
             .map((row) => (
-              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported {...(row.edits ? { edits: row.edits } : {})} {...rowMenu} />
+              <ReviewFileRow
+                key={row.file.path}
+                readPatch={readPatch}
+                file={row.file}
+                reported
+                view={view}
+                open={openPaths.has(row.file.path)}
+                onToggle={() => toggleRow(row.file.path)}
+                {...(row.edits ? { edits: row.edits } : {})}
+                {...rowMenu}
+              />
             ))}
         </div>
       )}
@@ -805,6 +1522,7 @@ export function DiffSurface({
           sessionId={sessionId}
           suggestion={suggestion}
           files={review.filesChanged}
+          {...(diff.filesIncomplete ? { countIncomplete: true } : {})}
           busy={active === "running" || active === "claimed"}
           workspacePath={diff.workspacePath}
           onCommitted={() => void load()}

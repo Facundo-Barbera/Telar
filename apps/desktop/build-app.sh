@@ -103,6 +103,27 @@ test -f "$PW_BUNDLE/node_modules/@playwright/mcp/cli.js" \
 # on the user's own install and refuses the turn with an actionable message when
 # it is missing or speaks a different control protocol (cli-resolution.ts).
 
+# NOT MATERIALIZED, AND DELIBERATELY SO: the Agent's LangGraph dependencies
+# (#531). `@langchain/langgraph`, `@langchain/core`, `@langchain/openai` and
+# `@langchain/langgraph-checkpoint-sqlite` are INLINED by the `bun build` above,
+# like every other engine dependency — the Agent SDK is external because
+# `cli-resolution.ts` reads its package.json off disk, and nothing in the agent
+# runtime reads a file out of its own node_modules.
+#
+# THE NATIVE `better_sqlite3.node` IS NOT IN THE .app, AND DOES NOT NEED TO BE.
+# `@langchain/langgraph-checkpoint-sqlite` statically imports `better-sqlite3`,
+# so the bundler inlines that package's JAVASCRIPT (~15 modules, negligible next
+# to 3 MB of LangChain). It never inlines the addon: better-sqlite3 resolves
+# `better_sqlite3.node` through `bindings()` INSIDE the `Database` constructor,
+# and Telar never constructs one — `agent/checkpointer.ts` hands the published
+# saver Telar's own driver (`bun:sqlite` under Bun, `node:sqlite` under
+# Electron-as-Node, the same fork `execution-store.ts` makes). Verified by
+# running the bundle under plain `node` in an empty directory: it loads.
+#
+# So there is nothing to exclude here. If a future change ever calls
+# `SqliteSaver.fromConnString` — the one path that DOES construct better-sqlite3
+# — this stops being true and the .app would need a per-ABI native build.
+
 echo "==> ready"
 echo "    web:    $STANDALONE_WEB/server.js"
 echo "    engine: $ENGINE_DIST/engine.mjs"

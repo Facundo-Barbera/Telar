@@ -37,8 +37,6 @@ actor RecordingEngineAPI: EngineAPI {
         return eventPages.removeFirst()
     }
 
-    func sessionData(_ id: EngineID) async throws -> Data { fatalError("unused") }
-    func liveSessionsData() async throws -> Data { fatalError("unused") }
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data { fatalError("unused") }
 
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult { fatalError("unused") }
@@ -212,5 +210,66 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
         )
         let tail = try await tailSession(api, "s", after: 42)
         #expect(tail.cursor == 42)
+    }
+
+    /// THE JOURNAL ARRIVES IN PAGES NOW (#494). A phone that folded the first
+    /// one and stopped would show a transcript silently short of what the
+    /// session did — worse than the 36.5 MB over the radio that paging removes.
+    @Test func aFullPageIsFollowedFromTheLastIdSeen() async throws {
+        let api = RecordingEngineAPI(
+            eventPages: [
+                page(#"{"events":[{"id":11,"at":1,"sessionId":"s","type":"turn.started"},{"id":12,"at":1,"sessionId":"s","runId":"r","type":"content.delta","itemId":"i","stream":"assistant_text","text":"x"}],"cursor":12,"more":true,"next":12}"#),
+                page(#"{"events":[{"id":13,"at":1,"sessionId":"s","runId":"r","type":"content.delta","itemId":"i","stream":"assistant_text","text":"y"}],"cursor":13,"more":false}"#),
+            ],
+            snapshots: [snapshot()]
+        )
+        let tail = try await tailSession(api, "s", after: 10)
+        // KEYSET: each ask names the last id folded, so a delta landing
+        // mid-walk can be neither skipped nor counted twice.
+        #expect(await api.recorded() == ["events(10)", "events(12)", "session"])
+        #expect(tail.events.map(\.id) == [11, 12, 13])
+        #expect(tail.cursor == 13)
+    }
+
+    /// A page claiming `more` that moved nothing ends the walk. This is the one
+    /// way the loop could fail to finish, and a poll may not hang.
+    @Test func aStalledPageEndsTheWalkRatherThanSpinning() async throws {
+        let api = RecordingEngineAPI(
+            eventPages: [page(#"{"events":[],"cursor":5,"more":true,"next":5}"#)],
+            snapshots: []
+        )
+        let tail = try await tailSession(api, "s", after: 5)
+        #expect(await api.recorded() == ["events(5)"])
+        #expect(tail.cursor == 5)
+    }
+
+    /// An engine older than the paged route never sends `more`, and absent must
+    /// mean what it always did: that was everything.
+    @Test func anEngineWithoutMoreIsReadExactlyAsItAlwaysWas() async throws {
+        let api = RecordingEngineAPI(
+            eventPages: [page(#"{"events":[{"id":7,"at":1,"sessionId":"s","type":"turn.started"}],"cursor":7}"#)],
+            snapshots: [snapshot()]
+        )
+        let tail = try await tailSession(api, "s", after: 6)
+        #expect(await api.recorded() == ["events(6)", "session"])
+        #expect(tail.events.map(\.id) == [7])
+    }
+
+    /// The cursorless fallback wants the journal's END, and a page answers from
+    /// its BEGINNING — taking page one's last id would tail from event 2 and
+    /// re-fold the whole history, the exact cost paging exists to remove.
+    @Test func theCursorlessFallbackWalksToTheEndOfTheJournal() async throws {
+        let api = RecordingEngineAPI(
+            eventPages: [
+                page(#"{"events":[{"id":1,"at":1,"sessionId":"s","type":"turn.started"}],"cursor":1,"more":true,"next":1}"#),
+                page(#"{"events":[{"id":2,"at":1,"sessionId":"s","type":"turn.completed","resultText":"ok"}],"cursor":2,"more":false}"#),
+                page(#"{"events":[],"cursor":2,"more":false}"#),
+            ],
+            snapshots: [snapshot()]
+        )
+        let hydrated = try await hydrateSession(api, "s")
+        #expect(await api.recorded() == ["session", "events(0)", "events(1)", "events(2)"])
+        #expect(hydrated.cursor == 2)
+        #expect(hydrated.events.isEmpty)
     }
 }

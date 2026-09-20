@@ -3,6 +3,8 @@
 import type { Channel } from "@/lib/build-identity";
 import type {
   BrowserSnapshot,
+  ClaudeConversation,
+  ConversationImportDetail,
   GitCommitEntry,
   GitHubCheckLog,
   GitHubFacets,
@@ -42,9 +44,25 @@ import type {
   InboxPolicy,
   AgentOrientation,
   EnvMode,
+  AgentAnswer,
+  AgentModelCatalogue,
+  AgentState,
+  AgentInboxAnswer,
+  AgentThreadAnswer,
+  DictationAnswer,
+  DictationProviderId,
+  DictationDiagnosisAnswer,
+  DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
+  JournalReclaim,
+  StorageReport,
   TextGenPolicy,
+  WorktreeMoveResult,
+  WorktreeInventory,
+  WorktreeReclaimItem,
+  WorktreeReclaimOutcome,
+  WorktreesRoot,
   UsageReport,
   UsageResolution,
   UsageLimits,
@@ -54,14 +72,15 @@ import type {
   CustomProviderModel,
   SessionDiff,
   EngineErrorCode,
-  EngineEvent,
   EngineHealth,
+  EventPage,
   McpOAuthStatus,
   McpServer,
   McpServerSpec,
   ModelSelection,
   Project,
   ProjectNote,
+  PreparedPrompt,
   TurnAttachment,
   TurnModelSelection,
   ProviderDriverKind,
@@ -72,6 +91,7 @@ import type {
   ProviderUpdateRun,
   PublishedAppearance,
   EngineRequest,
+  ReportWindowStatus,
   RequestDecision,
   RuntimeMode,
   LiveSessionRow,
@@ -89,8 +109,11 @@ import type {
   ProjectPlugins,
   Subscription,
   WakeKind,
+  GitFilePatch,
+  DiffBaseOption,
+  FilePatchOptions,
 } from "@telar/engine-client";
-import { forgeQuery, snapshotQuery } from "@telar/engine-client";
+import { diffBaseQuery, filePatchQuery, forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pathnameFetcher, pinnedHost } from "@/lib/hosts/client";
 // Type-only, like `Channel` above: `lib/fs-dirs.ts` reads the filesystem and
 // must not follow into the browser bundle.
@@ -193,35 +216,86 @@ function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undef
  */
 export const READ_BUDGET = 2;
 
-let reading = 0;
-const queued: Array<() => void> = [];
-
-/** Take a slot, waiting in line when the budget is spent. */
-async function acquireRead(): Promise<void> {
-  if (reading < READ_BUDGET) {
-    reading += 1;
-    return;
-  }
-  await new Promise<void>((resolve) => queued.push(resolve));
-}
+/**
+ * …AND ONE SLOT THAT ONLY AN OPENING MAY TAKE (#497).
+ *
+ * `/bootstrap` is the read that IS the click. Everything else the budget
+ * governs is a poll on a timer nobody pressed — and a poll landing a
+ * microsecond earlier was enough to put the one read a person is waiting on
+ * third in a queue of two. That is the "opening a conversation takes three
+ * serial round trips" in #490's audit: the wait was not the engine answering,
+ * it was this gate deciding the rail's housekeeping went first.
+ *
+ * ONE, NOT MORE, AND SEPARATE RATHER THAN RESERVED. Separate because a slot
+ * carved out of the two would halve ordinary read throughput for the whole life
+ * of the tab to serve a read that happens on a click; one because a person
+ * opens one conversation at a time, and the rail's warm-ups (lib/rail-prefetch)
+ * coalesce onto the same `SessionConnection` the cockpit reads, so two
+ * concurrent openings of the same conversation are one request already.
+ *
+ * THE CEILING IS THEREFORE THREE, not two — and #82's arithmetic still holds
+ * with room over: six connections per origin, minus three, leaves three free
+ * for navigation, which needs one. In practice the opening burst got SMALLER,
+ * not larger: `/projects` and `/browser` no longer go out beside `/bootstrap`
+ * at all (see the cockpit's `transcriptLanded` gate), so what used to be three
+ * reads contending for two slots is now one read on a slot of its own.
+ */
+export const OPEN_BUDGET = 1;
 
 /**
- * Hand the slot to whoever is next in line, or give it back.
+ * One budget and its queue.
  *
- * The waiter is resumed WITHOUT touching `reading` — the slot is transferred,
- * not released and re-taken, so a third caller arriving in the same tick cannot
- * slip past the queue into the gap that a decrement would open.
+ * WAS TWO MODULE-LEVEL VARIABLES AND TWO FUNCTIONS, which is fine for one gate
+ * and a copy-paste bug waiting for the second. The behaviour is unchanged and
+ * the comments below are the originals: nothing is dropped or debounced,
+ * over-budget callers queue FIFO and go out as slots free.
  */
-function releaseRead(): void {
-  const next = queued.shift();
-  if (next) {
-    next();
-    return;
-  }
-  reading -= 1;
+function gate(budget: number) {
+  let live = 0;
+  const queued: Array<() => void> = [];
+  return {
+    /** Take a slot, waiting in line when the budget is spent. */
+    async take(): Promise<void> {
+      if (live < budget) {
+        live += 1;
+        return;
+      }
+      await new Promise<void>((resolve) => queued.push(resolve));
+    },
+    /**
+     * Hand the slot to whoever is next in line, or give it back.
+     *
+     * The waiter is resumed WITHOUT touching `live` — the slot is transferred,
+     * not released and re-taken, so a third caller arriving in the same tick
+     * cannot slip past the queue into the gap that a decrement would open.
+     */
+    give(): void {
+      const next = queued.shift();
+      if (next) {
+        next();
+        return;
+      }
+      live -= 1;
+    },
+  };
 }
 
-async function request<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+type Gate = ReturnType<typeof gate>;
+
+const reads = gate(READ_BUDGET);
+/** The opening's own slot. Exported for the cockpit's sake only in the sense
+ *  that `sessionBootstrap` below is the single caller — nothing else may take
+ *  it, or it stops being the thing that makes an opening never wait. */
+const opens = gate(OPEN_BUDGET);
+
+async function request<T>(
+  fetcher: Fetcher,
+  method: string,
+  pathname: string,
+  body?: unknown,
+  signal?: AbortSignal,
+  lane: Gate = reads,
+): Promise<T> {
   /**
    * READS ARE BUDGETED; EVERYTHING ELSE GOES STRAIGHT OUT.
    *
@@ -235,11 +309,11 @@ async function request<T>(fetcher: Fetcher, method: string, pathname: string, bo
    * of those parked in a slot would starve the tail for as long as it ran.
    */
   const budgeted = method === "GET" && signal === undefined;
-  if (budgeted) await acquireRead();
+  if (budgeted) await lane.take();
   try {
     return await send<T>(fetcher, method, pathname, body, signal);
   } finally {
-    if (budgeted) releaseRead();
+    if (budgeted) lane.give();
   }
 }
 
@@ -304,6 +378,15 @@ export type LiveSessionsPage = {
   /** What to pass as `since` next time. Absent from an engine too old to
    *  count, which keeps every read a full one. */
   revision?: number;
+  /** How many SETTLED rows this answer left out (#457) — the size of the shelf
+   *  behind `?all=1`. Absent from an engine that predates the filter, which
+   *  means "you have everything", never "the shelf is empty". */
+  settledCount?: number;
+  /** Whether this Mac has a built-in Agent (#531) — one flag, which is all a
+   *  pinned row showing a label needs. Rides this read for `inbox`'s reason:
+   *  the rail already polls it, per host, per tick. Absent is off, and so is an
+   *  engine older than the feature. */
+  agent?: { enabled: boolean };
   unchanged?: false;
 };
 
@@ -435,6 +518,107 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
     setSessionDefaults: (patch: { envMode?: EnvMode }) =>
       request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
+    /* -------------------------------------------------------------- *
+     * THE BUILT-IN AGENT — issue #531.
+     *
+     * NOT UNDER `/api/sessions/`, because the Agent is not one: its
+     * conversation is a thread rather than a journal, and a screen that
+     * reached it through a session route would be told a conversation exists
+     * that `sessionBootstrap` cannot open.
+     *
+     * The RAIL calls none of these — `liveSessions` above carries
+     * `agent: { enabled }`, which is the whole of what the entry needs.
+     * -------------------------------------------------------------- */
+    /** Whether this Mac has an Agent, which thread, whether a turn runs, and
+     *  the one approval it may be parked on. The credential rides along —
+     *  which RUNG answered, never the key. */
+    agent: () => request<AgentAnswer>(fetcher, "GET", "/api/agent"),
+    /** Switch it on, pick its model, choose its effort and access, paste its
+     *  key, or start again. `reset` archives the conversation and mints a new
+     *  thread; it is the only patch that moves `generation`. `effort` and
+     *  `access` take `""` to clear — see `EngineClient.setAgent`. */
+    setAgent: (patch: { enabled?: boolean; model?: string; effort?: string; access?: string; reset?: boolean; apiKey?: string }) =>
+      request<AgentAnswer>(fetcher, "PATCH", "/api/agent", patch),
+    /** What OpenCode Go serves the Agent, DESCRIBED — names, families, context
+     *  limits and the endpoint each id answers on (#551). FAILS SOFT in two
+     *  independent halves: `source.go === null` is an unreachable Go and an
+     *  empty list, `source.modelsDev === null` is a full list of undescribed
+     *  ids. Either way a `message` carries the reason rather than an error. */
+    agentModels: () => request<AgentModelCatalogue>(fetcher, "GET", "/api/agent/models"),
+    /** Say something. The run id comes back before the turn runs, so the
+     *  composer has something to name in a Cancel. */
+    sendAgentTurn: (text: string) =>
+      request<{ runId: string; queued: number; agent: AgentState }>(fetcher, "POST", "/api/agent/turns", { text }),
+    /** Stop the live turn, or drop a queued one. `stopped: false` means there
+     *  was nothing left to stop, which is a fact rather than an error. */
+    cancelAgentTurn: (runId: string) =>
+      request<{ stopped: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/turns/${encodeURIComponent(runId)}/cancel`),
+    /** The transcript, bounded by a count AND a byte budget — #515's rule.
+     *  `after` pages forward; `tail` opens on the LAST page and `before` walks
+     *  back from it (#580). Page until `more` is false. */
+    agentThread: (options: { after?: number; before?: number; tail?: boolean; limit?: number } = {}) => {
+      const query = new URLSearchParams();
+      if (options.after !== undefined) query.set("after", String(options.after));
+      if (options.before !== undefined) query.set("before", String(options.before));
+      if (options.tail) query.set("tail", "1");
+      if (options.limit !== undefined) query.set("limit", String(options.limit));
+      const suffix = query.toString();
+      return request<AgentThreadAnswer>(fetcher, "GET", `/api/agent/thread${suffix ? `?${suffix}` : ""}`);
+    },
+    /** Answer the parked approval BY ID, so a stale question cannot approve the
+     *  one that replaced it. `resolved: false` means it was already answered. */
+    resolveAgentRequest: (requestId: string, decision: "accept" | "decline") =>
+      request<{ resolved: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/requests/${encodeURIComponent(requestId)}`, { decision }),
+    /** THE WAKE INBOX (#541 A) — what a completion on a subscribed session writes
+     *  now that it no longer starts an Agent turn. `unreadOnly` is the strip
+     *  above the composer; without it this pages the whole inbox. */
+    agentInbox: (options: { after?: number; limit?: number; unreadOnly?: boolean } = {}) => {
+      const query = new URLSearchParams();
+      if (options.after !== undefined) query.set("after", String(options.after));
+      if (options.limit !== undefined) query.set("limit", String(options.limit));
+      if (options.unreadOnly) query.set("unread", "1");
+      const suffix = query.toString();
+      return request<AgentInboxAnswer>(fetcher, "GET", `/api/agent/inbox${suffix ? `?${suffix}` : ""}`);
+    },
+    /** Mark rows read BY ID, so a client holding a stale list cannot clear rows
+     *  that landed after it last looked. `read` is how many actually moved. */
+    markAgentInboxRead: (ids: readonly number[]) =>
+      request<{ read: number; unread: number }>(fetcher, "POST", "/api/agent/inbox/read", { ids: [...ids] }),
+    /* -------------------------------------------------------------- *
+     * DICTATION — issue #544, first step.
+     *
+     * NO AUDIO GOES THROUGH THE ENGINE. The microphone is in this browser,
+     * so the engine holds the key and hands out a token that dies in
+     * minutes; the page opens its own socket to the provider with it. Both
+     * answers carry `provider` so a second vendor can follow without every
+     * surface being rebuilt to guess.
+     * -------------------------------------------------------------- */
+    /** Which provider transcribes, and whether this Mac has its key. NEVER the
+     *  key — `configured` is the whole of what may be said about it. */
+    dictation: () => request<DictationAnswer>(fetcher, "GET", "/api/dictation"),
+    /** Choose a provider, choose a language, paste its key, or clear the key
+     *  with an empty string. The key is WRITE-ONLY: it goes down and never
+     *  comes back. Any field absent leaves the stored one alone — switching
+     *  providers throws away neither a key nor a language. */
+    setDictation: (patch: { provider?: DictationProviderId; apiKey?: string; language?: string }) =>
+      request<DictationAnswer>(fetcher, "PATCH", "/api/dictation", patch),
+    /** Mint a token for one dictation. Fetch one per press of the button
+     *  rather than holding one: it expires in minutes, and `expiresAt` is an
+     *  instant so a caller compares it against its own clock. */
+    dictationToken: () => request<DictationTokenAnswer>(fetcher, "POST", "/api/dictation/token"),
+    /**
+     * Why the last dictation failed (#711).
+     *
+     * AFTER A SOCKET FAILS, NOT BEFORE ONE OPENS. A browser's `WebSocket` error
+     * event carries no reason BY DESIGN — the status of a failed cross-origin
+     * handshake would be an oracle — so this asks the engine, which holds the
+     * key, to ask Deepgram and answer in Deepgram's own words.
+     *
+     * A CALLER MUST SURVIVE IT FAILING. The sentence it already has is honest;
+     * this one is better. An engine too old for this route answers 404, and
+     * then the honest one is what a person sees.
+     */
+    dictationDiagnosis: () => request<DictationDiagnosisAnswer>(fetcher, "POST", "/api/dictation/diagnose"),
     /** Where each project group sits in the rail — see `SidebarLayout`. One
      *  arrangement for every client of this engine. */
     sidebarLayout: () => request<{ layout: SidebarLayout }>(fetcher, "GET", "/api/sidebar-layout"),
@@ -461,6 +645,42 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `refresh`, which waits for a fresh read of every configured hub. */
     usageLimits: (options: { refresh?: boolean } = {}) =>
       request<{ limits: UsageLimits }>(fetcher, "GET", `/api/usage/limits${options.refresh ? "?refresh=1" : ""}`),
+    /** What Telar keeps on disk, by category — see `StorageReport`. The first
+     *  call of an engine's life walks the store and is SLOW; every call after
+     *  it returns that walk's answer with the moment it was taken, until
+     *  `refresh` asks for another. Never put this on a timer (#629). */
+    storage: (options: { refresh?: boolean } = {}) =>
+      request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`),
+    /** Compact the turn journal and return its freed pages to the filesystem —
+     *  see `JournalReclaim`. SLOW and exclusive: the vacuum behind it rewrites
+     *  the database under a lock. It drops rows a settled turn has superseded
+     *  and never a turn, an item or an answer. */
+    reclaimJournal: () => request<{ reclaimed: JournalReclaim }>(fetcher, "POST", "/api/storage/journal/reclaim", {}),
+    /** Where session checkouts go on this install — see `WorktreesRoot`. */
+    worktreesRoot: () => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "GET", "/api/worktrees-root"),
+    /** Put them somewhere else from the next cut on; `null` restores the
+     *  default. Nothing is moved and no restart is needed — a checkout already
+     *  cut is addressed by the path recorded on its session. */
+    setWorktreesRoot: (root: string | null) => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "PUT", "/api/worktrees-root", { root }),
+    /** Move the checkouts already cut, by re-cutting each from its own branch.
+     *  SLOW (two git commands per checkout) and partial by design: one holding
+     *  uncommitted changes is refused by git, reported, and left alone. */
+    moveWorktrees: () => request<{ move: WorktreeMoveResult }>(fetcher, "POST", "/api/worktrees-root/move", {}),
+    /** Every checkout this install is keeping, CLASSIFIED — see
+     *  `WorktreeVerdict` (#671). Each row carries a verdict rather than four
+     *  columns to reason from: Telar proves merged, clean and unclaimed so a
+     *  reader does not check three things by hand before daring to delete.
+     *  SLOW — a walk per checkout — and never cached, because every rung of
+     *  the classification is live and a cached verdict was true earlier. */
+    worktrees: () => request<{ inventory: WorktreeInventory }>(fetcher, "GET", "/api/worktrees"),
+    /** Give checkouts back. THIS ARCHIVES SESSIONS: a settled session's
+     *  checkout is released by putting that session down, which is the only
+     *  supported way (settling deliberately does not release one, and nothing
+     *  re-cuts a missing worktree). `confirm` is the basename, typed, and is
+     *  required for every `needs-force` row. Refusals come back per item, not
+     *  as an error status. */
+    reclaimWorktrees: (items: readonly WorktreeReclaimItem[]) =>
+      request<{ reclaim: WorktreeReclaimOutcome }>(fetcher, "POST", "/api/worktrees/reclaim", { items }),
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>
@@ -535,10 +755,40 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
         patch,
       ),
-    /** A REAL delete, unlike the Spool shelf's retire — a project note is a
-     *  scratchpad. `deleted: false` means it was already gone, never an error. */
+    /** A REAL delete, not a retire — a project note is a scratchpad.
+     *  `deleted: false` means it was already gone, never an error. */
     deleteProjectNote: (projectId: string, noteId: string) =>
       request<{ deleted: boolean }>(fetcher, "DELETE", `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`),
+    /**
+     * THE PROJECT'S PROMPT SHELF — the composer's stash draws this beside the
+     * ⌘S queue.
+     *
+     * Uncached for a sharper version of the notebook's reason: the other writer
+     * is a WORKER, drafting a follow-up while you watch the turn that writes it.
+     * Already ordered newest-first, so nothing on this side re-sorts.
+     */
+    projectPrompts: (projectId: string) =>
+      request<{ prompts: PreparedPrompt[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/prompts`),
+    /** `text` is required and may not be blank: a prepared prompt with no
+     *  message is a row that does nothing when you press it. */
+    createProjectPrompt: (projectId: string, input: { title: string; text: string; reason?: string; sessionId?: string }) =>
+      request<{ prompt: PreparedPrompt }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/prompts`, input),
+    /** The author NEVER changes — the engine refuses a patch that names it. */
+    updateProjectPrompt: (projectId: string, promptId: string, patch: { title?: string; text?: string; reason?: string }) =>
+      request<{ prompt: PreparedPrompt }>(
+        fetcher,
+        "PATCH",
+        `/api/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`,
+        patch,
+      ),
+    /** How a prepared prompt ends: sent, or discarded. `deleted: false` means it
+     *  was already gone, never an error. */
+    deleteProjectPrompt: (projectId: string, promptId: string) =>
+      request<{ deleted: boolean }>(
+        fetcher,
+        "DELETE",
+        `/api/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`,
+      ),
     pinProjectNote: (projectId: string, noteId: string, pinned: boolean) =>
       request<{ note: ProjectNote }>(
         fetcher,
@@ -652,8 +902,14 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * bytes and no fold — instead of every row the caller already has. Check
      * `unchanged` before reading `sessions`: it means "keep what you have", and
      * a rail that redrew from it would blank itself once a tick.
+     *
+     * `all` IS THE SHELF'S ASK (#457). The route answers only the UNSETTLED rows
+     * by default — 7 of 291 on the owner's store — and `settledCount` says how
+     * many it left out, so a rail can draw the shelf header that opens it and
+     * only then pay for the rows behind it.
      */
-    liveSessions: () => request<LiveSessionsPage>(fetcher, "GET", "/api/sessions/live"),
+    liveSessions: (options: { all?: boolean } = {}) =>
+      request<LiveSessionsPage>(fetcher, "GET", options.all ? "/api/sessions/live?all=1" : "/api/sessions/live"),
     /**
      * THE SAME PASS, CONDITIONALLY — the read a RAIL should make (#459).
      *
@@ -673,6 +929,64 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         "GET",
         `/api/sessions/live?since=${encodeURIComponent(String(since))}`,
       ),
+    /**
+     * THE SAME PASS, CONDITIONAL ON AN ETAG — issue #457, step 3.
+     *
+     * `liveSessionsSince` is this in the body and it stays. What the header buys
+     * is a 304 with NO BODY at all, and — the part the cursor cannot do — a
+     * conditional WIDE read: the mode is inside the tag, where a `?since=`
+     * earned against the unsettled list would have been answered "unchanged"
+     * against `?all=1` and left the Settled shelf permanently empty.
+     *
+     * ITS OWN ENVELOPE, because `send` parses a JSON body on every path and a
+     * 304 has none. It keeps the read budget, which is the part of that envelope
+     * a poll actually needs — this is one of the reads the budget exists for.
+     *
+     * `cache: "no-store"` SO THE BROWSER STAYS OUT OF IT. The conditional here
+     * is the rail's own, held per host in a ref; an HTTP cache revalidating
+     * underneath it would answer from a copy this code never saw and the tag
+     * bookkeeping would be describing someone else's state.
+     */
+    liveSessionsMatching: async (
+      options: { etag?: string; all?: boolean } = {},
+    ): Promise<{ notModified: true; etag: string } | (LiveSessionsPage & { notModified?: false; etag?: string })> => {
+      const pathname = options.all ? "/api/sessions/live?all=1" : "/api/sessions/live";
+      await reads.take();
+      let response: Response;
+      try {
+        response = await fetcher(pathname, {
+          method: "GET",
+          cache: "no-store",
+          ...(options.etag === undefined ? {} : { headers: { "if-none-match": options.etag } }),
+        });
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+        const host = answeringHost(fetcher);
+        throw new EngineApiError(
+          "engine_unavailable",
+          host ? `The cockpit cannot reach ${host.name ?? "that Mac"}.` : "The cockpit cannot reach its local adapter.",
+          undefined,
+          host,
+        );
+      } finally {
+        reads.give();
+      }
+      const etag = response.headers.get("etag") ?? undefined;
+      // 304 FIRST, AND WITHOUT TOUCHING THE BODY: there is none.
+      if (response.status === 304) return { notModified: true, etag: etag ?? options.etag ?? "" };
+      const host = answeringHost(fetcher, response);
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new EngineApiError("engine_unavailable", "The engine adapter returned an invalid response.", response.status, host);
+      }
+      if (!response.ok) {
+        const error = (payload as { error?: { code?: EngineApiErrorCode; message?: string } } | null)?.error;
+        throw new EngineApiError(error?.code ?? "internal_error", error?.message ?? "The engine request failed.", response.status, host);
+      }
+      return { ...(payload as LiveSessionsPage), ...(etag === undefined ? {} : { etag }) };
+    },
     createSession: (
       projectId: string,
       input: {
@@ -683,7 +997,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         envMode?: "local" | "worktree";
         /** Worktree base — any name from `GitOverview.refs`. Absent = HEAD. */
         baseRef?: string;
-        /** A human's own branch name, outside loom//telar/. */
+        /** A human's own branch name, outside telar/. */
         branchName?: string;
       } = {},
     ) =>
@@ -702,9 +1016,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * trips through this adapter before a transcript could be folded. Kept
      * beside `session` rather than replacing it — the paging path asks for a
      * window whose cursor it already holds and wants none of this.
+     *
+     * AND IT NO LONGER QUEUES BEHIND THE POLLS (#497). This is the one read a
+     * person is actually waiting on, so it spends `OPEN_BUDGET` — a slot of its
+     * own that the rail's passes and the cockpit's own housekeeping cannot
+     * take. See the note on that constant for why one slot and why separate.
      */
     sessionBootstrap: (sessionId: string, window?: SnapshotWindow) =>
-      request<SessionBootstrap>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/bootstrap${snapshotQuery(window)}`),
+      request<SessionBootstrap>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/bootstrap${snapshotQuery(window)}`,
+        undefined,
+        undefined,
+        opens,
+      ),
     /** Rename, change the model, or change what the session may do without
      *  asking. The model must belong to the session's provider instance — the
      *  engine rejects anything else, because a turn is routed by that instance
@@ -723,8 +1049,22 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         /** Sit out a usage limit and carry on. `null` returns the session to the
          *  driver's default — see `Session.resumeAfterRateLimit`. */
         resumeAfterRateLimit?: boolean | null;
+        /** Hold routine peer reports and deliver them together on this cadence.
+         *  `null` returns the session to arrival delivery — see
+         *  `Session.reportWindowMinutes`. */
+        reportWindowMinutes?: number | null;
       },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    /**
+     * THE CADENCE, AND WHAT IT IS HOLDING — the Agents panel's own read (#723).
+     *
+     * NOT ON `liveSessions`. `LiveSessionRow` omits `reportWindowMinutes` by
+     * contract and the rail is measured against a per-row ceiling; the held
+     * count is not on the session record at all. Two numbers, read only by the
+     * surface that shows them, and only while it is open.
+     */
+    sessionReportWindow: (sessionId: string) =>
+      request<ReportWindowStatus>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/report-window`),
     /**
      * A HUMAN WAS SHOWN THIS TURN'S RESULT. Names the turn rather than a time,
      * so a receipt that lands after newer work cannot mark that work read —
@@ -763,8 +1103,16 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       input: { decision: RequestDecision; reason?: string; answers?: Record<string, unknown> },
     ) =>
       request<{ request: EngineRequest }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input),
-    events: (sessionId: string, after: number) =>
-      request<{ events: EngineEvent[]; cursor: number; more: boolean }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`),
+    /**
+     * ONE PAGE of the journal above `after` (#494). `more` true is ordinary,
+     * not an error — see `drainEvents` in `session-sync.ts` for the loop.
+     */
+    events: (sessionId: string, after: number, limit?: number) =>
+      request<EventPage>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${limit === undefined ? "" : `&limit=${limit}`}`,
+      ),
     /** `model` rides with THIS message — queue three with different models and
      *  each runs on the one it was written under. It cannot name a provider
      *  instance, so the session's provider is fixed for its whole life. */
@@ -803,29 +1151,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  before its conversation exists. */
     projectDiff: (projectId: string) =>
       request<{ diff: SessionDiff }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/diff`),
-    projectFilePatch: (projectId: string, path: string, options: { untracked?: boolean } = {}) => {
-      const query = new URLSearchParams({ path });
-      if (options.untracked) query.set("untracked", "1");
-      return request<{ file: { patch: string; binary: boolean } }>(
+    projectFilePatch: (projectId: string, path: string, options: FilePatchOptions = {}) =>
+      request<{ file: GitFilePatch }>(
         fetcher,
         "GET",
-        `/api/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`,
-      );
+        `/api/projects/${encodeURIComponent(projectId)}/diff?${filePatchQuery(path, options)}`,
+      ),
+    /** What this session has done to the repository, against the base the Diff
+     *  surface asked for — see `DiffBaseOption` for the three states of one. */
+    sessionDiff: (sessionId: string, options: DiffBaseOption = {}) => {
+      const query = diffBaseQuery(options);
+      return request<{ diff: SessionDiff }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/diff${query ? `?${query}` : ""}`);
     },
-    /** What this session has done to the repository since it started — committed
-     *  and uncommitted together, from the base recorded at creation. */
-    sessionDiff: (sessionId: string) =>
-      request<{ diff: SessionDiff }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/diff`),
     /** One file's patch, opened on demand. */
-    sessionFilePatch: (sessionId: string, path: string, options: { untracked?: boolean } = {}) => {
-      const query = new URLSearchParams({ path });
-      if (options.untracked) query.set("untracked", "1");
-      return request<{ file: { patch: string; binary: boolean } }>(
-        fetcher,
-        "GET",
-        `/api/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`,
-      );
-    },
+    sessionFilePatch: (sessionId: string, path: string, options: FilePatchOptions = {}) =>
+      request<{ file: GitFilePatch }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/diff?${filePatchQuery(path, options)}`),
     /**
      * Every file in a checkout, for the Files tree — and one file's text.
      *
@@ -846,6 +1186,45 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      */
     sessionSkills: (sessionId: string) =>
       request<ProviderSkills>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/skills`),
+    /**
+     * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, for `/resume` (#616).
+     *
+     * ASKED PER LOGIN, NOT PER SESSION, because the picker runs on a canvas —
+     * before the session it would adopt into exists. `instanceId` is whose
+     * history to read (a configured login keeps its own config directory);
+     * absent is the built-in slot, where a terminal `claude` writes.
+     *
+     * NOT SCOPED TO A PROJECT either. Resume finds a conversation by id from
+     * any directory, so filtering to the current checkout would hide
+     * conversations that would adopt perfectly well — the project path is shown
+     * on each row instead, and the person decides.
+     */
+    claudeConversations: (instanceId?: string) =>
+      request<{ conversations: ClaudeConversation[] }>(
+        fetcher,
+        "GET",
+        `/api/claude-conversations${instanceId ? `?${new URLSearchParams({ instanceId }).toString()}` : ""}`,
+      ),
+    /** Adopt one: fork it, import its history, and point this session's next
+     *  turn at the fork. The person's own conversation is not written to. */
+    adoptClaudeConversation: (sessionId: string, sourceSessionId: string) =>
+      request<{ session: Session; turn: Turn; provenance: ConversationImportDetail }>(
+        fetcher,
+        "POST",
+        `/api/sessions/${encodeURIComponent(sessionId)}/adopt`,
+        { sourceSessionId },
+      ),
+    /**
+     * The same, one scope wider — what a CANVAS asks, because the session that
+     * would answer for itself does not exist yet (#500). `driver` is the
+     * canvas's pending choice; absent means the engine's default.
+     */
+    projectSkills: (projectId: string, driver?: ProviderDriverKind) =>
+      request<ProviderSkills>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/skills${driver ? `?${new URLSearchParams({ driver }).toString()}` : ""}`,
+      ),
     projectFile: (projectId: string, path: string) =>
       request<{ file: WorkspaceFile }>(
         fetcher,
@@ -1052,9 +1431,16 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         "GET",
         `/api/provider-instances${options.refresh ? "?refresh=1" : ""}`,
       ),
-    /** `null` clears a field; an absent key leaves it alone. Sensitive values
-     *  round-trip as `{ value: "", valueRedacted: true }` and keep their
-     *  stored secret. */
+    /**
+     * `null` clears a field; an absent key leaves it alone. Sensitive values
+     * round-trip as `{ value: "", valueRedacted: true }` and keep their
+     * stored secret.
+     *
+     * `stoppedInheriting` IS THE ANSWER TO "WHAT DID THAT COST" (#594): the
+     * names this save stopped the login inheriting from the engine's own
+     * environment, present only when there are any. Names, never values —
+     * several of them are credentials.
+     */
     saveProviderInstance: (input: {
       id: string;
       driver?: ProviderDriverKind;
@@ -1064,7 +1450,16 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       binaryPath?: string | null;
       enabled?: boolean;
       env?: ProviderInstanceEnvVar[];
-    }) => request<{ providerInstance: ProviderInstance }>(fetcher, "PUT", "/api/provider-instances", input),
+      /** Inherited variables to keep, by name. The engine supplies the values
+       *  from its own environment; none crosses this call. */
+      carryOverInherited?: string[];
+    }) =>
+      request<{ providerInstance: ProviderInstance; stoppedInheriting?: string[] }>(
+        fetcher,
+        "PUT",
+        "/api/provider-instances",
+        input,
+      ),
     removeProviderInstance: (id: string) =>
       request<{ removed: boolean }>(fetcher, "DELETE", `/api/provider-instances/${encodeURIComponent(id)}`),
     /**

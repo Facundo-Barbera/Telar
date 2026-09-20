@@ -6,9 +6,10 @@ import { clientDsCapability } from "./ds/client-capability";
 import { collectTelarWall, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
 import { pluginToolModules } from "./plugins/bundled";
 import { pluginCall } from "./plugins/tool-module";
-import { spoolTools, type SpoolCapability } from "./spool/tools";
 import { sessionsTools } from "./sessions-tools/tools";
 import { notesTools, type NotesCapability } from "./notes-tools/tools";
+import { promptsTools, type PromptsCapability } from "./prompts-tools/tools";
+import { promptsForComposer } from "./prompts";
 import { dsTools } from "./ds/ds-tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { latexTools } from "./latex/latex-tools";
@@ -19,6 +20,7 @@ import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from ".
 import { runSecretFill } from "./browser/secret-fill";
 import type { SessionsSocketLease, SessionsToolSocket } from "./sessions-tools/run-socket";
 import { ratifiedReadTools } from "./plugins/policy";
+import { isMountPoint, mountPointForRoot, type VolumeDeps } from "./volumes";
 import { RateLimitedError, setPluginReadTools } from "./driver";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./provider-contract";
 import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
@@ -43,41 +45,30 @@ type WorkerClient = Pick<
   | "ackSteer"
   // Shelve/unshelve only — never the whole `updateSession`. See `settleSession`.
   | "settleSession"
-  // The spool's verbs. THE WORKER STILL HOLDS NO STORE HANDLE — these go
-  // back over the same loopback socket as everything else here, which is what
-  // makes the toolkit identical in the embedded worker and the out-of-process
-  // one. See `SpoolCapability`.
-  | "spool"
-  | "spoolItem"
-  | "createSpoolItem"
-  | "updateSpoolItem"
-  | "consultSpoolExpert"
-  | "spoolMap"
-  | "openSpoolThread"
-  | "setSpoolThreadWaiting"
-  | "settleSpoolThread"
-  | "answerSpoolQuestion"
-  | "spoolFocus"
-  | "openSpoolFocus"
-  | "closeSpoolFocus"
-  | "reconcileSpoolLook"
-  | "setSpoolSubjectTerrain"
-  | "setSpoolSubjectIdentity"
-  | "setSpoolAperture"
-  | "setSpoolAreaCeiling"
-  | "spoolNotes"
-  | "createSpoolNote"
-  | "updateSpoolNote"
-  | "spoolSearch"
-  // The project notebook's verbs, same rule again. `projects` rides along
-  // because `notes_projects` is how a caller finds the id the others take.
+  // And its own report cadence, on the same terms: one field, not the title, the
+  // model or the runtime mode. See `setSessionReportWindow` (#723).
+  | "setSessionReportWindow"
+  // The project notebook's verbs. THE WORKER STILL HOLDS NO STORE HANDLE —
+  // these go back over the same loopback socket as everything else here, which
+  // is what makes the toolkit identical in the embedded worker and the
+  // out-of-process one. See `NotesCapability`. `projects` rides along because
+  // `notes_projects` is how a caller finds the id the others take.
   | "listProjects"
   | "projectNotes"
   | "projectNote"
   | "createProjectNote"
   | "updateProjectNote"
   | "deleteProjectNote"
-  // The `sessions` verbs. Same rule as the spool's above: no store handle,
+  // The prompt shelf's verbs, on the same terms and for the same reason. NO
+  // `updateProjectPrompt`: an agent may offer a prompt and withdraw one it
+  // wrote, but editing a row the person is about to send — under a title they
+  // already read — is the kind of quiet substitution a shelf must not allow.
+  // Its absence here is what makes that true of the worker's reach and not only
+  // of the tool names.
+  | "projectPrompts"
+  | "createProjectPrompt"
+  | "deleteProjectPrompt"
+  // The `sessions` verbs. Same rule as the notebook's above: no store handle,
   // everything back over the loopback socket, so the toolkit is identical in
   // the embedded worker and the out-of-process one. See `SessionsCapability`.
   //
@@ -1040,6 +1031,7 @@ export class EngineWorker {
             ...(delivery.sender ? { sender: delivery.sender } : {}),
             ...(delivery.notice ? { notice: delivery.notice } : {}),
             ...(delivery.wakeReason ? { wakeReason: delivery.wakeReason } : {}),
+            ...(delivery.notification ? { notification: delivery.notification } : {}),
           })
         )
           continue;
@@ -1249,7 +1241,16 @@ export class EngineWorker {
       // SDK reports as a misleading "native binary" error — the folder, not
       // the binary, is what is gone (a moved checkout, a deleted worktree).
       // Said plainly here, in the words that fix it, before anything spawns.
-      assertProjectRoot(cwd);
+      //
+      // A CLAIM WITH NO `projectRoot` HAS NOTHING TO CHECK (#526) — that is a
+      // session with no working directory, not one whose folder went missing,
+      // and the check is skipped rather than passed a substitute.
+      //
+      // `claim.worktree` says whether that directory is a WORKTREE (#641), which
+      // is what decides between two unrelated failures with two unrelated
+      // remedies. Absent from an older engine, and absent is "a project folder",
+      // which is what this always assumed.
+      if (cwd !== undefined) assertProjectRoot(cwd, {}, claim.worktree);
       /**
        * THE SESSION'S BROWSER LEASE, one binding per session rather than one
        * per run. The lease's url+token are baked into the provider's live
@@ -1296,7 +1297,9 @@ export class EngineWorker {
           scopeKey: sessionId,
           // Where a `file:` navigation may point — the session's own checkout,
           // and nowhere else. Stable for the session's life, like the scope.
-          workspaceRoot: cwd,
+          // Absent for a session with no checkout, which `fileUrlViolation`
+          // already reads as "no local files at all" rather than "no fence".
+          ...(cwd === undefined ? {} : { workspaceRoot: cwd }),
           gate: (input) => refs.gate(input),
           onNavigated: (state) => refs.onNavigated(state),
           fillSecret: (args, callBrowser, profile) => refs.fillSecret(args, callBrowser, profile),
@@ -1309,32 +1312,44 @@ export class EngineWorker {
        * in-process registration (the `sessions` field below) and the socket
        * lease a Codex turn is pointed at.
        *
-       * UNSCOPED, unlike the spool, and that is not an oversight: there is no
-       * scope to apply. A session created here is a PEER of the one that
+       * UNSCOPED, unlike the notebook, and that is not an oversight: there is
+       * no scope to apply. A session created here is a PEER of the one that
        * asked — no parent, no child, no link recorded anywhere — so there is
        * nothing about this turn for the capability to be narrowed by, and
        * nothing counts how many it creates.
        *
-       * EVERY VERB GOES BACK THROUGH THE CLIENT, for the reason the spool's
-       * do: the worker holds no store handle, and routing through the same
-       * HTTP surface the cockpit uses means there is exactly one
-       * implementation of every rule about a session, whichever door
-       * reached it.
+       * EVERY VERB GOES BACK THROUGH THE CLIENT: the worker holds no store
+       * handle, and routing through the same HTTP surface the cockpit uses
+       * means there is exactly one implementation of every rule about a
+       * session, whichever door reached it.
        *
        * `origin: "session"` IS DECLARED HERE, in this code, and no tool shape
-       * on the wall carries it — the same construction as the spool's
-       * `source: "session"`.
+       * on the wall carries it.
        */
       const sessionsCapability: SessionsCapability = {
         /**
          * THE ONE SCOPED THING ON THIS CAPABILITY: who is asking, so a
          * subscription can name the session to wake. Closed over the claim
-         * exactly as the spool's `project` is. The daemon's socket builds
+         * exactly as the notebook's `projectId` is. The daemon's socket builds
          * this same capability WITHOUT it — a chat client has no session
          * to be woken in — and the wall refuses to subscribe there.
          */
         self: { sessionId },
-        list: () => this.options.client.liveSessions(),
+        /**
+         * THE CALLER'S CHOICE, AND THE SAME ONE THROUGH EITHER DOOR (#457 then
+         * #515).
+         *
+         * This was pinned to `all: true` because the daemon's in-process build
+         * called `store.liveSessions()`, which is unfiltered: asking narrowly
+         * here would have made one tool answer differently depending on which
+         * door it came through. Both sides now take the argument — the daemon
+         * through `store.liveSessionRows({ all })`, this through the route's
+         * own `?all=1` — so the parity holds at every setting instead of at the
+         * widest one, and the default stops folding a 323-row shelf nobody
+         * asked for. `settledCount` rides the narrow answer so the wall can say
+         * what it left out.
+         */
+        list: (options) => this.options.client.liveSessions({ all: options?.settled === true }),
         create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
         /**
          * SENT AS WHATEVER TURN IS LIVE WHEN THE CALL ARRIVES, PROVABLY. The
@@ -1356,7 +1371,21 @@ export class EngineWorker {
           const accepted = await this.options.client.submitAgentTurn(id, { ...input, proof: { sessionId, ...proof } });
           return { turn: accepted.turn, replayed: accepted.replayed };
         },
-        read: async (id, after) => (await this.options.client.events(id, after)).events,
+        read: async (id, after, options) => (await this.options.client.events(id, after, options?.limit)).events,
+        /**
+         * THE JOURNAL'S END, FROM THE NARROWEST READ THAT CARRIES IT (#515).
+         *
+         * `SessionSnapshot.cursor` is the last event id and is stamped BEFORE
+         * the snapshot's own rows, which is exactly the guarantee a tail read
+         * wants. `turns: 1` is what keeps paying for it cheap: the windowed
+         * snapshot folds one turn rather than the 685 an unwindowed one would,
+         * and every field but `cursor` is dropped on the floor here.
+         *
+         * An engine too old to stamp it sends nothing, and `?? 0` makes the
+         * wall's tail read cover the whole journal — the behaviour it had
+         * before this existed, rather than a wrong end.
+         */
+        cursor: async (id) => (await this.options.client.session(id, { turns: 1 })).cursor ?? 0,
         status: async (id) => {
           const snapshot = await this.options.client.session(id);
           return { session: snapshot.session, turns: snapshot.turns };
@@ -1366,6 +1395,9 @@ export class EngineWorker {
         // let this worker claim the peer's next message a heartbeat later.
         stop: (id) => this.options.client.stopSession(id, "agent"),
         settle: async (id, settled) => (await this.options.client.settleSession(id, settled)).session,
+        // The wall passes `self` and nothing else, so the only cadence a turn can
+        // set through here is its own — see `SessionsCapability` (#723).
+        setReportWindow: async (id, minutes) => (await this.options.client.setSessionReportWindow(id, minutes)).session,
         diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
         subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,
         unsubscribe: async (id, subscriber) => (await this.options.client.unsubscribe(id, { subscriberSessionId: subscriber })).removed,
@@ -1383,7 +1415,8 @@ export class EngineWorker {
        * capability is absent rather than empty: a model told "there are no
        * notes" would report that as the truth.
        *
-       * EVERY VERB GOES BACK THROUGH THE CLIENT, the rule the spool's states:
+       * EVERY VERB GOES BACK THROUGH THE CLIENT, the rule the sessions
+       * capability states:
        * the toolkit exercises the same routes the composer's foot does, so
        * there is exactly one implementation of every rule about a note —
        * including the `getProject` check that keeps an unknown id from minting
@@ -1406,7 +1439,7 @@ export class EngineWorker {
               }
             },
             // The toolkit's own handler declares `author: "session"`; the
-            // capability forwards it, exactly as the spool's `createNote` does.
+            // capability only forwards it.
             create: async (projectId, input) => (await this.options.client.createProjectNote(projectId, { ...input, author: "session" })).note,
             update: async (projectId, noteId, patch) => {
               try {
@@ -1416,6 +1449,52 @@ export class EngineWorker {
               }
             },
             remove: async (projectId, noteId) => (await this.options.client.deleteProjectNote(projectId, noteId)).deleted,
+          }
+        : undefined;
+
+      /**
+       * THE PROMPT SHELF — `prompt_draft` and its three siblings.
+       *
+       * EVERY VERB GOES BACK THROUGH THE CLIENT, the same rule the notebook's
+       * capability states: the toolkit exercises the routes the composer's own
+       * stash uses, so there is exactly one implementation of every rule about a
+       * prepared prompt — including the `getProject` check that stops an unknown
+       * id minting a shelf.
+       *
+       * ABSENT WITHOUT A PROJECT, like the notebook's: a prompt hangs off a
+       * project, and a project-less chat has no shelf to put one on.
+       *
+       * THE DRAFT REPORTS ITSELF. Writing through the client reaches the store
+       * but not the JOURNAL, and a handoff nobody is told about waits for the
+       * next focus event — which for "here is the follow-up I'd send next" is
+       * the wrong moment by a minute. So a successful create rides the same
+       * observation channel every other worker-seen thing does; a failure to
+       * report is swallowed, because the prompt IS on the shelf and a thrown
+       * nudge would turn a landed draft into an error the agent retries.
+       */
+      const promptsCapability: PromptsCapability | undefined = claim.projectId
+        ? {
+            self: { projectId: claim.projectId, sessionId },
+            list: async () =>
+              promptsForComposer((await this.options.client.projectPrompts(claim.projectId as string)).prompts, sessionId),
+            create: async (input) => {
+              // The toolkit's own handler declares the hand; the capability only
+              // forwards it — the same seam the notebook's `create` keeps.
+              const prompt = (await this.options.client.createProjectPrompt(claim.projectId as string, { ...input, author: "session" }))
+                .prompt;
+              await this.options.client
+                .reportObservations(sessionId, runId, claimToken, [
+                  {
+                    kind: "prompt.drafted",
+                    promptId: prompt.id,
+                    title: prompt.title,
+                    ...(prompt.sessionId ? { forSessionId: prompt.sessionId } : {}),
+                  },
+                ])
+                .catch(() => undefined);
+              return prompt;
+            },
+            remove: async (promptId) => (await this.options.client.deleteProjectPrompt(claim.projectId as string, promptId)).deleted,
           }
         : undefined;
 
@@ -1453,18 +1532,12 @@ export class EngineWorker {
        * same change moves the driver's fingerprint, so the provider cold-starts
        * onto the new credential.
        */
-      /**
-       * Filled by the `driver.run` options below. The wall reads it at REQUEST
-       * time, after the run has been entered, so assigning it later is sound —
-       * and leaving it unset would give a Codex turn no `spool_*` at all.
-       */
-      let spoolCapability: SpoolCapability | undefined;
       const telarKey = [...(claim.plugins ?? [])].sort().join(",");
       let telarEntry = this.telarLeases.get(sessionId);
       const telarCapabilities: Record<string, unknown> = {
-        get spool() { return spoolCapability; },
         sessions: sessionsCapability,
         ...(notesCapability ? { notes: notesCapability } : {}),
+        ...(promptsCapability ? { prompts: promptsCapability } : {}),
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
         ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
         ...pluginCapabilities,
@@ -1478,9 +1551,9 @@ export class EngineWorker {
           const box = { current: telarCapabilities };
           const lease = await this.options.telarSocket.bind(() =>
             collectTelarWall([
-              { name: "spool", build: spoolTools as never, capability: () => box.current.spool },
               { name: "sessions", build: sessionsTools as never, capability: () => box.current.sessions },
               { name: "notes", build: notesTools as never, capability: () => box.current.notes },
+              { name: "prompts", build: promptsTools as never, capability: () => box.current.prompts },
               { name: "ds", build: dsTools as never, capability: () => box.current.ds },
               { name: "notebook", build: notebookTools as never, capability: () => box.current.ds },
               { name: "latex", build: latexTools as never, capability: () => box.current.latex },
@@ -1516,8 +1589,15 @@ export class EngineWorker {
         runId,
         prompt,
         promptFromHuman,
+        // WHAT THIS TURN IS, when nobody typed it (#550). The driver reads it to
+        // pick a channel that is not the user's; without it the same notice goes
+        // down the person's channel and only prose distinguishes them.
+        ...(claim.turn.notification ? { notification: claim.turn.notification } : {}),
         sessionId,
-        cwd,
+        // Absent-means-absent, like everything else spread into this call: a
+        // project-less session has no directory and the driver is told so
+        // rather than handed one.
+        ...(cwd === undefined ? {} : { cwd }),
         signal: controller.signal,
         // Spread rather than passed as possibly-undefined: `exactOptionalPropertyTypes`
         // distinguishes "absent" from "present and undefined", and the drivers
@@ -1535,6 +1615,9 @@ export class EngineWorker {
         // for the same reason the two above are — the worker holds no store
         // handle, and absence is the honest "the person turned it off".
         ...(claim.orientation ? { orientation: claim.orientation } : {}),
+        // The coordinator briefing, forwarded the same way and for the same
+        // reason. Absence is the honest "this is not the designated session, or
+        // the switch is off" — which is every session but at most one.
         // WHICH LOGIN THIS RUNS AS. Derived here rather than on the claim
         // because it is a fact about spawning a process, and the worker is the
         // process that spawns one — the engine's job was to resolve WHICH
@@ -1559,67 +1642,17 @@ export class EngineWorker {
         // and with which credential. Spread on the same absent-means-absent
         // rule as everything above it.
         ...(lease ? { browserSocket: { url: lease.url, token: lease.token } } : {}),
-        /**
-         * THE SPOOL, SCOPED TO THIS TURN'S PROJECT.
-         *
-         * Assembled here, per run, because the scope IS the run's: `claim.project`
-         * is the project's own label, and it is what a spool item's `project`
-         * field is compared against. Absent leaves the capability unscoped, which
-         * is the project-less master's view — and the claim's own comment says
-         * why absence means that rather than "no items".
-         *
-         * EVERY VERB GOES BACK THROUGH THE CLIENT, so the toolkit exercises the
-         * same routes the queue does and there is exactly one implementation of
-         * every rule about an item.
-         */
-        spool: (spoolCapability = {
-          ...(claim.project ? { project: claim.project } : {}),
-          snapshot: () => this.options.client.spool(),
-          item: (id) =>
-            this.options.client.spoolItem(id).catch(() => null),
-          create: async (input) => (await this.options.client.createSpoolItem(input)).item,
-          update: async (id, patch) => (await this.options.client.updateSpoolItem(id, patch)).item,
-          consult: (id) => this.options.client.consultSpoolExpert(id),
-          // The work-state verbs, through the same client for the same reason:
-          // one implementation of every rule, already under test.
-          map: () => this.options.client.spoolMap(),
-          openThread: async (subject, input) => (await this.options.client.openSpoolThread(subject, input)).thread,
-          setWaiting: async (subject, threadId, waiting) =>
-            (await this.options.client.setSpoolThreadWaiting(subject, threadId, waiting)).thread,
-          settle: async (subject, threadId, answer) =>
-            (await this.options.client.settleSpoolThread(subject, threadId, answer)).thread,
-          answer: async (itemId, question, answer) =>
-            (await this.options.client.answerSpoolQuestion(itemId, question, answer)).item,
-          focus: () => this.options.client.spoolFocus(),
-          setFocus: async (input) => (await this.options.client.openSpoolFocus(input)).focus,
-          endFocus: async (id, end) => (await this.options.client.closeSpoolFocus(id, end)).focus,
-          // Loop 1's verbs reach every session the same way the rest do. The
-          // reconcile itself is the engine's — deterministic, pull-only — so a
-          // scoped session glancing at its own subject spends nothing and can
-          // start nothing.
-          look: async (subjectKey) => (await this.options.client.reconcileSpoolLook(subjectKey)).look,
-          setTerrain: async (subjectKey, terrain) =>
-            (await this.options.client.setSpoolSubjectTerrain(subjectKey, terrain)).subject,
-          setIdentity: async (subjectKey, patch) =>
-            (await this.options.client.setSpoolSubjectIdentity(subjectKey, patch)).subject,
-          // Chat and hand share one slot / one record: both of these go through
-          // the same routes the room's own controls PUT and PATCH, so there is
-          // exactly one implementation of the view and of the clamp.
-          setAperture: async (view) => (await this.options.client.setSpoolAperture(view)).aperture,
-          setAreaPermits: async (name, ceiling) =>
-            (await this.options.client.setSpoolAreaCeiling(name, ceiling)).area,
-          // The shelf and the search, through the same client for the same
-          // reason as everything above: one implementation of every rule.
-          // The toolkit's own handler declares `author: "session"` on create;
-          // the capability forwards it verbatim, exactly as `create.source`.
-          notes: async () => (await this.options.client.spoolNotes()).notes,
-          createNote: async (input) => (await this.options.client.createSpoolNote(input)).note,
-          updateNote: async (id, patch) => (await this.options.client.updateSpoolNote(id, patch)).note,
-          search: async (query, subject) =>
-            (await this.options.client.spoolSearch(query, subject ? { subject } : {})).hits,
-        }),
         // The sessions toolkit, hoisted above — one assembly, two consumers.
         sessions: sessionsCapability,
+        /**
+         * THE SESSION'S OWN ROWS, for the driver that rebuilds its conversation
+         * from them rather than resuming one the provider holds. Back over the
+         * client like everything else here — the worker holds no store handle —
+         * and WINDOWED, because a coordinator with a thousand turns behind it
+         * would otherwise pay for all of them on every message. The driver's
+         * own character budget is what actually decides how much is sent.
+         */
+        transcript: async (options) => (await this.options.client.session(sessionId, { turns: options?.turns ?? 80 })).items,
         // The project notebook, hoisted above for the same reason. Absent on a
         // project-less session, which is no notebook rather than an empty one.
         ...(notesCapability ? { notes: notesCapability } : {}),
@@ -1629,8 +1662,8 @@ export class EngineWorker {
         /**
          * THE KERNEL, WHEN THE CLAIM SAYS THE PROJECT OPTED IN. Every verb is
          * an HTTP call to the daemon, which owns the kernel — the worker holds
-         * no process and no store, exactly as with the spool. Absent on the
-         * claim means absent here, and the driver registers no toolkit.
+         * no process and no store, exactly as with everything above. Absent on
+         * the claim means absent here, and the driver registers no toolkit.
          */
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
         // The compile door, same shape: HTTP to the daemon, which owns the jobs.
@@ -1646,14 +1679,22 @@ export class EngineWorker {
          * is this turn's own checkout; the report rides the same observation
          * channel as everything else the worker sees, so the engine journals
          * it under this turn and a stop refuses it like any late report.
+         *
+         * ABSENT WITH NO CHECKOUT. The whole tool is a path inside a fence, and
+         * a session with no directory has no fence to put one in — so it does
+         * not exist rather than existing and refusing every call.
          */
-        display: createDisplayCapability({
-          cwd,
-          report: (observation) =>
-            this.options.client
-              .reportObservations(sessionId, runId, claimToken, [{ kind: "display.opened", ...observation }])
-              .then(() => undefined),
-        }),
+        ...(cwd === undefined
+          ? {}
+          : {
+              display: createDisplayCapability({
+                cwd,
+                report: (observation) =>
+                  this.options.client
+                    .reportObservations(sessionId, runId, claimToken, [{ kind: "display.opened", ...observation }])
+                    .then(() => undefined),
+              }),
+            }),
         onRequest: askEngine,
         onObservations: async (observations) => {
           // A stop is terminal the moment the engine records it, and the
@@ -2015,24 +2056,106 @@ export class EngineWorker {
  * directory NOW. Thrown as a `driver_failed` message that names the path and
  * the likely cause, so a moved checkout reads as "the folder is gone", never
  * as a broken binary.
+ *
+ * AND THE DRIVE HAS TO BE THERE — issue #534, and this is the check that had to
+ * come FIRST rather than last. Two of the three cases below would otherwise
+ * give advice that makes things worse:
+ *
+ *   - An unplugged drive read as "it may have been moved or deleted; re-register
+ *     the project with its current location", which is how somebody loses a
+ *     project id, its sessions and its browser profile over a cable.
+ *   - A RECREATED EMPTY MOUNTPOINT passed every check here. macOS leaves
+ *     `/Volumes/<name>` behind as an ordinary folder, so the `stat` succeeded,
+ *     the directory test succeeded, `access` succeeded — and a provider was
+ *     spawned in an empty folder that disappears at the next remount, having
+ *     been told it was looking at the project.
+ *
+ * IT NEEDS NO STORE AND NO PROJECT RECORD, which is why it can live here: the
+ * PATH says whether it is under a mount root, and the filesystem says whether
+ * anything is mounted there. See `volumes.ts`.
+ *
+ * ══ A WORKTREE IS NOT A PROJECT, AND SAYING SO IS THE FIX — issue #641 ══
+ *
+ * `cwd` is the session's working directory, which for a worktree session is the
+ * WORKTREE. Everything below called it "the project folder" anyway, and the
+ * ENOENT arm sent the reader to re-register the project — advice that is not
+ * merely useless for this case but actively harmful, because re-registering
+ * mints a new project id and leaves the session's history behind. The project
+ * was never the thing that broke.
+ *
+ * SO THE CALLER SAYS WHICH KIND OF DIRECTORY THIS IS. `worktree` is present
+ * exactly when `cwd` is one (see `WorkerClaim.worktree`), and it carries the two
+ * facts the sentence needs: the branch, and the project's own checkout — so the
+ * message can say "that one is fine" as a claim it has checked rather than an
+ * assumption.
  */
-export function assertProjectRoot(cwd: string): void {
+export type WorktreeFacts = { branch: string; repoRoot: string };
+
+/**
+ * The sentence for a worktree that is gone: what happened, what is NOT wrong,
+ * what almost certainly did it, and what to do instead.
+ *
+ * IT NAMES `gh pr merge --delete-branch` BY NAME because that is the cause in
+ * every occurrence seen so far, and a reader who merged a PR two minutes ago
+ * recognises their own action in it. Telar locks its worktrees against exactly
+ * this now; reaching this message means the lock was missing or released, which
+ * is worth knowing rather than smoothing over.
+ *
+ * IT PROMISES NOTHING ABOUT THE BRANCH. `--delete-branch` deletes the remote
+ * branch too — verified against the branches from this issue's own occurrences,
+ * which are gone from the remote, not merely local. "Cut a fresh worktree from
+ * its branch" would be advice that fails for the commonest case, so the message
+ * says what to CHECK and names the fallback that always exists: the branch it
+ * was merged into.
+ */
+function missingWorktreeMessage(cwd: string, worktree: WorktreeFacts, exists: (path: string) => boolean): string {
+  const project = exists(worktree.repoRoot)
+    ? `The project itself is fine — it is still at ${worktree.repoRoot}, so do NOT re-register it; that would give it a new id and leave this session's history behind.`
+    : `The project's own checkout at ${worktree.repoRoot} is missing too, so this is a larger loss than one worktree — check that path before anything else.`;
+  return [
+    `This session's worktree ${cwd} no longer exists.`,
+    project,
+    "A worktree goes when its session is archived or deleted, or when something outside Telar removes it — `gh pr merge --delete-branch` runs `git worktree remove` on whichever worktree holds the branch it is deleting, which takes the directory, the local branch and git's registration together.",
+    `This session cannot continue in a checkout that is not there. Anything it had committed is on ${worktree.branch} if that branch survives (\`git branch -a --contains\`) and in the branch it was merged into either way; anything uncommitted went with the directory. Start a session on the project from whichever of those still exists.`,
+  ].join(" ");
+}
+
+export function assertProjectRoot(cwd: string, volumes: VolumeDeps = {}, worktree?: WorktreeFacts): void {
+  const mount = mountPointForRoot(cwd, volumes);
+  if (mount !== undefined && !isMountPoint(mount, volumes)) {
+    throw new Error(
+      `The drive holding this project is not connected (${mount}). Plug it back in and retry — do not re-register the project from another path, which would give it a new id and leave this session's history behind.`,
+    );
+  }
+  // The worktree's own words for every arm below, not only the missing one: a
+  // permission problem on a worktree is not a permission problem on a project
+  // either, and "re-register" is wrong advice in all of them.
+  const what = worktree ? "This session's worktree" : "The project folder";
   let stat: fs.Stats;
   try {
     stat = fs.statSync(cwd);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error(
+        worktree
+          ? missingWorktreeMessage(cwd, worktree, (target) => fs.existsSync(target))
+          : `The project folder ${cwd} does not exist. It may have been moved or deleted; re-register the project with its current location (or restore the folder) and retry.`,
+      );
+    }
+    throw new Error(`${what} ${cwd} cannot be accessed (${code ?? "unknown error"}). Check its permissions and retry.`);
+  }
+  if (!stat.isDirectory()) {
     throw new Error(
-      code === "ENOENT"
-        ? `The project folder ${cwd} does not exist. It may have been moved or deleted; re-register the project with its current location (or restore the folder) and retry.`
-        : `The project folder ${cwd} cannot be accessed (${code ?? "unknown error"}). Check its permissions and retry.`,
+      worktree
+        ? `This session's worktree path ${cwd} is not a folder. Something replaced it; the project at ${worktree.repoRoot} is unaffected.`
+        : `The project path ${cwd} is not a folder. Re-register the project with its checkout directory and retry.`,
     );
   }
-  if (!stat.isDirectory()) throw new Error(`The project path ${cwd} is not a folder. Re-register the project with its checkout directory and retry.`);
   try {
     fs.accessSync(cwd, fs.constants.R_OK | fs.constants.X_OK);
   } catch {
-    throw new Error(`The project folder ${cwd} is not readable by this user. Check its permissions and retry.`);
+    throw new Error(`${what} ${cwd} is not readable by this user. Check its permissions and retry.`);
   }
 }
 

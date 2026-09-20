@@ -20,6 +20,25 @@ export function fmtAgo(ts: number, now = Date.now()): string {
 }
 
 /**
+ * A size, in the largest unit that leaves a number a person can read.
+ *
+ * MOVED HERE FROM `desktop-store.ts`, which is where it happened to be written
+ * — it is a formatter, not a fact about the store, and the third caller (#616's
+ * conversation picker, which shows how much conversation there is) would have
+ * been the second module importing a store accessor for one pure function.
+ */
+export function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+/**
  * `fmtCost` USED TO LIVE HERE and money is no longer a unit this cockpit
  * reports.
  *

@@ -25,8 +25,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderSignIn, ProviderUpdate } from "@telar/engine-client";
-import { cliUsable, resolveCliAsync } from "./cli-resolution";
+import { cliUsable, resolveCliAsync, type CliId } from "./cli-resolution";
 import { cliUpdateFor } from "./cli-updates";
+import { TELAR_ENGINE_VERSION } from "./version";
 
 /**
  * A version probe costs a subprocess, and this is read from a settings page
@@ -110,6 +111,119 @@ const OWNED_ENV: Record<ProviderDriverKind, readonly string[]> = {
 };
 
 /**
+ * OF THE OWNED NAMES, THE ONES THAT CARRY A CREDENTIAL.
+ *
+ * Used for one decision only: when a variable is CARRIED OVER from the engine's
+ * own environment into an instance's declarations, this is what decides whether
+ * the value goes to the 0600 secret store (never read back, redacted on every
+ * list) or stays a plain row a person can read on the settings page.
+ *
+ * AN EXPLICIT LIST RATHER THAN A HEURISTIC over the name, because both ways of
+ * being wrong cost something real and they are not symmetrical: a credential
+ * filed as plain text is echoed to whoever opens the pane, and a routing fact
+ * filed as a secret becomes unreadable to the person who set it. A name spelled
+ * out here is a decision somebody made and a reviewer can check.
+ */
+const CREDENTIAL_ENV: ReadonlySet<string> = new Set([
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "OPENAI_API_KEY",
+]);
+
+/**
+ * WHAT MAKES AN INSTANCE "CONFIGURED" — one spelling, because two places now
+ * ask.
+ *
+ * The scrub below asks so it knows whether to run; `stoppedInheriting` asks so
+ * it knows whether this save is the TRANSITION. A second copy of the predicate
+ * would let the warning and the behaviour it warns about drift apart, which is
+ * the one bug a warning must not have.
+ */
+export function providerInstanceConfigured(instance: Pick<ProviderInstance, "configDir" | "env">): boolean {
+  return instance.configDir !== undefined || instance.env.length > 0;
+}
+
+/**
+ * THE OWNED VARIABLES THIS ENGINE IS ACTUALLY PASSING DOWN — NAMES, NEVER
+ * VALUES.
+ *
+ * Reads the engine's OWN environment, which is the whole trick: what a child
+ * would have inherited is what this process carries, so nothing has to be
+ * spawned or inspected to find out.
+ *
+ * AN EMPTY VALUE IS NOT AN INHERITANCE. `ANTHROPIC_BASE_URL=` reaches a child as
+ * a variable the CLI reads as unset, so losing it loses nothing — and warning
+ * about it would be a warning nobody can act on, which is the failure the issue
+ * spends a paragraph on.
+ *
+ * ON A DOCK-LAUNCHED MAC THIS IS EMPTY for every driver, and that is the
+ * expected answer rather than a degenerate one.
+ */
+export function inheritedOwnedEnv(
+  driver: ProviderDriverKind,
+  ambient: Record<string, string | undefined> = process.env,
+): string[] {
+  return OWNED_ENV[driver].filter((name) => (ambient[name] ?? "").trim() !== "");
+}
+
+/** Whether a carried-over value belongs in the 0600 store rather than in the
+ *  registry a settings page reads. */
+export function providerEnvIsCredential(name: string): boolean {
+  return CREDENTIAL_ENV.has(name);
+}
+
+/** Whether this driver owns the name at all — the guard on a carry-over
+ *  request, so a name outside the scrub's reach is refused rather than written
+ *  as a declaration that protects nothing. */
+export function providerOwnsEnv(driver: ProviderDriverKind, name: string): boolean {
+  return OWNED_ENV[driver].includes(name);
+}
+
+/**
+ * WHICH VARIABLES A CHANGE WOULD STOP THIS LOGIN INHERITING — names, never
+ * values.
+ *
+ * This is the whole of #594. The scrub is right and does not change; what was
+ * wrong is that it fired in SILENCE, and after #593 it fires from a control
+ * ("compact after N tokens") whose reader was thinking about compaction and
+ * nothing else. So the engine now says, at the moment of the change, which
+ * variables this login is about to stop receiving.
+ *
+ * THREE CONDITIONS, AND EVERY ONE OF THEM NARROWS:
+ *
+ *   · ONLY ON THE TRANSITION. An instance that was already configured has
+ *     already stopped inheriting; a second variable changes nothing for it, and
+ *     re-announcing on every later save is how a warning becomes wallpaper.
+ *   · ONLY IF SOMETHING IS ACTUALLY INHERITED. A Mac launched from the Dock
+ *     carries none of these, so this is empty and nothing is said.
+ *   · NEVER ABOUT A VARIABLE THE CHANGE ITSELF SUPPLIES. A declared variable
+ *     survives the scrub (it is applied last, below), and a config folder
+ *     REPLACES the config-dir variable on purpose — that is what a config
+ *     folder is for. Neither is a loss, and naming them would send someone to
+ *     fix something that is working.
+ *
+ * NAMES ONLY, AND THAT IS A RULE RATHER THAN A CHOICE OF FORMAT. Three of the
+ * names this can return are `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` and
+ * `CLAUDE_CODE_OAUTH_TOKEN`. A warning that helpfully showed what was about to
+ * be lost would be a credential printed on a settings page, in an HTTP
+ * response, and in whatever log caught it.
+ */
+export function stoppedInheriting(input: {
+  /** The instance as it stands, or undefined when this save creates it. */
+  before: Pick<ProviderInstance, "configDir" | "env"> | undefined;
+  /** The instance this save would produce. */
+  after: Pick<ProviderInstance, "driver" | "configDir" | "env">;
+  ambient?: Record<string, string | undefined>;
+}): string[] {
+  if (input.before && providerInstanceConfigured(input.before)) return [];
+  if (!providerInstanceConfigured(input.after)) return [];
+  const supplied = new Set(input.after.env.map((variable) => variable.name));
+  if (input.after.configDir !== undefined) supplied.add(CONFIG_DIR_ENV[input.after.driver]);
+  return inheritedOwnedEnv(input.after.driver, input.ambient ?? process.env).filter((name) => !supplied.has(name));
+}
+
+/**
  * What this instance's provider process should run with, as a patch over the
  * worker's own environment.
  *
@@ -123,9 +237,12 @@ const OWNED_ENV: Record<ProviderDriverKind, readonly string[]> = {
  *
  * A key mapped to `undefined` means "delete this from the child's environment".
  * Both drivers merge the patch over `process.env` and drop undefined keys.
+ *
+ * THE TRIGGER IS SHARED WITH THE WARNING (`providerInstanceConfigured`), so the
+ * sentence a person reads and the deletion it describes cannot disagree — #594.
  */
 export function providerProcessEnv(instance: ProviderInstance): Record<string, string | undefined> {
-  const configured = instance.configDir !== undefined || instance.env.length > 0;
+  const configured = providerInstanceConfigured(instance);
   const patch: Record<string, string | undefined> = {};
   if (configured) for (const name of OWNED_ENV[instance.driver]) patch[name] = undefined;
   if (instance.configDir) patch[CONFIG_DIR_ENV[instance.driver]] = expandHome(instance.configDir);
@@ -157,8 +274,13 @@ export type VersionProbe = {
  * its own bundled one. So the version somebody read on this pane was not the
  * version that answered them, and in a packaged app the pane could report a
  * healthy install for a provider that could not start.
+ *
+ * TAKES A `CliId` RATHER THAN A DRIVER KIND, since `telar` names no CLI: the
+ * caller answers for that one before it gets here (see `versionFor`), and the
+ * narrower parameter is what makes "before" a rule the compiler keeps rather
+ * than a comment.
  */
-async function probeVersion(driver: ProviderDriverKind, binaryPath?: string, force = false): Promise<VersionProbe> {
+async function probeVersion(driver: CliId, binaryPath?: string, force = false): Promise<VersionProbe> {
   const resolution = await resolveCliAsync(driver, { ...(binaryPath ? { binaryPath } : {}) });
   if (resolution.status === "missing") {
     return { installed: false, ...(resolution.message ? { message: resolution.message } : {}) };
@@ -244,7 +366,9 @@ export function statusOf(input: {
 }
 
 export type ProviderProbeDeps = {
-  version?: (driver: ProviderDriverKind, binaryPath: string | undefined, force: boolean) => Promise<VersionProbe>;
+  /** `CliId`, not `ProviderDriverKind`: a deployment's own probe answers "which
+   *  CLI is on this machine", and `telar` is not one — see `versionFor`. */
+  version?: (driver: CliId, binaryPath: string | undefined, force: boolean) => Promise<VersionProbe>;
   now?: () => number;
 };
 
@@ -259,6 +383,16 @@ export function createProviderProber(deps: ProviderProbeDeps = {}) {
   const keyFor = (driver: ProviderDriverKind, binaryPath: string | undefined): string => `${driver} ${binaryPath ?? ""}`;
 
   const versionFor = async (driver: ProviderDriverKind, binaryPath: string | undefined, force: boolean): Promise<VersionProbe> => {
+    /**
+     * THERE IS NO BINARY TO FIND, so nobody is asked — not `resolveCliAsync`,
+     * which knows only the three real CLIs, and not an injected `version`
+     * either. Telar's own loop runs inside this process: "installed" is true by
+     * construction and the version that answers a turn is this build's. A
+     * deployment (or a test) that supplies its own probe is answering "which
+     * CLI is on this machine", which is not a question about this driver.
+     *
+     * NOT CACHED, for the same reason: there is nothing that could change.
+     */
     const key = keyFor(driver, binaryPath);
     const hit = cache.get(key);
     if (!force && hit && now() - hit.at < VERSION_CACHE_MS) return hit.probe;

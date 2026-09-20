@@ -2,8 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   commitSessionWork,
   countDirty,
+  defaultRemoteBase,
   gitOverview,
+  gitOverviewAsync,
   GIT_LOG_FORMAT,
+  listGitRefs,
+  listGitRefsAsync,
   parseAheadBehind,
   parseGitLog,
   parseNameStatus,
@@ -14,17 +18,56 @@ import {
   projectRemoteAsync,
   samePath,
   sessionDiff,
+  sessionDiffAsync,
+  sessionFilePatch,
+  sessionFilePatchAsync,
 } from "../src/git";
+import { GIT_TIMEOUT_STATUS } from "../src/worktree";
 import type { AsyncGitRunner, GitResult, GitRunner } from "../src/worktree";
 
 const ok = (stdout: string): GitResult => ({ status: 0, stdout, stderr: "" });
 const fail = (): GitResult => ({ status: 1, stdout: "", stderr: "fatal" });
+
+/**
+ * A CHILD THE ENGINE KILLED, shaped exactly as `createGitRunner` reports one.
+ *
+ * THE POINT OF THE WHOLE SUITE BELOW. A timeout arrives as an ordinary non-zero
+ * exit, so a test that only ever exercises `fail()` proves nothing about it —
+ * which is how a timed-out ref listing came to be reported as a repository with
+ * no branches (#650) under a green suite.
+ */
+const timedOut = (what = "for-each-ref"): GitResult => ({
+  status: GIT_TIMEOUT_STATUS,
+  stdout: "",
+  stderr: `git ${what} in /repo did not finish within 30000ms and was killed`,
+  timedOut: true,
+});
 
 /** A runner keyed by the first two argv words, so a test states only the
  *  commands it cares about and every other call fails like a real git would. */
 function runner(replies: Record<string, GitResult>): GitRunner {
   return (_cwd, args) => replies[args.slice(0, 2).join(" ")] ?? fail();
 }
+
+/**
+ * The ref listing's runner keys on the NAMESPACE, because both halves are
+ * `for-each-ref --sort=-committerdate` and the two-word key above answers them
+ * identically — which would hide the exact case this module got wrong: one half
+ * dying while the other answers.
+ */
+function refsRunner(replies: Record<string, GitResult>): GitRunner {
+  return (_cwd, args) => {
+    if (args[0] === "for-each-ref") return replies[args[args.length - 1] ?? ""] ?? fail();
+    return replies[args.slice(0, 2).join(" ")] ?? fail();
+  };
+}
+
+const HEADS = "refs/heads";
+const REMOTES = "refs/remotes";
+const BOTH_HALVES: Record<string, GitResult> = {
+  [HEADS]: ok("main\t*\nfeature-x\t\n"),
+  [REMOTES]: ok("origin/main\t\norigin/HEAD\t\n"),
+};
 
 /**
  * The review's runner keys on THREE words, because `diff -z --numstat` and
@@ -132,6 +175,105 @@ describe("gitOverview", () => {
     const overview = gitOverview(runner({ ...REPO, "status --porcelain": fail() }), "/repo");
     expect(overview.branch).toBe("main");
     expect(overview.dirtyFiles).toBe(0);
+  });
+});
+
+/**
+ * A TIMED-OUT READ IS NOT A FACT ABOUT THE REPOSITORY — issue #650.
+ *
+ * Every test here drives `timedOut()` rather than `fail()`, and that is the
+ * whole discipline: the two are the same exit status, so a suite that only
+ * exercises the second calls this covered while the bug ships. The claims a
+ * killed child must never produce are "no branches", "a clean tree", "no
+ * worktrees" and "not a git repository".
+ */
+describe("git did not answer", () => {
+  test("a timed-out half leaves the listing INCOMPLETE rather than short", () => {
+    // The observed defect, exactly: locals die under load, remotes answer, and
+    // the result was a shorter list that read as the whole repository.
+    const listing = listGitRefs(refsRunner({ ...BOTH_HALVES, [HEADS]: timedOut() }), "/repo");
+    expect(listing.incomplete).toBe("timeout");
+    // What DID arrive is kept — those are still perfectly good bases.
+    expect(listing.refs.map((ref) => ref.name)).toEqual(["origin/main"]);
+  });
+
+  test("an empty listing means 'no branches' ONLY when nothing failed", () => {
+    // The three cases the old `return []` collapsed into one.
+    expect(listGitRefs(refsRunner({ [HEADS]: ok(""), [REMOTES]: ok("") }), "/repo")).toEqual({ refs: [] });
+    expect(listGitRefs(refsRunner({ [HEADS]: timedOut(), [REMOTES]: ok("") }), "/repo").incomplete).toBe("timeout");
+    expect(listGitRefs(refsRunner({ [HEADS]: fail(), [REMOTES]: ok("") }), "/repo").incomplete).toBe("failed");
+  });
+
+  test("a timeout outranks a plain failure, because it is the one a retry fixes", () => {
+    const listing = listGitRefs(refsRunner({ [HEADS]: fail(), [REMOTES]: timedOut() }), "/repo");
+    expect(listing.incomplete).toBe("timeout");
+  });
+
+  test("the overview carries the incompleteness to the picker", () => {
+    const overview = gitOverview(refsRunner({ ...REPO, ...BOTH_HALVES, [REMOTES]: timedOut() }), "/repo");
+    expect(overview.refsIncomplete).toBe("timeout");
+    expect((overview.refs ?? []).map((ref) => ref.name)).toEqual(["main", "feature-x"]);
+    // And a whole listing says nothing, so the picker's ordinary state is quiet.
+    expect(gitOverview(refsRunner({ ...REPO, ...BOTH_HALVES }), "/repo").refsIncomplete).toBeUndefined();
+  });
+
+  test("an incomplete listing cannot veto origin/HEAD, so the default base survives", () => {
+    // The quieter half of the same bug: `defaultBase` corroborates the pointer
+    // against the refs, so a dead remote half silently dropped the default and
+    // the composer fell back to HEAD without anyone being told.
+    const git = refsRunner({ "symbolic-ref -q": ok("refs/remotes/origin/main\n") });
+    expect(defaultRemoteBase(git, "/repo", { refs: [], incomplete: "timeout" })).toBe("origin/main");
+    // With a WHOLE listing the corroboration still holds — a stale pointer to a
+    // deleted branch must not seed every worktree with a failing ref.
+    expect(defaultRemoteBase(git, "/repo", { refs: [] })).toBeUndefined();
+  });
+
+  test("a killed `git status` leaves the dirty count ABSENT, never a reassuring 0", () => {
+    const overview = gitOverview(runner({ ...REPO, "status --porcelain": timedOut("status") }), "/repo");
+    expect(overview.dirtyFiles).toBeUndefined();
+    // A plain failure keeps the pinned decision above: a locked index is usually
+    // a clean tree, and that case is not this one.
+    expect(gitOverview(runner({ ...REPO, "status --porcelain": fail() }), "/repo").dirtyFiles).toBe(0);
+  });
+
+  test("a killed `worktree list` leaves the worktrees ABSENT, never '0 worktrees'", () => {
+    expect(gitOverview(runner({ ...REPO, "worktree list": timedOut("worktree list") }), "/repo").worktrees).toBeUndefined();
+    expect(gitOverview(runner({ ...REPO, "worktree list": fail() }), "/repo").worktrees).toEqual([]);
+  });
+
+  test("a killed probe is refused, not reported as an unversioned directory", () => {
+    // `envMode: "local"` makes "not a repository" a SUPPORTED state, which is
+    // why reporting it wrongly is so quiet — the foot just says so and stops.
+    // Same refusal `files.ts` makes for the file listing.
+    const stalled = runner({ "rev-parse --is-inside-work-tree": timedOut("rev-parse") });
+    expect(() => gitOverview(stalled, "/repo")).toThrow("did not finish within");
+    expect(() => sessionDiff(stalled, { cwd: "/repo" })).toThrow("did not finish within");
+    // A genuine `false` is still answered rather than thrown.
+    expect(gitOverview(runner({ "rev-parse --is-inside-work-tree": ok("false\n") }), "/plain").repository).toBe(false);
+  });
+
+  test("a killed probe does not tell someone their checkout is unversioned before a commit", () => {
+    const reason = commitSessionWork(runner({ "rev-parse --is-inside-work-tree": timedOut("rev-parse") }), {
+      cwd: "/repo",
+      message: "x",
+    }).reason;
+    expect(reason).not.toContain("not a git repository");
+    expect(reason).toContain("git did not answer");
+  });
+
+  test("the async twins answer identically on the timeout path", async () => {
+    const sync = refsRunner({ ...BOTH_HALVES, [HEADS]: timedOut() });
+    const async: AsyncGitRunner = async (cwd, args) => sync(cwd, args);
+    expect(await listGitRefsAsync(async, "/repo")).toEqual(listGitRefs(sync, "/repo"));
+
+    const stalledSync = runner({ "rev-parse --is-inside-work-tree": timedOut("rev-parse") });
+    const stalledAsync: AsyncGitRunner = async (cwd, args) => stalledSync(cwd, args);
+    await expect(gitOverviewAsync(stalledAsync, "/repo")).rejects.toThrow("did not finish within");
+    await expect(sessionDiffAsync(stalledAsync, { cwd: "/repo" })).rejects.toThrow("did not finish within");
+
+    const overviewSync = refsRunner({ ...REPO, ...BOTH_HALVES, [REMOTES]: timedOut() });
+    const overviewAsync: AsyncGitRunner = async (cwd, args) => overviewSync(cwd, args);
+    expect(await gitOverviewAsync(overviewAsync, "/repo")).toEqual(gitOverview(overviewSync, "/repo"));
   });
 });
 
@@ -276,6 +418,216 @@ describe("sessionDiff", () => {
       { cwd: "/repo", baseRef: "base000" },
     );
     expect(diff.files.find((file) => file.path === "src/a.ts")?.status).toBe("deleted");
+  });
+});
+
+/**
+ * A TIMED-OUT DIFF IS NOT "THIS SESSION CHANGED NOTHING" — issue #654.
+ *
+ * Every test here drives `timedOut()` and never `fail()` alone, for the reason
+ * #650's suite gives: the two are the SAME EXIT STATUS, so a test exercising a
+ * generic non-zero exit would call this covered while the bug shipped. What no
+ * killed read may produce is an empty review, an empty commit list, a base
+ * reported as unrecorded, or a patch that reads as a binary file.
+ *
+ * WORSE HERE THAN IN THE REF LISTING, which is why it got its own issue: an
+ * empty diff is a claim a person acts on directly — it is how you decide a
+ * session did nothing and archive it — and `sessions_diff` is read by AGENTS,
+ * which will report it onward as fact.
+ */
+describe("git did not answer about the diff", () => {
+  const base = { cwd: "/repo", baseRef: "base000" };
+
+  test("a killed numstat leaves the review INCOMPLETE rather than empty, and keeps the untracked half", () => {
+    // The shape that matters: one read dies, the others answer, and the result
+    // was a SHORTER review that read as the whole change.
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "diff -z --numstat": timedOut("diff --numstat") }), base);
+    expect(diff.filesIncomplete).toBe("timeout");
+    // What DID arrive is kept — those are real changes, about to be committed.
+    expect(diff.files.map((file) => file.path)).toEqual(["dist/app.js"]);
+  });
+
+  test("a killed `git status` loses every untracked file, which for a scaffolding run is all of them", () => {
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "status --porcelain": timedOut("status") }), base);
+    expect(diff.filesIncomplete).toBe("timeout");
+    expect(diff.files.map((file) => file.path)).toEqual(["src/a.ts"]);
+  });
+
+  test("a killed name-status marks the review too, because every letter becomes a guess", () => {
+    // The rows are all there; their statuses are not. A row claiming "modified"
+    // about a file git deleted is a wrong claim about that file.
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "diff -z --name-status": timedOut("diff --name-status") }), base);
+    expect(diff.filesIncomplete).toBe("timeout");
+    expect(diff.files).toHaveLength(2);
+  });
+
+  test("an empty review means 'nothing changed' ONLY when nothing failed", () => {
+    // The three cases the old `status !== 0 ? []` collapsed into one.
+    const quiet = { ...REVIEW, "diff -z --numstat": ok(""), "diff -z --name-status": ok(""), "status --porcelain": ok("") };
+    const nothing = sessionDiff(reviewRunner(quiet), base);
+    expect(nothing.files).toEqual([]);
+    expect(nothing.filesIncomplete).toBeUndefined();
+    expect(sessionDiff(reviewRunner({ ...quiet, "diff -z --numstat": timedOut() }), base).filesIncomplete).toBe("timeout");
+    // A plain failure is marked too, unlike `gitOverview`'s pinned dirty count:
+    // that decision was about a COUNT on the composer's foot, and this is the
+    // list somebody is about to commit.
+    expect(sessionDiff(reviewRunner({ ...quiet, "diff -z --numstat": fail() }), base).filesIncomplete).toBe("failed");
+  });
+
+  test("a killed `rev-parse --verify` cannot veto the base the session recorded", () => {
+    /**
+     * THE QUIET HALF OF #654, and the analogue of #650's `defaultRemoteBase`
+     * fix. The base comes from the session record; the verify is corroboration.
+     * Dropping it on a timeout silently reframes the review as `HEAD…worktree`
+     * — which excludes every commit the session made, so a session that
+     * COMMITTED all of its work reads as having done none of it, under a
+     * sentence ("no starting commit was recorded") that is itself false.
+     */
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "rev-parse --verify": timedOut("rev-parse --verify") }), base);
+    expect(diff.base).toBe("base000");
+    expect(diff.baseUnverified).toBe("timeout");
+    // And the range is still asked about, so committed work is still counted.
+    expect(diff.commits).toHaveLength(1);
+  });
+
+  test("a base that genuinely does not resolve is still dropped, unmarked", () => {
+    // The pinned decision this must not have broken: `--verify --quiet` exiting
+    // non-zero IS the answer "that ref is gone", and falling back to HEAD gives
+    // a smaller TRUE answer rather than an error nobody can act on.
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "rev-parse --verify": fail() }), { cwd: "/repo", baseRef: "gone" });
+    expect(diff.base).toBeUndefined();
+    expect(diff.baseUnverified).toBeUndefined();
+  });
+
+  test("a killed `git log` marks the COMMITS and says nothing about the files", () => {
+    // The whole reason there are three channels and not one: a reader should
+    // distrust the half of the screen that is actually unknown.
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, [LOG_KEY]: timedOut("log") }), base);
+    expect(diff.commitsIncomplete).toBe("timeout");
+    expect(diff.commits).toEqual([]);
+    expect(diff.filesIncomplete).toBeUndefined();
+    expect(diff.files).toHaveLength(2);
+  });
+
+  test("no base is not a failed log, so nothing is marked", () => {
+    // There is no range to ask about, which the surface already explains with
+    // `base` absent — marking it as well would invent a git failure.
+    const diff = sessionDiff(reviewRunner(REVIEW), { cwd: "/repo" });
+    expect(diff.commits).toEqual([]);
+    expect(diff.commitsIncomplete).toBeUndefined();
+  });
+
+  test("a whole review says nothing at all, so the ordinary surface stays quiet", () => {
+    const diff = sessionDiff(reviewRunner(REVIEW), base);
+    expect(diff.filesIncomplete).toBeUndefined();
+    expect(diff.commitsIncomplete).toBeUndefined();
+    expect(diff.baseUnverified).toBeUndefined();
+  });
+
+  test("a killed patch is marked, not returned as an empty one that reads as 'binary file'", () => {
+    // `patch: ""` meant two things, and the surfaces drew the second as the
+    // first: an empty non-binary patch renders as "Binary file — no textual
+    // diff", so a killed subprocess told the reader something specific and
+    // wrong about the file's CONTENTS.
+    const killed = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --unified=3": timedOut("diff") }), { ...base, path: "src/a.ts" });
+    expect(killed).toEqual({ patch: "", binary: false, incomplete: "timeout" });
+    const broken = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --unified=3": { status: 128, stdout: "", stderr: "fatal" } }), {
+      ...base,
+      path: "src/a.ts",
+    });
+    expect(broken.incomplete).toBe("failed");
+    // Exit 1 is `--no-index` reporting a difference, which is this command's
+    // SUCCESS — it must not land in the new channel.
+    const differs = sessionFilePatch(reviewRunner({ ...REVIEW, "diff --no-index": { status: 1, stdout: "@@ -0,0 +1 @@\n+new\n", stderr: "" } }), {
+      ...base,
+      path: "dist/app.js",
+      untracked: true,
+    });
+    expect(differs.incomplete).toBeUndefined();
+    expect(differs.patch).toContain("+new");
+  });
+
+  test("the async twins answer identically on every one of these paths", async () => {
+    for (const replies of [
+      { ...REVIEW, "diff -z --numstat": timedOut("diff --numstat") },
+      { ...REVIEW, "rev-parse --verify": timedOut("rev-parse --verify") },
+      { ...REVIEW, [LOG_KEY]: timedOut("log") },
+      { ...REVIEW, "status --porcelain": timedOut("status") },
+    ]) {
+      const sync = reviewRunner(replies);
+      const async: AsyncGitRunner = async (cwd, args) => sync(cwd, args);
+      expect(await sessionDiffAsync(async, base)).toEqual(sessionDiff(sync, base));
+    }
+
+    const patchSync = reviewRunner({ ...REVIEW, "diff --unified=3": timedOut("diff") });
+    const patchAsync: AsyncGitRunner = async (cwd, args) => patchSync(cwd, args);
+    expect(await sessionFilePatchAsync(patchAsync, { ...base, path: "src/a.ts" })).toEqual(
+      sessionFilePatch(patchSync, { ...base, path: "src/a.ts" }),
+    );
+  });
+});
+
+/**
+ * IGNORING WHITESPACE IS A DIFFERENT COMMAND, NOT A DIFFERENT RENDERING — #694.
+ *
+ * The toolbar toggle looks like a view option and is not one: git decides which
+ * hunks exist before any of the patch reaches a client, so the flag has to be on
+ * the command. These assert the ARGUMENT, because that is the whole of the
+ * change and the only part a fixture can see.
+ */
+describe("sessionFilePatch, ignoring whitespace", () => {
+  /** Records what git was asked, and answers a patch to every diff. */
+  function recording(): { runner: GitRunner; calls: string[][] } {
+    const calls: string[][] = [];
+    const runner: GitRunner = (_cwd, args) => {
+      calls.push(args);
+      if (args[0] === "rev-parse") return ok("");
+      return ok("@@ -1 +1 @@\n-a\n+b\n");
+    };
+    return { runner, calls };
+  }
+
+  test("off by default — the ordinary read is unchanged", () => {
+    const { runner, calls } = recording();
+    sessionFilePatch(runner, { cwd: "/repo", path: "src/a.ts" });
+    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "HEAD", "--", "src/a.ts"]);
+  });
+
+  test("on, the command carries -w AND --ignore-blank-lines", () => {
+    // Either alone leaves the toggle half-true: `-w` keeps a hunk whose only
+    // change is an inserted blank line, which is the same noise to the person
+    // who asked for the noise to go.
+    const { runner, calls } = recording();
+    sessionFilePatch(runner, { cwd: "/repo", path: "src/a.ts", ignoreWhitespace: true });
+    expect(calls.at(-1)).toEqual(["diff", "--unified=3", "-w", "--ignore-blank-lines", "HEAD", "--", "src/a.ts"]);
+  });
+
+  test("an untracked file ignores whitespace too, against /dev/null", () => {
+    // The `--no-index` branch is a whole separate command line, so it is the
+    // one that quietly keeps working while doing nothing.
+    const { runner, calls } = recording();
+    sessionFilePatch(runner, { cwd: "/repo", path: "dist/app.js", untracked: true, ignoreWhitespace: true });
+    expect(calls.at(-1)).toEqual(["diff", "--no-index", "--unified=3", "-w", "--ignore-blank-lines", "--", "/dev/null", "dist/app.js"]);
+  });
+
+  test("the flag goes AFTER --unified=3 and BEFORE the base, so the base is still a base", () => {
+    // `git diff [options] <commit> -- <path>`: an option between the commit and
+    // the pathspec separator would be parsed as a second revision.
+    const { runner, calls } = recording();
+    sessionFilePatch(runner, { cwd: "/repo", baseRef: "abc1234", path: "src/a.ts", ignoreWhitespace: true });
+    const args = calls.at(-1)!;
+    expect(args.indexOf("-w")).toBeLessThan(args.indexOf("abc1234"));
+    expect(args.indexOf("abc1234")).toBeLessThan(args.indexOf("--"));
+  });
+
+  test("the async twin sends the same argument list", async () => {
+    const sync = recording();
+    const async = recording();
+    const asyncRunner: AsyncGitRunner = async (cwd, args) => async.runner(cwd, args);
+    const input = { cwd: "/repo", path: "src/a.ts", ignoreWhitespace: true } as const;
+    sessionFilePatch(sync.runner, input);
+    await sessionFilePatchAsync(asyncRunner, input);
+    expect(async.calls).toEqual(sync.calls);
   });
 });
 

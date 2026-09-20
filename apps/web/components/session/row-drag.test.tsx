@@ -5,7 +5,6 @@
  * handle and the right-click trigger are DIFFERENT ELEMENTS. A platform drag
  * and a base-ui context menu on one node compete for the same press — the
  * project header avoids it by putting the trigger inside the draggable button,
- * the Spool's board card by putting the trigger inside the draggable `<li>`,
  * and this row by wrapping the menu in a handle of its own. The rest of the
  * gesture — where a drop lands, which band it is confined to — is arithmetic,
  * and `lib/session-groups.test.ts` pins it as arithmetic.
@@ -54,7 +53,7 @@ const drag = {
 const render = (over: Partial<React.ComponentProps<typeof SessionRow>> = {}) =>
   renderToStaticMarkup(
     <SidebarProvider>
-      <SessionRow session={session} active={false} showProject={false} variant="card" band="active" renderedAt={0} onRefresh={noop} {...over} />
+      <SessionRow session={session} active={false} showProject={false} variant="card" band="active" renderedAt={0} onRowChanged={noop} {...over} />
     </SidebarProvider>,
   );
 

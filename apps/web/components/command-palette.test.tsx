@@ -29,10 +29,14 @@ test("EVERY VERB THE RAIL PRESSES IS A COMMAND THIS APP HAS", () => {
   const pressed = [...sidebar.matchAll(/run\("([a-z-]+)"\)/g)].map((match) => match[1]!);
   expect(pressed.length).toBeGreaterThan(0);
   for (const id of pressed) expect(ids.has(id)).toBe(true);
-  // The three verbs in the header's pill, by name.
-  for (const verb of ["reveal-in-finder", "add-project", "new-conversation"] as CommandId[]) {
+  // The two verbs in the header's pill, by name. Reveal in Finder was a third
+  // until #470: it pressed a command the rail itself bound to a GUESS at the
+  // project at hand, and the verb now lives only where a folder can be named —
+  // a project group's menu, a session's own Reveal button.
+  for (const verb of ["add-project", "new-conversation"] as CommandId[]) {
     expect(pressed).toContain(verb);
   }
+  expect(pressed).not.toContain("reveal-in-finder");
 });
 
 test("the rail's own bindings name commands that exist too", () => {
@@ -48,11 +52,34 @@ test("⌘K opens the palette and closes it again, carrying the rail's field in",
   // bigger question, and a search half-typed into one should not have to be
   // retyped into the other.
   expect(sidebar).toContain('"search-sessions": () =>');
-  expect(sidebar).toContain('setPalette((current) => (current.open ? { ...current, open: false } : { open: true, page: "root", query }))');
+  // `asked` rides along with `open` on every path that can open the palette —
+  // it is the latch that keeps 68 kB of dialog out of the rail's own bundle
+  // until somebody asks for it (#492), so a path that opened without setting it
+  // would render a palette that never loads.
+  expect(sidebar).toContain('setPalette((current) => (current.open ? { ...current, open: false } : { open: true, asked: true, page: "root", query }))');
   // And the field is still just a filter — no palette in its keydown.
   const field = sidebar.slice(sidebar.indexOf("const handleSearchKeyDown"), sidebar.indexOf("return (", sidebar.indexOf("const handleSearchKeyDown")));
   expect(field).not.toContain("openPalette");
   expect(field).not.toContain("setPalette");
+});
+
+/**
+ * THE LATCH IS AN INVARIANT, NOT A LINE (#492).
+ *
+ * The palette is `next/dynamic` now and the rail renders it only once
+ * `palette.asked` is true, so a new way to open it that sets `open` alone is a
+ * ⌘K that does nothing at all — no type error, because both fields are on the
+ * same object and `open: true` is a complete expression by itself. The failure
+ * would be invisible in review and total at runtime, which is exactly the shape
+ * worth spending a test on.
+ */
+test("every path that opens the palette also latches it into existence", () => {
+  const opens = [...sidebar.matchAll(/open: true[^}]*/g)].map((match) => match[0]);
+  expect(opens.length).toBeGreaterThan(0);
+  for (const open of opens) expect(open).toContain("asked: true");
+  // ...and the one path that can only be told `open` from outside carries the
+  // latch forward rather than dropping it on close.
+  expect(sidebar).toContain("asked: current.asked || open");
 });
 
 test("the registry is the source of the Actions list, not a second list beside it", () => {
@@ -60,7 +87,54 @@ test("the registry is the source of the Actions list, not a second list beside i
   // A command is listed only when something can run it: a mounted component has
   // claimed it, or it is pure navigation with a destination.
   expect(source).toContain('Boolean(commandHandler(id)) || commandDestination(id, []).kind !== "noop"');
-  expect(source).toContain('["search-sessions"],');
+  // The palette that opened this dialog is never a row in it, and neither is a
+  // command whose row moved down into Quick settings (#479).
+  expect(source).toContain('["search-sessions", ...PALETTE_QUICK_COMMANDS],');
+});
+
+test("a glyph per command, resolved through the one map (#479)", () => {
+  // The palette used to draw one glyph per GROUP, which made the list scannable
+  // by section and not by row — the wrong unit for a surface whose whole job is
+  // finding one verb among twenty-odd.
+  expect(source).toContain("const Glyph = commandIcon(row.id);");
+  expect(source).toContain('import { commandIcon, iconByName } from "@/lib/command-icons";');
+  // And the group map is gone from this file: the fallback lives with the map.
+  expect(source).not.toContain("GROUP_ICONS");
+});
+
+test("every settings write goes through the one adapter, so #471 rebases one file", () => {
+  // The palette must not reach into the theme store, the appearance store or
+  // the Looks shelf itself — lib/quick-settings.ts is the only door, and that
+  // is what keeps the Appearance rework a single-file rebase.
+  expect(source).toContain('import { ACCENTS, ACCENT_LABELS, useQuickSettings } from "@/lib/quick-settings";');
+  for (const store of ["@/lib/appearance", "@/lib/looks", "@/lib/theme-palettes", "@/components/theme-provider"]) {
+    expect(source).not.toContain(store);
+  }
+});
+
+test("a quick row applies and LEAVES THE PALETTE OPEN", () => {
+  // The one place these rows behave unlike every other: they are knobs, not
+  // verbs. Stepping the text size twice is ordinary, and a dialog that shut
+  // after each step would make the second press a whole ⌘K again.
+  const take = source.slice(source.indexOf("const take ="), source.indexOf("const onKeyDown ="));
+  const quick = take.slice(take.indexOf('if (row.kind === "quick")'), take.indexOf("// A door walks"));
+  expect(quick).toContain("setNotice(quick.apply(row.id));");
+  expect(quick).not.toContain("onOpenChange(false)");
+  // Its readout sits where a command's chord would — a verb promises a key, a
+  // knob reports a state.
+  expect(source).toContain('<span className="shrink-0 text-2xs text-muted-foreground">{row.value}</span>');
+});
+
+test("the Looks and Accent pages are pages of THIS dialog, not a second one", () => {
+  // #479 asked for the palette's existing sub-page mechanism rather than a new
+  // dialog — so these are `page` values on the same DialogContent.
+  expect(source).toContain('page === "looks" ?');
+  expect(source).toContain('page === "accent" ?');
+  expect(source).not.toContain("<Dialog open={true}");
+  // One page component serves both lists: same chrome, different data.
+  expect(source).toContain("function QuickPage({");
+  // Backspace on an EMPTY field is the way back, as everywhere else here.
+  expect(source).toContain('if (event.key === "Backspace" && query === "") {');
 });
 
 test("the chord sits at the row's right, from the live keymap", () => {
@@ -113,14 +187,17 @@ test("the sub-pages are the project palette's own, embedded rather than rebuilt"
   expect(source).toContain("<ProjectPalettePages");
   expect(source).toContain("page={page}");
   // Backspace on an empty field walks back out of them to this palette's list.
-  expect(source).toContain("onBack={() => {");
-  expect(source).toContain('setPage("root");');
+  // `walk` is that one move — the page, a cleared query, the highlight home —
+  // named once now that four pages use it rather than spelled out at each.
+  expect(source).toContain('onBack={() => walk("root")}');
+  expect(source).toContain("const walk = (to: CommandPalettePage) => {");
+  expect(source).toContain('setPage(to);');
 });
 
 test("a row that walks does not also close the dialog", () => {
   const take = source.slice(source.indexOf("const take ="), source.indexOf("const onKeyDown ="));
   expect(take).toContain("if (row.page) {");
-  expect(take).toContain("setPage(SUB_PAGE[row.page]);");
+  expect(take).toContain("walk(SUB_PAGE[row.page]);");
   // Everything else closes first and then acts, so a navigation never happens
   // behind a dialog that is still up.
   expect(take).toContain("onOpenChange(false);\n    onRun(row.id);");

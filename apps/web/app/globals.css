@@ -107,7 +107,6 @@
   --color-verify: var(--verify);
   --color-success: var(--success);
   --color-warning: var(--warning);
-  --color-spool: var(--spool);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground-wash, var(--muted-foreground));
@@ -221,51 +220,27 @@
   --warning: oklch(0.515 0.11 72);
   --destructive: oklch(0.50 0.19 25.5);
 
-  /* --spool NAMES A ROOM, NOT A STATE, and the rule directly above — "do not add
-     a sixth ramp; new state colours go on this vocabulary" — is about STATE.
-     Nothing here ever means done, blocked, failing or needs-attention; the Spool
-     reaches for --warning and --destructive for those exactly like every other
-     screen, and this appears in none of the places a status would.
+  /* THE EIGHT IDENTITY HUES — `IDENTITY_COLORS`, the per-thing marks
+     (Apple Calendar's per-calendar hues).
 
-     WHY IT EXISTS. The Spool's differentiator was `bg-muted/25` on its ground —
-     one value step, invisible in a screenshot, and the report was "I don't see
-     myself using this". The app's own law is that hue belongs on icons and
-     containers stay neutral, so the honest way to say "you are somewhere else"
-     is a mark, not a wash.
-
-     WHERE IT IS ALLOWED: the Spool's glyph, its active tab, the ripening stage
-     dots, the panel's left hairline, the "needs you" mark, and the pulse of a
-     pass in flight. NEVER a surface fill, and never a solid behind text — it is
-     tuned as a MARK, so it clears 3:1 as a dot and is not asked for more.
-
-     Hue 315 is 51 degrees off --primary at 264, past --verify at 293 and short
-     of --chart-2 at 336, at the same lightness as the state ramps in each
-     theme. */
-  --spool: oklch(0.545 0.16 315);
-
-  /* THE EIGHT IDENTITY HUES — `SpoolSubjectColor`, the Spool's per-subject
-     marks (docs/spool-loops.md §8.2, Apple Calendar's per-calendar hues).
-
-     IDENTITY, NEVER STATE. Each of these says WHOSE something is — a subject
+     IDENTITY, NEVER STATE. Each of these says WHOSE something is — a thing
      the user coloured — and nothing else. They are constant: never derived
      from state, never a function of a deadline, a pin or a tier, never used
-     for urgency. A slipped pin wears the same hue as a resting one. This is
-     NOT a sixth ramp: the rule above ("do not add a sixth ramp; new state
-     colours go on this vocabulary") is about STATE, and none of these may
-     ever mean done, blocked, failing or needs-attention — the Spool still
-     reaches for --warning and --destructive for those like every other
-     screen, and still does not, on its front page, at all.
+     for urgency. This is NOT a sixth ramp: the rule above ("do not add a
+     sixth ramp; new state colours go on this vocabulary") is about STATE, and
+     none of these may ever mean done, blocked, failing or needs-attention —
+     those stay on --warning and --destructive like every other screen.
 
      TUNED AS SMALL DOTS, deliberately quieter than the state ramps (chroma
      0.03–0.10 against the ramps' 0.09–0.20) so eight of them on one screen
-     read as a key, not a carnival. Dark lifts lightness the same way --spool
-     does (0.545 → 0.74) and holds chroma. `slate` and `sand` run near-grey
-     on purpose — a palette needs quiet members.
+     read as a key, not a carnival. Dark lifts lightness (0.55 → 0.73) and
+     holds chroma. `slate` and `sand` run near-grey on purpose — a palette
+     needs quiet members.
 
      DELIBERATELY NOT BRIDGED INTO @theme: no `bg-subject-*` utility exists,
      so the only door to these values is the one pure helper
-     (`components/spool/subject-color.ts`), which is what keeps them out of
-     state conditionals by construction. */
+     (`identityColorVar` in `lib/telar-icons.tsx`), which is what keeps them
+     out of state conditionals by construction. */
   --subject-plum: oklch(0.55 0.09 325);
   --subject-sea: oklch(0.55 0.08 205);
   --subject-moss: oklch(0.55 0.08 140);
@@ -283,7 +258,7 @@
      (`text-sky-600 dark:text-sky-400`) — a fixed sRGB pair that cannot follow a
      theme and had to restate itself in every block. One token per hue, flipping
      with the scheme like everything else, is the same fix `--subject-*` already
-     is for the Spool.
+     is for identity.
 
      IDENTITY, NEVER STATE, exactly like the subject hues above: nothing here may
      ever mean done, blocked or failing — those stay on --success / --warning /
@@ -500,11 +475,7 @@
   --warning: oklch(0.78 0.15 72);
   --destructive: oklch(0.7 0.19 25.5);
 
-  /* The room mark, lifted the same way. See the light theme for what it is and
-     — more to the point — for what it is not allowed to be. */
-  --spool: oklch(0.74 0.15 315);
-
-  /* The identity hues, lifted the way --spool is — see the light theme for
+  /* The identity hues, lifted the same way — see the light theme for
      the law they live under: WHOSE, never how urgent. */
   --subject-plum: oklch(0.73 0.1 325);
   --subject-sea: oklch(0.73 0.09 205);
@@ -850,7 +821,7 @@ code, pre, kbd, samp {
    2. ALPHA ON A TOKEN MULTIPLIES, IT DOES NOT REPLACE. Tailwind compiles
       `bg-muted/25` to `color-mix(in oklab, var(--muted) 25%, transparent)`, so
       a token already sitting at 72% alpha lands the element at 18% — and
-      `bg-muted/25` is exactly what the Spool header, the stance and the
+      `bg-muted/25` is exactly what the quiet section headers and the
       workspace strip use for their fills. Under a backdrop they dissolved.
       This is NOT fixable at the call sites: the SAME class string renders on a
       page with no backdrop at all, where the token is opaque and /25 means
@@ -955,6 +926,135 @@ html:not(.dark):is([data-telar-shell][data-translucent], [data-backdrop]) {
 html:not(.dark)[data-telar-shell][data-translucent] {
   --muted-foreground-wash: color-mix(in oklab, var(--foreground) 30%, var(--muted-foreground));
   --sidebar-foreground-wash: color-mix(in oklab, var(--foreground) 30%, var(--sidebar-foreground));
+}
+
+/* ─── A FLOOR UNDER THE SEMANTIC TINTS (#691) ───────────────────────────────
+
+   `bg-success/10` IS NOT A TINT. IT IS AN ALPHA. Tailwind compiles it to
+   `color-mix(in oklab, var(--success) 10%, transparent)` — 10% of a colour the
+   theme chose, and 90% of WHATEVER HAPPENS TO BE BEHIND IT. On an opaque card
+   that reads as a wash of green over the card, which is what was wanted. Over
+   the translucency wash the other 90% is the desktop, so a diff's added line
+   was a tenth of a hue and nine tenths of somebody's wallpaper. #434 put a
+   legibility floor under --muted-foreground for exactly this scene and left the
+   semantic tints with no floor at all; these two classes are that floor.
+
+   MIXED AGAINST THE CARD, NOT AGAINST TRANSPARENT. Each class names the mix the
+   utility was reaching for and supplies the second colour it was missing: the
+   card the tinted row sits on. The result is OPAQUE, so the wash cannot thin
+   it, it cannot compound through nesting (bug 2 in the contract above), and the
+   number is a floor on how much of the semantic colour is PRESENT rather than a
+   ceiling on how much of the scene shows through.
+
+   A CLASS RATHER THAN A UTILITY, for the reason the contract gives at
+   `bg-muted/25`: Tailwind hands `bg-x/NN` exactly one lever — the alpha — and
+   the end of the mix that had to change is the other one. One class string
+   renders in every scene, so the VALUE is the thing that has to stop moving.
+
+   12% IS THE FLOOR AND IT IS ONE NUMBER, in one declaration, so a re-tune
+   cannot leave the tints disagreeing. It replaces 10% of an unknown with 12% of
+   the live token against the live --card, which means both schemes and every
+   Look are already covered — there is nothing scheme-specific to state and so
+   nothing to keep in sync.
+
+   THE INK IS UNTOUCHED. `text-success` on an added line keeps the colour its
+   theme gave it. The wash never retints a mark, and neither does this.
+
+   A RESTING FILL ONLY, AND THAT IS NOT A LIMITATION. There is deliberately no
+   variant-capable form of these: a HOVER tint should compose with whatever it is
+   over — deepening the surface under the pointer — which is exactly what an
+   alpha is for and exactly what an opaque mix cannot do. `hover:bg-warning/15`
+   over a band that now paints is correct as written; the same string over a band
+   that did not paint was the bug, and painting the band is the fix for both. */
+:root {
+  --tint-floor: 12%;
+}
+.tint-success {
+  background-color: color-mix(in oklab, var(--success) var(--tint-floor), var(--card));
+}
+.tint-destructive {
+  background-color: color-mix(in oklab, var(--destructive) var(--tint-floor), var(--card));
+}
+.tint-warning {
+  background-color: color-mix(in oklab, var(--warning) var(--tint-floor), var(--card));
+}
+
+/* ─── THE DIFF VIEWER, WEARING THIS APP'S TOKENS (#694) ─────────────────────
+
+   The Diff surface renders through `@pierre/diffs`, whose viewer is a CUSTOM
+   ELEMENT WITH A SHADOW ROOT. That sounds like a wall and is the opposite:
+   custom properties inherit straight through a shadow boundary, so the whole
+   of the theming below is ordinary CSS on the host — no !important, no
+   stylesheet injection, nothing reaching inside the component. The library
+   publishes a `-override` name for every colour it computes, which is the
+   supported hook and the one this block uses.
+
+   THE FLOOR ABOVE IS THE FLOOR HERE. An added line's fill is the same
+   expression `.tint-success` is, against the same --card and through the same
+   --tint-floor. That is the point of writing it here rather than in the
+   component: the diff is a reading surface, and a second number for the same
+   idea is how the two drift apart. Re-tune --tint-floor and the diff moves
+   with the rest of the app.
+
+   BOTH ARMS OF EVERY light-dark() GET THE SAME VARIABLE, and that is load-
+   bearing rather than lazy. Pierre's stylesheet sets `color-scheme: light dark`
+   on its own :host, so `light-dark()` inside it follows the SYSTEM scheme —
+   while this app's scheme is the `.dark` class on <html>. A user on a light OS
+   running a dark Look would get the viewer's light arm over a dark card. Two
+   independent fixes, deliberately both: `color-scheme` is set on the host from
+   out here (an outer-tree rule on the host outranks the shadow tree's own
+   :host), and every value this block supplies is a token that ALREADY carries
+   the scheme — so even where the cascade surprises us, both arms agree.
+
+   --card AND NOT --background, unlike the reference's --code-background: this
+   viewer is mounted inside an expanded file row, which is a card. Matching the
+   panel behind it would make the hunk invisible as a body; matching the card
+   is what the hand-rolled <pre> it replaces already did. */
+.diff-code-view {
+  color-scheme: light;
+
+  /* The ground and the ink. */
+  --diffs-light-bg: var(--card);
+  --diffs-dark-bg: var(--card);
+  --diffs-light: var(--card-foreground);
+  --diffs-dark: var(--card-foreground);
+
+  /* The semantic pair, through this app's floor. */
+  --diffs-addition-base: var(--success);
+  --diffs-deletion-base: var(--destructive);
+  --diffs-bg-addition-override: color-mix(in oklab, var(--success) var(--tint-floor), var(--card));
+  --diffs-bg-deletion-override: color-mix(in oklab, var(--destructive) var(--tint-floor), var(--card));
+  /* The emphasis is the WORD that changed inside a changed line, so it has to
+     read as more than the line it sits on: TWICE THE FLOOR, against the same
+     card. Written out rather than mixed against the fill above it so there is
+     one shape here and not two — and so the pair moves together when the floor
+     is re-tuned, which is the whole argument for --tint-floor being one
+     number. */
+  --diffs-bg-addition-emphasis-override: color-mix(in oklab, var(--success) calc(var(--tint-floor) * 2), var(--card));
+  --diffs-bg-deletion-emphasis-override: color-mix(in oklab, var(--destructive) calc(var(--tint-floor) * 2), var(--card));
+
+  /* The neutral chrome inside the viewer: unchanged context, the hunk
+     separator, the gutter. Muted is the app's name for exactly this — a
+     surface that recedes without leaving the card. */
+  --diffs-bg-context-override: var(--card);
+  --diffs-bg-context-gutter-override: var(--card);
+  --diffs-bg-separator-override: var(--muted);
+  --diffs-bg-buffer-override: var(--muted);
+  --diffs-fg-number-override: var(--muted-foreground);
+  --diffs-fg-number-addition-override: var(--success);
+  --diffs-fg-number-deletion-override: var(--destructive);
+
+  /* Type, from the same variables every other mono surface in the app reads —
+     so a hunk and the file viewer beside it are the same size. `--app-font-*`
+     rather than the `--font-*` Tailwind bridge, which is the rule the katex
+     block below states: the setting lives on the former, and these land in
+     Pierre's own plain `font-family` declaration. */
+  --diffs-font-family: var(--app-font-mono);
+  --diffs-header-font-family: var(--app-font-sans);
+  --diffs-font-size: var(--app-font-mono-size, 13px);
+}
+.dark .diff-code-view {
+  color-scheme: dark;
 }
 
 /* ─── THE BACKDROP LAYER (lib/backdrop.ts) ──────────────────────────────────

@@ -43,30 +43,39 @@
  */
 
 import {
+  AudioLinesIcon,
+  BellIcon,
   BlocksIcon,
+  BookMarkedIcon,
   CameraIcon,
   CircleUserRoundIcon,
   DownloadIcon,
   ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
+  GaugeIcon,
   GitPullRequestIcon,
   GlobeIcon,
+  HardDriveIcon,
   ImageIcon,
   InfoIcon,
   KeyboardIcon,
   KeyRoundIcon,
+  RotateCcwIcon,
   LayersIcon,
+  MicIcon,
   LockIcon,
   MonitorIcon,
   PaletteIcon,
   PlugIcon,
   PlugZapIcon,
   ServerIcon,
+  ShieldCheckIcon,
   SlidersHorizontalIcon,
   SmartphoneIcon,
   SparklesIcon,
   TimerIcon,
+  TypeIcon,
   WrenchIcon,
 } from "lucide-react";
 import { indexSettings, type SettingsPageSpec } from "@/lib/settings-search";
@@ -130,6 +139,19 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           },
         ],
       },
+      /**
+       * THE MAIN ASSISTANT'S GROUP STOOD HERE, and the Agent's took its place
+       * (#531) — and the Agent's has since moved off General entirely, to a tab
+       * of its own under Runtime (#556). Dictation's group left by the same
+       * door and for a sharper reason (#544): it ships OFF, so the row a reader
+       * wants is the switch that turns it on, and a switch buried inside the
+       * pane everybody opens for something else is one nobody finds.
+       *
+       * Both are declared on the `agent` and `dictation` pages below. What
+       * `settings-registry.test.ts` pins is that a row is declared on the pane
+       * that actually renders it — which is the drift either move would
+       * otherwise have introduced silently.
+       */
       {
         title: "Generated text",
         rows: [
@@ -469,6 +491,20 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       {
+        title: "Push notifications",
+        rows: [
+          {
+            title: "Provision relay",
+            // The words somebody types when notifications are not arriving —
+            // they search for the symptom, not for "relay", which is a term
+            // they have no reason to know.
+            hint: "Whether this Mac can send alerts to your phones, and the relay credential that lets it.",
+            keywords: ["notifications", "apns", "alerts", "push", "relay", "keychain", "phone", "not working"],
+            icon: BellIcon,
+          },
+        ],
+      },
+      {
         title: "Other Macs",
         rows: [
           {
@@ -533,6 +569,76 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
       },
     ],
   },
+  /**
+   * THE AGENT, ON ITS OWN PANE (#556) — every row of it, in the order the pane
+   * renders them.
+   *
+   * INDEXED THOUGH IT IS EXPERIMENTAL, for the reason the Main group before it
+   * was: a feature nobody can find is one nobody can switch off either. The
+   * keywords are what somebody types having SEEN the rail entry and wanting to
+   * know what it is — "main" among them, because this replaces what that word
+   * used to name and people keep typing it.
+   *
+   * SIX ROWS ON ONE PANE IS WHY THE PANE EXISTS. They were four rows in a group
+   * stacked between Links and Dictation on General, and the two the composer's
+   * pills already wrote — effort and access — had no settings home at all.
+   */
+  {
+    id: "agent",
+    label: "Agent",
+    icon: SparklesIcon,
+    groups: [
+      {
+        title: "Agent",
+        rows: [
+          {
+            title: "Agent (experimental)",
+            hint: "One built-in conversation per Mac for coordinating Telar work — no project, no checkout, running Telar's own loop.",
+            keywords: ["agent", "main", "assistant", "coordinator", "orchestrator", "delegate", "experimental", "rail", "briefing"],
+            icon: SparklesIcon,
+          },
+          {
+            /** Indexed by the words somebody types when a turn has just failed
+             *  and the message said "key": the pane is where it is fixed. */
+            title: "OpenCode Go key",
+            hint: "The credential the Agent calls OpenCode Go with. Stored with this Mac's engine state.",
+            keywords: ["agent", "key", "api key", "opencode", "go", "credential", "token", "401"],
+            icon: KeyRoundIcon,
+          },
+          {
+            title: "Model",
+            hint: "Which model OpenCode Go serves the Agent. Empty runs the default.",
+            keywords: ["agent", "model", "opencode", "go", "kimi"],
+            icon: SparklesIcon,
+          },
+          {
+            /** Findable by the wire name too: somebody who has read an API doc
+             *  types `reasoning_effort`, not "how hard it thinks". */
+            title: "Reasoning effort",
+            hint: "How hard the Agent's model thinks on each turn. Auto does not send the parameter at all.",
+            keywords: ["agent", "reasoning", "effort", "reasoning_effort", "thinking", "low", "medium", "high", "auto"],
+            icon: GaugeIcon,
+          },
+          {
+            /** "Approve" and "ask me" are what somebody types when they are
+             *  tired of answering the gate — or want to start being asked. */
+            title: "Access",
+            hint: "Whether you answer the Agent's approval gate or policy does. Neither widens which calls are gated.",
+            keywords: ["agent", "access", "approval", "approve", "ask", "auto", "permission", "gate", "confirm"],
+            icon: ShieldCheckIcon,
+          },
+          {
+            /** Indexed by "start over" and "clear", which is what somebody
+             *  looking for this calls it before they find the word Telar uses. */
+            title: "Reset conversation",
+            hint: "Start the Agent again with an empty thread. The old conversation is archived, not deleted.",
+            keywords: ["agent", "reset", "clear", "start over", "new conversation", "archive", "thread"],
+            icon: RotateCcwIcon,
+          },
+        ],
+      },
+    ],
+  },
   {
     id: "providers",
     // NAVIGATE-ONLY, and knowingly. This pane's body is one card per configured
@@ -574,6 +680,127 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     ],
   },
   {
+    /**
+     * DICTATION (#544) — its own pane now, not a group inside General.
+     *
+     * The keywords are what somebody types when they have SEEN the mic button
+     * and it did not work — "microphone", "mic", "voice" — and, since it ships
+     * off, what somebody types looking for a button that is not there. The
+     * vendor's name is in there because it is what the error beside the button
+     * actually says.
+     */
+    id: "dictation",
+    label: "Dictation",
+    icon: MicIcon,
+    groups: [
+      {
+        title: "Dictation",
+        rows: [
+          {
+            /** THE ROW THAT TURNS IT ON, and the only one that exists while it
+             *  is off — so it is the one somebody searching for a missing mic
+             *  button has to land on. */
+            title: "Provider",
+            hint: "Who transcribes, or nobody. Off by default: no mic button anywhere, and this Mac's own dictation keeps working in the message box.",
+            keywords: [
+              "dictation",
+              "dictate",
+              "microphone",
+              "mic",
+              "voice",
+              "speech",
+              "transcribe",
+              "transcription",
+              "provider",
+              "off",
+              "disable",
+              "turn off",
+              "turn on",
+              "enable",
+              "deepgram",
+              "wispr",
+            ],
+            icon: MicIcon,
+          },
+          {
+            title: "Deepgram key",
+            hint: "The credential this Mac spends on transcription. Stored with its engine state; the browser and the phone only ever get a token that expires in minutes.",
+            keywords: ["dictation", "dictate", "microphone", "mic", "voice", "speech", "transcribe", "transcription", "deepgram", "key", "api key", "credential"],
+            icon: KeyRoundIcon,
+          },
+          {
+            /** WHAT SOMEBODY TYPES AFTER A NAME COMES BACK WRONG (#581) —
+             *  "glossary", "vocabulary", "keyterms", "custom words". The row is
+             *  the only place any of those can be fixed, and none of them is a
+             *  word the two rows above use. */
+            title: "Vocabulary",
+            hint: "Words the recogniser has no reason to expect, one per line. Your conversations, projects and branches are already sent; this is the rest.",
+            keywords: [
+              "dictation",
+              "vocabulary",
+              "glossary",
+              "keyterm",
+              "keyterms",
+              "terms",
+              "custom words",
+              "jargon",
+              "names",
+              "spelling",
+              "accuracy",
+              "wrong word",
+            ],
+            icon: BookMarkedIcon,
+          },
+          /**
+           * "HOW IT WORKS" IS GONE (#643), and the live demo below is what
+           * replaced it. It was a ~300-character paragraph on a row with no
+           * control, explaining in prose that words appear as they are heard and
+           * are rewritten in place until they settle — which the Live transcript
+           * row now SHOWS. The index entry goes with the row: a result that
+           * scrolled to a row nobody renders is the decay this file's test
+           * exists to catch.
+           */
+        ],
+      },
+      /**
+       * PICK, TEST, WATCH (#643) — a second group on the same pane, indexed
+       * because each of the three is a question somebody arrives with rather
+       * than a control they go looking for. "Wrong microphone", "is it even
+       * hearing me", "I want to see it working" are three different searches and
+       * three different rows.
+       *
+       * THE KEYWORDS DELIBERATELY DO NOT FIGHT THE PROVIDER ROW for the bare
+       * word "microphone". That row is the one somebody with no mic button at
+       * all has to land on — it is the switch that turns the feature on — and it
+       * is declared above these, so a tie on rank keeps it first (see
+       * `searchSettings`: ties hold registry order).
+       */
+      {
+        title: "Microphone",
+        rows: [
+          {
+            title: "Input",
+            hint: "Which microphone dictation records from. Kept in this browser alone, so a phone or another Mac keeps its own.",
+            keywords: ["input", "device", "which microphone", "choose microphone", "headset", "airpods", "usb", "interface", "built-in", "default input", "wrong microphone"],
+            icon: MicIcon,
+          },
+          {
+            title: "Level",
+            hint: "Whether the microphone is being heard at all, read straight off the input without transcribing — so it works with no key and no connection.",
+            keywords: ["level", "meter", "volume", "test microphone", "not hearing", "no audio", "silent", "muted", "dead", "check"],
+            icon: AudioLinesIcon,
+          },
+          {
+            title: "Live transcript",
+            hint: "A real transcription in the pane, discarded rather than sent — to see the words arrive and be rewritten in place before they settle.",
+            keywords: ["demo", "preview", "try", "live", "test transcription", "interim", "rewritten", "see it working"],
+            icon: TypeIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: "source-control",
     label: "Source control",
     icon: GitPullRequestIcon,
@@ -609,7 +836,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         rows: [
           {
             title: "Tell agents they are inside Telar",
-            hint: "One paragraph per turn saying what Telar's words mean — the browser, a session, the panel, the rail, Spool, Looks.",
+            hint: "One paragraph per turn saying what Telar's words mean — the browser, a session, the panel, the rail, Looks.",
             keywords: [
               "orientation",
               "preamble",
@@ -631,7 +858,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           },
           {
             title: "Install the telar skill",
-            hint: "A SKILL.md in each provider's skills directory with the detail: the panel, Warps, assignment and settling, browser tabs, the Spool's verbs.",
+            hint: "A SKILL.md in each provider's skills directory with the detail: the panel, Warps, assignment and settling, browser tabs.",
             keywords: ["skill", "SKILL.md", "claude", "codex", "opencode", "docs", "reference", "telar"],
             icon: SparklesIcon,
           },
@@ -709,6 +936,65 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
               "default python",
             ],
             icon: BlocksIcon,
+          },
+        ],
+      },
+    ],
+  },
+  /**
+   * STORAGE (#642) — and the reason its rows are indexed at all is the reason
+   * the pane exists: nobody knew `execution.sqlite` was a gigabyte, so nobody
+   * would think to look for a pane about it. What a person types here is a
+   * symptom ("disk full", "space"), not a destination.
+   *
+   * THE PER-CATEGORY ROWS ARE NOT INDEXED. Their titles are copy, but which of
+   * them EXIST depends on what this install happens to have on disk — a machine
+   * that never ran the data-science plugin has no Python row — and an index
+   * that found a row which is not there is worse than one that finds the pane.
+   * The two standing rows are: the total, and the location.
+   */
+  {
+    id: "storage",
+    label: "Storage",
+    icon: HardDriveIcon,
+    groups: [
+      {
+        title: "What Telar is keeping",
+        rows: [
+          {
+            title: "Total",
+            hint: "How much disk Telar itself is using, by category, with a way to open each one in Finder.",
+            keywords: ["disk", "space", "size", "storage", "gigabytes", "full", "how big", "reveal", "finder", "sqlite", "database", "cache"],
+            icon: HardDriveIcon,
+          },
+        ],
+      },
+      {
+        /**
+         * TWO ROWS CALLED "Location", ON ONE PANE, AND DELIBERATELY. One moves
+         * the reproducible 92%; the other moves everything including the
+         * history that nothing reproduces. The group is what tells them apart,
+         * and it is half the anchor, so both are findable and neither is
+         * mistaken for the other.
+         */
+        title: "Session checkouts",
+        rows: [
+          {
+            title: "Location",
+            hint: "Where session checkouts are made, and how to put them on another drive without moving your history.",
+            keywords: ["worktree", "checkout", "external", "drive", "move", "space", "disk", "12 gb", "relocate"],
+            icon: FolderGitIcon,
+          },
+        ],
+      },
+      {
+        title: "Store",
+        rows: [
+          {
+            title: "Location",
+            hint: "Where Telar keeps everything, and how to move it to another drive.",
+            keywords: ["move", "external", "volume", "drive", "relocate", "where", "path", "ssd"],
+            icon: HardDriveIcon,
           },
         ],
       },

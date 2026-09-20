@@ -341,13 +341,19 @@ async function main() {
     manager.hibernateTab(fakeExt);
     fakeExt.url = "chrome-extension://abcdef/unlock.html";
     const before = manager.state("s1").tabs.map((t) => [t.url, t.active, t.viewport.preset]);
-    note(`before quit s1: ${JSON.stringify(before)}`);
+    // THE PARTITION EACH SCOPE WAS ACTUALLY BROWSING IN, captured before the
+    // quit. This is what "restored in its remembered partition" is measured
+    // against below — a literal there would only restate the registry's own
+    // naming scheme, which is exactly how this assertion went stale (#622).
+    const partitionBefore = { s1: manager.scopeTabs("s1")[0].partition, s2: manager.scopeTabs("s2")[0].partition };
+    note(`before quit s1: ${JSON.stringify(before)}; partitions=${JSON.stringify(partitionBefore)}`);
     manager.destroy(); // window close / quit: synchronous save
     const written = JSON.parse(fs.readFileSync(path.join(userData, "browser-tabs.json"), "utf8"));
     assert(!JSON.stringify(written).includes("chrome-extension"), "an extension page was persisted");
     assert(!JSON.stringify(written).includes("page=closed"), "a closed tab was persisted");
 
-    manager = new DesktopBrowserManager(window, { profiles: readProfileRegistry(userData), tabStore: createTabStore(userData, { writeDelayMs: 10 }) });
+    const profiles = readProfileRegistry(userData);
+    manager = new DesktopBrowserManager(window, { profiles, tabStore: createTabStore(userData, { writeDelayMs: 10 }) });
     const restored = manager.state("s1");
     note(`after restart s1: ${JSON.stringify(restored.tabs.map((t) => [t.url, t.active, t.sleeping, t.viewport.preset]))}`);
     assert(restored.tabs.length === 2, `expected 2 restored tabs, got ${restored.tabs.length}`);
@@ -368,10 +374,23 @@ async function main() {
     const live = manager.tabs.filter((t) => t.view);
     note(`after first use: ${live.length} live view(s), partition=${live[0].partition}`);
     assert(live.length === 1, "more than one tab woke");
-    assert(live[0].partition === `persist:telar-project-${PROJECT.slice("project_".length)}`, "restored tab is in the wrong partition");
+    // THE SAME JAR IT WAS SIGNED INTO, AND THE ONE THE REGISTRY STILL RESOLVES.
+    // Two assertions because they fail for different reasons: the first catches
+    // a restart that woke the tab somewhere else, the second catches the tab
+    // store and the profile registry disagreeing about where that is.
+    assert(live[0].partition === partitionBefore.s1, `restored tab is in the wrong partition: ${live[0].partition}, was ${partitionBefore.s1}`);
+    assert(live[0].partition === profiles.resolve(PROJECT).partition, `restored tab is not where the registry resolves ${PROJECT}: ${live[0].partition} vs ${profiles.resolve(PROJECT).partition}`);
     assert((await evaluate(manager, live[0], "document.getElementById('marker').textContent")) === "Page: landed", "restored page did not load on wake");
     // The other scope stays asleep until asked, and keeps its own profile.
-    assert(manager.scopeTabs("s2")[0].partition === "persist:telar-profile-none", "restored s2 partition wrong");
+    //
+    // ON A FRESH userData THAT IS THE SAME PARTITION AS s1's, and deliberately
+    // so: no project is assigned, no pre-profile jar is on disk, so both keys
+    // land on rung 3 — the one "Default" profile `ensureDefault` mints. A jar
+    // per project stopped being minted in `3f750551`. What is asserted here is
+    // that s2 kept the identity IT resolved to across the restart, not that the
+    // two scopes differ.
+    assert(manager.scopeTabs("s2")[0].partition === partitionBefore.s2, `restored s2 partition wrong: ${manager.scopeTabs("s2")[0].partition}, was ${partitionBefore.s2}`);
+    assert(manager.scopeTabs("s2")[0].partition === profiles.resolve("none").partition, "restored s2 is not where the registry resolves the projectless key");
 
     console.log("BROWSER_PERSISTENCE_OK");
   } finally {

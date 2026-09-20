@@ -39,15 +39,15 @@ import Testing
             hosts: [mini, studio],
             projects: [
                 mini.id: [project("t", "telar", root: "/Users/me/code/telar")],
-                studio.id: [project("s", "spool", root: "/Volumes/work/spool")],
+                studio.id: [project("s", "sprout", root: "/Volumes/work/sprout")],
             ]
         )
         #expect(matchNewConversationTargets(targets, query: "").count == 2)
-        #expect(matchNewConversationTargets(targets, query: "spo").map(\.project.name) == ["spool"])
+        #expect(matchNewConversationTargets(targets, query: "spr").map(\.project.name) == ["sprout"])
         // The host — the fact the row now carries instead of a mode above it.
-        #expect(matchNewConversationTargets(targets, query: "studio").map(\.project.name) == ["spool"])
+        #expect(matchNewConversationTargets(targets, query: "studio").map(\.project.name) == ["sprout"])
         // The path, which is the whole point of showing it.
-        #expect(matchNewConversationTargets(targets, query: "/Volumes").map(\.project.name) == ["spool"])
+        #expect(matchNewConversationTargets(targets, query: "/Volumes").map(\.project.name) == ["sprout"])
         #expect(matchNewConversationTargets(targets, query: "nothing here").isEmpty)
     }
 

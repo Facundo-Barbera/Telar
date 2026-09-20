@@ -49,6 +49,9 @@ struct NewSessionView: View {
     /// straight past the palette into the draft.
     @State private var autoTarget: NewConversationTarget?
     @State private var addingProject = false
+    /// The palette row's project avatar, off the project name's own style
+    /// (`.callout`) so the mark keeps pace with the words it labels (#718).
+    @ScaledMetric(relativeTo: .callout) private var targetMark: CGFloat = 27
     /// Which Mac the `+` registers a folder on. Nil until the sheet opens.
     @State private var addHostId: HostID?
     /// The branch a "New session on `<branch>`" carried in, handed to the
@@ -84,13 +87,22 @@ struct NewSessionView: View {
                 if matches.isEmpty {
                     VStack(spacing: 12) {
                         if loading { ProgressView() }
+                        // THE ONE INEXACT RUNG IN THE WHOLE RAMP. Every other
+                        // size lands on a style that matches it at the default
+                        // text size — 16 is `.callout`, 17 is `.body`, 20 is
+                        // `.title3`. An 18 has none: `.headline` is 17 and
+                        // `.title3` is 20, so it had to move. It moves DOWN,
+                        // because one point is a smaller change than two and
+                        // `.headline` is what this is — a heading over the
+                        // sentence beneath it. The `.bold` is the call site's
+                        // own and is kept.
                         Text(loading ? "Loading projects" : targets.isEmpty ? "No projects found" : "No project matches that")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(.headline, weight: .bold))
                             .foregroundStyle(Theme.text)
                         Text(loading ? "Reading every paired Mac's registry."
                              : targets.isEmpty ? "No Mac reported a project. Add one below."
                              : "Try another name, Mac or path.")
-                            .font(.system(size: 14))
+                            .font(.system(Theme.subhead))
                             .foregroundStyle(Theme.textMuted)
                             .multilineTextAlignment(.center)
                     }
@@ -198,30 +210,33 @@ struct NewSessionView: View {
     /// something you compare character by character rather than read.
     private func targetRow(_ target: NewConversationTarget) -> some View {
         HStack(spacing: 12) {
+            // The avatar scales with the project name beside it (#718) —
+            // `ProjectAvatar` is proportional to whatever `size` it is given,
+            // so the literal at the call site was the only thing pinning it.
             ProjectAvatar(name: target.project.name, projectId: target.project.id, hostId: target.hostId,
-                          icon: target.project.icon, api: settings.api(for: target.hostId), size: 27)
+                          icon: target.project.icon, api: settings.api(for: target.hostId), size: targetMark)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(target.project.name)
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.system(.callout, weight: .bold))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
                     HStack(spacing: 3) {
-                        Image(systemName: "desktopcomputer").font(.system(size: 10))
-                        Text(target.hostName).font(.system(size: 11)).lineLimit(1)
+                        Image(systemName: "desktopcomputer").font(.system(Theme.caption))
+                        Text(target.hostName).font(.system(Theme.caption)).lineLimit(1)
                     }
                     .foregroundStyle(Theme.textMuted)
                 }
                 if let root = target.root {
                     Text(root)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.system(Theme.caption, design: .monospaced))
                         .foregroundStyle(Theme.textMuted)
                         .lineLimit(1).truncationMode(.head)
                 }
             }
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.chevron)
         }
         .padding(.horizontal, 16)
@@ -276,16 +291,16 @@ struct NewSessionView: View {
 
     private var addProjectLabel: some View {
         HStack(spacing: 12) {
+            // The 27pt square and its glyph scale together (#674).
             Image(systemName: "plus.circle.fill")
-                .font(.system(size: 17))
                 .foregroundStyle(Theme.accent)
-                .frame(width: 27, height: 27)
+                .scaledGlyphBox(27, glyph: 17)
             Text("Add project…")
-                .font(.system(size: 16, weight: .bold))
+                .font(.system(.callout, weight: .bold))
                 .foregroundStyle(Theme.text)
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.chevron)
         }
         .padding(.horizontal, 16)
@@ -378,7 +393,7 @@ struct NewSessionDraftView: View {
             // A subject line, not a rival composer: one quiet row above the
             // prompt. Left empty, the message's first line becomes the title.
             TextField("Title — optional, taken from your message", text: $title)
-                .font(.system(size: 14))
+                .font(.system(Theme.subhead))
                 .foregroundStyle(Theme.text)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
@@ -417,7 +432,7 @@ struct NewSessionDraftView: View {
                 Rectangle().fill(Theme.border).frame(height: 1)
                 if let error {
                     Text(error)
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.statusRed)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
@@ -425,7 +440,7 @@ struct NewSessionDraftView: View {
                 }
                 if let intakeNote {
                     Text(intakeNote)
-                        .font(.system(size: 12))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
@@ -440,10 +455,12 @@ struct NewSessionDraftView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             PhotosPicker(selection: $pickedPhotos, maxSelectionCount: 8, matching: .images) {
+                                // The composer's circles scale with their
+                                // glyphs, exactly as SessionView's do (#674):
+                                // one ratio, so 16-in-44 holds at every size.
                                 Image(systemName: "plus")
-                                    .font(.system(size: 16))
                                     .foregroundStyle(Theme.text)
-                                    .frame(width: 44, height: 44)
+                                    .scaledGlyphBox(44, glyph: 16)
                                     .background(Theme.subtle)
                                     .clipShape(Circle())
                                     .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
@@ -468,22 +485,22 @@ struct NewSessionDraftView: View {
                                 onChange: { choice = $0 }
                             )
                             chip(icon: "slider.horizontal.3",
-                                 label: ComposerView.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
-                                ForEach(ComposerView.runtimeModes, id: \.0) { mode, label in
+                                 label: SessionComposerControls.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
+                                ForEach(SessionComposerControls.runtimeModes, id: \.0) { mode, label in
                                     Button { runtimeMode = mode } label: { menuRow(label, selected: mode == runtimeMode) }
                                 }
                             }
                             workspaceChip
                             if let hostName {
                                 HStack(spacing: 8) {
-                                    Image(systemName: "desktopcomputer").font(.system(size: 14))
+                                    Image(systemName: "desktopcomputer").font(.system(Theme.subhead))
                                     Text(hostName)
-                                        .font(.system(size: 14, weight: .semibold))
+                                        .font(.system(Theme.subhead, weight: .semibold))
                                         .lineLimit(1)
                                 }
                                 .foregroundStyle(Theme.textMuted)
                                 .padding(.horizontal, 14)
-                                .frame(height: 44)
+                                .scaledHeight(44, relativeTo: .subheadline)
                                 .background(Theme.subtle)
                                 .clipShape(Capsule())
                                 .overlay(Capsule().strokeBorder(Theme.borderSubtle, lineWidth: 1))
@@ -496,14 +513,15 @@ struct NewSessionDraftView: View {
                     } label: {
                         if submitting {
                             ProgressView()
-                                .frame(width: 44, height: 44)
+                                .scaledSquare(44)
                                 .background(Theme.subtleStrong)
                                 .clipShape(Circle())
                         } else {
+                            // Send: the same circle as the attach button
+                            // above, scaling for the same reason.
                             Image(systemName: "arrow.up")
-                                .font(.system(size: 16, weight: .semibold))
                                 .foregroundStyle(canStart ? Theme.primaryGlyph : Theme.textMuted)
-                                .frame(width: 44, height: 44)
+                                .scaledGlyphBox(44, glyph: 16, weight: .semibold)
                                 .background(canStart ? Theme.primaryFill : Theme.subtleStrong)
                                 .clipShape(Circle())
                         }
@@ -680,15 +698,15 @@ struct NewSessionDraftView: View {
             items()
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: icon).font(.system(size: 14))
+                Image(systemName: icon).font(.system(Theme.subhead))
                 Text(label)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(Theme.subhead, weight: .semibold))
                     .lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
+                Image(systemName: "chevron.down").font(.system(Theme.caption, weight: .medium))
             }
             .foregroundStyle(Theme.text)
             .padding(.horizontal, 14)
-            .frame(height: 44)
+            .scaledHeight(44, relativeTo: .subheadline)
             .background(Theme.subtle)
             .clipShape(Capsule())
             .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))

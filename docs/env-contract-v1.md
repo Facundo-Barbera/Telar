@@ -89,8 +89,8 @@ Semantics:
 - A lease is **held through verify and repair** and released on green (or
   abandonment). Repair without the environment is churn; the lease exists to
   prevent re-queuing between verify and fix.
-- The queue is FIFO with one exception: a loom re-entering after a repair on
-  the *same* lease keeps it; a loom that released and returns goes to the back.
+- The queue is FIFO with one exception: a holder re-entering after a repair on
+  the *same* lease keeps it; one that released and returns goes to the back.
 - Leases have a TTL (default 45 min, renewable). An expired lease is reclaimed
   with `down`; the holder is notified, not silently killed mid-verify —
   reclaim happens between verb invocations.

@@ -84,12 +84,35 @@ export function describeProfileUse(profile: BrowserProfile): string {
   return `${shared[0].toUpperCase()}${shared.slice(1)}.`;
 }
 
-/** Why delete is unavailable, or undefined when it is. The same two rules the
- *  registry enforces, said before the click rather than after it. */
+/**
+ * Why delete is unavailable, or undefined when it is. The one rule the registry
+ * still enforces, said before the click rather than after it.
+ *
+ * A PROFILE IN USE IS NOT A REASON ANY MORE (#476). It used to be — "point that
+ * project at another profile first" — which asked the reader to do by hand,
+ * project by project, exactly what deleting now does for them. What is left is
+ * the default, and it is left because there is nowhere for its projects to fall
+ * back TO.
+ */
 export function whyUndeletable(profile: BrowserProfile): string | undefined {
   if (profile.isDefault) return "The default profile cannot be deleted. Make another profile the default first.";
-  if (profile.projects?.length) return "A project is assigned to it. Point that project at another profile first.";
   return undefined;
+}
+
+/**
+ * What the confirm asks, and it names the consequence the row cannot show: how
+ * many projects move, and where they move to. Deleting is cheap by design —
+ * the cookies stay on disk — but "3 projects will use Default instead" is the
+ * part a person cannot take back with a re-creation, so it is the part that is
+ * said out loud.
+ */
+export function confirmProfileDeletion(profile: BrowserProfile, profiles: BrowserProfile[]): string {
+  const assigned = profile.projects?.length ?? 0;
+  const fallback = profiles.find((candidate) => candidate.isDefault)?.label;
+  const moved = assigned
+    ? ` ${assigned === 1 ? "1 project" : `${assigned} projects`} will use ${fallback ? `"${fallback}"` : "the default"} instead.`
+    : "";
+  return `Delete "${profile.label}"?${moved} Its cookies stay on disk.`;
 }
 
 /**

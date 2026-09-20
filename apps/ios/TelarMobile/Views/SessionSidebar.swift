@@ -27,6 +27,34 @@ struct SessionSidebar: View {
     @State private var deleting: HostedSession?
     @AppStorage("telar.sidebar.collapsed") private var savedCollapsed = ""
 
+    /// THE MARKS SCALE WITH THE LINE THEY LABEL (#718). `ProjectAvatar` and
+    /// `ProviderIconView` are both proportional to the `size` they are handed
+    /// — correct by construction, and #674 left them alone for that reason.
+    /// What it did not look at was the CALL SITES, which hand them a literal.
+    /// The row's text scales and the mark beside it does not, so the two drift
+    /// apart at large text sizes; the mark ends up labelling a line it is no
+    /// longer the size of.
+    ///
+    /// EACH ONE TAKES THE STYLE OF THE TEXT IT SITS NEXT TO, not one shared
+    /// reference, which is the opposite of the choice `ScaledFrame` makes for
+    /// tap targets — and deliberately. A tap target answers to the finger and
+    /// wants one ratio across the app; a mark answers to the words beside it
+    /// and has to track those or it stops matching its own line. That is why
+    /// the two 11s below become different metrics: one sits against the title
+    /// (`.subheadline`), the other against the branch (`.caption`), and they
+    /// were only ever the same number by coincidence.
+    @ScaledMetric(relativeTo: .footnote) private var groupMark: CGFloat = 16
+    @ScaledMetric(relativeTo: .caption2) private var rowProjectMark: CGFloat = 12
+    @ScaledMetric(relativeTo: .subheadline) private var titleProviderMark: CGFloat = 11
+    @ScaledMetric(relativeTo: .caption) private var branchProviderMark: CGFloat = 11
+    /// The slim row's one mark slot, which is a project avatar when there is a
+    /// project and a provider mark when there is not. Both off the slim
+    /// title's own style so the slot is the same size whichever fills it —
+    /// they keep their different seeds because an avatar and a glyph do not
+    /// read as the same weight at the same number.
+    @ScaledMetric(relativeTo: .footnote) private var slimProjectMark: CGFloat = 13
+    @ScaledMetric(relativeTo: .footnote) private var slimProviderMark: CGFloat = 12
+
     private var model: SidebarModel {
         SidebarModel(
             sessions: inbox.sections.active,
@@ -34,6 +62,9 @@ struct SessionSidebar: View {
             marks: { inbox.project($0)?.mark ?? .none },
             remotes: { inbox.project($0)?.remoteUrl },
             hostNames: { settings.host($0)?.name },
+            // Off the SAME project record every line above reads — the Mac
+            // probed the disk and published the answer; the phone draws it.
+            availabilities: { inbox.project($0)?.availability },
             layouts: inbox.layouts
         )
     }
@@ -63,6 +94,110 @@ struct SessionSidebar: View {
                     ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
                 }
             } else {
+                // EACH MAC'S BUILT-IN AGENT, above everything (#531) —
+                // experimental, and absent on every phone whose Macs have never
+                // switched one on.
+                //
+                // ONE ROW PER MAC, and nothing is looked up in that Mac's
+                // sessions to draw it. The Main band this replaces had to find a
+                // designated conversation among the rows, so it appeared a beat
+                // late on a Mac still answering its first poll and not at all if
+                // the conversation had fallen off the page. The Agent is not a
+                // session: one flag decides, and the row is there the moment the
+                // Mac says it is.
+                //
+                // FIRST, AND OUTSIDE SEARCH, for the desktop's reason: it is not
+                // a band and not an entry in the list, it is the row that is
+                // always in the same place. A search is a question about the
+                // whole list and flattens every band — and this row is not in
+                // the list to be found, so it simply goes.
+                //
+                // A DIRECT DESTINATION rather than a `NavigationLink(value:)`.
+                // The value form resolves against the destinations registered
+                // for session ids, and an Agent has no id in that namespace —
+                // there is nothing to register it under.
+                let agentRows = inbox.agents
+                if !agentRows.isEmpty {
+                    Section {
+                        ForEach(agentRows) { row in
+                            NavigationLink {
+                                if let api = settings.api(for: row.hostId) {
+                                    AgentView(hostId: row.hostId, api: api)
+                                } else {
+                                    // A Mac whose client cannot be built is one
+                                    // this phone is no longer paired with. The
+                                    // sentence is better than a blank screen.
+                                    ContentUnavailableView(
+                                        "That Mac is not connected",
+                                        systemImage: "sparkles",
+                                        description: Text("Pair with it again to reach its Agent.")
+                                    )
+                                }
+                            } label: {
+                                // A TALLER ROW WITH ONE STATUS LINE (#539). It
+                                // was a single line the height of a conversation,
+                                // on the argument that it only answers "where do
+                                // I go to coordinate". The owner's first night
+                                // says half of that was wrong: "is it working, is
+                                // it waiting for me" is a question this row has,
+                                // and answering nothing made the one
+                                // always-present entry the least informative
+                                // thing on the sidebar.
+                                Label {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 6) {
+                                            Text("Agent").font(.subheadline)
+                                            // WHAT CAME IN WHILE THE SCREEN WAS
+                                            // SHUT (#541 A). A wake no longer
+                                            // starts a turn, so without this the
+                                            // sidebar cannot say anything
+                                            // arrived. A COUNT and never a tone:
+                                            // whether any of it is waiting on a
+                                            // person is the status line's job,
+                                            // one line down, and two things
+                                            // competing to signal urgency on one
+                                            // row is how neither gets read.
+                                            if let badge = row.badge {
+                                                Text(badge)
+                                                    .font(Theme.monoSmall)
+                                                    .monospacedDigit()
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 1)
+                                                    .background(Theme.surface, in: Capsule())
+                                                    .foregroundStyle(Theme.textMuted)
+                                                    .accessibilityLabel("\(badge) unread")
+                                            }
+                                            // WHICH MAC, and only when there is more
+                                            // than one to tell apart — the rule
+                                            // `HostLabel` applies to every other row
+                                            // on this sidebar.
+                                            if settings.hosts.count > 1, let name = settings.host(row.hostId)?.name {
+                                                Text(name).font(.caption).foregroundStyle(Theme.textMuted)
+                                            }
+                                        }
+                                        .lineLimit(1)
+                                        agentStatusLine(row.status)
+                                    }
+                                } icon: {
+                                    Image(systemName: "sparkles")
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                    } header: {
+                        // A GLYPH BEFORE THE WORD, the treatment "Needs you"
+                        // gets and for the same reason: it says this band is
+                        // different before the word is read. No count — one Mac
+                        // has at most one Agent, so a number here would only
+                        // ever say how many Macs are paired.
+                        HStack(spacing: 6) {
+                            Image(systemName: "sparkles")
+                            Text(agentRows.count > 1 ? "Agents" : "Agent")
+                        }
+                        .bandCaption()
+                        .accessibilityElement(children: .combine)
+                    }
+                }
                 ForEach(MobileDrafts.shared.drafts.filter { draft in
                     settings.host(draft.hostId) != nil && (inbox.filter == nil || inbox.filter == draft.hostId)
                 }) { draft in
@@ -133,7 +268,7 @@ struct SessionSidebar: View {
                             HStack(spacing: 6) {
                                 Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
                                     .font(.caption).foregroundStyle(Theme.textMuted)
-                                ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, mark: group.mark, api: settings.api(for: group.hostId), size: 16)
+                                ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, mark: group.mark, api: settings.api(for: group.hostId), size: groupMark)
                                 // A HEADER IS A HEADER BY ITS WEIGHT. In
                                 // `textMuted` at body size this named the
                                 // project more quietly than the rows it was
@@ -144,6 +279,18 @@ struct SessionSidebar: View {
                                 // semibold, near-full strength.
                                 Text(group.name).font(Theme.groupHeader).foregroundStyle(Theme.text.opacity(0.9))
                                     .lineLimit(1).truncationMode(.tail)
+                                // THE DRIVE IS AWAY — issue #534. The same muted
+                                // chip the host badges below use, and never a
+                                // warning colour: a project on an external drive
+                                // is unreadable whenever the drive is elsewhere,
+                                // which is the ordinary state of an external
+                                // drive. Nothing here is broken and nothing needs
+                                // fixing but a cable.
+                                if let away = group.awayLabel {
+                                    Text(away).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
+                                        .lineLimit(1).padding(.horizontal, 4)
+                                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                                }
                                 // ONE HEADER, EVERY MAC IT LIVES ON — the
                                 // desktop's rule (project-group.tsx). A group on
                                 // one Mac wears a badge only when there is more
@@ -211,7 +358,16 @@ struct SessionSidebar: View {
                     }
                 }
                 shelf("Snoozed", rows: inbox.sections.snoozed.sorted { ($0.session.snoozedUntil ?? 0) < ($1.session.snoozedUntil ?? 0) }, open: $snoozedOpen)
-                shelf("Settled", rows: inbox.sections.settled, open: $settledOpen)
+                // THE ROWS ARE NOT HERE UNTIL THIS IS OPENED (#457): the Macs
+                // answer the unsettled list and say how many they kept, which
+                // is what draws this and what the tap then asks for.
+                shelf(
+                    "Settled",
+                    rows: inbox.sections.settled,
+                    open: $settledOpen,
+                    heldBack: inbox.shelvedOnMacs,
+                    onOpen: { await inbox.showSettled() }
+                )
             }
             // THE DESKTOP'S TWO SENTENCES, NOT ONE THAT COVERS BOTH — #357's
             // copy audit (`SidebarEmpty`, app-sidebar.tsx). "Your work starts
@@ -350,17 +506,21 @@ struct SessionSidebar: View {
         //
         // The glyphs keep the web's size and the tap targets do not: 32pt is a
         // mouse target, and a finger is owed the full 44.
+        //
+        // BOTH GLYPHS BELOW SCALE WITH THEIR OWN SQUARE (#674). 17-in-44 is
+        // the proportion at every text size, not just the default one — see
+        // `scaledGlyphBox`.
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 0) {
                 Button(action: openSettings) {
-                    Image(systemName: "gearshape").font(.system(size: 17))
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                    Image(systemName: "gearshape")
+                        .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
                 }
                 .keyboardShortcut(",", modifiers: .command)
                 .accessibilityLabel("Settings")
                 Button { showUsage = true } label: {
-                    Image(systemName: "chart.bar").font(.system(size: 17))
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                    Image(systemName: "chart.bar")
+                        .scaledGlyphBox(44, glyph: 17).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Usage")
                 .disabled(settings.hosts.isEmpty)
@@ -668,13 +828,13 @@ struct SessionSidebar: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 if row.session.settledOverride == "active" {
-                    Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(Theme.textMuted.opacity(0.7))
+                    Image(systemName: "pin.fill").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted.opacity(0.7))
                 }
                 // The attention and pinned bands, search and the shelves
                 // mix projects, so the row names its own. A row under its
                 // project's own header says nothing the header has not.
                 if showsProject, let project = inbox.project(row) {
-                    ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: 12)
+                    ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: rowProjectMark)
                     Text(project.name).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.75)).lineLimit(1)
                 }
                 Spacer(minLength: 4)
@@ -696,17 +856,17 @@ struct SessionSidebar: View {
                 // at the end at reduced opacity. It sits on the title line
                 // so it survives the third line's absence.
                 if row.session.workspace.branch == nil {
-                    ProviderIconView(driver: row.session.driver, size: 11).opacity(0.5)
+                    ProviderIconView(driver: row.session.driver, size: titleProviderMark).opacity(0.5)
                 }
             }
             // NO THIRD LINE UNLESS IT SAYS SOMETHING THIS ROW ALONE WOULD
             // SAY. A branch differs per row; the model does not.
             if let branch = row.session.workspace.branch {
                 HStack(spacing: 5) {
-                    Image(systemName: "arrow.triangle.branch").font(.system(size: 9))
-                    Text(branch).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                    Image(systemName: "arrow.triangle.branch").font(.system(Theme.captionTiny))
+                    Text(branch).font(.system(Theme.caption)).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 4)
-                    ProviderIconView(driver: row.session.driver, size: 11).opacity(0.6)
+                    ProviderIconView(driver: row.session.driver, size: branchProviderMark).opacity(0.6)
                 }
                 .foregroundStyle(Theme.textMuted.opacity(0.7))
             }
@@ -731,13 +891,13 @@ struct SessionSidebar: View {
     @ViewBuilder private func slimBody(_ row: HostedSession, host: String?) -> some View {
         HStack(spacing: 6) {
             if row.session.settledOverride == "active" {
-                Image(systemName: "pin.fill").font(.system(size: 8)).foregroundStyle(Theme.textMuted.opacity(0.7))
+                Image(systemName: "pin.fill").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted.opacity(0.7))
             }
             if let project = inbox.project(row) {
-                ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: 13)
+                ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: slimProjectMark)
                     .opacity(0.8)
             } else {
-                ProviderIconView(driver: row.session.driver, size: 12).opacity(0.6)
+                ProviderIconView(driver: row.session.driver, size: slimProviderMark).opacity(0.6)
             }
             unreadDot(row.session)
             Text(row.session.title.isEmpty ? "Untitled session" : row.session.title)
@@ -800,7 +960,7 @@ struct SessionSidebar: View {
     /// — beside a group header's list of them, above and below other rows
     /// wearing the same shape — and in company the shape is already the word.
     private func hostBadge(_ name: String) -> some View {
-        Text(name).font(.system(size: 10)).foregroundStyle(Theme.textMuted.opacity(0.7))
+        Text(name).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted.opacity(0.7))
             .lineLimit(1).truncationMode(.tail)
             .padding(.horizontal, 4).background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
             .accessibilityLabel("On \(name)")
@@ -842,19 +1002,48 @@ struct SessionSidebar: View {
         }
     }
 
+    /// THE AGENT ROW'S STATUS LINE (#539) — the same grammar `statusSlot` gives
+    /// a session below, because a reader who has learned this list should not
+    /// have to learn one row separately.
+    ///
+    /// A PULSING DOT FOR "STILL GOING", A STILL DOT FOR "WAITING FOR A PERSON",
+    /// and nothing at all beside a quiet line: the motion is the fastest read on
+    /// the sidebar, and an approval that has parked is exactly the thing that is
+    /// NOT moving.
+    @ViewBuilder private func agentStatusLine(_ status: AgentStatus) -> some View {
+        HStack(spacing: 3) {
+            switch status.tone {
+            case .working: SteppedPulseDot(color: Theme.statusSky)
+            case .waiting: Image(systemName: "circle.circle").font(.system(Theme.captionTiny))
+            case .idle: EmptyView()
+            }
+            Text(status.label).lineLimit(1)
+        }
+        .font(.caption2.weight(status.tone == .idle ? .regular : .medium))
+        .foregroundStyle(agentStatusTone(status.tone))
+    }
+
+    private func agentStatusTone(_ tone: AgentStatus.Tone) -> Color {
+        switch tone {
+        case .waiting: return Theme.statusAmber
+        case .working: return Theme.statusSky
+        case .idle: return Theme.textMuted.opacity(0.7)
+        }
+    }
+
     /// A SPINNER-DOT FOR "STILL GOING", A STILL DOT FOR "STOPPED AND WAITING",
     /// the wake time for a snoozed row, the relative time for everything else.
     @ViewBuilder private func statusSlot(_ session: Session) -> some View {
         let now = Timestamp(Date().timeIntervalSince1970 * 1000)
         if let until = session.snoozedUntil, until > now, session.activity != .blocked {
             HStack(spacing: 3) {
-                Image(systemName: "alarm").font(.system(size: 9))
+                Image(systemName: "alarm").font(.system(Theme.captionTiny))
                 Text(relativeTime(until)).monospacedDigit()
             }
             .font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.7))
         } else if session.activity == .blocked {
             HStack(spacing: 3) {
-                Image(systemName: "circle.circle").font(.system(size: 9))
+                Image(systemName: "circle.circle").font(.system(Theme.captionTiny))
                 Text("Needs you")
             }
             .font(.caption2.weight(.medium)).foregroundStyle(Theme.statusAmber)
@@ -903,9 +1092,30 @@ struct SessionSidebar: View {
         .presentationDetents([.medium])
     }
 
-    @ViewBuilder private func shelf(_ name: String, rows: [HostedSession], open: Binding<Bool>) -> some View {
+    /// `heldBack` IS THE COUNT OF ROWS THE MACS DID NOT SEND (#457), and it is
+    /// what keeps this shelf drawable when it is empty.
+    ///
+    /// The live read answers only the unsettled rows until somebody opens the
+    /// settled shelf, so `rows` is empty until then — and a shelf that hides
+    /// itself when empty would be a shelf with no way to open it. `onOpen` is
+    /// what asks for them, so the rows arrive on the tap rather than three
+    /// seconds later on the next poll.
+    @ViewBuilder private func shelf(
+        _ name: String,
+        rows: [HostedSession],
+        open: Binding<Bool>,
+        heldBack: Int = 0,
+        // `@MainActor` and not `@Sendable`: it closes over the store, which is
+        // main-actor-isolated, and the Task below inherits the same isolation.
+        onOpen: (@MainActor () async -> Void)? = nil
+    ) -> some View {
         let filtered = rows.filter(matches)
-        if !filtered.isEmpty {
+        // WHAT THE HEADER SAYS. Open, the rows are here and they are the
+        // answer — filtered by the search field, which `heldBack` is not.
+        // Closed, the Macs' own count is the only thing that knows there is
+        // anything behind this at all.
+        let count = open.wrappedValue ? filtered.count : max(filtered.count, heldBack)
+        if !filtered.isEmpty || heldBack > 0 {
             Section {
                 if open.wrappedValue {
                     // A SHELF IS OFF THE LIST — history behind you, or work
@@ -924,17 +1134,23 @@ struct SessionSidebar: View {
                 // own separator because a section header in an inset-grouped
                 // list sits OUTSIDE the card, on the page, where the list draws
                 // no separator at all.
-                Button { open.wrappedValue.toggle() } label: {
+                Button {
+                    let opening = !open.wrappedValue
+                    open.wrappedValue = opening
+                    // Only on the way OPEN, and only once it is: closing keeps
+                    // whatever rows arrived, which cost nothing to hold.
+                    if opening, let onOpen { Task { await onOpen() } }
+                } label: {
                     HStack(spacing: 6) {
                         Image(systemName: open.wrappedValue ? "chevron.down" : "chevron.right")
                             .font(.caption)
                         Text(name)
                         Rectangle().fill(Theme.border).frame(height: 1).accessibilityHidden(true)
-                        Text("\(filtered.count)").monospacedDigit()
+                        Text("\(count)").monospacedDigit()
                     }
                     .bandCaption()
                 }
-                .accessibilityLabel("\(name), \(filtered.count), \(open.wrappedValue ? "expanded" : "collapsed")")
+                .accessibilityLabel("\(name), \(count), \(open.wrappedValue ? "expanded" : "collapsed")")
             }
         }
     }

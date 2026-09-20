@@ -23,11 +23,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { QrMatrix } from "@/lib/remote/qr";
+import { describeServeError, type TailscaleServeError } from "@/lib/remote/tailscale-serve";
 import { fmtAgo } from "@/lib/format";
 import { desktopApp } from "@/lib/desktop-app";
 import { cn } from "@/lib/utils";
 import { QrCodeView } from "./qr-code";
 import { CopyCommand } from "./copy-command";
+import { PushNotificationsGroup } from "./push-notifications-group";
 import { Dropdown, Row, SettingsGroup, ToggleRow } from "./settings-shell";
 
 interface RemoteDevice {
@@ -52,6 +54,8 @@ interface RemoteStatus {
   requireAuth: boolean;
   exposure?: "local-only" | "network-accessible";
   tailscaleServe?: boolean;
+  /** Why the ts.net URL is absent, when the launcher tried and failed (#627). */
+  tailscaleServeError?: TailscaleServeError;
   host?: RemoteHost;
   devices: RemoteDevice[];
   callerDeviceId?: string;
@@ -412,10 +416,44 @@ export function RemoteSection() {
                 <>
                   Served at <span className="font-mono text-foreground">{magicdns.url}/</span> — a real certificate, so phone browsers get a secure context.
                 </>
+              ) : /**
+                   * THE FAILURE BEATS THE PROMISE. "Publishes at the next
+                   * launch" is what this said for ever to somebody whose last
+                   * launch already tried and failed — so when the launcher
+                   * reported a reason, that is the hint (#627).
+                   */
+              status.tailscaleServeError ? (
+                <span className="text-destructive">{describeServeError(status.tailscaleServeError)}</span>
               ) : status.tailscaleServe ? (
                 "Publishes at the next launch. Needs Tailscale running, with HTTPS certificates on for your tailnet."
               ) : (
-                "Use Tailscale Serve to expose this cockpit through a MagicDNS HTTPS URL."
+                /**
+                 * THE COST IS NAMED BEFORE THE CLICK, NOT AFTER IT (#639).
+                 *
+                 * Turning this on leads to Tailscale issuing a certificate,
+                 * and issuing one writes this machine's DNS name into a public
+                 * Certificate Transparency log — append-only, globally
+                 * searchable, no delete, for ever. The tailnet portion is
+                 * randomised; the MACHINE NAME IS NOT, and a default macOS
+                 * machine name is built from the account holder's full name.
+                 *
+                 * Tailscale's own dialog does say this — at the moment of
+                 * confirming, which is too late for anyone who clicks through,
+                 * and is exactly how it was discovered here. A row that offers
+                 * the thing is the right place for the sentence.
+                 *
+                 * AND THE RENAME IS THE ACTIONABLE HALF. It has to happen
+                 * before the first certificate, so it belongs in the same
+                 * breath as the warning rather than in a doc nobody opens.
+                 */
+                <>
+                  Expose this cockpit through a MagicDNS HTTPS URL — a real certificate, so phone browsers get a secure context.{" "}
+                  <span className="text-foreground">
+                    Issuing it publishes this machine&rsquo;s name to a public Certificate Transparency log, permanently. Rename the machine in
+                    Tailscale first if it carries yours.
+                  </span>{" "}
+                  Dictation also works over an <span className="font-mono text-foreground">ssh -L</span> tunnel, which needs neither.
+                </>
               )
             }
             checked={status.tailscaleServe === true}
@@ -587,6 +625,12 @@ export function RemoteSection() {
           </div>
         )}
       </SettingsGroup>
+
+      {/* PUSH, UNDER THE DEVICES IT IS ABOUT (#579). It belongs here rather
+          than in Notifications because what it reports is a property of THIS
+          MAC's remote access — the relay credential and which paired phones it
+          can reach — not of what this browser chooses to be told. */}
+      <PushNotificationsGroup />
 
       {/* DANGER, AT THE FLOOR OF THE PANE. A plain label and no red panel — the
           separation is structural, so the one action that logs several devices

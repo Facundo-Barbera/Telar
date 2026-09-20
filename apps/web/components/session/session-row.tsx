@@ -33,18 +33,22 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   CircleDotIcon,
+  HardDriveIcon,
   ClockIcon,
   GitBranchIcon,
   MonitorIcon,
   PinIcon,
   UndoIcon,
 } from "lucide-react";
+import type { LiveSessionRow } from "@telar/engine-client";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
-import { canvasHref, sessionHref, settledHint, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
+import { canvasHref, sessionHref, sessionKey, settledHint, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
+import { claimPrefetch, PREFETCH_INTENT_MS, PREFETCH_MARGIN, releasePrefetch, warmConversation } from "@/lib/rail-prefetch";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
-import { SessionInboxMenu, SessionRowContextMenu, patchSession, runSessionPatch, type SessionRowMenuProps } from "@/components/session/session-inbox-menu";
+import { SessionInboxMenu, SessionRowContextMenu, type SessionRowMenuProps } from "@/components/session/session-inbox-menu";
+import { mutateRow, patchSession, withSettling, withSnooze, withTitle, type SessionRowChanged } from "@/lib/session-mutations";
 import { canSettle, canSnooze, snoozePresets, wakeLabel } from "@/lib/session-settling";
 import type { RailJumpSlot } from "@/lib/session-groups";
 import { Button } from "@/components/ui/button";
@@ -198,7 +202,7 @@ export function SessionRow({
   searchable = false,
   searchSelected = false,
   renderedAt,
-  onRefresh,
+  onRowChanged,
   drag,
   jumpSlot,
 }: {
@@ -234,7 +238,18 @@ export function SessionRow({
   searchable?: boolean;
   searchSelected?: boolean;
   renderedAt: number;
-  onRefresh: () => void;
+  /**
+   * THIS ROW CHANGED, AND HERE IT IS — issue #495, and it used to be
+   * `onRefresh: () => void`.
+   *
+   * The old name was the whole problem. It said "something happened" and left
+   * the rail to work out what, which it did by reading everything again: the
+   * pairing book, then one live read PER PAIRED MAC, for a settle that touched
+   * one field of one session. Every verb below now applies to this row at once
+   * and hands back the record the engine answered with — see
+   * `lib/session-mutations.ts` for the three states each one passes through.
+   */
+  onRowChanged: SessionRowChanged;
   /**
    * DRAG TO REORDER, WHEN THE BAND AROUND THIS ROW ARRANGES ITSELF. Absent in
    * search results, in the shelves and in "Needs you" — a list that is an
@@ -272,6 +287,95 @@ export function SessionRow({
   }, [renaming]);
 
   const href = sessionHref(session);
+  /**
+   * WHETHER THIS ROW IS OPENED AHEAD OF THE CLICK — issue #497.
+   *
+   * `false` is the resting state and stays the default: the rail draws every
+   * session on this Mac, and a list of forty rows that each prefetch a
+   * force-dynamic route would be forty route payloads and forty `/bootstrap`
+   * reads for the one conversation somebody opens. `lib/rail-prefetch.ts` is
+   * where the three warm rows are chosen and why three; this only asks.
+   *
+   * A ROW WITH NO PROJECT HAS NO ADDRESS TO WARM. `sessionHref` sends it to the
+   * front door (see its note), and prefetching that would be warming a route
+   * this row does not lead to.
+   */
+  const warmable = Boolean(session.projectId);
+  const rowKey = sessionKey(session);
+  const [warm, setWarm] = useState(false);
+  /** The 150 ms pause that separates pointing at a row from sweeping across it
+   *  on the way to something else. */
+  const intent = useRef<number | undefined>(undefined);
+  const restIntent = () => {
+    if (intent.current === undefined) return;
+    window.clearTimeout(intent.current);
+    intent.current = undefined;
+  };
+  const beginIntent = () => {
+    if (!warmable || warm || intent.current !== undefined) return;
+    intent.current = window.setTimeout(() => {
+      intent.current = undefined;
+      // INTENT MAY EVICT and a viewport claim may not — a full cap must never
+      // stop the rail warming the row somebody is about to press.
+      if (claimPrefetch(rowKey, { active, intent: true })) setWarm(true);
+    }, PREFETCH_INTENT_MS);
+  };
+  useEffect(() => restIntent, []);
+
+  /**
+   * ROWS NEAR THE VIEWPORT WARM THEMSELVES — t3's second signal, a 160 px
+   * margin so a row is ready just before it becomes the next thing you could
+   * scroll to.
+   *
+   * OBSERVED PER ROW RATHER THAN FROM THE RAIL, because the rail draws
+   * `SessionRow` from five different places (the bands, the project groups, the
+   * search results) and an observer wired at each would be five copies of this
+   * agreeing by hand. The slot bookkeeping is shared and module-scope, so the
+   * cap is still counted once across all of them.
+   *
+   * LEAVING GIVES THE SLOT BACK, which is what lets scrolling rotate the three
+   * warm rows rather than spending them on whatever happened to be on screen
+   * first.
+   */
+  useEffect(() => {
+    const node = rowRef.current;
+    if (!warmable || !node || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) setWarm((current) => current || claimPrefetch(rowKey, { active }));
+          else {
+            releasePrefetch(rowKey);
+            setWarm(false);
+          }
+        }
+      },
+      { rootMargin: PREFETCH_MARGIN },
+    );
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      releasePrefetch(rowKey);
+    };
+  }, [rowKey, active, warmable]);
+
+  /**
+   * …AND A WARM ROW PAYS ITS `/bootstrap` NOW.
+   *
+   * The route prefetch above is Next's, and on a `force-dynamic` page it buys
+   * the chunks and the shell as far as `loading.tsx` — not the transcript. The
+   * transcript is this cockpit's own read, so the rail makes it too, through
+   * the same `SessionConnection` the cockpit will read from: a warm still in
+   * flight when the click lands is joined rather than raced.
+   *
+   * NEVER FOR THE ACTIVE ROW. That conversation is on screen; its connection is
+   * already held and being tailed once a second, and warming it would be a
+   * second caller asking for what the cockpit is already reading.
+   */
+  useEffect(() => {
+    if (!warm || active) return;
+    warmConversation(session.hostId, session.id);
+  }, [warm, active, session.hostId, session.id]);
   const snoozing = band === "snoozed";
   /**
    * The settling module's view of this session, WHICH IS NO LONGER EMPTY.
@@ -302,18 +406,27 @@ export function SessionRow({
    * do not reads as broken, not as principled.
    */
   const unsettles = settledByDecision || band === "settled";
+  /** One optimistic mutation on THIS row, spelled once for the four buttons
+   *  below. See `lib/session-mutations.ts` for the three states it passes
+   *  through and for why none of them reads the list. */
+  const mutate = (after: SidebarSession, send: () => Promise<LiveSessionRow>) =>
+    void mutateRow({ before: session, after: { row: after }, send, onRowChanged });
   const unsettle = () =>
     // TWO PATCHES, ONE REPORTED OUTCOME. If the first refusal went unreported
     // the second would run against a session that never took the override, and
     // the row would sit there unchanged with nothing said.
-    runSessionPatch(async () => {
+    mutate(withSettling(session, null), async () => {
       // A drift-settled session has no override to clear, and clearing nothing
       // writes nothing — so nothing would change. Setting an override first makes
       // the clearing patch a real change, and a real change stamps `updatedAt`,
       // which is what actually restarts the inactivity clock.
+      //
+      // THE ROW SETTLES ON THE SECOND ANSWER (#495). The first is a pinned state
+      // nobody asked for and nothing should draw; returning it would flash this
+      // row through the pinned band on its way back to the list.
       if (!settledByDecision) await patchSession(session, { settledOverride: "active" });
-      await patchSession(session, { settledOverride: null });
-    }, onRefresh);
+      return patchSession(session, { settledOverride: null });
+    });
 
   // Deleting the session you are currently VIEWING must not maroon you on it:
   // the survivor rule in deriveSessionList keeps this row visible for as long as
@@ -334,14 +447,18 @@ export function SessionRow({
     setRenaming(true);
   };
 
-  const commitRename = async () => {
+  const commitRename = () => {
     const next = draft.trim();
     setRenaming(false);
     // An unchanged or empty name is a cancel, not a write — the engine would
     // reject the empty one anyway, and a no-op PATCH writes no event but still
     // costs a round trip and a refresh of every surface.
     if (!next || next === session.title) return;
-    await runSessionPatch(() => patchSession(session, { title: next.slice(0, 120) }), onRefresh);
+    const title = next.slice(0, 120);
+    // THE NAME IS ON THE ROW BEFORE THE FIELD CLOSES. Renaming is the mutation
+    // where the old reload was most visible — you typed a title, the field
+    // reverted to the old one, and a beat later the new one arrived.
+    mutate(withTitle(session, title), () => patchSession(session, { title }));
   };
 
   if (renaming) {
@@ -351,11 +468,11 @@ export function SessionRow({
           ref={input}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          onBlur={() => void commitRename()}
+          onBlur={commitRename}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              void commitRename();
+              commitRename();
             } else if (event.key === "Escape") {
               event.preventDefault();
               setRenaming(false);
@@ -392,7 +509,72 @@ export function SessionRow({
    * exactly that. The countdown is the same one t3 puts on its snoozed rows,
    * and it takes the timestamp's place rather than sitting beside it.
    */
-  const statusSlot = session.draft ? (
+  /**
+   * THE CHECKOUT BEFORE ANYTHING ELSE — issue #496.
+   *
+   * `git worktree add` runs in the background now, so a worktree session exists
+   * for a few seconds before the directory it works in does. It outranks every
+   * other status because it outranks them in fact: nothing can be working,
+   * queued or blocked in a checkout that is not there, and the engine holds the
+   * session's turns until it is.
+   *
+   * A FAILURE SHOWS GIT'S OWN FIRST LINE rather than a word of ours. "Setup
+   * failed" would tell a reader only that they are stuck; `fatal: Unable to
+   * create '.git/index.lock'` tells them what to do about it. The rest of the
+   * stderr rides in `title`, because the slot is one line and git's is not.
+   */
+  /**
+   * THE DISK BEFORE EVERYTHING ELSE — issue #534.
+   *
+   * WHY IT OUTRANKS `preparation`. A worktree cut that failed while the drive
+   * was away shows git's own first line here, and git's first line is about a
+   * repository it could not open — true, and not the useful sentence. "Drive
+   * away" is, and the cut retries by itself on reconnect (see the engine's
+   * recovery), so the failure the row would otherwise shout about is one that
+   * is already being fixed.
+   *
+   * IT SAYS NOTHING WHEN THE DISK IS FINE, which is every row this list has
+   * drawn until now, and nothing on an engine too old to have an opinion.
+   */
+  const driveSlot =
+    session.projectAvailability === "unmounted" || session.projectAvailability === "missing" ? (
+      <span
+        className={`inline-flex min-w-0 shrink items-center gap-1 text-2xs font-medium text-muted-foreground ${yieldOnHover}`}
+        title={
+          session.projectAvailability === "unmounted"
+            ? `The drive holding ${session.projectName ?? "this project"} is not connected. Its work is still on it.`
+            : `${session.workspacePath ?? "This session's folder"} is not on this machine any more.`
+        }
+      >
+        <HardDriveIcon className="size-3 shrink-0" />
+        <span role="status" className="truncate">
+          {session.projectAvailability === "unmounted" ? "Drive away" : "Folder gone"}
+        </span>
+      </span>
+    ) : undefined;
+
+  const statusSlot = driveSlot ?? (session.preparation ? (
+    <span
+      className={`inline-flex min-w-0 shrink items-center gap-1 text-2xs font-medium ${
+        session.preparation.state === "failed" ? "text-warning" : "text-muted-foreground"
+      } ${yieldOnHover}`}
+      title={session.preparation.error}
+    >
+      {session.preparation.state === "preparing" ? (
+        <>
+          <CircleDashedIcon className="size-3 animate-spin [animation-duration:3s]" />
+          <span role="status">Preparing</span>
+        </>
+      ) : (
+        <>
+          <CircleDotIcon className="size-3 shrink-0" />
+          <span role="status" className="truncate">
+            {session.preparation.error?.split("\n")[0]?.trim() || "Worktree setup failed"}
+          </span>
+        </>
+      )}
+    </span>
+  ) : session.draft ? (
     <span className={`shrink-0 text-2xs text-sidebar-foreground/45 ${yieldOnHover}`}>Draft</span>
   ) : snoozing && session.snoozedUntil !== undefined ? (
     <span className={`inline-flex shrink-0 items-center gap-1 text-2xs tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>
@@ -417,7 +599,7 @@ export function SessionRow({
     </span>
   ) : (
     <span className={`shrink-0 text-2xs tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>{time}</span>
-  );
+  ));
 
   /**
    * …AND ⌘N SITS ON TOP OF IT WHILE ⌘ IS HELD — issue #401.
@@ -619,7 +801,7 @@ export function SessionRow({
     // The same fold the settle button beside it uses, drift included.
     settled: unsettles,
     onRename: beginRename,
-    onDone: onRefresh,
+    onRowChanged,
     onLeave: leaveIfActive,
   };
 
@@ -637,6 +819,15 @@ export function SessionRow({
      */
     <div
       ref={rowRef}
+      /* POINTING AT A ROW IS THE STRONGEST SIGNAL THE RAIL GETS (#497), so it
+         is read on the WHOLE row rather than on the link inside it: the row is
+         what a pointer is over, it is the element both the plain and the
+         hover-card branches share, and `onFocus` bubbling here is what gives a
+         keyboard the same warm-up a pointer gets. Leaving cancels a pause that
+         has not elapsed — a sweep across the rail must warm nothing. */
+      onPointerEnter={beginIntent}
+      onPointerLeave={restIntent}
+      onFocus={beginIntent}
       // A ROW WHOSE HOST STOPPED ANSWERING IS A PHOTOGRAPH, so it recedes the
       // same way an archived one does — the list is still there, it just is not
       // being told anything. The hover title carries the only fact that is
@@ -667,7 +858,11 @@ export function SessionRow({
         <Link
           id={`sidebar-session-${session.id}`}
           href={href}
-          prefetch={false}
+          // COLD UNTIL THIS ROW HAS EARNED A SLOT (#497). `null` is Next's own
+          // spelling for "prefetch as you normally would" — it is what restores
+          // the default once intent is shown, and it is not the same as `true`,
+          // which would also resolve the URL's data at prefetch time.
+          prefetch={warm ? null : false}
           // AN ANCHOR IS DRAGGABLE BY DEFAULT, and that default would win: a
           // grab starting on the title would hand the platform a URL to drag
           // instead of letting the row's own wrapper carry the row. Off here so
@@ -696,9 +891,10 @@ export function SessionRow({
             render={
               <Link
                 href={href}
-                // Session routes are force-dynamic and carry the transcript.
-                // They are deliberately fetched only when selected.
-                prefetch={false}
+                // Session routes are force-dynamic and carry the transcript, so
+                // they stay cold by default — see the plain branch, and
+                // `lib/rail-prefetch.ts` for which three rows are not.
+                prefetch={warm ? null : false}
                 // See the plain branch: an anchor drags its own URL unless
                 // told not to, which would beat the row wrapper's drag.
                 draggable={false}
@@ -789,7 +985,8 @@ export function SessionRow({
               disabled={!unsettles && !canSettle(sessionActivity)}
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
-                void (unsettles ? unsettle() : runSessionPatch(() => patchSession(session, { settledOverride: "settled" }), onRefresh));
+                if (unsettles) unsettle();
+                else mutate(withSettling(session, "settled"), () => patchSession(session, { settledOverride: "settled" }));
               }}
             >
               {unsettles ? <UndoIcon /> : <CircleCheckIcon />}
@@ -824,7 +1021,7 @@ export function SessionRow({
               aria-label="Wake session now"
               title="Wake now"
               className="text-muted-foreground hover:text-foreground"
-              onClick={() => void runSessionPatch(() => patchSession(session, { snoozedUntil: null }), onRefresh)}
+              onClick={() => mutate(withSnooze(session, null), () => patchSession(session, { snoozedUntil: null }))}
             >
               <AlarmClockIcon />
             </Button>
@@ -851,7 +1048,9 @@ export function SessionRow({
                   {snoozePresets(new Date(renderedAt)).map((preset) => (
                     <DropdownMenuItem
                       key={preset.id}
-                      onClick={() => void runSessionPatch(() => patchSession(session, { snoozedUntil: preset.until }), onRefresh)}
+                      onClick={() =>
+                        mutate(withSnooze(session, preset.until), () => patchSession(session, { snoozedUntil: preset.until }))
+                      }
                     >
                       <span className="flex-1">{preset.label}</span>
                       <span className="font-mono text-3xs tabular-nums text-muted-foreground/60">{preset.when}</span>
@@ -878,8 +1077,7 @@ export function SessionRow({
 
   /**
    * THE HANDLE IS A BOX AROUND THE MENU, NOT THE ELEMENT INSIDE IT — the same
-   * separation the Spool's board card makes (`spool/board.tsx`) and the project
-   * header makes one level up.
+   * separation the project header makes one level up.
    *
    * The row's right-click trigger renders `display: contents`, which paints
    * nothing and is therefore never an event target: the row's own <div> is what

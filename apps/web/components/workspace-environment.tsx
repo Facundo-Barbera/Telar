@@ -6,10 +6,13 @@ import {
   FolderGit2Icon,
   FolderGitIcon,
   GitBranchIcon,
+  HardDriveIcon,
   GitBranchPlusIcon,
   GitCommitHorizontalIcon,
+  RefreshCwIcon,
+  TriangleAlertIcon,
 } from "lucide-react";
-import type { GitOverview, GitRefEntry, Session } from "@telar/engine-client";
+import type { GitOverview, GitReadFailure, GitRefEntry, ProjectAvailability, Session } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -64,14 +67,33 @@ function shortName(ref: GitRefEntry): string {
  * worktree will be ON (the engine refuses, never resets, a collision); without a
  * name the engine derives one under `telar/`.
  */
-function BaseRefPicker({
+export function BaseRefPicker({
   refs,
+  incomplete,
+  onRetry,
   defaultBase,
   currentBranch,
   pending,
   onBase,
 }: {
   refs: GitRefEntry[];
+  /**
+   * WHY THE LIST BELOW MAY NOT BE THE REPOSITORY — issue #650.
+   *
+   * The refs come from two `for-each-ref` calls, and on a loaded machine one of
+   * them can be killed at the engine's 30-second bound. That used to arrive here
+   * as a SHORT LIST, which is the worst shape a wrong answer can take: an empty
+   * picker looks broken and gets questioned, a short one looks complete and gets
+   * BELIEVED. The person does not find the branch they wanted, reads that as
+   * "it does not exist", and cuts their session from a base they did not mean —
+   * a decision about where their work starts from, corrupted with nothing
+   * anywhere saying git failed.
+   */
+  incomplete?: GitReadFailure;
+  /** What a person can actually do about a timeout. Absent means the caller has
+   *  no way to ask again, and the notice says so rather than offering a button
+   *  that does nothing. */
+  onRetry?: () => void | Promise<void>;
   /** The remote's default branch (`origin/main`) — pinned to the top. */
   defaultBase?: string;
   currentBranch?: string;
@@ -80,6 +102,7 @@ function BaseRefPicker({
 }) {
   const [query, setQuery] = useState("");
   const [name, setName] = useState(pending.branchName ?? "");
+  const [retrying, setRetrying] = useState(false);
 
   const trimmed = query.trim().toLowerCase();
   const filtered = trimmed ? refs.filter((ref) => ref.name.toLowerCase().includes(trimmed)) : refs;
@@ -106,6 +129,16 @@ function BaseRefPicker({
     onBase({ ...(baseRef ? { baseRef } : {}), ...(name.trim() ? { branchName: name.trim() } : {}) });
   };
 
+  const retry = async () => {
+    if (!onRetry || retrying) return;
+    setRetrying(true);
+    try {
+      await onRetry();
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   /** The donor's row anatomy: mono name, one tiny muted badge at most. */
   const row = (refName: string, badge?: string) => (
     <button
@@ -125,6 +158,43 @@ function BaseRefPicker({
 
   return (
     <div>
+      {/*
+        GIT DID NOT ANSWER, SAID OUT LOUD — issue #650.
+
+        ABOVE the list rather than in place of it: the refs that did arrive are
+        still perfectly good bases, and throwing them away would trade a
+        misleading list for a useless one. What this has to prevent is the list
+        being read as the whole repository, and a notice over it does that while
+        the rows stay pickable.
+
+        RETRY IS THE OFFER because a timeout is the case that goes away on its
+        own — the machine was busy, ask again. The other failures keep the
+        button too (it costs one poll) but say what they are, so a person who
+        presses it twice to no effect knows this is not a busy machine.
+      */}
+      {incomplete && (
+        <div className="mb-1 rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5">
+          <p className="flex items-start gap-1.5 text-2xs text-warning">
+            <TriangleAlertIcon className="mt-px size-3 shrink-0" />
+            <span>
+              {incomplete === "timeout"
+                ? "git did not answer in time, so this list is missing branches — it is not the whole repository."
+                : "git could not list this repository's branches, so this list is incomplete."}
+            </span>
+          </p>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={() => void retry()}
+              disabled={retrying}
+              className="mt-1 flex items-center gap-1 rounded-md px-1 py-0.5 text-2xs font-medium text-warning transition-colors outline-none hover:bg-warning/15 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+            >
+              <RefreshCwIcon className={cn("size-3 shrink-0", retrying && "animate-spin")} />
+              {retrying ? "Asking git again…" : "Ask git again"}
+            </button>
+          )}
+        </div>
+      )}
       <input
         value={query}
         onChange={(event) => setQuery(event.target.value)}
@@ -167,7 +237,15 @@ function BaseRefPicker({
         {locals.map((ref) => row(ref.name, ref.head ? "current" : undefined))}
         {remotes.length > 0 && <p className="px-2 pt-1.5 pb-0.5 text-3xs font-medium uppercase tracking-wide text-muted-foreground">Origin</p>}
         {remotes.map((ref) => row(ref.name, "remote"))}
-        {filtered.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">No matching refs.</p>}
+        {/* THE TWO EMPTIES ARE DIFFERENT SENTENCES. "Nothing matched what you
+            typed" is about the search; "this repository has no branches" is a
+            claim about the repository, and it is only safe to make when the
+            listing is whole — the notice above owns the case where it is not. */}
+        {filtered.length === 0 && (
+          <p className="px-2 py-1.5 text-xs text-muted-foreground">
+            {trimmed ? "No matching refs." : incomplete ? "No branches were listed." : "This repository has no branches yet."}
+          </p>
+        )}
         {hiddenCount > 0 && <p className="px-2 py-1.5 text-3xs text-muted-foreground">{hiddenCount} more — search to find them.</p>}
       </div>
       {/* The new-branch name rides WITH whichever base is chosen; empty means
@@ -217,6 +295,7 @@ export function WhereThisLands({
   projectId,
   projectName,
   git,
+  onRetry,
   envMode,
   onEnvMode,
   pendingBase,
@@ -226,6 +305,8 @@ export function WhereThisLands({
   projectName?: string;
   /** Polled by the strip; absent until the first answer arrives. */
   git?: GitOverview;
+  /** Re-read the overview now, for the picker's "ask git again". */
+  onRetry?: () => void | Promise<void>;
   /**
    * The one create-time choice with nowhere else to live: a worktree is cut when
    * the session is created and cannot be changed afterwards, so it belongs to
@@ -275,16 +356,35 @@ export function WhereThisLands({
       ? pendingBase.baseRef
       : (git?.branch ?? "HEAD");
 
+  /** Only where it could change a choice: the base ref is a worktree's question. */
+  const incompleteRefs = willBeWorktree && git?.refsIncomplete !== undefined;
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        render={<button type="button" aria-label="Where this lands" title="Where the first message creates this session" className={CONTROL} />}
+        render={
+          <button
+            type="button"
+            aria-label="Where this lands"
+            title={
+              /* THE DECISION IS MADE AT ENTER, NOT AT POPOVER-OPEN — so the one
+                 thing that would change it has to be readable without opening
+                 anything. A person who never presses this button still cuts a
+                 session from whatever base the foot settled on. */
+              incompleteRefs
+                ? "Some branches could not be listed — open this before choosing a base"
+                : "Where the first message creates this session"
+            }
+            className={CONTROL}
+          />
+        }
       >
         {willBeWorktree ? <GitBranchIcon className="size-3.5 shrink-0" /> : <FolderGitIcon className="size-3.5 shrink-0" />}
         <span className="min-w-0 truncate font-medium text-foreground">{projectName ?? projectId}</span>
         <span className="hidden min-w-0 truncate font-mono text-muted-foreground @xl/composer:inline">
           {willBeWorktree ? base : "checkout"}
         </span>
+        {incompleteRefs && <TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-warning" />}
         <ChevronDownIcon className="size-3 shrink-0" />
       </PopoverTrigger>
       <PopoverContent side="top" align="start" sideOffset={8} className="w-72 gap-0 rounded-xl p-1.5">
@@ -317,6 +417,8 @@ export function WhereThisLands({
           <div className="mt-1.5 border-t border-border/60 pt-1.5">
             <BaseRefPicker
               refs={git?.refs ?? []}
+              {...(git?.refsIncomplete ? { incomplete: git.refsIncomplete } : {})}
+              {...(onRetry ? { onRetry } : {})}
               {...(git?.defaultBase ? { defaultBase: git.defaultBase } : {})}
               {...(git?.branch ? { currentBranch: git.branch } : {})}
               pending={pendingBase ?? {}}
@@ -343,6 +445,7 @@ export function EnvironmentStrip({
   session,
   git,
   reachable = true,
+  onRetry,
   envMode,
   onEnvMode,
   pendingBase,
@@ -360,12 +463,18 @@ export function EnvironmentStrip({
   /** False once a read has failed, which is prose in the branch popover rather
    *  than a silently stale number. */
   reachable?: boolean;
+  /** Re-read the overview now. Handed down to the base picker, which is the one
+   *  surface here that can be wrong in a way a person should be able to fix. */
+  onRetry?: () => void | Promise<void>;
   envMode?: "local" | "worktree";
   onEnvMode?: (mode: "local" | "worktree") => void;
   pendingBase?: { baseRef?: string; branchName?: string };
   onBase?: (next: { baseRef?: string; branchName?: string }) => void;
   onOpenChanges?: () => void;
 }) {
+  /** The project's disk, when it is not readable — stamped on the same `git`
+   *  read this strip already polls, so it costs no request. See #534. */
+  const away = git?.availability === "available" ? undefined : git?.availability;
   const worktreeBranch = session?.workspace.mode === "worktree" ? session.workspace.branch : undefined;
   const branch = worktreeBranch ?? git?.branch;
   const dirty = git?.dirtyFiles ?? 0;
@@ -392,6 +501,7 @@ export function EnvironmentStrip({
             projectId={projectId}
             {...(projectName ? { projectName } : {})}
             {...(git ? { git } : {})}
+            {...(onRetry ? { onRetry } : {})}
             {...(envMode ? { envMode } : {})}
             onEnvMode={onEnvMode}
             {...(pendingBase ? { pendingBase } : {})}
@@ -423,9 +533,29 @@ export function EnvironmentStrip({
 
             {/* THE BRANCH: a readout, with the detail one click deep. */}
             <Popover>
-              <PopoverTrigger render={<button type="button" aria-label="Branch" title="Where this session's work lands" className={CONTROL} />}>
-                <GitBranchIcon className="size-3.5 shrink-0" />
-                <span className="min-w-0 truncate font-mono">{branch ?? "no branch"}</span>
+              {/*
+                THE DRIVE, NOT THE BRANCH, WHEN THERE IS NO DRIVE — issue #534.
+
+                Every number this control draws comes from a `git` that answered
+                about a path it could not read: no branch, zero dirty files, no
+                worktrees. Drawn as-is that is a clean checkout on no branch,
+                which is a reassuring picture of a disk nobody opened. The strip
+                names the cable instead, and the popover below says the rest.
+              */}
+              <PopoverTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label={away ? "Drive" : "Branch"}
+                    title={away ? "This project's disk is not readable right now" : "Where this session's work lands"}
+                    className={CONTROL}
+                  />
+                }
+              >
+                {away ? <HardDriveIcon className="size-3.5 shrink-0" /> : <GitBranchIcon className="size-3.5 shrink-0" />}
+                <span className="min-w-0 truncate font-mono">
+                  {away === "unmounted" ? "drive away" : away === "missing" ? "folder gone" : (branch ?? "no branch")}
+                </span>
                 <ChevronDownIcon className="size-3 shrink-0" />
               </PopoverTrigger>
               <PopoverContent side="top" align="start" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] gap-0 rounded-2xl p-2">
@@ -448,17 +578,28 @@ export function EnvironmentStrip({
                     <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
                       <FolderGitIcon className="size-4 shrink-0 text-muted-foreground" />
                       <span className="min-w-0 flex-1 truncate text-sm">{modeLabel}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {git.worktrees.length} worktree{git.worktrees.length === 1 ? "" : "s"}
-                      </span>
+                      {/* ABSENT IS NOT ZERO here either: a `git worktree list`
+                          the engine killed is a count nobody took, and
+                          "0 worktrees" is a fact a reader would act on. */}
+                      {git.worktrees && (
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {git.worktrees.length} worktree{git.worktrees.length === 1 ? "" : "s"}
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
                 {/* Prose only when something is WRONG. The ordinary cases were a
                     paragraph restating what the rows above already show. */}
-                {(!reachable || (git && !git.repository)) && (
+                {(!reachable || away || (git && !git.repository)) && (
                   <p className="px-2 pt-2 text-2xs text-muted-foreground">
-                    {!reachable ? "The engine did not answer — this may be out of date." : "Not a git repository."}
+                    {!reachable
+                      ? "The engine did not answer — this may be out of date."
+                      : away === "unmounted"
+                        ? "The drive holding this project is not connected, so nothing above was read from it. Plug it back in and this comes back as it was — the project keeps its id, its conversations and its settings."
+                        : away === "missing"
+                          ? "This project's folder is not on this machine any more, so nothing above was read from it."
+                          : "Not a git repository."}
                   </p>
                 )}
                 {/* The donor's footer, pointing at the same place: the surface that
@@ -498,7 +639,23 @@ export function EnvironmentStrip({
  * constantly — and a count that could not be read is drawn as NO count, never as
  * a reassuring zero.
  */
-export function WorkspaceEnvironment(props: Omit<Parameters<typeof EnvironmentStrip>[0], "git" | "reachable">) {
+export function WorkspaceEnvironment({
+  onAvailability,
+  ...props
+  // `onRetry` is this component's own poll — offering it as a prop would invite
+  // a caller to pass a second one that silently loses to it.
+}: Omit<Parameters<typeof EnvironmentStrip>[0], "git" | "reachable" | "onRetry"> & {
+  /**
+   * TOLD WHEN THE PROJECT'S DISK CHANGES STATE — issue #534.
+   *
+   * REPORTED UP RATHER THAN POLLED TWICE. The composer has to refuse a send on
+   * an unplugged project, and this strip is already reading `projectGit` on a
+   * timer for the branch and the dirty count — an answer the engine now stamps
+   * its availability probe on. A second poller in the composer would be a
+   * second request for one enum and, worse, a second opinion about a cable.
+   */
+  onAvailability?: (availability: Exclude<ProjectAvailability, "available"> | undefined) => void;
+}) {
   const { projectId } = props;
   const [git, setGit] = useState<GitOverview>();
   const [reachable, setReachable] = useState(true);
@@ -508,10 +665,15 @@ export function WorkspaceEnvironment(props: Omit<Parameters<typeof EnvironmentSt
       const result = await api.projectGit(projectId);
       setGit(result.git);
       setReachable(true);
+      onAvailability?.(result.git.availability === "available" ? undefined : result.git.availability);
     } catch {
       setReachable(false);
+      // AN ENGINE THAT DID NOT ANSWER SAYS NOTHING ABOUT A DRIVE. Reporting
+      // "away" here would make a restarting daemon look like an unplugged disk
+      // and refuse a send for it; the strip's own `reachable` prose is the
+      // honest answer to that, and it is already there.
     }
-  }, [projectId]);
+  }, [projectId, onAvailability]);
 
   useEffect(() => {
     // Deferred to a task rather than called in the effect body: a synchronous
@@ -526,5 +688,5 @@ export function WorkspaceEnvironment(props: Omit<Parameters<typeof EnvironmentSt
     };
   }, [load]);
 
-  return <EnvironmentStrip {...props} {...(git ? { git } : {})} reachable={reachable} />;
+  return <EnvironmentStrip {...props} {...(git ? { git } : {})} reachable={reachable} onRetry={load} />;
 }

@@ -21,7 +21,7 @@
  */
 const fs = require("node:fs");
 const path = require("node:path");
-const { isProtectedUrl } = require("./private-interaction");
+const { isProtectedUrl } = require("./protected-urls");
 
 /**
  * v1 named a scope's PROJECT (`profileKey`); v2 names its PROFILE (`profileId`,

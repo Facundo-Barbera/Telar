@@ -10,7 +10,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { candidatePathsFor, expectedClaudeCliVersion, findExecutable, isExecutableFile, resolveCli } from "../src/cli-resolution";
+import { candidatePathsFor, cliUsable, expectedClaudeCliVersion, findExecutable, isExecutableFile, resolveCli } from "../src/cli-resolution";
+import { OPENCODE_VERSION, openCodeVersionVerdict } from "../src/opencode/version";
 
 const roots: string[] = [];
 const root = (): string => {
@@ -25,6 +26,7 @@ afterEach(() => {
   process.env.PATH = savedPath;
   delete process.env.CLAUDE_CODE_EXECUTABLE;
   delete process.env.CODEX_BIN;
+  delete process.env.OPENCODE_BIN;
 });
 
 /** A binary that reports a version, so a resolution gets all the way to `ok`. */
@@ -231,4 +233,66 @@ test("the messages are short enough to read on a settings row", () => {
   // Unpinned on a machine with duplicates appends their paths, which are as
   // long as the machine makes them — still one readable line, not a paragraph.
   expect(resolveCli("claude").message.length).toBeLessThan(360);
+});
+
+/**
+ * OPENCODE UPDATES ITSELF, SO AN EXACT PIN BREAKS ON ITS SCHEDULE — issue #655.
+ *
+ * The machine that reported this was pinned at 1.18.30 and woke up on 1.18.31.
+ * Nothing local changed. `requireCli("opencode")` threw, `readOpenCodeModels`
+ * swallowed it into an empty catalogue, and the model picker showed NO OpenCode
+ * models at all — which is why a person went looking for one model, Jev, and
+ * concluded it was not being loaded. `startOpenCodeRuntime` refused in the same
+ * breath, so no session could run either.
+ *
+ * `cliUsable` already writes the rule down: only "no CLI at all" and "wrong
+ * protocol family" are refusals, and "the common case — a patch ahead —
+ * demonstrably works". This spec simply never implemented the middle tier.
+ */
+test("a patch-ahead OpenCode drifts rather than refusing, and stays usable", () => {
+  const directory = root();
+  const [major, minor] = OPENCODE_VERSION.split(".");
+  // Pinned, so the duplicate-copy note stays off and this is the sentence on
+  // its own — the developer machines running this suite have a real OpenCode.
+  const pinned = fakeCli(directory, "opencode", `${major}.${minor}.999`);
+
+  const resolution = resolveCli("opencode", { binaryPath: pinned });
+  expect(resolution.status).toBe("drifted");
+  // The whole point: a turn, and a catalogue read, may still proceed.
+  expect(cliUsable(resolution)).toBe(true);
+  expect(resolution.message).toContain(OPENCODE_VERSION);
+  expect(resolution.message.length).toBeLessThan(140);
+});
+
+test("a different OpenCode minor is still a refusal, and names the install that fixes it", () => {
+  // Minor is where `opencode serve`'s HTTP surface — the one @opencode-ai/sdk
+  // is generated against — may actually move. Drift tolerance is for patches.
+  const directory = root();
+  const [major, minor] = OPENCODE_VERSION.split(".");
+  const pinned = fakeCli(directory, "opencode", `${major}.${Number(minor) + 1}.0`);
+
+  const resolution = resolveCli("opencode", { binaryPath: pinned });
+  expect(resolution.status).toBe("incompatible");
+  expect(cliUsable(resolution)).toBe(false);
+  expect(resolution.message).toContain(`opencode-ai@${OPENCODE_VERSION}`);
+});
+
+test("the exact tested OpenCode is plain `ok`, with nothing to say about it", () => {
+  const directory = root();
+  const pinned = fakeCli(directory, "opencode", OPENCODE_VERSION);
+
+  const resolution = resolveCli("opencode", { binaryPath: pinned });
+  expect(resolution.status).toBe("ok");
+  expect(resolution.message).toBeUndefined();
+});
+
+/** The verdict on its own, including the shape the runtime health check reads:
+ *  a server that would not say its version is not "close enough". */
+test("an OpenCode that will not name its version is incompatible, not drifted", () => {
+  expect(openCodeVersionVerdict(undefined)).toBe("incompatible");
+  expect(openCodeVersionVerdict("")).toBe("incompatible");
+  expect(openCodeVersionVerdict(OPENCODE_VERSION)).toBe("ok");
+  expect(openCodeVersionVerdict("1.18.31", "1.18.30")).toBe("drifted");
+  expect(openCodeVersionVerdict("1.19.0", "1.18.30")).toBe("incompatible");
+  expect(openCodeVersionVerdict("2.18.30", "1.18.30")).toBe("incompatible");
 });

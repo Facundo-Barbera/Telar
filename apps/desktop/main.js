@@ -17,16 +17,24 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomBytes, randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, session, shell, webContents } = require("electron");
 const { autoUpdater, CancellationToken } = require("electron-updater");
 const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
-const { keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
+const remoteFile = require("./remote-file");
+const { claimedCommandIds, keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
+const { ChordScopes } = require("./chord-scope");
 const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
+const { provisionPushRelay } = require("./push-relay");
+const { watchVolumes } = require("./volume-watch");
+const { awaitStore } = require("./store-gate");
+const { createStoreGateWindow } = require("./store-gate-window");
+const { adoptStore, clearPending, clearRetired, readMarker, setPending } = require("./store-location");
+const { deleteRetiredSubtrees, migrateStore, preflight: preflightMove, retiredSubtrees } = require("./store-migrate");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
 const { readProfileRegistry } = require("./browser-profiles");
@@ -35,6 +43,7 @@ const { createSitePermissionStore } = require("./site-permissions");
 const { resolveHelperExec } = require("./helper-exec");
 const devUpdate = require("./dev-update");
 const updateWatchdog = require("./update-watchdog");
+const serviceWorkerWatchdog = require("./service-worker-watchdog");
 const { createInstallGate } = require("./update-install");
 const { wireLoginOffer } = require("./login-offer-window");
 const { discoverOpeners, openWith, openersWithIcons, bundleIcon } = require("./workspace-openers");
@@ -380,14 +389,104 @@ function resolveServerJs() {
  * verifying a build against the user's own store would kill their live sessions.
  */
 let smokeHome = null;
+/**
+ * AND SINCE #630 THE PERSON MAY HAVE CHOSEN SOMEWHERE ELSE. `openStoreGate`
+ * settles that once, before either child is spawned, and parks the answer here
+ * — so every later caller of `telarHome()` gets the same root the engine was
+ * started with rather than re-deriving one that could have changed underneath
+ * it. Before the gate has run this falls through to exactly the old behaviour,
+ * which is what keeps the smoke path and an explicit TELAR_HOME unchanged.
+ */
+let resolvedStoreHome = null;
 function telarHome() {
   if (SMOKE) {
     smokeHome ??= fs.mkdtempSync(path.join(os.tmpdir(), "telar-smoke-"));
     return smokeHome;
   }
+  if (resolvedStoreHome) return resolvedStoreHome;
   // A dev-packaged build never follows an inherited TELAR_HOME — see DEV_BUILD.
   if (DEV_BUILD) return app.getPath("userData");
   return process.env.TELAR_HOME?.trim() || app.getPath("userData");
+}
+
+/**
+ * SETTLE ON A STORE BEFORE ANYTHING OPENS ONE — issue #630.
+ *
+ * The engine's only available answer to "my state root is not reachable" is to
+ * fail to start, and a daemon that dies during boot takes the app with it
+ * (`startEngineChild`'s exit handler). So the question is asked HERE, by the
+ * process that owns a screen, and the engine is spawned only once there is an
+ * answer. The loop, and the guarantee that no path through it initialises over
+ * an absent store, are in `store-gate.js`.
+ *
+ * AN EXPLICIT `TELAR_HOME` SKIPS THE GATE ENTIRELY. It is a developer pointing
+ * this build at a dogfood store for one run, not a choice somebody recorded in
+ * Settings, and making it consult (or worse, write) the marker would have the
+ * dev stack quietly adopt whatever it was last pointed at.
+ *
+ * Returns the root, or `null` when the person chose to quit rather than
+ * continue without their store.
+ */
+let storeGate = null;
+async function openStoreGate() {
+  const explicit = DEV_BUILD ? "" : process.env.TELAR_HOME?.trim();
+  if (explicit) return explicit;
+  storeGate = createStoreGateWindow();
+  /**
+   * WATCHING WHILE WE WAIT. `volume-watch.js` needs no engine and no window —
+   * it is a pure module taking an `onChanged` — so the same mechanism that
+   * makes a remounted project appear in the rail is what ends this wait
+   * without anyone clicking. `resume` covers the drive pulled during sleep.
+   */
+  const watcher = watchVolumes({ onChanged: () => storeGate.volumesChanged(), powerMonitor });
+  try {
+    const settled = await awaitStore(
+      { userData: app.getPath("userData"), defaultRoot: app.getPath("userData") },
+      { present: (outcome) => storeGate.present(outcome), findVolumeMount },
+    );
+    return settled.quit ? null : settled.root;
+  } finally {
+    watcher.stop();
+    storeGate.close();
+    storeGate = null;
+  }
+}
+
+/**
+ * WHERE THIS DRIVE IS MOUNTED NOW, by its own identifier rather than its name.
+ *
+ * The shell's own copy of `apps/engine/src/volumes.ts`'s search, for the same
+ * reason `volume-watch.js` keeps its own mount-root list: the gate runs before
+ * the engine exists, so it cannot ask the engine. macOS only, and absent rather
+ * than invented elsewhere — every path through the gate copes without a uuid.
+ */
+function findVolumeMount(uuid) {
+  if (process.platform !== "darwin") return undefined;
+  for (const root of ["/Volumes"]) {
+    let names;
+    try {
+      names = fs.readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const mount = path.join(root, name);
+      try {
+        if (fs.statSync(mount).dev === fs.statSync(root).dev) continue;
+        const plist = execFileSync("diskutil", ["info", "-plist", mount], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          // Bounded for the same reason the engine's is: `diskutil` talks to
+          // diskarbitrationd, and a wedged daemon must not hold the launch.
+          timeout: 5_000,
+        });
+        if (/<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]?.trim() === uuid) return mount;
+      } catch {
+        // Not a mount, not readable, or no uuid: not the drive we want.
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -547,20 +646,17 @@ function watchForUnpairing(webContents) {
   });
 }
 
-function readRemoteFile(home) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(home, "remote", "remote.json"), "utf8"));
-  } catch {
-    // No file, unreadable, or not JSON — every reader below takes the safe
-    // answer, which is what every install had before the setting existed.
-    return null;
-  }
-}
-
+/**
+ * WHERE THE SOCKET LISTENS — and the version discipline is the point (#627).
+ *
+ * This used to be a bare `JSON.parse` here, which meant a file whose version
+ * this build does not know bound every interface while the cockpit's own gate
+ * reset the same file to `requireAuth: false` and admitted everyone. The rule
+ * and its test now live in `remote-file.js`; the shell never widens on a file
+ * it cannot read.
+ */
 function serverBindHost(home) {
-  const remote = readRemoteFile(home);
-  if (remote?.exposure === "network-accessible" && remote?.requireAuth === true) return "0.0.0.0";
-  return "127.0.0.1";
+  return remoteFile.serverBindHost(home);
 }
 
 /**
@@ -572,16 +668,37 @@ function serverBindHost(home) {
  * the reason is logged as a label only (stderr may hold auth keys).
  */
 let tailscaleServeUrl = null;
+/**
+ * AND WHY IT DID NOT PUBLISH, WHERE SOMEBODY WILL SEE IT (#627).
+ *
+ * Both failures below used to end at `console.error` — which is nowhere, for a
+ * person who turned on a setting, restarted as instructed, and got no ts.net
+ * URL. They experience the most common cause (HTTPS certificates off for the
+ * tailnet, a checkbox in someone else's admin console) as "remote access is
+ * broken", with nothing to act on.
+ *
+ * The classification already exists: `tailscale.js` returns a LABEL and never
+ * raw stderr, because stderr can carry `tskey-…` auth keys. So the label rides
+ * to the web child in its environment, beside `TELAR_TAILSCALE_URL` and for the
+ * same reason — the Remote access pane is what has to say it.
+ */
+const TAILSCALE_SERVE_ERROR_ENV = "TELAR_TAILSCALE_SERVE_ERROR";
+let tailscaleServeError = null;
 async function publishTailscaleServe(home, port) {
-  const remote = readRemoteFile(home);
-  if (remote?.tailscaleServe !== true || remote?.requireAuth !== true) return null;
+  tailscaleServeError = null;
+  if (!remoteFile.tailscaleServeRequested(home)) return null;
   const domain = await tailscale.certDomain();
   if (!domain) {
+    // `certDomain` cannot say WHICH of the three it was — it asks `status
+    // --json` and finds no CertDomains — so the label is the honest union of
+    // them, and the pane names all three.
+    tailscaleServeError = "no-cert-domain";
     console.error("[telar-desktop] tailscale serve requested but tailscale is missing, not running, or has HTTPS certificates disabled; skipped.");
     return null;
   }
   const outcome = await tailscale.startServe(port);
   if (outcome !== "none") {
+    tailscaleServeError = outcome;
     console.error(`[telar-desktop] tailscale serve failed (${outcome}); the ts.net endpoint is down.`);
     return null;
   }
@@ -759,6 +876,9 @@ function startServer(port, home) {
       // The ts.net endpoint the Remote access panel lists — present only when
       // `publishTailscaleServe` ran first and succeeded.
       ...(tailscaleServeUrl ? { TELAR_TAILSCALE_URL: tailscaleServeUrl } : {}),
+      // And why it did NOT, when serve was asked for and did not stand. A
+      // classification label only — never stderr, which can carry auth keys.
+      ...(tailscaleServeError ? { [TAILSCALE_SERVE_ERROR_ENV]: tailscaleServeError } : {}),
       // What the gate compares this shell's cookie against (lib/remote/host-token.ts).
       TELAR_HOST_TOKEN: HOST_TOKEN,
       // And what the Remote access panel calls the host row. The shell holds a
@@ -928,10 +1048,10 @@ function createWindow(url) {
   const profiles = readProfileRegistry(app.getPath("userData"));
   const manager = new DesktopBrowserManager(win, {
     onControlChanged: reportBrowserControl,
-    // A credential entry FINISHED in some tab (metadata only — the capture is
-    // an address, an identity and a moment). The offer flow decides whether to
+    // A login entry FINISHED in some tab (metadata only — the capture is an
+    // address, an identity and a moment). The offer flow decides whether to
     // ask "may agents use this login here?" — login-offer-window.js.
-    onCredentialEntryFinished: (capture) => requireLoginOffer().entryFinished(capture),
+    onLoginEntryFinished: (capture) => requireLoginOffer().entryFinished(capture),
     // Recent sites are PER PROFILE, not per project: two projects sharing an
     // identity share its history, which is what sharing an identity means.
     onVisited: (scopeKey, url) => requireBrowserSuggestions().remember(manager.activeProfile(scopeKey)?.id, url),
@@ -952,6 +1072,9 @@ function createWindow(url) {
     // ONE EXTENSION HOST PER PARTITION, created when a partition first gets a
     // tab. chrome.tabs of one project's 1Password sees that project only.
     createExtensionHost: (partition) => startExtensionHost(win, manager, partition),
+    // ⌘1..⌘9 BELONG TO A FOCUSED PAGE (#660) — the menu stands down for exactly
+    // as long as one holds them, and the manager answers the key itself.
+    onChordScope: (chords) => setBrowserChordScope(manager, chords),
   });
   browserManagers.add(manager);
   browserManager = manager;
@@ -969,6 +1092,24 @@ function createWindow(url) {
   // remounted Browser surface will publish fresh bounds and make it visible.
   win.webContents.on("did-start-loading", () => {
     manager.hideVisibleScope();
+    /**
+     * THE RENDERER THAT HELD THEM IS GOING AWAY, SO ITS CLAIMS DIE WITH IT
+     * (#656). Both of these are a mirror of renderer state, and a renderer
+     * cannot release what it is no longer running: reload the cockpit while a
+     * palette is up, or while a keybindings row is armed, and without this the
+     * menu keeps its accelerators stripped forever — the rail's ⌘1..⌘9 dead
+     * with no way back but a restart. A suppression that leaks is worse than
+     * the bug it fixed, which is the whole reason this line is here and not a
+     * comment about how it cannot happen.
+     *
+     * SAFE TO DO UNCONDITIONALLY: the reloaded cockpit re-claims on mount for
+     * anything that is still up, and claims nothing when nothing is.
+     */
+    if (!chordScopes.empty || chordCapture) {
+      chordScopes.setRenderer([]);
+      chordCapture = false;
+      buildApplicationMenu();
+    }
   });
   win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
@@ -978,6 +1119,10 @@ function createWindow(url) {
   win.on("closed", () => {
     manager.destroy();
     browserManagers.delete(manager);
+    // `destroy` already releases through `hibernateTab`; this is the belt to its
+    // braces, because a claim that outlives its window leaves the OTHER window's
+    // rail shortcuts dead and nothing left alive to release them (#660).
+    if (chordScopes.forget(manager)) buildApplicationMenu();
     // Another window's host, not null, while one is still open: closing the
     // second window must not leave the first without a fallback manager.
     if (browserManager === manager) browserManager = browserManagers.values().next().value ?? null;
@@ -1044,7 +1189,6 @@ function startExtensionHost(win, manager, partition) {
   if (!wanted || SMOKE) return null;
   const ses = session.fromPartition(partition);
   const host = new ExtensionHost(ses, {
-    privacy: manager.privacy,
     window: win,
     tabs: {
       // chrome.tabs.create from THIS partition's extension: a human tab in a
@@ -1143,6 +1287,39 @@ function requireLoginOffer() {
  *  builder below, and `setChordCapture` in apps/web/lib/commands.ts. */
 let chordCapture = false;
 
+/**
+ * THE CHORDS A SURFACE ON SCREEN HAS CLAIMED (#656) — pushed by the cockpit
+ * whenever a palette, modal or picker goes up or comes down, and empty the rest
+ * of the time.
+ *
+ * WHY THE MENU IS WHERE THIS HAS TO BE FIXED. macOS matches a menu's key
+ * equivalent before the keydown reaches the page, so the New Conversation
+ * palette's ⌘1..⌘9 — which it draws on its own rows — were consumed by File →
+ * Jump to and never delivered. The palette's handler was not losing a race; it
+ * was never running. Stripping the accelerator for the interval of the claim is
+ * the only thing that hands the key to the renderer at all.
+ *
+ * NOT `enabled: false`, unlike `chordCapture` above. A modal being up is no
+ * reason the menu should stop being clickable with the mouse — it is the KEY
+ * that is spoken for, not the command. Only the accelerator goes.
+ *
+ * AND SINCE #660 THERE ARE TWO OWNERS, both of which can be live. The cockpit
+ * renderer's stack is one; a focused browser page is the other, and only this
+ * process can know about that one — the keydown never reaches the renderer, and
+ * the native focus is in another process entirely. They UNION rather than
+ * overwrite, because a page's claim erasing a palette's would leave the palette
+ * with the dead ⌘1..⌘9 this whole mechanism exists to prevent. The union and
+ * the reasoning live in chord-scope.js, which is unit-tested; this file is the
+ * Electron entry point and cannot be.
+ */
+const chordScopes = new ChordScopes();
+
+/** A manager's pages took or released the keys. Rebuilds only on a real change,
+ *  since this fires on every focus move between tabs of the same browser. */
+function setBrowserChordScope(manager, chords) {
+  if (chordScopes.setOwner(manager, chords)) buildApplicationMenu();
+}
+
 function sendCommandKey(browserWindow, id) {
   const win = browserWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
   win?.webContents.send("telar:command-keys:invoke", id);
@@ -1164,6 +1341,12 @@ function sendCommandKey(browserWindow, id) {
  * accelerator. Electron rejects `accelerator: ""`, hence the conditional spread.
  */
 function buildApplicationMenu(keymap = readKeymap()) {
+  // Which commands a surface on screen has taken the key for (#656). Computed
+  // from the LIVE keymap by the shared table, so this and the renderer's own
+  // dispatcher stand down for exactly the same set — and so moving the nine
+  // jumps to ⌥1..⌥9 hands ⌘1 back to the palette instead of leaving it
+  // suppressed against a chord nobody uses.
+  const claimed = new Set(claimedCommandIds(keymap, chordScopes.all()));
   const toMenuItem = (command) => ({
     label: command.label,
     // STRIPPED WHILE A SETTINGS ROW IS RECORDING. macOS matches a menu's key
@@ -1171,7 +1354,10 @@ function buildApplicationMenu(keymap = readKeymap()) {
     // would open the Diff and never be recorded — which would fail the pane on
     // exactly the chords a person most wants to change. Disabled too, belt and
     // braces; both are put back the moment recording ends.
-    ...(command.accelerator && !chordCapture ? { accelerator: command.accelerator } : {}),
+    //
+    // AND STRIPPED WHILE A SURFACE CLAIMS THE CHORD, for the same mechanical
+    // reason and with the opposite answer about `enabled`: see `chordScope`.
+    ...(command.accelerator && !chordCapture && !claimed.has(command.id) ? { accelerator: command.accelerator } : {}),
     enabled: !chordCapture,
     click: (_menuItem, browserWindow) => sendCommandKey(browserWindow, command.id),
   });
@@ -1196,7 +1382,10 @@ function buildApplicationMenu(keymap = readKeymap()) {
       submenu: [
         ...otherBindings.map(toMenuItem),
         { type: "separator" },
-        { label: "Jump to Conversation", submenu: jumpBindings.map(toMenuItem) },
+        // "Jump to" rather than "Jump to Conversation" (#569): the numbers
+        // count the rail's own entries, and the first of them is the Agent on
+        // a Mac that has one — see the jump block in command-keys.js.
+        { label: "Jump to", submenu: jumpBindings.map(toMenuItem) },
         // The Dev self-update entry (DEV-005) — only a --dev package carries
         // it. The shipping app keeps electron-updater; this is the local twin.
         ...(DEV_BUILD
@@ -1260,15 +1449,14 @@ ipcMain.handle("telar:browser:remove-suggestion", (event, input) => {
   requireBrowserSuggestions().remove(manager.activeProfile(input.scopeKey)?.id, input.url);
 });
 ipcMain.handle("telar:browser:state", (event, scopeKey) => requireBrowserManager(event).state(scopeKey));
-// The password manager's toolbar button. Opening its popup BEGINS a private
-// interaction; only a human's Resume ends it.
+// The password manager's toolbar button. Opening its popup pauses nothing.
 // Status is PER SCOPE now: each project's session has its own partition and
 // its own 1Password host. Creating the host on the first status poll lets the
 // extension preload while the human looks, before any tab navigates.
 ipcMain.handle("telar:browser:extension-status", (event, scopeKey) => {
   const manager = requireBrowserManager(event);
   const host = manager.hostForScope(scopeKey);
-  if (!host) return { phase: "unavailable", error: "Extensions are not enabled, or this session has no project profile yet.", privacy: manager.privacy.state() };
+  if (!host) return { phase: "unavailable", error: "Extensions are not enabled, or this session has no project profile yet." };
   // Carry the partition so the renderer can keep only this scope's status and
   // ignore another project's host pushes.
   let partition; try { partition = manager.partitionOf(scopeKey); } catch { partition = undefined; }
@@ -1365,7 +1553,6 @@ ipcMain.handle("telar:browser:assign-project-profile", (event, input) => {
 ipcMain.handle("telar:browser:set-scope-profile", (event, input) =>
   requireBrowserManager(event).setScopeProfile(input?.scopeKey, input?.profileId),
 );
-ipcMain.handle("telar:browser:private-resume", (event) => requireBrowserManager(event).resumeFromPrivate());
 /**
  * SITE PERMISSIONS (#422) — the answer to a prompt, the prompts still open, and
  * the memory of every answer already given.
@@ -1440,6 +1627,42 @@ ipcMain.handle("telar:browser:open-external", (event, input) => {
   openInSystemBrowser(target);
   return { ok: true };
 });
+/**
+ * "CLEAR COOKIES" / "CLEAR CACHE", from the browser's options menu (#473).
+ *
+ * THE COCKPIT'S OWN TOP FRAME ONLY, the same guard "open in system browser"
+ * wears and for a stronger reason: this signs a whole profile out. A browser
+ * tab's preload, a subframe, or anything an agent can reach must not be able
+ * to wipe the identity the human is browsing as.
+ */
+ipcMain.handle("telar:browser:clear-data", (event, input) => {
+  const manager = requireBrowserManager(event);
+  const cockpit = manager.window;
+  if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
+    throw new Error("Only the Telar window may clear this browser's cookies or cache.");
+  }
+  return manager.clearBrowsingData(input?.scopeKey, input?.kind);
+});
+/**
+ * THE CAMERA BUTTON AND THE ANNOTATE OVERLAY'S FROZEN FRAME (#474).
+ *
+ * THE COCKPIT'S OWN TOP FRAME ONLY, the guard "clear data" and "open in system
+ * browser" wear. A screenshot is a copy of whatever the person is signed into:
+ * a browser tab's preload, a subframe, or anything an agent can reach must not
+ * be able to take one. An agent that wants a picture of a page has
+ * `browser_take_screenshot` and its own tab to point it at.
+ */
+ipcMain.handle("telar:browser:capture", (event, input) => {
+  const manager = requireBrowserManager(event);
+  const cockpit = manager.window;
+  if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
+    throw new Error("Only the Telar window may capture this browser.");
+  }
+  return manager.capture(input?.scopeKey, {
+    fullPage: Boolean(input?.fullPage),
+    elements: Boolean(input?.elements),
+  });
+});
 ipcMain.handle("telar:browser:tool", (event, input) =>
   requireBrowserManager(event).callTool(input?.scopeKey, input?.name, input?.args || {}),
 );
@@ -1448,6 +1671,10 @@ ipcMain.handle("telar:browser:set-bounds", (event, input) => {
 });
 ipcMain.handle("telar:browser:set-visible", (event, input) =>
   requireBrowserManager(event).setVisible(input?.scopeKey, input?.visible),
+);
+/** The frozen frame a menu opens over (#475) — capture, then hide. */
+ipcMain.handle("telar:browser:freeze-view", (event, input) =>
+  requireBrowserManager(event).freezeView(input?.scopeKey),
 );
 ipcMain.handle("telar:browser:release-scope", (event, input) =>
   requireBrowserManager(event).releaseScope(input?.scopeKey, Boolean(input?.destroy)),
@@ -1474,14 +1701,15 @@ ipcMain.handle("telar:login-offer:open", (event, scopeKey) => {
   return requireLoginOffer().explicitOffer(capture);
 });
 
-// A tab preload heard a human's hands in the page; all we hold is the sender.
-ipcMain.on("telar:browser:credential-field", (event, detail) => {
+// A tab preload saw a value land in a login field — the login offer's only
+// trigger. All we hold is the sender.
+ipcMain.on("telar:browser:login-entry", (event, detail) => {
   try {
     // EVERY WINDOW'S HOST IS ASKED, because the sender is a native TAB — it is
-    // not any window's own renderer, so there is nothing to resolve it by. Both
-    // methods look the webContents up in their own tabs and no-op on a stranger,
+    // not any window's own renderer, so there is nothing to resolve it by. The
+    // method looks the webContents up in its own tabs and no-ops on a stranger,
     // so asking the wrong one costs a lookup and never a false report.
-    for (const manager of browserManagers) manager.noteCredentialFieldFromWebContents(event.sender, detail || {});
+    for (const manager of browserManagers) manager.noteLoginEntryFromWebContents(event.sender, detail || {});
   } catch {
     // A report from a view mid-teardown must not crash the shell.
   }
@@ -1503,9 +1731,9 @@ ipcMain.on("telar:browser:human-input", (event) => {
  */
 let engineDiscovery = null;
 let discoveryReadAt = 0;
-function reportBrowserControl(change) {
-  // In dev mode (TELAR_DESKTOP_URL) the shell never booted the engine itself,
-  // so discovery is read off disk lazily — same file waitForEngine proves.
+/** In dev mode (TELAR_DESKTOP_URL) the shell never booted the engine itself, so
+ *  discovery is read off disk lazily — the same file `waitForEngine` proves. */
+function currentEngineDiscovery() {
   if (!engineDiscovery && Date.now() - discoveryReadAt > 5_000) {
     discoveryReadAt = Date.now();
     try {
@@ -1514,17 +1742,20 @@ function reportBrowserControl(change) {
       /* no engine on this machine right now */
     }
   }
-  const discovery = engineDiscovery;
+  return engineDiscovery;
+}
+
+/** One best-effort POST at the local engine. Nothing awaits it and no failure is
+ *  reported: every caller here is a hint the engine would have worked out for
+ *  itself on its next pass. */
+function postToEngine(routePath, body) {
+  const discovery = currentEngineDiscovery();
   if (!discovery?.port || !discovery?.token) return;
-  const payload = JSON.stringify({
-    controller: change.controller,
-    ...(change.tabId ? { tabId: change.tabId } : {}),
-    ...(change.interrupted ? { interrupted: true } : {}),
-  });
+  const payload = JSON.stringify(body ?? {});
   const request = http.request({
     host: discovery.host || "127.0.0.1",
     port: discovery.port,
-    path: `/v2/sessions/${encodeURIComponent(change.scopeKey)}/browser/control`,
+    path: routePath,
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -1536,6 +1767,30 @@ function reportBrowserControl(change) {
   request.on("error", () => {});
   request.on("timeout", () => request.destroy());
   request.end(payload);
+}
+
+function reportBrowserControl(change) {
+  postToEngine(`/v2/sessions/${encodeURIComponent(change.scopeKey)}/browser/control`, {
+    controller: change.controller,
+    ...(change.tabId ? { tabId: change.tabId } : {}),
+    ...(change.interrupted ? { interrupted: true } : {}),
+  });
+}
+
+/**
+ * A DISK MOVED — issue #534.
+ *
+ * The shell is the only process watching `/Volumes`; the engine is where the
+ * registry lives and where availability is decided. This carries nothing but
+ * "something changed, look now": which projects that concerns is the engine's
+ * question, and answering it here would put its rule in the shell.
+ *
+ * Best-effort like every other hint above. The engine re-probes on its own poll
+ * regardless, so an engine that was restarting when a drive was plugged in
+ * notices a pass later rather than not at all. See `volume-watch.js`.
+ */
+function reportVolumesChanged() {
+  postToEngine("/v2/projects/reprobe");
 }
 
 // --- Native folder picker -----------------------------------------------------
@@ -1621,6 +1876,135 @@ ipcMain.handle("telar:dialog:choose-directory", async (event, input) => {
   const [directory] = result.filePaths || [];
   return result.canceled || !directory ? { cancelled: true } : { path: directory };
 });
+
+// --- Where the store lives (#630) --------------------------------------------
+/**
+ * THE SETTINGS SURFACE FOR MOVING THE STORE.
+ *
+ * IT IS THE SHELL'S AND NOT THE ENGINE'S, for the same reason update
+ * preferences are: this is a property of THIS INSTALLATION on THIS MACHINE,
+ * decided before the engine exists and read at launch. An engine route would be
+ * asking the thing being moved where it should be.
+ *
+ * AND IT REPORTS `restartRequired` RATHER THAN PRETENDING. The root is read
+ * once and handed to both children (`childEnv`), and the daemon holds
+ * `engine.lock` and its sqlite handles for its whole life — so a move takes
+ * effect at the next launch, and saying otherwise would be the "setting that
+ * looks like it applied" failure `PATCH /api/remote` already avoids.
+ */
+function storeStatus() {
+  const userData = app.getPath("userData");
+  const { marker } = readMarker(userData);
+  const active = marker?.active;
+  const retired = marker?.retired;
+  return {
+    path: telarHome(),
+    defaultPath: app.getPath("userData"),
+    storeId: active?.storeId,
+    volume: active?.volume,
+    // An explicit TELAR_HOME is a developer pointing this run somewhere; the
+    // controls say so rather than offering to move a store they do not own.
+    pinnedByEnvironment: Boolean(!DEV_BUILD && process.env.TELAR_HOME?.trim()),
+    retired: retired
+      ? {
+          ...retired,
+          bytes: retiredSubtrees(retired.source, retired.stamp).reduce((total, entry) => total + entry.bytes, 0),
+          removable: (active?.lastOpenedAt ?? 0) > Number(retired.stamp),
+        }
+      : undefined,
+  };
+}
+
+ipcMain.handle("telar:store:status", () => storeStatus());
+
+ipcMain.handle("telar:store:preflight", (_event, input) => {
+  const target = typeof input?.path === "string" ? input.path.trim() : "";
+  if (!target) return { ok: false, message: "Choose a folder." };
+  return preflightMove({ source: telarHome(), target });
+});
+
+ipcMain.handle("telar:store:move", async (event, input) => {
+  const target = typeof input?.path === "string" ? input.path.trim() : "";
+  if (!target) return { ok: false, message: "Choose a folder." };
+  const source = telarHome();
+  const userData = app.getPath("userData");
+  const { marker } = readMarker(userData);
+  if (!marker?.active) return { ok: false, message: "Telar has not settled on a store yet." };
+
+  // Recorded BEFORE the copy, cleared after: an intent, never consulted when
+  // deciding where to open, so a move that dies halfway cannot strand anyone.
+  setPending(userData, { path: target });
+  const outcome = await migrateStore({
+    source,
+    target,
+    onProgress: (progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send("telar:store:progress", progress);
+    },
+  });
+  if (!outcome.ok) {
+    clearPending(userData);
+    return outcome;
+  }
+
+  /**
+   * AND ONLY NOW DOES ANYTHING POINT AT THE NEW STORE. This single write is the
+   * switch — before it Telar opens the old store, after it the new one, and
+   * there is no state in between. The old store is retired, not deleted;
+   * removing it is a separate act, gated on the new one having been opened.
+   */
+  adoptStore(userData, {
+    path: target,
+    storeId: outcome.storeId,
+    volume: volumeIdentityFor(target),
+    retired: { source, stamp: outcome.stamp },
+  });
+  clearPending(userData);
+  return { ok: true, restartRequired: true, bytes: outcome.bytes, path: target };
+});
+
+ipcMain.handle("telar:store:remove-old", () => {
+  const userData = app.getPath("userData");
+  const { marker } = readMarker(userData);
+  if (!marker?.retired) return { ok: false, message: "There is no previous store to remove." };
+  const outcome = deleteRetiredSubtrees({
+    source: marker.retired.source,
+    stamp: marker.retired.stamp,
+    openedAt: marker.active?.lastOpenedAt ?? 0,
+  });
+  if (outcome.ok) clearRetired(userData);
+  return outcome;
+});
+
+ipcMain.handle("telar:store:keep-old", () => {
+  clearRetired(app.getPath("userData"));
+  return { ok: true };
+});
+
+/**
+ * The drive a chosen path is on, recorded at adoption so a remount under a
+ * different name is recognisable later. Absent for a path on this machine's own
+ * disk, and absent rather than invented where `diskutil` has nothing to say.
+ */
+function volumeIdentityFor(target) {
+  if (process.platform !== "darwin") return undefined;
+  const prefix = "/Volumes/";
+  if (!target.startsWith(prefix)) return undefined;
+  const [name] = target.slice(prefix.length).split(path.sep);
+  if (!name) return undefined;
+  const mount = path.join("/Volumes", name);
+  try {
+    if (fs.statSync(mount).dev === fs.statSync("/Volumes").dev) return undefined;
+    const plist = execFileSync("diskutil", ["info", "-plist", mount], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000,
+    });
+    const uuid = /<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]?.trim();
+    return { mount, label: name, ...(uuid ? { uuid } : {}) };
+  } catch {
+    return { mount, label: name };
+  }
+}
 
 // --- Auto-update (electron-updater) ------------------------------------------
 // electron-updater has no way to bake a custom request header into the
@@ -2170,6 +2554,82 @@ function startHeapLog() {
   timer.unref?.();
 }
 
+/**
+ * THE RUNAWAY-RENDERER WATCHDOG — issue #487's consequences. The decisions are
+ * in service-worker-watchdog.js, which is pure; this is the three readings it
+ * needs and the kill.
+ *
+ * WHY A KILL AND NOT A STOP. Electron 43's `session.serviceWorkers` has
+ * getAllRunning, getInfoFromVersionID, getWorkerFromVersionID and
+ * startWorkerForScope — and no stop of any kind. Terminating the renderer
+ * process is the only lever the platform actually gives us, and it is the one
+ * that worked by hand in the incident: Chromium treats it as a crashed
+ * renderer, and an MV3 worker is built to be killed when idle and restarted on
+ * its next event, which is what Chrome itself does after thirty seconds.
+ */
+function startServiceWorkerWatchdog() {
+  const watchdog = serviceWorkerWatchdog.createServiceWorkerWatchdog({
+    readMetrics: () => app.getAppMetrics(),
+    // EVERY OS pid HOSTING A PAGE ANYBODY CAN SEE — the app's own windows, the
+    // tabs, the DevTools views, the extension popups. A renderer that is not
+    // one of these is showing nothing, which is the whole signal: Electron
+    // will not tell us a renderer is a service worker (ProcessMetric.type has
+    // no such value), so "hosts no WebContents" is what stands in for it.
+    readLiveProcessIds: () => {
+      const pids = [];
+      for (const contents of webContents.getAllWebContents()) {
+        if (contents.isDestroyed()) continue;
+        try {
+          const pid = contents.getOSProcessId();
+          if (pid) pids.push(pid);
+        } catch {
+          // A WebContents that will not name its process is one we cannot
+          // exclude by pid; skipping it can only make the watchdog more
+          // cautious, never less.
+        }
+      }
+      return pids;
+    },
+    // Every partition's running workers, each told whether its own origin
+    // still has a tab open in that partition.
+    readWorkers: () => {
+      const workers = [];
+      const partitions = new Set();
+      const liveOrigins = new Map();
+      for (const manager of browserManagers) {
+        for (const partition of manager.activePartitions()) partitions.add(partition);
+        for (const [partition, origins] of manager.liveOriginsByPartition()) {
+          if (!liveOrigins.has(partition)) liveOrigins.set(partition, new Set());
+          for (const origin of origins) liveOrigins.get(partition).add(origin);
+        }
+      }
+      for (const partition of partitions) {
+        let running;
+        try {
+          running = session.fromPartition(partition).serviceWorkers.getAllRunning();
+        } catch {
+          continue; // a partition that will not answer is one poll's worth of blindness
+        }
+        for (const info of Object.values(running || {})) {
+          const origin = serviceWorkerWatchdog.originOfScope(info?.scope);
+          workers.push({
+            partition,
+            scope: info?.scope,
+            scriptUrl: info?.scriptUrl,
+            versionId: info?.versionId,
+            hasLiveTab: Boolean(origin && liveOrigins.get(partition)?.has(origin)),
+          });
+        }
+      }
+      return workers;
+    },
+    terminate: (pid) => process.kill(pid, "SIGKILL"),
+    log: logShell,
+  });
+  watchdog.start();
+  return watchdog;
+}
+
 function updateLogger() {
   const write = (level, message) => {
     const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
@@ -2396,6 +2856,23 @@ ipcMain.handle("telar:keybindings:capture", (_event, capturing) => {
   return chordCapture;
 });
 
+/**
+ * A surface on screen claims these chords (#656) — the menu gives up the
+ * accelerators that collide with them until the claim is released.
+ *
+ * TOTAL ABOUT ITS INPUT on purpose. This is called on every palette open and
+ * close; a malformed payload must cost the claim, never the menu. Anything that
+ * is not an array of strings reads as "nothing is claimed", which is the state
+ * that leaves every accelerator live.
+ */
+ipcMain.handle("telar:keybindings:scope", (_event, chords) => {
+  const accepted = chordScopes.setRenderer(chords);
+  buildApplicationMenu();
+  // The RENDERER's own list back, not the union: this answers "what did you take
+  // from my announcement", and a page's claim is not the caller's to hear about.
+  return accepted;
+});
+
 ipcMain.handle("telar:keybindings:set", (_event, overrides) => {
   const stored = keymapOverrides(mergeKeymap(overrides));
   writeKeybindingOverrides(stored);
@@ -2472,6 +2949,21 @@ ipcMain.handle("telar:app:relaunch", () => {
   app.relaunch();
   app.quit();
 });
+
+/**
+ * PROVISIONING THIS MAC'S PUSH RELAY — issue #579.
+ *
+ * The cockpit's server READS this Keychain item on every push and must never be
+ * able to write one: it is the process that answers requests from every paired
+ * phone, and a route that can mint the credential every push rides on is a far
+ * larger thing to get right than one that can only spend it. So the write is
+ * here, in the process with no request surface at all.
+ *
+ * NOTHING ABOUT THE VALUE IS LOGGED OR RETURNED. The answer is `{ ok }` and, on
+ * a refusal, a sentence about what to do — see `push-relay.js`, which also
+ * explains why the secret goes on stdin rather than into argv.
+ */
+ipcMain.handle("telar:push:provision-relay", async (_event, config) => provisionPushRelay(config));
 
 /**
  * A SECOND WINDOW ON A PAGE OF THE APP — "Open in a new window", from the
@@ -2633,6 +3125,10 @@ if (SMOKE) {
         // And the heap guard with it: #296 died five hours in, so the series
         // has to start at launch, not at the first window.
         startHeapLog();
+        // The same reasoning for #487, which took fifty minutes to become
+        // visible: the poll has to be running before the first tab, not after
+        // somebody notices the fans.
+        startServiceWorkerWatchdog();
         applyDevelopmentAppIcon();
         buildApplicationMenu();
         // Before the first window exists, so no scheme change can be missed.
@@ -2661,6 +3157,17 @@ if (SMOKE) {
         let url = OVERRIDE_URL;
         if (!url) {
           captureLoginShellEnv();
+          /**
+           * THE STORE BEFORE THE ENGINE — issue #630. This may wait
+           * indefinitely, which is the point: a drive that is meant to be
+           * plugged in and is not is a condition to sit in, not a reason to
+           * start without somebody's history and create a second one.
+           */
+          resolvedStoreHome = await openStoreGate();
+          if (resolvedStoreHome === null) {
+            app.quit();
+            return;
+          }
           // THE ENGINE FIRST, AND WAITED FOR. The cockpit's server components
           // ask the engine for the session list while rendering the first page;
           // starting them together means that first paint races a daemon that
@@ -2677,6 +3184,14 @@ if (SMOKE) {
         }
         updaterWindow = createWindow(url);
         configureAutoUpdater();
+        /**
+         * AND WATCH THE MOUNT ROOTS — issue #534. After the window, because it
+         * is a hint rather than a precondition: the engine's own poll already
+         * makes a project on an unplugged drive correct, and this only decides
+         * how quickly the rail says so. See `volume-watch.js` for why it is
+         * `fs.watch` plus `resume` rather than a `diskutil activity` child.
+         */
+        watchVolumes({ onChanged: reportVolumesChanged, powerMonitor });
         app.on("activate", () => {
           if (BrowserWindow.getAllWindows().length === 0) createWindow(url);
         });

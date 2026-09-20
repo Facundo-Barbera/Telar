@@ -23,31 +23,63 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, KeyboardIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import dynamic from "next/dynamic";
+import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { markNavigation } from "@/lib/perf-marks";
 import { Badge } from "@/components/ui/badge";
-import { AppearanceSection } from "./appearance-section";
-import { InboxSection } from "./inbox-section";
-import { LinksSection } from "./links-section";
-import { McpSection } from "./mcp-section";
-import { OrientationSection } from "./orientation-section";
-import { IntegrationsPage } from "./integrations-page";
-import { KeybindingsPage } from "./keybindings-page";
-import { ProjectsPage } from "./projects-page";
-import { PermissionsSection } from "./permissions-section";
-import { ProvidersSection } from "./providers-section";
-import { RemoteSection } from "./remote-section";
-import { SourceControlPage } from "./source-control-page";
-import { OtherMacsSection } from "./other-macs-section";
-import { TextGenSection } from "./textgen-section";
-import { PluginsPage } from "./plugins-page";
-import { UpdatesSection } from "./updates-section";
-import { UsageProvidersSection } from "./usage-providers-section";
-import { WorkspaceSection } from "./workspace-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { useSectionFromUrl } from "./use-section-from-url";
+
+/**
+ * ONE PANE AT A TIME, AND ONLY THE ONE BEING READ (#492).
+ *
+ * Every arm of the render below is guarded by `active === …`, so at most one of
+ * these is on screen and the rest are code the reader will probably never ask
+ * for — somebody opens Settings to change a model or a shortcut, not to load a
+ * LaTeX toolchain manager, a theme editor and a package browser. Statically
+ * imported, all eighteen were in the chunk the FIRST pane's paint waited on:
+ * roughly a third of `/settings`, none of it drawn.
+ *
+ * SERVER RENDERING IS KEPT (no `ssr: false`). `useSectionFromUrl` deliberately
+ * reports the fallback pane on the server and corrects in an effect, so General
+ * is what the first HTML contains — that is a paint, and dropping it would trade
+ * the split for a blank frame on the one pane that opens by default.
+ *
+ * NO `loading`, because these swap on a click within one app: the chunk comes
+ * off the same origin the page came from, and a spinner that resolves in the
+ * same frame is a flash, not feedback.
+ *
+ * WHY EIGHTEEN LINES RATHER THAN A MAP over ids: `import()` must take a literal
+ * path for the bundler to see it at all (next/dist/docs/01-app/02-guides/
+ * lazy-loading.md). A table keyed by section id would compile and split nothing.
+ */
+const AppearanceSection = dynamic(() => import("./appearance-section").then((mod) => mod.AppearanceSection));
+const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
+const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
+const AgentSection = dynamic(() => import("./agent-section").then((mod) => mod.AgentSection));
+const DictationSection = dynamic(() => import("./dictation-section").then((mod) => mod.DictationSection));
+const McpSection = dynamic(() => import("./mcp-section").then((mod) => mod.McpSection));
+const OrientationSection = dynamic(() => import("./orientation-section").then((mod) => mod.OrientationSection));
+const IntegrationsPage = dynamic(() => import("./integrations-page").then((mod) => mod.IntegrationsPage));
+const KeybindingsPage = dynamic(() => import("./keybindings-page").then((mod) => mod.KeybindingsPage));
+const ProjectsPage = dynamic(() => import("./projects-page").then((mod) => mod.ProjectsPage));
+const PermissionsSection = dynamic(() => import("./permissions-section").then((mod) => mod.PermissionsSection));
+const ProvidersSection = dynamic(() => import("./providers-section").then((mod) => mod.ProvidersSection));
+const RemoteSection = dynamic(() => import("./remote-section").then((mod) => mod.RemoteSection));
+const SourceControlPage = dynamic(() => import("./source-control-page").then((mod) => mod.SourceControlPage));
+const OtherMacsSection = dynamic(() => import("./other-macs-section").then((mod) => mod.OtherMacsSection));
+const TextGenSection = dynamic(() => import("./textgen-section").then((mod) => mod.TextGenSection));
+const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.PluginsPage));
+const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
+const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
+const StorageSection = dynamic(() => import("./storage-section").then((mod) => mod.StorageSection));
+const WorktreesRootSection = dynamic(() => import("./worktrees-root-section").then((mod) => mod.WorktreesRootSection));
+const WorktreeListSection = dynamic(() => import("./worktree-list-section").then((mod) => mod.WorktreeListSection));
+const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
+const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
 
 const api = createEngineApi();
 
@@ -119,6 +151,27 @@ const SECTIONS: SettingsSection[] = [
    * already draws for the browser — the same subject, so the same glyph.
    */
   { id: "integrations", label: "Browser", icon: GlobeIcon, group: "Cockpit" },
+  /**
+   * THE AGENT'S OWN TAB (#556), FIRST UNDER "RUNTIME" and no longer a group
+   * stacked in the middle of General.
+   *
+   * IT WAS ON GENERAL BECAUSE IT WAS NEW, not because it belonged there: one
+   * experimental group between Links and Dictation, below three rows about
+   * every session and above three about this install. It has six rows of its
+   * own now — a switch, a credential, a model, two defaults and a reset — which
+   * is a pane, and burying a pane's worth of setup inside the one General pane
+   * is how a feature becomes unfindable.
+   *
+   * UNDER "RUNTIME" because whether this Mac HAS an Agent is a fact about the
+   * machine that runs turns: every rail on every device draws from it, and the
+   * key it spends lives with that engine's state. Cockpit is decisions about
+   * this window; this is not one.
+   *
+   * THE GLYPH IS THE RAIL ENTRY'S — `SparklesIcon`, the same one
+   * components/session/agent-entry.tsx draws, so the nav item and the row it
+   * configures are recognisably one subject.
+   */
+  { id: "agent", label: "Agent", icon: SparklesIcon, group: "Runtime" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   /**
    * UNDER "RUNTIME", beside Providers and for the same reason: both are CLIs
@@ -128,11 +181,42 @@ const SECTIONS: SettingsSection[] = [
   { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "Runtime" },
   { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
   /**
+   * UNDER "RUNTIME" (#544): dictation is a service the machine that runs turns
+   * spends a key on, like Providers and TextGen — not a decision about this
+   * window. A paired phone dictating through this Mac reads this pane's
+   * setting, which is exactly what makes it the machine's and not the
+   * cockpit's.
+   *
+   * ITS OWN PANE RATHER THAN A GROUP INSIDE GENERAL, which is where it landed
+   * first. It ships OFF, so the thing a reader is most often looking for is the
+   * switch that turns it on — and a switch stacked seventh inside the pane
+   * everybody opens for something else is a switch nobody finds. A name in the
+   * nav is the cheapest possible answer to "can Telar do dictation".
+   */
+  { id: "dictation", label: "Dictation", icon: MicIcon, group: "Runtime" },
+  /**
    * ONE DESTINATION FOR EVERY PLUGIN, rather than a top-level item each. Two
    * shipped today and the list grows; a nav that grew with it would crowd out
    * the things a person opens settings for.
    */
   { id: "plugins", label: "Plugins", icon: BlocksIcon, group: "Runtime" },
+  /**
+   * WHAT THIS MACHINE IS KEEPING, AND WHERE — issue #642.
+   *
+   * UNDER "RUNTIME" AND LAST. Everything on it is a fact about the machine that
+   * runs turns rather than about this window: the checkouts sessions are built
+   * in, the journal turns are recorded to, the Python the plugin installed. A
+   * paired phone reading this pane is reading THIS Mac's disk.
+   *
+   * THE STORE'S LOCATION CAME WITH IT, off General. #630 put it beside Updates
+   * on the reasoning that both are properties of this install applied at the
+   * next launch, which was right while it was one row — but a pane that reports
+   * what is in the store and a row on another pane that moves the store are the
+   * same question answered in two places, and the one that can MOVE it was the
+   * one further from the numbers. Nothing is stranded: the row never had a
+   * section id of its own.
+   */
+  { id: "storage", label: "Storage", icon: HardDriveIcon, group: "Runtime" },
 ];
 
 /**
@@ -141,7 +225,7 @@ const SECTIONS: SettingsSection[] = [
  * live in bookmarks; an alias costs one map entry and never strands a link on
  * the default pane.
  */
-const SECTION_ALIASES: Record<string, string> = {
+export const SECTION_ALIASES: Record<string, string> = {
   sessions: "general",
   inbox: "general",
   textgen: "general",
@@ -161,6 +245,18 @@ const SECTION_ALIASES: Record<string, string> = {
    * lands on the one row it could have meant.
    */
   settled: "general",
+  /**
+   * THE AGENT LEFT GENERAL FOR A TAB OF ITS OWN (#556), and `main` is the id
+   * that has to keep landing on it.
+   *
+   * "Main" is what this feature was called before #531 — the designated
+   * coordinator conversation — and the word is still in the registry's own
+   * keywords because people who used it keep typing it. General is untouched
+   * and every id that named General still answers General; what moved is the
+   * Agent's rows, so the alias points at where they went rather than at the
+   * pane they were cut from.
+   */
+  main: "agent",
 };
 
 /** A figure the engine reported, in the register the rest of the app uses for
@@ -211,7 +307,10 @@ function AboutSection({
   );
 }
 
-const SECTION_IDS = SECTIONS.map((section) => section.id);
+/** Exported with `SECTION_ALIASES` above so a test can resolve a link the way
+ *  the page does — through the real table and the real hook — rather than by
+ *  matching a string in this file's source. */
+export const SECTION_IDS = SECTIONS.map((section) => section.id);
 
 export function SettingsPage() {
   // `?section=mcp` is how a sign-in gets the user back to the pane they left —
@@ -236,8 +335,25 @@ export function SettingsPage() {
     }
   }, []);
 
+  /**
+   * ...AND WHEN IT STOPPED ASSEMBLING ITSELF (#492).
+   *
+   * The app shell stamps `commit` — the route rendering at all — and this
+   * stamps `idle`, the two of them bracketing what "opening Settings" costs.
+   * There is no `transcript` phase: that stamp means a conversation's own rows
+   * landed, and this page has none, so it stays absent rather than being given
+   * a meaning it does not have.
+   *
+   * ON `load()` RESOLVING, NOT ON A PIECE OF STATE ARRIVING. `about` is set
+   * only when the engine answers, so an idle keyed to it would never fire on a
+   * machine whose daemon is down — the slowest arrival there is would be the
+   * one missing from the numbers. `load` settles either way, which is the
+   * honest reading of "this screen has what it is going to have".
+   */
   useEffect(() => {
-    const task = window.setTimeout(() => void load(), 0);
+    const task = window.setTimeout(() => {
+      void load().then(() => markNavigation("idle", window.location.pathname));
+    }, 0);
     return () => window.clearTimeout(task);
   }, [load]);
 
@@ -270,6 +386,41 @@ export function SettingsPage() {
           <UpdatesSection />
         </>
       )}
+
+      {/* WHAT IS ON THIS MACHINE'S DISK, then where it lives (#642). The
+          figures come first deliberately: "move the store" is a decision, and
+          a decision is easier to make after reading what it would move than
+          before. */}
+      {active === "storage" && (
+        <>
+          <StorageSection />
+          {/* THE REPRODUCIBLE HALF BEFORE THE WHOLE (#642 part 2). Moving only
+              the checkouts leaves Telar able to start without the drive;
+              moving the store does not. The cheaper, safer choice should be
+              the one a reader meets first. */}
+          <WorktreesRootSection />
+          {/* AND THEN WHICH ONES CAN GO (#671). It reads directly under the
+              row that says where checkouts live and the figure that says what
+              they cost, because that is the order the question arrives in:
+              somebody reads "Session checkouts — 7.3 GB", and the next thing
+              they want is the list of them and which are finished. Before
+              this there was no such screen anywhere — the only mention of a
+              worktree in the whole cockpit was a count. */}
+          <WorktreeListSection />
+          <StoreSection />
+        </>
+      )}
+
+      {/* ONE GROUP, ALONE ON ITS PANE — deliberately, rather than padded out
+          with a neighbour. Nothing else in Settings is about the Agent, and a
+          tab that held the Agent plus something adjacent would be General
+          again, one size down. */}
+      {active === "agent" && <AgentSection />}
+
+      {/* AND THE SAME FOR DICTATION (#544), which left General by the same
+          door and for a sharper reason: it ships OFF, so the row a reader
+          wants is the switch that turns it on. */}
+      {active === "dictation" && <DictationSection />}
 
       {active === "projects" && <ProjectsPage />}
 

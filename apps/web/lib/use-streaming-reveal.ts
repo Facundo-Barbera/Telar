@@ -1,9 +1,27 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { revealState, revealText, stepReveal, type RevealState } from "./streaming-reveal";
 
 const REDUCED = "(prefers-reduced-motion: reduce)";
 const now = () => (typeof performance === "undefined" ? Date.now() : performance.now());
+
+/**
+ * READ DURING RENDER, NOT IN AN EFFECT.
+ *
+ * An effect runs AFTER the paint, so honouring the preference there is always
+ * one frame late: the commit before it holds the paced prefix — for a first
+ * chunk, the empty string — and a reader who asked for no motion still watches
+ * the text arrive a frame behind every chunk. `useSyncExternalStore` answers in
+ * the render that produces the text, and still notifies when the preference
+ * changes with no new text, which a sample could not.
+ */
+const subscribeReduced = (onChange: () => void) => {
+  const media = window.matchMedia(REDUCED);
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
+};
+const reducedNow = () => window.matchMedia(REDUCED).matches;
+const notReducedOnTheServer = () => false;
 
 /**
  * Whether `target` replaces what is on screen rather than continuing it.
@@ -31,6 +49,13 @@ export function isReplacement(rendered: string, shown: number, target: string): 
  * completion, stop.
  */
 export function useStreamingReveal(target: string, streaming: boolean): string {
+  const reduced = useSyncExternalStore(subscribeReduced, reducedNow, notReducedOnTheServer);
+  /**
+   * ONE CONDITION FOR "is anything being paced", so the state, the frame and
+   * the returned text cannot disagree about it. Reduced motion is not a second
+   * kind of exit: it is the same exit completion and Stop take.
+   */
+  const paced = streaming && !reduced;
   /**
    * STATE, NOT REFS, AND ADJUSTED DURING RENDER.
    *
@@ -46,9 +71,16 @@ export function useStreamingReveal(target: string, streaming: boolean): string {
     rendered: target,
   }));
   const { pace } = reveal;
-  if (reveal.rendered !== target) {
+  /**
+   * A PACE LEFT BEHIND BY AN EXIT IS CAUGHT UP, NOT FROZEN PART WAY. Whatever
+   * ends the pacing — completion, Stop, reduce — shows the whole text, so the
+   * position that goes with it is the whole text. Leaving a partial one would
+   * rewind the reader's screen the moment pacing resumed: the reduce toggled
+   * back off during a reply, the turn that streams again after settling.
+   */
+  if (reveal.rendered !== target || (!paced && pace.shown < target.length)) {
     setReveal(
-      isReplacement(reveal.rendered, reveal.pace.shown, target)
+      !paced || isReplacement(reveal.rendered, reveal.pace.shown, target)
         ? { pace: revealState(target.length, now()), rendered: target }
         : { pace: stepReveal(reveal.pace, target.length, now()), rendered: target },
     );
@@ -58,24 +90,11 @@ export function useStreamingReveal(target: string, streaming: boolean): string {
     setReveal((current) => ({ pace: next(current.pace), rendered: current.rendered }));
 
   useEffect(() => {
-    if (!streaming || pace.shown >= target.length) return;
-    if (typeof window === "undefined") return;
-    const media = window.matchMedia(REDUCED);
-    const flush = () => setPace(() => revealState(target.length, now()));
-    // A LISTENER, NOT A SAMPLE: the preference can change with no new text, and
-    // a frame that never runs cannot notice.
-    if (media.matches) {
-      flush();
-      return;
-    }
-    media.addEventListener("change", flush);
+    if (!paced || pace.shown >= target.length) return;
     const frame = requestAnimationFrame(() => setPace((current) => stepReveal(current, target.length, now())));
-    return () => {
-      media.removeEventListener("change", flush);
-      cancelAnimationFrame(frame);
-    };
-  }, [pace, streaming, target]);
+    return () => cancelAnimationFrame(frame);
+  }, [pace, paced, target]);
 
-  if (!streaming) return target;
+  if (!paced) return target;
   return revealText(target, pace.shown);
 }

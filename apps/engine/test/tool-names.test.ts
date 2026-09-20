@@ -28,13 +28,13 @@ test("every tool Telar exposes declares its capability in its name", () => {
   // fails the build instead.
   expect(() => assertTelarToolNames(BROWSER_TOOLS.map((tool) => tool.name))).not.toThrow();
   expect(() => assertTelarToolNames(["navigate"])).toThrow(/must be prefixed/);
-  expect(() => assertTelarToolNames(["loom_open"])).toThrow(/must be prefixed/);
+  expect(() => assertTelarToolNames(["warp_open"])).toThrow(/must be prefixed/);
 });
 
 test("one NAMESPACE holds every capability — two registrations, because one must cross a wire", () => {
-  // The default is unchanged: a spool tool still qualifies under `telar`.
-  // Shifting the default would silently rename every spool tool.
-  expect(qualifyTelarTool("spool_list_items")).toBe("mcp__telar__spool_list_items");
+  // The default is unchanged: a core tool still qualifies under `telar`.
+  // Shifting the default would silently rename every one of them.
+  expect(qualifyTelarTool("sessions_list")).toBe("mcp__telar__sessions_list");
   // The browser's callers name its server explicitly.
   expect(qualifyTelarTool("browser_navigate", TELAR_BROWSER_MCP_SERVER)).toBe("mcp__telar-browser__browser_navigate");
   expect(TELAR_CAPABILITIES).toContain("browser");

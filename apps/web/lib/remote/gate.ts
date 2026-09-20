@@ -15,8 +15,8 @@ import { matchDevice, type DeviceRole, type PairedDevice, type RemoteFile } from
  *
  * OBSERVERS may GET and HEAD, nothing else — and the allowlist of
  * observer-writable routes is EMPTY, on purpose. Every non-GET route was
- * audited (2026-09): the read-ish POSTs (/api/browse opens a native dialog,
- * /api/spool/look reconciles state) are mutations too. Don't add exceptions
+ * audited (2026-09): the read-ish POSTs (/api/browse opens a native dialog) are
+ * mutations too. Don't add exceptions
  * speculatively. There are no Server Actions in this app, so page requests
  * (always GET) need no method rule.
  */

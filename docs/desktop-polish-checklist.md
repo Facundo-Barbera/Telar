@@ -12,7 +12,7 @@ Scope: sessions, project navigation, browser, 1Password and release reliability.
 - No device frame on Fit or blank tabs. New tabs show project history and discovered local servers.
 - Successful replacement navigation can recover from ERR_ABORTED; actual failures remain errors.
 - Usage has matching borders, loading feedback, range caching and stale-request protection. Global and project Settings use the same rounded-panel shell.
-- Opening 1Password does not pause browser tools or show control banners. Actual credential-field protection remains, and extension pages stay outside agent capture.
+- A sign-in never pauses browser tools: neither the 1Password popup nor a credential field gates, delays or refuses an agent's call, and there is no control banner (#524). Extension pages stay outside agent capture.
 - Release smoke and engine-worker checks precede upload; immutable artifacts precede feeds.
 
 ## Final review
@@ -26,7 +26,7 @@ Scope: sessions, project navigation, browser, 1Password and release reliability.
 
 Run `bun run verify`, package smoke and deep strict signature verification. Then inspect the actual signed app through computer use. Unit tests alone are not visual acceptance.
 
-Electron harnesses: browser regression, persistence, credential frames, popup geometry, and `browser-fit-zoom.electron-test.js`. The Fit harness reads without repairing geometry and checks actual rendered pixels, native zoom, visual scale, fixed-to-fit changes, repeated resizing, click coordinates and hidden retention.
+Electron harnesses: browser regression, persistence, popup geometry, and `browser-fit-zoom.electron-test.js`. (The credential-frames harness listed here until 2026-09-20 was deleted in `87527fbd`; the eight that CI runs per PR are named in `verify.yml`'s `electron` job, and three more need 1Password's proprietary CRX and run only locally.) The Fit harness reads without repairing geometry and checks actual rendered pixels, native zoom, visual scale, fixed-to-fit changes, repeated resizing, click coordinates and hidden retention.
 
 Native checks: blank tabs, fitted/fixed resizing, session switching, drafts, restoration, Usage and sidebar controls. The unsigned shell and signed installed app are different acceptance surfaces.
 

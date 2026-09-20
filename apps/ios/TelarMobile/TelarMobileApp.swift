@@ -148,7 +148,7 @@ struct RootView: View {
             if let selection, settings.host(selection.hostId) == nil { self.selection = nil }
         }
         .task(id: fingerprint) {
-            inbox.sync(hosts: settings.hosts, settings: settings)
+            inbox.sync(hosts: settings.hosts, settings: settings, active: scenePhase == .active)
             MobileNotifications.shared.settings = settings
             await MobileNotifications.shared.syncRegistrations()
         }
@@ -163,6 +163,9 @@ struct RootView: View {
                let parsed = Pairing.parsePairingURL(link),
                let token = try? await Pairing.exchange(base: parsed.base, token: parsed.token, deviceName: UIDevice.current.name) {
                 settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
+                // A MAC ADDED IS A MAC WORTH BEING NOTIFIED BY (#579) — the
+                // same once-per-install ask the two pairing screens make.
+                await MobileNotifications.shared.promptAfterPairing()
             }
             if let id = UserDefaults.standard.string(forKey: "openSession") {
                 selection = ScopedSessionID.resolveLaunchArg(sessionId: id,

@@ -20,6 +20,7 @@ import type {
   ItemDetail,
   ItemSeed,
   McpServer,
+  NotificationDetail,
   TurnAttachment,
   RequestDecision,
   RequestDetail,
@@ -73,11 +74,11 @@ import { createWarpRunner, type WarpSpawn } from "./warp/runner";
 import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { displayTools, type DisplayCapability } from "./display/tools";
-import { spoolTools, type SpoolCapability } from "./spool/tools";
 import type { SteerMailbox, SteerMessage } from "./steering";
-import { framedSteerText, steerRowTitle } from "./attribution";
+import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notesTools, type NotesCapability } from "./notes-tools/tools";
+import { promptsTools, type PromptsCapability } from "./prompts-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
 import { latexTools } from "./latex/latex-tools";
@@ -86,9 +87,10 @@ import type { DsCapability } from "./ds/capability";
 
 export { ProviderUnavailableError, normalizeOutcome } from "./provider-contract";
 export type { DriverRequest, DriverRequestOutcome, DriverRun, DriverResult, ProviderTurnBinding, DriverSessionHooks, TurnDriver,
-  SpoolCapability, SessionsCapability, DsCapability, DisplayCapability, LatexCapability } from "./provider-contract";
+  SessionsCapability, DsCapability, DisplayCapability, LatexCapability } from "./provider-contract";
 import { ProviderUnavailableError, normalizeOutcome, type DriverRequest, type DriverRequestOutcome, type DriverRun,
   type DriverResult, type ProviderTurnBinding, type DriverSessionHooks, type TurnDriver } from "./provider-contract";
+import { requireCwd } from "./provider-contract";
 
 /** The SDK's permission callback, narrowed to what this driver uses. */
 type SdkCanUseTool = (
@@ -179,6 +181,69 @@ function claudeInitialContent(prompt: string, attachments: TurnAttachment[]): st
   return blocks;
 }
 
+/**
+ * A NOTIFICATION, ON THE CLAUDE CHANNEL THAT IS NOT THE PERSON'S — issue #550.
+ *
+ * TWO MECHANISMS, BECAUSE NEITHER IS SUFFICIENT ALONE.
+ *
+ * `origin` is the SDK's own provenance channel (`SDKMessageOrigin`) and it is
+ * the structural half: `peer` is what a message from another session IS, and
+ * `task-notification` is what an engine announcement about a background
+ * happening IS. The CLI's `isHuman()` gate reads it, so a peer's report can no
+ * longer pass for a person's instruction by arriving on the same stream. It is
+ * ALSO the half that can fail silently — an older CLI drops an origin kind it
+ * does not know (measured: `docs/investigations/delivery-as-harness-input-2026-09-11.md`
+ * §1) — and a provenance channel that fails open is not one to stake the whole
+ * claim on.
+ *
+ * `<system-reminder>` is the content half and the one that cannot be dropped.
+ * The harness's own convention is that text inside it is SYSTEM-authored — not
+ * the user speaking — and it survives any CLI that forwards content at all.
+ * There is no user-role alternative: `SDKUserMessage.message` is a
+ * `MessageParam` whose role is fixed to `"user"`, so a literal system role is
+ * not expressible on this wire and claiming one would be the same lie in a
+ * different field.
+ *
+ * WHAT IS NOT DONE HERE: `isSynthetic`. It marks messages the CLI GENERATED for
+ * itself and setting it on input risks the CLI treating the message as its own
+ * echo. The two mechanisms above say what needs saying without guessing at a
+ * field's receiving-side behaviour.
+ */
+export function claudeNotificationOrigin(detail: NotificationDetail): { kind: string; [field: string]: unknown } {
+  if (detail.kind === "peer_message") {
+    // `from` IS THE ADDRESSABLE IDENTITY and `fromSession` the navigable one;
+    // both are the sending session where there is one. A send from the outward
+    // sessions socket has no session to name, and says so rather than inventing
+    // a plausible id.
+    const from = detail.sessionId ?? "sessions-socket";
+    return { kind: "peer", from, ...(detail.sessionId ? { fromSession: detail.sessionId } : {}) };
+  }
+  // A wake and a parked request are the ENGINE reporting a background
+  // happening, which is exactly what this kind means to the CLI — and it is the
+  // one that gets framed as a notification rather than as prompt authority.
+  return { kind: "task-notification" };
+}
+
+/**
+ * The notice as SYSTEM-authored content. See `claudeNotificationOrigin` for why
+ * the tag rather than a role, and why both halves are sent.
+ *
+ * AND THE RELAY RULE RIDES HERE, NOT IN THE BODY — issue #636, the Claude twin
+ * of `codexNotificationInstruction`'s header. The rule belongs to the CHANNEL:
+ * it is the role speaking about what a peer message is, so it is said once per
+ * driver, outside the minted notice. In the body it was stored, shown on four
+ * surfaces, counted against every recipient's context, and — in its old
+ * over-broad phrasing — read by four sessions in a row as "an approval relayed
+ * by an agent is not an approval".
+ *
+ * ONLY FOR A PEER MESSAGE. A wake has no peer in it and so no relay question;
+ * saying it there would be the same over-application in a smaller costume.
+ */
+export function claudeNotificationContent(body: string, detail?: NotificationDetail): string {
+  const rule = detail?.kind === "peer_message" ? `\n${RELAY_RULE}` : "";
+  return `<system-reminder>\n${body}${rule}\n</system-reminder>`;
+}
+
 /** The field kill switch: `TELAR_CLAUDE_STREAMING_INPUT=0` restores the
  *  plain-string prompt (and with it, no send-now on Claude). */
 export function claudeStreamingInputEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -197,16 +262,17 @@ async function* singleUserMessage(content: string | Array<Record<string, unknown
  * reaches through `bindings.current`, swapped whole at the top of every run.
  * The query outlives the turn (see ./claude-runtime.ts); these do not: the
  * permission gate is bound to a claim token that dies with the turn, the
- * spool and sessions capabilities to the worker client that assembled them,
- * and the warp spawn to this turn's model and login.
+ * sessions capability to the worker client that assembled it, and the warp
+ * spawn to this turn's model and login.
  */
 type ClaudeTurnBindings = {
   signal: AbortSignal;
   canUseTool: SdkCanUseTool | undefined;
-  spool: SpoolCapability | undefined;
   sessions: SessionsCapability | undefined;
   /** The project's notebook, scoped to this turn's project. */
   notes: NotesCapability | undefined;
+  /** The project's prompt shelf, scoped to this turn's project AND session. */
+  prompts: PromptsCapability | undefined;
   ds: DsCapability | undefined;
   display: DisplayCapability | undefined;
   latex: LatexCapability | undefined;
@@ -393,32 +459,23 @@ type ClaudeSdk = {
 };
 
 /**
- * WHAT THE DIRECTING AGENT READS, and the only documentation of Warp that a
- * model ever sees.
+ * WHAT THE DIRECTING AGENT READS WHEN IT IS DECIDING.
  *
  * Written as instructions for choosing, not as a description of parameters: the
  * failure this guards against is not a malformed call, it is a warp launched for
  * work that one agent should have done in a straight line. A fan-out costs a
  * real process per child on the user's own machine.
+ *
+ * THE SCRIPT API IS NOT HERE, AND THAT IS THE POINT (#515). This string is in
+ * every turn of every session whether or not a Warp is ever run — it was 2,988
+ * characters of script reference that nobody reads until the moment they write
+ * a script, and at that moment they can read the `telar` skill, which is on disk
+ * and costs nothing until something asks for it. What stays here is only what a
+ * model needs to CHOOSE: what a Warp is, when it is the right shape, what it
+ * costs, and where the reference lives. Keep it under the 350-character cap
+ * `tool-budgets.test.ts` enforces; anything longer belongs in the skill.
  */
-const WARP_DESCRIPTION = `Run a Warp: a script that fans work out across several sub-agents and returns their combined result.
-
-The script is JavaScript and it is where the structure lives — loops, conditionals, fan-out and the plain code between stages are yours to write, and they run deterministically rather than being decided turn by turn. Reach for this when the work is wide (many files, many angles, many candidates) or when confidence matters more than speed (independent attempts, adversarial verification). For anything a single straight line of work covers, do it yourself — this spawns a real process per concurrent child.
-
-The script must begin with a pure object literal:
-
-  export const meta = { name: 'find-flaky-tests', description: 'Find flaky tests and propose fixes', phases: [{ title: 'Scan' }, { title: 'Fix' }] }
-
-Then write statements at the top level. Top-level await and top-level return both work; whatever you return becomes this tool's result. Available as globals:
-
-- agent(prompt, opts?) -> Promise<any>. One sub-agent. Resolves to its final text, or — with opts.schema (a JSON Schema) — to a validated object, which is what makes the code between stages ordinary code instead of another agent hired to read the last one's paragraphs. Resolves to null if the child died, so .filter(Boolean) before using results. opts: { model, effort, schema, label, phase, maxTurns, agentType }. Omit model to inherit the session's.
-- parallel(thunks) -> Promise<any[]>. Concurrent, WITH A BARRIER: everything settles before it resolves. Correct only when the next step genuinely needs all of the previous one at once — a dedupe across the whole set, an early exit on a total, a prompt that compares one finding against the others.
-- pipeline(items, ...stages) -> Promise<any[]>. Each item through every stage independently, NO barrier. This is the default for multi-stage work: item A can be in stage 3 while item B is still in stage 1, so the run costs the slowest single chain rather than the sum of the slowest-per-stage. Every stage receives (previousResult, originalItem, index). A stage that throws drops that item to null and keeps the others flowing.
-- phase(title) opens a progress group; log(message) narrates to the human; args is the JSON value passed alongside the script.
-
-Date.now(), new Date() and Math.random() THROW — a script that branched on the clock could not be replayed. require, import, process and fs are absent; the script orchestrates agents and does not touch the host itself. A script that cannot parse, is missing its meta, or reaches for a banned name is refused before anything is spent, with the line number.
-
-A Warp child may not create work that outlives the run or escapes the script: fan-out (Agent, Task, Workflow), scheduling (cron, wake-ups), messaging other sessions, and switching worktrees are all withheld from it. So the script is the only place parallelism is expressed. Children run in the same checkout as this session and inherit its permissions.`;
+export const WARP_DESCRIPTION = `Run a Warp: a JavaScript script that fans work across sub-agents and returns their combined result. Reach for it when the work is wide — many files, angles or candidates — or when confidence beats speed. Each concurrent child is a real process, so a straight line of work is not one. Begins with \`export const meta\`; script API in the \`telar\` skill.`;
 
 /**
  * `warp`, as an MCP tool.
@@ -557,23 +614,17 @@ function warpTool(
  * TELAR'S OWN READ-ONLY TOOLS, classified as reads rather than as generic tool
  * calls.
  *
- * FOUND BY DRIVING THE MASTER CHAT. The Spool's front door opened, the assistant
- * reached for `spool_list_items` to answer "where did I stop?", and the turn
- * parked — asking the user to approve READING THEIR OWN TASK LIST. That is the
- * exact friction the module exists to remove, on the one screen it exists to be.
- *
- * THE FIX IS A CLASSIFICATION, NOT A BYPASS, and the distinction matters. The
+ * THE POINT IS A CLASSIFICATION, NOT A BYPASS, and the distinction matters. The
  * engine already has a ladder: `approval-required` auto-accepts `file_read` and
- * parks everything else. These tools ARE reads — they return the user's own
- * stored items and change nothing — so naming them correctly lets the existing
- * rule do its job. Nothing here can skip a mode's decision; it only stops
- * mis-declaring a read as an action.
+ * parks everything else. A tool that returns the user's own stored state and
+ * changes nothing IS a read, so naming it correctly lets the existing rule do
+ * its job. Nothing here can skip a mode's decision; it only stops mis-declaring
+ * a read as an action.
  *
- * THE LIST IS EXPLICIT, NEVER A PREFIX MATCH ON "list". `spool_create_item`,
- * `spool_update_item` and `spool_consult_expert` all stay `tool_call` and keep
- * parking: two of them write, and the third spends money. A rule shaped like
- * "anything that sounds like a read" would silently adopt the next tool whose
- * name starts well.
+ * THE LIST IS EXPLICIT, NEVER A PREFIX MATCH ON "list". Anything that writes or
+ * spends stays `tool_call` and keeps parking, and a rule shaped like "anything
+ * that sounds like a read" would silently adopt the next tool whose name starts
+ * well. A name earns its place here one at a time.
  */
 // `display_open` is not literally a read, but it is read-SHAPED: it writes
 // nothing, spends nothing, and its whole effect is a panel opening on the
@@ -584,7 +635,7 @@ function warpTool(
  * at startup through `setPluginReadTools`, because a plugin's own manifest is a
  * CLAIM rather than a grant and only the host may ratify it.
  */
-const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "display_open"]);
+const TELAR_READ_TOOLS = new Set<string>(["display_open"]);
 
 /**
  * The reads the host ratified. EMPTY UNTIL INSTALLED, deliberately.
@@ -609,7 +660,7 @@ export function requestKindForTool(name: string): RequestKind {
   if (name === "Write" || name === "Edit" || name === "MultiEdit" || name === "NotebookEdit") return "file_change";
   const parsed = parseToolName(name);
   // Only OUR servers' tools qualify — a user-configured server that happened to
-  // name a tool `spool_list_items` must not inherit the engine's own posture.
+  // name a tool `display_open` must not inherit the engine's own posture.
   if (isTelarMcpServer(parsed.server) && (TELAR_READ_TOOLS.has(parsed.tool) || telarPluginReadTools.has(parsed.tool))) {
     return "file_read";
   }
@@ -1260,8 +1311,9 @@ export function createClaudeDriver(
     async run({
       prompt,
       promptFromHuman,
+      notification,
       sessionId,
-      cwd,
+      cwd: claimedCwd,
       signal,
       model,
       effort,
@@ -1277,11 +1329,12 @@ export function createClaudeDriver(
       browserSocket,
       telarSocket,
       orientation,
+      mainBriefing,
       run,
       plugins,
-      spool,
       sessions,
       notes,
+      prompts,
       ds,
       display,
       latex,
@@ -1297,6 +1350,9 @@ export function createClaudeDriver(
           "Claude Agent SDK is unavailable; install and configure Claude Code before retrying",
         );
       }
+      // The Claude SDK spawns its CLI in a directory; a session with none is a
+      // routing mistake and says so before anything starts. See `requireCwd`.
+      const cwd = requireCwd(claimedCwd, "Claude Code");
       const sdkEffort = claudeEffort(effort);
       const userServers = claudeMcpServers(userMcpServers);
       const contextEnv = claudeContextEnvForModel(model);
@@ -2172,7 +2228,7 @@ export function createClaudeDriver(
       };
 
       /**
-       * TELAR'S IN-PROCESS TOOLS, IN ONE SERVER — the spool and `warp`.
+       * TELAR'S IN-PROCESS TOOLS, IN ONE SERVER.
        *
        * THE BROWSER IS NOT HERE ANY MORE: it is served by the worker's own
        * `BrowserToolSocket` and registered below as an HTTP entry, the same
@@ -2187,19 +2243,32 @@ export function createClaudeDriver(
           kind: "item.started",
           item: {
             id,
-            detail: {
-              type: "user_message",
-              text: message.text,
-              ...(attachments.length > 0 ? { attachments } : {}),
-              ...(message.sender ? { sender: message.sender } : {}),
-              // The row keeps the BODY in `text` and the engine's notice beside
-              // it, so the transcript can collapse to the one line the model
-              // was handed and still expand to everything the peer sent.
-              ...(message.notice ? { notice: message.notice } : {}),
-              // WHO SAID IT SURVIVES THE ROW. A wake steered into a running
-              // turn used to land here bare and draw as the person's bubble.
-              ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
-            },
+            /**
+             * A NOTIFICATION IS ITS OWN ROW, MID-TURN AS WELL — #550.
+             *
+             * The engine writes this row itself when the notification opens a
+             * turn of its own; a message steered into a RUNNING turn belongs on
+             * that turn's timeline, in the order the provider received it, so
+             * the seam that hands it over is the only party that can write it.
+             * Same detail either way, so the transcript cannot tell whether the
+             * recipient happened to be busy — which is the asymmetry being
+             * closed.
+             */
+            detail: message.notification
+              ? { type: "notification", notification: message.notification }
+              : {
+                  type: "user_message",
+                  text: message.text,
+                  ...(attachments.length > 0 ? { attachments } : {}),
+                  ...(message.sender ? { sender: message.sender } : {}),
+                  // The row keeps the BODY in `text` and the engine's notice beside
+                  // it, so the transcript can collapse to the one line the model
+                  // was handed and still expand to everything the peer sent.
+                  ...(message.notice ? { notice: message.notice } : {}),
+                  // WHO SAID IT SURVIVES THE ROW. A wake steered into a running
+                  // turn used to land here bare and draw as the person's bubble.
+                  ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
+                },
             title: steerRowTitle(message),
           },
         });
@@ -2238,9 +2307,9 @@ export function createClaudeDriver(
       const turnBindings: ClaudeTurnBindings = {
         signal,
         canUseTool,
-        spool,
         sessions,
         notes,
+        prompts,
         ds,
         display,
         latex,
@@ -2278,8 +2347,17 @@ export function createClaudeDriver(
        * mid-conversation cold-starts, which is exactly what "off means nothing
        * Telar-authored is injected" requires.
        */
+      /**
+       * THEN WHAT THIS SESSION IS FOR, if this machine has named it Main. Gated
+       * on the SESSION rather than on a capability or a person, and resolved at
+       * claim time like the paragraph above it — so switching Main off takes
+       * effect on the next turn, and the fingerprint below carries it for the
+       * same reason it carries `orientation`. Before the capability briefings
+       * because it says what this conversation is, not how to drive a tool.
+       */
       const briefings = [
         ...(orientation ? [orientation] : []),
+        ...(mainBriefing ? [mainBriefing] : []),
         ...(browserSocket ? [BROWSER_BRIEFING] : []),
         ...(run ? [RUN_BRIEFING] : []),
       ];
@@ -2301,9 +2379,9 @@ export function createClaudeDriver(
       const telarLeased = telarSocket ? telarLeases.get(sessionId) : undefined;
       const telarRef = telarLeased?.ref ?? { current: undefined as RuntimeBindings<ClaudeTurnBindings> | undefined };
       const telarParts: TelarWallPart[] = [
-        { name: "spool", build: spoolTools as never, capability: () => telarRef.current?.current.spool },
         { name: "sessions", build: sessionsTools as never, capability: () => telarRef.current?.current.sessions },
         { name: "notes", build: notesTools as never, capability: () => telarRef.current?.current.notes },
+        { name: "prompts", build: promptsTools as never, capability: () => telarRef.current?.current.prompts },
         { name: "ds", build: dsTools as never, capability: () => telarRef.current?.current.ds },
         { name: "notebook", build: notebookTools as never, capability: () => telarRef.current?.current.ds },
         { name: "latex", build: latexTools as never, capability: () => telarRef.current?.current.latex },
@@ -2347,12 +2425,13 @@ export function createClaudeDriver(
          */
         servers: canonicalServers(userMcpServers),
         browser: browserSocket ?? null,
-        spool: Boolean(spool),
         sessions: Boolean(sessions),
         // Same rule: the toolkits are baked into the query at creation, so a
         // project-less session gaining a project must cold-start rather than
         // keep advertising a wall it no longer lacks.
         notes: Boolean(notes),
+        // Same rule again: the prompt wall is baked into the query at creation.
+        prompts: Boolean(prompts),
         // Toggling the project's data-science switch must cold-start: the
         // toolkits are baked into the query at creation.
         ds: Boolean(ds),
@@ -2371,6 +2450,13 @@ export function createClaudeDriver(
          * different system prompt.
          */
         orientation: orientation ?? null,
+        /**
+         * Same rule once more, and here it is what makes "disable removes the
+         * briefing" true rather than aspirational: the paragraph is appended at
+         * query creation, so a session that stops being Main must cold-start
+         * rather than keep a live query that is still carrying it.
+         */
+        mainBriefing: mainBriefing ?? null,
         /**
          * THE `telar` WALL'S LEASE. A STABLE TOKEN IS NOT CATALOG COHERENCE:
          * re-collecting per request keeps dispatch honest server-side, but a
@@ -2418,35 +2504,20 @@ export function createClaudeDriver(
         const telarTools: unknown[] = [];
 
         /**
-         * THE SPOOL, WHEN THE TURN CARRIES ONE — CAP-12's "tasks are a
-         * Telar-wide substrate", which is only true if an ordinary project
-         * session can reach them.
+         * THE SESSIONS TOOLKIT, WHEN THE TURN CARRIES ONE.
          *
-         * NO APPROVAL GATE ON ANY OF THESE, and that is the same judgement the
-         * legacy server made about the same four verbs: none of them is a commit.
-         * Filing a task starts nothing, and the two things a human must decide —
-         * a verdict, and a sub-task's promotion — have no tool input that can
-         * spell them. The one gate that matters here is structural, not
-         * interactive.
+         * NO APPROVAL GATE ON ANY OF THESE, the judgement every toolkit below
+         * inherits: not one of them lands anything. Creating a session starts no
+         * work (nothing is queued until `sessions_send`), reading and stopping
+         * are read-and-brake, and there is deliberately no merge, no accept and
+         * no archive for a gate to guard. The guard that matters here is
+         * structural — the store's live-session budget — not interactive.
+         *
+         * THE ONE GATE THAT IS NOT HERE AT ALL is a warp child's. `warp/spawn.ts`
+         * withholds Telar's whole MCP server from a child and names these tools
+         * in `WARP_CHILD_DISALLOWED_TOOLS` on top of that, because
+         * `sessions_create` is fan-out wearing another hat.
          */
-        if (spool && sdk.tool) telarTools.push(...spoolTools(sdk.tool, delegatingCapability(() => bindings.current.spool)));
-
-      /**
-       * THE SESSIONS TOOLKIT, WHEN THE TURN CARRIES ONE.
-       *
-       * NO APPROVAL GATE ON ANY OF THESE, the same judgement the spool's verbs
-       * get and for the same reason: not one of them lands anything. Creating a
-       * session starts no work (nothing is queued until `sessions_send`),
-       * reading and stopping are read-and-brake, and there is deliberately no
-       * merge, no accept and no archive for a gate to guard. The guard that
-       * matters here is structural — the store's live-session budget — not
-       * interactive.
-       *
-       * THE ONE GATE THAT IS NOT HERE AT ALL is a warp child's. `warp/spawn.ts`
-       * withholds Telar's whole MCP server from a child and names these tools
-       * in `WARP_CHILD_DISALLOWED_TOOLS` on top of that, because
-       * `sessions_create` is fan-out wearing another hat.
-       */
         if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, delegatingCapability(() => bindings.current.sessions)));
 
         /**
@@ -2454,12 +2525,27 @@ export function createClaudeDriver(
          * deploy note say?" is answerable, and "keep this where we can find it"
          * lands somewhere the human will actually see it.
          *
-         * NO APPROVAL GATE, the spool's judgement again: nothing here lands
-         * anything, and writing a note changes no branch and queues no turn. The
+         * NO APPROVAL GATE, the sessions toolkit's judgement again: nothing here
+         * lands anything, and writing a note changes no branch and queues no turn. The
          * one guard that matters is the wall's own — `notes_delete` removes only
          * notes an agent wrote, and refuses the user's in a sentence.
          */
         if (notes && sdk.tool) telarTools.push(...notesTools(sdk.tool, delegatingCapability(() => bindings.current.notes)));
+
+        /**
+         * THE PROMPT SHELF, WHEN THE TURN CARRIES A PROJECT — so a turn can end
+         * by drafting the turn that should follow it, and a prompt asked for as
+         * a product lands where it can be sent rather than in a transcript.
+         *
+         * NO APPROVAL GATE, and here the reason is the tool's whole point rather
+         * than a judgement about blast radius: `prompt_draft` LANDS NOTHING BY
+         * CONSTRUCTION. It queues no turn and starts no work — the prompt sits
+         * on the shelf until a person presses it, which is the human decision
+         * the tool exists to preserve. Gating it would ask for consent to ask
+         * for consent. The wall's own fence is the one that matters:
+         * `prompt_drop` removes only what an agent wrote.
+         */
+        if (prompts && sdk.tool) telarTools.push(...promptsTools(sdk.tool, delegatingCapability(() => bindings.current.prompts)));
 
         /**
          * THE DATA-SCIENCE TOOLKITS, WHEN THE PROJECT OPTED IN. No approval
@@ -2482,7 +2568,7 @@ export function createClaudeDriver(
 
         /**
          * THE DISPLAY TOOLKIT, WHEN THE TURN CARRIES ONE. No approval gate,
-         * the spool's judgement again: opening a panel on a file the human
+         * the same judgement again: opening a panel on a file the human
          * could open themselves commits nothing. The worker's capability owns
          * the one check that matters — the path stays inside this turn's own
          * checkout.
@@ -2561,8 +2647,13 @@ export function createClaudeDriver(
            */
           prompt: streaming
             ? (feed.stream() as AsyncIterable<SdkUserMessage>)
-            : (attachments?.length ?? 0) > 0
-              ? singleUserMessage(claudeInitialContent(prompt, attachments ?? []))
+            : // THE KILL-SWITCH PATH KEEPS THE SYSTEM WRAPPER even though it
+              // cannot carry an origin: `sdk.query`'s non-streaming form takes
+              // a bare string with nowhere to stamp provenance, so the content
+              // half is the whole of what this path can say — and it is the
+              // half that does not silently drop.
+              (attachments?.length ?? 0) > 0 || notification
+              ? singleUserMessage(claudeInitialContent(notification ? claudeNotificationContent(prompt, notification) : prompt, attachments ?? []))
               : prompt,
           options: {
             cwd,
@@ -2737,10 +2828,22 @@ export function createClaudeDriver(
         // kind the CLI keeps.
         runtime.feed.push({
           type: "user",
-          message: { role: "user", content: claudeInitialContent(prompt, attachments ?? []) },
+          message: {
+            role: "user",
+            // A NOTIFICATION IS NOT THE PROMPT, it is an announcement the turn
+            // is being opened ON — so it goes in system-authored and stamped
+            // with its real provenance, never as the person's words (#550).
+            content: notification
+              ? claudeInitialContent(claudeNotificationContent(prompt, notification), attachments ?? [])
+              : claudeInitialContent(prompt, attachments ?? []),
+          },
           parent_tool_use_id: null,
           uuid: turnUuid,
-          ...(promptFromHuman ? { origin: { kind: "human" as const } } : {}),
+          ...(notification
+            ? { origin: claudeNotificationOrigin(notification) }
+            : promptFromHuman
+              ? { origin: { kind: "human" as const } }
+              : {}),
         });
       }
 
@@ -2838,11 +2941,26 @@ export function createClaudeDriver(
                * reading the interrupt has always taken.
                */
               const typedByAPerson = queued.some((message) => message.sender === undefined && message.wakeReason === undefined);
+              /**
+               * A BATCH OF NOTIFICATIONS AND NOTHING ELSE IS A NOTIFICATION
+               * (#550). Mixed with a person's words it is the person's — same
+               * reading `typedByAPerson` already takes, and for the same reason:
+               * someone typed, mid-turn, and that is what the turn should
+               * honour. A batch that is ONLY notifications has no such claim on
+               * the person's channel, so it goes system-authored and stamped
+               * with the provenance of the first one in it.
+               */
+              const notifications = queued.map((message) => message.notification).filter((detail) => detail !== undefined);
+              const allNotifications = !typedByAPerson && notifications.length === queued.length && notifications[0] !== undefined;
               runtime.feed.push({
                 type: "user",
-                message: { role: "user", content: claudeInitialContent(text, attachments) },
+                message: { role: "user", content: claudeInitialContent(allNotifications ? claudeNotificationContent(text, notifications[0]!) : text, attachments) },
                 parent_tool_use_id: null,
-                ...(typedByAPerson ? { origin: { kind: "human" as const } } : {}),
+                ...(allNotifications
+                  ? { origin: claudeNotificationOrigin(notifications[0]!) }
+                  : typedByAPerson
+                    ? { origin: { kind: "human" as const } }
+                    : {}),
               });
               /**
                * PUSHING IS NOT INTERRUPTING: the provider reads no further input

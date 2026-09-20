@@ -99,8 +99,8 @@ describe("the connect card and the secret", () => {
     expect(mcp.secret).not.toBe(first.discovery.token);
     expect(mcp.secret.length).toBeGreaterThanOrEqual(32);
     // THREE DOORS, THREE KEYS. Revoking an app's reach into the notebook must
-    // not be the same act as revoking its reach into sessions or the spool.
-    expect(mcp.secret).not.toBe((await client.spoolMcpInfo()).mcp.secret);
+    // not be the same act as revoking its reach into sessions.
+    expect(mcp.secret).not.toBe((await client.sessionsMcpInfo()).mcp.secret);
     expect(mcp.secret).not.toBe((await client.sessionsMcpInfo()).mcp.secret);
     expect(mcp.addCommand).toBe(`claude mcp add --transport http telar-notes ${mcp.url} --header "Authorization: Bearer ${mcp.secret}"`);
 

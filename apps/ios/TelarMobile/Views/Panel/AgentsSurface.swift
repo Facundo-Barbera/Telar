@@ -278,7 +278,17 @@ struct AgentsSurface: View {
     @State private var following: [Subscription] = []
     @State private var loaded = false
     @State private var failed = false
+    /// THE LIVE LIST'S TAG (#499) — handed back on the next read so a panel
+    /// left open on an idle Mac costs a 304 and no body every ten seconds,
+    /// rather than the whole list again. This surface asks WIDE (see `read`),
+    /// which is the one place the full serialisation is still paid for, so the
+    /// conditional matters here more than anywhere.
+    @State private var etag: String?
     @Environment(\.openURL) private var openURL
+    /// POLLS STOP WHEN NOBODY IS LOOKING (#499). This one ran on its own timer
+    /// with no gate at all: a phone in a pocket with a panel open kept asking
+    /// its Mac for every session on it, every ten seconds, forever.
+    @Environment(\.scenePhase) private var scenePhase
 
     /// HOW OFTEN A DELEGATE'S STATE IS RE-READ. A worker finishing an errand
     /// writes nothing to the journal this panel is mounted beside, so a surface
@@ -316,7 +326,13 @@ struct AgentsSurface: View {
         .refreshable { await read() }
         // The id restarts the loop when the turn settles, so the reader sees
         // the answer without waiting out the current interval.
-        .task(id: "\(sessionId):\(active)") {
+        //
+        // AND WHEN THE APP COMES BACK (#499). scenePhase is in the id, so
+        // leaving the app cancels this task outright — no timer, no request —
+        // and returning to it starts a fresh one that reads immediately, which
+        // is what a reader coming back wants anyway.
+        .task(id: "\(sessionId):\(active):\(scenePhase == .active)") {
+            guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 await read()
                 try? await Task.sleep(for: Self.poll)
@@ -402,16 +418,16 @@ struct AgentsSurface: View {
                     .accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13)).foregroundStyle(Theme.text)
+                Text(title).font(.system(Theme.footnote)).foregroundStyle(Theme.text)
                     .lineLimit(1).truncationMode(.tail)
                 if let detail {
-                    Text(detail).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Text(detail).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                         .lineLimit(1).truncationMode(.tail)
                 }
             }
             Spacer(minLength: 4)
             Text(state.label)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .font(.system(Theme.caption, design: .monospaced, weight: .medium))
                 .foregroundStyle(color(state.tone))
                 .layoutPriority(-1)
             if open != nil {
@@ -458,15 +474,35 @@ struct AgentsSurface: View {
     ///
     /// A FAILED READ PRESERVES THE LAST GOOD ANSWER. An empty list claims
     /// nobody is working here, and a dropped request is not evidence of that.
+    ///
+    /// AND IT ASKS FOR ALL OF THEM (#457). The live route answers the unsettled
+    /// rows by default, which is right for a RAIL and wrong here: a delegate is
+    /// settled precisely BECAUSE its work was delivered, so the narrow list
+    /// would drop the finished agents this surface exists to show. It is a read
+    /// per open panel rather than a poll per rail, which is what makes paying
+    /// for the whole list the right trade in this one place.
+    ///
+    /// AND IT IS CONDITIONAL (#499). Paying for the whole list is the right
+    /// trade; paying for it again every ten seconds when nothing has moved is
+    /// not. The tag turns an idle panel's tick into a 304 with no body, which
+    /// is what the inbox's poll already does against the same route.
+    ///
+    /// A 304 IS A GOOD READ. `answer.live` is nil and the rows on screen are
+    /// already the answer, so `failed` clears and nothing is reassigned —
+    /// distinct from the dropped request below, which preserves them too but
+    /// says so.
     private func read() async {
-        let list = try? await api.liveSessions()
+        let answer = try? await api.liveSessions(matching: etag, since: nil, all: true)
         let subscriptions = try? await api.sessionSubscriptions(sessionId)
-        if let list {
-            sessions = list.sessions
-            assignments = list.assignments
+        if let answer {
+            etag = answer.etag
+            if let list = answer.live {
+                sessions = list.sessions
+                assignments = list.assignments
+            }
         }
         if let subscriptions { following = subscriptions }
-        failed = list == nil
+        failed = answer == nil
         loaded = true
     }
 }

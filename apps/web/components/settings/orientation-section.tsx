@@ -81,7 +81,7 @@ export function OrientationSection() {
     >
       <Row
         label="Tell agents they are inside Telar"
-        hint="One paragraph per turn: that “the browser” is Telar's, that a session is a Telar session, and what the panel, the rail, Spool and Looks are."
+        hint="One paragraph per turn: that “the browser” is Telar's, that a session is a Telar session, and what the panel, the rail and Looks are."
         {...(error ? { error } : {})}
         {...(policy.preamble === DEFAULT_AGENT_ORIENTATION.preamble
           ? {}
@@ -128,7 +128,7 @@ export function OrientationSection() {
       </Row>
       <Row
         label="Install the telar skill"
-        hint="A SKILL.md in each provider's skills directory, with the detail: the panel's tabs, Warps, how sessions are assigned and settled, the browser's tab rules, the Spool's verbs. Turning this off deletes it."
+        hint="A SKILL.md in each provider's skills directory, with the detail: the panel's tabs, Warps, how sessions are assigned and settled, the browser's tab rules. Turning this off deletes it."
         {...(policy.skill === DEFAULT_AGENT_ORIENTATION.skill
           ? {}
           : { onRevert: () => void save({ skill: DEFAULT_AGENT_ORIENTATION.skill }) })}

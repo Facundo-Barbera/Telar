@@ -35,6 +35,14 @@
  * else's rate limit — the same reason the list surface does not — and a detail tab
  * is the one most likely to be left open on a second monitor. The refresh button is
  * the only thing that asks again.
+ *
+ * THREE OF THE PIECES BELOW ARE EXPORTED and nothing else imports them. They are the
+ * three the §1b layout decisions live in — who is attributed where, what the chips
+ * line says when it is empty, whether the merge control has a floor and a sentence —
+ * and every one of those is a claim about rendered markup that cannot be checked by
+ * reading `ForgeDetailSurface`, which does nothing but fetch before it draws them.
+ * `github-detail-surface.test.tsx` renders them directly; see the fifth paragraph of
+ * `EntryCard` for the regression that motivated it.
  */
 
 import { useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
@@ -254,10 +262,20 @@ const PANEL_IMAGE = {
  * agent's prose would put two markdown engines in one window, disagreeing about
  * code fences in a panel whose whole job is to make the two feel like one
  * instrument.
+ *
+ * THE COLUMN IS CAPPED, which is the one thing the panel was not doing. github.com
+ * caps its issue body and so does every other surface anybody reads prose in; the
+ * measure is the oldest rule in typesetting and the reason is that a line long
+ * enough loses the reader on the way back to the start of the next one. This
+ * repository's issues are long prose, and the panel is draggable to half the
+ * screen — the width where it stops reading is a width somebody will choose. At
+ * 320px the cap never binds and nothing changes.
  */
+const READING_MEASURE = "max-w-[64ch]";
+
 function Markdown({ children, className }: { children: string; className?: string }) {
   return (
-    <MessageResponse className={cn("text-xs", PANEL_MARKDOWN, className)} components={PANEL_IMAGE}>
+    <MessageResponse className={cn("text-xs", READING_MEASURE, PANEL_MARKDOWN, className)} components={PANEL_IMAGE}>
       {children}
     </MessageResponse>
   );
@@ -282,49 +300,69 @@ const REVIEW_TONE: Record<string, string> = {
  * costs one border.
  *
  * THE AUTHOR BAR IS TINTED AND THE BODY IS NOT, so the eye can find the boundaries
- * by scanning one column of grey rather than reading. The time sits at the far right
- * for the same reason: a ragged left edge of names is scannable, a ragged right edge
- * of dates is not.
+ * by scanning one column of grey rather than reading.
+ *
+ * WHO AND WHEN ARE ONE FACT, SO THEY ARE PRINTED TOGETHER. The time used to be
+ * pushed to the far right of the bar, on the reasoning that a ragged left edge of
+ * names scans well and a ragged right edge of dates does not. True, and beside the
+ * point: widen the panel and the name ends up most of the surface away from the
+ * timestamp that belongs to it, so answering "who said this, and when" costs a
+ * full-width eye movement on every card in the thread. The link out takes the far
+ * right instead — a column of identical glyphs is exactly what a ragged right edge
+ * is good for.
+ *
+ * THE OPENING POST HAS NO AUTHOR BAR. The facts line above the thread already says
+ * who opened this and when; repeating it on the first card made the opening post
+ * read as a reply to itself, posted by its own author in the same second.
  *
  * A COMMENT GITHUB HID STAYS HIDDEN, behind its reason and a click. Rendering a
  * spam-hidden comment in full beside the real ones shows a reader something the
  * repository decided to hide — and GitHub itself collapses these.
+ *
+ * AND THE CARD PAINTS — `bg-card`, issue #691. It wore a border, an author bar on
+ * the replies, and no fill of its own, which only ever worked because the panel
+ * behind it was opaque: turn translucency on, the panel thins to --sidebar-wash,
+ * and this becomes a 1px hairline drawn over the desktop with a paragraph inside
+ * it. A comment body is read word by word, which makes it a READING SURFACE, and
+ * a reading surface never thins at any slider setting. The fill also repairs the
+ * author bar in light mode, where `bg-muted/40` over --sidebar was 0.952 over
+ * 0.955 — a boundary marker nobody could see. On --card it finally is one.
  */
-function EntryCard({ entry }: { entry: ForgeEntry }) {
+export function EntryCard({ entry }: { entry: ForgeEntry }) {
   const [revealed, setRevealed] = useState(false);
   const hidden = entry.minimized === true && !revealed;
   const verdict = entry.state ? (REVIEW_TONE[entry.state.toUpperCase()] ?? "text-muted-foreground") : undefined;
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-md border border-border">
-      <div className="flex min-w-0 items-baseline gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-3xs text-muted-foreground">
-        <span className="min-w-0 truncate font-medium text-foreground">{entry.author ?? "someone"}</span>
-        {/* WHAT THIS ENTRY IS, in the fewest words that distinguish it: the opening
-            post, a plain comment, or a review with a verdict. A plain comment says
-            nothing — it is the default and a word for it would be noise on every
-            card in the thread. */}
-        {entry.kind === "body" && <span className="shrink-0">opened this</span>}
-        {entry.kind === "review" && <span className={cn("shrink-0", verdict)}>{reviewLabel(entry.state ?? "")}</span>}
-        {entry.association && (
-          <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
-            {entry.association.toLowerCase()}
-          </Badge>
-        )}
-        <span className="ml-auto shrink-0 tabular-nums" title={when(entry.at)}>
-          {fmtAgo(entry.at)}
-        </span>
-        {entry.url && (
-          <a
-            href={entry.url}
-            target="_blank"
-            rel="noreferrer"
-            aria-label="Open this comment on GitHub"
-            className="shrink-0 rounded p-0.5 transition-colors hover:text-foreground"
-          >
-            <ExternalLinkIcon className="size-2.5" />
-          </a>
-        )}
-      </div>
+    <div className="min-w-0 overflow-hidden rounded-md border border-border bg-card">
+      {entry.kind !== "body" && (
+        <div className="flex min-w-0 items-baseline gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-3xs text-muted-foreground">
+          <span className="min-w-0 truncate font-medium text-foreground">{entry.author ?? "someone"}</span>
+          {entry.association && (
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
+              {entry.association.toLowerCase()}
+            </Badge>
+          )}
+          {/* WHAT THIS ENTRY IS, in the fewest words that distinguish it: a review
+              with a verdict, or a plain comment. A plain comment says nothing — it
+              is the default and a word for it would be noise on every card. */}
+          {entry.kind === "review" && <span className={cn("shrink-0", verdict)}>{reviewLabel(entry.state ?? "")}</span>}
+          <span className="shrink-0 tabular-nums" title={when(entry.at)}>
+            {fmtAgo(entry.at)}
+          </span>
+          {entry.url && (
+            <a
+              href={entry.url}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open this comment on GitHub"
+              className="ml-auto shrink-0 rounded p-0.5 transition-colors hover:text-foreground"
+            >
+              <ExternalLinkIcon className="size-2.5" />
+            </a>
+          )}
+        </div>
+      )}
       <div className="min-w-0 px-2 py-1.5">
         {hidden ? (
           <button
@@ -498,8 +536,11 @@ function CheckRow({
             <>
               {/* MONOSPACE, SCROLLED, AND CAPPED IN HEIGHT. A log is the one thing on
                   this surface that can be thousands of lines, and it must not push the
-                  conversation off the screen. */}
-              <pre className="max-h-64 overflow-auto rounded border border-border bg-muted/40 p-1.5 font-mono text-3xs leading-snug whitespace-pre-wrap">
+                  conversation off the screen.
+                  `bg-card` RATHER THAN `bg-muted/40` (#691): a failing step's log is
+                  read line by line, so it paints. At 40% it was borrowing the panel's
+                  fill, and under translucency there is no panel fill to borrow. */}
+              <pre className="max-h-64 overflow-auto rounded border border-border bg-card p-1.5 font-mono text-3xs leading-snug whitespace-pre-wrap">
                 {log.lines.join("\n")}
               </pre>
               {log.truncated && (
@@ -617,10 +658,38 @@ function ChecksBlock({ checks, projectId }: { checks: readonly GitHubCheck[]; pr
 }
 
 /**
+ * THE MERGE REGION'S HOME.
+ *
+ * A NAMED FLOOR RATHER THAN A FLOATING BUTTON. The merge shipped as a green pill
+ * in the bottom-left corner, over whatever the scroller happened to end on, with
+ * no label and — in the one state you actually press it in — no sentence beside
+ * it. It read as an accident: the most careful logic in this surface, presented as
+ * something that had come loose. A border, a fill and a mono label cost four
+ * classes and make it a region of the surface, which is what it is.
+ *
+ * IT NAMES THE BASE BRANCH IN THE LABEL, so the region says what it does before
+ * anybody reads the button in it — the answer to the finding filed with §1b, that
+ * the one outward-facing write in this cockpit is also the one nothing announces.
+ */
+function MergeHome({ base, children }: { base?: string; children: React.ReactNode }) {
+  return (
+    <div className="shrink-0 border-t border-border bg-card px-3 py-2">
+      <p className="mb-1.5 truncate font-mono text-4xs tracking-[0.08em] text-muted-foreground uppercase">
+        merge into {base ?? "its base branch"}
+      </p>
+      {children}
+    </div>
+  );
+}
+
+/**
  * THE MERGE.
  *
  * A FOOTER, OUTSIDE THE SCROLLER, because it is the action this surface exists to
  * make possible and scrolling a forty-comment thread to find it would be a joke.
+ * The checks sit immediately above it, at the end of the scroller, for the same
+ * reason github.com puts them there: "is CI green" is a question you ask while
+ * deciding to merge.
  *
  * TWO PRESSES, AND THE SECOND ONE SPELLS OUT WHAT IT WILL DO. The first press
  * arms; the row becomes a sentence naming the number, the base branch and the
@@ -628,7 +697,7 @@ function ChecksBlock({ checks, projectId }: { checks: readonly GitHubCheck[]; pr
  * here, and a single-press primary button in a panel you are dragging tabs around
  * in is a mis-click away from doing it.
  */
-function MergeFooter({
+export function MergeFooter({
   pull,
   onMerged,
   onReread,
@@ -656,9 +725,11 @@ function MergeFooter({
 
   if (!pull.headRefOid) {
     return (
-      <div className="shrink-0 border-t border-border px-3 py-2 text-2xs leading-snug text-muted-foreground">
-        gh did not report this branch&apos;s head commit, so merging is not offered.
-      </div>
+      <MergeHome {...(pull.baseRefName ? { base: pull.baseRefName } : {})}>
+        <p className="text-2xs leading-snug text-muted-foreground">
+          gh did not report this branch&apos;s head commit, so merging is not offered.
+        </p>
+      </MergeHome>
     );
   }
 
@@ -683,7 +754,7 @@ function MergeFooter({
   };
 
   return (
-    <div className="shrink-0 border-t border-border px-3 py-2">
+    <MergeHome {...(pull.baseRefName ? { base: pull.baseRefName } : {})}>
       {/* WHY IT WOULD NOT WORK, above the button rather than after pressing it.
           Every state here is one GitHub would also refuse; saying it in front of
           the reader turns a round trip and a red banner into a sentence. */}
@@ -735,6 +806,11 @@ function MergeFooter({
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
+          {/* THE MERGEABILITY LINE, AGAINST THE BUTTON IT DESCRIBES. `mergeReadiness`
+              now answers for the clean case too, so this is present in every state an
+              open pull request can be in — the button never stands on its own. Stacked
+              rather than beside it because a 320px column has room for one of them per
+              line, and the sentence is the half you read first. */}
           {readiness.note && (
             <p className={cn("text-2xs leading-snug", readiness.canMerge ? "text-muted-foreground" : "text-warning")}>{readiness.note}</p>
           )}
@@ -781,6 +857,116 @@ function MergeFooter({
           )}
         </div>
       )}
+    </MergeHome>
+  );
+}
+
+/**
+ * THE FACTS, IN THE SAME GRAMMAR AS A LIST ROW.
+ *
+ * This was four stacked icon rows in four shades of grey, each a sentence, which is
+ * why the top of the panel read as a blob. The list row's shape — one line of facts,
+ * then one line of chips — is the shape that works at this width, and using it twice
+ * means clicking a row does not change the language it was described in.
+ *
+ * THE FIRST LINE IS THE THREAD'S ONE ATTRIBUTION. Who opened this and when, with the
+ * "when" against the "who" rather than a column away, and it is the only place either
+ * is printed: the opening post below carries no author bar because this line is it.
+ */
+export function ForgeFacts({
+  thing,
+  pull,
+  mine,
+}: {
+  thing: GitHubIssueDetail | GitHubPullDetail;
+  pull?: GitHubPullDetail;
+  mine?: boolean;
+}) {
+  const openedAt = thing.createdAt;
+  return (
+    <div className="flex flex-col gap-1.5 px-3 py-2.5">
+      <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-2xs text-muted-foreground">
+        <span className="font-medium text-foreground">{thing.author ?? "someone"}</span>
+        <span title={when(openedAt)}>opened this {fmtAgo(openedAt)}</span>
+        {thing.updatedAt > openedAt && <span>· updated {fmtAgo(thing.updatedAt)}</span>}
+        {thing.assignees.length > 0 && (
+          <span className="inline-flex items-center gap-0.5 text-foreground" title={`Assigned to ${thing.assignees.join(", ")}`}>
+            <UserIcon className="size-2.5" />
+            {thing.assignees.join(", ")}
+          </span>
+        )}
+      </p>
+
+      {/* THE BRANCH PAIR AND THE DIFFSTAT ON ONE LINE. Two facts about the same
+          thing — what this changes and where it goes — and separating them cost
+          a whole row each for six words. */}
+      {pull && (
+        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-3xs text-muted-foreground">
+          <span className="text-foreground">{pull.headRefName ?? "?"}</span>
+          <span aria-hidden>→</span>
+          <span className="text-foreground">{pull.baseRefName ?? "?"}</span>
+          <span className="tabular-nums">
+            <span className="text-success">+{pull.additions.toLocaleString("en-US")}</span>{" "}
+            <span className="text-destructive">−{pull.deletions.toLocaleString("en-US")}</span>{" "}
+            <span>
+              in {pull.changedFiles.toLocaleString("en-US")} {pull.changedFiles === 1 ? "file" : "files"}
+            </span>
+          </span>
+          {/* The one badge worth the width on a session's panel: this pull
+              request is FOR THE BRANCH THIS SESSION IS ON. */}
+          {mine && (
+            <Badge variant="secondary" className="px-1 py-0 font-sans text-4xs font-normal">
+              this session
+            </Badge>
+          )}
+        </p>
+      )}
+
+      {pull?.mergedAt && (
+        <p className="flex items-center gap-1 text-2xs text-success">
+          <GitMergeIcon className="size-3" />
+          Merged{pull.mergedBy ? ` by ${pull.mergedBy}` : ""} <span title={when(pull.mergedAt)}>{fmtAgo(pull.mergedAt)}</span>
+        </p>
+      )}
+
+      {/**
+       * THE CHIPS LINE, DRAWN EVEN WHEN IT IS EMPTY. Labels, then the milestone, then
+       * the boards — the same order and the same shapes the list row uses.
+       *
+       * IT USED TO VANISH, and that is why a bare issue looked broken rather than
+       * bare. An unlabelled issue and an issue whose labels failed to arrive rendered
+       * identically: as nothing at all. "No labels" is a fact about the issue; an
+       * absent row is a fact about the renderer, and a reader cannot tell which one
+       * they are looking at. This is deliberately the whole of the fix — §5 rules out
+       * the sidebar that would otherwise hold this, on the grounds that at panel width
+       * it spends 250px on metadata that is usually empty.
+       */}
+      <div className="flex flex-wrap items-center gap-1">
+        {thing.labels.length === 0 ? (
+          <span className="text-3xs text-muted-foreground">No labels</span>
+        ) : (
+          thing.labels.map((label) => (
+            <Badge key={label.name} variant="outline" className="px-1 py-0 text-4xs font-normal">
+              {label.name}
+            </Badge>
+          ))
+        )}
+        {thing.milestone && (
+          <Badge variant="outline" className="gap-0.5 px-1 py-0 text-4xs font-normal" title={`Milestone ${thing.milestone}`}>
+            <MilestoneIcon className="size-2.5" />
+            {thing.milestone}
+          </Badge>
+        )}
+        {/* Absent rather than empty when there are none, and the LIST surface is
+            where the "no read:project scope" sentence lives — a detail view has
+            no way to tell an unscoped token from an unplaced issue. */}
+        {thing.projects.map((project) => (
+          <Badge key={project} variant="secondary" className="gap-0.5 px-1 py-0 text-4xs font-normal" title={`On the ${project} board`}>
+            <SquareKanbanIcon className="size-2.5" />
+            {project}
+          </Badge>
+        ))}
+      </div>
     </div>
   );
 }
@@ -903,105 +1089,35 @@ export function ForgeDetailSurface({
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {/**
-         * THE FACTS, IN THE SAME GRAMMAR AS A LIST ROW.
-         *
-         * This was four stacked icon rows in four shades of grey, each a sentence,
-         * which is why the top of the panel read as a blob. The list row's shape —
-         * one line of facts, then one line of chips — is the shape that works at
-         * this width, and using it twice means clicking a row does not change the
-         * language it was described in.
-         */}
-        <div className="flex flex-col gap-1.5 px-3 py-2.5">
-          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-2xs text-muted-foreground">
-            <span className="font-medium text-foreground">{thing.author ?? "someone"}</span>
-            <span title={when(openedAt)}>opened this {fmtAgo(openedAt)}</span>
-            {thing.updatedAt > openedAt && <span>· updated {fmtAgo(thing.updatedAt)}</span>}
-            {thing.assignees.length > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-foreground" title={`Assigned to ${thing.assignees.join(", ")}`}>
-                <UserIcon className="size-2.5" />
-                {thing.assignees.join(", ")}
-              </span>
-            )}
-          </p>
-
-          {/* THE BRANCH PAIR AND THE DIFFSTAT ON ONE LINE. Two facts about the same
-              thing — what this changes and where it goes — and separating them cost
-              a whole row each for six words. */}
-          {pull && (
-            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-3xs text-muted-foreground">
-              <span className="text-foreground">{pull.headRefName ?? "?"}</span>
-              <span aria-hidden>→</span>
-              <span className="text-foreground">{pull.baseRefName ?? "?"}</span>
-              <span className="tabular-nums">
-                <span className="text-success">+{pull.additions.toLocaleString("en-US")}</span>{" "}
-                <span className="text-destructive">−{pull.deletions.toLocaleString("en-US")}</span>{" "}
-                <span>
-                  in {pull.changedFiles.toLocaleString("en-US")} {pull.changedFiles === 1 ? "file" : "files"}
-                </span>
-              </span>
-              {/* The one badge worth the width on a session's panel: this pull
-                  request is FOR THE BRANCH THIS SESSION IS ON. */}
-              {mine && (
-                <Badge variant="secondary" className="px-1 py-0 font-sans text-4xs font-normal">
-                  this session
-                </Badge>
-              )}
-            </p>
-          )}
-
-          {pull?.mergedAt && (
-            <p className="flex items-center gap-1 text-2xs text-success">
-              <GitMergeIcon className="size-3" />
-              Merged{pull.mergedBy ? ` by ${pull.mergedBy}` : ""} <span title={when(pull.mergedAt)}>{fmtAgo(pull.mergedAt)}</span>
-            </p>
-          )}
-
-          {/* THE CHIPS LINE. Labels, then the milestone, then the boards — the same
-              order and the same shapes the list row uses. Absent when there are
-              none, rather than an empty strip. */}
-          {(thing.labels.length > 0 || thing.milestone || thing.projects.length > 0) && (
-            <div className="flex flex-wrap items-center gap-1">
-              {thing.labels.map((label) => (
-                <Badge key={label.name} variant="outline" className="px-1 py-0 text-4xs font-normal">
-                  {label.name}
-                </Badge>
-              ))}
-              {thing.milestone && (
-                <Badge variant="outline" className="gap-0.5 px-1 py-0 text-4xs font-normal" title={`Milestone ${thing.milestone}`}>
-                  <MilestoneIcon className="size-2.5" />
-                  {thing.milestone}
-                </Badge>
-              )}
-              {/* Absent rather than empty when there are none, and the LIST surface is
-                  where the "no read:project scope" sentence lives — a detail view has
-                  no way to tell an unscoped token from an unplaced issue. */}
-              {thing.projects.map((project) => (
-                <Badge key={project} variant="secondary" className="gap-0.5 px-1 py-0 text-4xs font-normal" title={`On the ${project} board`}>
-                  <SquareKanbanIcon className="size-2.5" />
-                  {project}
-                </Badge>
-              ))}
-            </div>
-          )}
-        </div>
+        <ForgeFacts thing={thing} {...(pull ? { pull } : {})} mine={mine} />
 
         {/**
          * THE BODY IS THE FIRST CARD, not a bare block above the conversation.
          *
          * It is the first thing somebody said, and drawing it as unattributed prose
          * made the whole surface read as a document with comments stapled underneath.
-         * As a card with an author bar it is the opening of a thread, which is what it
-         * is.
+         * As a card it is the opening of a thread, which is what it is — and it is the
+         * one card with no author bar, because the line directly above it already
+         * named the author and the hour.
          */}
         <div className="border-t border-border px-3 py-2.5">
           <EntryCard entry={timeline[0]!} />
         </div>
 
-        {/* CHECKS BEFORE THE CONVERSATION, because they are status rather than
-            something anybody said — and status is what you came to look at. */}
-        {pull && <ChecksBlock checks={pull.checks} projectId={projectId} />}
         <Timeline entries={timeline} older={thing.olderComments} />
+
+        {/**
+         * CHECKS AT THE BOTTOM, AGAINST THE MERGE.
+         *
+         * They used to sit between the body and the replies, which put 11px of grey
+         * status through the middle of a conversation — and a check is not something
+         * anybody said. github.com keeps them at the foot of the thread beside the
+         * merge button, and the reason is not habit: "is CI green" is a question you
+         * ask while deciding whether to merge, not while reading what somebody wrote.
+         * Here that also gives the merge footer a block above it to sit against
+         * rather than floating over the end of the last comment.
+         */}
+        {pull && <ChecksBlock checks={pull.checks} projectId={projectId} />}
       </div>
 
       {pull && <MergeFooter pull={pull} projectId={projectId} onMerged={setPull} onReread={refresh} />}

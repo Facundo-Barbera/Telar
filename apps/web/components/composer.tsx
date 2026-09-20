@@ -21,12 +21,14 @@
  * see is indistinguishable from a keystroke that did nothing.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   CircleCheckIcon,
   CornerDownLeftIcon,
   EraserIcon,
   FoldVerticalIcon,
+  HardDriveIcon,
   ImageIcon,
   LayersIcon,
   MonitorIcon,
@@ -37,7 +39,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import type { EngineRequest, ProviderDriverKind, ProviderSkills, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import type { ClaudeConversation, EngineRequest, ProjectAvailability, ProviderDriverKind, ProviderSkills, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import {
   advance as advanceQuestion,
   buildAnswers,
@@ -64,7 +66,9 @@ import {
   useComposerCommandChoices,
 } from "./composer-controls";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
+import { markComposerActive, registerComposer, type ComposerKind, type ComposerSubmit } from "@/lib/composer-registry";
 import { ComposerMenu } from "./composer-menu";
+import { DictationButton } from "./dictation-button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
 import {
@@ -80,14 +84,17 @@ import {
 } from "@/lib/composer-completions";
 import { rankNotes, useProjectNotes } from "@/lib/project-notes";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
-import { appendPrompt, mergeAttachments, splitImages, type StashEntry, type StashedImage } from "@/lib/prompt-stash";
+import { useComposerDictation } from "@/lib/dictation/use-composer-dictation";
+import { appendPrompt, mergeAttachments, splitImages, type StashedImage } from "@/lib/prompt-stash";
+import type { ShelfRow } from "@/lib/prompt-shelf";
 import { encodeImagesForStash, filesFromStash } from "@/lib/stash-images";
-import { usePromptStash } from "@/lib/use-prompt-stash";
+import { usePromptShelf } from "@/lib/use-prompt-shelf";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { fmtTokens } from "@/lib/format";
 import { createEngineApi } from "@/lib/engine/client";
 import { FreshGreeting } from "./session/fresh-greeting";
+import { ResumePicker, ResumePickerTrigger } from "./session/resume-picker";
 import { WorkspaceEnvironment } from "./workspace-environment";
 import { cn } from "@/lib/utils";
 
@@ -98,8 +105,13 @@ const api = createEngineApi();
 
 /** The contract's own ceiling (`TurnSubmission.attachments`). Enforced here so
  *  the seventeenth file is refused at the point of picking rather than at the
- *  end of a submit that also uploaded the first sixteen. */
-const MAX_ATTACHMENTS = 16;
+ *  end of a submit that also uploaded the first sixteen.
+ *
+ *  EXPORTED because attachments no longer arrive only through this box: the
+ *  browser's camera (#474) hands one straight to the cockpit's list, and a
+ *  second ceiling that disagreed with this one would be a limit enforced in
+ *  two places and true in neither. */
+export const MAX_ATTACHMENTS = 16;
 
 
 /**
@@ -123,13 +135,11 @@ function activeDriverOf(session: Session | undefined, driver: ProviderDriverKind
   return session?.driver ?? driver ?? "claude";
 }
 
-function placeholderFor(ready: boolean, busy: boolean, placeholder?: string): string {
+function placeholderFor(ready: boolean, busy: boolean): string {
   if (!ready) return "Waiting for the session…";
   // A message mid-turn reaches the running agent; say so.
   if (busy) return "Enter sends into the running turn…";
-  // A CALLER MAY NAME ITS OWN. The default offers to "explore the project",
-  // which the Spool's front door does not have one of.
-  return placeholder ?? "Ask for changes, or explore the project…";
+  return "Ask for changes, or explore the project…";
 }
 
 /**
@@ -398,6 +408,7 @@ function ComposerBanner({
 export function Composer({
   draft,
   ready,
+  kind = "session",
   attachments,
   onAttach,
   fresh = false,
@@ -407,11 +418,13 @@ export function Composer({
   onEnvMode,
   pendingBase,
   onBase,
+  onAdopt,
   pendingModel,
   busy,
   sending,
   runtimeMode,
   session,
+  controls,
   projectId,
   projectName,
   usage,
@@ -424,7 +437,6 @@ export function Composer({
   onStopBackground,
   onRuntimeMode,
   onResumeAfterRateLimit,
-  placeholder,
   onModelChange,
   onOpenChanges,
   onCompact,
@@ -435,6 +447,17 @@ export function Composer({
 }: {
   draft: string;
   ready: boolean;
+  /**
+   * WHICH OF THE TWO MESSAGE BOXES THIS IS (#548).
+   *
+   * The Agent screen renders this same component, and until now nothing on the
+   * page said which one you were looking at. It names the editable root — `id`
+   * and `data-composer` — and it is what the page API reports to an external
+   * client that has to choose before it speaks into one. Not derived from
+   * `session` or `controls`: a composer's identity should not be a side effect
+   * of which props a caller happened to pass.
+   */
+  kind?: ComposerKind;
   /** Files picked but not yet sent. Owned by the cockpit because sending them
    *  is: they are uploaded as part of the same submit that creates the session. */
   attachments: File[];
@@ -451,6 +474,16 @@ export function Composer({
   /** The base-ref picker's create-time choice — worktree only. */
   pendingBase?: { baseRef?: string; branchName?: string };
   onBase?: (next: { baseRef?: string; branchName?: string }) => void;
+  /**
+   * BRING AN EXISTING CLAUDE CODE CONVERSATION IN INSTEAD OF STARTING ONE
+   * (#616). Given, the empty composer offers it under the greeting; absent,
+   * nothing is drawn — which is every case but a fresh Claude canvas.
+   *
+   * THE CALLER ADOPTS. It creates the session and hands the conversation to the
+   * engine; this component only chooses which one, because the session that
+   * receives it is the caller's to mint.
+   */
+  onAdopt?: (conversation: ClaudeConversation) => Promise<void>;
   /** The provider knobs the first message will create the session with, while
    *  fresh. Same shape as `session.model` minus the instance, which the engine
    *  stamps. */
@@ -461,11 +494,19 @@ export function Composer({
   runtimeMode?: RuntimeMode;
   session?: Session;
   /**
+   * THE CALLER'S OWN CONTROL PILLS, INSTEAD OF THIS COMPOSER'S (#539).
+   *
+   * One caller passes them: the Agent screen, whose three settings are the same
+   * three questions but none of the same sources — no provider catalogue, no
+   * per-model effort list, no session runtime mode. Given, the pills below are
+   * not rendered at all; absent, nothing changes for anybody.
+   */
+  controls?: React.ReactNode;
+  /**
    * ABSENT MEANS THIS CONVERSATION HAS NO PROJECT, and that is a positive
    * statement rather than a missing value — see `Session.projectId`'s own note.
-   * The Spool's master chat is the one that has none: it answers ACROSS
-   * projects, so a project here would scope it to the single thing it must not
-   * be.
+   * A project-less conversation answers ACROSS projects, so a project here
+   * would scope it to the single thing it must not be.
    *
    * THREE OF THIS COMPONENT'S FOUR USES OF IT ARE THINGS A PROJECT-LESS CHAT
    * DOES NOT WANT — the git environment strip, the project greeting, and
@@ -515,14 +556,21 @@ export function Composer({
   onResumeAfterRateLimit?: (next: boolean) => void;
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
-  /** What the input invites. The default offers to "explore the project",
-   *  which is wrong on the Spool's front door — it has no project. */
-  placeholder?: string;
   onModelChange?: (next: ModelChoice) => void;
   /** Opens the right panel on the file-changes surface. */
   onOpenChanges?: () => void;
 }) {
   const [armedRaw, setEscArmed] = useState(false);
+  /**
+   * THE PROJECT'S DISK, WHEN IT IS NOT READABLE — issue #534.
+   *
+   * Reported UP by the environment strip in this component's own foot rather
+   * than polled here: that strip already reads `projectGit` on a timer for the
+   * branch and the dirty count, and the engine stamps its availability probe on
+   * that answer. A second poll for the same fact would be a second opinion
+   * about a cable as well as a second request.
+   */
+  const [driveAway, setDriveAway] = useState<Exclude<ProjectAvailability, "available">>();
   const armedAt = useRef<number>(0);
   const editor = useRef<ComposerEditorHandle>(null);
   /**
@@ -571,15 +619,148 @@ export function Composer({
   const setQd = (next: QuestionDraft) => question && setQState({ requestId: question.id, draft: next });
   const qActiveKey = qFields[qd.index]?.key;
 
-  const advanceOrSubmitQuestion = () => {
-    if (!question || !onAnswerQuestion || !canAdvance(qFields, qd)) return;
+  /** WHAT THE BOX ACTUALLY HOLDS — the question's custom answer while one is on
+   *  screen, the draft otherwise. One expression, because the editor's value,
+   *  the registry's reading of it and the page API's answer must be the same
+   *  string or an external client is told about a draft nobody can see. */
+  const boxText = questionActive && qActiveKey !== undefined ? (qd.custom[qActiveKey] ?? "") : draft;
+
+  /** True when the form moved on — advanced to the next field, or answered. */
+  const advanceOrSubmitQuestion = (): boolean => {
+    if (!question || !onAnswerQuestion || !canAdvance(qFields, qd)) return false;
     if (!isLastQuestion(qFields, qd)) {
       setQd(advanceQuestion(qd));
-      return;
+      return true;
     }
     const answers = buildAnswers(qFields, qd);
-    if (answers) onAnswerQuestion(question.id, answers);
+    if (!answers) return false;
+    onAnswerQuestion(question.id, answers);
+    return true;
   };
+
+  /**
+   * THE ONE GATE EVERY SEND PASSES THROUGH (#548).
+   *
+   * Enter, ⌘↵, the send button and now `window.telar.submit()` all end here.
+   * The first three used to carry their own copy of `draft.trim() && ready &&
+   * !driveAway`, and a caller arriving from OUTSIDE the app is exactly how a
+   * fourth copy — the one that forgets `driveAway`, or forgets that a question
+   * changes what Enter means — comes to be written.
+   *
+   * IT ANSWERS IN SENTENCES because the external caller cannot see the screen:
+   * a `false` tells a dictation client nothing it can say out loud.
+   */
+  const advance = useRef(advanceOrSubmitQuestion);
+  useLayoutEffect(() => {
+    advance.current = advanceOrSubmitQuestion;
+  });
+
+  const trySubmit = useCallback((): ComposerSubmit => {
+    // A QUESTION ON SCREEN CHANGES WHAT SENDING MEANS: the box is that
+    // question's custom answer, so Enter advances or answers the form.
+    if (questionActive) {
+      return advance.current() ? { ok: true } : { ok: false, reason: "The open question has no answer to send yet." };
+    }
+    if (!ready) return { ok: false, reason: "This conversation is not ready yet." };
+    if (driveAway) return { ok: false, reason: "The project's files are not reachable right now." };
+    if (!draft.trim()) return { ok: false, reason: "There is nothing to send." };
+    onSubmit();
+    return { ok: true };
+  }, [questionActive, ready, driveAway, draft, onSubmit]);
+
+  /* ---------------------------------------------------------------- *
+   * THE PAGE API'S SIDE OF THE COMPOSER (#548) — see lib/page-api.ts.
+   * ---------------------------------------------------------------- */
+
+  /** The DOM id of the editable root. `turn-prompt` is the session composer's
+   *  and stays: it is in the app's own label, and external clients already
+   *  reach for it. */
+  const editorId = kind === "agent" ? "agent-prompt" : "turn-prompt";
+  /** Registered under React's own instance key rather than the DOM id, so a
+   *  second composer of the same kind is a duplicate-id bug and not also an
+   *  unregistration of the first. */
+  const token = useId();
+  /**
+   * WHAT THIS COMPOSER HOLDS RIGHT NOW, readable from a call that arrived from
+   * outside React. Same reason as `latest` below: the entry is registered once
+   * and would otherwise answer with the mount's props forever.
+   *
+   * A LAYOUT EFFECT, NOT A PASSIVE ONE, and the difference is load-bearing:
+   * `dictate(text, { submit: true })` inserts and sends in one breath, and the
+   * send has to see the draft the insert just committed. Layout effects run
+   * inside the commit `flushSync` forces below; a passive effect would leave
+   * this holding the previous draft for exactly the moment that matters.
+   */
+  const live = useRef({ text: boxText, ready, submit: trySubmit });
+  useLayoutEffect(() => {
+    live.current = { text: boxText, ready, submit: trySubmit };
+  });
+
+  useEffect(
+    () =>
+      registerComposer(token, {
+        id: editorId,
+        kind,
+        draft: () => live.current.text,
+        focused: () => editor.current?.focused() ?? false,
+        insert: (text) => {
+          // THE SAME REFUSAL THE SCREEN SHOWS: `disabled={!ready}` on the editor
+          // means a person cannot type here either.
+          if (!live.current.ready) return { ok: false, reason: "This conversation is not ready yet." };
+          const box = editor.current;
+          if (!box) return { ok: false, reason: "The message box is not on screen." };
+          /**
+           * FLUSHED, NOT SCHEDULED. A keystroke and the Enter that follows it
+           * are two events with a render in between; `dictate(…, { submit:
+           * true })` is one call, and the send reads the draft out of REACT
+           * state — the cockpit's `onSubmit` sends what its own `draft` holds.
+           * Without the synchronous commit, a dictated sentence would be
+           * submitted as whatever was in the box before it, which is the one
+           * outcome a dictation client cannot notice or explain.
+           */
+          let draft = "";
+          flushSync(() => {
+            draft = box.insertAtCaret(text);
+          });
+          return { ok: true, draft };
+        },
+        /**
+         * THE SAME WRITE, BY OFFSETS — how a live dictation revises the words
+         * it has not finalised yet (#544). Flushed for `insert`'s reason: the
+         * caller is outside React and reads the committed draft back
+         * synchronously to know where its own span now ends.
+         */
+        replace: (start, end, text) => {
+          if (!live.current.ready) return { ok: false, reason: "This conversation is not ready yet." };
+          const box = editor.current;
+          if (!box) return { ok: false, reason: "The message box is not on screen." };
+          let draft = "";
+          flushSync(() => {
+            draft = box.replaceRange(start, end, text);
+          });
+          return { ok: true, draft };
+        },
+        /**
+         * PURELY A DRAWING (#561), which is why it has no readiness guard and
+         * no refusal to return: it changes how the draft LOOKS and never what
+         * it says. A box that is not ready cannot be written into, so a
+         * dictation never gets far enough to mark one.
+         */
+        dictating: (state) => editor.current?.dictating(state),
+        caretRect: () => editor.current?.caretRect(),
+        submit: () => live.current.submit(),
+      }),
+    [token, editorId, kind],
+  );
+
+  /**
+   * THE DICTATION THIS BOX HAS, held HERE rather than inside the mic button
+   * (#588) — because ⌘D is a second way to press the same toggle, and a command
+   * handler holding its own `useDictation` would be a second microphone over
+   * one composer. The button below draws this; the chord reaches it through the
+   * registry, keyed by the same `token` the composer registry uses.
+   */
+  const dictation = useComposerDictation(token);
 
   useEffect(() => {
     if (!escArmed) return;
@@ -618,13 +799,21 @@ export function Composer({
    * THE STASH — ⌘S sets this box aside; any composer can pull it back.
    * ---------------------------------------------------------------- */
 
-  const stash = usePromptStash();
+  /**
+   * TWO STORES, ONE HANDLE. The ⌘S queue lives in `localStorage` because it
+   * carries images; an agent's drafts live in the engine because a worker wrote
+   * them. `use-prompt-shelf.ts` is the only place that knows there are two —
+   * everything below this line sees one list of rows.
+   */
+  const shelf = usePromptShelf(projectId, session?.id);
   const [stashOpen, setStashOpen] = useState(false);
   const [stashActive, setStashActive] = useState(0);
   const [stashing, setStashing] = useState(false);
   /** The one thing that went wrong, said in place. There is no toast in this
    *  app and that is deliberate — see file-view-surface.tsx. */
   const [note, setNote] = useState<string>();
+  /** The Claude Code conversation picker is open (#616). */
+  const [resuming, setResuming] = useState(false);
   /**
    * WHAT THE BOX HOLDS RIGHT NOW, readable from inside an await.
    *
@@ -674,7 +863,7 @@ export function Composer({
       }
     }
 
-    const ok = stash.stash({ id: crypto.randomUUID(), at: Date.now(), prompt: text, images: encoded.images });
+    const ok = shelf.stash({ id: crypto.randomUUID(), at: Date.now(), prompt: text, images: encoded.images });
     if (!ok) {
       setNote("There was no room to stash this. Nothing was taken from the box.");
       return;
@@ -687,12 +876,12 @@ export function Composer({
     // its own explanation, which is why there is no message for it.
     onAttach([...rest, ...encoded.kept]);
     setStashOpen(false);
-  }, [draft, attachments, stash, onDraftChange, onAttach]);
+  }, [draft, attachments, shelf, onDraftChange, onAttach]);
 
   const doRestore = useCallback(
-    (entry: StashEntry) => {
+    (row: ShelfRow) => {
       const room = Math.max(0, MAX_ATTACHMENTS - attachments.length);
-      const taken = stash.take(entry.id, room);
+      const taken = shelf.take(row, room);
       // Gone — the other window took it between the paint and the click. Also
       // the guard that stops a click and an Enter landing on the same row.
       if (!taken) return;
@@ -704,7 +893,7 @@ export function Composer({
         /**
          * A HOST THAT TAKES NO ATTACHMENTS.
          *
-         * The Spool's master chat passes a stub `onAttach` and an always-empty
+         * Such a host passes a stub `onAttach` and an always-empty
          * list, and nothing in the props tells it apart from a real one. The
          * only honest test is to hand the files over and then look: if the box
          * is not holding more than it was, they never arrived, and they go back
@@ -720,7 +909,7 @@ export function Composer({
         const images = taken.images;
         window.setTimeout(() => {
           if (held.current.length > before) return;
-          stash.put(images, crypto.randomUUID(), Date.now());
+          shelf.put(images, crypto.randomUUID(), Date.now());
           setNote("This chat cannot hold images — they are back in the stash.");
         }, 0);
       }
@@ -733,7 +922,7 @@ export function Composer({
       // repaint (which is what usually restores the caret) never runs.
       editor.current?.focus();
     },
-    [attachments, stash, draft, onDraftChange, onAttach],
+    [attachments, shelf, draft, onDraftChange, onAttach],
   );
 
   const sessionId = session?.id;
@@ -793,22 +982,29 @@ export function Composer({
   }, [trigger?.kind, paths, reading, checkout, sessionId, projectId]);
 
   /**
-   * READ ON THE FIRST `$` OR `/`, AND ONLY ON A SESSION THAT EXISTS.
+   * READ ON THE FIRST `$` OR `/`, FROM THE SESSION WHEN THERE IS ONE AND THE
+   * PROJECT WHEN THERE IS NOT.
    *
    * Same rule as the path listing above and the same reason: the engine may
    * have to ask the harness itself, which is a subprocess, and most messages
-   * contain neither sigil. A CANVAS ASKS NOTHING — there is no session to ask
-   * about yet, and the skills of a session that does not exist is not a
-   * question with an answer.
+   * contain neither sigil.
+   *
+   * A CANVAS USED TO ASK NOTHING, and that was #500 — `$` in a new session drew
+   * an empty menu until after the first turn, because the only endpoint was per
+   * session and a session that does not exist has no skills. But the PROJECT
+   * has them: its checkout is the one the new session will run in or copy, and
+   * its `.claude` is already on disk. So a canvas asks about the project, with
+   * the driver the canvas is currently offering — the answer depends on which
+   * harness is about to listen, and nothing has recorded that choice yet.
    */
   useEffect(() => {
     if (trigger?.kind !== "skill" && trigger?.kind !== "command") return;
-    if (skills || readingSkills || !sessionId) return;
+    if (skills || readingSkills || (!sessionId && !projectId)) return;
     const task = window.setTimeout(() => {
       setReadingSkills(true);
       void (async () => {
         try {
-          setSkillCache({ checkout, value: (await api.sessionSkills(sessionId)) });
+          setSkillCache({ checkout, value: sessionId ? await api.sessionSkills(sessionId) : await api.projectSkills(projectId!, menuDriver) });
         } catch {
           // Two empty lists read as "this provider offers none", which is the
           // honest answer when the engine could not be asked — and is what a
@@ -820,7 +1016,7 @@ export function Composer({
       })();
     }, 0);
     return () => window.clearTimeout(task);
-  }, [trigger?.kind, skills, readingSkills, checkout, sessionId]);
+  }, [trigger?.kind, skills, readingSkills, checkout, sessionId, projectId, menuDriver]);
 
   const completions = useMemo<Completion[]>(() => {
     if (!trigger || dismissed) return [];
@@ -973,20 +1169,20 @@ export function Composer({
           // Returned so Escape never also abandons a recall or arms the stop.
           return;
         }
-        if (stash.entries.length > 0) {
+        if (shelf.rows.length > 0) {
           if (event.key === "ArrowDown") {
             event.preventDefault();
-            setStashActive((index) => (index + 1) % stash.entries.length);
+            setStashActive((index) => (index + 1) % shelf.rows.length);
             return;
           }
           if (event.key === "ArrowUp") {
             event.preventDefault();
-            setStashActive((index) => (index - 1 + stash.entries.length) % stash.entries.length);
+            setStashActive((index) => (index - 1 + shelf.rows.length) % shelf.rows.length);
             return;
           }
           if (event.key === "Enter") {
             event.preventDefault();
-            const picked = stash.entries[Math.min(stashActive, stash.entries.length - 1)];
+            const picked = shelf.rows[Math.min(stashActive, shelf.rows.length - 1)];
             if (picked) doRestore(picked);
             return;
           }
@@ -995,9 +1191,9 @@ export function Composer({
           // deliberately saved, that is one twitch away from unrecoverable.
           if (event.key === "Backspace" && (event.metaKey || event.ctrlKey)) {
             event.preventDefault();
-            const picked = stash.entries[Math.min(stashActive, stash.entries.length - 1)];
-            if (picked) stash.drop(picked.id);
-            setStashActive((index) => Math.max(0, Math.min(index, stash.entries.length - 2)));
+            const picked = shelf.rows[Math.min(stashActive, shelf.rows.length - 1)];
+            if (picked) shelf.drop(picked);
+            setStashActive((index) => Math.max(0, Math.min(index, shelf.rows.length - 2)));
             return;
           }
         }
@@ -1039,13 +1235,13 @@ export function Composer({
       if (questionActive) {
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
-          advanceOrSubmitQuestion();
+          trySubmit();
         }
         return;
       }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (draft.trim() && ready) onSubmit();
+        trySubmit();
         return;
       }
       if (event.key === "Escape" && busy) {
@@ -1062,24 +1258,21 @@ export function Composer({
       // Any other key disarms — the human moved on.
       if (escArmed) setEscArmed(false);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- advanceOrSubmitQuestion is rebuilt per render by design; questionActive covers its liveness
+    // No `ready`, `onSubmit` or the question draft here any more: every send
+    // this handler can reach goes through `trySubmit`, which carries them.
     [
       draft,
-      ready,
       busy,
       escArmed,
-      onDraftChange,
-      onSubmit,
+      trySubmit,
       onStop,
       menuOpen,
       completions,
       active,
       apply,
       questionActive,
-      qd,
-      question,
       attachments,
-      stash,
+      shelf,
       stashOpen,
       stashActive,
       stashing,
@@ -1103,11 +1296,7 @@ export function Composer({
   useCommandHandlers({
     "focus-composer": () => editor.current?.focus(),
     send: () => {
-      if (questionActive) {
-        advanceOrSubmitQuestion();
-        return;
-      }
-      if (draft.trim() && ready) onSubmit();
+      trySubmit();
     },
     // No arming here, unlike Escape: ⌘. is not a key anybody presses by accident
     // mid-sentence, which is the whole reason Escape needs two presses.
@@ -1230,6 +1419,23 @@ export function Composer({
         <FreshGreeting projectId={projectId} {...(projectName ? { projectName } : {})} />
       )}
 
+      {/* THE OTHER WAY TO START: bring in a conversation that already exists
+          (#616). Under the greeting rather than beside the Send button, because
+          it is an alternative to typing the first message rather than an action
+          on one — and it disappears the moment there is a session, like the
+          greeting it sits under. */}
+      {fresh && onAdopt && (
+        <>
+          <ResumePickerTrigger onOpen={() => setResuming(true)} />
+          <ResumePicker
+            open={resuming}
+            onOpenChange={setResuming}
+            onPick={onAdopt}
+            {...(session?.providerInstanceId ? { instanceId: session.providerInstanceId } : {})}
+          />
+        </>
+      )}
+
       <BackgroundPresence count={backgroundTasks} onStop={onStopBackground} />
 
       {/* WHY IT DID NOT HAPPEN, above the box rather than in a toast — the
@@ -1290,11 +1496,7 @@ export function Composer({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (questionActive) {
-            advanceOrSubmitQuestion();
-            return;
-          }
-          if (draft.trim() && ready) onSubmit();
+          trySubmit();
         }}
       >
         {/* A TRANSLUCENT, BLURRED SURFACE — not a flat panel. The transcript
@@ -1312,11 +1514,12 @@ export function Composer({
             would stack them the day the invariant above ever slipped. */}
         {stashOpen ? (
           <ComposerStashMenu
-            entries={stash.entries}
-            active={Math.min(stashActive, Math.max(0, stash.entries.length - 1))}
+            agents={shelf.agents}
+            yours={shelf.yours}
+            active={Math.min(stashActive, Math.max(0, shelf.rows.length - 1))}
             onActive={setStashActive}
             onPick={doRestore}
-            onDrop={(entry) => stash.drop(entry.id)}
+            onDrop={(row) => shelf.drop(row)}
           />
         ) : menuOpen && trigger ? (
           <ComposerMenu
@@ -1399,7 +1602,7 @@ export function Composer({
               </span>
             </div>
           )}
-          <label className="sr-only" htmlFor="turn-prompt">
+          <label className="sr-only" htmlFor={editorId}>
             Message
           </label>
           {/* IN QUESTION MODE THE EDITOR IS THE CUSTOM-ANSWER FIELD: its value
@@ -1433,12 +1636,13 @@ export function Composer({
           >
           <ComposerEditor
             ref={editor}
-            id="turn-prompt"
-            value={questionActive && qActiveKey !== undefined ? (qd.custom[qActiveKey] ?? "") : draft}
+            id={editorId}
+            data-composer={kind}
+            value={boxText}
             placeholder={
               questionActive
                 ? "Type your own answer, or leave blank…"
-                : placeholderFor(ready, busy, placeholder)
+                : placeholderFor(ready, busy)
             }
             // NOT disabled while busy. That is the whole point.
             disabled={!ready}
@@ -1464,6 +1668,9 @@ export function Composer({
             onSelectionChange={() => !questionActive && retrigger(draft)}
             onKeyDown={onKeyDown}
             onPasteFiles={addFiles}
+            // THE CARET ARRIVING IS THE WHOLE OF "ACTIVE" — see
+            // lib/composer-registry.ts.
+            onFocus={() => markComposerActive(token)}
           />
           </div>
           {attachments.length > 0 && (
@@ -1493,6 +1700,23 @@ export function Composer({
                   the row's shape is the one it will keep. */}
               <AddContextMenu onPick={addFiles} />
               {/**
+               * THE MIC (#544), and mounting it HERE is what puts it on both
+               * composers at once: the Agent screen renders this same
+               * component with `kind="agent"`, so one button cannot drift into
+               * two. It inserts through `window.telar.dictate`, which is the
+               * same door the headset already speaks through (#548) — the
+               * registry is what decides which box that is, not this row.
+               *
+               * IN THE LEFT CLUSTER because that cluster is already "things
+               * that go into this message". The right one is send and turn
+               * status, where a recording indicator would compete with the
+               * send affordance at exactly the moment both matter.
+               *
+               * THE MACHINE IS NOT IN HERE ANY MORE (#588) — it is `dictation`
+               * above, so ⌘D presses the same toggle this button does.
+               */}
+              <DictationButton dictation={dictation} />
+              {/**
                * THE STASH COUNT, and it is not rendered at all while the stash
                * is empty. A "0" is chrome advertising a feature you have not
                * used, and — the harder constraint — `InputGroup` carries
@@ -1504,13 +1728,16 @@ export function Composer({
                * "things that go into this message"; the right one is send and
                * turn status, where a count competes with the send affordance.
                */}
-              {(stash.entries.length > 0 || stashing) && (
+              {(shelf.rows.length > 0 || stashing) && (
                 <button
                   type="button"
-                  aria-label="Stashed prompts"
+                  // NAMED BY WHAT IS IN IT. A drafted follow-up you never
+                  // stashed sitting under a control labelled "Stashed prompts"
+                  // is the badge telling you it is yours before you open it.
+                  aria-label={shelf.agents.length > 0 ? "Prompts waiting to be sent, including drafts an agent wrote" : "Stashed prompts"}
                   aria-haspopup="listbox"
                   aria-expanded={stashOpen}
-                  title="Stashed prompts (⌘S)"
+                  title={shelf.agents.length > 0 ? "Prompts waiting — an agent drafted one (⌘S)" : "Stashed prompts (⌘S)"}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => {
                     setStashOpen((open) => !open);
@@ -1519,10 +1746,15 @@ export function Composer({
                   className={cn(
                     "flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
                     stashOpen && "bg-accent text-foreground",
+                    // AN UNREAD DRAFT MARKS THE BADGE. The menu is closed when
+                    // an agent writes one, so without this the only thing that
+                    // changed is a number — and a follow-up nobody notices is
+                    // the tool having done nothing at all.
+                    !stashOpen && shelf.agents.length > 0 && "text-primary",
                   )}
                 >
                   <LayersIcon className="size-4" />
-                  {stashing ? <Spinner /> : <span className="text-xs tabular-nums">{stash.entries.length}</span>}
+                  {stashing ? <Spinner /> : <span className="text-xs tabular-nums">{shelf.rows.length}</span>}
                 </button>
               )}
               {/**
@@ -1541,7 +1773,19 @@ export function Composer({
                * the access mode without opening anything, which is the point —
                * a menu that is always closed is state you cannot see.
                */}
-              {(session || (fresh && driver)) && (
+              {/**
+               * THE AGENT BRINGS ITS OWN THREE (#539).
+               *
+               * The controls below are gated on a session, and the gate is real
+               * rather than an oversight: they read a provider catalogue, a
+               * per-model effort list and one of the engine's session runtime
+               * modes, and the Agent has none of the three. Rendering the
+               * caller's row here rather than teaching this one about the Agent
+               * keeps `composer.tsx` about sessions and keeps the Agent's pills
+               * next to the state they write.
+               */}
+              {controls}
+              {!controls && (session || (fresh && driver)) && (
                 <>
                   <AgentControl
                     driver={activeDriver}
@@ -1665,9 +1909,33 @@ export function Composer({
           repository. Rendering it empty would be a row of blanks claiming the
           conversation lands somewhere; rendering it at all would be the widening
           this component was careful not to do. */}
+      {/*
+        THE ONE THING THAT STOPS A SEND HERE — issue #534.
+
+        The engine refuses a turn on an unplugged project with this same
+        sentence, so nothing is lost by pressing Send; what is lost is the
+        reader's time, because the refusal arrives after the message has been
+        typed and sent. Saying it above the box, and holding the send, is the
+        difference between a rule and a surprise.
+
+        IT IS NOT A NEW READ. The strip below already polls `projectGit` for
+        this foot, and the engine stamps its probe on that answer — so this
+        costs no request, and it goes quiet by itself when the drive comes back.
+      */}
+      {driveAway && (
+        <p className="mx-3 mt-2 flex items-start gap-2 rounded-xl bg-muted/50 px-3 py-2 text-2xs text-muted-foreground">
+          <HardDriveIcon className="mt-px size-3.5 shrink-0" />
+          <span>
+            {driveAway === "unmounted"
+              ? `The drive holding ${projectName ?? "this project"} is not connected, so nothing can run here yet. Plug it back in — the conversation, its history and its settings are all still here.`
+              : `${projectName ?? "This project"}'s folder is not on this machine any more, so nothing can run here.`}
+          </span>
+        </p>
+      )}
       {projectId && (
       <WorkspaceEnvironment
         projectId={projectId}
+        onAvailability={setDriveAway}
         {...(projectName ? { projectName } : {})}
         {...(session ? { session } : {})}
         {...(envMode ? { envMode } : {})}

@@ -101,19 +101,23 @@ export function computerUseHint(state: ComputerUseState, isCua: boolean): string
  * WHOSE SESSIONS THIS GRANT IS FOR — the row's missing half (#368).
  *
  * The pane measured a macOS permission and never said which providers it was a
- * permission FOR, which every reader took as "all of them". It is not: Codex
- * ships its own computer-use provider, so Telar withholds this one there rather
- * than hand that model two desktops under two names — a Codex session's Grant
- * access does nothing for it. Claude and OpenCode arrive without a desktop and
- * get Telar's.
+ * permission FOR, which every reader took as "all of them". Since #521 that
+ * reading is correct — every provider Telar drives gets Telar's desktop — but
+ * the row still names them, because "all of them" has been the wrong answer
+ * once and a reader cannot tell a promise from an assumption.
  *
- * BADGES, NOT A SENTENCE, and not a second hint: the answer is a LIST of three,
- * the hint slot is the one that changes with the state, and a standing
- * paragraph above a row is the doubling #357 already cut once.
+ * BOTH HALVES STAY even though one is empty today: a provider that arrives
+ * with a desktop of its own is a thing that can exist again, and the row that
+ * silently stopped distinguishing is how #368 happened.
+ *
+ * BADGES, NOT A SENTENCE, and not a second hint: the answer is a LIST, the
+ * hint slot is the one that changes with the state, and a standing paragraph
+ * above a row is the doubling #357 already cut once.
  *
  * READ FROM THE ENGINE'S OWN LIST (`driverTakesComputerUse`), which is what the
- * claim fold uses — so this row cannot promise a provider the engine withholds
- * it from, which is the drift that made the pane wrong in the first place.
+ * claim fold uses — so this row can neither promise a provider the engine
+ * withholds it from nor stay silent about one it supplies. Both directions of
+ * that drift have now been shipped.
  */
 export function ComputerUseProviders() {
   const supplied = DRIVERS.filter(driverTakesComputerUse);

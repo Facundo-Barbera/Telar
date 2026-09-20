@@ -152,6 +152,34 @@ describe("setPanelTabParams", () => {
     // A REPLACE, not a merge — a key nobody could clear would be worse.
     expect(setPanelTabParams(named, "editor", {}).tabs[0]!.params).toEqual({});
   });
+
+  test("a partial write erases the keys it did not mention — which is why the Diff writes its whole tab", () => {
+    /**
+     * THE HAZARD THE REPLACE CREATES, pinned as behaviour rather than left as
+     * a sentence in a comment. The Diff tab carries a filter AND a scope AND a
+     * remembered base (#694, #335); a handler writing one of them would erase
+     * the others, silently, and only for somebody who had touched both.
+     * `diffTabParams` exists so there is one writer for the whole set.
+     */
+    const panel = addPanelTab(emptyPanelTabs<Tab>(), { id: "diff", kind: "diff", params: { scope: "branch", base: "origin/main", filter: "apps/web" } });
+    expect(setPanelTabParams(panel, "diff", { filter: "apps/engine" }).tabs[0]!.params).toEqual({ filter: "apps/engine" });
+  });
+
+  test("two panels on one session keep their own params", () => {
+    /**
+     * WHY THE DIFF'S SCOPE LIVES HERE AT ALL. Each window holds its own
+     * `PanelTabState`, which is what lets one show the working tree while the
+     * other shows a turn — the same property #693 relies on for "one issue
+     * here, another one there" after detail tabs moved inside their list.
+     */
+    const base = addPanelTab(emptyPanelTabs<Tab>(), { id: "diff", kind: "diff", params: {} });
+    const left = setPanelTabParams(base, "diff", { scope: "turn", turn: "run_7" });
+    const right = setPanelTabParams(base, "diff", { scope: "branch", base: "origin/main" });
+    expect(left.tabs[0]!.params).toEqual({ scope: "turn", turn: "run_7" });
+    expect(right.tabs[0]!.params).toEqual({ scope: "branch", base: "origin/main" });
+    // ...and neither write reached the state the other was made from.
+    expect(base.tabs[0]!.params).toEqual({});
+  });
 });
 
 describe("closePanelTab", () => {
@@ -223,7 +251,7 @@ describe("browser pages are their own tabs", () => {
     // rather than the tab silently vanishing on restore.
     expect(isPanelTab("browser:whatever")).toBe(true);
     expect(isPanelTab("agents")).toBe(true);
-    expect(isPanelTab("looms")).toBe(false);
+    expect(isPanelTab("not-a-tab")).toBe(false);
   });
 });
 
@@ -400,6 +428,42 @@ describe("migrates the old string list into instances", () => {
   test("a kind this build no longer understands is dropped rather than restored blank", () => {
     writeLegacy("session_a", ["agents", "usage"]);
     expect(kinds(readPanelTabs<PanelTab>("session_a", isKnown))).toEqual(["agents"]);
+  });
+
+  test("INSTANCES that migrate to one kind collapse too, not just old bare strings (#693)", () => {
+    /**
+     * The defect this pins. Collapsing used to key off the stored SHAPE — a bare
+     * string meant "written before instances existed", and every merge so far had
+     * also been a format change, so that held. It stopped holding when `issue:675`
+     * and `issue:666` — written by THIS build, as instances — both began naming
+     * `issues`: shape-based dedupe restored two tabs, both labelled Issues, both
+     * showing the same list. The question was never how old an entry is but
+     * whether `migrate` moved it.
+     */
+    let panel = openPanelTab(emptyPanelTabs<PanelTab>(), "diff");
+    panel = openNewPanelTab(panel, "issue:675" as PanelTab);
+    panel = openNewPanelTab(panel, "issue:666" as PanelTab);
+    writePanelTabs("session_a", panel, 1);
+    const migrate = (kind: string) => (kind.startsWith("issue:") ? "issues" : kind);
+    const restored = readPanelTabs<PanelTab>("session_a", isKnown, migrate);
+    expect(kinds(restored)).toEqual(["diff", "issues"]);
+    // ONE tab, and it takes the id a fresh open would — not `issue:675`, which
+    // names a kind that no longer exists and would break "the first instance of
+    // a kind IS the kind".
+    expect(ids(restored)).toEqual(["diff", "issues"]);
+    // The active tab was the SECOND of the merged ids; it still selects the
+    // merger rather than falling back to the first tab in the strip.
+    expect(restored.activeTab).toBe("issues");
+  });
+
+  test("two instances of a kind that was NOT migrated are still two tabs", () => {
+    // The other half of the rule above: `migrate` leaves `editor` alone, so two
+    // deliberate Editors must not collapse into one.
+    let panel = openPanelTab(emptyPanelTabs<PanelTab>(), "editor");
+    panel = openNewPanelTab(panel, "editor");
+    writePanelTabs("session_a", panel, 1);
+    const restored = readPanelTabs<PanelTab>("session_a", isKnown, (kind) => (kind.startsWith("issue:") ? "issues" : kind));
+    expect(ids(restored)).toEqual(["editor", "editor#2"]);
   });
 
   test("`readPanelTabIds` still answers in KINDS, which is the vocabulary its callers speak", () => {

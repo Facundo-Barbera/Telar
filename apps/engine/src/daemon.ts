@@ -17,6 +17,7 @@ import {
   parseForgeQuery,
   RequestOpenInput,
   AgentTurnInput,
+  ProviderDriverKind,
   ProviderTurnOpenInput,
   SessionTaskReport,
   resolveMcpServers,
@@ -31,15 +32,18 @@ import {
   type McpOAuthStatus,
   type McpServer,
   type ModelSelection,
-  type ProviderDriverKind,
   type RuntimeMode,
+  type StorageReport,
   type TurnSubmissionResult,
   type UsageLimits,
   type WorkerClaim,
   type WorkerStatus,
   pluginEnabled,
   machineAllows,
+  parseDiffBaseQuery,
+  parseFilePatchQuery,
   readProjectPlugins,
+  workspacePath,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
@@ -51,7 +55,18 @@ import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-
 import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
 import { createLoginGrantStore } from "./secrets/login-grants";
 import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
-import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier, type StoppedClaim } from "./state";
+import {
+  acquireDaemonLock,
+  EngineStateError,
+  EngineStore,
+  migrateLegacyEngineRoot,
+  statePaths,
+  engineRootFromEnv,
+  type DiffBaseOption,
+  type EngineNotifier,
+  type FilePatchOptions,
+  type StoppedClaim,
+} from "./state";
 import { KernelHost } from "./ds/kernel-host";
 import { bundledPlugins } from "./plugins/bundled";
 import { PluginHost } from "./plugins/host";
@@ -74,9 +89,7 @@ import {
 } from "./appearance-home";
 import { readUsageReport, warmUsageScanCache } from "./usage";
 import { readUsageLimitSource } from "./usage-limits";
-import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
 import type { SocketTool } from "./mcp-socket";
-import type { SpoolCapability } from "./spool/tools";
 import {
   collectSessionsWallTools,
   ensureSessionsSocketSecret,
@@ -91,10 +104,29 @@ import {
   notesSocketConnectCard,
 } from "./notes-tools/socket";
 import type { NotesCapability } from "./notes-tools/tools";
+import { AGENT_SELF_ID, collectAgentTools } from "./agent/tools";
+import { PREFERENCES_NOTE_TITLE } from "./agent/memory";
+import { isAgentSelf } from "./agent/identity";
+import { AgentRuntime, type AgentRuntimeOptions } from "./agent/runtime";
+import { agentChatModel } from "./agent/model";
+import { readAgentModels } from "./models";
+import { DICTATION_OFF, DictationError } from "./dictation/token";
+import { dictationProvider } from "./dictation/provider";
+import { THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX } from "./agent/thread-log";
+import { INBOX_PAGE_DEFAULT, INBOX_PAGE_MAX } from "./agent/inbox";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
+import * as shelf from "./prompts";
+import { PreparedPromptsError } from "./prompts";
 import type { GhRunner } from "./github";
-import type { AsyncGitRunner, GitRunner } from "./worktree";
+import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
+import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
+import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
+import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
+import { measureStorage } from "./storage";
+import { describeOutcome } from "./worktrees-move";
+import { describeReclaim } from "./worktree-inventory";
+import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 
 /**
@@ -125,6 +157,22 @@ export type EngineDaemonOptions = {
   engineRoot?: string;
   port?: number;
   now?: () => number;
+  /**
+   * THE AGENT'S MODEL, INJECTED — the same seam `models` is, and for a sharper
+   * reason (#531). The key ladder's third rung reads the OpenCode CLI's own
+   * credential, so on a developer's machine the default factory finds a real
+   * key and a route test would quietly spend real calls against a real API.
+   * A test passes a scripted model; nothing in production passes anything.
+   */
+  agentModel?: AgentRuntimeOptions["model"];
+  /**
+   * HOW THE ENGINE REACHES DEEPGRAM'S GRANT ENDPOINT — injected for `gh`'s
+   * reason and `agentModel`'s (#544). A route test that mints a dictation token
+   * must never spend a real Deepgram account, and a developer with a key
+   * pasted into their own engine would otherwise have this suite doing exactly
+   * that. Nothing in production passes anything; the default is `fetch`.
+   */
+  dictationFetch?: typeof fetch;
   /** Worker liveness is deliberately short; a lost running turn is stopped
    *  rather than replayed or left claimed. See `retireWorker`. */
   workerLeaseMs?: number;
@@ -140,6 +188,13 @@ export type EngineDaemonOptions = {
    */
   delegationSweepIntervalMs?: number;
   /**
+   * Testable cadence for the report-window sweep — issue #723.
+   *
+   * FASTER THAN THE SWEEP ABOVE, because the shortest window a person may set is
+   * a minute and a pass slower than that would silently become the real window.
+   */
+  reportWindowSweepIntervalMs?: number;
+  /**
    * Told when a worker registration retires. AN OBSERVER, NOT THE CLEANUP:
    * ending that worker's claims happens on the default path inside
    * `retireWorker` whether or not this is passed, because a deployment that
@@ -153,7 +208,7 @@ export type EngineDaemonOptions = {
   notifier?: EngineNotifier;
   /**
    * How the engine reaches GitHub. INJECTED for the reason every other
-   * subprocess here is: a route test that drives `/v2/spool/look` must never
+   * subprocess here is: a route test that drives a forge read must never
    * actually spend somebody's rate limit. The default shells to the real `gh`.
    */
   gh?: GhRunner;
@@ -176,6 +231,23 @@ export type EngineDaemonOptions = {
   git?: GitRunner;
   /** Test seam: the provider model list, so a suite never spawns a real CLI. */
   models?: ConstructorParameters<typeof EngineStore>[2] extends { models?: infer M } ? M : never;
+  /**
+   * How the engine asks about disks (`volumes.ts`). INJECTED for `gh`'s reason
+   * and a sharper one: the default shells to `diskutil` and reads this Mac's
+   * real `/Volumes`, and a route test about an unplugged drive must be able to
+   * unplug one. See `test/fake-mount.ts`.
+   */
+  volumes?: VolumeDeps;
+  /**
+   * The engine's own environment — what a provider process would inherit from
+   * it (#594).
+   *
+   * INJECTED BY TESTS ONLY; the default is this process's. A route test about
+   * what a newly-configured login stops inheriting has to be able to launch the
+   * engine "from a terminal that had a proxy set", and mutating the real
+   * `process.env` to do it would leak into every other test in the file.
+   */
+  ambientEnv?: Record<string, string | undefined>;
   /**
    * Run a worker inside the daemon process.
    *
@@ -265,12 +337,72 @@ function errorFor(error: unknown): HttpError {
   if (error instanceof ProjectNotesError) {
     return new HttpError(error.code === "not_found" ? 404 : 400, error.code, error.message);
   }
+  // The prompt shelf's, for the same reason and in the same shape.
+  if (error instanceof PreparedPromptsError) {
+    return new HttpError(error.code === "not_found" ? 404 : 400, error.code, error.message);
+  }
+  /**
+   * AND THE CUT'S REFUSALS, for the identical reason — issue #695.
+   *
+   * `prepareSessionWorktree` raises every reason a worktree cannot be cut ON THE
+   * REQUEST rather than on the row, on the stated grounds that the caller is
+   * still there to be told (worktree.ts's header, the #496 seam). Falling through
+   * to the 500 below spent that argument for nothing: "worktree sessions need a
+   * git repository; /Volumes/X/thing is not one" reached the client as "engine
+   * encountered an internal error", which is not a reason and not even true.
+   *
+   * `invalid_request`, NEVER `internal_error`: each of these is the caller having
+   * asked for something this engine will not do — an unversioned directory, a
+   * branch inside `telar/`, a ref that does not resolve — so the status is a 400
+   * and the sentence is the engine's own, whole. The drive-away arm never arrives
+   * here: `assertProjectAvailable` refuses it first as a `conflict`.
+   */
+  if (error instanceof WorktreeError) {
+    return new HttpError(400, "invalid_request", error.message);
+  }
   return new HttpError(500, "internal_error", "engine encountered an internal error");
 }
 
 function writeJson(response: http.ServerResponse, status: number, body: unknown, headers: http.OutgoingHttpHeaders = {}): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers });
   response.end(JSON.stringify(body));
+}
+
+/**
+ * THE LIVE LIST'S ETAG — the revision cursor (#462) spelled the way HTTP spells
+ * it, so a client that knows nothing about `?since=` still gets the cheap tick.
+ *
+ * THE MODE IS IN THE TAG, and that is what the query cursor could not do. A
+ * `?since=` earned against the unsettled list and spent against `?all=1` would
+ * be answered "unchanged" and leave a shelf empty, because the revision counts
+ * WRITES and does not move when a reader opens one — which is why the wide read
+ * refuses to be conditional on it. Two modes, two tags, and the wide read can
+ * be conditional too.
+ *
+ * WEAK, because the claim is semantic. Two answers at one revision carry the
+ * same rows; nothing here promises the same bytes, and `W/` is how that is said.
+ */
+function liveSessionsETag(revision: number, all: boolean): string {
+  return `W/"live-${revision}-${all ? "all" : "lean"}"`;
+}
+
+/**
+ * Does `If-None-Match` name this tag?
+ *
+ * WEAK COMPARISON, which is what RFC 9110 requires of `If-None-Match`: `W/"x"`
+ * and `"x"` match, and a client that stripped the prefix somewhere along the
+ * way is not punished for it. A list is a list — a browser may send back
+ * several — and `*` means "if you have anything at all", which here is always.
+ */
+function matchesETag(header: string | string[] | undefined, tag: string): boolean {
+  if (header === undefined) return false;
+  const bare = (value: string): string => value.trim().replace(/^W\//, "");
+  const wanted = bare(tag);
+  for (const entry of (Array.isArray(header) ? header : [header]).flatMap((value) => value.split(","))) {
+    const candidate = bare(entry);
+    if (candidate === "*" || candidate === wanted) return true;
+  }
+  return false;
 }
 
 async function body(request: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -420,27 +552,32 @@ function stringValue(value: unknown, label: string, optional = false): string | 
   return value;
 }
 
-/**
- * THE ONE PLACE A ROUTE READS "TODAY" — and it never reads a clock to get it.
- * §3.2-as-amended: a comparison against today requires the CALLER to state
- * one; `?today=YYYY-MM-DD` is that statement, freshly introduced by the lobby
- * and the brief (no earlier spool route took a query param at all). Absent is
- * the honest "the caller sent none" — the composition degrades rather than
- * substituting `new Date()`.
- */
-function todayParam(url: URL): string | undefined {
-  const raw = url.searchParams.get("today");
-  if (raw === null) return undefined;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    throw new HttpError(400, "invalid_request", `today must be YYYY-MM-DD — got ${JSON.stringify(raw)}.`);
-  }
-  return raw;
-}
-
 function sessionPath(pathname: string): { sessionId: string; tail: string } | undefined {
   const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
+}
+
+/**
+ * `?path=…&untracked=1&ignoreWhitespace=1` — how one file's patch is read.
+ *
+ * SHARED BY THE SESSION AND PROJECT ROUTES, which is the whole reason it is a
+ * function: they serve the same surface (`diff-surface.tsx` switches between
+ * them on whether there is a session yet), so a parameter one parsed and the
+ * other ignored would be a toolbar control that worked in a conversation and
+ * did nothing on a canvas.
+ */
+/**
+ * THE QUERY IS PARSED BY THE CONTRACT'S OWN PARSER, not by a copy written here
+ * — `protocol/diff-query.ts` carries the argument, and the bug it was written
+ * for was a hand-written third copy dropping a parameter in silence.
+ */
+function filePatchOptions(url: URL): FilePatchOptions {
+  return parseFilePatchQuery(url.searchParams);
+}
+
+function requestedBase(url: URL): DiffBaseOption {
+  return parseDiffBaseQuery(url.searchParams);
 }
 
 /**
@@ -459,6 +596,86 @@ function snapshotWindowParam(url: URL): SessionBootstrapWindow | undefined {
   const turns = Number(raw);
   if (!Number.isSafeInteger(turns) || turns < 1) throw new HttpError(400, "invalid_request", "turns must be a positive integer");
   return { turns, ...(before === undefined ? {} : { before }) };
+}
+
+/**
+ * HOW MANY JOURNAL ROWS ONE `GET /v2/sessions/:id/events` MAY ANSWER WITH.
+ *
+ * 200 is the tail a cockpit actually folds per tick, and the size the #490
+ * audit measured at 185 KB / 106 ms against 36.5 MB / 2.48 s for the same
+ * session unpaged. A client that wants fewer says so; one that wants more is
+ * capped, because the cap is what stops a caller from asking for the run back
+ * in one piece and reinstating the cost this page size exists to remove.
+ *
+ * A LIMIT THAT IS NOT A NUMBER IS A BUG IN THE CALLER, not a reason to serve
+ * the whole journal — it is refused rather than defaulted, the same way an
+ * unparseable `turns` is.
+ */
+const EVENT_PAGE_DEFAULT = 200;
+const EVENT_PAGE_MAX = 1000;
+
+function eventPageLimit(raw: string | null): number {
+  if (raw === null) return EVENT_PAGE_DEFAULT;
+  const limit = Number(raw);
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new HttpError(400, "invalid_request", "limit must be a positive integer");
+  return Math.min(limit, EVENT_PAGE_MAX);
+}
+
+/**
+ * WHAT THE QUERY ROUTES MAY ANSWER WITH — issue #516.
+ *
+ * Every one of these is a CEILING, not a suggestion. The routes exist because a
+ * tool answer lands in a model's context window (#515), so a caller that asks
+ * for more than the ceiling is clamped rather than served: the point of the
+ * bound is that it cannot be argued out of. A caller that wants the rest pages
+ * for it, and every answer says whether there is a rest.
+ *
+ * THE DEFAULTS ARE WHAT THE ISSUE ASKED FOR: an outline page of 20 turns, a
+ * grep page of 20 matches, ten sessions from `find`, 8,000 characters of one
+ * step. The maxima are where one answer stops being something a model can hold
+ * beside the rest of its work.
+ */
+const OUTLINE_PAGE_DEFAULT = 20;
+const OUTLINE_PAGE_MAX = 100;
+const GREP_PAGE_DEFAULT = 20;
+const GREP_PAGE_MAX = 100;
+const FIND_LIMIT_DEFAULT = 10;
+const FIND_LIMIT_MAX = 50;
+const ITEM_CHARS_DEFAULT = 8_000;
+const ITEM_CHARS_MAX = 64_000;
+const ANSWER_SLICE_DEFAULT = 8_000;
+const ANSWER_SLICE_MAX = 64_000;
+
+/**
+ * A NON-NEGATIVE INTEGER QUERY PARAMETER, clamped — or refused.
+ *
+ * REFUSED RATHER THAN DEFAULTED when it is not a number, on `eventPageLimit`'s
+ * argument: `?limit=all` is a bug in the caller, and quietly serving it the
+ * default would hide the bug behind an answer that looks right.
+ */
+function positiveParam(raw: string | null, fallback: number, ceiling: number, label: string): number {
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) throw new HttpError(400, "invalid_request", `${label} must be a non-negative integer`);
+  return Math.min(value, ceiling);
+}
+
+/**
+ * `/runs/:runId/items` and `/runs/:runId/items/:step` — one shape, because the
+ * list and the step are the same address at two depths and parsing them apart
+ * would let the two disagree about what a run id may contain.
+ *
+ * `step` IS A NUMBER WHEN IT LOOKS LIKE ONE and an item id otherwise: a caller
+ * that has just read the list names a position, and one that found the item in a
+ * journal page names its id. See `runItem`.
+ */
+function runItemsPath(tail: string): { runId: string; step?: number | string } | undefined {
+  const match = /^\/runs\/([A-Za-z0-9_-]+)\/items(?:\/([A-Za-z0-9_-]+))?$/.exec(tail);
+  if (!match) return undefined;
+  const raw = match[2];
+  if (raw === undefined) return { runId: decodeURIComponent(match[1]) };
+  const index = Number(raw);
+  return { runId: decodeURIComponent(match[1]), step: Number.isSafeInteger(index) && index >= 0 ? index : decodeURIComponent(raw) };
 }
 
 type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "release" | "resume" | "promote" | "steer-ack";
@@ -593,12 +810,31 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   store = new EngineStore(root, options.now, {
     onQueueChanged: () => wakeEmbeddedWorker?.(),
     onTurnsStopped: (cancellations) => cancelEmbeddedClaims?.(cancellations),
+    /**
+     * THE JOURNAL SWEEP'S LINE, PRINTED LATE — issue #646.
+     *
+     * The sweep below reports at open because it finishes there. This one runs
+     * on a timer seconds afterwards, because its first pass on a large store is
+     * a minute of work and the open path is the wrong place for it — so the
+     * line arrives when the rows actually go. Same rule as the rest: only when
+     * something went, and "superseded" rather than "removed", because these
+     * rows say nothing their turn's `item.completed` does not already say.
+     */
+    onExecutionHousekeeping: ({ journal }) => {
+      const rows = journal.deltas + journal.starts;
+      if (rows === 0) return;
+      process.stdout.write(
+        `Telar engine: compacted ${rows.toLocaleString("en-US")} superseded journal rows across ${journal.sessions.toLocaleString("en-US")} sessions\n`,
+      );
+    },
     executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
     ...(options.git ? { git: options.git } : {}),
     ...(options.models ? { models: options.models } : {}),
+    ...(options.volumes ? { volumes: options.volumes } : {}),
+    ...(options.ambientEnv ? { ambientEnv: options.ambientEnv } : {}),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,
     // not defaulted in the store, so tests never read the real machine. The
@@ -611,6 +847,124 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     },
   });
   } catch (error) { lock.release(); throw error; }
+  /**
+   * WHAT THE STORE SWEPT ON THE WAY UP — issue #457, step 4.
+   *
+   * Both sweeps delete things nothing can reach: command receipts past their
+   * week, and the JSON copy the sqlite import left behind once sqlite has owned
+   * the store for a week. On the dogfood home that was 299,323 receipts and
+   * 239 MB of backup, and the only evidence a person would otherwise have that
+   * a quarter of a gigabyte went away is that it is gone.
+   *
+   * ONE LINE, AND ONLY WHEN SOMETHING WENT. A daemon that printed "removed
+   * nothing" on every start would be training its reader to skip the line that
+   * matters. A backup still inside its week is deliberately silent too: it is
+   * not news, it is the ordinary state of a store migrated this week.
+   */
+  const swept = store.executionHousekeeping();
+  if (swept) {
+    const parts: string[] = [];
+    if (swept.receipts > 0) parts.push(`${swept.receipts.toLocaleString("en-US")} spent command receipts`);
+    if (swept.backup?.removed) {
+      const mb = (swept.backup.bytes / 1_000_000).toFixed(1);
+      const days = Math.floor(swept.backup.ageMs / 86_400_000);
+      parts.push(`the pre-SQLite JSON backup (${swept.backup.files.toLocaleString("en-US")} files, ${mb} MB, ${days} days old)`);
+    }
+    if (parts.length > 0) process.stdout.write(`Telar engine: removed ${parts.join(" and ")}\n`);
+  }
+  /**
+   * THE SESSION INDEX, WHEN IT HAD TO BE BUILT — issue #493.
+   *
+   * ONE LINE, AND ONLY WHEN THERE WAS WORK, on the same argument as the sweep
+   * above: this is silent on every open after the first, and a daemon that said
+   * "indexed 0 sessions" each time would train its reader past the one start
+   * where the number is large and the open is visibly slower for it.
+   */
+  const indexed = store.sessionIndexBackfill;
+  if (indexed && (indexed.built > 0 || indexed.removed > 0)) {
+    const built = indexed.built > 0 ? `indexed ${indexed.built.toLocaleString("en-US")} sessions` : "";
+    const removed = indexed.removed > 0 ? `dropped ${indexed.removed.toLocaleString("en-US")} orphaned rows` : "";
+    process.stdout.write(`Telar engine: ${[built, removed].filter(Boolean).join(" and ")}\n`);
+  }
+  /**
+   * AND THE TURN PROJECTION, WHEN IT HAD TO BE BUILT — issue #516.
+   *
+   * Its own line rather than a clause on the one above, because the two backfills
+   * cost differently and a person watching a slow start is trying to work out
+   * which: the session index folds four small documents per conversation, this
+   * one parses every `items.json` on the machine. Silent on every open after the
+   * first, on the same argument as both sweeps above.
+   */
+  const summarised = store.turnSummaryBackfill;
+  if (summarised && summarised.turns > 0) {
+    process.stdout.write(
+      `Telar engine: summarised ${summarised.turns.toLocaleString("en-US")} turns across ${summarised.sessions.toLocaleString("en-US")} sessions\n`,
+    );
+  }
+  /**
+   * AND WHAT THE SPOOL AND THE LOOMS LEFT — issue #501, step 2.
+   *
+   * Beside the sweep above and for the same reason: two directories nothing in
+   * this repository can open any more. Once per home, best-effort, and silent
+   * unless something actually went. See `decommission-sweep.ts`.
+   */
+  const decommissioned = sweepReport(sweepSpoolAndLooms(store.paths.root));
+  if (decommissioned) process.stdout.write(`${decommissioned}\n`);
+  /**
+   * AND EVERY LIVE WORKTREE IS LOCKED — issue #641.
+   *
+   * Not a sweep: nothing is deleted and nothing is once-per-home. It is the
+   * backfill for a guard that is otherwise only applied at the cut, so the
+   * worktrees that exist right now — including whichever session is mid-feature
+   * when this daemon starts — are covered before the next `gh pr merge
+   * --delete-branch` goes looking for one. Cheap, idempotent, and best-effort;
+   * see `EngineStore.lockLiveWorktrees`.
+   *
+   * SILENT, unlike the sweeps above, and deliberately: this runs on every start
+   * rather than once, and it changes nothing a person owns. A line per boot
+   * saying "locked 7 worktrees" is how a log teaches its reader to skip it.
+   */
+  store.lockLiveWorktrees();
+  /**
+   * AND WHAT THE MAIN SESSION LEFT — issue #531.
+   *
+   * THE KEY IS CARRIED FIRST, then the document goes. The order is the rule: the
+   * carry reads the `telar` login's secret, and a sweep that deleted before
+   * reading would lose the one thing the owner asked to keep. Both are
+   * best-effort and silent unless something actually went — see
+   * `agent/main-sweep.ts`.
+   */
+  // THREE STATEMENTS, NOT ONE ARGUMENT LITERAL. The carry must read the `telar`
+  // login's secret before anything drops it, and an ordering rule that survives
+  // only as long as nobody reorders the keys of an object literal is not a rule.
+  const carriedKey = store.carryOverAgentKey();
+  const droppedSecrets = store.removeRetiredProviderSecrets();
+  const mainSwept = mainSweepReport({ carriedKey, droppedSecrets, removed: sweepMainSession(store.paths.root) });
+  if (mainSwept) process.stdout.write(`${mainSwept}\n`);
+  /**
+   * WHICH PROJECTS' DISKS ARE HERE — issue #534.
+   *
+   * ONCE, ON THE WAY UP, so an engine that started with a drive already unplugged
+   * knows it BEFORE the first listing rather than on it. Without this the first
+   * `GET /v2/projects` after a boot is the probe, and until it lands the rail
+   * would draw an away project as an ordinary one and spawn git against it.
+   *
+   * NO TIMER FOLLOWS. The poll is `projectMetadata`'s existing call path and the
+   * mount events are `POST /v2/projects/reprobe`; this is the floor's first
+   * reading, not a third mechanism.
+   *
+   * ONE LINE, AND ONLY WHEN A DRIVE IS ACTUALLY AWAY, on the same argument as
+   * every sweep above: a daemon that reported "all disks present" on each start
+   * would train its reader past the start where one is not.
+   */
+  const away = store
+    .listProjects()
+    .map((project) => ({ project, availability: store.projectAvailability(project) }))
+    .filter((entry) => entry.availability !== "available");
+  if (away.length > 0) {
+    const named = away.map((entry) => `${entry.project.name} (${entry.availability})`).join(", ");
+    process.stdout.write(`Telar engine: ${away.length === 1 ? "a project is" : `${away.length} projects are`} unreadable — ${named}\n`);
+  }
   /**
    * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
    * away. Run once on start and again on every PATCH of the toggle.
@@ -659,6 +1013,52 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       usageLimitsCache.inFlight = undefined;
     });
     return usageLimitsCache.inFlight;
+  };
+  /**
+   * HOW BIG THE STORE IS, as of the last time anybody asked — issue #642.
+   *
+   * IN MEMORY AND MEASURED LAZILY. A snapshot on disk would add a file to the
+   * very thing being measured, and there is no figure worth restoring across a
+   * restart: the walk is what makes it true, and the walk is cheap enough to
+   * repeat once per engine life.
+   *
+   * NOTHING SCHEDULES THIS. It runs when a reader first opens the pane and
+   * again when one presses refresh — #629 is open because four timers in the
+   * rail cost ~97,000 requests a day, and a directory's size does not change by
+   * the second. The stale-while-revalidate the limits cache above uses would be
+   * the wrong shape here for the same reason: there is nothing to revalidate
+   * against but another full walk.
+   *
+   * ONE WALK AT A TIME. Two settings windows opening together must not put two
+   * traversals of a 13 GB tree on the same disk; the second joins the first.
+   */
+  const storageCache: { report?: StorageReport; inFlight?: Promise<StorageReport> } = {};
+  const readStorage = (refresh: boolean): Promise<StorageReport> => {
+    if (!refresh && storageCache.report) return Promise.resolve(storageCache.report);
+    /**
+     * BOTH ROOTS WHILE A SPLIT LASTS — #642 part 2.
+     *
+     * Changing where checkouts go affects the NEXT cut; the ones already cut
+     * stay where they are until they are moved or their sessions end. So for a
+     * while there are checkouts under two roots, and a "Session checkouts" row
+     * that counted only the configured one would under-report by exactly the
+     * gigabytes somebody changed the setting to get rid of.
+     */
+    const configured = rootOf(readWorktreesRoot(store.paths.root)) ?? defaultWorktreesRoot(store.paths.root);
+    const fallback = defaultWorktreesRoot(store.paths.root);
+    storageCache.inFlight ??= measureStorage({
+      root: store.paths.root,
+      worktreesRoot: configured,
+      ...(configured === fallback ? {} : { alsoWorktrees: [fallback] }),
+    })
+      .then((report) => {
+        storageCache.report = report;
+        return report;
+      })
+      .finally(() => {
+        storageCache.inFlight = undefined;
+      });
+    return storageCache.inFlight;
   };
   const daemonId = crypto.randomUUID();
   /**
@@ -763,7 +1163,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   });
   const updateProvider =
     options.runProviderUpdate ??
-    ((driver: ProviderDriverKind, binaryPath: string | undefined) => runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) }));
+    ((driver: ProviderDriverKind, binaryPath: string | undefined) => {
+      return runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) });
+    });
   /**
    * A REGISTRATION RETIRES — THE ONE DOOR. Dropping the registration and
    * ending the work it held are the same event, so they are the same function
@@ -833,6 +1235,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
   }, options.delegationSweepIntervalMs ?? 5 * 60_000);
   delegationSweeper.unref();
+  /**
+   * AND A REPORT WINDOW NEEDS ONE TOO — issue #723.
+   *
+   * The same gap as the sweep above, for the same reason: the mailbox's drains
+   * all hang off a turn ending, and a coordinator that set a window and went
+   * quiet has no turn to end. The tick is FASTER than the delegation sweep
+   * because the shortest window a person can set is a minute, and a five-minute
+   * pass would make that window a five-minute one.
+   *
+   * IT IS STILL CHEAP. A session with no window costs one document read and a
+   * closed window with an empty box costs one more; nothing here reads a queue
+   * unless a cohort is actually going out.
+   */
+  const reportWindowSweeper = setInterval(() => {
+    try {
+      store.sweepReportWindows();
+    } catch {
+      /* the next tick tries again */
+    }
+  }, options.reportWindowSweepIntervalMs ?? 30_000);
+  reportWindowSweeper.unref();
 
   // Read once: it names the Mac to another cockpit (`.local` dropped — it is
   // mDNS's suffix, not the name), and a name that flickered per request
@@ -856,96 +1279,85 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   });
 
   /**
-   * THE SOCKET'S SECRET AND TOOLS, both lazy: nothing is minted or assembled
-   * until something asks — the connect card or a client's first request — so a
-   * daemon nothing connects to writes nothing extra to disk.
-   */
-  let socketSecretCache: string | undefined;
-  const socketSecret = () => (socketSecretCache ??= ensureSocketSecret(store.spool));
-  let socketToolsCache: SocketTool[] | undefined;
-  const socketTools = (): SocketTool[] => {
-    if (socketToolsCache) return socketToolsCache;
-    /**
-     * THE WALL AT MASTER SCOPE — every capability lands on the store's own
-     * facade, the same methods the HTTP routes call, so there is exactly one
-     * implementation of every rule about an item. No `project` key: the
-     * socket is the user's own outward door and sees every subject, like the
-     * master chat. The wall's absences ride along whole: close, reopen,
-     * accept, delete and lane structure are not on the wall, so no client of
-     * this socket can reach them — asserted in `spool-socket.test.ts`.
-     */
-    const capability: SpoolCapability = {
-      snapshot: async () => store.spoolSnapshot(),
-      item: async (id) => {
-        try {
-          return store.spoolItem(id);
-        } catch {
-          return null;
-        }
-      },
-      create: async (input) => store.createSpoolItem(input),
-      update: async (id, patch) => store.updateSpoolItem(id, patch),
-      consult: (id) => store.consultSpoolExpert(id),
-      map: async () => store.spoolMap(),
-      openThread: async (subject, input) => store.openSpoolThread(subject, input),
-      setWaiting: async (subject, threadId, waiting) => store.setSpoolThreadWaiting(subject, threadId, waiting),
-      settle: async (subject, threadId, answer) => store.settleSpoolThread(subject, threadId, answer),
-      answer: async (itemId, question, answer) => store.answerSpoolQuestion(itemId, question, answer),
-      focus: async () => ({ pickup: store.spoolPickup(), days: store.spoolFocusDays() }),
-      setFocus: async (input) => store.openSpoolFocus(input),
-      endFocus: async (id, end) => store.closeSpoolFocus(id, end),
-      look: (subjectKey) => store.reconcileSpoolLook(subjectKey),
-      setTerrain: async (subjectKey, terrain) => store.setSpoolSubjectTerrain(subjectKey, terrain),
-      setIdentity: async (subjectKey, patch) => store.setSpoolSubjectIdentity(subjectKey, patch),
-      setAperture: async (view) => store.setSpoolAperture(view),
-      setAreaPermits: async (name, ceiling) => store.setSpoolAreaCeiling(name, ceiling),
-      notes: async () => store.spoolNotes(),
-      // The wall's handler declares `author: "session"`; the arm below is the
-      // same default the human route keeps, so an absent declaration is a hand.
-      createNote: async (input) => store.createSpoolNote({ ...input, author: input.author === "session" ? "session" : "you" }),
-      updateNote: async (id, patch) => store.updateSpoolNote(id, patch),
-      search: async (query, subject) => store.spoolSearch(query, subject ? { subject } : {}),
-    };
-    socketToolsCache = collectWallTools(capability);
-    return socketToolsCache;
-  };
-
-  /**
-   * THE SESSIONS SOCKET'S SECRET AND TOOLS, lazy for the same reason and minted
-   * SEPARATELY from the spool's: two doors, two keys.
+   * THE SESSIONS SOCKET'S SECRET AND TOOLS, both lazy: nothing is minted or
+   * assembled until something asks. Minted SEPARATELY from the notebook's:
+   * two doors, two keys.
    */
   let sessionsSecretCache: string | undefined;
   const sessionsSecret = () => (sessionsSecretCache ??= ensureSessionsSocketSecret(store.paths));
   let sessionsToolsCache: SocketTool[] | undefined;
-  const sessionsSocketTools = (): SocketTool[] => {
-    if (sessionsToolsCache) return sessionsToolsCache;
+  /**
+   * THE IN-PROCESS SESSIONS CAPABILITY, WITH OR WITHOUT A `self`.
+   *
+   * ONE BUILD, TWO CALLERS (#531). The outward MCP socket takes it with no
+   * `self` — a chat client is not a session and has nowhere to be woken, so the
+   * subscription tools refuse in words. The built-in Agent takes the same build
+   * with `self: { sessionId: "agent" }`, which is the only difference between
+   * them: it has somewhere to be woken and something to be attributed to.
+   *
+   * Written as a parameter rather than as a second object so a verb added to
+   * one is added to both — the drift this seam exists to prevent is exactly the
+   * kind nobody notices until an agent's tool answers differently from a chat
+   * client's.
+   */
+  const buildSessionsCapability = (self?: { sessionId: string }): SessionsCapability => {
     /**
-     * EVERY MEMBER DELEGATES TO A `store.*` METHOD THAT ALREADY EXISTS, exactly
-     * as the spool socket's capability does. There is no validation here and
+     * EVERY MEMBER DELEGATES TO A `store.*` METHOD THAT ALREADY EXISTS. There
+     * is no validation here and
      * there must not be: `createSession` owns the env-mode rule and the
      * driver check; `submitTurn` owns the backlog cap; `readEvents` owns the
      * cursor check. A check written at this seam would protect the socket
      * and nothing else.
      *
      * `origin: "session"` IS DECLARED BY THIS CODE, never by a caller: no tool
-     * shape on the wall carries it. It is the same construction the spool's
-     * `source: "session"` uses — provenance a list can show, nothing more.
+     * shape on the wall carries it — provenance a list can show, nothing more.
      */
-    const capability: SessionsCapability = {
-      // NO `self`: a chat client on this socket is not a session and has
-      // nowhere to be woken. The subscription tools refuse, in words.
-      list: async () => store.liveSessions(),
+    return {
+      // ABSENT for the socket: a chat client on it is not a session and has
+      // nowhere to be woken, so the subscription tools refuse in words. PRESENT
+      // for the Agent, which has both.
+      ...(self ? { self } : {}),
+      /**
+       * THE SHELF IS THE STORE'S RULE, ASKED FOR RATHER THAN RE-IMPLEMENTED
+       * (#515). This used to be `store.liveSessions()` — every session the
+       * store calls live, settled included, 334 rows and 142 KB in one tool
+       * answer. `liveSessionRows` is the same fold the rail's own route serves,
+       * with the clients' `isShelved` deciding, so the toolkit's default list
+       * and the person's sidebar agree by construction rather than by two
+       * copies of one rule. `settled: true` is `?all=1`, the old answer.
+       */
+      list: async (options) => store.liveSessionRows({ all: options?.settled === true }),
       create: async (input) => store.createSession({ ...input, origin: "session" }),
-      // An agent's words, with no session to attribute them to: the caller is
-      // the user's own chat client, outside any turn. Never the person's.
-      send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
-      read: async (sessionId, after) => store.readEvents(sessionId, after),
-      status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
+      /**
+       * An agent's words, with no session to attribute them to: the caller is
+       * the user's own chat client, outside any turn. Never the person's.
+       *
+       * THE AGENT'S BUILD PASSES ITS OWN NAME AS PROOF (#539), and that is the
+       * whole of the difference. It buys one thing — a human Stop on the
+       * recipient latches out peer sessions and not the Agent, which the person
+       * is typing at right now — and the store says in its answer when that
+       * latch was stepped over. The socket's build has no `self` and so sends
+       * unproven, exactly as before: a chat client is not the Agent.
+       */
+      send: async (sessionId, input) =>
+        store.submitAgentTurn(sessionId, input, self && isAgentSelf(self.sessionId) ? { sessionId: AGENT_SELF_ID } : undefined),
+      read: async (sessionId, after, options) => store.readEvents(sessionId, after, options?.limit),
+      // The last event id, so the wall can serve "what happened lately" from
+      // one page rather than by walking a journal to reach its end (#515).
+      cursor: async (sessionId) => store.eventCursor(sessionId),
+      status: async (sessionId) => ({
+        session: store.getSession(sessionId),
+        turns: store.turns(sessionId),
+        // The held mail, so the cap's "stays pending and pollable" has a poll.
+        pendingNotifications: store.pendingNotifications(sessionId),
+      }),
       // STOP IS STOP, whoever presses it. An agent stopping a peer ends the
       // same work a person's Stop ends, and leaves the session idle rather
       // than latched — see `stopSession`.
       stop: async (sessionId) => store.stopSession(sessionId, "agent"),
       settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
+      // The bounds are the store's, like every member here — see #723.
+      setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
       diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
       unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
@@ -953,9 +1365,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       requests: async (sessionId) => store.requests(sessionId),
       resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
     };
-    sessionsToolsCache = collectSessionsWallTools(capability);
-    return sessionsToolsCache;
   };
+  const sessionsSocketTools = (): SocketTool[] => (sessionsToolsCache ??= collectSessionsWallTools(buildSessionsCapability()));
 
   /**
    * THE NOTES SOCKET'S SECRET AND TOOLS — the third door, lazy like the other
@@ -964,8 +1375,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   let notesSecretCache: string | undefined;
   const notesSecret = () => (notesSecretCache ??= ensureNotesSocketSecret(store.paths));
   let notesToolsCache: SocketTool[] | undefined;
-  const notesSocketTools = (): SocketTool[] => {
-    if (notesToolsCache) return notesToolsCache;
+  /**
+   * THE NOTEBOOK CAPABILITY, shared by the outward socket and the Agent for
+   * `buildSessionsCapability`'s reason — one build, so a rule added to one door
+   * is added to both. Neither has a `self`: a chat client has no project to
+   * default to, and neither has the Agent, which owns no checkout at all.
+   */
+  const buildNotesCapability = (): NotesCapability => {
     /**
      * NO `self`: a chat client on this socket is not in a session and has no
      * project to default to, so `notes_list` asks it for one by name — exactly
@@ -976,7 +1392,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
      * `getProject` IS THE GATE ON EVERY WRITE, here as on the routes: an id
      * nobody registered must not be able to mint a notebook file.
      */
-    const capability: NotesCapability = {
+    return {
       projects: async () => store.listProjects().map((project) => ({ id: project.id, name: project.name })),
       list: async (projectId) => {
         store.getProject(projectId);
@@ -986,7 +1402,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       create: async (projectId, input) => {
         store.getProject(projectId);
         // THE WALL DECLARES `author: "session"`, never a caller: no tool shape
-        // carries it. Same construction as the spool's `source: "session"`.
+        // carries it.
         return notebook.createNote(store.paths, projectId, { ...input, author: "session" });
       },
       update: async (projectId, noteId, patch) => {
@@ -995,9 +1411,164 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       },
       remove: async (projectId, noteId) => notebook.deleteNote(store.paths, projectId, noteId),
     };
-    notesToolsCache = collectNotesWallTools(capability);
-    return notesToolsCache;
   };
+  const notesSocketTools = (): SocketTool[] => (notesToolsCache ??= collectNotesWallTools(buildNotesCapability()));
+
+  /** Every live `GET /v2/agent/stream`, so shutdown can end them — see the
+   *  route. A `Set` of teardown functions rather than of responses: the route
+   *  owns what ending one means. */
+  const openStreams = new Set<(() => void) & { end?: () => void }>();
+
+  /**
+   * THE BUILT-IN AGENT — one per machine, in this process (#531).
+   *
+   * BUILT EAGERLY AND OPENED LAZILY. Constructing it costs nothing: the runtime
+   * reads `agent.json` per call and opens `threads.sqlite` on the first turn,
+   * thread read or stream, so an engine whose Agent has never been switched on
+   * never grows a database. What being built early buys is the wake sink below,
+   * which has to be in place before any turn can end.
+   *
+   * ITS WALL IS REBUILT PER TURN, through the same two builders the outward
+   * socket uses, with a `self` of `agent`. See `agent/tools.ts` for why the
+   * daemon's capability is the right one and why neither build carries the
+   * request gate.
+   */
+  const agentRuntime: AgentRuntime = new AgentRuntime({
+    engineRoot: root,
+    tools: (): SocketTool[] =>
+      collectAgentTools({
+        sessions: buildSessionsCapability({ sessionId: AGENT_SELF_ID }),
+        notes: buildNotesCapability(),
+        query: {
+          find: async (query) => store.findSessions(query),
+          outline: async (sessionId, window) => store.turnOutline(sessionId, window),
+          answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
+        },
+        /**
+         * "HOW ARE THINGS", IN ONE CALL — #570.
+         *
+         * TWO OWNERS, ONE CAPABILITY. The five reads about SESSIONS are the
+         * store's own — the same `liveSessionRows`, `turnOutline` and `requests`
+         * the rail and the query tools already use, so a fleet row and the rail's
+         * row cannot disagree about a session — and the two about the AGENT come
+         * from the runtime, which owns the standing document and the inbox. See
+         * `AgentRuntime.fleet`.
+         *
+         * `turnOutline` AT LIMIT 1 IS THE LAST-TURN READ. It is the projection
+         * #516 built for exactly this — state, when it ended, and the answer's
+         * opening line — so nothing here re-folds a turn a second way.
+         */
+        fleet: {
+          ...agentRuntime.fleet(),
+          rail: async () => {
+            const live = store.liveSessionRows({ all: false });
+            return { sessions: live.sessions, projects: live.projects };
+          },
+          subscribed: async () => [...new Set(store.subscriptionsFor(AGENT_SELF_ID).map((subscription) => subscription.targetSessionId))],
+          // ABSENT RATHER THAN THROWN: the Agent's notes outlive the sessions
+          // they name, and a status answer must not fail because one line of its
+          // own bookkeeping is stale.
+          session: async (sessionId) => {
+            try {
+              return store.getSession(sessionId);
+            } catch {
+              return undefined;
+            }
+          },
+          lastTurn: async (sessionId) => {
+            try {
+              const [newest] = store.turnOutline(sessionId, { limit: 1 }).turns;
+              return newest ? { state: newest.state, ...(newest.endedAt === undefined ? {} : { endedAt: newest.endedAt }), answer: newest.answer } : undefined;
+            } catch {
+              return undefined;
+            }
+          },
+          openRequests: async (sessionId) => {
+            try {
+              return store.requests(sessionId).filter((request) => request.state === "open").length;
+            } catch {
+              return 0;
+            }
+          },
+        },
+        // THE AGENT'S OWN, from the runtime being constructed here: it owns the
+        // standing document and the transcript's search index, and this closure
+        // is not called until a turn runs. See `AgentRuntime.memory`.
+        memory: agentRuntime.memory(),
+        /**
+         * THE ONE READ THAT LEAVES THIS MACHINE — #541's owner decision 4.
+         *
+         * BOTH VERBS ARE THE STORE'S OWN, which is what keeps this bounded: they
+         * are the same cached, timeout-guarded, injectable-`gh` reads the panel
+         * uses (`projectIssue`, `projectPull`), so an Agent asking about a pull
+         * request four times in a turn spends one round trip and the second is
+         * the same thirty-second cache the cockpit hits.
+         */
+        github: {
+          issue: (projectId, number) => store.projectIssue(projectId, number),
+          pull: (projectId, number) => store.projectPull(projectId, number),
+          projects: async () => store.listProjects().map((project) => ({ id: project.id, name: project.name })),
+        },
+      }),
+    model:
+      options.agentModel ??
+      ((input) =>
+        agentChatModel({
+          threadId: input.threadId,
+          ...(input.model ? { model: input.model } : {}),
+          // `reasoning_effort` on the wire, and only when somebody set it —
+          // see `agent/model.ts` for why it is omitted rather than defaulted.
+          ...(input.effort ? { effort: input.effort } : {}),
+          agentDir: path.join(root, "agent"),
+        })),
+    ...(options.now ? { now: options.now } : {}),
+    // THE SAME PARAGRAPH EVERY OTHER TURN ON THIS MACHINE GETS, under the same
+    // switch — `AgentOrientation.preamble`. A coordinator that did not know
+    // what Telar is would be the one conversation on the machine that did not.
+    orientation: () => (store.getAgentOrientation().preamble ? TELAR_ORIENTATION : undefined),
+    /**
+     * THE AGENT'S OWN NOTEBOOK — `notes/agent.json`, under the reserved id the
+     * sessions wall already knows it by (#541's owner decision 3).
+     *
+     * NOT A PROJECT'S NOTEBOOK, because the Agent owns no project and the
+     * preferences are not about one: pinning "Facundo prefers small PRs" to
+     * whichever repository happened to be busy that week would put a fact about
+     * a person in a strip about a codebase. It is a real note file in the real
+     * notes directory, so `notes_read` reaches it and nothing new had to be
+     * invented to hold it.
+     *
+     * REWRITTEN RATHER THAN ACCUMULATED — see `PREFERENCES_NOTE_TITLE`.
+     */
+    keepPreferences: (preferences) => {
+      const existing = notebook.readNotes(store.paths, AGENT_SELF_ID).find((note) => note.title === PREFERENCES_NOTE_TITLE);
+      if (existing) notebook.updateNote(store.paths, AGENT_SELF_ID, existing.id, { body: preferences, pinned: true });
+      else notebook.createNote(store.paths, AGENT_SELF_ID, { title: PREFERENCES_NOTE_TITLE, body: preferences, pinned: true, author: "session" });
+    },
+  });
+  /**
+   * A COMPLETION OR A PARKED REQUEST ON A SUBSCRIBED SESSION BECOMES AN INBOX
+   * ROW — and no turn at all (#541 A).
+   *
+   * The store fans subscriptions out and finds one subscriber that is not a
+   * session; this is where that one goes. Registered here rather than inside
+   * the runtime because the direction matters: the runtime knows about the
+   * store, and the store must not know about a graph.
+   *
+   * IT HANDS OVER THE NOTIFICATION WHOLE, the one `notification.ts` minted for
+   * every subscriber to this transition (#550), so the Agent's row and a
+   * session's notification item say the same sentence about the same fact.
+   */
+  store.setAgentWakeSink((wake) => {
+    agentRuntime.wake({ notification: wake.notification });
+  });
+  /**
+   * AN APPROVAL THIS MACHINE PARKED BEFORE IT LAST STOPPED, FOUND AGAIN.
+   *
+   * AWAITED, so `GET /v2/agent` cannot answer "nothing pending" to a cockpit
+   * that is holding the very question. One bounded read of a thread that in the
+   * ordinary case does not exist — see `AgentRuntime.restore`.
+   */
+  await agentRuntime.restore();
 
   const execution = createExecutionPort(store, {
     registerWorker: async (workerId) => {
@@ -1063,45 +1634,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       /**
-       * THE OUTWARD MCP SOCKET — before the bearer check, because its auth is
-       * DELIBERATELY NOT the management token: this endpoint answers to its
-       * own dedicated secret and to nothing else, in both directions — the
-       * engine token does not open the socket, and a leaked socket secret
-       * opens no other route (every other path still demands the bearer
-       * above). Streamable HTTP, stateless, tools only: POST carries one
-       * JSON-RPC message; GET (the server-initiated stream) is declined 405,
-       * which the protocol permits; DELETE has no session to end and says so
-       * with a 200.
-       */
-      if (url.pathname === "/v2/spool/mcp") {
-        if (!bearerIsValid(request.headers.authorization, socketSecret())) {
-          writeJson(response, 401, { error: { code: "engine_unauthorized", message: "the spool socket answers to its own secret — see /v2/spool/mcp-info" } });
-          return;
-        }
-        if (request.method === "POST") {
-          const message = await body(request);
-          const answer = await handleSocketMessage(socketTools(), message);
-          if (answer === undefined) {
-            response.writeHead(202).end();
-            return;
-          }
-          writeJson(response, 200, answer);
-          return;
-        }
-        if (request.method === "DELETE") {
-          writeJson(response, 200, {});
-          return;
-        }
-        writeJson(response, 405, { error: { code: "invalid_request", message: "the spool socket is POST-only — it keeps no stream open" } });
-        return;
-      }
-      /**
-       * THE SESSIONS SOCKET — beside the spool's, and before the bearer check
-       * for the identical reason: it answers to its OWN secret in both
-       * directions. The engine token does not open it, and its secret opens no
-       * other route — including, deliberately, the archive and delete verbs,
-       * which stay a person's: a chat client that could archive a session
-       * could erase another agent's work.
+       * THE SESSIONS SOCKET — an OUTWARD MCP socket, before the bearer check,
+       * because its auth is DELIBERATELY NOT the management token: it answers
+       * to its OWN dedicated secret and to nothing else, in both directions.
+       * The engine token does not open it, and a leaked socket secret opens no
+       * other route (every other path still demands the bearer above) —
+       * including, deliberately, the archive and delete verbs, which stay a
+       * person's: a chat client that could archive a session could erase
+       * another agent's work.
+       *
+       * Streamable HTTP, stateless, tools only: POST carries one JSON-RPC
+       * message; GET (the server-initiated stream) is declined 405, which the
+       * protocol permits; DELETE has no session to end and says so with a 200.
        *
        * IT MUST STAY ABOVE `sessionPath`, which would otherwise read
        * `/v2/sessions/mcp` as a session whose id is "mcp" and answer 404. That
@@ -1189,12 +1733,63 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
+      /**
+       * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS — `/resume`'s picker (#616).
+       *
+       * NOT UNDER A SESSION, and that is the whole reason it is here rather
+       * than beside `/skills`: the picker runs on a CANVAS, before the session
+       * it would adopt into exists. `projectSkills` learned the same thing in
+       * #500 — a question a canvas has to ask cannot be scoped to a session.
+       *
+       * IT IS STILL A LOGIN'S QUESTION. A configured instance keeps its own
+       * config directory with its own history in it, so `?instanceId=` selects
+       * whose conversations these are; absent is the built-in slot, which is
+       * where a terminal `claude` writes.
+       *
+       * `?cwd=` narrows to one project directory. Absent lists every project,
+       * which is the right default: resume finds a conversation BY ID from any
+       * directory, so filtering to cwd-matched projects would hide
+       * conversations that would adopt perfectly well. The project path is on
+       * each row instead, and the person decides.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/claude/conversations") {
+        const instanceId = url.searchParams.get("instanceId")?.trim();
+        const cwd = url.searchParams.get("cwd")?.trim();
+        writeJson(response, 200, {
+          conversations: await store.listAdoptableClaudeConversations({
+            ...(instanceId ? { instanceId } : {}),
+            ...(cwd ? { cwd } : {}),
+            limit: positiveParam(url.searchParams.get("limit"), 100, 500, "limit"),
+          }),
+        });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/projects") {
         // `?includeRemoved=1` OPTS IN to the put-away ones. Absent by default,
         // so every picker and the sidebar drop a removed project without
         // knowing the concept exists; its own settings page is the one caller
         // that has to name it in order to offer to restore it.
         writeJson(response, 200, { projects: store.listProjects({ includeRemoved: url.searchParams.get("includeRemoved") === "1" }) });
+        return;
+      }
+      /**
+       * A DRIVE WAS PLUGGED IN OR PULLED OUT — issue #534.
+       *
+       * ACCELERATION, NOT TRUTH, and the distinction is the whole contract. The
+       * poll in `projectMetadata` is the floor and is what makes the feature
+       * correct; this only moves the moment it notices from "within one pass" to
+       * "now". So a shell that never calls it, a watcher that dies, an event
+       * missed while the Mac was asleep — each costs latency and nothing else,
+       * which is why the desktop side (`main.js`) is allowed to be best-effort.
+       *
+       * NO BODY, AND IT NAMES NO PROJECT. The caller knows a disk moved; it does
+       * not know which registrations that concerns, and asking it to work that
+       * out would put the engine's rule in the shell. Every project is re-probed
+       * — three `stat`s each — and the answer says how many actually moved, which
+       * is what makes the desktop unit test able to assert the call landed.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/projects/reprobe") {
+        writeJson(response, 200, store.reprobeProjects());
         return;
       }
       /**
@@ -1270,6 +1865,424 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * ══ THE BUILT-IN AGENT — issue #531 ══
+       *
+       * Eight routes, and they are deliberately NOT under `/v2/sessions/`: the
+       * Agent is not a session, it has no id in that namespace, and a client
+       * that reached it through a session route would be told a conversation
+       * exists that `sessions_read` cannot open.
+       *
+       * THE RAIL DOES NOT READ ANY OF THESE. It gets `agent: { enabled }` off
+       * `/v2/sessions/live`, which it already polls — one flag, because a row
+       * that only shows a label needs nothing else. These are the pane's reads
+       * and the composer's writes.
+       */
+      if (url.pathname === "/v2/agent" && (request.method === "GET" || request.method === "PATCH")) {
+        if (request.method === "PATCH") {
+          const input = await body(request);
+          // FORWARDED BY PRESENCE, unvalidated, like every other settings patch
+          // here: the shape lives beside the schema in `agent/store.ts`, and a
+          // second copy at this seam could disagree with it.
+          agentRuntime.patch({
+            ...("enabled" in input ? { enabled: input.enabled } : {}),
+            ...("model" in input ? { model: input.model } : {}),
+            // The composer's other two pills (#539). Same forwarding rule as the
+            // model beside them: presence, unvalidated, because the shape lives
+            // once beside the schema.
+            ...("effort" in input ? { effort: input.effort } : {}),
+            ...("access" in input ? { access: input.access } : {}),
+            ...("reset" in input ? { reset: input.reset } : {}),
+          });
+          /**
+           * THE KEY IS WRITE-ONLY, AND IS NOT PART OF THE SETTINGS DOCUMENT.
+           *
+           * Stored 0600 beside the thread rather than on `agent.json`, for
+           * `providerSecrets`' own reason: the settings document is handed to
+           * every client that opens the pane, and a key on it would be one
+           * redaction away from being echoed back to a browser. There is no
+           * redacted round trip to preserve either — the only field is one a
+           * person retypes, and an empty string clears it.
+           */
+          if ("apiKey" in input) store.setAgentKey(input.apiKey);
+        }
+        // THE CREDENTIAL RIDES ALONG, because the pane that reads this is the
+        // pane that decides whether to show a setup field, and asking in a
+        // second request would let the two disagree about one instant. Which
+        // RUNG answered, never the key.
+        writeJson(response, 200, { agent: agentRuntime.state(), credential: store.agentCredential() });
+        return;
+      }
+      /**
+       * WHAT THE AGENT MAY RUN, DESCRIBED.
+       *
+       * ITS OWN ROUTE because `/v2/models/:driver` is keyed by
+       * `ProviderDriverKind` and answers "what can this SESSION run" — and the
+       * Agent is not a session. Go's public endpoint, no credential (the docs
+       * publish it as open), merged with models.dev's descriptions and the
+       * transcribed route table — see `agent/catalogue.ts`.
+       *
+       * THE AGENT DIRECTORY IS PASSED BECAUSE THE DESCRIPTIONS ARE CACHED IN
+       * IT: models.dev's `api.json` is 4.6 MB, so it is read at most once a day
+       * into `<engineRoot>/agent/catalogue.json`. It still fails soft with the
+       * service's own words — an empty picker carrying the reason beats one
+       * full of ids that 404.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/agent/models") {
+        writeJson(response, 200, await readAgentModels(path.join(root, "agent")));
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/agent/turns") {
+        const input = await body(request);
+        const text = stringValue(input.text, "text") ?? "";
+        try {
+          /**
+           * `brief` IS THE VOICE CLIENT'S FLAG (#567) — telar-vr sends it, the
+           * cockpit does not. It shortens THIS turn's answer and is stored
+           * nowhere, so the same conversation read on a screen a minute later
+           * is unchanged. Absent and false are the same thing here.
+           */
+          writeJson(response, 201, {
+            ...agentRuntime.submit({ text, ...(input.brief === true ? { brief: true } : {}) }),
+            agent: agentRuntime.state(),
+          });
+        } catch (error) {
+          // A switched-off Agent and an empty message are both the caller's
+          // mistake, said in the sentence the runtime wrote for them.
+          throw new HttpError(409, "conflict", error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      if (request.method === "POST" && url.pathname.startsWith("/v2/agent/turns/") && url.pathname.endsWith("/cancel")) {
+        const runId = url.pathname.slice("/v2/agent/turns/".length, -"/cancel".length);
+        // STOPPED IS A FACT, NOT A 404. A run that already finished answers
+        // `false` rather than an error: a Stop pressed a beat late is not a
+        // client bug, and it must not paint a failure over a turn that worked.
+        writeJson(response, 200, { stopped: agentRuntime.cancel(runId || undefined), agent: agentRuntime.state() });
+        return;
+      }
+      /**
+       * THE TRANSCRIPT, FROM EITHER END (#580).
+       *
+       * `after=` is unchanged and still means "what is new" — it is what every
+       * poll and every stream reconnect rides. `tail=1` opens on the END, and
+       * `before=<id>` walks back from there; both answer `oldest`, the next
+       * `before`, and read `more` as "older rows are waiting".
+       *
+       * BACKWARD IS ASKED FOR AND NEVER INFERRED. A bare read still means
+       * "from the beginning", so a client built against the old route gets
+       * exactly what it got before rather than silently landing at the end of
+       * a conversation it meant to read from the start.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/agent/thread") {
+        const limit = positiveParam(url.searchParams.get("limit"), THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX, "limit");
+        const before = url.searchParams.get("before");
+        const tail = url.searchParams.get("tail");
+        if (before !== null || tail === "1" || tail === "true") {
+          writeJson(response, 200, agentRuntime.threadWindow({
+            ...(before === null ? {} : { before: positiveParam(before, 0, Number.MAX_SAFE_INTEGER, "before") }),
+            limit,
+          }));
+          return;
+        }
+        writeJson(response, 200, agentRuntime.thread({
+          after: positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after"),
+          limit,
+        }));
+        return;
+      }
+      /**
+       * ══ THE WAKE INBOX — issue #541, section A ══
+       *
+       * WHAT REPLACED THE WAKE TURN. A completion on a subscribed session writes
+       * a row here and starts nothing; the next turn a person begins opens with
+       * a digest of what is unread. These two routes are what a client needs to
+       * draw the same thing the model was shown, and to clear it.
+       *
+       * BOUNDED LIKE EVERY OTHER READ IN THIS ENGINE (#515): `after` is an
+       * exclusive cursor, `limit` is clamped by the store, and `more` says
+       * whether the page stopped early. `unread=1` is the section above the
+       * composer; without it the route pages the whole inbox, which is what a
+       * "show everything" disclosure would ask for.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/agent/inbox") {
+        const unreadOnly = url.searchParams.get("unread");
+        writeJson(response, 200, agentRuntime.inbox({
+          after: positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after"),
+          limit: positiveParam(url.searchParams.get("limit"), INBOX_PAGE_DEFAULT, INBOX_PAGE_MAX, "limit"),
+          ...(unreadOnly === "1" || unreadOnly === "true" ? { unreadOnly: true } : {}),
+        }));
+        return;
+      }
+      /**
+       * MARK ROWS READ, BY ID.
+       *
+       * BY ID AND NEVER "EVERYTHING", for `resolveAgentRequest`'s reason: a
+       * client holding a stale list must not be able to clear rows that landed
+       * after it last looked. `read` is how many actually MOVED, so a second
+       * press of the same button answers `0` rather than claiming a write that
+       * did nothing.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/agent/inbox/read") {
+        const input = await body(request);
+        const ids = Array.isArray(input.ids) ? input.ids.filter((id: unknown): id is number => typeof id === "number") : undefined;
+        if (!ids) throw new HttpError(400, "invalid_request", "ids must be a list of row ids");
+        if (ids.length > INBOX_PAGE_MAX) throw new HttpError(400, "invalid_request", `mark at most ${INBOX_PAGE_MAX} rows read at a time`);
+        writeJson(response, 200, agentRuntime.markInboxRead(ids));
+        return;
+      }
+      if (request.method === "POST" && url.pathname.startsWith("/v2/agent/requests/")) {
+        const requestId = url.pathname.slice("/v2/agent/requests/".length);
+        const input = await body(request);
+        const decision = input.decision === "accept" ? "accept" : input.decision === "decline" ? "decline" : undefined;
+        if (!decision) throw new HttpError(400, "invalid_request", 'decision must be "accept" or "decline"');
+        // ANSWERED BY ID, so a client holding a stale question cannot approve
+        // the one that replaced it. `false` means it was already answered.
+        writeJson(response, 200, { resolved: agentRuntime.resolveRequest(requestId, decision), agent: agentRuntime.state() });
+        return;
+      }
+      /**
+       * THE ENGINE'S FIRST PUSH ROUTE, AND IT IS KEPT SMALL ON PURPOSE.
+       *
+       * Server-sent events over the same bearer auth as everything else: no
+       * second protocol, no upgrade, no library. `after` is a transcript cursor,
+       * so the contract is the one every other read here has — page what you
+       * missed, then watch.
+       *
+       * THE BACKLOG IS SENT FIRST, INSIDE THE SAME RESPONSE. A client that
+       * paged and then subscribed would have a gap between the two calls; this
+       * closes it by replaying from the caller's cursor before the live feed
+       * starts, on one connection.
+       *
+       * A DELTA IS NOT REPLAYABLE and is not replayed: it is live-only, and the
+       * assistant row that follows carries the whole text. A client joining
+       * mid-sentence sees the finished message a moment later rather than half
+       * of one for ever.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/agent/stream") {
+        const after = positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after");
+        response.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        });
+        const send = (event: unknown) => {
+          try {
+            response.write(`data: ${JSON.stringify(event)}\n\n`);
+          } catch {
+            // The socket has gone; the close handler below unsubscribes.
+          }
+        };
+        /**
+         * ONE FRAME BEFORE ANYTHING ELSE, AND IT IS NOT POLITENESS.
+         *
+         * Measured: `writeHead` alone does not put the headers on the wire, so a
+         * client subscribing to a QUIET thread — one with no backlog to replay —
+         * sat in `await fetch(...)` until something happened to be said. Which is
+         * exactly backwards: the emptier the conversation, the longer the client
+         * hung waiting to be told it had connected. A comment frame flushes them
+         * and is ignored by every SSE reader.
+         */
+        response.write(": open\n\n");
+        for (const row of agentRuntime.thread({ after, limit: THREAD_PAGE_MAX }).rows) send({ type: "row", row });
+        const stop = agentRuntime.watch(send);
+        // A COMMENT FRAME ON A TIMER, because a stream that says nothing for
+        // twenty minutes is one a proxy closes. It is not an event and no
+        // client has to know about it.
+        const beat = setInterval(() => {
+          try {
+            response.write(": beat\n\n");
+          } catch {
+            /* the close handler is what actually tidies up */
+          }
+        }, 25_000);
+        beat.unref();
+        const finish = () => {
+          clearInterval(beat);
+          stop();
+          openStreams.delete(finish);
+        };
+        /**
+         * THE SHUTDOWN HAS TO BE ABLE TO END THIS.
+         *
+         * `server.close()` stops accepting and then WAITS for open connections,
+         * and an SSE stream is a connection that by design never ends — so a
+         * daemon with a cockpit watching the Agent would hang on close for ever.
+         * Registered here and ended in `close()` below, before the server is
+         * asked to shut: the client sees a clean end of stream and reconnects to
+         * whatever comes back up.
+         */
+        openStreams.add(finish);
+        request.on("close", finish);
+        response.on("close", finish);
+        (finish as { end?: () => void }).end = () => {
+          finish();
+          try {
+            response.end();
+          } catch {
+            /* already gone */
+          }
+        };
+        return;
+      }
+      /**
+       * ══ DICTATION — issue #544, first step ══
+       *
+       * TWO ROUTES, AND NEITHER OF THEM CARRIES AUDIO. The microphone is in the
+       * client on every surface Telar has, so the engine does the one thing only
+       * it can: it holds the long-lived Deepgram key, and mints a token that
+       * expires in minutes for a client to open its own socket with. Relaying
+       * frames through a Mac that has no reason to see them is the second step's
+       * problem, and may never be one — see `dictation/token.ts`.
+       *
+       * MACHINE-SCOPED, like the session defaults and the Agent beside it: the
+       * desktop shell, a browser tab and a paired phone read one engine, and a
+       * per-client key would be a key pasted once per device.
+       */
+      if (url.pathname === "/v2/dictation" && (request.method === "GET" || request.method === "PATCH")) {
+        /**
+         * THE KEY IS WRITE-ONLY AND THERE IS NO SETTINGS DOCUMENT FOR IT TO
+         * RIDE ON. Stored 0600 under `dictation/`, for `agentKeyFile`'s reason:
+         * anything handed to every client that opens the pane is one redaction
+         * away from being echoed back to a browser. There is no redacted round
+         * trip to preserve either — the only field is one a person retypes, and
+         * an empty string clears it.
+         */
+        if (request.method === "PATCH") {
+          const input = await body(request);
+          // BY PRESENCE, both of them. A client that sent no key must not be
+          // read as clearing one, and a client that sent no provider must not
+          // be read as switching dictation off.
+          if ("provider" in input) store.setDictationProvider(input.provider);
+          if ("language" in input) store.setDictationLanguage(input.language);
+          // AN EMPTY LIST IS A REAL VALUE HERE — it is what emptying the box
+          // means — so this is by presence like the rest and not by truthiness.
+          if ("vocabulary" in input) store.setDictationVocabulary(input.vocabulary);
+          if ("apiKey" in input) store.setDictationKey(input.apiKey);
+        }
+        // `provider` IS A SETTING NOW, not a constant riding the answer. `off`
+        // is the default and means there is no mic button anywhere — see
+        // `dictation/provider.ts` for why that is the honest default rather
+        // than a feature switched off. `configured` is still the whole of what
+        // may be said about the key, and it is answered even when the provider
+        // is off so the pane can say a key is already there.
+        //
+        // `language` AND `languages` TRAVEL TOGETHER (#560): the code that is
+        // stored, and the vocabulary it is written in, so a picker can be drawn
+        // from one answer without a second route and without a client holding a
+        // copy of a vendor's language table.
+        writeJson(response, 200, { dictation: store.dictationState() });
+        return;
+      }
+      /**
+       * A TOKEN, SPENT ONCE, WORTH LITTLE IF CAUGHT.
+       *
+       * POST rather than GET because it MINTS something: it is a call to
+       * Deepgram that costs a round trip and produces a new credential every
+       * time, and a GET that did that would be cached by something eventually.
+       *
+       * THE REFUSALS ARE THREE DIFFERENT FACTS. Dictation being off is a
+       * `conflict` naming the pane that turns it on — and it is the ordinary
+       * default rather than a misconfiguration; no key is a `conflict` naming
+       * the pane to paste one on; Deepgram refusing is `provider_unavailable`
+       * carrying Deepgram's own words, because "401" alone cannot tell a person
+       * whether the key is wrong or the account is out of credit. All three are
+       * sentences — a client's only move is to show one to a person.
+       *
+       * THE PROVIDER DECIDES, AND IT DECIDES BY NOT HAVING A `mintToken`. That
+       * is what keeps "off spends nothing" true for the next provider too,
+       * rather than being an `if` somebody has to remember to write again.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/dictation/token") {
+        try {
+          const state = store.dictationState();
+          const chosen = dictationProvider(state.provider);
+          if (!chosen.mintToken) throw new DictationError("off", DICTATION_OFF);
+          // THE LANGUAGE GOES DOWN WITH THE TOKEN (#560). Both clients ask for
+          // one on every press of the mic button and neither reads the settings
+          // route on that path, so putting it here is what makes a single round
+          // trip answer "with what credential" and "in which language" at once.
+          //
+          // AND WITH IT, THE GLOSSARY (#581). The same argument one step
+          // further: the words worth priming a recogniser with are this Mac's
+          // unsettled conversations, its projects and the terms somebody typed
+          // into the box, and no browser tab or phone can see any of them. The
+          // route hands the provider the RAW NAMES — `keyterm` is Deepgram's
+          // word and is spoken in `provider.ts`, not here.
+          writeJson(
+            response,
+            200,
+            await chosen.mintToken({
+              key: store.dictationKey(),
+              language: state.language,
+              vocabulary: state.vocabulary,
+              context: store.dictationContext(),
+              ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}),
+            }),
+          );
+        } catch (error) {
+          if (error instanceof DictationError) {
+            const conflict = error.kind === "off" || error.kind === "unconfigured";
+            throw new HttpError(conflict ? 409 : 502, conflict ? "conflict" : "provider_unavailable", error.message);
+          }
+          throw error;
+        }
+        return;
+      }
+      /**
+       * WHY THE LAST DICTATION FAILED — asked once, for every surface (#711).
+       *
+       * NO CLIENT CAN ANSWER THIS AND NONE EVER WILL. A browser's `WebSocket`
+       * error event carries no reason BY DESIGN — surfacing the status of a
+       * failed cross-origin handshake would be an oracle — so a tab sees a bare
+       * `onerror`, the phone sees a bare read failure, and the headset sees a
+       * third version of the same nothing. Deepgram DOES send a reason; it is
+       * thrown away on the way to all three. That is how a `400 Bad Request —
+       * Keyterm limit exceeded` reached the owner as "the connection failed"
+       * and sent him to replace a key that was fine.
+       *
+       * SO THE ENGINE ASKS. It holds the long-lived key and already opens this
+       * endpoint to fit the glossary, which makes it the one place that can —
+       * and one place rather than three clients each rediscovering that they
+       * cannot.
+       *
+       * POST, AND AFTER THE FAILURE RATHER THAN BEFORE EVERY PRESS. It spends a
+       * handshake against Deepgram, so it is not a GET something would cache;
+       * and it is paid by somebody whose dictation has already stopped rather
+       * than by somebody about to speak. See `dictation/diagnose.ts` for the
+       * shapes weighed and why this one.
+       *
+       * THE REFUSALS ARE THE TOKEN ROUTE'S, DELIBERATELY. Off is a `conflict`,
+       * no key is a `conflict` naming the pane to paste one on, and the
+       * provider's own trouble is `provider_unavailable` — the same three facts
+       * a client already knows how to show, rather than a second vocabulary for
+       * the same route's worth of problems.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/dictation/diagnose") {
+        try {
+          const state = store.dictationState();
+          const chosen = dictationProvider(state.provider);
+          if (!chosen.diagnose) throw new DictationError("off", DICTATION_OFF);
+          writeJson(
+            response,
+            200,
+            await chosen.diagnose({
+              key: store.dictationKey(),
+              language: state.language,
+              vocabulary: state.vocabulary,
+              context: store.dictationContext(),
+              ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}),
+            }),
+          );
+        } catch (error) {
+          if (error instanceof DictationError) {
+            const conflict = error.kind === "off" || error.kind === "unconfigured";
+            throw new HttpError(conflict ? 409 : 502, conflict ? "conflict" : "provider_unavailable", error.message);
+          }
+          throw error;
+        }
+        return;
+      }
+      /**
        * Where each project group sits in the rail. A document of the
        * environment, like the two above: one arrangement for every client that
        * reads this engine, so a drag on the desktop is where the phone finds
@@ -1331,6 +2344,166 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const id = decodeURIComponent(url.pathname.slice("/v2/browser/logins/".length));
         if (!createLoginGrantStore(store.paths.root).revoke(id)) throw new HttpError(404, "not_found", "no such remembered login");
         writeJson(response, 200, { ok: true });
+        return;
+      }
+      /**
+       * WHAT TELAR IS KEEPING AND WHERE — issue #642. Read-only: there is no
+       * route here that removes a byte, because the pane this feeds has no
+       * delete and no "clean up" in this pass.
+       *
+       * `?refresh=1` RE-WALKS; without it the cached measurement comes back
+       * with the timestamp it was taken at, and the pane shows the figure as of
+       * that moment. The first read of an engine's life waits for the walk —
+       * seconds on a large store — which is why the cockpit fetches this off
+       * the render path and never on a timer.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/storage") {
+        writeJson(response, 200, { storage: await readStorage(url.searchParams.get("refresh") === "1") });
+        return;
+      }
+      /**
+       * GIVE THE JOURNAL'S FREED PAGES BACK — issue #646.
+       *
+       * THE ONLY WRITE THE STORAGE PANE HAS, and it is a POST because it is one:
+       * #642 was deliberately read-and-reveal, on the argument that a pane
+       * should not invite somebody to delete history they have just met. This
+       * does not delete history. It drops journal rows whose own
+       * `item.completed` already carries what they say, and then vacuums — so
+       * what it removes is a second copy and a high-water mark, and the pane
+       * can say so in those words.
+       *
+       * IT BLOCKS FOR SECONDS, DELIBERATELY. The VACUUM holds an exclusive lock
+       * for the rewrite (7 s on the owner's gigabyte) and there is no honest way
+       * to report a before-and-after without waiting for it. That is the whole
+       * reason it is a button rather than something the engine does at startup.
+       *
+       * AND THE CACHED MEASUREMENT GOES WITH IT: the figures the pane is showing
+       * describe a file this just changed the size of, and serving them
+       * afterwards would tell somebody the press did nothing.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/storage/journal/reclaim") {
+        const reclaimed = store.reclaimExecutionStore();
+        if (!reclaimed) {
+          writeJson(response, 409, { error: "this engine is not running on SQLite, so there is nothing to vacuum" });
+          return;
+        }
+        storageCache.report = undefined;
+        writeJson(response, 200, { reclaimed });
+        return;
+      }
+      /**
+       * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
+       *
+       * NO `restartRequired`, and that is a finding rather than an omission.
+       * The root is consulted at exactly one moment — planning where a new
+       * checkout lands — and everything afterwards addresses a worktree by the
+       * absolute path recorded on its session. So a new root takes effect on
+       * the next cut, and printing a restart out of symmetry with #630 would
+       * cost somebody a restart they do not need.
+       *
+       * AND NOTHING IS MOVED BY THIS. Checkouts already cut keep working where
+       * they are; moving them is a separate, explicit operation with its own
+       * refusals. A PUT here cannot lose anybody's work.
+       */
+      if (url.pathname === "/v2/worktrees-root" && (request.method === "GET" || request.method === "PUT")) {
+        if (request.method === "PUT") {
+          const input = (await body(request)) as { root?: unknown };
+          // PRESENT-BUT-NULL IS "put it back beside the store", the same shape
+          // every other nullable setting here uses to mean the default.
+          if (input.root === null) clearWorktreesRoot(store.paths.root);
+          else if (typeof input.root === "string" && input.root.trim()) {
+            if (!path.isAbsolute(input.root.trim())) throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path");
+            try {
+              writeWorktreesRoot(store.paths.root, input.root.trim());
+            } catch (cause) {
+              throw new HttpError(400, "invalid_request", cause instanceof Error ? cause.message : "that folder could not be used for session checkouts");
+            }
+          } else throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path, or null for the default");
+          // The figures are about to be wrong in the one way that matters, so
+          // the next read measures rather than serving the old split.
+          storageCache.report = undefined;
+        }
+        const state = readWorktreesRoot(store.paths.root);
+        writeJson(response, 200, {
+          worktreesRoot: {
+            ...state,
+            default: defaultWorktreesRoot(store.paths.root),
+            ...(worktreesRootBlocker(state) ? { blocker: worktreesRootBlocker(state) } : {}),
+          },
+        });
+        return;
+      }
+      /**
+       * MOVE THE CHECKOUTS ALREADY CUT — issue #642 part 2, and the one
+       * destructive thing on this pane.
+       *
+       * IT RE-CUTS RATHER THAN COPIES, so `git worktree remove` — never with
+       * `--force` — is what refuses a checkout holding uncommitted work, and
+       * the branch is verified to still exist before anything is removed. See
+       * `worktrees-move.ts` for why copy-and-repair is unsafe rather than
+       * merely slower.
+       *
+       * REFUSED WHOLESALE WHILE ANYTHING IS WORKING, before a single checkout
+       * is touched: a turn in flight is holding that directory right now.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/worktrees-root/move") {
+        const state = readWorktreesRoot(store.paths.root);
+        const destination = rootOf(state);
+        if (!destination) throw new HttpError(409, "conflict", worktreesRootBlocker(state) ?? "Telar does not know where session checkouts belong.");
+        let outcome;
+        try {
+          outcome = await store.moveWorktrees(destination);
+        } catch (cause) {
+          throw new HttpError(409, "conflict", cause instanceof Error ? cause.message : "the checkouts could not be moved");
+        }
+        // The figures moved by exactly this much, so the next read measures.
+        storageCache.report = undefined;
+        writeJson(response, 200, { move: { ...outcome, summary: describeOutcome(outcome) } });
+        return;
+      }
+      /**
+       * WHAT IS BEING KEPT — issue #671, and the screen that did not exist.
+       *
+       * NOT CACHED, UNLIKE THE STORAGE REPORT BESIDE IT, and the difference is
+       * what each answer is for. Storage answers "how big is Telar", which does
+       * not change by the second and is expensive to re-walk whole. This
+       * answers "which of these may I delete", and every rung of that is live:
+       * a session starts working, a drive is unplugged, a PR merges. A cached
+       * verdict is a verdict that was true earlier, and this one is acted on.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/worktrees") {
+        writeJson(response, 200, { inventory: await store.worktreeInventory() });
+        return;
+      }
+      /**
+       * GIVE CHECKOUTS BACK — the other half of #671, and the second
+       * destructive thing this daemon offers.
+       *
+       * IT ARCHIVES SESSIONS. A checkout held by a settled session is released
+       * by putting that session down, which is the only supported way (see
+       * `reclaimWorktrees`), so this endpoint ends conversations as well as
+       * freeing disk. The client's confirm says so in those words.
+       *
+       * PARTIAL IS SUCCESS AND REFUSALS ARE THE PAYLOAD, not an error status:
+       * a press over six checkouts where one is being worked in is four
+       * removals, one archive and one honest refusal, and a 409 would throw
+       * away the five that worked.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/worktrees/reclaim") {
+        const input = (await body(request)) as { items?: unknown };
+        if (!Array.isArray(input.items)) throw new HttpError(400, "invalid_request", "items must be an array of checkouts to give back");
+        const items = input.items.map((entry) => {
+          const item = entry as { path?: unknown; confirm?: unknown };
+          if (typeof item.path !== "string" || !item.path.trim()) {
+            throw new HttpError(400, "invalid_request", "each item needs the checkout's path");
+          }
+          return { path: item.path, ...(typeof item.confirm === "string" ? { confirm: item.confirm } : {}) };
+        });
+        const results = await store.reclaimWorktrees(items);
+        // Gigabytes just moved, so the pane above this one must measure rather
+        // than serve the split it read before the press.
+        storageCache.report = undefined;
+        writeJson(response, 200, { reclaim: { results, summary: describeReclaim(results) } });
         return;
       }
       /**
@@ -1648,877 +2821,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * THE SPOOL — the item store behind SPEC-organization-workspace.
-       *
-       * NOT UNDER A PROJECT, and that is the module's premise rather than a
-       * routing convenience: an item's project is an OPTIONAL field on it, and
-       * absent means floating, which is a valid resting state. A
-       * `/v2/projects/:id/spool` shape would make the one thing the store is for
-       * — holding work that has not been placed yet — unaddressable. A
-       * project-scoped view is a filter over `rows`, not a different endpoint.
+       * THE CONNECT CARD — where the notebook's outward socket listens and its
+       * dedicated secret. BEHIND THE NORMAL BEARER, deliberately: the card
+       * mints and reveals the socket's credential, so only something already
+       * holding engine access may read it. The composed `claude mcp add` line
+       * comes from the engine so the card and the socket cannot disagree.
        */
-      if (request.method === "GET" && url.pathname === "/v2/spool") {
-        writeJson(response, 200, store.spoolSnapshot());
-        return;
-      }
-      /**
-       * The Spool's master chat, ensured.
-       *
-       * A GET THAT MAY CREATE, which is unusual enough to justify: the master is
-       * a SINGLETON front door, so "get me the master" and "make one if there
-       * has never been one" are the same request from the caller's side, and
-       * splitting them would make every client do the two-step. It is
-       * idempotent — a second call returns the first one's session — which is
-       * the property that actually matters here.
-       */
-      if (url.pathname === "/v2/spool/night") {
-        if (request.method === "GET") {
-          writeJson(response, 200, { night: store.spoolNight() });
-          return;
-        }
-        if (request.method === "POST") {
-          /**
-           * STARTS THE NIGHT AND ANSWERS AT ONCE, with the plan it intends to
-           * work. It used to await the whole run, and a live night proved that
-           * wrong inside one attempt: five minutes in, the caller's HTTP client
-           * gave up and reported the engine unreachable while the daemon
-           * happily finished every job. Progress is read from `GET` — the record
-           * is on disk after each job, so that read is always current.
-           *
-           * IT REFUSES WHILE A PERSON IS WORKING rather than standing down one
-           * job in. Starting a run that immediately halts would burn the plan
-           * and write a stopped record for no reason.
-           */
-          if (store.humanActive()) {
-            writeJson(response, 200, {
-              night: null,
-              refused: "A turn is running, so the night stood down rather than competing for the account.",
-            });
-            return;
-          }
-          const input = await body(request).catch(() => ({}) as Record<string, unknown>);
-          writeJson(
-            response,
-            200,
-            store.startSpoolNight({
-              ...(typeof input.maxJobs === "number" ? { maxJobs: input.maxJobs } : {}),
-              ...(typeof input.maxCostUsd === "number" ? { maxCostUsd: input.maxCostUsd } : {}),
-            }),
-          );
-          return;
-        }
-      }
-      /**
-       * WHAT THE SPOOL IS DOING RIGHT NOW. `GET` is the whole surface; `DELETE`
-       * on one id stops that pass. There is no `POST` — work is begun by the
-       * verb that spends the money (a consultation, a night), never by asking
-       * for a record of it.
-       */
-      /**
-       * THE SUBJECTS, RECONCILED ON READ. `GET` derives any that items name and
-       * nothing has registered, so this is also how the migration runs — no boot
-       * hook, nothing to leave half-done, and it self-heals.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/subjects") {
-        writeJson(response, 200, { subjects: store.spoolSubjects() });
-        return;
-      }
-      /**
-       * THE LOBBY — mission control, ranked, never enumerated (§13.2). A pure
-       * composition over what the routes above already serve: no store write,
-       * no `gh` run, no model call. `?today=YYYY-MM-DD` is optional — see
-       * `todayParam` — and every today-relative fact simply does not appear
-       * without it.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/lobby") {
-        writeJson(response, 200, { lobby: store.spoolLobby(todayParam(url)) });
-        return;
-      }
-      /**
-       * THE RE-ENTRY BRIEF — a subject's room, opened. Same pull-only,
-       * model-free composition as the lobby above, widened to one subject's
-       * pickup, threads, stored look, queue rows and notes. `not_found` for a
-       * key nothing goes by, the same shape `PATCH .../subjects/:key` uses.
-       */
-      const spoolSubjectBrief = /^\/v2\/spool\/subjects\/([^/]+)\/brief$/.exec(url.pathname);
-      if (request.method === "GET" && spoolSubjectBrief) {
-        writeJson(response, 200, {
-          brief: store.spoolSubjectBrief(decodeURIComponent(spoolSubjectBrief[1]), todayParam(url)),
-        });
-        return;
-      }
-      const spoolSubject = /^\/v2\/spool\/subjects\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolSubject) {
-        const input = await body(request);
-        /**
-         * TERRAIN IS ITS OWN ARM. `null` clears and an object sets — two
-         * different requests JSON can only tell apart by the key being present,
-         * the same `in` rule the inbox route states. The shape and the
-         * repo-address guard live in the store (the wall); a refusal comes back
-         * with the store's own sentence.
-         */
-        if ("terrain" in input) {
-          writeJson(response, 200, {
-            subject: store.setSpoolSubjectTerrain(
-              decodeURIComponent(spoolSubject[1]),
-              input.terrain as Parameters<typeof store.setSpoolSubjectTerrain>[1],
-            ),
-          });
-          return;
-        }
-        /**
-         * IDENTITY IS ITS OWN ARM, on the same `in` rule as terrain: `null`
-         * clears a field, a value sets it, an absent key leaves it alone —
-         * which is what lets one request set `area`, `color` and `rank`
-         * together, the way a user states them ("pon casa en Personal, de
-         * color mar"), or the way a drag surface states just `rank` alone.
-         * The closed color set, the area cap and the rank floor live in the
-         * store (the wall); a refusal comes back with the store's own
-         * sentence.
-         */
-        if ("area" in input || "color" in input || "rank" in input) {
-          writeJson(response, 200, {
-            subject: store.setSpoolSubjectIdentity(decodeURIComponent(spoolSubject[1]), {
-              ...("area" in input ? { area: input.area as string | null } : {}),
-              ...("color" in input ? { color: input.color as Parameters<typeof store.setSpoolSubjectIdentity>[1]["color"] } : {}),
-              ...("rank" in input ? { rank: input.rank as number | null } : {}),
-            }),
-          });
-          return;
-        }
-        const permits = input.permits;
-        if (permits !== "read" && permits !== "draft" && permits !== "propose") {
-          writeJson(response, 400, {
-            error: `permits must be "read", "draft" or "propose" — got ${JSON.stringify(permits)}.`,
-          });
-          return;
-        }
-        // A key nothing goes by throws `not_found` from the store — see
-        // `setSpoolSubjectPermits`. Written as a bare `writeJson(404)` first,
-        // which dropped the error CODE and made the web adapter report a
-        // reachable, answered request as "the engine is unreachable".
-        writeJson(response, 200, {
-          subject: store.setSpoolSubjectPermits(decodeURIComponent(spoolSubject[1]), permits),
-        });
-        return;
-      }
-      /**
-       * THE AREAS — the group-level permit ceilings. `GET` lists only the
-       * records something was stated on; the area NAMES live on the subjects
-       * read, and the web joins the two by `name` (the join-by-key idiom).
-       * `PATCH` states a ceiling or withdraws one with `null` — there is no
-       * create route (records are minted lazily by the first statement) and no
-       * delete route (a cleared, unreferenced area sits harmlessly).
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/areas") {
-        writeJson(response, 200, { areas: store.spoolAreas() });
-        return;
-      }
-      const spoolArea = /^\/v2\/spool\/areas\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolArea) {
-        const input = await body(request);
-        const ceiling = input.ceiling;
-        if (ceiling !== null && ceiling !== "read" && ceiling !== "draft" && ceiling !== "propose") {
-          throw new HttpError(
-            400,
-            "invalid_request",
-            `ceiling must be "read", "draft", "propose" or null to withdraw it — got ${JSON.stringify(ceiling)}.`,
-          );
-        }
-        writeJson(response, 200, { area: store.setSpoolAreaCeiling(decodeURIComponent(spoolArea[1]), ceiling) });
-        return;
-      }
-      /**
-       * THE TAGS — the free-text labels items and notes already carry, given
-       * exactly two hand verbs. `GET` is a projection (no tag record on
-       * disk); `PATCH .../tags/:from` with `{to}` renames it everywhere,
-       * merging onto `to` when that name is already in use. There is no
-       * create route (a tag exists the moment something carries it) and no
-       * delete route (retagging to `[]` on the row itself is how one goes
-       * away).
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/tags") {
-        writeJson(response, 200, { tags: store.spoolTags() });
-        return;
-      }
-      const spoolTag = /^\/v2\/spool\/tags\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolTag) {
-        const input = await body(request);
-        const to = stringValue(input.to, "to");
-        if (!to) throw new HttpError(400, "invalid_request", "to is required — the name the tag should read after the rename.");
-        writeJson(response, 200, store.renameSpoolTag(decodeURIComponent(spoolTag[1]), to));
-        return;
-      }
-      /**
-       * THE APERTURE SLOT — which smart view the wide room is showing. `PUT`
-       * because the request replaces the one whole value: idempotent, last
-       * writer wins, and the chat's tool and the hand's click share this slot
-       * so neither can drift from the other. No history behind it — see
-       * `spool/aperture.ts` for why a log of glances is refused.
-       */
-      if (url.pathname === "/v2/spool/aperture") {
-        if (request.method === "GET") {
-          writeJson(response, 200, { aperture: store.spoolAperture() });
-          return;
-        }
-        if (request.method === "PUT") {
-          const input = await body(request);
-          writeJson(response, 200, { aperture: store.setSpoolAperture(input.view) });
-          return;
-        }
-      }
-      /**
-       * RECONCILE-ON-LOOK — the only route in the engine that reads the world,
-       * and it is PULL ONLY: a human's arrival or focus calls it, no timer or
-       * webhook exists to. `gh` failing is a 200 whose outcome carries the
-       * stale look and an `error` naming why — the room renders its staleness
-       * rather than coming down. A subject with no terrain answers with a
-       * `note`, because that is an ordinary state and not a fault.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/spool/look") {
-        const input = await body(request);
-        const subjectKey = stringValue(input.subjectKey, "subjectKey");
-        if (!subjectKey) throw new HttpError(400, "invalid_request", "subjectKey is required — name the subject to look at.");
-        writeJson(response, 200, { look: await store.reconcileSpoolLook(subjectKey) });
-        return;
-      }
-      /** The stored looks — what the Spool last saw, honestly stale
-       *  (`fresh: false`), with no network read. */
-      if (request.method === "GET" && url.pathname === "/v2/spool/looks") {
-        writeJson(response, 200, { looks: store.spoolLooks() });
-        return;
-      }
-      /** "Noted" — drains ONE observation. Never deletes; the row stays with
-       *  its mark, which is the store's no-delete discipline on the one record
-       *  the Spool authors about the world. */
-      const spoolLookAck = /^\/v2\/spool\/looks\/([^/]+)\/ack$/.exec(url.pathname);
-      if (request.method === "POST" && spoolLookAck) {
-        const input = await body(request);
-        const observationId = stringValue(input.observationId, "observationId");
-        if (!observationId) throw new HttpError(400, "invalid_request", "observationId is required — name the observation being noted.");
-        writeJson(response, 200, {
-          look: store.acknowledgeSpoolObservation(decodeURIComponent(spoolLookAck[1]), observationId),
-        });
-        return;
-      }
-      /** "Noted", in bulk — one digest line's whole group drained in one
-       *  gesture. Idempotent per id; the rules live in the store. */
-      const spoolLookAckAll = /^\/v2\/spool\/looks\/([^/]+)\/ack-all$/.exec(url.pathname);
-      if (request.method === "POST" && spoolLookAckAll) {
-        const input = await body(request);
-        if (!Array.isArray(input.observationIds) || input.observationIds.some((id) => typeof id !== "string")) {
-          throw new HttpError(400, "invalid_request", "observationIds must be an array of observation ids.");
-        }
-        const { look, acknowledged } = store.acknowledgeSpoolObservations(
-          decodeURIComponent(spoolLookAckAll[1]),
-          input.observationIds as string[],
-        );
-        writeJson(response, 200, { look, acknowledged });
-        return;
-      }
-      const spoolLookOne = /^\/v2\/spool\/looks\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "GET" && spoolLookOne) {
-        writeJson(response, 200, { look: store.spoolLook(decodeURIComponent(spoolLookOne[1])) });
-        return;
-      }
-      /** Everything remembered, in one read — retired facts included, because
-       *  "dismissing drains" means the record stays legible to the human. */
-      if (request.method === "GET" && url.pathname === "/v2/spool/memory") {
-        writeJson(response, 200, store.spoolMemory());
-        return;
-      }
-      const spoolFact = /^\/v2\/spool\/memory\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolFact) {
-        const input = await body(request);
-        const subject = typeof input.subject === "string" ? input.subject : undefined;
-        const why = (input.retire as { why?: unknown } | undefined)?.why;
-        // A RETIREMENT WITHOUT A REASON IS REFUSED. The reason is the durable
-        // half — a drained fact keeps it forever, and a blank one turns the
-        // record of why something stopped being true into a shrug.
-        if (input.retire !== undefined && (typeof why !== "string" || why.trim() === "")) {
-          throw new HttpError(400, "invalid_request", "retire.why is required — say what stopped being true.");
-        }
-        writeJson(response, 200, {
-          fact: store.judgeSpoolFact({
-            id: decodeURIComponent(spoolFact[1]),
-            ...(subject ? { subject } : {}),
-            ...(typeof why === "string" ? { retire: { why } } : {}),
-            ...(typeof input.reviewed === "boolean" ? { reviewed: input.reviewed } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * THE SHELF — notes beside the items (`docs/spool-loops.md` §10.1).
-       * The human API: create defaults the author to "you" exactly as the
-       * items route defaults `source`, and only the tool wall's own code ever
-       * declares "session". Retire is POST-as-verb like close — a drain with
-       * a required reason, never a DELETE.
-       */
-      if (url.pathname === "/v2/spool/notes" && (request.method === "GET" || request.method === "POST")) {
-        if (request.method === "GET") {
-          const subject = url.searchParams.get("subject")?.trim() || undefined;
-          writeJson(response, 200, { notes: store.spoolNotes(subject) });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 201, {
-          note: store.createSpoolNote({
-            title: String(input.title ?? ""),
-            body: String(input.body ?? ""),
-            ...(Array.isArray(input.tags) ? { tags: input.tags as string[] } : {}),
-            ...(typeof input.subjectKey === "string" && input.subjectKey ? { subjectKey: input.subjectKey } : {}),
-            author: input.author === "session" ? "session" : "you",
-          }),
-        });
-        return;
-      }
-      const spoolNoteRetire = /^\/v2\/spool\/notes\/([^/]+)\/retire$/.exec(url.pathname);
-      if (request.method === "POST" && spoolNoteRetire) {
-        const input = await body(request);
-        writeJson(response, 200, {
-          note: store.retireSpoolNote(decodeURIComponent(spoolNoteRetire[1]), String(input.reason ?? "")),
-        });
-        return;
-      }
-      const spoolNote = /^\/v2\/spool\/notes\/([^/]+)$/.exec(url.pathname);
-      if (spoolNote && (request.method === "GET" || request.method === "PATCH")) {
-        const id = decodeURIComponent(spoolNote[1]);
-        if (request.method === "GET") {
-          writeJson(response, 200, { note: store.spoolNote(id) });
-          return;
-        }
-        // FORWARDED WHOLE, the same rule the item PATCH states: the shelf
-        // refuses a forbidden key — `author` above all — by NAME with its
-        // sentence, and filtering here would turn that refusal into silence.
-        writeJson(response, 200, { note: store.updateSpoolNote(id, await body(request)) });
-        return;
-      }
-      /** THE SEARCH — deterministic and lexical (§10.2). A read; an empty `q`
-       *  answers no hits rather than an error, because an empty query is a
-       *  search for nothing, honestly answered. */
-      if (request.method === "GET" && url.pathname === "/v2/spool/search") {
-        const limit = Number(url.searchParams.get("limit") ?? "");
-        writeJson(response, 200, {
-          hits: store.spoolSearch(url.searchParams.get("q") ?? "", {
-            ...(url.searchParams.get("subject") ? { subject: url.searchParams.get("subject")! } : {}),
-            ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * THE CONNECT CARD — where the outward socket listens and its dedicated
-       * secret. BEHIND THE NORMAL BEARER, deliberately: the card mints and
-       * reveals the socket's credential, so only something already holding
-       * engine access may read it. The composed `claude mcp add` line comes
-       * from the engine so the card and the socket cannot disagree.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/mcp-info") {
-        const bound = server.address();
-        const port = bound && typeof bound === "object" ? bound.port : 0;
-        writeJson(response, 200, {
-          mcp: socketConnectCard(`http://127.0.0.1:${port}/v2/spool/mcp`, socketSecret()),
-        });
-        return;
-      }
-      /** The notebook socket's card, behind the normal bearer for the reason
-       *  stated above: it mints and reveals a credential. */
       if (request.method === "GET" && url.pathname === "/v2/notes/mcp-info") {
         const bound = server.address();
         const port = bound && typeof bound === "object" ? bound.port : 0;
         writeJson(response, 200, {
           mcp: notesSocketConnectCard(`http://127.0.0.1:${port}/v2/notes/mcp`, notesSecret()),
         });
-        return;
-      }
-      /**
-       * THE MAP — every subject's open questions, in one read.
-       *
-       * ONE CALL AND NOT ONE PER SUBJECT, the rule `/v2/spool` already states:
-       * these are projections of the same items and the same digests, and a
-       * client that fetched them separately could draw one subject's weave a
-       * tick apart from another's with no way to tell staleness from
-       * disagreement.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/threads") {
-        writeJson(response, 200, store.spoolMap());
-        return;
-      }
-      const spoolMapSubject = /^\/v2\/spool\/threads\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "GET" && spoolMapSubject) {
-        writeJson(response, 200, store.spoolThreads(decodeURIComponent(spoolMapSubject[1])));
-        return;
-      }
-      /**
-       * MAP THIS SUBJECT — detached, and it answers with the work record rather
-       * than the result. The expert route learned this the expensive way: a pass
-       * that runs for minutes behind a synchronous POST is a request the client
-       * abandons while the daemon keeps spending.
-       */
-      if (request.method === "POST" && spoolMapSubject) {
-        const started = store.startSpoolThreadPass(decodeURIComponent(spoolMapSubject[1]));
-        writeJson(response, started.refused ? 200 : 202, started);
-        return;
-      }
-      const spoolThread = /^\/v2\/spool\/threads\/([^/]+)\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolThread) {
-        const subject = decodeURIComponent(spoolThread[1]);
-        const threadId = decodeURIComponent(spoolThread[2]);
-        const input = await body(request);
-        /**
-         * A SETTLE WITHOUT AN ANSWER IS REFUSED HERE TOO, the same shape the
-         * fact retirement above takes. `settleThread` also refuses it — the
-         * store is the wall — but a 400 naming the field is a better answer than
-         * a 500 carrying a thrown sentence.
-         */
-        if (input.settle !== undefined) {
-          const answer = (input.settle as { answer?: unknown } | undefined)?.answer;
-          if (typeof answer !== "string" || answer.trim() === "") {
-            throw new HttpError(
-              400,
-              "invalid_request",
-              "settle.answer is required — settling a thread records what was found out, not that it is over.",
-            );
-          }
-          writeJson(response, 200, { thread: store.settleSpoolThread(subject, threadId, answer) });
-          return;
-        }
-        if (input.reviewed === true) {
-          writeJson(response, 200, { thread: store.reviewSpoolThread(subject, threadId) });
-          return;
-        }
-        /** Who the thread is stuck on. Normalisation and the settled refusal
-         *  live in the store — the wall — this only shapes the arm. */
-        if (input.waiting !== undefined) {
-          const waiting = input.waiting as { kind?: unknown; who?: unknown; note?: unknown };
-          if (waiting?.kind !== "you" && waiting?.kind !== "agent" && waiting?.kind !== "person") {
-            throw new HttpError(400, "invalid_request", 'waiting.kind must be "you", "agent" or "person".');
-          }
-          writeJson(response, 200, {
-            thread: store.setSpoolThreadWaiting(subject, threadId, {
-              kind: waiting.kind,
-              ...(typeof waiting.who === "string" ? { who: waiting.who } : {}),
-              ...(typeof waiting.note === "string" ? { note: waiting.note } : {}),
-            }),
-          });
-          return;
-        }
-        throw new HttpError(400, "invalid_request", "Send `settle: {answer}`, `reviewed: true` or `waiting: {kind}`.");
-      }
-      /**
-       * OPEN ONE QUESTION from conversation. POST-as-create on the subject's
-       * own collection; the pass trigger keeps the parent path, because a pass
-       * and a deliberate open are different acts with different costs.
-       */
-      const spoolThreadOpen = /^\/v2\/spool\/threads\/([^/]+)\/open$/.exec(url.pathname);
-      if (request.method === "POST" && spoolThreadOpen) {
-        const input = await body(request);
-        const question = typeof input.question === "string" ? input.question : "";
-        const items = Array.isArray(input.items) ? input.items.filter((i): i is string => typeof i === "string") : [];
-        if (!question.trim()) throw new HttpError(400, "invalid_request", "question is required.");
-        writeJson(response, 200, {
-          thread: store.openSpoolThread(decodeURIComponent(spoolThreadOpen[1]), {
-            question,
-            items,
-            ...(typeof input.handle === "string" ? { handle: input.handle } : {}),
-            ...(input.waiting && typeof input.waiting === "object"
-              ? { waiting: input.waiting as { kind: "you" | "agent" | "person"; who?: string; note?: string } }
-              : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * SETTLE MANY, each with its own REQUIRED answer — the selection model's
-       * settle. A row that cannot take its settle comes back in `refused` with
-       * its sentence; only a body that is not even the right shape is a 400.
-       */
-      const spoolSettleMany = /^\/v2\/spool\/threads\/([^/]+)\/settle-many$/.exec(url.pathname);
-      if (request.method === "POST" && spoolSettleMany) {
-        const input = await body(request);
-        if (
-          !Array.isArray(input.settles) ||
-          input.settles.some(
-            (row) => !row || typeof row !== "object" || typeof (row as { threadId?: unknown }).threadId !== "string",
-          )
-        ) {
-          throw new HttpError(
-            400,
-            "invalid_request",
-            "settles must be an array of {threadId, answer} — every settle records what was found out, per thread.",
-          );
-        }
-        writeJson(
-          response,
-          200,
-          store.settleSpoolThreadsMany(
-            decodeURIComponent(spoolSettleMany[1]),
-            (input.settles as Array<{ threadId: string; answer?: unknown }>).map((row) => ({
-              threadId: row.threadId,
-              answer: typeof row.answer === "string" ? row.answer : "",
-            })),
-          ),
-        );
-        return;
-      }
-      /** Move one capture between threads. `to: null` takes it off the map, which
-       *  is a resting state the surface draws rather than a hole. */
-      if (request.method === "POST" && url.pathname === "/v2/spool/threads-refile") {
-        const input = await body(request);
-        const subject = typeof input.subject === "string" ? input.subject : "";
-        const itemId = typeof input.itemId === "string" ? input.itemId : "";
-        if (!subject || !itemId) {
-          throw new HttpError(400, "invalid_request", "subject and itemId are required.");
-        }
-        writeJson(response, 200, {
-          map: store.refileSpoolCapture(subject, itemId, typeof input.to === "string" ? input.to : null),
-        });
-        return;
-      }
-      /**
-       * WHERE TO PICK UP, plus the day reading — in one call.
-       *
-       * The rule `/v2/spool` states: these are two views of the same focus log
-       * and the same map, and a client that fetched them separately could draw a
-       * brief that disagrees with the history under it.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/focus") {
-        writeJson(response, 200, { pickup: store.spoolPickup(), days: store.spoolFocusDays() });
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/spool/focus") {
-        const input = await body(request);
-        const subject = stringValue(input.subject, "subject");
-        if (!subject) throw new HttpError(400, "invalid_request", "subject is required.");
-        writeJson(response, 201, {
-          focus: store.openSpoolFocus({
-            subject,
-            ...(typeof input.threadId === "string" ? { threadId: input.threadId } : {}),
-            ...(typeof input.note === "string" ? { note: input.note } : {}),
-          }),
-        });
-        return;
-      }
-      const spoolFocusEntry = /^\/v2\/spool\/focus\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolFocusEntry) {
-        const id = decodeURIComponent(spoolFocusEntry[1]);
-        const input = await body(request);
-        /**
-         * CLOSING AND CORRECTING ARE DIFFERENT VERBS ON ONE ROUTE, and the body
-         * says which. They are not merged: closing records where you LEFT it and
-         * correcting records what it SHOULD HAVE SAID, and one endpoint that did
-         * both by inference would eventually do the wrong one silently.
-         */
-        if (input.end !== undefined) {
-          const end = input.end as { reason?: unknown; note?: unknown };
-          if (end.reason !== "done" && end.reason !== "switched" && end.reason !== "paused") {
-            throw new HttpError(400, "invalid_request", 'end.reason must be "done", "switched" or "paused".');
-          }
-          writeJson(response, 200, {
-            focus: store.closeSpoolFocus(id, {
-              reason: end.reason,
-              ...(typeof end.note === "string" ? { note: end.note } : {}),
-            }),
-          });
-          return;
-        }
-        if (input.amend !== undefined) {
-          const amend = input.amend as { subject?: unknown; threadId?: unknown; note?: unknown; why?: unknown };
-          writeJson(response, 200, {
-            focus: store.amendSpoolFocus(
-              id,
-              {
-                ...(typeof amend.subject === "string" ? { subject: amend.subject } : {}),
-                // `null` CLEARS the thread and `undefined` leaves it — the
-                // distinction `amendFocus` depends on, preserved across HTTP.
-                ...(amend.threadId === null || typeof amend.threadId === "string" ? { threadId: amend.threadId } : {}),
-                ...(typeof amend.note === "string" ? { note: amend.note } : {}),
-              },
-              typeof amend.why === "string" ? amend.why : undefined,
-            ),
-          });
-          return;
-        }
-        throw new HttpError(400, "invalid_request", "Send either `end: {reason}` or `amend: {...}`.");
-      }
-      if (request.method === "GET" && url.pathname === "/v2/spool/work") {
-        writeJson(response, 200, { work: store.spoolWork() });
-        return;
-      }
-      if (request.method === "DELETE" && url.pathname.startsWith("/v2/spool/work/")) {
-        const id = decodeURIComponent(url.pathname.slice("/v2/spool/work/".length));
-        /**
-         * `stopped: false` IS A 200, not a 404. "There is nothing running under
-         * that id" is the honest answer to "stop this" from a surface whose
-         * record is a poll or two old — and it is the state the caller wanted.
-         */
-        writeJson(response, 200, { stopped: store.cancelSpoolWork(id) });
-        return;
-      }
-      /**
-       * THE COMPOSED SCREEN. GET is a poll on `rev`; POST asks for a new one and
-       * answers immediately, because the composition arrives on the canvas
-       * rather than in this response — see `askSpoolCanvas`.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/canvas") {
-        writeJson(response, 200, store.spoolCanvas());
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/spool/canvas") {
-        const input = await body(request);
-        const asked = stringValue(input.asked, "asked")?.trim() ?? "";
-        if (!asked) throw new HttpError(400, "invalid_request", "Send `asked` — the question to compose an answer to.");
-        writeJson(response, 202, store.askSpoolCanvas(asked));
-        return;
-      }
-      if (request.method === "GET" && url.pathname === "/v2/spool/master") {
-        writeJson(response, 200, { session: store.ensureMasterSession() });
-        return;
-      }
-      if (url.pathname === "/v2/spool/lanes" && (request.method === "GET" || request.method === "POST")) {
-        if (request.method === "GET") {
-          writeJson(response, 200, { lanes: store.spoolLanes() });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 201, {
-          lane: store.createSpoolLane({
-            label: String(input.label ?? ""),
-            window: String(input.window ?? ""),
-            ...(typeof input.note === "string" ? { note: input.note } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * Split rows out of a lane into a new one. A COMPOSITION of the lane verbs
-       * beside it, never a fifth primitive — and human-only, like all of them.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/spool/lanes/split") {
-        const input = await body(request);
-        writeJson(
-          response,
-          200,
-          store.splitSpoolLane(
-            String(input.sourceKey ?? ""),
-            {
-              label: String(input.label ?? ""),
-              window: String(input.window ?? ""),
-              ...(typeof input.note === "string" ? { note: input.note } : {}),
-            },
-            (input.items ?? []) as string[],
-          ),
-        );
-        return;
-      }
-      const spoolLaneReorder = /^\/v2\/spool\/lanes\/([^/]+)\/reorder$/.exec(url.pathname);
-      if (request.method === "POST" && spoolLaneReorder) {
-        const input = await body(request);
-        writeJson(response, 200, {
-          lane: store.reorderSpoolLane(decodeURIComponent(spoolLaneReorder[1]), (input.items ?? []) as string[]),
-        });
-        return;
-      }
-      const spoolLane = /^\/v2\/spool\/lanes\/([^/]+)$/.exec(url.pathname);
-      if (spoolLane && (request.method === "PATCH" || request.method === "DELETE")) {
-        const key = decodeURIComponent(spoolLane[1]);
-        if (request.method === "PATCH") {
-          const input = await body(request);
-          writeJson(response, 200, { lane: store.renameSpoolLane(key, String(input.label ?? "")) });
-          return;
-        }
-        /**
-         * A REFUSAL IS 200 WITH `ok: false`, not a 4xx, and the distinction is
-         * not pedantry. Every refusal the store produces is a sentence naming
-         * what the human must move first — it is the ANSWER to "can I retire
-         * this?", not a malformed request. A 400 would let a client render it as
-         * an error toast and drop the sentence that made it actionable.
-         */
-        writeJson(response, 200, store.retireSpoolLane(key));
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/spool/items") {
-        const input = await body(request);
-        writeJson(response, 201, {
-          item: store.createSpoolItem({
-            title: String(input.title ?? ""),
-            /**
-             * WHOSE HAND, defaulted to the HUMAN's. This is the human API — the
-             * workbench form posts here with no agent anywhere near it, and a
-             * bare create must therefore stamp "you", or the footer's "agents
-             * added N" counts a hand-made item (the live-drive lie this fixes).
-             * The tool wall is the one caller that declares `source: "session"`
-             * — its own code, never a model argument — and anything that is not
-             * that exact declaration is a hand.
-             */
-            source: input.source === "session" ? "session" : "you",
-            ...(typeof input.project === "string" ? { project: input.project } : {}),
-            ...(typeof input.lane === "string" ? { lane: input.lane } : {}),
-            ...(typeof input.raw === "string" ? { raw: input.raw } : {}),
-            ...(typeof input.rawSource === "string" ? { rawSource: input.rawSource } : {}),
-            ...(typeof input.creationNote === "string" ? { creationNote: input.creationNote } : {}),
-            // A quoted pair, validated by the store's schema — see
-            // `NewSpoolItem.deadline` for the quoting law it rides under.
-            ...(input.deadline && typeof input.deadline === "object"
-              ? { deadline: input.deadline as { label: string; kind: "external" | "self" } }
-              : {}),
-            // Forwarded raw so the STORE's gate speaks: a malformed pin gets
-            // its plain sentence back as a 400 rather than being dropped here.
-            ...(input.pinned !== undefined && input.pinned !== null ? { pinned: input.pinned as { day: string } } : {}),
-            // Same rule for tags: the store's one gate speaks, not this route.
-            ...(input.tags !== undefined ? { tags: input.tags as string[] } : {}),
-          }),
-        });
-        return;
-      }
-      const spoolExpert = /^\/v2\/spool\/items\/([^/]+)\/expert$/.exec(url.pathname);
-      if (request.method === "POST" && spoolExpert) {
-        /**
-         * TWO SHAPES, AND WHICH ONE YOU GET DEPENDS ON WHO IS ASKING.
-         *
-         * `{detach: true}` starts the pass and answers at once with its work
-         * record. This route's previous comment said the synchronous form held
-         * only "once the OVERNIGHT runner exists and nobody is watching — at
-         * which point the job store is the thing that reports what ran while you
-         * slept". That store now exists (`spool/work.ts`), and the assumption
-         * behind waiting — "a human who clicked consult is, by definition,
-         * watching" — was wrong in the way that matters: they are watching a
-         * SCREEN, not an HTTP socket, and the socket gives up first.
-         *
-         * WITHOUT THE FLAG IT STILL AWAITS, because `spool_consult_expert` is
-         * called by a MODEL mid-turn and a model cannot do anything with a
-         * record it would have to poll for.
-         *
-         * A REFUSAL IS A 200 WITH ITS SENTENCE, in both shapes. Same reasoning
-         * as the lane retire above: "the expert cannot read this because the
-         * item is floating" is the ANSWER, not a malformed request.
-         */
-        const id = decodeURIComponent(spoolExpert[1]);
-        const input = await body(request).catch(() => ({}) as Record<string, unknown>);
-        if (input.detach === true) {
-          writeJson(response, 200, store.startSpoolExpert(id));
-          return;
-        }
-        writeJson(response, 200, await store.consultSpoolExpert(id));
-        return;
-      }
-      /**
-       * BRIEFED ARRIVAL — loop 2. A READ, deliberately: it composes the full
-       * briefing (packet, raw words, thread state, and the delta from the
-       * subject's stored look) from what is already on disk, with no model
-       * call, no session created and no turn queued. The web writes it into a
-       * composer draft and the HUMAN sends it — the moat stays where it is.
-       * An item whose subject maps to no registered project answers with
-       * `project` absent, which is an ordinary state the surface renders
-       * honestly, never an invented project.
-       */
-      const spoolBriefing = /^\/v2\/spool\/items\/([^/]+)\/briefing$/.exec(url.pathname);
-      if (request.method === "GET" && spoolBriefing) {
-        writeJson(response, 200, { briefing: store.spoolBriefing(decodeURIComponent(spoolBriefing[1])) });
-        return;
-      }
-      const spoolPromote = /^\/v2\/spool\/items\/([^/]+)\/subtasks\/([^/]+)\/promote$/.exec(url.pathname);
-      if (request.method === "POST" && spoolPromote) {
-        writeJson(
-          response,
-          200,
-          store.promoteSpoolSubtask(decodeURIComponent(spoolPromote[1]), decodeURIComponent(spoolPromote[2])),
-        );
-        return;
-      }
-      const spoolSubtask = /^\/v2\/spool\/items\/([^/]+)\/subtasks\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolSubtask) {
-        const input = await body(request);
-        writeJson(response, 200, {
-          item: store.setSpoolSubtaskDone(
-            decodeURIComponent(spoolSubtask[1]),
-            decodeURIComponent(spoolSubtask[2]),
-            input.done === true,
-          ),
-        });
-        return;
-      }
-      const spoolSubtasks = /^\/v2\/spool\/items\/([^/]+)\/subtasks$/.exec(url.pathname);
-      if (request.method === "POST" && spoolSubtasks) {
-        const input = await body(request);
-        writeJson(response, 201, {
-          item: store.addSpoolSubtask(decodeURIComponent(spoolSubtasks[1]), String(input.title ?? "")),
-        });
-        return;
-      }
-      /**
-       * ANSWER ONE OF AN ITEM'S OPEN QUESTIONS — the reduction verb. The match
-       * rule, the empty-answer refusal and the timeline write all live in the
-       * store; this route only guards the two required strings by name.
-       */
-      const spoolAnswer = /^\/v2\/spool\/items\/([^/]+)\/answer$/.exec(url.pathname);
-      if (request.method === "POST" && spoolAnswer) {
-        const input = await body(request);
-        const question = typeof input.question === "string" ? input.question : "";
-        const answer = typeof input.answer === "string" ? input.answer : "";
-        if (!question.trim() || !answer.trim()) {
-          throw new HttpError(
-            400,
-            "invalid_request",
-            "question and answer are both required — an answer with no question is an orphan, and a question with no answer stays open.",
-          );
-        }
-        writeJson(response, 200, {
-          item: store.answerSpoolQuestion(decodeURIComponent(spoolAnswer[1]), question, answer),
-        });
-        return;
-      }
-      /**
-       * THE CHECKBOX — docs/spool-loops.md §9. DEDICATED ROUTES, DELIBERATELY:
-       * the generic item PATCH below is reachable from the tool wall's update
-       * capability, so close and reopen must not travel through it — the store
-       * refuses `closed` on that path by name, and these two verbs exist ONLY
-       * here, on the human API, where no tool and no capability can spell them.
-       * Closing cascades (open threads on the item settle with the user's own
-       * close as the answer); reopening unticks and resurrects nothing.
-       */
-      const spoolClose = /^\/v2\/spool\/items\/([^/]+)\/close$/.exec(url.pathname);
-      if (request.method === "POST" && spoolClose) {
-        writeJson(response, 200, store.closeSpoolItem(decodeURIComponent(spoolClose[1])));
-        return;
-      }
-      const spoolReopen = /^\/v2\/spool\/items\/([^/]+)\/reopen$/.exec(url.pathname);
-      if (request.method === "POST" && spoolReopen) {
-        writeJson(response, 200, store.reopenSpoolItem(decodeURIComponent(spoolReopen[1])));
-        return;
-      }
-      /**
-       * MANY CHECKBOXES — the selection model's close, and HUMAN API ONLY
-       * exactly like the single verb: this route is the only caller of
-       * `closeSpoolItems`, no tool names it, and the socket's wall cannot
-       * reach it (asserted in `spool-socket.test.ts`). Per-item results carry
-       * the single close's own shape; an id nothing goes by is `{id, error}`
-       * beside the closes that landed, never a thrown batch.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/spool/items/close-many") {
-        const input = await body(request);
-        if (!Array.isArray(input.ids) || input.ids.some((id) => typeof id !== "string")) {
-          throw new HttpError(400, "invalid_request", "ids must be an array of item ids.");
-        }
-        writeJson(response, 200, store.closeSpoolItems(input.ids as string[]));
-        return;
-      }
-      const spoolItem = /^\/v2\/spool\/items\/([^/]+)$/.exec(url.pathname);
-      if (spoolItem && (request.method === "GET" || request.method === "PATCH")) {
-        const id = decodeURIComponent(spoolItem[1]);
-        if (request.method === "GET") {
-          writeJson(response, 200, store.spoolItem(id));
-          return;
-        }
-        /**
-         * FORWARDED WHOLE, deliberately. The store refuses a forbidden key by
-         * NAME and throws a sentence saying which one and why — filtering the
-         * body here would turn "you cannot rewrite the user's own words" into a
-         * silent no-op, which is the exact failure that refusal exists to
-         * prevent. The engine's error translation carries the sentence out.
-         */
-        writeJson(response, 200, { item: store.updateSpoolItem(id, await body(request)) });
         return;
       }
       /**
@@ -2557,8 +2871,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const input = await body(request);
         writeJson(response, 201, {
           // ABSENT `author` MEANS THE HUMAN'S. Only the tool wall declares
-          // "session", exactly as the spool's notes do — so a note that arrives
-          // with no declaration is a hand's.
+          // "session" — so a note that arrives with no declaration is a hand's.
           note: notebook.createNote(store.paths, projectId, {
             title: input.title as string,
             body: (input.body ?? "") as string,
@@ -2590,6 +2903,66 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const note = notebook.updateNote(store.paths, projectId, noteId, patch);
         if (!note) throw new HttpError(404, "not_found", "no note goes by that id in this project's notebook");
         writeJson(response, 200, { note });
+        return;
+      }
+      /**
+       * THE PROMPT SHELF — unsent messages kept by name, either hand's.
+       *
+       * Under `/v2/projects/:id/` for the notebook's reason, and with the same
+       * `store.getProject` FIRST on every one of them: it is the registration
+       * check, and it is what keeps a caller-supplied id from becoming a
+       * filename before anything has vouched for it.
+       *
+       * A prompt may also carry the SESSION it was prepared for. This route
+       * answers the whole shelf rather than filtering by session, because the
+       * caller that wants one composer's list (`promptsForComposer`) and the
+       * caller that wants the project's count are both real.
+       */
+      const projectPrompts = /^\/v2\/projects\/([^/]+)\/prompts$/.exec(url.pathname);
+      if (projectPrompts && (request.method === "GET" || request.method === "POST")) {
+        const projectId = decodeURIComponent(projectPrompts[1]);
+        store.getProject(projectId);
+        if (request.method === "GET") {
+          writeJson(response, 200, { prompts: shelf.readPrompts(store.paths, projectId) });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 201, {
+          // ABSENT `author` MEANS THE HUMAN'S, as on the notebook: only the tool
+          // wall declares "session", so a prompt arriving undeclared is a hand's.
+          prompt: shelf.createPrompt(store.paths, projectId, {
+            title: input.title as string,
+            text: (input.text ?? "") as string,
+            ...(input.sessionId ? { sessionId: String(input.sessionId) } : {}),
+            ...(input.reason !== undefined ? { reason: String(input.reason) } : {}),
+            author: input.author === "session" ? "session" : "you",
+          }),
+        });
+        return;
+      }
+      const projectPrompt = /^\/v2\/projects\/([^/]+)\/prompts\/([^/]+)$/.exec(url.pathname);
+      if (projectPrompt && (request.method === "GET" || request.method === "PATCH" || request.method === "DELETE")) {
+        const projectId = decodeURIComponent(projectPrompt[1]);
+        const promptId = decodeURIComponent(projectPrompt[2]);
+        store.getProject(projectId);
+        if (request.method === "DELETE") {
+          // `deleted: false` RATHER THAN A 404 on one that is already gone: the
+          // ordinary way a prompt leaves this shelf is being sent, possibly from
+          // the other window, and a retried delete has reached the state it asked
+          // for.
+          writeJson(response, 200, { deleted: shelf.deletePrompt(store.paths, projectId, promptId) });
+          return;
+        }
+        if (request.method === "GET") {
+          const prompt = shelf.getPrompt(store.paths, projectId, promptId);
+          if (!prompt) throw new HttpError(404, "not_found", "no prepared prompt goes by that id on this project's shelf");
+          writeJson(response, 200, { prompt });
+          return;
+        }
+        const patch = await body(request);
+        const prompt = shelf.updatePrompt(store.paths, projectId, promptId, patch);
+        if (!prompt) throw new HttpError(404, "not_found", "no prepared prompt goes by that id on this project's shelf");
+        writeJson(response, 200, { prompt });
         return;
       }
       /** Pin or unpin. Its own route rather than a PATCH field on the caller's
@@ -2650,7 +3023,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const target = url.searchParams.get("path");
         if (target) {
           writeJson(response, 200, {
-            file: await store.projectFilePatchAsync(projectId, target, { untracked: url.searchParams.get("untracked") === "1" }),
+            file: await store.projectFilePatchAsync(projectId, target, filePatchOptions(url)),
           });
           return;
         }
@@ -2678,6 +3051,40 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         writeJson(response, 200, { listing: await store.projectFilesAsync(projectId) });
+        return;
+      }
+      /**
+       * WHAT A PROJECT'S PROVIDER CAN BE ASKED TO DO — the same inventory as
+       * `/v2/sessions/:id/skills`, one scope wider, for a canvas whose session
+       * does not exist yet (#500).
+       *
+       * A FRESH SESSION IS THE WHOLE REASON THIS ROUTE EXISTS. `$` used to draw
+       * nothing on a canvas because the only way to ask was per session, and a
+       * session with no runtime has no answer — so the menu stayed empty until
+       * after the first turn. The project's own checkout is the honest thing to
+       * read there: it is what the session about to be created will copy or run
+       * in, and it is where its `.claude` already is.
+       *
+       * THE DRIVER IS THE CANVAS'S PENDING CHOICE, because it has not been
+       * recorded anywhere yet. Claude when unsaid, matching `/v2/models`.
+       */
+      const projectSkills = /^\/v2\/projects\/([^/]+)\/skills$/.exec(url.pathname);
+      if (request.method === "GET" && projectSkills) {
+        const project = store.getProject(decodeURIComponent(projectSkills[1]!));
+        const asked = url.searchParams.get("driver");
+        const driver = ProviderDriverKind.safeParse(asked ?? "claude");
+        if (!driver.success) throw new HttpError(400, "invalid_request", `unknown provider driver ${JSON.stringify(asked)}`);
+        writeJson(
+          response,
+          200,
+          await readProviderSkillsCached({
+            cacheKey: `project:${project.id}:${driver.data}`,
+            driver: driver.data,
+            checkout: project.root,
+            ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),
+            ...(options.providerSkills?.loadProviderCommands ? { loadProviderCommands: options.providerSkills.loadProviderCommands } : {}),
+          }),
+        );
         return;
       }
       /** One project file's BYTES — the media viewers' read. Same fence as the
@@ -3353,21 +3760,36 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         const input = await body(request);
+        const saved = store.saveProviderInstance({
+          id,
+          // Every field is forwarded VERBATIM, including an explicit `null`:
+          // the store owns the three-state rule (clear / keep / set), and a
+          // route that coerced null away here would make "remove the accent
+          // colour" unexpressible over HTTP.
+          ...(input.driver === undefined ? {} : { driver: input.driver }),
+          ...(input.displayName === undefined ? {} : { displayName: input.displayName as string | null }),
+          ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor as string | null }),
+          ...(input.configDir === undefined ? {} : { configDir: input.configDir as string | null }),
+          ...(input.binaryPath === undefined ? {} : { binaryPath: input.binaryPath as string | null }),
+          ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+          ...(input.env === undefined ? {} : { env: input.env }),
+          ...(input.carryOverInherited === undefined ? {} : { carryOverInherited: input.carryOverInherited }),
+        });
+        /**
+         * WHAT THIS SAVE STOPPED THE LOGIN INHERITING — #594, and NAMES ONLY.
+         *
+         * Present only when there is something to say, so a client can treat
+         * its presence as the event rather than comparing an empty array. It is
+         * on the SAVE rather than on the list because it is a fact about a
+         * change: an instance that was already configured lost nothing here.
+         *
+         * NO VALUE IS IN THIS ANSWER. Three of the names it can carry are
+         * credentials, and a response that showed what was about to be lost
+         * would be the leak this warning exists to avoid.
+         */
         writeJson(response, 200, {
-          providerInstance: store.saveProviderInstance({
-            id,
-            // Every field is forwarded VERBATIM, including an explicit `null`:
-            // the store owns the three-state rule (clear / keep / set), and a
-            // route that coerced null away here would make "remove the accent
-            // colour" unexpressible over HTTP.
-            ...(input.driver === undefined ? {} : { driver: input.driver }),
-            ...(input.displayName === undefined ? {} : { displayName: input.displayName as string | null }),
-            ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor as string | null }),
-            ...(input.configDir === undefined ? {} : { configDir: input.configDir as string | null }),
-            ...(input.binaryPath === undefined ? {} : { binaryPath: input.binaryPath as string | null }),
-            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
-            ...(input.env === undefined ? {} : { env: input.env }),
-          }),
+          providerInstance: saved.instance,
+          ...(saved.stoppedInheriting.length > 0 ? { stoppedInheriting: saved.stoppedInheriting } : {}),
         });
         return;
       }
@@ -3467,10 +3889,55 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * `?full=1` IS THE ONE-RELEASE ESCAPE HATCH, for a client built against
        * the old shape — a paired Mac on last week's nightly, a script. It is not
        * a mode anything of ours asks for, and it is meant to be deleted.
+       *
+       * AND THE DEFAULT IS NOW THE UNSETTLED ROWS ALONE (#457). Re-measured on
+       * the owner's store after #459: 276 KB and 2.33 s per read, three seconds
+       * apart, per connected cockpit — for 291 sessions of which SEVEN were not
+       * settled. `?all=1` is the whole list and is what the cockpit's shelf
+       * sends when a reader opens it; `settledCount` rides the default answer so
+       * the shelf header that asks for them is drawn without them. The rule is
+       * the clients' own (`isShelved`), so the engine cannot drop a row a rail
+       * would have shown. `?full=1` is unfiltered, because its entire contract
+       * is "the old answer, verbatim".
        */
       if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
         if (url.searchParams.get("full") === "1") {
           writeJson(response, 200, store.liveSessions());
+          return;
+        }
+        const all = url.searchParams.get("all") === "1";
+        /**
+         * `If-None-Match` — THE SAME CONDITIONAL READ, SPELLED IN HEADERS.
+         *
+         * `?since=` (#462) is this in the body, and it stays: two proxy hops sit
+         * between this engine and a browser, and the cockpit's own route
+         * RE-COMPOSES the answer rather than streaming it, so a cursor a route
+         * handler can read is the thing that works everywhere. What the header
+         * adds is three things the body cursor cannot:
+         *
+         *   - A 304 HAS NO BODY AT ALL, against the cursor's sixty-odd bytes.
+         *   - THE WIDE READ CAN BE CONDITIONAL. The mode is inside the tag, so a
+         *     tag earned against the unsettled list simply does not match an
+         *     `?all=1` ask — where a `?since=` would have matched and answered
+         *     the shelf with "unchanged". See `liveSessionsETag`.
+         *   - IT IS THE STANDARD SPELLING, so a script, a cache or a client that
+         *     has never heard of `?since=` gets the cheap tick for free.
+         *
+         * BEFORE THE CURSOR, because it is the cheaper of the two and because a
+         * client sending both means both.
+         */
+        /**
+         * THE CURSOR IS PER SHAPE OF ANSWER NOW (#493). A write to a session on
+         * the shelf moves the wide answer and not the default one, so the two
+         * ask for different numbers — see `sessionsRevision`. The tag already
+         * carried the mode for the same reason; the number behind it now does
+         * too, which is what stops a settled conversation's background task from
+         * invalidating every rail on the machine.
+         */
+        const etag = liveSessionsETag(store.sessionsRevision({ all }), all);
+        if (matchesETag(request.headers["if-none-match"], etag)) {
+          response.writeHead(304, { etag, "cache-control": "no-store" });
+          response.end();
           return;
         }
         /**
@@ -3491,21 +3958,57 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          *
          * An unparseable cursor is not an error: it is a client that has no
          * useful cursor, which is exactly the full answer's case.
+         *
+         * `?all=1` IS NEVER CONDITIONAL, and that is a correctness rule rather
+         * than an oversight (#457). The revision counts WRITES, so it does not
+         * move when a reader opens the Settled shelf — a cursor earned against
+         * the default list, spent against `all=1`, would be answered "unchanged"
+         * and the shelf would stay empty for as long as nothing else happened on
+         * the machine. Making the wide ask always pay for itself is the version
+         * of this that cannot be got wrong: the shelf is opened by hand and for
+         * a moment, and the state this issue is about is the other one.
          */
         const since = Number(url.searchParams.get("since"));
-        if (Number.isSafeInteger(since) && since === store.sessionsRevision()) {
-          writeJson(response, 200, { revision: since, unchanged: true, daemonId });
+        if (!all && Number.isSafeInteger(since) && since === store.sessionsRevision()) {
+          // The default shape, which is the only one this cursor serves.
+          writeJson(response, 200, { revision: since, unchanged: true, daemonId }, { etag });
           return;
         }
-        writeJson(response, 200, { ...store.liveSessionRows(), daemonId });
+        writeJson(response, 200, { ...store.liveSessionRows({ all }), daemonId }, { etag });
         return;
       }
       /**
        * THE SESSIONS SOCKET'S CONNECT CARD — where it listens and its dedicated
-       * secret. BEHIND THE NORMAL BEARER, exactly as the spool's is: the card
+       * secret. BEHIND THE NORMAL BEARER, exactly as the notebook's is: the card
        * mints and reveals the socket's credential, so only something already
        * holding engine access may read it.
        */
+      /**
+       * WHICH CONVERSATION WAS THIS — issue #516.
+       *
+       * A LITERAL PATH UNDER `/v2/sessions/`, so it lives up here with `/live`
+       * and for the identical reason: `sessionPath` matches `find` as happily as
+       * it matches a session id, and below the block this route would be "no
+       * session by that id".
+       *
+       * READ-ONLY AND BOUNDED: ten rows by default, each one id, title, project,
+       * activity, `updatedAt` and a quoted `why`. `index` says whether this
+       * engine's sqlite answered from FTS5 or from the scan, because a caller
+       * comparing two engines' results deserves to know which they got.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/sessions/find") {
+        const q = url.searchParams.get("q");
+        if (!q || !q.trim()) throw new HttpError(400, "invalid_request", "q is required");
+        const settled = url.searchParams.get("settled");
+        writeJson(response, 200, store.findSessions({
+          q,
+          ...(url.searchParams.get("projectId") ? { projectId: url.searchParams.get("projectId")! } : {}),
+          ...(settled === null ? {} : { settled: settled === "1" || settled === "true" }),
+          ...(url.searchParams.get("since") ? { since: positiveParam(url.searchParams.get("since"), 0, Number.MAX_SAFE_INTEGER, "since") } : {}),
+          limit: positiveParam(url.searchParams.get("limit"), FIND_LIMIT_DEFAULT, FIND_LIMIT_MAX, "limit"),
+        }));
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/sessions/mcp-info") {
         const bound = server.address();
         const port = bound && typeof bound === "object" ? bound.port : 0;
@@ -3538,8 +4041,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             /**
              * WHO ASKED — provenance. Forwarded rather than ignored because the
              * OUT-OF-PROCESS worker reaches this route to build the toolkit's
-             * `create`, exactly as it reaches `/v2/spool/items` to build the
-             * spool's: the capability is assembled out of client calls in one
+             * `create`: the capability is assembled out of client calls in one
              * deployment and out of `store.*` calls in the other, and both must
              * stamp the same provenance.
              *
@@ -3714,17 +4216,117 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, sessionBootstrap(store, session.sessionId, snapshotWindowParam(url)));
           return;
         }
+        /**
+         * THE JOURNAL, A PAGE AT A TIME — issue #494.
+         *
+         * This route used to answer with the whole tail above `after`, which on
+         * the biggest dogfood session was 36.5 MB serialised in 2.48 s — one
+         * response the engine builds entirely in memory, the cockpit route
+         * relays entirely in memory, and the client parses entirely in memory
+         * before it can fold a single row. A 200-row page of the same journal
+         * is 185 KB.
+         *
+         * KEYSET, NEVER OFFSET. `after` is an event id, so the window does not
+         * shift under a journal that is being appended to while a client pages
+         * it: `LIMIT ... OFFSET` would drop or repeat rows the moment a turn
+         * streamed a delta mid-walk, which on a live session is always.
+         *
+         * `more` IS EXACT, not "the page came back full". One row beyond the
+         * limit is read and dropped, so a client that pages until `more` is
+         * false never pays a final round trip to be told there was nothing —
+         * and `next` carries the `after` for the following page, present
+         * exactly when `more` is true so the two cannot disagree.
+         */
         if (request.method === "GET" && session.tail === "/events") {
           const after = Number(url.searchParams.get("after") ?? "0");
-          const events = store.readEvents(session.sessionId, after);
+          const limit = eventPageLimit(url.searchParams.get("limit"));
+          // One over, to tell a full page from a full page with more behind it.
+          const read = store.readEvents(session.sessionId, after, limit + 1);
+          const events = read.length > limit ? read.slice(0, limit) : read;
+          const cursor = events.at(-1)?.id ?? (Number.isSafeInteger(after) ? after : 0);
           writeJson(response, 200, {
             events,
-            cursor: events.at(-1)?.id ?? (Number.isSafeInteger(after) ? after : 0),
-            // The store returns the whole tail in one read, so a caller never
-            // has to page. Reported anyway because the field is contract and a
-            // future chunked read must not silently look like a complete one.
-            more: false,
+            cursor,
+            more: read.length > limit,
+            ...(read.length > limit ? { next: cursor } : {}),
           });
+          return;
+        }
+        /**
+         * ══ SCROLLING A CONVERSATION RATHER THAN PAGING IT — issue #516 ══
+         *
+         * `/events` above is the journal: every row, in order, from a cursor. It
+         * is the right read for a transcript and the wrong one for an agent,
+         * which wants to ask a question — which turn, what did it conclude, what
+         * did step twelve do — and gets there today only by paging 38 MB.
+         *
+         * The four routes below answer those questions from the `turn_summary`
+         * projection and from indexed document spans. NONE OF THEM FOLDS EVENTS
+         * (except `/grep`, which is a question about event text and says so),
+         * and every one states `more` with the cursor for the next page, so a
+         * caller never has to fetch everything to learn there was nothing.
+         *
+         * ONE TURN PER ROW, NEWEST FIRST. `before` is a sequence rather than an
+         * offset, for the reason `/events` gives about `after`: a session being
+         * appended to under a paging caller must not shift its window.
+         */
+        if (request.method === "GET" && session.tail === "/outline") {
+          writeJson(response, 200, store.turnOutline(session.sessionId, {
+            limit: positiveParam(url.searchParams.get("limit"), OUTLINE_PAGE_DEFAULT, OUTLINE_PAGE_MAX, "limit"),
+            ...(url.searchParams.get("before") === null ? {} : { before: positiveParam(url.searchParams.get("before"), 0, Number.MAX_SAFE_INTEGER, "before") }),
+          }));
+          return;
+        }
+        /**
+         * WHAT ONE RUN DID — the list, then one step of it.
+         *
+         * TWO ROUTES RATHER THAN ONE FAT ANSWER, because the list exists so a
+         * caller can choose before it pays: `{index, id, title, status, bytes}`
+         * is under a kilobyte for a long run, and `bytes` is what tells an agent
+         * which step it can afford. The step itself is clamped to `maxChars`
+         * with the marker that says how much was left behind.
+         */
+        const run = runItemsPath(session.tail);
+        if (request.method === "GET" && run) {
+          if (run.step === undefined) {
+            writeJson(response, 200, { items: store.runItems(session.sessionId, run.runId) });
+            return;
+          }
+          writeJson(response, 200, store.runItem(
+            session.sessionId,
+            run.runId,
+            run.step,
+            positiveParam(url.searchParams.get("maxChars"), ITEM_CHARS_DEFAULT, ITEM_CHARS_MAX, "maxChars"),
+          ));
+          return;
+        }
+        /**
+         * THE ANSWER ALONE, SLICED — the most common orchestrator read, as its
+         * own verb. `totalChars` rides every slice so a caller knows what it is
+         * choosing not to read; the default run is the latest turn that actually
+         * left text.
+         */
+        if (request.method === "GET" && session.tail === "/answer") {
+          writeJson(response, 200, store.turnAnswer(session.sessionId, {
+            ...(url.searchParams.get("runId") ? { runId: url.searchParams.get("runId")! } : {}),
+            from: positiveParam(url.searchParams.get("from"), 0, Number.MAX_SAFE_INTEGER, "from"),
+            limit: positiveParam(url.searchParams.get("limit"), ANSWER_SLICE_DEFAULT, ANSWER_SLICE_MAX, "limit"),
+          }));
+          return;
+        }
+        /**
+         * WHERE A PHRASE APPEARS IN THIS JOURNAL — the one route here that does
+         * read events, because no projection worth keeping could answer it. The
+         * scan runs inside sqlite and only the matching page is materialised;
+         * see `grepEvents`.
+         */
+        if (request.method === "GET" && session.tail === "/grep") {
+          const pattern = url.searchParams.get("pattern");
+          if (!pattern) throw new HttpError(400, "invalid_request", "pattern is required");
+          writeJson(response, 200, store.grepSession(session.sessionId, pattern, {
+            limit: positiveParam(url.searchParams.get("limit"), GREP_PAGE_DEFAULT, GREP_PAGE_MAX, "limit"),
+            ...(url.searchParams.get("before") === null ? {} : { before: positiveParam(url.searchParams.get("before"), 0, Number.MAX_SAFE_INTEGER, "before") }),
+          }));
           return;
         }
         /**
@@ -3736,11 +4338,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const target = url.searchParams.get("path");
           if (target) {
             writeJson(response, 200, {
-              file: await store.sessionFilePatchAsync(session.sessionId, target, { untracked: url.searchParams.get("untracked") === "1" }),
+              file: await store.sessionFilePatchAsync(session.sessionId, target, filePatchOptions(url)),
             });
             return;
           }
-          writeJson(response, 200, { diff: await store.sessionDiffAsync(session.sessionId) });
+          writeJson(response, 200, { diff: await store.sessionDiffAsync(session.sessionId, requestedBase(url)) });
           return;
         }
         /**
@@ -3769,17 +4371,47 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          */
         if (request.method === "GET" && session.tail === "/skills") {
           const record = store.getSession(session.sessionId);
+          // A session with no checkout has no project skills to read — the
+          // answer is the empty menu, not a probe of some other directory.
+          const checkout = workspacePath(record.workspace);
+          if (checkout === undefined) {
+            writeJson(response, 200, { skills: [], commands: [] });
+            return;
+          }
           writeJson(
             response,
             200,
             await readProviderSkillsCached({
-              sessionId: record.id,
+              cacheKey: record.id,
               driver: record.driver,
-              checkout: record.workspace.path,
+              checkout,
               ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),
               ...(options.providerSkills?.loadProviderCommands
                 ? { loadProviderCommands: options.providerSkills.loadProviderCommands }
                 : {}),
+            }),
+          );
+          return;
+        }
+        /**
+         * ADOPT ONE — fork it, import its history, and point this session's
+         * next turn at the fork.
+         *
+         * A POST ON THE SESSION, because that is what changes: nothing about
+         * the person's own conversation is touched (asserted, not assumed), and
+         * what comes back is this session's new turn plus the stamp saying
+         * where it came from.
+         */
+        if (request.method === "POST" && session.tail === "/adopt") {
+          const input = await body(request);
+          const cut = input.cut === "since_compact_boundary" || input.cut === "whole" ? input.cut : undefined;
+          writeJson(
+            response,
+            201,
+            await store.adoptClaudeConversation(session.sessionId, {
+              sourceSessionId: stringValue(input.sourceSessionId, "source session id")!,
+              ...(cut ? { cut } : {}),
+              ...((value) => (value ? { sourceCwd: value } : {}))(stringValue(input.sourceCwd, "source cwd", true)),
             }),
           );
           return;
@@ -3942,10 +4574,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             () => {
               const record = store.getSession(session.sessionId);
               if (!record.projectId) throw new RunError("invalid_request", "runs need a project");
+              // A run is a process in a directory; a session with none cannot
+              // have one. Stated separately from the project check because they
+              // are different absences, even though today only one session has
+              // both.
+              const worktreePath = workspacePath(record.workspace);
+              if (worktreePath === undefined) throw new RunError("invalid_request", "runs need a working directory");
               return {
                 sessionId: record.id,
                 projectId: record.projectId,
-                worktreePath: record.workspace.path,
+                worktreePath,
                 ...(record.workspace.mode === "worktree" ? { worktreeBranch: record.workspace.branch } : {}),
               };
             },
@@ -4030,12 +4668,45 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               targetSessionId: stringValue(input.targetSessionId, "target session id")!,
               ...(events && events.length > 0 ? { events } : {}),
               ...(input.once === true ? { once: true } : {}),
+              // A CLOSED SET, read off the body rather than trusted from it:
+              // anything else is absent, which the store reads as the default.
+              ...(input.completionWake === "always" || input.completionWake === "settled_only"
+                ? { completionWake: input.completionWake }
+                : {}),
             }),
           });
           return;
         }
         if (request.method === "GET" && session.tail === "/subscriptions") {
           writeJson(response, 200, { subscriptions: store.subscriptionsFor(session.sessionId) });
+          return;
+        }
+        /**
+         * THE CADENCE, AND WHAT IT IS HOLDING — issue #723.
+         *
+         * TWO FACTS, ONE READ, because neither is legible alone. A window with
+         * nothing waiting and a window with five reports waiting are different
+         * situations to the person who set it, and a surface that could only
+         * show the setting would make a held report look exactly like a lost
+         * one — the bug #631 part 2 fixed, reintroduced by the cure's own UI.
+         *
+         * ITS OWN ROUTE RATHER THAN A FIELD ON A LIST. `LiveSessionRow` omits
+         * `reportWindowMinutes` deliberately (see the contract) and the rail is
+         * measured against a per-row ceiling; the count is not on the session
+         * record at all — it is the mailbox's length, which only a read of the
+         * box can answer. A surface that configures a cadence reads this; a
+         * list never does.
+         *
+         * `held` IS THE WHOLE BOX, not the windowed part of it. A busy session
+         * holds mail for its running turn whatever its cadence says, and the
+         * mailbox does not file the two apart — so this reports what is waiting
+         * and lets the reader, who can see the window beside it, say why.
+         */
+        if (request.method === "GET" && session.tail === "/report-window") {
+          writeJson(response, 200, {
+            reportWindowMinutes: store.getSession(session.sessionId).reportWindowMinutes ?? null,
+            held: store.pendingNotifications(session.sessionId).length,
+          });
           return;
         }
         /**
@@ -4123,6 +4794,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               ...(input.settledOverride === undefined ? {} : { settledOverride: input.settledOverride as "settled" | "active" | null }),
               ...(input.snoozedUntil === undefined ? {} : { snoozedUntil: input.snoozedUntil as number | null }),
               ...(input.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: input.resumeAfterRateLimit as boolean | null }),
+              // The report window, same reasoning again — the bounds are the
+              // store's, so an in-process caller cannot set a window this hop
+              // would have refused (#723).
+              ...(input.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: input.reportWindowMinutes as number | null }),
             }),
           });
           return;
@@ -4480,7 +5155,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // After the worker, before the lock: a live Chromium holding a profile
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");
+        // THE AGENT'S STREAMS FIRST, and before the server: `server.close()`
+        // waits for open connections, and an SSE stream never closes itself.
+        for (const stream of [...openStreams]) (stream.end ?? stream)();
+        openStreams.clear();
         await closeServer(server);
+        // AFTER THE SERVER, so no stream route is still holding a watcher, and
+        // before the execution store: the Agent's thread is a database handle
+        // this process owns, and a daemon that left it open would leave the
+        // next reset unable to move the file.
+        store.setAgentWakeSink(undefined);
+        // AWAITED, and that is the whole of #539's item 5 in one line: the
+        // Agent's turn is a promise in THIS event loop, so stopping the engine
+        // ends it — there is nothing to outlive the daemon. `shutdown` aborts
+        // the live turn, waits for its `turn_done` to be written, and only then
+        // closes the thread file.
+        await agentRuntime.shutdown();
         clearInterval(workerPruner);
         clearInterval(delegationSweeper);
         removeOwnDiscovery(store, daemonId);

@@ -64,7 +64,7 @@ const turn = (items: JournalItem[], state: JournalTurn["state"] = "running"): Jo
 
 const render = (items: JournalItem[], live = true, state: JournalTurn["state"] = "running") =>
   renderToStaticMarkup(
-    <SessionTurn turn={turn(items, state)} requests={[]} sending={false} live={live} now={3} onDecide={() => {}} onRetry={() => {}} />,
+    <SessionTurn turn={turn(items, state)} requests={[]} sending={false} live={live} onDecide={() => {}} onRetry={() => {}} />,
   );
 
 describe("a steer arriving mid-sentence", () => {

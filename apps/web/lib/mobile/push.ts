@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import http2 from "node:http2";
-import { relayConfig } from "./relay";
+import { relayConfig, relayHostId } from "./relay";
 import { remoteHome } from "../remote/store";
 
 export interface MobileRegistration {
@@ -30,14 +30,102 @@ export interface PushRecord extends MobileRegistration {
   automaticStartedAt?: number;
   automaticStarts?: number;
   automaticSignal?: string;
+  /** CONSECUTIVE failures; reset by any success. Twenty of them parks the
+   *  record — see `PARK_AFTER_FAILURES` in worker.ts. */
   failures?: number;
   retryAt?: number;
+  /**
+   * STOPPED UNTIL THE PHONE ASKS AGAIN — issue #584.
+   *
+   * A record that has failed twenty times running is not having a bad minute;
+   * something about it is wrong in a way no amount of retrying fixes, and the
+   * relay bill for finding that out again every hour is real. A parked record
+   * is skipped entirely and comes back the moment the phone PUTs a fresh
+   * registration, which every app open does.
+   */
+  parked?: true;
+  /** Seconds, when APNs last took something for this phone. Written only on a
+   *  200 (#579) — it is what Settings shows to tell a phone that is registered
+   *  from one that is actually being reached. Absent until the first one. */
+  lastDeliveryAt?: number;
+  /** The last send's status and Apple's word for it, for the Settings pane
+   *  (#584). A status only: never a token, never a payload. */
+  lastStatus?: number;
+  lastReason?: string;
+  /**
+   * THE REVISION THE RELAY LAST ACCEPTED A REGISTRATION FOR — issue #584.
+   *
+   * Every push used to be TWO relay calls: a PUT of the device registration
+   * followed by the POST. The registration only changes when the record does,
+   * so re-sending it per push doubled the invocation count for nothing. When
+   * this equals `revision`, a push is the single POST.
+   */
+  relayRevision?: string;
+  /**
+   * WHICH MAC OWNS THIS PHONE — issue #584, and the "one sender per relay host"
+   * half of it. Both the MacBook and the mini held the same three records and
+   * each sent everything, so every alert went twice and every dead token was
+   * retried twice. This is the relay host id of the Mac the registration
+   * arrived at; a Mac serves only its own.
+   *
+   * NOT `hostId`: that one is the PHONE's local UUID for this Mac, minted on
+   * the phone (`apps/ios/TelarMobile/Stores/Host.swift`), so it is the same
+   * value in both copies of the file and identifies nothing from here.
+   */
+  relayHostId?: string;
   updatedAt: number;
   seen: Record<string, string>;
   activitySent: Record<string, number>;
 }
 export type PushPayload = { aps: Record<string, unknown>; url?: string };
 export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity"; collapseId: string; payload: PushPayload };
+
+/**
+ * WHAT CAME BACK FROM A SEND — issue #584.
+ *
+ * A bare status was not enough to tell a DEAD device token from a bad hour.
+ * Apple says which it is in the `reason` of its JSON body, and without that the
+ * worker treated every 4xx as transient and retried two rejected tokens 627 and
+ * 17 times over, which is most of the 173k relay invocations that exhausted the
+ * account's daily quota.
+ *
+ * `relay` IS THE OTHER HALF OF THE SAME PROBLEM. A relay that refuses (revoked
+ * host credential, expired registration, daily budget) answers with its own
+ * status, and a relay 400 must never be read as Apple's verdict on a phone.
+ * Absent means the status IS Apple's — which is what `sendAPNs` returns
+ * directly, so the default cannot silently mislabel a direct send.
+ */
+export type DeliveryResult = {
+  /** Apple's status — or the relay's own, when `relay` is set. */
+  status: number;
+  /** Apple's rejection reason, e.g. `BadDeviceToken`. A bare enum word: never a
+   *  token, a payload or a provider body. */
+  reason?: string;
+  /** The RELAY refused, so `status` is not Apple's answer about this token. */
+  relay?: true;
+  /** The relay accepted a fresh device registration during this delivery, so
+   *  the record's `relayRevision` may advance (#584). */
+  registered?: true;
+  /** Seconds from a relay 429's `Retry-After`: this host's daily budget is
+   *  spent and nothing more may be sent until it resets. */
+  retryAfter?: number;
+};
+
+/**
+ * THE FOUR WAYS APPLE SAYS "THIS TOKEN IS GONE", plus the 410 that says it
+ * without words. The owner's decision (#584): drop the record and let the app
+ * re-register on its next open. Never retry a rejected token.
+ *
+ * 403 IS DELIBERATELY NOT HERE. It is `ExpiredProviderToken` — the relay's
+ * signing key, not the phone — and treating it as terminal would delete every
+ * record on the Mac the hour a key rotated. It is transient, and so is every
+ * status the relay answers with itself.
+ */
+const DEAD_TOKEN_REASONS = new Set(["BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered", "ExpiredToken"]);
+export function isDeadToken(result: DeliveryResult): boolean {
+  if (result.relay) return false;
+  return result.status === 410 || (result.status === 400 && result.reason !== undefined && DEAD_TOKEN_REASONS.has(result.reason));
+}
 export class PushInputError extends Error {}
 const hex = /^[a-fA-F0-9]{32,512}$/;
 const uuid = /^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$/;
@@ -76,7 +164,7 @@ export function writePushRecords(records: PushRecord[], file = pushFile()): void
   fs.writeFileSync(tmp, JSON.stringify(records), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
-export function saveRegistration(deviceId: string, registration: MobileRegistration, file = pushFile()): void {
+export function saveRegistration(deviceId: string, registration: MobileRegistration, file = pushFile(), ownHostId = relayHostId()): void {
   const records = readPushRecords(file);
   const old = records.find(r => r.deviceId === deviceId && r.topic === registration.topic);
   // A start receipt belongs to the token it was sent to. A reinstall mints a fresh
@@ -84,7 +172,18 @@ export function saveRegistration(deviceId: string, registration: MobileRegistrat
   // and must not close the start gate; the attempt count travels with it for the same reason.
   const keepStart = registration.liveActivities === true && old?.liveActivities === true
     && registration.pushToStartToken !== undefined && registration.pushToStartToken === old.pushToStartToken;
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  // `lastDeliveryAt` TRAVELS ACROSS A RE-REGISTRATION. The phone re-registers on
+  // every preference change and every token refresh; forgetting when it was
+  // last reached would make Settings say "never" about a phone being pushed to
+  // all day.
+  // A FRESH REGISTRATION IS THE WAY BACK (#584). It un-parks the record, clears
+  // the consecutive-failure count and drops any pending backoff — an app open is
+  // exactly the evidence that the phone is reachable again, and it is what the
+  // dead-token drop relies on to bring a re-registered phone back.
+  //
+  // `relayRevision` is deliberately NOT carried: the revision below is new, so
+  // the relay has not seen this registration and must be sent it once.
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
 export function signalKey(session: SessionSignal): string {
@@ -140,8 +239,20 @@ function bearer(): string {
   cachedJWT = { identity, at: now, token: `${message}.${signature}` };
   return cachedJWT.token;
 }
-/** APNs tokens and payloads never enter logs. Callers see only delivery status. */
-export async function sendAPNs(delivery: Delivery): Promise<number> {
+/** Apple answers a rejection with `{"reason":"BadDeviceToken"}`. Only that word is
+ *  taken, and only when it looks like one — no provider body travels further. */
+export function appleReason(body: string): string | undefined {
+  try {
+    const value = (JSON.parse(body) as { reason?: unknown }).reason;
+    return typeof value === "string" && /^[A-Za-z]{1,64}$/.test(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** APNs tokens and payloads never enter logs. Callers see only delivery status
+ *  and Apple's own rejection reason. */
+export async function sendAPNs(delivery: Delivery): Promise<DeliveryResult> {
   const authorization = `bearer ${bearer()}`;
   return new Promise((resolve, reject) => {
     const client = http2.connect(delivery.sandbox ? "https://api.sandbox.push.apple.com" : "https://api.push.apple.com");
@@ -152,10 +263,17 @@ export async function sendAPNs(delivery: Delivery): Promise<number> {
       "apns-topic": delivery.topic, "apns-push-type": delivery.kind, "apns-priority": delivery.kind === "alert" || ["start", "end"].includes(String(delivery.payload.aps.event)) ? "10" : "5",
       "apns-expiration": String(Math.floor(Date.now() / 1000) + 3600), "apns-collapse-id": delivery.collapseId });
     let status = 0;
+    // BOUNDED: Apple's rejection body is a few dozen bytes. Anything past the
+    // bound is dropped rather than buffered, and never logged either way.
+    let body = "";
     request.on("response", headers => { status = Number(headers[":status"]); });
-    request.on("data", () => {});
+    request.on("data", chunk => { if (body.length < 512) body += String(chunk); });
     request.on("error", fail);
-    request.on("end", () => { clearTimeout(timer); client.close(); resolve(status); });
+    request.on("end", () => {
+      clearTimeout(timer); client.close();
+      const reason = status === 200 ? undefined : appleReason(body);
+      resolve({ status, ...(reason === undefined ? {} : { reason }) });
+    });
     request.end(JSON.stringify(delivery.payload));
   });
 }

@@ -57,8 +57,8 @@ test("a plugin WRITE still parks a card on both providers", () => {
 });
 
 test("a core read auto-accepts on both providers", () => {
-  expect(claude("spool_list_items")).toBe("file_read");
-  expect(codex("spool_list_items")).toBe("file_read");
+  expect(claude("display_open")).toBe("file_read");
+  expect(codex("display_open")).toBe("file_read");
 });
 
 test("an UNINSTALLED process fails CLOSED — every plugin tool asks", () => {
@@ -70,7 +70,7 @@ test("an UNINSTALLED process fails CLOSED — every plugin tool asks", () => {
   expect(codex("ds_packages")).toBe("tool_call");
   // …while core reads are unaffected, because they were never the host's to
   // ratify.
-  expect(claude("spool_list_items")).toBe("file_read");
+  expect(claude("display_open")).toBe("file_read");
 });
 
 test("the host can only NARROW — installing a smaller set removes plugin reads", () => {
@@ -101,6 +101,6 @@ test("a plugin may only be believed about its OWN namespace", () => {
 
 test("a user-configured server does not inherit Telar's posture", () => {
   // Only OUR servers' tools qualify. A third-party server that happened to name
-  // a tool `spool_list_items` must still ask.
-  expect(requestKindForTool(canonicalToolName("someone-elses", "spool_list_items"))).toBe("tool_call");
+  // a tool `display_open` must still ask.
+  expect(requestKindForTool(canonicalToolName("someone-elses", "display_open"))).toBe("tool_call");
 });

@@ -125,16 +125,18 @@ export type SessionActionItem = {
 export type SessionActionTarget = {
   id: string;
   title: string;
-  /** Absent on the Spool's master chat, which belongs to no project — so the
-   *  two items that need one say so rather than building a `/projects/undefined`
-   *  URL. */
+  /** Absent on a session that belongs to no project — so the two items that
+   *  need one say so rather than building a `/projects/undefined` URL. */
   projectId?: string;
   /** For the label. Falls back to "this project" when the project list has not
    *  landed: an opaque `project_1a16…` is addressing, not a name. */
   projectName?: string;
   /** Which Mac. Absent for the local engine. */
   hostId?: string;
-  workspacePath: string;
+  /** Where the session's files are. ABSENT ON A SESSION WITH NO CHECKOUT — see
+   *  `SessionWorkspace`'s `none` variant — so "Copy path" is simply not offered
+   *  rather than copying an empty string. */
+  workspacePath?: string;
   /**
    * THE SESSION'S OWN BRANCH, which only a worktree session has. A local
    * session runs on the project's checkout, where the branch is a property of
@@ -169,8 +171,6 @@ export type SessionActionTarget = {
 export type SessionActionCapabilities = {
   /** On another Mac. Per-project settings are a local-only route. */
   remote?: boolean;
-  /** Observe mode: the title is a fact, not a field, and nothing here writes. */
-  readOnly?: boolean;
   /**
    * THIS IS THE SESSION YOU ARE ALREADY READING — the cockpit's own header,
    * always, and the rail's active row. Only `Open` reads it, and it stays in
@@ -236,7 +236,6 @@ export type SessionActionMenuState = {
 
 /** Kept as prose in one place so two items cannot word the same refusal twice. */
 const NO_PROJECT = "This session belongs to no project.";
-const OBSERVING = "This session is being observed, not driven.";
 const ARCHIVED = "This conversation is over.";
 const WAITING = "Something here is waiting on you.";
 const RUNNING_DELETE = "A turn is running. Stop it before deleting.";
@@ -254,7 +253,7 @@ const ALREADY_OPEN = "You are already reading this one.";
  */
 export function buildSessionActionMenuItems(state: SessionActionMenuState): SessionActionItem[] {
   const { session, activity, now, actions } = state;
-  const { remote = false, readOnly = false, current = false } = state.capabilities ?? {};
+  const { remote = false, current = false } = state.capabilities ?? {};
   const items: SessionActionItem[] = [];
 
   /* ── 1. Getting to it ─────────────────────────────────────────────────── */
@@ -342,7 +341,6 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
       icon: pinned ? "unpin" : "pin",
       kind: "toggle",
       separatorBefore: true,
-      disabled: readOnly && OBSERVING,
       run: () => actions.pin(!pinned),
     });
 
@@ -359,7 +357,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
        * button that appears broken. Coming BACK from settled is always allowed:
        * the refusal is about shelving a session someone still needs.
        */
-      disabled: (readOnly && OBSERVING) || (settled ? false : settleRefusal(activity)),
+      disabled: settled ? false : settleRefusal(activity),
       run: () => actions.settle(!settled),
     });
 
@@ -371,7 +369,6 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
         icon: "wake",
         kind: "toggle",
         detail: wakeLabel(session.snoozedUntil!, now),
-        disabled: readOnly && OBSERVING,
         run: () => actions.snooze(null),
       });
     } else {
@@ -387,7 +384,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
         label: "Snooze",
         icon: "snooze",
         kind: "toggle",
-        disabled: (readOnly && OBSERVING) || (!canSnooze(activity) && WAITING),
+        disabled: !canSnooze(activity) && WAITING,
         // Presets rather than a picker: the point of a snooze is that it costs
         // one gesture. Resolved against `now`, so "In 1 hour" is an hour from
         // the paint that built this list.
@@ -409,7 +406,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
     label: "Rename",
     icon: "rename",
     separatorBefore: true,
-    disabled: (readOnly && OBSERVING) || (session.archived && ARCHIVED),
+    disabled: session.archived && ARCHIVED,
     run: actions.rename,
   });
 
@@ -426,7 +423,9 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
    */
   const copies: SessionActionItem[] = [
     { id: "copy-link", label: "Link", icon: "copy", run: () => actions.copyLink(href) },
-    { id: "copy-path", label: "Path", icon: "copy", run: () => actions.copy(session.workspacePath) },
+    ...(session.workspacePath
+      ? [{ id: "copy-path", label: "Path", icon: "copy" as const, run: () => actions.copy(session.workspacePath!) }]
+      : []),
     ...(session.branch ? [{ id: "copy-branch", label: "Branch", icon: "copy" as const, run: () => actions.copy(session.branch!) }] : []),
     { id: "copy-id", label: "Session ID", icon: "copy", run: () => actions.copy(session.id) },
   ];
@@ -465,8 +464,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
     icon: "delete",
     separatorBefore: true,
     destructive: true,
-    disabled:
-      (readOnly && OBSERVING) || (activity.working && RUNNING_DELETE) || (activity.waitingOnYou && WAITING_DELETE),
+    disabled: (activity.working && RUNNING_DELETE) || (activity.waitingOnYou && WAITING_DELETE),
     run: actions.remove,
   });
 

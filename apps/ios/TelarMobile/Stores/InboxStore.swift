@@ -97,6 +97,8 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// The cache read seeding the first frame — off the main thread, the
     /// same reason as SessionSyncEngine's.
     private var restoring: Task<Void, Never>?
+    /// The cache WRITE in flight, held only so the tests can wait for it.
+    private var recording: Task<Void, Never>?
     private var anythingLive = false
     /// The engine's default (3 days) until the real policy arrives; a policy
     /// fetch failure keeps the last known answer rather than rebanding.
@@ -120,6 +122,56 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// too old to count, and a Mac that restarted and now counts from somewhere
     /// else. One store is one Mac, so a cursor can never be spent on another's.
     private var revision: Int?
+    /// THE CONDITIONAL READ'S TAG (#457) — what the Mac handed back last time,
+    /// sent with the next ask so a tick with nothing behind it costs a 304 and
+    /// no body at all.
+    ///
+    /// AN ETAG RATHER THAN `revision` ABOVE, because the tag carries the MODE:
+    /// a cursor earned against the unsettled list and spent against the wide one
+    /// would be answered "unchanged" and leave the settled shelf empty. `nil`
+    /// means ask for everything, which is the right answer in all three cases
+    /// that produce it: the first poll after this store was built, a Mac too old
+    /// to mint a tag, and a Mac that restarted and now counts from somewhere
+    /// else. One store is one Mac, so a tag can never be spent on another's.
+    private var etag: String?
+    /// HOW MANY SETTLED ROWS THE MAC IS HOLDING BACK (#457).
+    ///
+    /// Its live read answers the UNSETTLED rows by default — 7 of 291 on the
+    /// owner's store, where it used to fold and serialise all 291 every three
+    /// seconds for this phone and every other device at once. This is the count
+    /// it sends instead, and it is what the "Settled" divider draws so there is
+    /// something to tap that asks for the rest.
+    ///
+    /// ZERO FROM A MAC THAT PREDATES THE FILTER, which sent every row — the
+    /// sections below then hold the settled ones already and this adds nothing.
+    private(set) var shelvedOnMac = 0
+    /// WHETHER THIS MAC HAS A BUILT-IN AGENT (#531), as of its last answer.
+    ///
+    /// FALSE UNTIL A MAC SAYS OTHERWISE, and false again the moment one says it
+    /// is off: unlike `layout` beside it, an absent field here is a real answer
+    /// rather than "cannot say". A Mac whose engine predates the feature sends
+    /// nothing and means off, and holding a stale `true` for it would put a row
+    /// on this sidebar that its own rail does not draw.
+    private(set) var agentEnabled = false
+    /// THE AGENT'S OWN STATE, for the sidebar row's status line (#539).
+    ///
+    /// A SECOND REQUEST, AND ONLY WHERE THERE IS A ROW TO PUT IT ON. It cannot
+    /// ride the live read beside `agentEnabled`: that read is CONDITIONAL on the
+    /// Mac's sessions revision, and the Agent's own turns move nothing in the
+    /// sessions store — so a status folded in there would freeze on whatever it
+    /// said when some unrelated session was last written, and read "working" for
+    /// an hour after the turn ended.
+    ///
+    /// So it is asked for separately, after the live read and only when that
+    /// read says this Mac HAS an Agent. On every phone whose Macs have never
+    /// switched one on — which is every phone out of the box — nothing extra is
+    /// ever fetched.
+    private(set) var agentState: AgentState?
+    /// WHETHER THIS PHONE IS ASKING FOR THEM. Off until a reader opens the
+    /// shelf, and it stays on afterwards: the rows cost nothing to keep, and
+    /// turning it back off would mean re-fetching all of them the next time
+    /// they glanced at the list.
+    private var wantsSettled = false
 
     init(api: any EngineAPI, hostId: HostID = HostID(), cache: HostSnapshotCache? = nil) {
         self.api = api
@@ -133,6 +185,9 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
+                // AFTER the live read, because that read is what says whether
+                // this Mac has an Agent at all — see `agentState`.
+                await self?.refreshAgent()
                 // 3s while anything is live, 10s when the whole list idles.
                 let lively = self?.anythingLive ?? false
                 try? await Task.sleep(for: .seconds(lively ? 3 : 10))
@@ -143,6 +198,21 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     func stop() {
         loop?.cancel()
         loop = nil
+    }
+
+    /// The Agent's state for the sidebar row's line — nothing at all when this
+    /// Mac has no Agent, which is every Mac out of the box.
+    ///
+    /// A FAILED ASK KEEPS WHAT IS ON SCREEN, like every other read here: the row
+    /// is still worth pressing, and the next tick is seconds away. Only the
+    /// SWITCH going off clears the line, and it clears it because the row goes
+    /// with it.
+    func refreshAgent() async {
+        guard agentEnabled else {
+            agentState = nil
+            return
+        }
+        if let answer = try? await api.agent() { agentState = answer.agent }
     }
 
     /// A read receipt landed on a session this store lists. Clear its dot NOW.
@@ -208,9 +278,10 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         apply(live)
     }
 
-    /// Tests: wait for the cache read to land.
+    /// Tests: wait for the cache read — and the cache write — to land.
     func awaitPendingWork() async {
         await restoring?.value
+        await recording?.value
     }
 
     func refresh() async {
@@ -230,12 +301,42 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
              answer carries none to replace them with. The error state is
              cleared first, because a tick that succeeded is a tick that
              succeeded.
+
+             AND IT IS THE UNSETTLED ROWS UNLESS THE SHELF IS OPEN (#457). The
+             Mac now sends 7 rows where it sent 291, and `settledCount` beside
+             them draws the divider that asks for the other 284.
+
+             THE CONDITIONAL IS AN ETAG RATHER THAN THE CURSOR, and that is what
+             makes the wide read conditional too. A cursor is a number about the
+             Mac's store, so it does not move when a reader opens a shelf — one
+             earned against the unsettled list and spent against `all` would be
+             answered "unchanged" and the shelf would stay empty until something
+             else happened over there. The tag carries the mode, so the two asks
+             can never be answered with each other's list. A 304 also has no
+             body at all, where the cursor's cheapest answer is sixty bytes.
+             `revision` is still read off the answers that carry one, so a Mac
+             too old to mint a tag keeps working exactly as it did.
              */
-            let live: LiveSessions
-            if let cursor = revision {
-                live = try await api.liveSessions(since: cursor)
+            /**
+             THE CURSOR IS THE FLOOR, NOT THE DEAD PATH. A Mac too old to mint a
+             tag answers 200 with none, and this phone then falls back to
+             `?since=` — which is exactly what it did before, so a mixed-version
+             pair loses nothing. Only the NARROW read can use a cursor; the wide
+             one is refused a cursor for the reason above and simply pays.
+             */
+            let answer: LiveSessionsRead
+            if etag == nil, !wantsSettled, let cursor = revision {
+                answer = try await api.liveSessions(matching: nil, since: cursor, all: false)
             } else {
-                live = try await api.liveSessions()
+                answer = try await api.liveSessions(matching: etag, since: nil, all: wantsSettled)
+            }
+            etag = answer.etag
+            guard let live = answer.live else {
+                lastError = nil
+                unauthorized = false
+                loaded = true
+                recordedAt = nil
+                return
             }
             revision = live.revision
             if live.unchanged {
@@ -272,11 +373,20 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
             unauthorized = false
             loaded = true
             recordedAt = nil
-            remember()
+            remember(answer.data)
         } catch {
             lastError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
             unauthorized = (error as? EngineAPIError)?.isUnauthorized == true
         }
+    }
+
+    /// A reader opened the settled shelf. Ask the Mac for its rows, now rather
+    /// than on the next tick — otherwise they tap "Settled (284)" and watch an
+    /// empty shelf for three seconds.
+    func showSettled() async {
+        guard !wantsSettled else { return }
+        wantsSettled = true
+        await refresh()
     }
 
     private func apply(_ live: LiveSessions) {
@@ -284,6 +394,15 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         // that cannot say, never "nobody has arranged anything" — so the copy
         // already held survives rather than being blanked every poll.
         if let arrangement = live.layout { layout = arrangement }
+        // HOW MANY IT HELD BACK (#457). Nil means a Mac that sent everything,
+        // and the sections below then hold the settled rows themselves — so
+        // zero here is "nothing withheld", never "nothing settled".
+        shelvedOnMac = live.settledCount ?? 0
+        // WHETHER THIS MAC HAS AN AGENT (#531). Taken straight, not merged with
+        // what was held: nil is the Mac saying "off", not "cannot say", so an
+        // Agent switched off on the desktop leaves this sidebar on the very
+        // next poll rather than lingering until something else moves.
+        agentEnabled = live.agent?.enabled ?? false
         projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
         projects = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0) })
         assignments = live.assignments
@@ -297,20 +416,25 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         }
     }
 
-    /// The bytes of the read that just succeeded, kept for next time. A
-    /// second small GET rather than a re-encode — see SessionSyncEngine.
-    private func remember() {
-        guard let cache else { return }
-        let api = self.api
-        Task.detached(priority: .utility) { [weak self] in
-            guard let data = try? await api.liveSessionsData() else { return }
-            await self?.store(data, in: cache)
-        }
-    }
-
-    private func store(_ data: Data, in cache: HostSnapshotCache) {
-        if data == lastInboxData { return }
+    /// The bytes of the read that just succeeded, kept for next time.
+    ///
+    /// THE POLL'S OWN BODY (#499) — never a second read. This used to fire a
+    /// fresh, unconditional GET of the whole live list the instant a poll
+    /// changed anything: 318 KB on the owner's Mac, for rows it had been handed
+    /// microseconds earlier, on a route it asks every three seconds. The read
+    /// that earned the rows carries the bytes now, so warming the cache costs
+    /// nothing over reading it.
+    ///
+    /// NIL MEANS NOTHING NEW TO RECORD — a 304, an `unchanged` answer, or a
+    /// conformer with no bytes to give. The copy already on disk stands, which
+    /// is right in all three: it is still the last thing this Mac actually
+    /// said.
+    ///
+    /// THE WRITE IS DETACHED because it is file I/O, and this is the tail of a
+    /// poll that runs on the main actor while somebody is reading the list.
+    private func remember(_ data: Data?) {
+        guard let cache, let data, data != lastInboxData else { return }
         lastInboxData = data
-        cache.writeInbox(data)
+        recording = Task.detached(priority: .utility) { cache.writeInbox(data) }
     }
 }

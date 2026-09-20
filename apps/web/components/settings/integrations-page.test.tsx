@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describeProfileUse, profileNameProblem, whyUndeletable, type BrowserProfile } from "@/lib/desktop-browser-profiles";
+import { confirmProfileDeletion, describeProfileUse, profileNameProblem, whyUndeletable, type BrowserProfile } from "@/lib/desktop-browser-profiles";
 import { BrowserProfilesSection } from "./browser-profiles-section";
 import { IntegrationsPage } from "./integrations-page";
 import { Row } from "./settings-shell";
@@ -31,10 +31,20 @@ test("the default's row says what a reader cannot see from the list", () => {
   expect(describeProfileUse(profile())).toContain("Nothing is using it");
 });
 
-test("delete is refused for the default and for a profile a project uses, and says which", () => {
+test("delete is refused for the default alone, and the confirm names what moves (#476)", () => {
   expect(whyUndeletable(profile({ isDefault: true }))).toContain("Make another profile the default first");
-  expect(whyUndeletable(profile({ projects: ["project_a"] }))).toContain("Point that project at another profile");
+  // A profile projects are assigned to is deletable: they fall back to the
+  // default with it, which the confirm says before it happens rather than the
+  // row saying "point them elsewhere first".
+  expect(whyUndeletable(profile({ projects: ["project_a"] }))).toBeUndefined();
   expect(whyUndeletable(profile())).toBeUndefined();
+
+  const fallback = profile({ id: "bp_default", label: "Default", isDefault: true });
+  expect(confirmProfileDeletion(profile({ projects: ["project_a", "project_b"] }), [fallback])).toBe(
+    'Delete "Work"? 2 projects will use "Default" instead. Its cookies stay on disk.',
+  );
+  expect(confirmProfileDeletion(profile({ projects: ["project_a"] }), [fallback])).toContain("1 project will use");
+  expect(confirmProfileDeletion(profile(), [fallback])).toBe('Delete "Work"? Its cookies stay on disk.');
 });
 
 test("a profile name is required and may not repeat another", () => {
@@ -60,11 +70,14 @@ test("the pane is profiles THEN remembered logins — a grant is scoped to a pro
   expect(html.indexOf("Browser profiles")).toBeLessThan(html.indexOf("Remembered logins"));
 });
 
-test("the delete button is disabled by the same rule that explains it", () => {
+test("the delete button is disabled by the same rule that explains it, and asks first", () => {
   // One source of truth: whatever whyUndeletable says is both the tooltip and
   // the disabled condition, so a button is never live with a reason attached.
   expect(section).toContain("disabled={busy === profile.id || Boolean(whyUndeletable(profile))}");
   expect(section).toContain("title={whyUndeletable(profile) ??");
+  // Nothing is forgotten without the question, and the question is the shared
+  // sentence rather than one written twice.
+  expect(section).toContain("if (!window.confirm(confirmProfileDeletion(profile, profiles ?? []))) return;");
   // And it is hidden entirely on a shell too old to have the handler.
   expect(section).toContain("{bridge.deleteProfile && (");
 });

@@ -27,15 +27,34 @@ struct TranscriptView: View {
         // A transcript is bounded (and PR 2 windows it further), so paying for
         // real heights up front is what makes the tail a real place.
         VStack(alignment: .leading, spacing: 16) {
-            ForEach(turns) { turn in
-                TurnView(turn: turn)
-                if let receiptMarker, turn.runId == receiptMarker, let onReceiptMarkerVisible {
-                    ReadReceiptMarker(runId: receiptMarker, onVisible: onReceiptMarkerVisible)
+            // CONSECUTIVE ARRIVALS ARE ONE BLOCK — #577. The 16pt above is a
+            // TURN gap, and between two wakes the engine queued back to back
+            // there is no turn: nobody spoke and nothing was answered, two
+            // things merely arrived. A run of them is drawn at the activity
+            // lane's own rhythm instead. A group of one is every other turn in
+            // the conversation, rendered exactly as before.
+            ForEach(groupNotificationTurns(turns).map(TurnGroup.init)) { group in
+                VStack(alignment: .leading, spacing: group.turns.count > 1 ? 2 : 16) {
+                    ForEach(group.turns) { turn in
+                        TurnView(turn: turn)
+                        if let receiptMarker, turn.runId == receiptMarker, let onReceiptMarkerVisible {
+                            ReadReceiptMarker(runId: receiptMarker, onVisible: onReceiptMarkerVisible)
+                        }
+                    }
                 }
             }
         }
         .padding(.horizontal, 12)
     }
+}
+
+/// One block of the transcript: a run of consecutive arrivals, or any other
+/// single turn. Identified by its first turn's run, so loading a page of older
+/// turns above cannot renumber the ones already on screen.
+private struct TurnGroup: Identifiable {
+    let turns: [JournalTurn]
+    init(_ turns: [JournalTurn]) { self.turns = turns }
+    var id: EngineID { turns.first?.runId ?? "" }
 }
 
 /// The end of one answer, as a view.
@@ -82,7 +101,10 @@ struct TurnView: View {
         // boundary in the conversation, so the work after it belongs to it and
         // is drawn UNDER it. One response is every turn nobody steered, and it
         // renders exactly as it did before.
-        let responses = splitAtMessageBoundaries(turn.items)
+        // The opening arrival is drawn ONCE, by the header below (#590) — the
+        // one that is handed `turn.prompt`, so a peer's row carries the head of
+        // what was actually sent rather than the head of the envelope about it.
+        let responses = splitAtMessageBoundaries(withoutOpeningNotification(turn))
         let answering = responses[responses.count - 1]
         let earlier = responses.dropLast()
         let orphans = spawnlessTasks(turn.items, tasks: turn.tasks)
@@ -117,7 +139,13 @@ struct TurnView: View {
             // and drawing them as bubbles put words in the reader's mouth —
             // twenty lines of another agent's status, right-aligned, as though
             // they had typed it.
-            if turn.isWake || turn.isProviderStarted {
+            // A NOTIFICATION TURN IS A NOTIFICATION ROW (#550), and first —
+            // it is the honest description of every session-origin turn the
+            // engine now writes. The arms under it are what a turn stored
+            // before this existed still falls back to.
+            if turn.notification != nil {
+                NotificationTurnRow(turn: turn)
+            } else if turn.isWake || turn.isProviderStarted {
                 WakeRow(turn: turn)
             } else if turn.isFromAgent {
                 AgentMessageRow(turn: turn)
@@ -225,10 +253,75 @@ struct TurnResponse: Equatable {
     var items: [JournalItem]
 }
 
+/// ONE ARRIVAL DRAWS ONE NOTIFICATION ROW — issue #590, on the phone.
+///
+/// An arrival that opens a turn is stored TWICE on purpose: on the turn, and on
+/// the turn's first item (`notification.ts`). The Mac learned to draw only one
+/// of them; this phone drew both — `NotificationTurnRow` above, and the
+/// `notification_<runId>` item again as the first response's boundary. For a
+/// peer's message the two at least differed; for a WAKE, which has no message on
+/// either side, they were the identical line, twice.
+///
+/// KEYED ON THE ITEM'S ID, which the engine mints from the run — never on
+/// matching summaries. A text heuristic eventually eats a real second arrival
+/// from the same session, which is the failure that costs someone an errand.
+/// A notification that landed MID-TURN has an id of its own and no header
+/// announcing it, so it is untouched: drawing it is what the item row is for.
+/// (The web's `withoutOpeningNotification`, 1:1.)
+func withoutOpeningNotification(_ turn: JournalTurn) -> [JournalItem] {
+    guard turn.notification != nil, turn.origin == "session" || turn.origin == "provider" else { return turn.items }
+    let drawn = "notification_\(turn.runId)"
+    return turn.items.filter { $0.id != drawn }
+}
+
+/// A TURN THAT IS NOTHING BUT AN ARRIVAL — issue #577.
+///
+/// THE QUESTION IS WHAT THIS SCREEN WOULD DRAW, not what the turn is called. A
+/// usage footnote, a failure line, a `Stopped` marker and — on the phone, unlike
+/// the Mac — the `Queued`/`Working` indicator every pending turn carries are all
+/// things a reader sees under the row, and a strip that swallowed one would be
+/// hiding it. Only a turn with literally nothing beneath its row is bare.
+func bareNotificationTurn(_ turn: JournalTurn) -> Bool {
+    guard turn.notification != nil else { return false }
+    guard withoutOpeningNotification(turn).isEmpty else { return false }
+    guard turn.resultText.isEmpty, turn.failure == nil, turn.usage == nil else { return false }
+    guard !turn.state.isActive else { return false }
+    return turn.state != .failed && turn.state != .stopped && turn.state != .discarded
+}
+
+/// CONSECUTIVE ARRIVALS ARE ONE STRIP — issue #577. (The Mac's
+/// `groupNotificationTurns`, 1:1.)
+///
+/// A run of notification turns with nothing between them is ONE thing that
+/// happened to this session while it worked, so it is drawn as one tight block
+/// of one-line rows rather than as N conversations with a turn gap each. The run
+/// ENDS at the first turn that answered: that turn's row still joins the strip —
+/// it is an arrival like the others — and its reply hangs under it at the
+/// ordinary paragraph gap, which is what the reader came for.
+///
+/// EVERY TURN COMES BACK, in order, in exactly one group. A turn that is not an
+/// arrival is a group of one and renders as it always did; so is a lone arrival,
+/// which is the "a group of one is one line" case.
+func groupNotificationTurns(_ turns: [JournalTurn]) -> [[JournalTurn]] {
+    var groups: [[JournalTurn]] = []
+    for turn in turns {
+        if let previous = groups.last?.last, turn.notification != nil, bareNotificationTurn(previous) {
+            groups[groups.count - 1].append(turn)
+        } else {
+            groups.append([turn])
+        }
+    }
+    return groups
+}
+
 func splitAtMessageBoundaries(_ items: [JournalItem]) -> [TurnResponse] {
     var responses: [TurnResponse] = [TurnResponse(boundary: nil, items: [])]
     for item in items {
+        // `notification` seams for `user_message`'s reason: something ARRIVED,
+        // and what follows is the turn's answer to it (#550).
         if case .userMessage = item.detail {
+            responses.append(TurnResponse(boundary: item, items: []))
+        } else if case .notification = item.detail {
             responses.append(TurnResponse(boundary: item, items: []))
         } else {
             responses[responses.count - 1].items.append(item)
@@ -425,26 +518,50 @@ struct TaskChipRow: View {
     }
 }
 
-/// One run of activity rows: a rolling window while live, a tally once
-/// settled — the web's ActivityGroup. Both are the same sentence at two
+/// HOW A RUN OF WORK FOLDS, at both of its scales, over ANY row.
+///
+/// A rolling window while live — the newest step, with "+N earlier steps" above
+/// it — and one summary line once settled. Both are the same sentence at two
 /// scales, so the grammar is learned once. Its own fold state, so two runs in
 /// the same response open independently.
-struct ActivityRunView: View {
-    /// Already filtered by `renderable` — this view counts what it is given.
-    let rows: [JournalItem]
-    let tasks: [JournalTask]
-    let live: Bool
+///
+/// GENERIC OVER THE ROW, because the Agent's conversation folds by these same
+/// two rules over `AgentRow` and not `JournalItem` at all (#569). Its tool calls
+/// were drawn one flat line each — twelve calls, twelve lines — for exactly as
+/// long as this chrome could only be handed a session's items. What a row LOOKS
+/// like never reaches here: `content` draws it however that screen draws it, and
+/// the only two questions asked about a row are whether it failed and what the
+/// tally calls it.
+///
+/// THE FAILURE MARK IS A GLYPH, NOT A COUNT — the phone's own choice, and it
+/// reads every row rather than only the hidden ones: a run with a failure in it
+/// says so on the line that hides it, and a number on a phone-width row would
+/// cost the tally the space it needs.
+struct StepFoldView<Row: Identifiable, Content: View>: View {
+    private let rows: [Row]
+    private let live: Bool
+    private let failed: (Row) -> Bool
+    private let tally: () -> String
+    private let content: (Row) -> Content
     @State private var expanded = false
+
+    init(
+        rows: [Row],
+        live: Bool,
+        failed: @escaping (Row) -> Bool,
+        tally: @escaping () -> String,
+        @ViewBuilder content: @escaping (Row) -> Content
+    ) {
+        self.rows = rows
+        self.live = live
+        self.failed = failed
+        self.tally = tally
+        self.content = content
+    }
 
     /// A step that failed inside the fold must not be swallowed by the very
     /// mechanism that hid it.
-    private var anyFailed: Bool {
-        rows.contains { $0.status == .failed }
-            || rows.contains { item in
-                guard case .task(let taskId) = item.detail else { return false }
-                return tasks.first(where: { $0.id == taskId })?.task.state == .failed
-            }
-    }
+    private var anyFailed: Bool { rows.contains(where: failed) }
 
     var body: some View {
         if !rows.isEmpty {
@@ -478,17 +595,7 @@ struct ActivityRunView: View {
             .buttonStyle(.plain)
         }
         ForEach(expanded ? rows : Array(rows.suffix(1))) { item in
-            row(item)
-        }
-    }
-
-    /// A settled spawn folds into the tally like any other step, but when it
-    /// is shown it is the agent it started, not an empty placeholder.
-    @ViewBuilder private func row(_ item: JournalItem) -> some View {
-        if case .task = item.detail {
-            TaskChipRow(item: item, tasks: tasks)
-        } else {
-            ItemRowView(item: item)
+            content(item)
         }
     }
 
@@ -506,7 +613,7 @@ struct ActivityRunView: View {
                     .foregroundStyle(!expanded && anyFailed ? Theme.statusRed : Theme.textMuted)
                     .tabularNumbers()
                 Text("·").foregroundStyle(Theme.textMuted.opacity(0.5))
-                Text(tally)
+                Text(tally())
                     .font(Theme.meta)
                     .foregroundStyle(Theme.textMuted.opacity(0.8))
                     .lineLimit(1)
@@ -520,7 +627,7 @@ struct ActivityRunView: View {
             NestedDetail {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(rows) { item in
-                        row(item)
+                        content(item)
                     }
                 }
             }
@@ -538,6 +645,39 @@ struct ActivityRunView: View {
         Image(systemName: "exclamationmark.triangle")
             .font(.system(Theme.caption, weight: .medium))
             .foregroundStyle(Theme.statusRed)
+    }
+}
+
+/// One run of a SESSION's activity rows. All that is left here is what a
+/// session's items mean — which failed, what the tally calls each one, and which
+/// view draws one; the fold itself is `StepFoldView`, shared with the Agent's
+/// conversation.
+struct ActivityRunView: View {
+    /// Already filtered by `renderable` — this view counts what it is given.
+    let rows: [JournalItem]
+    let tasks: [JournalTask]
+    let live: Bool
+
+    var body: some View {
+        StepFoldView(rows: rows, live: live, failed: failed, tally: { tally }) { item in
+            row(item)
+        }
+    }
+
+    private func failed(_ item: JournalItem) -> Bool {
+        if item.status == .failed { return true }
+        guard case .task(let taskId) = item.detail else { return false }
+        return tasks.first(where: { $0.id == taskId })?.task.state == .failed
+    }
+
+    /// A settled spawn folds into the tally like any other step, but when it
+    /// is shown it is the agent it started, not an empty placeholder.
+    @ViewBuilder private func row(_ item: JournalItem) -> some View {
+        if case .task = item.detail {
+            TaskChipRow(item: item, tasks: tasks)
+        } else {
+            ItemRowView(item: item)
+        }
     }
 
     /// "Ran command ×12 · Read file ×4", in first-appearance order.
@@ -566,6 +706,7 @@ struct ActivityRunView: View {
         case .reasoning: "Thought"
         // "You steered" is a claim about who typed it, so it is only true of a
         // message the person actually sent.
+        case .notification(let detail): describeNotification(detail)
         case .userMessage(let message):
             message.wakeReason != nil ? "Woken" : message.sender != nil ? "Agent message" : "You steered"
         case .task: "Delegated"
@@ -688,33 +829,33 @@ struct AgentMessageRow: View {
 /// assistant's lane, shaped like the compaction row, and it never expands —
 /// the run it is about is the thing worth opening, and that is elsewhere.
 struct WakeRow: View {
+    /// WHAT HAPPENED, from the structured reason and nothing else (#572). The
+    /// engine's own notice used to BE this line — so a peer's result and the
+    /// completion behind it both read "Session finished a turn.", one sentence
+    /// printed twice for two different facts. The notice is the `head` now.
     let line: String
+    /// The head of the words themselves, under the verb. Absent when the wake
+    /// announced something in another session's run and there is none here.
+    var head: String?
 
-    init(line: String) { self.line = line }
+    init(line: String, head: String? = nil) {
+        self.line = line
+        self.head = head
+    }
 
     /// A wake that arrived as its OWN TURN, the recipient being idle.
     init(turn: JournalTurn) {
-        if let notice = turn.agentNotice, !notice.isEmpty {
-            line = notice
-        } else {
-            let first = turn.prompt.split(separator: "\n").first.map(String.init) ?? turn.prompt
-            // A provider-started turn has NO prompt at all — that is its whole
-            // shape — so the kind is the only thing there is to say.
-            line = first.isEmpty
-                ? (turn.isProviderStarted ? describeProviderWake(turn.providerReason) : describeWake(turn.wakeReason))
-                : first
-        }
+        // A provider-started turn has NO prompt at all — that is its whole
+        // shape — so its own kind is the only thing there is to say.
+        line = turn.isProviderStarted ? describeProviderWake(turn.providerReason) : describeWake(turn.wakeReason)
+        head = notificationHead(turn.agentNotice) ?? notificationHead(turn.prompt)
     }
 
     /// The MID-TURN twin: the engine steered the same wake into a running turn.
     /// Same line, so the reader sees one kind of thing however it landed.
     init(message: UserMessageDetail) {
-        if let notice = message.notice, !notice.isEmpty {
-            line = notice
-        } else {
-            let first = message.text.split(separator: "\n").first.map(String.init) ?? message.text
-            line = first.isEmpty ? describeWake(message.wakeReason) : first
-        }
+        line = describeWake(message.wakeReason)
+        head = notificationHead(message.notice) ?? notificationHead(message.text)
     }
 
     var body: some View {
@@ -723,12 +864,137 @@ struct WakeRow: View {
             Text(line)
                 .font(Theme.meta)
                 .lineLimit(2)
+            if let head, head != line {
+                Text(head).font(Theme.monoSmall).lineLimit(1)
+            }
             Spacer(minLength: 0)
         }
         .foregroundStyle(Theme.textMuted)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Woken: \(line)")
+    }
+}
+
+/// WHAT A NOTIFICATION IS CALLED, in one line — issue #550.
+///
+/// The Mac's `notificationLabel`, 1:1, and like it the ONE place a happening
+/// becomes a word on this phone (#572). `describeWake` is an adapter onto it,
+/// so a wake reaching a row in the other shape cannot be named differently —
+/// and a peer's `result` can no longer be classified as the completion that
+/// follows it a few seconds later.
+func describeNotification(_ detail: NotificationDetail) -> String {
+    notificationVerb(kind: detail.kind, intent: detail.intent, wakeKind: detail.wakeKind)
+}
+
+/// The head of what was actually sent, for a peer's row — the Mac's
+/// `notificationHead`, to the character. Enough to tell a result from the
+/// result before it; not the message, which is behind the disclosure.
+func describeNotificationHead(_ detail: NotificationDetail, message: String? = nil) -> String? {
+    guard detail.kind == "peer_message" else { return nil }
+    return notificationHead(message ?? detail.summary)
+}
+
+/// A NOTIFICATION — a peer's message, a wake, a parked request. #550.
+///
+/// NOT A BUBBLE OF ANYONE'S, which is the whole point: all three reached this
+/// session without a person typing, and this phone drew two of them on the
+/// right of the screen as though the reader had. One line collapsed — a bell,
+/// what happened, whose session — with the notice behind a tap, and the peer's
+/// actual message behind a second one when there IS one on this side.
+struct NotificationRow: View {
+    let detail: NotificationDetail
+    /// The body as sent, for a peer's message. A wake announces something in
+    /// ANOTHER session's run and has none here.
+    var message: String? = nil
+    @State private var expanded = false
+    @State private var reading = false
+
+    private var peerMessage: String? {
+        guard detail.kind == "peer_message", let message, !message.isEmpty, message != detail.body else { return nil }
+        return message
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "bell").font(.system(Theme.caption))
+                    Text(describeNotification(detail)).font(Theme.meta)
+                    // WHICH RESULT, not just that one arrived — #572. Two
+                    // notices from one session on one screen have to be told
+                    // apart without expanding both.
+                    if let head = describeNotificationHead(detail, message: message) {
+                        Text(head).font(Theme.monoSmall).lineLimit(1)
+                    }
+                    if let entries = detail.entries, entries.count > 1 {
+                        Text("and \(entries.count - 1) more").font(Theme.monoSmall)
+                    }
+                    if let sessionId = detail.sessionId {
+                        Text("session …\(String(sessionId.suffix(6)))").font(Theme.monoSmall)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(Theme.caption))
+                }
+                .foregroundStyle(Theme.textMuted)
+                // THE ACTIVITY LANE'S OWN ROW HEIGHT — #577, and the Mac's
+                // shared `ROW`. An arrival is a step-lane line, not a message
+                // block: the same 24pt minimum every fold row has, which is
+                // also the tap target this row was missing.
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                NestedDetail {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let entries = detail.entries, entries.count > 1 {
+                            ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                                Text(entry.summary).font(Theme.monoSmall).foregroundStyle(Theme.textMuted).lineLimit(2)
+                            }
+                        }
+                        Text(detail.body)
+                            .font(Theme.meta)
+                            .foregroundStyle(Theme.textMuted)
+                            .textSelection(.enabled)
+                        // THE ACTION THE ROW IS FOR. The notice announces a
+                        // message rather than quoting it — that is what keeps a
+                        // recipient's context cheap — so the row has to offer
+                        // the thing it announced.
+                        if let peerMessage {
+                            Button(reading ? "Hide the message" : "Read the message") {
+                                withAnimation(.easeInOut(duration: 0.2)) { reading.toggle() }
+                            }
+                            .font(Theme.monoSmall)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Theme.textMuted)
+                            if reading {
+                                MarkdownText(text: peerMessage)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 240)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Notification: \(describeNotification(detail))")
+    }
+}
+
+/// A TURN THAT IS A NOTIFICATION — the row above, filled from the turn.
+struct NotificationTurnRow: View {
+    let turn: JournalTurn
+
+    var body: some View {
+        if let detail = turn.notification {
+            // The body is only this turn's when a PEER sent it; a wake's turn
+            // carries a machine label, and offering that as "the message" would
+            // be a dead end.
+            NotificationRow(detail: detail, message: turn.sender != nil ? turn.prompt : nil)
+        }
     }
 }
 
@@ -819,6 +1085,11 @@ struct ItemRowView: View {
             // polls once a second and would otherwise paint each second's
             // deltas in one block. Mirrors the web's `running(item)`.
             StreamingMarkdown(text: item.text, streaming: item.status == .inProgress)
+        case .notification(let detail):
+            // #550: its own arm, ABOVE `user_message`, because the point of the
+            // type is that narrowing on it is what gives you the payload —
+            // there is no `sender` or `wakeReason` field left to forget.
+            NotificationRow(detail: detail)
         case .userMessage(let message):
             // Steered messages land mid-run as user_message items — and WHO
             // SENT ONE decides what it looks like, exactly as it does for a

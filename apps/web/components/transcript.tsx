@@ -28,13 +28,14 @@
  * unified patches, so we render them.
  */
 
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import {
   BookOpenIcon,
   BotIcon,
   CheckIcon,
   ChevronRightIcon,
   CircleIcon,
+  DownloadIcon,
   FileTextIcon,
   GlobeIcon,
   ListTodoIcon,
@@ -50,6 +51,7 @@ import {
 import type { Item, RateLimitType, TurnFailureCode } from "@telar/engine-client";
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { fmtTokens } from "@/lib/format";
+import { notificationHead, notificationVerbs, type NotificationSubject } from "@/lib/notifications";
 import { CONSULT_TALLY_LABEL, foldHarnessRows, harnessConsult } from "@/lib/harness-paths";
 import { toolInputSummary } from "@/lib/tool-input-summary";
 import { attachmentUrl } from "@/lib/ds";
@@ -59,6 +61,10 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { Shimmer } from "@/components/ui/shimmer";
 import { CODE_SURFACE_FRAME, CODE_SURFACE_LINES, CODE_SURFACE_TEXT, CodeSurface, CopyButton, foldLines } from "@/components/ui/code-surface";
 import { Badge } from "@/components/ui/badge";
+// RULES 2 AND 3 LIVE NEXT DOOR, generic over the row, because the Agent's
+// conversation folds its work by the same two rules over rows that are not
+// `JournalItem` at all (#569). See `transcript-fold.tsx`.
+import { ROW, StepFold } from "@/components/transcript-fold";
 // The ONE definition of what a message looks like — shared with the cockpit so
 // a message sent mid-run and one sent idle cannot drift apart.
 import { AgentMessageBubble, ConversationMessage, type OpenTab } from "@/components/session/conversation-message";
@@ -136,8 +142,6 @@ function preview(item: JournalItem): string {
 
 const failed = (item: JournalItem) => item.status === "failed";
 const running = (item: JournalItem) => item.status === "inProgress";
-
-const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /**
  * THE GESTURES A TRANSCRIPT ROW CAN OFFER THAT IT CANNOT PERFORM ITSELF.
@@ -579,6 +583,46 @@ function CompactionRow({ item }: { item: JournalItem }) {
 }
 
 /**
+ * WHERE AN ADOPTED CONVERSATION CAME FROM — `/resume` (#616), at the head of
+ * the history it explains.
+ *
+ * THE ROW IS THE PROVENANCE. The CLI records nothing about a fork's origin —
+ * measured, the forked transcript mentions the source id zero times — so
+ * without this a session that quietly knows a conversation it never had is
+ * indistinguishable from one that invented it. Someone opening this in six
+ * weeks reads: what it was, where it came from, and how much of it is here.
+ *
+ * BOTH CUTS ARE SHOWN WHEN THEY DISAGREE, because they answer different
+ * questions: `records` is what the MODEL still remembers, `rows` is what the
+ * PERSON can still scroll. Equal is the ordinary case and says nothing extra;
+ * unequal is exactly when somebody needs to be told.
+ */
+function ConversationImportRow({ item }: { item: JournalItem }) {
+  const detail = item.detail.type === "conversation_import" ? item.detail.import : undefined;
+  if (!detail) return null;
+  const kept =
+    detail.cut === "since_compact_boundary"
+      ? `${detail.records} records since its last compaction`
+      : `${detail.records} records`;
+  return (
+    <div className="flex flex-col gap-0.5 rounded-md border border-dashed border-border/70 bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground">
+      <p className="flex items-center gap-1.5">
+        <DownloadIcon className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1">
+          Imported from Claude Code — {kept}. Your own Claude Code history is untouched.
+        </span>
+      </p>
+      {detail.firstPrompt && <p className="min-w-0 truncate pl-5 italic opacity-80">“{detail.firstPrompt}”</p>}
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-5 font-mono text-3xs opacity-70">
+        {detail.sourceCwd && <span className="min-w-0 truncate">{detail.sourceCwd}</span>}
+        <span>{detail.sourceSessionId}</span>
+        {detail.rows !== detail.records && <span>{detail.rows} rows shown</span>}
+      </p>
+    </div>
+  );
+}
+
+/**
  * THE PROVIDER MADE THE TURN WAIT — a retry after a failed request, or a rate
  * limit. Rendered as a seam like a compaction rather than as a tool call,
  * because that is what it is: the reason the session went quiet, and the one
@@ -615,23 +659,15 @@ function ProviderWaitRow({ item }: { item: JournalItem }) {
  * the peer by its id's tail, since the wake text itself carries the title on
  * expand.
  *
- * HERE RATHER THAN IN THE COCKPIT because both surfaces name a wake and only
- * one import direction exists (cockpit → transcript): a wake that lands while
- * the session is idle is a turn header there, and the same wake landing
- * mid-turn is a row here. Two spellings of "Session finished a turn" would be
- * the bug this file already fixed, reintroduced in words.
+ * AN ADAPTER, NOT A VOCABULARY (#572). A wake reaches this file as a
+ * `WakeReason` and a notification reaches it as a `NotificationDetail`; they are
+ * the same happening in two shapes, so this translates one into the other and
+ * `notificationLabel` answers. The switch that used to be here was the second
+ * spelling of "Session finished a turn", and a peer's `result` classified
+ * against it read as a completion.
  */
 export function sessionWakeLabel(reason: NonNullable<JournalTurn["wakeReason"]>): { verb: string; Icon: typeof BotIcon } {
-  switch (reason.kind) {
-    case "turn_completed":
-      return { verb: "Session finished a turn", Icon: BotIcon };
-    case "turn_failed":
-      return { verb: "Session failed a turn", Icon: BotIcon };
-    case "turn_stopped":
-      return { verb: "Session was stopped", Icon: BotIcon };
-    case "request_opened":
-      return { verb: "Session asked a question", Icon: BotIcon };
-  }
+  return notificationLabel({ kind: reason.kind === "request_opened" ? "request" : "wake", wakeKind: reason.kind });
 }
 
 /**
@@ -645,10 +681,10 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
   const { verb, Icon } = sessionWakeLabel(reason);
   const body = itemText(item).trim();
   return (
-    <div className="py-0.5" aria-label="Wake from another session">
+    <div className="min-w-0" aria-label="Wake from another session">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={ROW}
         disabled={!body}
         aria-expanded={body ? open : undefined}
         onClick={() => setOpen((current) => !current)}
@@ -659,6 +695,120 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
         {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
       </button>
       {open && body && <p className="max-h-96 overflow-auto whitespace-pre-wrap break-words px-1.5 pb-1 text-xs text-muted-foreground">{body}</p>}
+    </div>
+  );
+}
+
+/**
+ * WHAT A NOTIFICATION IS CALLED, in one line — issue #550, and the ONE caller
+ * of `notificationVerbs` every surface in this app goes through (#572).
+ *
+ * The cockpit draws a notification that opened its own turn, this file draws one
+ * that landed mid-turn, and `sessionWakeLabel` above hands a wake in wearing the
+ * other shape. Three drawings, one classification.
+ *
+ * `head` IS WHY A RESULT AND THE COMPLETION AFTER IT LOOK DIFFERENT. Both come
+ * from one worker seconds apart and #240 keeps them two facts on purpose; the
+ * verb now says which is which, and the head of what was actually sent says
+ * which result. A wake has no body on this side and gets none.
+ */
+export function notificationLabel(
+  detail: NotificationSubject & Partial<Pick<NonNullable<JournalTurn["notification"]>, "summary">>,
+  /** The peer's message as sent, when the surface has it — the turn's own
+   *  `prompt`. Falls back to the engine's summary line, which is all a row
+   *  drawing a bare item has. */
+  message?: string,
+): { verb: string; Icon: typeof BotIcon; head?: string } {
+  const { verb } = notificationVerbs(detail);
+  const head = detail.kind === "peer_message" ? notificationHead(message ?? detail.summary) : undefined;
+  return { verb, Icon: BotIcon, ...(head ? { head } : {}) };
+}
+
+/**
+ * A NOTIFICATION ROW — the thing #550 exists to draw.
+ *
+ * NOT A BUBBLE, OF EITHER KIND. A peer's message, a wake and a parked request
+ * all reached this session without anybody typing; drawing any of them in the
+ * person's bubble was the visual half of the same mistake the drivers made in
+ * the prompt. One line collapsed — an icon, what happened, whose session — with
+ * the notice itself behind a disclosure and a link to read the message.
+ *
+ * A COHORT IS THE SAME ROW. Several wakes merged into one notification list
+ * their summaries under the same disclosure rather than earning a second shape:
+ * the reader's question ("what happened while I was working") has one answer,
+ * however many things are in it.
+ *
+ * ITS RHYTHM IS THE STEP LANE'S, NOT A BUBBLE'S — #577. `ROW` is the shared
+ * constant, so a notification line and a `4 steps · Ran command ×2` line cannot
+ * drift apart; the `py-0.5` wrapper this used to carry made every arrival 4px
+ * taller than the rows around it, for nothing a reader could name.
+ */
+export function NotificationRow({ detail, message }: { detail: NonNullable<JournalTurn["notification"]>; message?: string }) {
+  const [open, setOpen] = useState(false);
+  const [reading, setReading] = useState(false);
+  const { verb, Icon, head } = notificationLabel(detail, message);
+  const body = detail.body.trim();
+  const entries = detail.entries ?? [];
+  /**
+   * "READ THE MESSAGE" IS ONLY OFFERED WHEN THERE IS ONE HERE.
+   *
+   * A peer's message is stored on this very turn, so the row can show what was
+   * actually sent — which is the whole point of a notice that announces rather
+   * than quotes. A wake announces something that happened in ANOTHER session and
+   * has no body on this side; a button promising one would be a dead end.
+   */
+  const peerMessage = detail.kind === "peer_message" && message && message.trim() !== body ? message.trim() : undefined;
+  return (
+    <div className="min-w-0" aria-label="Notification">
+      <button
+        type="button"
+        className={ROW}
+        disabled={!body}
+        aria-expanded={body ? open : undefined}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0">{verb}</span>
+        {/* WHICH RESULT, not just that one arrived — #572. Two notices from one
+            session on one screen have to be told apart without expanding both. */}
+        {head && <span className="min-w-0 truncate text-2xs text-muted-foreground">{head}</span>}
+        {entries.length > 1 && <span className="shrink-0 text-2xs text-muted-foreground">{`and ${entries.length - 1} more`}</span>}
+        {detail.sessionId && (
+          <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">{`session …${detail.sessionId.slice(-6)}`}</span>
+        )}
+        {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
+      </button>
+      {open && body && (
+        <div className="px-1.5 pb-1">
+          {entries.length > 1 && (
+            <ul className="mb-1 space-y-0.5">
+              {entries.map((entry, index) => (
+                <li key={`${entry.runId ?? entry.sessionId ?? index}-${index}`} className="truncate text-2xs text-muted-foreground">
+                  {entry.summary}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{body}</p>
+          {/* THE ACTION THE ROW IS FOR. The notice announces a message rather
+              than quoting it — that is what keeps a recipient's context cheap —
+              so the row has to offer the thing it announced, or the reader is
+              left holding a headline. */}
+          {peerMessage && (
+            <button
+              type="button"
+              className="mt-1 rounded-md px-1 py-0.5 text-2xs text-muted-foreground underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              aria-expanded={reading}
+              onClick={() => setReading((current) => !current)}
+            >
+              {reading ? "Hide the message" : "Read the message"}
+            </button>
+          )}
+          {reading && peerMessage && (
+            <p className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-words border-l-2 border-border pl-2 text-xs">{peerMessage}</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -739,7 +889,12 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, 
   if (item.detail.type === "plan") return <PlanRow item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
+  if (item.detail.type === "conversation_import") return <ConversationImportRow item={item} />;
   if (item.detail.type === "provider_wait") return <ProviderWaitRow item={item} />;
+  // A NOTIFICATION IS NOT A MESSAGE ROW OF ANY KIND — #550. Its own arm, above
+  // `user_message`, because the whole point of the type is that narrowing on it
+  // is what gives you the payload: there is no field left to forget to check.
+  if (item.detail.type === "notification") return <NotificationRow detail={item.detail.notification} />;
   if (item.detail.type === "user_message") return <SteeredMessageRow item={item} {...(onOpenTab ? { onOpenTab } : {})} {...(onInsert ? { onInsert } : {})} />;
   if (item.plotAttachmentId) return <PlotRow item={item} attachmentId={item.plotAttachmentId} />;
   if (isToolItem(item)) return <ToolRow item={item} {...gestures} />;
@@ -882,7 +1037,12 @@ export type ActivitySegment = { kind: "run"; items: JournalItem[] } | { kind: "r
 // something the reader can otherwise only experience as the session hanging,
 // and folding it into a run tally ("18 steps · Ran command ×12") would hide the
 // one row that says why nothing happened for four minutes.
-const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "plan", "context_compaction", "provider_wait"]);
+// `notification` joins the seam for `user_message`'s reason: something
+// ARRIVED, and what follows is the turn's answer to it rather than more of
+// what came before (#550).
+// `conversation_import` joins it as the head of an adopted history: what
+// follows is somebody's old conversation rather than more of this one (#616).
+const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "notification", "plan", "context_compaction", "provider_wait", "conversation_import"]);
 
 /**
  * A TURN, CUT INTO RESPONSES AT ITS MESSAGE BOUNDARIES. A message sent into a
@@ -901,10 +1061,95 @@ const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message
  */
 export type TurnResponse = { boundary?: JournalItem; items: JournalItem[] };
 
+/**
+ * ONE ARRIVAL, ONE ROW — issue #590.
+ *
+ * An arrival that OPENED a turn is stored in two places on purpose
+ * (`notification.ts`): on the TURN, for readers holding a turn and not its
+ * items, and on the turn's first ITEM, written at accept so a queued wake is
+ * visible in the transcript while the session is still busy. Both are right.
+ * What nobody decided was which of them DRAWS it when both are present — and
+ * for a turn opened by a notification, both always are. So one `sessions_send`
+ * painted two rows, and a wake — which has no message on either side, so both
+ * rows fall back to the same summary — painted two identical ones.
+ *
+ * THE TURN ROW IS THE ONE THAT STAYS. It is passed `turn.prompt`, so a peer's
+ * message shows the head of what was actually SENT rather than the head of the
+ * engine's envelope about it; two assignments on one screen can be told apart
+ * by the first and cannot by the second.
+ *
+ * KEYED ON THE ITEM'S ID, which the engine mints from the run
+ * (`writeNotificationItem`) — never on matching summaries or kinds. A text
+ * heuristic would eventually eat a real second arrival from the same session,
+ * which is the failure that costs someone an errand.
+ *
+ * A NOTIFICATION THAT LANDED MID-TURN IS UNTOUCHED. Its row is written by the
+ * driver's seam with an id of its own, it has no turn row, and drawing it is
+ * exactly what the item row is for.
+ */
+export function withoutOpeningNotification(turn: Pick<JournalTurn, "runId" | "origin" | "items" | "notification">): readonly JournalItem[] {
+  if (!turn.notification || (turn.origin !== "session" && turn.origin !== "provider")) return turn.items;
+  const drawn = `notification_${turn.runId}`;
+  return turn.items.filter((item) => item.id !== drawn);
+}
+
+/**
+ * A TURN THAT IS NOTHING BUT AN ARRIVAL — issue #577.
+ *
+ * Two wakes and a peer's result land while the session is working, and the
+ * engine queues one turn each. Nobody typed them and none of them has an answer
+ * yet, so all three draw a single row and an EMPTY assistant lane under it —
+ * which the transcript then separates with a full turn gap, as though a
+ * conversation had happened between them. Three lines of text, half a viewport.
+ *
+ * THE QUESTION IS WHAT WOULD BE DRAWN, not what the turn is called. A usage
+ * footnote, a failure line, a `stopped` marker and a request card are all things
+ * a reader sees under the row, and a strip that swallowed one would be hiding
+ * it. Only a turn with literally nothing beneath its row is bare.
+ */
+export function bareNotificationTurn(turn: JournalTurn): boolean {
+  if (!turn.notification) return false;
+  if (withoutOpeningNotification(turn).length > 0) return false;
+  if (turn.resultText || turn.failure || turn.usage) return false;
+  if (turn.resumedAfterRateLimit !== undefined) return false;
+  return turn.state !== "failed" && turn.state !== "stopped" && turn.state !== "discarded";
+}
+
+/**
+ * CONSECUTIVE ARRIVALS ARE ONE STRIP — issue #577, and the rule both clients
+ * read the turn list through.
+ *
+ * A run of notification turns with nothing between them is ONE thing that
+ * happened to this session while it worked, so it is drawn as one tight block of
+ * one-line rows rather than as N conversations. The run ENDS at the first turn
+ * that answered: that turn's row still joins the strip — it is an arrival like
+ * the others — and its reply hangs under it at the ordinary paragraph gap, which
+ * is what the reader came for.
+ *
+ * EVERY TURN COMES BACK, in order, in exactly one group. A turn that is not a
+ * notification is a group of one and renders as it always did — so is a lone
+ * arrival, which is the "group of one is one line" case.
+ *
+ * THE LIVE TURN IS NEVER A STRIP'S MIDDLE. It is still being written and carries
+ * a working indicator under its row; grouping the rows after it around that
+ * would put the indicator inside the block.
+ */
+export function groupNotificationTurns(turns: readonly JournalTurn[], activeRunId?: string): readonly (readonly JournalTurn[])[] {
+  const groups: JournalTurn[][] = [];
+  for (const turn of turns) {
+    const open = groups.at(-1);
+    const previous = open?.at(-1);
+    const joins = open && previous && turn.notification && bareNotificationTurn(previous) && previous.runId !== activeRunId;
+    if (joins) open.push(turn);
+    else groups.push([turn]);
+  }
+  return groups;
+}
+
 export function splitAtMessageBoundaries(items: readonly JournalItem[]): TurnResponse[] {
   const responses: TurnResponse[] = [{ items: [] }];
   for (const item of items) {
-    if (item.detail.type === "user_message") responses.push({ boundary: item, items: [] });
+    if (item.detail.type === "user_message" || item.detail.type === "notification") responses.push({ boundary: item, items: [] });
     else responses.at(-1)!.items.push(item);
   }
   // A turn whose only message is its own prompt is one response, and renders
@@ -1044,33 +1289,15 @@ export function ActivityGroup({
  * A FAILED SUB-AGENT COUNTS, because its row is the only trace of it here; the
  * work it failed at is inside the agent, not in this run.
  */
-export function failedCount(rows: readonly JournalItem[], tasks: readonly JournalTask[]): number {
-  return rows.filter(
-    (item) =>
-      failed(item) ||
-      (item.detail.type === "task" && tasks.find((task) => task.id === (item.detail as { taskId: string }).taskId)?.state === "failed"),
-  ).length;
+export function itemFailed(item: JournalItem, tasks: readonly JournalTask[]): boolean {
+  return (
+    failed(item) ||
+    (item.detail.type === "task" && tasks.find((task) => task.id === (item.detail as { taskId: string }).taskId)?.state === "failed")
+  );
 }
 
-/**
- * The failed tally beside a neutral step count.
- *
- * SEPARATELY STYLED, AND ONLY THAT. The count of what went wrong is the
- * destructive part; the count of what happened is not. Hidden while the run is
- * open because every failed row is then on screen saying so itself — this is
- * the fold's summary of what it is covering up, not a second error report.
- */
-function FailedCount({ count, hidden }: { count: number; hidden: boolean }) {
-  if (hidden || count === 0) return null;
-  return (
-    <>
-      <span className="shrink-0 text-muted-foreground/50">·</span>
-      <span className="flex shrink-0 items-center gap-1 text-destructive">
-        <TriangleAlertIcon className="size-3 shrink-0" />
-        {count} failed
-      </span>
-    </>
-  );
+export function failedCount(rows: readonly JournalItem[], tasks: readonly JournalTask[]): number {
+  return rows.filter((item) => itemFailed(item, tasks)).length;
 }
 
 /**
@@ -1110,7 +1337,7 @@ function HarnessConsultRow({ label, items, tasks, ...gestures }: { label: string
  * cannot disagree about what a turn contained — a fold that applied only to
  * history would make a live turn look busier than the same turn a second later.
  */
-function TranscriptRows({ rows, tasks, ...gestures }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
+function TranscriptRows({ rows, tasks, ...gestures }: { rows: readonly JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const workspace = useContext(WorkspaceContext);
   const segments = useMemo(() => foldHarnessRows(rows, workspace), [rows, workspace]);
   return (
@@ -1126,69 +1353,42 @@ function TranscriptRows({ rows, tasks, ...gestures }: { rows: JournalItem[]; tas
   );
 }
 
+/**
+ * THE TWO RUNS ARE `StepFold`, and all that is left here is what a session's
+ * rows mean: which of them failed, and what the tally calls each one.
+ *
+ * The chrome — the window, the tally line, the failure count, the nesting — is
+ * generic and shared with the Agent's conversation, which folds the same two
+ * rules over rows that are not `JournalItem` (#569).
+ */
 function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
-  const [open, setOpen] = useState(false);
-  // Only the rows the fold is HIDING can carry a surprise; the one on screen
-  // reports itself. Same rule as the settled run, applied to its own window.
-  const failures = failedCount(rows.slice(0, -1), tasks);
-  const hidden = Math.max(0, rows.length - 1);
-  const shown = open ? rows : rows.slice(-1);
   const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
     <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
-      {hidden > 0 && (
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((c) => !c)}
-          className={cn(ROW, "text-muted-foreground hover:bg-muted/50")}
-        >
-          <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-          <span className="shrink-0">
-            {open ? "Show fewer steps" : `+${hidden} earlier step${hidden === 1 ? "" : "s"}`}
-          </span>
-          <FailedCount count={failures} hidden={open} />
-        </button>
-      )}
-      <TranscriptRows rows={shown} tasks={tasks} {...pass} />
+      <StepFold
+        rows={rows}
+        live
+        failed={(item) => itemFailed(item, tasks)}
+        // A live window says how many steps are behind it and nothing about
+        // what they were, so this is never read.
+        tally={() => ""}
+        renderRows={(shown) => <TranscriptRows rows={shown} tasks={tasks} {...pass} />}
+      />
     </div>
   );
 }
 
 function SettledRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
-  const [open, setOpen] = useState(false);
   const workspace = useContext(WorkspaceContext);
-  const failures = failedCount(rows, tasks);
   const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
-    <>
-      {/* THE SUMMARY WRAPS RATHER THAN TRUNCATING (#354). At panel width a
-          busy turn ended "· Ran command ×4 · …" with the ellipsis eating the
-          part a reader actually scans for — what the agent DID — while the
-          generic head of the list survived. Two lines is the whole budget: a
-          fold that grows without limit stops being a fold. `items-start` keeps
-          the chevron and the step count on the first line rather than centring
-          them against a two-line block. */}
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((c) => !c)}
-        className={cn(ROW, "items-start text-muted-foreground hover:bg-muted/50")}
-      >
-        <ChevronRightIcon className={cn("mt-0.5 size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-        <span className="shrink-0">
-          {rows.length} step{rows.length === 1 ? "" : "s"}
-        </span>
-        <FailedCount count={failures} hidden={open} />
-        <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="line-clamp-2 min-w-0 text-muted-foreground/80">{tallyParts(rows, workspace).join(" · ")}</span>
-      </button>
-      {open && (
-        <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
-          <TranscriptRows rows={rows} tasks={tasks} {...pass} />
-        </div>
-      )}
-    </>
+    <StepFold
+      rows={rows}
+      live={false}
+      failed={(item) => itemFailed(item, tasks)}
+      tally={() => tallyParts(rows, workspace).join(" · ")}
+      renderRows={(shown) => <TranscriptRows rows={shown} tasks={tasks} {...pass} />}
+    />
   );
 }
 
@@ -1289,6 +1489,30 @@ const formatElapsed = (seconds: number) =>
   seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 
 /**
+ * THE TRANSCRIPT'S ONLY CLOCK (#498).
+ *
+ * The elapsed readout below is the one thing in a conversation that has to
+ * change without an event arriving, so SOMETHING has to tick once a second
+ * while a turn runs. It used to be `useState` in `SessionCockpit`, threaded down
+ * as a `now` prop — which meant each tick re-rendered the whole cockpit and
+ * every turn mounted under it, ten of them, to advance two numbers inside this
+ * one component.
+ *
+ * The clock belongs to the thing that reads it. This component mounts only on a
+ * live turn and unmounts the moment it settles, so the interval's lifetime is
+ * already exactly the window in which a second-by-second clock means anything —
+ * no `running` flag to thread, and nothing above it re-renders on a tick.
+ */
+function useSecondsClock(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return now;
+}
+
+/**
  * The tail of a live turn.
  *
  * NO BORDER, NO CARD, NO BACKGROUND — a status LINE at the same 11px muted
@@ -1307,7 +1531,6 @@ export function WorkingIndicator({
   lastActivityAt,
   delegated,
   compacting,
-  now,
 }: {
   label: string;
   startedAt?: number;
@@ -1319,8 +1542,8 @@ export function WorkingIndicator({
   /** The provider is squeezing its context. Silence is what a compaction IS —
    *  see `isCompacting`. */
   compacting?: boolean;
-  now: number;
 }) {
+  const now = useSecondsClock();
   const elapsed = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
   /**
    * SILENCE IS A GAP SINCE THE LAST THING THAT HAPPENED, not the age of the

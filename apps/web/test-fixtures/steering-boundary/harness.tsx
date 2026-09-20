@@ -132,7 +132,6 @@ function Harness() {
         requests: [],
         sending: false,
         live: turn.state === "running",
-        now: 3,
         onDecide: () => {},
         onRetry: () => {},
       }),

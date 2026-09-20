@@ -89,8 +89,9 @@ export type CommandDestination =
  * `bindCommands` and this function answers `noop` for them, which is what a key
  * pressed on a route where its surface does not exist should do.
  *
- * `jump-N` is the Nth row of the rail as drawn, attention and pinned bands
- * included, folded groups skipped.
+ * `jump-N` is the Nth row of the rail as drawn, the Agent's entry first when
+ * there is one, then the attention and pinned bands, folded groups skipped —
+ * see `jumpDestinations`.
  */
 export function commandDestination(id: CommandId, recentSessionHrefs: readonly (string | undefined)[]): CommandDestination {
   if (id === "new-conversation") return { kind: "navigate", href: "/" };
@@ -120,4 +121,24 @@ export function commandDestination(id: CommandId, recentSessionHrefs: readonly (
 function jumpSlot(id: CommandId): number | undefined {
   const match = /^jump-([1-9])$/.exec(id);
   return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * WHAT ⌘1..⌘9 OPEN, top to bottom as drawn — issue #569.
+ *
+ * THE AGENT'S ROW IS A ROW. It is pinned above every band, so when the rail
+ * draws it (`agentEntryShown`) it takes the first number and the conversations
+ * take the rest; when it does not, this is the list of session hrefs unchanged
+ * and nothing about the keys moves.
+ *
+ * A pure function of two values so the shift is held by a test rather than read
+ * off the sidebar: `railJumpSlots` shifts the BADGES by the same fact, and the
+ * two disagreeing would put ⌘2 on a row that ⌘2 does not open.
+ */
+export function jumpDestinations(
+  sessionHrefs: readonly (string | undefined)[],
+  agentHref?: string,
+): (string | undefined)[] {
+  const rows = agentHref ? [agentHref, ...sessionHrefs] : [...sessionHrefs];
+  return rows.slice(0, 9);
 }

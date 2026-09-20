@@ -43,9 +43,16 @@ enum SessionState: String, Codable {
 
 /// Flattened from the contract's discriminated union — `local` and `worktree`
 /// share every field the phone reads, and a flat struct decodes both.
+///
+/// `path` IS OPTIONAL BECAUSE `none` EXISTS (#526). The Main conversation has no
+/// project and no checkout, so its workspace carries no path at all — and a
+/// non-optional `String` here would have failed to decode that session, taking
+/// the WHOLE live-sessions answer down with it. Absent is a fact about the
+/// session, not a field the Mac forgot: a reader that needs a directory says so
+/// rather than substituting one.
 struct SessionWorkspace: Codable, Equatable {
     var mode: String
-    var path: String
+    var path: String?
     var branch: String?
     var baseRef: String?
 }
@@ -149,7 +156,7 @@ struct Subscription: Codable, Equatable, Identifiable {
 
 struct Session: Codable, Identifiable, Equatable {
     var id: EngineID
-    /// Absent is a positive statement (the Spool's project-less master chat),
+    /// Absent is a positive statement (a session that belongs to no project),
     /// not an error.
     var projectId: EngineID?
     var title: String
@@ -290,6 +297,16 @@ struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     /// Absence is never treated as an answer: those projects keep the old
     /// per-Mac key rather than folding on their name.
     var remoteUrl: String?
+    /// `Project.availability` — WHETHER THAT MAC CAN READ THIS PROJECT RIGHT
+    /// NOW (issue #534). The Mac probes its own disks; the phone only draws the
+    /// answer, because a phone has no way to know whether a drive is plugged
+    /// into a machine in another room.
+    ///
+    /// Absent on a Mac too old to answer, which is read as "nobody said" rather
+    /// than as a state — see `ProjectAvailability`, whose decode is deliberately
+    /// lenient so a value this build has never heard of costs a badge and never
+    /// the whole project row.
+    var availability: ProjectAvailability?
 
     /// THE THREE ANSWERS TO "WHAT DOES THIS PROJECT LOOK LIKE", carried
     /// together — see `ProjectMark`. One value rather than three fields at every
@@ -346,6 +363,22 @@ struct SidebarLayout: Decodable, Equatable, Sendable {
 /// on meaning the engine's own default rather than "unknown". Do NOT make a
 /// field required to satisfy the session screen: that screen has its own read,
 /// and a required field the list does not send blanks the whole list.
+/// WHETHER A MAC HAS A BUILT-IN AGENT — experimental, off by default (#531).
+///
+/// ONE FIELD, AND DELIBERATELY ONLY ONE. This replaces the Main DESIGNATION,
+/// which had to name a session id because the coordinator was an ordinary
+/// conversation wearing a briefing. The Agent is not a session: it has its own
+/// identity and its own thread, there is no id in the sessions namespace to
+/// send, and the row this phone draws for it is a label and a destination.
+///
+/// WHAT THAT REMOVES IS A WHOLE CLASS OF EMPTY ROW. Main's entry could only be
+/// drawn once the Mac's rows had arrived and the designated one was among them
+/// — a Mac still answering its first poll had the id and not yet the row. This
+/// needs nothing from the list at all.
+struct AgentFlag: Decodable, Equatable {
+    var enabled: Bool
+}
+
 struct LiveSessions: Decodable {
     var sessions: [Session]
     var projects: [ProjectRef]
@@ -373,6 +406,28 @@ struct LiveSessions: Decodable {
     /// WHAT TO ASK WITH NEXT TIME — the conditional read's cursor (#459). Nil
     /// from a Mac too old to count, which simply keeps every read a full one.
     var revision: Int?
+    /// HOW MANY SETTLED ROWS THIS ANSWER LEFT OUT (#457) — the size of the shelf
+    /// behind `?all=1`.
+    ///
+    /// The Mac answers the UNSETTLED rows by default, because it was folding and
+    /// serialising 291 of them every three seconds so that each device could put
+    /// 284 under a divider nobody had opened. This is the one integer that tells
+    /// this phone the list it holds is partial, and it is what the "Settled"
+    /// divider draws.
+    ///
+    /// NIL MEANS "YOU HAVE EVERYTHING", never "the shelf is empty" — a Mac whose
+    /// engine predates the filter sends every row, exactly as before, and the
+    /// phone bands them itself.
+    var settledCount: Int?
+    /// WHETHER THIS MAC HAS A BUILT-IN AGENT (#531), riding the read the phone
+    /// already makes every few seconds — the same reason `layout` and `inbox`
+    /// ride it, and the reason this phone needs no route of its own for one
+    /// flag that moves twice a year.
+    ///
+    /// NIL MEANS OFF, and it means it for both of the reasons that produce it: a
+    /// Mac whose engine predates the feature, and one that has never been
+    /// switched on. Neither should put a row on this sidebar.
+    var agent: AgentFlag?
     /// NOTHING HAS MOVED SINCE THE CURSOR THIS PHONE SENT, so this answer
     /// carries no rows at all and the store keeps what it has.
     ///
@@ -382,13 +437,17 @@ struct LiveSessions: Decodable {
     /// never be confused with "this Mac has no conversations".
     var unchanged: Bool = false
 
-    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments, inbox, revision, unchanged }
+    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments, inbox, revision, settledCount, agent, unchanged }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         // A policy this build cannot read costs the window, never the list.
         inbox = try? c.decodeIfPresent(InboxPolicy.self, forKey: .inbox)
         revision = try? c.decodeIfPresent(Int.self, forKey: .revision)
+        settledCount = try? c.decodeIfPresent(Int.self, forKey: .settledCount)
+        // A flag this build cannot read costs the entry, never the list — the
+        // same tolerance every optional above is given.
+        agent = try? c.decodeIfPresent(AgentFlag.self, forKey: .agent)
         unchanged = (try? c.decode(Bool.self, forKey: .unchanged)) ?? false
         sessions = try c.decodeIfPresent([Skippable<Session>].self, forKey: .sessions)?.compactMap(\.value) ?? []
         projects = try c.decodeIfPresent([Skippable<ProjectRef>].self, forKey: .projects)?.compactMap(\.value) ?? []

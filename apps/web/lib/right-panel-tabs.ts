@@ -327,10 +327,20 @@ export function readPanelTabs<Kind extends string>(
   const stored = readStore().sessions[sessionId];
   if (!stored) return emptyPanelTabs<Kind>();
   const tabs: PanelTabInstance<Kind>[] = [];
-  /** Which kinds a LEGACY entry has already claimed — a renamed tab restores
-   *  under its new name once, so a layout that held both of two merged tabs
-   *  holds one of the merger. Instances written by this build are deduped by
-   *  their own id instead: two Editors are two Editors. */
+  /**
+   * Which kinds a RENAMED entry has already claimed — a renamed tab restores
+   * under its new name once, so a layout that held both of two merged tabs
+   * holds one of the merger. Instances written by this build are deduped by
+   * their own id instead: two Editors are two Editors.
+   *
+   * RENAMED, NOT MERELY OLD. This used to key off the stored SHAPE — a bare
+   * string was written before instances existed (#322), an object after — which
+   * was enough while every merge was also a format change. It stopped being
+   * enough at #693: `issue:675` and `issue:666` were written by THIS build, as
+   * instances, and both now name `issues`, so shape-based dedupe restored two
+   * tabs both labelled Issues. The precise question was never "how old is this
+   * entry" but "did `migrate` move it", which is what is asked here.
+   */
   const collapsed = new Set<string>();
   /** Which stored id each restored instance came from, so `activeTab` can be
    *  resolved whichever vocabulary it was written in. */
@@ -340,17 +350,28 @@ export function readPanelTabs<Kind extends string>(
     if (!parsed) continue;
     const kind = migrate(parsed.kind);
     if (!isKnown(kind)) continue;
-    if (parsed.legacy) {
+    if (parsed.legacy || kind !== parsed.kind) {
       if (collapsed.has(kind)) {
-        // Still remembered, so an `activeTab` naming the SECOND of two merged
-        // ids selects the merger rather than falling back to the first tab.
+        // Still remembered — under BOTH vocabularies, since a renamed entry may
+        // have been stored as a bare kind or as an instance with its own id — so
+        // an `activeTab` naming the SECOND of two merged ids selects the merger
+        // rather than falling back to the first tab.
         const existing = tabs.find((tab) => tab.kind === kind);
-        if (existing) from.set(parsed.kind, existing.id);
+        if (existing) {
+          from.set(parsed.kind, existing.id);
+          if (parsed.id !== undefined) from.set(parsed.id, existing.id);
+        }
         continue;
       }
       collapsed.add(kind);
     }
-    const id = parsed.id !== undefined && !tabs.some((tab) => tab.id === parsed.id) ? parsed.id : nextPanelTabId({ tabs, open: false }, kind);
+    /** A RENAMED ENTRY DOES NOT KEEP ITS STORED ID. `issue:675` is the id of a
+     *  tab kind that no longer exists; carrying it onto the `issues` tab would
+     *  break the rule that the first instance of a kind IS the kind (which is
+     *  what everything keyed on "the first Editor" and "the first Browser"
+     *  depends on) and would read as an id nothing can explain. */
+    const keep = parsed.id !== undefined && kind === parsed.kind && !tabs.some((tab) => tab.id === parsed.id);
+    const id = keep ? parsed.id! : nextPanelTabId({ tabs, open: false }, kind);
     tabs.push({ id, kind, params: parsed.params });
     from.set(parsed.id ?? parsed.kind, id);
   }

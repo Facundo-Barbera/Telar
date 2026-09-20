@@ -39,6 +39,9 @@
  *   • Sending a message must ALWAYS land at the end, whatever the lock says.
  *     That one is the caller's moment rather than a rule this file could infer,
  *     so it arrives through `followRef`.
+ *   • Reaching the TOP edge is a gesture too, and paging history in there moves
+ *     everything the reader was looking at down by the height of what arrived.
+ *     `ConversationTopEdge` owns both halves — see it for the argument.
  */
 
 import type { ComponentProps, ReactNode, Ref } from "react";
@@ -167,6 +170,138 @@ const ConversationPlacement = ({ at, landed }: { at: string; landed: boolean }) 
     void scrollToBottom({ animation: "instant" });
   });
   return null;
+};
+
+/**
+ * How far above the top edge a page of history starts loading.
+ *
+ * Far enough that an unhurried scroll never reaches a wall, near enough that a
+ * reader who opens a long conversation and stays at the bottom pays for
+ * nothing. Roughly half a viewport on a laptop.
+ */
+const PREFETCH_MARGIN_PX = 400;
+
+/**
+ * WHERE THE VIEWPORT MUST SIT once a page of older turns has been prepended.
+ *
+ * Prepending moves every pixel the reader was looking at DOWN by exactly the
+ * height of what arrived, and nothing in the browser puts it back: CSS scroll
+ * anchoring is best-effort and a flex column under a scroll library is not the
+ * case it handles well. The height that arrived is the growth in `scrollHeight`
+ * — which is why the measurement is taken before the request rather than
+ * inferred from the turns that came back, whose heights nobody knows until
+ * they are laid out.
+ */
+export function anchoredScrollTop(before: { scrollTop: number; scrollHeight: number }, after: { scrollHeight: number }): number {
+  return before.scrollTop + (after.scrollHeight - before.scrollHeight);
+}
+
+/**
+ * THE TOP OF THE TRANSCRIPT, AS A TRIGGER (#498).
+ *
+ * History used to be an explicit press, on the argument that reaching the top
+ * of the window to re-read something must stay free. That argument was about
+ * FETCHING — and it is still honoured, because nothing is fetched unless there
+ * is a page above and none is already in flight. What it cost was the reading:
+ * scrolling up in a long session hit a wall with a button on it, once per
+ * twenty turns.
+ *
+ * THE BUTTON STAYS, as `children`. An `IntersectionObserver` is a gesture only a
+ * pointer or a scrolling keystroke performs; a reader who tabs through the
+ * conversation needs a control to focus, and that is the same control it always
+ * was doing the same thing.
+ *
+ * MOUNT IT UNCONDITIONALLY — it decides for itself whether to draw anything.
+ * The LAST page arrives in the same commit that turns `more` off, so a caller
+ * that mounted this on `more` would unmount it exactly when its correction was
+ * due, and the one page where a reader has walked furthest back is the one whose
+ * place gets thrown away.
+ *
+ * Renders inside the provider, which is the only place the scroll element can
+ * be reached from.
+ */
+export const ConversationTopEdge = ({
+  more,
+  loading,
+  onReach,
+  children,
+}: {
+  /** There is at least one page of history above what is loaded. */
+  more: boolean;
+  /** A page is already on its way. */
+  loading: boolean;
+  /** Fetch the next page. Called at most once per arrival at the edge. */
+  onReach: () => void;
+  /** The same gesture as a control — the keyboard's way in. */
+  children?: ReactNode;
+}) => {
+  const { scrollRef } = useStickToBottomContext();
+  const edge = useRef<HTMLDivElement>(null);
+  /** Where the viewport was when the page was asked for. */
+  const anchor = useRef<{ scrollTop: number; scrollHeight: number } | undefined>(undefined);
+  /** Whether the request this anchor belongs to has been seen in flight. */
+  const awaited = useRef(false);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    const target = edge.current;
+    // No page above, or one already coming: nothing to watch for. Tearing the
+    // observer down while a fetch is in flight is also what keeps one arrival
+    // at the edge from becoming four requests.
+    if (!root || !target || !more || loading) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        const element = scrollRef.current;
+        if (element) anchor.current = { scrollTop: element.scrollTop, scrollHeight: element.scrollHeight };
+        onReach();
+      },
+      { root, rootMargin: `${PREFETCH_MARGIN_PX}px 0px 0px 0px` },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [scrollRef, more, loading, onReach]);
+
+  /**
+   * DELIBERATELY NO DEPENDENCY ARRAY, and a layout effect rather than an effect:
+   * any commit at all can be the one that prepends the page — the growth and the
+   * `loading` flag land in separate commits — and the correction has to be
+   * queued before the browser paints, or the reader sees the jump this exists to
+   * prevent.
+   */
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    const held = anchor.current;
+    if (!element || !held) return;
+    if (element.scrollHeight > held.scrollHeight) {
+      anchor.current = undefined;
+      awaited.current = false;
+      element.scrollTop = anchoredScrollTop(held, element);
+      return;
+    }
+    if (loading) {
+      awaited.current = true;
+      return;
+    }
+    // The request ended and prepended nothing — it failed, or the page was
+    // empty. Drop the anchor: left behind, it would move the viewport on
+    // whatever grew the transcript next.
+    if (awaited.current) {
+      anchor.current = undefined;
+      awaited.current = false;
+    }
+  });
+
+  // Nothing to draw once the whole conversation is loaded — but the COMPONENT
+  // is still mounted, which is what keeps the correction above alive through
+  // the commit that turned `more` off.
+  if (!more && !loading) return null;
+  return (
+    <div>
+      <div ref={edge} aria-hidden data-conversation-top-edge="" />
+      {children}
+    </div>
+  );
 };
 
 export type ConversationViewportProps = ComponentProps<typeof StickToBottom> & {

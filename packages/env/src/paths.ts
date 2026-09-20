@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-/** All state lives under TELAR_HOME (default ~/.telar), same root as @telar/core. */
+/** All state lives under TELAR_HOME (default ~/.telar), the same root the engine uses. */
 export function telarHome(): string {
   return process.env.TELAR_HOME ?? join(homedir(), ".telar");
 }

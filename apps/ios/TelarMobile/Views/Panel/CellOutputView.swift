@@ -12,14 +12,14 @@ struct CellOutputView: View {
     var body: some View {
         switch output {
         case .text(let stream, let text, let truncated):
-            ClampedLines(text: text + (truncated ? " … truncated" : ""), size: 11)
+            ClampedLines(text: text + (truncated ? " … truncated" : ""))
                 .foregroundStyle(stream == "stderr" ? Theme.statusAmber : stream == "result" ? Theme.text : Theme.text.opacity(0.8))
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .error(let error):
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(error.ename): \(error.evalue)").font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.statusRed)
+                Text("\(error.ename): \(error.evalue)").font(.system(Theme.caption, design: .monospaced, weight: .semibold)).foregroundStyle(Theme.statusRed)
                 if !error.traceback.isEmpty {
-                    ClampedLines(text: error.traceback.map(stripAnsi).joined(separator: "\n"), size: 10)
+                    ClampedLines(text: error.traceback.map(stripAnsi).joined(separator: "\n"))
                         .foregroundStyle(Theme.textMuted)
                 }
             }
@@ -52,7 +52,7 @@ struct CellOutputView: View {
         case .clear:
             EmptyView()
         case .unknown(let kind):
-            Text("[\(kind)]").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Text("[\(kind)]").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
         }
     }
 }
@@ -64,7 +64,6 @@ struct CellOutputView: View {
 /// tap away and says how much it is holding.
 struct ClampedLines: View {
     let text: String
-    var size: CGFloat = 11
     /// JupyterLab clamps around this too. Enough for a traceback's head and a
     /// dataframe's first rows.
     static let limit = 12
@@ -75,8 +74,13 @@ struct ClampedLines: View {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         let hidden = max(0, lines.count - Self.limit)
         VStack(alignment: .leading, spacing: 2) {
+            // ONE SIZE, BECAUSE THE TWO THIS TOOK WERE THE SAME SIZE. Stream
+            // output asked for 11 and a traceback for 10, and both land on
+            // `Theme.caption` — the point between them was never deliberate,
+            // so the parameter that carried it is gone rather than left as a
+            // knob with one setting.
             Text(expanded || hidden == 0 ? text : lines.prefix(Self.limit).joined(separator: "\n"))
-                .font(.system(size: size, design: .monospaced))
+                .font(.system(Theme.caption, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if hidden > 0 {
@@ -84,7 +88,7 @@ struct ClampedLines: View {
                     withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
                 } label: {
                     Text(expanded ? "Show less" : "\(hidden) more line\(hidden == 1 ? "" : "s")")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(Theme.caption, weight: .medium))
                         .foregroundStyle(Theme.accent)
                         .frame(minHeight: 28)
                 }
@@ -118,9 +122,14 @@ private struct OutputImage: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .onTapGesture { if let attachmentId { onOpen?(attachmentId) } }
             } else if attachmentId != nil || dataB64 != nil {
+                // NOT A #717 SITE, and checked rather than missed. This height
+                // reserves room for an IMAGE that is about to land, not for
+                // text — type has no opinion about how tall a figure is, so
+                // scaling it with the reader's setting would move the spinner
+                // for no reason and then snap back when the picture arrives.
                 ProgressView().frame(height: 60)
             } else {
-                Text("[image]").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text("[image]").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
             }
         }
         .task(id: attachmentId ?? dataB64?.prefix(32).description ?? "") {
@@ -133,12 +142,34 @@ private struct OutputImage: View {
     }
 }
 
+/// THE GRID SCALES AS A UNIT (#674) — width and both heights together, which
+/// is why it could not be swept site by site. Every cell is pinned to one
+/// width so the columns line up across a horizontal scroll, so a cell that
+/// grew while its neighbours did not would not merely clip, it would break the
+/// alignment the grid is for. One `@ScaledMetric` seed per dimension, all off
+/// `.caption` — the style the text inside them now takes — keeps the columns
+/// square at every content size.
+///
+/// THIS IS THE ONE PLACE IN #674 THAT MOVES AT THE DEFAULT TEXT SIZE, and it
+/// is unavoidable rather than careless. The cells took a 10 and an 8; the ramp
+/// they belong on starts at `.caption` (12) and `.caption2` (11), because
+/// `.caption2` is the floor of Apple's ramp and an 8 can go nowhere else. Text
+/// two points bigger needs a box bigger than 30 to sit in and a column wider
+/// than 96 to finish a name in, so the header went 30 → 34, the rows 22 → 24
+/// and the columns 96 → 108. A reader who has not moved the slider sees a
+/// slightly roomier table; every other site in #674 they cannot see at all.
 private struct DataframeGrid: View {
     let columns: [String]
     let dtypes: [String]
     let rows: [[JSONValue]]
     let shape: [Int]
     let truncated: Bool
+
+    /// One column width and the two row heights, seeded with the figures above
+    /// and scaled off the same style the cells are drawn in.
+    @ScaledMetric(relativeTo: .caption) private var columnWidth: CGFloat = 108
+    @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 34
+    @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 24
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -147,10 +178,10 @@ private struct DataframeGrid: View {
                     HStack(spacing: 0) {
                         ForEach(Array(columns.enumerated()), id: \.offset) { i, column in
                             VStack(alignment: .leading, spacing: 0) {
-                                Text(column).font(.system(size: 10, weight: .semibold)).lineLimit(1)
-                                if let dtype = dtypes[safe: i] { Text(dtype).font(.system(size: 8)).foregroundStyle(Theme.textMuted) }
+                                Text(column).font(.system(Theme.caption, weight: .semibold)).lineLimit(1)
+                                if let dtype = dtypes[safe: i] { Text(dtype).font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted) }
                             }
-                            .padding(.horizontal, 6).frame(width: 96, height: 30, alignment: .leading)
+                            .padding(.horizontal, 6).frame(width: columnWidth, height: headerHeight, alignment: .leading)
                         }
                     }
                     .background(Theme.subtle)
@@ -158,10 +189,10 @@ private struct DataframeGrid: View {
                         HStack(spacing: 0) {
                             ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
                                 Text(cellString(cell))
-                                    .font(.system(size: 10, design: .monospaced))
+                                    .font(.system(Theme.caption, design: .monospaced))
                                     .foregroundStyle(cell == .null ? Theme.textMuted : Theme.text)
                                     .lineLimit(1)
-                                    .padding(.horizontal, 6).frame(width: 96, height: 22, alignment: .leading)
+                                    .padding(.horizontal, 6).frame(width: columnWidth, height: rowHeight, alignment: .leading)
                             }
                         }
                         .background(r % 2 == 0 ? Color.clear : Theme.subtle.opacity(0.4))
@@ -170,7 +201,7 @@ private struct DataframeGrid: View {
             }
             .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
             Text("\(shape.first ?? rows.count) × \(shape.last ?? columns.count)\(truncated ? " · preview" : "")")
-                .font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                .font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
         }
     }
 

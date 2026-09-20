@@ -272,6 +272,31 @@ export function DirectoryBrowser({
         </button>
       </div>
 
+      {/* WHERE BROWSING MAY START — issue #630.
+
+          Listing a mounted drive has always been allowed and has never been
+          REACHABLE: the browser opens at home, and home's parent is null by
+          design, so the only way to a volume was to know its path and type it.
+          To somebody with an external disk that is indistinguishable from
+          "Telar cannot see my drive". These are the roots `listDirectories`
+          already sanctions, made visible; nothing new is permitted. Shown only
+          when there is somewhere to go besides home. */}
+      {(listing?.roots?.length ?? 0) > 1 && (
+        <div className="flex flex-wrap items-center gap-1 border-b px-3 py-2">
+          {listing?.roots.map((root) => (
+            <button
+              key={root.path}
+              type="button"
+              onClick={() => open(root.path)}
+              aria-current={listing.path === root.path}
+              className="rounded-sm px-1.5 py-0.5 text-2xs text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-[current=true]:text-foreground"
+            >
+              {root.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div ref={rows} id="directory-browser-entries" role="listbox" aria-label="Directories" className="max-h-80 overflow-y-auto p-1.5">
         <p aria-hidden className="px-2 pt-1 pb-1.5 text-2xs font-medium text-muted-foreground">
           Directories

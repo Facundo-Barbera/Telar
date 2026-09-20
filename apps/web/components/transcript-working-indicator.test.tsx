@@ -11,9 +11,13 @@
  * These render the indicator the way `session-cockpit` does — label and
  * `delegated` from `turnActivity`, `compacting` from `isCompacting` — so what is
  * asserted is the wiring and not just the prop.
+ *
+ * THE INDICATOR OWNS ITS CLOCK (#498), so "now" is no longer a prop these can
+ * set. It seeds from `Date.now()` on its first render, which is what the stub
+ * below pins: the turn started a minute before whatever the component reads.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Item, Turn } from "@telar/engine-client";
 import { isCompacting, projectJournal, type JournalTurn } from "@/lib/engine/journal";
@@ -22,6 +26,14 @@ import { turnActivity, WorkingIndicator } from "./transcript";
 const STARTED = 1_000_000;
 /** Three times the twenty-second threshold: unambiguously quiet. */
 const NOW = STARTED + 60_000;
+
+const realNow = Date.now;
+beforeEach(() => {
+  Date.now = () => NOW;
+});
+afterEach(() => {
+  Date.now = realNow;
+});
 
 const turn: Turn = { runId: "run_1", sessionId: "s1", sequence: 1, input: "Please help", state: "running", acceptedAt: STARTED, updatedAt: STARTED };
 
@@ -50,7 +62,6 @@ const render = (subject: JournalTurn) => {
       compacting={isCompacting(subject)}
       startedAt={subject.startedAt}
       lastActivityAt={subject.lastActivityAt}
-      now={NOW}
     />,
   );
 };
@@ -76,7 +87,7 @@ describe("the working indicator on a turn quiet for a minute", () => {
   test("suppression is the compacting flag itself, not the turn's shape", () => {
     const subject = quietTurn("inProgress");
     const html = renderToStaticMarkup(
-      <WorkingIndicator label="Compacting context" startedAt={subject.startedAt} lastActivityAt={subject.lastActivityAt} now={NOW} />,
+      <WorkingIndicator label="Compacting context" startedAt={subject.startedAt} lastActivityAt={subject.lastActivityAt} />,
     );
     expect(html).toContain("no output");
   });

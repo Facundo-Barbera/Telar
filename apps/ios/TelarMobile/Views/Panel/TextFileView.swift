@@ -112,7 +112,7 @@ struct TextFileView: View {
                 ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                     HStack(alignment: .top, spacing: 0) {
                         Text("\(index + 1)")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.system(Theme.caption, design: .monospaced))
                             .foregroundStyle(Theme.textMuted)
                             .frame(width: gutter, alignment: .trailing)
                             .padding(.trailing, 8)
@@ -130,12 +130,12 @@ struct TextFileView: View {
                         // a first frame, and an unknown language stays plain.
                         if let coloured = highlighted?[safe: index] {
                             Text(coloured)
-                                .font(.system(size: 12, design: .monospaced))
+                                .font(.system(Theme.footnote, design: .monospaced))
                                 .lineLimit(wrap ? nil : 1)
                                 .textSelection(.enabled)
                         } else {
                             Text(String(line))
-                                .font(.system(size: 12, design: .monospaced))
+                                .font(.system(Theme.footnote, design: .monospaced))
                                 .foregroundStyle(Theme.text)
                                 .lineLimit(wrap ? nil : 1)
                                 .textSelection(.enabled)
@@ -159,7 +159,7 @@ struct TextFileView: View {
                 }
                 if file.truncated {
                     Text("Truncated: the first \(humanBytes(file.text.utf8.count)) of \(humanBytes(file.bytes)).")
-                        .font(.system(size: 11))
+                        .font(.system(Theme.caption))
                         .foregroundStyle(Theme.statusAmber)
                         .padding(.top, 8)
                 }
@@ -193,7 +193,7 @@ struct TextFileView: View {
 
     private var editor: some View {
         TextEditor(text: $text)
-            .font(.system(size: 14, design: (path as NSString).pathExtension.lowercased() == "md" ? .default : .monospaced))
+            .font(.system(Theme.subhead, design: (path as NSString).pathExtension.lowercased() == "md" ? .default : .monospaced))
             .lineSpacing(3)
             .foregroundStyle(Theme.text)
             .scrollContentBackground(.hidden)
@@ -240,12 +240,12 @@ struct TextFileView: View {
 
     private func refusalBanner(_ refusal: WorkspaceWriteRefusal) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle").font(.system(size: 11)).foregroundStyle(Theme.statusRed)
-            Text(refusalCopy(refusal)).font(.system(size: 12)).foregroundStyle(Theme.statusRed)
+            Image(systemName: "exclamationmark.triangle").font(.system(Theme.caption)).foregroundStyle(Theme.statusRed)
+            Text(refusalCopy(refusal)).font(.system(Theme.footnote)).foregroundStyle(Theme.statusRed)
             Spacer(minLength: 0)
             if refusal == .conflict {
                 Button("Re-read from disk") { Task { await read(discardingDraft: true) } }
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(Theme.footnote, weight: .medium))
                     .buttonStyle(.plain)
                     .foregroundStyle(Theme.text)
             }

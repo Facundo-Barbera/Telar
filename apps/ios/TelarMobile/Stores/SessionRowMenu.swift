@@ -188,8 +188,12 @@ enum SessionRowMenu {
             copies.append(SessionMenuItem(id: "copy-link", label: "Link", systemImage: "link",
                                           verb: .copy(cockpitURL.absoluteString)))
         }
-        copies.append(SessionMenuItem(id: "copy-path", label: "Path", systemImage: "folder",
-                                      verb: .copy(session.workspace.path)))
+        // A conversation with no checkout has no path to copy — the item is
+        // absent rather than copying an empty string (#526).
+        if let path = session.workspace.path {
+            copies.append(SessionMenuItem(id: "copy-path", label: "Path", systemImage: "folder",
+                                          verb: .copy(path)))
+        }
         if let branch {
             copies.append(SessionMenuItem(id: "copy-branch", label: "Branch", systemImage: "arrow.triangle.branch",
                                           verb: .copy(branch)))

@@ -33,11 +33,15 @@
 import {
   DEFAULT_AUTO_SETTLE_HOURS,
   type LiveSessionRow,
+  type ProjectAvailability,
   type SessionActivity,
   type SessionAssignment,
+  type SessionPreparation,
+  type ProviderDriverKind,
   type SessionSettledBy,
+  workspacePath,
 } from "@telar/engine-client";
-import { isSettled, isSnoozed, type SettlingActivity, type SettlingOptions } from "./session-settling";
+import { isShelved, isSnoozed, settlingActivityOf, type SettlingActivity, type SettlingOptions } from "./session-settling";
 import { hostPrefix } from "./hosts/client";
 
 export const SESSION_PAGE_SIZE = 20;
@@ -81,8 +85,8 @@ export type SidebarSession = {
   /**
    * OPTIONAL, and the rail never receives one without it today.
    *
-   * A session with no project is the Spool's master chat, and the sidebar is a
-   * PROJECT-SCOPED list — the engine's project reads exclude it by construction,
+   * The sidebar is a PROJECT-SCOPED list and a session with no project is not a
+   * row in it — the engine's project reads exclude it by construction,
    * so it never reaches this shape. The field is optional anyway because the
    * engine's `Session.projectId` is, and a type that disagreed with the protocol
    * would push a cast into whichever caller met one first.
@@ -107,18 +111,40 @@ export type SidebarSession = {
    * the project list is still loading.
    */
   projectRemote?: string;
+  /**
+   * `Project.availability` — whether this row's project can be READ right now,
+   * as the engine's one probe answered it (issue #534).
+   *
+   * CARRIED ON THE ROW LIKE THE REST, and off the same live read: the rail's
+   * badge, the composer's refusal and a row's "this path is not here" all ask
+   * the same question, and a surface that went and asked the filesystem its own
+   * version would be a second opinion about a cable.
+   *
+   * Absent while the project list is still loading, and on an engine that
+   * predates the field — which reads as "nobody has said", never as a fourth
+   * state, so an older engine draws exactly what it always did.
+   */
+  projectAvailability?: ProjectAvailability;
   createdAt: number;
   updatedAt: number;
   archived: boolean;
-  driver: "claude" | "codex" | "opencode";
+  driver: ProviderDriverKind;
   model?: string;
   effort?: string;
   /** Everything this session has spent, in tokens. Money is not a unit this
    *  cockpit reports — see lib/format.ts. */
   tokens?: number;
   contextTokens?: number;
-  workspacePath: string;
+  /** Absent on a session with no checkout — see `SessionWorkspace`'s `none`
+   *  variant. A row that has none draws no path and offers no "Open". */
+  workspacePath?: string;
   worktreeBranch?: string;
+  /**
+   * The checkout is still being cut, or could not be — `Session.preparation`,
+   * carried through unchanged. Absent means ready, which is every row but a
+   * worktree session's first few seconds. See `SessionPreparation`.
+   */
+  preparation?: SessionPreparation;
   /** The project checkout's current branch, for a LOCAL session — which has no
    *  branch of its own because it runs on the project's own checkout. Derived
    *  per project by the engine, not stored. */
@@ -198,6 +224,8 @@ export function toSidebarSession(
   projectIconName?: string,
   /** The title of the session named by `settledBy` — see `settledForTitle`. */
   coordinatorTitle?: string,
+  /** `Project.availability` — whether the project's disk is here (#534). */
+  projectAvailability?: ProjectAvailability,
 ): SidebarSession {
   return {
     id: session.id,
@@ -212,6 +240,7 @@ export function toSidebarSession(
     ...(projectIcon ? { projectIcon } : {}),
     ...(projectIconName ? { projectIconName } : {}),
     ...(projectRemote ? { projectRemote } : {}),
+    ...(projectAvailability ? { projectAvailability } : {}),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     archived: session.state === "archived",
@@ -228,8 +257,9 @@ export function toSidebarSession(
         }
       : {}),
     ...(typeof session.usage?.contextUsed === "number" ? { contextTokens: session.usage.contextUsed } : {}),
-    workspacePath: session.workspace.path,
+    ...(workspacePath(session.workspace) ? { workspacePath: workspacePath(session.workspace)! } : {}),
     ...(session.workspace.mode === "worktree" ? { worktreeBranch: session.workspace.branch } : {}),
+    ...(session.preparation === undefined ? {} : { preparation: session.preparation }),
     ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
     ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
     ...(session.settledBy ? { settledBy: session.settledBy } : {}),
@@ -255,19 +285,14 @@ export function toSidebarSession(
  * to hide it is a control that does nothing. `session-row.tsx` had its own
  * two-field version of this, which is exactly how that drift starts.
  *
- * `queued` COUNTS AS WORKING. It is not running yet, but a turn is on its way,
- * and settling a session that is about to answer you is the same mistake as
- * settling one mid-answer.
+ * NOW THE PROTOCOL'S, because the ENGINE folds it too (#457): it decides which
+ * rows leave `GET /v2/sessions/live` at all, so a fold that lived only in the
+ * cockpit would be half of a rule with the other half on the other side of the
+ * wire. Kept as a named re-export here — it takes `SidebarSession`, which the
+ * protocol cannot name, and every caller in this app says `settlingActivity`.
  */
 export function settlingActivity(session: SidebarSession): SettlingActivity {
-  return {
-    working: session.activity === "working" || session.activity === "queued",
-    waitingOnYou: session.activity === "blocked",
-    ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
-    // A failure is dated by when the turn ended, because that IS when it
-    // failed — the engine derives both from the same turn.
-    ...(session.lastTurnFailed ? { failed: true, ...(session.lastTurnEndedAt === undefined ? {} : { failedAt: session.lastTurnEndedAt }) } : {}),
-  };
+  return settlingActivityOf(session);
 }
 
 /**
@@ -358,8 +383,11 @@ export function bandOf(session: SidebarSession, options: SettlingOptions): Sessi
   // The pin, checked after the snooze and before the clock. `isSettled` already
   // answers false for it; naming it here is what gives it a band of its own.
   if (session.settledOverride === "active") return "pinned";
-  if (session.draft && !session.archived && session.settledOverride !== "settled") return "active";
-  return isSettled(session, activity, options) ? "settled" : "active";
+  // The shelf question, not the row question — and it is the PROTOCOL's now,
+  // because the engine asks the same one to decide which rows leave
+  // `/v2/sessions/live` at all (#457). The draft carve-out that used to sit
+  // here is inside it; see `isShelved`.
+  return isShelved(session, activity, options) ? "settled" : "active";
 }
 
 /** A session's identity across every Mac in the rail: two engines can mint
@@ -527,11 +555,24 @@ export function deriveSessionList({
 /** The route a session's own row links to — spelled once so every caller
  *  resolves to the exact same URL a click on the row would. */
 export function sessionHref(session: Pick<SidebarSession, "id" | "projectId" | "hostId">): string {
-  // A SESSION WITH NO PROJECT IS THE SPOOL'S MASTER CHAT, and its address is the
-  // Spool itself — there is no `/projects/<id>/...` URL to build for it, and
-  // composing one with `undefined` in the path would 404 in a way that looks
-  // like a routing bug rather than a session that lives somewhere else.
-  if (!session.projectId) return "/spool";
+  /**
+   * A SESSION WITH NO PROJECT HAS NO PROJECT-SCOPED ADDRESS, so it gets the one
+   * reserved address there is: `/main`. There is no `/projects/<id>/...` URL to
+   * build for it, and composing one with `undefined` in the path would 404 in a
+   * way that looks like a routing bug rather than a session that lives nowhere
+   * in this list.
+   *
+   * `/main` IS AN ADDRESS FOR THE ROLE, NOT FOR THE ID — one Main conversation
+   * per machine (#526) — which is exactly why it can be named without knowing
+   * which session is behind it.
+   *
+   * IT CARRIES THE HOST LIKE EVERY OTHER SESSION ADDRESS HERE. A paired Mac has
+   * a Main of its own, and its row is in this rail; a bare `/main` would have
+   * opened THIS cockpit's coordinator instead — the same conversation-shaped
+   * screen, the wrong machine, with nothing on it to say so. `hostPrefix` is
+   * empty for the local engine, so the plain `/main` is unchanged.
+   */
+  if (!session.projectId) return `${hostPrefix(session.hostId)}/main`;
   return `${hostPrefix(session.hostId)}/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`;
 }
 

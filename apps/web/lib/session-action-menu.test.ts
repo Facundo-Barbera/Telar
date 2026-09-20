@@ -147,14 +147,17 @@ describe("getting to it: one href, three items", () => {
     ]);
   });
 
-  test("the Spool's master chat addresses the Spool, rather than a /projects/undefined link", () => {
+  test("a project-less session addresses /main, rather than a /projects/undefined link", () => {
+    // ONE MAIN CONVERSATION PER MACHINE (#526), so the role has an address even
+    // though the session has no project-scoped one. It used to be the front
+    // door, which was honest but landed nowhere in particular.
     const { calls, handlers } = spies();
     const items = build({ session: target({ projectId: undefined }) }, handlers);
     byId(items, "open").run!();
     byId(byId(items, "copy").children!, "copy-link").run!();
     expect(calls).toEqual([
-      ["open", "/spool"],
-      ["copyLink", "/spool"],
+      ["open", "/main"],
+      ["copyLink", "/main"],
     ]);
   });
 
@@ -185,16 +188,10 @@ describe("getting to it: one href, three items", () => {
     // On every arrangement, so it cannot creep back in through one of them.
     for (const arrangement of [
       build({ session: target({ archived: true }) }),
-      build({ capabilities: { readOnly: true, remote: true, current: true } }),
+      build({ capabilities: { remote: true, current: true } }),
     ]) {
       expect(ids(arrangement)).not.toContain("open-window");
     }
-  });
-
-  test("neither verb is refused by observe mode: reading where a session lives is not writing to it", () => {
-    const items = build({ capabilities: { readOnly: true } }, spies({ shell: true }).handlers);
-    expect(byId(items, "open").disabled).toBeFalsy();
-    expect(byId(items, "open-window").disabled).toBeFalsy();
   });
 
   test("and neither is refused on an archived session — its transcript is still worth reading", () => {
@@ -361,22 +358,11 @@ describe("gating: disabled with a reason beats failing later", () => {
     expect(byId(build({ session: target({ archived: true }) }), "rename").disabled).toBe("This conversation is over.");
   });
 
-  test("an observed session writes nothing, and says so on every write", () => {
-    const items = build({ capabilities: { readOnly: true } });
-    const refused = items.filter((item) => item.disabled).map((item) => item.id);
-    expect(refused).toEqual(["pin", "settle", "snooze", "rename", "delete"]);
-    expect(byId(items, "delete").disabled).toBe("This session is being observed, not driven.");
-    // Reading facts about it — and going to it — is still fine.
-    expect(byId(items, "copy").disabled).toBeFalsy();
-    expect(byId(items, "new-session").disabled).toBeFalsy();
-    expect(byId(items, "open").disabled).toBeFalsy();
-  });
-
   test("a session with no project cannot start a sibling or open settings", () => {
     const items = build({ session: target({ projectId: undefined }) });
     expect(byId(items, "new-session").disabled).toBe("This session belongs to no project.");
     expect(byId(items, "project-settings").disabled).toBe("This session belongs to no project.");
-    // It can still be opened: the Spool is a real address.
+    // It can still be opened: the front door is a real address.
     expect(byId(items, "open").disabled).toBeFalsy();
   });
 
@@ -435,7 +421,7 @@ describe("the destructive flag", () => {
       build({ session: target({ archived: true }) }),
       build({ session: target({ snoozedUntil: NOW + 60_000, snoozedAt: NOW - 1 }) }),
       build({ session: target({ settledOverride: "settled", branch: "telar/x" }) }),
-      build({ capabilities: { readOnly: true, remote: true } }),
+      build({ capabilities: { remote: true } }),
     ];
     for (const items of arrangements) {
       expect(items.filter((item) => item.destructive).map((item) => item.id)).toEqual(["delete"]);

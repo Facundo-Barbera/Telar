@@ -11,7 +11,7 @@
  *      the question through completely different wires — Claude reports a
  *      qualified tool name, Codex sends an MCP *elicitation* with the approval
  *      hidden in `_meta` — and before this change the Codex arm answered
- *      `"tool_call"` unconditionally. That made `spool_list_items` auto-accept
+ *      `"tool_call"` unconditionally. That made `display_open` auto-accept
  *      under one provider and park a card under the other, for the same read.
  */
 import { afterEach, describe, expect, test } from "bun:test";
@@ -36,14 +36,14 @@ const claudeAsks = (server: string, tool: string) => requestKindForTool(`mcp__${
 
 describe("both providers classify a tool the same way", () => {
   const cases: { tool: string; kind: string; why: string }[] = [
-    { tool: "spool_list_items", kind: "file_read", why: "a core read" },
+    { tool: "display_open", kind: "file_read", why: "a core read" },
     { tool: "ds_packages", kind: "file_read", why: "a plugin read the host ratified" },
     { tool: "ds_kernel", kind: "file_read", why: "a plugin read the host ratified" },
     { tool: "notebook_run_cell", kind: "tool_call", why: "a plugin tool that executes" },
     { tool: "ds_install", kind: "tool_call", why: "a plugin tool that writes to the environment" },
     { tool: "latex_compile", kind: "tool_call", why: "a plugin tool that writes" },
     { tool: "latex_status", kind: "tool_call", why: "NOT promoted by the migration" },
-    { tool: "spool_create_item", kind: "tool_call", why: "a core write" },
+    { tool: "sessions_create", kind: "tool_call", why: "a core write" },
   ];
 
   for (const { tool, kind, why } of cases) {
@@ -141,6 +141,6 @@ describe("the driver's default and the host's installation", () => {
   test("the host can only narrow — installing an empty set removes plugin reads, not core ones", () => {
     setPluginReadTools(new Set());
     expect(requestKindForTool("mcp__telar__ds_packages")).toBe("tool_call");
-    expect(requestKindForTool("mcp__telar__spool_list_items")).toBe("file_read");
+    expect(requestKindForTool("mcp__telar__display_open")).toBe("file_read");
   });
 });

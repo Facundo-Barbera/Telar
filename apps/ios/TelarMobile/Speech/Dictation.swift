@@ -1,0 +1,438 @@
+import AVFoundation
+import Foundation
+
+/// PUSH-TO-TALK ON THE PHONE (#544).
+///
+/// ── THE SHAPE, WHICH IS THE WEB'S ───────────────────────────────────────────
+/// Tap the mic: ask the paired Mac for a token that dies in five minutes, ask
+/// iOS for the microphone, open a socket straight to the transcription service
+/// with that token, and push 16 kHz mono PCM up it. Words go INTO the
+/// composer's draft as they are heard and are rewritten in place until the
+/// service settles them. Tap again and everything unwinds.
+///
+/// THE AUDIO NEVER TOUCHES THE MAC, which is the whole reason the route is a
+/// token route: a phone on a tailnet relaying every frame through a Mac that
+/// has no reason to see them would add a hop to a real-time stream for nothing.
+///
+/// ── WHY LINEAR16 HERE AND A CONTAINER ON THE WEB ────────────────────────────
+/// The browser has `MediaRecorder`, which hands over WebM/Opus and lets the
+/// service read the container's own header. `AVAudioEngine` hands over raw PCM
+/// buffers at whatever the hardware runs at — 48 kHz float on every recent
+/// iPhone — so this end has to say what it is sending, and has to convert. 16
+/// kHz mono `linear16` is what the streaming API wants and is a quarter the
+/// bytes of the hardware format, which matters on a phone's uplink.
+///
+/// `AVAudioConverter` DOES THE RESAMPLE, not a hand-rolled decimation: the tap
+/// delivers a hardware-rate buffer and the conversion is a rate change plus a
+/// format change plus a channel fold, which is three places to be subtly wrong
+/// and produce audio that transcribes as nothing.
+///
+/// ── THE HEADER IS AVAILABLE HERE, SO IT IS USED ─────────────────────────────
+/// The browser cannot send a header on a websocket at all, so the web client
+/// hands the credential over as the `bearer` subprotocol instead
+/// (`apps/web/lib/dictation/deepgram.ts`). `URLSessionWebSocketTask` takes a
+/// `URLRequest`, so the phone sends `Authorization: Bearer <jwt>` directly —
+/// the same scheme word, through the door this end actually has.
+///
+/// ── TOGGLE, AND LOUD ABOUT IT ───────────────────────────────────────────────
+/// Hold-to-talk on a phone means holding a finger on the screen while the
+/// keyboard is up, over the thing you are dictating about. So it is a toggle,
+/// and the failure mode of a toggle is a recording somebody forgot: `phase` is
+/// what the button draws in red, and the words appearing in the box as they are
+/// spoken are the loudest signal there is that this is running.
+@MainActor @Observable final class Dictation {
+    enum Phase: Equatable {
+        /// Nothing running, microphone released.
+        case idle
+        /// Minting a token and asking for the microphone.
+        case starting
+        /// The socket is open and audio is going up.
+        case listening
+    }
+
+    private(set) var phase: Phase = .idle
+    /// Why it stopped, or would not start. A sentence: the only move a button
+    /// has is to show it to a person.
+    private(set) var error: String?
+    /// WHAT THIS DICTATION IS TRANSCRIBING (#560), for the badge at the caret
+    /// to say (#561). Set when the socket is opened rather than at the tap: it
+    /// is the Mac's answer on the token, and until that has arrived there is no
+    /// honest value for it. `nil` while nothing is listening.
+    private(set) var language: String?
+
+    /// WHAT THE SERVICE JUST SAID, handed to whoever owns the draft. Settled or
+    /// not — the composer's `DictationDraftWriter` is what knows the difference
+    /// and where in the box the unconfirmed run currently sits. Nothing about
+    /// the span lives in here: this object owns a microphone and a socket.
+    var onWords: ((DictationWords) -> Void)?
+    /// THIS DICTATION IS OVER, so the span must be forgotten. Without it the
+    /// next press would open by REPLACING the words the last one left behind —
+    /// the draft guard only catches a person who typed in between, and most
+    /// people just press the button again.
+    var onEnd: (() -> Void)?
+
+    private let api: EngineAPI
+    private let engine = AVAudioEngine()
+    /// WHETHER THE SHARED SESSION IS OURS TO HAND BACK (#623). Lives on the
+    /// object rather than inside a generation, deliberately: a start that
+    /// activated and was then abandoned mid-flight leaves its claim here, where
+    /// the next `stop()` — and `.onDisappear` guarantees one — still finds it.
+    private let claim = AudioSessionClaim()
+    private var socket: URLSessionWebSocketTask?
+    private var converter: AVAudioConverter?
+    /// WHICH DICTATION THIS IS. Starting is asynchronous — a token round trip,
+    /// a permission prompt — and stopping is not, so a second tap lands in the
+    /// middle of the first tap's `await`. Every stop moves this on; a start
+    /// whose generation is stale drops what it built instead of adopting it.
+    private var generation = 0
+
+    init(api: EngineAPI) {
+        self.api = api
+    }
+
+    /// What the service wants, and what everything below converts to.
+    private static let wireFormat = AVAudioFormat(
+        commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true
+    )
+
+    func toggle() {
+        // Stopping is synchronous and starting is not, so a tap during
+        // `starting` still stops — the fence above is what makes that true.
+        if phase == .idle {
+            Task { await start() }
+        } else {
+            stop()
+        }
+    }
+
+    // MARK: starting
+
+    private func start() async {
+        let mine = generation
+        error = nil
+        phase = .starting
+        do {
+            // THE TOKEN FIRST, because it is the step that fails for a reason
+            // the person can fix — no key on that Mac, the service refusing.
+            // Asking for the microphone first would raise a permission prompt
+            // on a Mac that cannot dictate at all, which is a prompt with
+            // nothing behind it.
+            let minted = try await api.dictationToken()
+            guard generation == mine else { return }
+            // WHICH SOCKET TO OPEN IS THE ANSWER'S TO SAY, not this file's to
+            // assume. Everything below — the URL, the header, the 16 kHz PCM —
+            // is one provider's shape; another arrives with a different one,
+            // and opening this socket anyway would fail at the handshake with
+            // nothing on screen explaining why.
+            guard DictationProvider.canDictateHere(minted.provider) else {
+                throw DictationFailure.audio(
+                    "This version of Telar cannot dictate with \(minted.provider). Update the app, or choose another provider in that Mac's Dictation settings."
+                )
+            }
+            guard try await allowedToRecord() else {
+                phase = .idle
+                error = "Telar does not have permission to use the microphone. Allow it in Settings and tap again."
+                return
+            }
+            guard generation == mine else { return }
+            try open(minted)
+            guard generation == mine else {
+                stop()
+                return
+            }
+            phase = .listening
+            listen()
+        } catch {
+            // A FAILURE NOBODY IS WAITING FOR IS NOT WORTH A SENTENCE: the
+            // person tapped stop, and a message about the start they cancelled
+            // would be the app arguing with them.
+            guard generation == mine else { return }
+            teardownAudio()
+            phase = .idle
+            self.error = sentence(for: error)
+        }
+    }
+
+    /// iOS's own permission, asked once and remembered by the system. Wrapped
+    /// because the callback API predates concurrency and every caller here is
+    /// already in an `async` function.
+    private func allowedToRecord() async throws -> Bool {
+        await withCheckedContinuation { resume in
+            AVAudioApplication.requestRecordPermission { granted in resume.resume(returning: granted) }
+        }
+    }
+
+    private func open(_ minted: DictationTokenAnswer) throws {
+        guard let wire = Self.wireFormat else { throw DictationFailure.audio("This device cannot record in the format the service needs.") }
+
+        // A CATEGORY IS CLAIMED HERE, unlike `Talkback`, and it has to be:
+        // `AVAudioEngine`'s input node is silent — not an error, SILENT — under
+        // the default `.soloAmbient` category, and a dictation that records
+        // nothing and reports nothing is the worst outcome this file has.
+        // `.duckOthers` rather than interrupting, so a podcast dips for the
+        // length of a sentence instead of stopping.
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
+        // TAKEN THROUGH THE CLAIM (#623), so the teardown knows there is
+        // something to give back. Every line below this one can throw, and the
+        // `catch` in `start()` tears down on this same instance — which is what
+        // returns the session on a start that got this far and no further.
+        //
+        // NOTHING THAT TOUCHES AUDIO HARDWARE MAY MOVE ABOVE THIS LINE, and
+        // `engine.inputNode` below is the one that matters: the teardown reads
+        // the claim to decide whether that node was ever instantiated, and an
+        // access ordered before the take would make it answer no while a route
+        // was already configured.
+        try claim.take()
+
+        // THE LANGUAGE COMES OFF THE TOKEN ANSWER (#560) rather than from a
+        // second call to the settings route: this tap already costs one round
+        // trip, and the Mac knows both answers at the moment it mints.
+        // AND SO DOES THE GLOSSARY (#581): the words worth priming the
+        // recogniser with are that Mac's unsettled conversations, its projects
+        // and the terms somebody typed into its settings, none of which this
+        // phone can see.
+        language = minted.listenLanguage
+        var request = URLRequest(url: DeepgramListen.url(language: minted.listenLanguage, keyterms: minted.listenKeyterms))
+        // THE HEADER, WHICH THE BROWSER CANNOT SEND. `Bearer` is the JWT's own
+        // scheme; `Token` is for a long-lived API key and is refused for a
+        // grant token.
+        request.setValue("Bearer \(minted.token)", forHTTPHeaderField: "Authorization")
+        let task = URLSession.shared.webSocketTask(with: request)
+        socket = task
+        task.resume()
+
+        let input = engine.inputNode
+        let hardware = input.outputFormat(forBus: 0)
+        guard hardware.sampleRate > 0 else { throw DictationFailure.audio("No microphone input is available right now.") }
+        converter = AVAudioConverter(from: hardware, to: wire)
+
+        // 4096 FRAMES is about 85 ms at 48 kHz — short enough that the first
+        // interim word appears while it is still being said, long enough that
+        // the socket is not being written to on every render of the waveform.
+        input.installTap(onBus: 0, bufferSize: 4096, format: hardware) { [weak self] buffer, _ in
+            guard let bytes = Self.pcm16(from: buffer, using: self?.converter, to: wire) else { return }
+            // OFF THE AUDIO THREAD BEFORE ANYTHING ELSE. This closure runs on a
+            // real-time thread; doing anything that can block on it is how an
+            // audio glitch becomes a dropped word.
+            task.send(.data(bytes)) { _ in }
+        }
+        engine.prepare()
+        try engine.start()
+    }
+
+    /// Resample and narrow one tap buffer to 16 kHz mono `linear16`.
+    ///
+    /// `nonisolated` AND STATIC because it is called from the audio thread and
+    /// touches nothing but its arguments — an instance method here would be a
+    /// main-actor hop per buffer, eighty times a second.
+    private nonisolated static func pcm16(from buffer: AVAudioPCMBuffer, using converter: AVAudioConverter?, to wire: AVAudioFormat) -> Data? {
+        guard let converter else { return nil }
+        let ratio = wire.sampleRate / buffer.format.sampleRate
+        // +1 FRAME OF HEADROOM: the ratio rarely divides evenly, and a capacity
+        // one frame short makes the converter fail rather than truncate.
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1
+        guard let out = AVAudioPCMBuffer(pcmFormat: wire, frameCapacity: capacity) else { return nil }
+        var handed = false
+        var failure: NSError?
+        converter.convert(to: out, error: &failure) { _, status in
+            // ONE BUFFER, ONCE. Answering the same input twice makes the
+            // converter loop; `.noDataNow` is how a tap-driven feed says "that
+            // is all there is until the next callback".
+            if handed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            handed = true
+            status.pointee = .haveData
+            return buffer
+        }
+        guard failure == nil, out.frameLength > 0, let channel = out.int16ChannelData else { return nil }
+        return Data(bytes: channel[0], count: Int(out.frameLength) * MemoryLayout<Int16>.size)
+    }
+
+    // MARK: hearing
+
+    /// One read at a time, re-armed after each — `URLSessionWebSocketTask`'s
+    /// own shape. A read that fails is the socket ending, which is either the
+    /// stop below (already idle, nothing to say) or a drop worth a sentence.
+    private func listen() {
+        guard let task = socket else { return }
+        task.receive { [weak self] result in
+            Task { @MainActor in
+                guard let self, self.socket === task else { return }
+                switch result {
+                case .success(let message):
+                    if case .string(let text) = message,
+                       let frame = DictationFrame.read(text),
+                       // A FRAME THAT SAYS NOTHING ABOUT THE WORDS — metadata,
+                       // an utterance end, a keep-alive — must not reach the
+                       // draft at all, which is why the reducer answers `nil`
+                       // rather than an empty pair.
+                       let words = DictationTranscript.read(frame) {
+                        self.onWords?(words)
+                    }
+                    self.listen()
+                case .failure:
+                    // WHAT A DROPPED SOCKET CARRIES: nothing. The refusal that
+                    // caused it was an ordinary HTTP response and this task
+                    // never sees it, the same way a browser's `WebSocket` error
+                    // event carries no reason. So this sentence is the honest
+                    // one, shown AT ONCE — waiting on a round trip would be
+                    // silence at the moment somebody is wondering whether the
+                    // tap registered — and the Mac is then asked for a better
+                    // one (#711).
+                    self.error = Self.socketEnded
+                    self.stop()
+                    self.diagnose(replacing: Self.socketEnded)
+                }
+            }
+        }
+    }
+
+    // MARK: stopping
+
+    /// EVERY PATH OUT COMES THROUGH HERE, including the ones that failed before
+    /// anything opened. Releasing the microphone is the step that must not be
+    /// conditional: a phone holding a live input after the button says idle
+    /// keeps the system's orange recording dot lit.
+    func stop() {
+        generation += 1
+        // FLUSH BEFORE CLOSING. The service holds the tail of an utterance
+        // until it hears silence or this, and that tail is the words just
+        // spoken.
+        if let task = socket {
+            task.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
+            task.cancel(with: .goingAway, reason: nil)
+        }
+        socket = nil
+        language = nil
+        teardownAudio()
+        // THE WORDS STAY IN THE BOX, the span does not — including a guess the
+        // service never got to settle. They said it; they can edit it.
+        onEnd?()
+        phase = .idle
+    }
+
+    private func teardownAudio() {
+        if engine.isRunning { engine.stop() }
+        // NOT INSTANTIATED JUST TO BE TORN DOWN (#623). Reading
+        // `engine.inputNode` is not a read: on iOS it CREATES the node and has
+        // the session configure an input route, which disturbs other audio
+        // without anything here having called `setActive(true)` at all. This
+        // function runs on every exit from a conversation, so on the
+        // no-dictation path it was doing precisely that — the same symptom as
+        // the deactivation below, by a second route. Removing a tap from a node
+        // nobody ever tapped is not worth paying that for.
+        //
+        // THE CLAIM IS THE RIGHT PREDICATE ONLY BECAUSE OF THE ORDER IN
+        // `open()`: the node is first touched well below `claim.take()`, so a
+        // tap can never exist without a claim, and skipping this can never
+        // strand one. Moving that access above the take would make this guard
+        // quietly wrong.
+        if claim.isHeld { engine.inputNode.removeTap(onBus: 0) }
+        converter = nil
+        // HANDED BACK, so whatever was ducked comes up again and the next app
+        // to want the microphone is not fighting a session nobody is using —
+        // BUT ONLY ONE WE TOOK (#623). Everything above is unconditional and
+        // must stay so; this is not. `stop()` runs on every exit from a
+        // conversation, dictated in or not, and telling the whole phone to
+        // resume a session this app never activated is what was interrupting
+        // somebody's music.
+        claim.handBack()
+    }
+
+    /// The Mac's own words where there are some — "no key is configured" names
+    /// the pane to fix it on, which nothing here could have worked out.
+    /// `EngineAPIError` is a `LocalizedError` whose `errorDescription` already
+    /// passes an unrecognised code's message through, so a 409 about a missing
+    /// key arrives as its sentence rather than as a status.
+    /// WHAT A DROPPED SOCKET CAN HONESTLY SAY BY ITSELF. Named rather than
+    /// inlined because `diagnose` replaces exactly this sentence and nothing
+    /// else — two spellings of it would make the replacement silently stop
+    /// happening.
+    static let socketEnded = "The connection to the transcription service ended."
+
+    /// ASK THE MAC WHY, AND SAY THAT INSTEAD (#711).
+    ///
+    /// THIS PHONE CANNOT LEARN IT. A refused upgrade is an ordinary HTTP
+    /// response and `URLSessionWebSocketTask` reports it as a read failure with
+    /// nothing in it — so `400 Bad Request — Keyterm limit exceeded` arrives as
+    /// "the connection ended", which is what sent the owner to replace a key
+    /// that was fine. The Mac holds the key and can ask; it answers every
+    /// surface from one route.
+    ///
+    /// ONLY IF THE SENTENCE IT IS REPLACING IS STILL THE ONE ON SCREEN. A
+    /// person who tapped again while this was in flight is looking at a live
+    /// dictation or a newer refusal, and overwriting either with the diagnosis
+    /// of an older tap would be the app answering a question nobody is still
+    /// asking.
+    ///
+    /// EVERY FAILURE HERE IS SILENT. This is a better sentence for a refusal
+    /// that already has one; a Mac too old for the route, or one that is off,
+    /// leaves the honest sentence standing, which is the right outcome.
+    private func diagnose(replacing said: String) {
+        Task { @MainActor in
+            guard let better = try? await api.dictationDiagnosis(), !better.reason.isEmpty else { return }
+            guard self.phase == .idle, self.error == said else { return }
+            self.error = better.reason
+        }
+    }
+
+    private func sentence(for error: Error) -> String {
+        if case DictationFailure.audio(let said) = error { return said }
+        return error.localizedDescription
+    }
+}
+
+private enum DictationFailure: Error {
+    case audio(String)
+}
+
+/// The socket's address. Its own type rather than a string in `open` so the
+/// query is readable, and so the web client's equivalent
+/// (`apps/web/lib/dictation/deepgram.ts`) has something to be kept in step
+/// with.
+enum DeepgramListen {
+    /// `nova-3` is what the headset already dictates with, so the same words
+    /// come out on every surface. `encoding` and `sample_rate` ARE declared
+    /// here, unlike the web's, because this end sends raw PCM with no container
+    /// header for the service to read.
+    ///
+    /// `language` IS AN ARGUMENT WITH NO DEFAULT (#560), which is the point:
+    /// leaving it off the query is what made every dictation come back as
+    /// English, so the next caller of this cannot open a socket without having
+    /// decided. The value is the Mac's — mapped from the setting there and
+    /// carried down on the token answer.
+    ///
+    /// AND SO IS `keyterms` (#581), for the same reason and a fresher one: the
+    /// headset has always primed the recogniser with up to forty of these and
+    /// this phone primed it with none, which is the whole of why the VR client
+    /// understood the app's own glossary and this app did not. One REPEATED
+    /// parameter per term — Deepgram reads `keyterm` as multi-valued, and a
+    /// comma-joined string would be one long term nobody says. It works under
+    /// `language=multi`, which is confirmed on the headset and is what every
+    /// Telar client actually opens.
+    ///
+    /// The list arrives bounded and ordered from the Mac; nothing here decides
+    /// what is in it.
+    ///
+    /// `endpointing` STAYS AT 300 rather than dropping to 100 for this end's
+    /// raw PCM: the headset saw monosyllables doubled at the lower value, and
+    /// "yes yes" in the box is a worse bug than a final landing a fifth of a
+    /// second late.
+    static func url(language: String, keyterms: [String]) -> URL {
+        var components = URLComponents(string: "wss://api.deepgram.com/v1/listen")!
+        components.queryItems = [
+            URLQueryItem(name: "model", value: "nova-3"),
+            URLQueryItem(name: "interim_results", value: "true"),
+            URLQueryItem(name: "smart_format", value: "true"),
+            URLQueryItem(name: "language", value: language),
+            URLQueryItem(name: "endpointing", value: "300"),
+            URLQueryItem(name: "encoding", value: "linear16"),
+            URLQueryItem(name: "sample_rate", value: "16000"),
+            URLQueryItem(name: "channels", value: "1"),
+        ] + keyterms.map { URLQueryItem(name: "keyterm", value: $0) }
+        return components.url!
+    }
+}

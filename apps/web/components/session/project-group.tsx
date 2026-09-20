@@ -7,6 +7,7 @@ import {
   ChevronUpIcon,
   FolderOpenIcon,
   FoldVerticalIcon,
+  HardDriveIcon,
   MessageSquarePlusIcon,
   MonitorIcon,
   SlidersHorizontalIcon,
@@ -37,6 +38,7 @@ import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import type { ProjectPlace } from "@/lib/hosts/project-places";
 import type { ProjectGroup as Group, RailJumpSlot } from "@/lib/session-groups";
 import { canvasHref, sessionKey, type SessionBand, type SidebarSession } from "@/lib/session-list";
+import type { SessionRowChanged } from "@/lib/session-mutations";
 import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpenersAnswer } from "@/lib/workspace-open";
 import {
   preferredOpenerSnapshot,
@@ -108,7 +110,7 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
       : (entries.find((entry) => entry.preferred && entry.kind === "opener") ?? entries.find((entry) => entry.kind === "opener"));
 
   /** The shell's refusal is reported, never swallowed — this rail has no error
-   *  surface of its own, which is the argument `runSessionPatch` makes for the
+   *  surface of its own, which is the argument `mutateRow` makes for the
    *  same alert one file over. */
   const act = (entry: WorkspaceOpenerEntry | "reveal") => {
     if (blocker || !bridge || !root) return;
@@ -146,8 +148,8 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
  * on another group and it lands above or below, by which half of that group
  * the pointer was in. The drag is the platform's own (`draggable` and
  * `dataTransfer`, the app's one drag idiom — see `lib/drag-reference.ts`), the
- * handlers arrive as bare prop references the way the Spool's lobby takes
- * them, and the sidebar owns the state, because the drop lands on a DIFFERENT
+ * handlers arrive as bare prop references,
+ * and the sidebar owns the state, because the drop lands on a DIFFERENT
  * group than the one that started the drag.
  *
  * THE INSERT MARK IS A SHADOW, NOT A BORDER. A border added on drag-over would
@@ -164,7 +166,7 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
  * THE TRIGGER WRAPS THE LABEL, NEVER THE BUTTON. That button is the drag
  * handle, and base-ui's trigger renders an element of its own — one carrying
  * `draggable` would make a right-press and a grab compete for the same node,
- * which is the race the Spool's board card avoids the same way.
+ * which is the race every draggable row in this app avoids the same way.
  */
 export function ProjectGroupSection({
   group,
@@ -174,7 +176,7 @@ export function ProjectGroupSection({
   activeSessionId,
   renderedAt,
   bandFor,
-  onRefresh,
+  onRowChanged,
   dragging,
   insert,
   onDragStart,
@@ -201,7 +203,10 @@ export function ProjectGroupSection({
   /** The rail's own banding — a paired Mac's row is banded by that Mac's
    *  clock, and the group must not re-derive it with this Mac's. */
   bandFor: (session: SidebarSession) => SessionBand;
-  onRefresh: () => void;
+  /** ONE ROW CHANGED — forwarded, never called here (#495). A group draws rows;
+   *  the rail owns the list they belong to, and a mutation inside a group is
+   *  still a mutation on one row of the rail's list. */
+  onRowChanged: SessionRowChanged;
   /** This group is the one being carried. */
   dragging: boolean;
   /** Where the carried group would land relative to this one, while over it. */
@@ -349,6 +354,35 @@ export function ProjectGroupSection({
                 size={16}
               />
               <span className="min-w-0 truncate text-xs-plus font-semibold text-sidebar-foreground/90">{group.name}</span>
+              {/*
+                THE DRIVE IS AWAY — issue #534.
+
+                A WORD, NOT A WARNING COLOUR. Nothing is wrong here and nothing
+                needs fixing: a project on an external drive is unreadable
+                whenever the drive is elsewhere, which is the ordinary state of
+                an external drive. The rows underneath still open, their history
+                still reads, and plugging the disk back in is the whole of the
+                remedy — so this is the same muted chip the host badges beside it
+                use, and never an error.
+
+                IT DOES NOT SAY "RE-REGISTER". That is the one piece of advice
+                that would cost the person their project id, their sessions and
+                their browser profile, which is exactly what the engine's
+                refusal sentences also refuse to suggest.
+              */}
+              {group.availability ? (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-3xs text-sidebar-foreground/60"
+                  title={
+                    group.availability === "unmounted"
+                      ? `The drive holding ${group.name} is not connected. Plug it back in and this project comes back as it was.`
+                      : `The folder for ${group.name} is not on this machine any more.`
+                  }
+                >
+                  <HardDriveIcon className="size-2.5" />
+                  <span className="max-w-20 truncate">{group.availability === "unmounted" ? "drive away" : "folder gone"}</span>
+                </span>
+              ) : null}
               {badges.map((place) => {
                 const label = place.hostName ?? (place.hostId ? "another Mac" : "This Mac");
                 return (
@@ -516,7 +550,7 @@ export function ProjectGroupSection({
                 variant="slim"
                 band={bandFor(session)}
                 renderedAt={renderedAt}
-                onRefresh={onRefresh}
+                onRowChanged={onRowChanged}
                 drag={rowDrag(key)}
                 {...(slot === undefined ? {} : { jumpSlot: slot })}
               />

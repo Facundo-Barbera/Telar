@@ -20,7 +20,7 @@
  */
 import { z } from "zod";
 import { Id, ProviderRefs, RateLimitType, Timestamp, TurnAttachment } from "./common";
-import { WakeReason } from "./entities";
+import { NotificationDetail, WakeReason } from "./entities";
 
 /**
  * The subset of item types that represent a tool doing something. These are the
@@ -51,6 +51,14 @@ export type ToolItemType = z.infer<typeof ToolItemType>;
 
 export const ItemType = z.enum([
   "user_message",
+  /**
+   * SOMETHING REACHED THIS SESSION THAT NOBODY TYPED — a peer's message, a wake
+   * from a session it subscribed to, a request one of them parked. Its own type
+   * rather than a flag on `user_message` precisely so that no renderer and no
+   * driver can treat it as the person speaking by forgetting to check a field.
+   * See `NotificationDetail`.
+   */
+  "notification",
   "assistant_message",
   /** Extended thinking. Carried as its own item type rather than folded into
    *  assistant_message so a client can collapse it independently — which is the
@@ -240,6 +248,63 @@ export const ErrorDetail = z.object({
 export type ErrorDetail = z.infer<typeof ErrorDetail>;
 
 /**
+ * WHERE AN ADOPTED CONVERSATION CAME FROM — `/resume` (#616), and the only
+ * record there will ever be of it.
+ *
+ * THE PROVIDER STAMPS NOTHING. Measured on a real fork: the forked transcript
+ * mentions the source id zero times, and the two files' key sets are identical.
+ * So "a person opening this session in six weeks can tell what it was" is not
+ * something that can be recovered later from the store on disk — it exists only
+ * if Telar writes it at the moment of the adoption, which is this.
+ *
+ * IT IS A ROW, NOT A FIELD ON THE SESSION, and that is the point of it being
+ * here. A field would be a debug value one surface reads; a row is in the
+ * journal, so `sessions_read` returns it among the events, the turn fold names
+ * it, and the cockpit draws it at the head of the history it explains — three
+ * readers, one fact, nothing to keep in step.
+ *
+ * TWO CUTS, BOTH REPORTED, because they are different questions and a single
+ * number would answer neither honestly:
+ *   - `records` / `cut` — what the FORK carries, which is what the model can
+ *     still remember.
+ *   - `rows` / `rowCut` — what the COCKPIT shows, which is what the person can
+ *     still scroll.
+ * They coincide when the fork was whole and the transcript fitted the row
+ * budget, and they diverge exactly when somebody needs to be told they have.
+ */
+export const ConversationImportDetail = z.object({
+  /** Claude only in this pass (#616 scope). Named rather than assumed, so a
+   *  second provider's import cannot quietly read as this one's. */
+  provider: z.literal("claude"),
+  /** The conversation that was adopted — the id in the person's OWN store. */
+  sourceSessionId: z.string().min(1),
+  /** The fork Telar made and now resumes. Never the source: Telar does not
+   *  write into somebody's own Claude Code history. */
+  sessionId: z.string().min(1),
+  /** The source's working directory, when its records carried one. What makes
+   *  "which conversation was that" answerable a month later. */
+  sourceCwd: z.string().optional(),
+  /** The conversation's own opening prompt, clipped. The CLI's titles do not
+   *  distinguish conversations — six identically-titled ones were produced
+   *  deliberately and the CLI itself refused to tell them apart — so this is
+   *  the field that identifies WHICH conversation this was. */
+  firstPrompt: z.string().max(500).optional(),
+  /** Records carried into the fork. */
+  records: z.number().int().nonnegative(),
+  /** Where the fork was cut. `whole` is the whole conversation. */
+  cut: z.enum(["whole", "since_compact_boundary"]),
+  /** Journal rows this import wrote. */
+  rows: z.number().int().nonnegative(),
+  /** Why the READ stopped where it did — Claude's own compaction boundary, a
+   *  row budget, or not at all. */
+  rowCut: z.enum(["whole", "compact_boundary", "row_budget"]),
+  /** Size of the source transcript at the moment it was adopted. Half of the
+   *  evidence that adopting it did not change it. */
+  sourceBytes: z.number().int().nonnegative().optional(),
+});
+export type ConversationImportDetail = z.infer<typeof ConversationImportDetail>;
+
+/**
  * The per-type payload of an item.
  *
  * A DISCRIMINATED UNION ON `type`, not an optional grab-bag, so that narrowing
@@ -282,6 +347,17 @@ export const ItemDetail = z.discriminatedUnion("type", [
      */
     wakeReason: WakeReason.optional(),
   }),
+  /**
+   * A PEER'S MESSAGE, A WAKE, OR A PARKED REQUEST — announced, not ventriloquised.
+   *
+   * THE WHOLE POINT IS THE TYPE. A `user_message` carrying `sender` or
+   * `wakeReason` said the same facts, but it said them in fields a renderer or a
+   * driver had to REMEMBER to look at — and the one that forgot drew engine prose
+   * as the person's bubble and handed it to the model as the person's
+   * instruction. A distinct arm cannot be forgotten: narrowing on the type is
+   * what gives you the payload at all.
+   */
+  z.object({ type: z.literal("notification"), notification: NotificationDetail }),
   z.object({ type: z.literal("assistant_message"), text: z.string() }),
   z.object({ type: z.literal("reasoning"), text: z.string() }),
   z.object({ type: z.literal("plan"), plan: PlanDetail }),
@@ -304,6 +380,14 @@ export const ItemDetail = z.discriminatedUnion("type", [
     postTokens: z.number().int().nonnegative().optional(),
   }),
   z.object({ type: z.literal("provider_wait"), wait: ProviderWaitDetail }),
+  /**
+   * THE HEAD OF AN ADOPTED CONVERSATION — its own arm for the same reason
+   * `notification` has one: the facts have to live somewhere a renderer cannot
+   * forget to look. Stated as prose in an `assistant_message` it would be
+   * indistinguishable from something the model said, which is the precise lie
+   * an import must not tell.
+   */
+  z.object({ type: z.literal("conversation_import"), import: ConversationImportDetail }),
   z.object({ type: z.literal("error"), error: ErrorDetail }),
   z.object({ type: z.literal("unknown"), label: z.string().optional(), payload: z.unknown().optional() }),
 ]);
@@ -360,5 +444,17 @@ export const Item = z.object({
    *  parent timeline. */
   taskId: Id.optional(),
   providerRefs: ProviderRefs.optional(),
+  /**
+   * THIS ROW WAS READ OUT OF A PROVIDER'S TRANSCRIPT, not produced by a turn
+   * this engine ran — `/resume` adopting an existing Claude Code conversation
+   * (#616). The distinction has to be on the row itself: a session can hold
+   * imported history and live turns at once, so "is this session imported" is
+   * not a question with one answer, and a row that passes for a Telar turn it
+   * never was misleads every later reader, the Agent's digest included.
+   *
+   * `literal(true)`, not `boolean`, so absent and `false` are not two spellings
+   * of the same state. An imported row says so; every other row stays silent.
+   */
+  imported: z.literal(true).optional(),
 });
 export type Item = z.infer<typeof Item>;

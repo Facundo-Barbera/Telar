@@ -63,7 +63,7 @@ const DIFF: { sign: " " | "-" | "+"; n: number; text: string }[] = [
  *  and the 0/O 1/l/I confusions a mono face exists to settle. */
 export function CodeSpecimen() {
   return (
-    <div className="overflow-hidden rounded-md border border-border">
+    <div className="overflow-hidden rounded-md border border-border bg-card">
       <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
         <code className="text-muted-foreground">lib/looks.ts</code>
         <span className="ml-auto font-mono text-2xs tabular-nums">

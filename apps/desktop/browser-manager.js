@@ -1,6 +1,6 @@
 const { randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
-const { PrivateInteraction, isProtectedUrl } = require("./private-interaction");
+const { isProtectedUrl } = require("./protected-urls");
 const { ProfileRegistry, requireProjectKey } = require("./browser-profiles");
 const { serializeInventory, parseInventory } = require("./browser-tab-store");
 const { captureEntry } = require("./login-offer");
@@ -58,6 +58,30 @@ function resolveViewport(input) {
   return { width: w, height: h };
 }
 
+/**
+ * THE ZOOM LADDER — Chromium's own steps, so − and + land where a person who
+ * has used a browser expects them to. The manager owns the ladder rather than
+ * the panel: a factor is a page-level fact, and two surfaces stepping it with
+ * two ladders would drift.
+ */
+const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
+
+/** The next rung in `direction` from `factor`, clamped at both ends. `reset`
+ *  is 1 whatever the current factor is. */
+function zoomStep(factor, direction) {
+  if (direction === "reset") return 1;
+  const current = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  if (direction === "in") return ZOOM_STEPS.find((step) => step > current + 1e-6) ?? ZOOM_STEPS.at(-1);
+  if (direction === "out") return [...ZOOM_STEPS].reverse().find((step) => step < current - 1e-6) ?? ZOOM_STEPS[0];
+  throw new Error(`Unknown zoom direction ${JSON.stringify(direction)}. Use in, out or reset.`);
+}
+
+/** The colour scheme a tab is emulating, normalized. "system" is no override. */
+function resolveColorScheme(value) {
+  if (value === "light" || value === "dark" || value === "system") return value;
+  throw new Error(`Unknown appearance ${JSON.stringify(value)}. Use light, dark or system.`);
+}
+
 /** Which preset (if any) a size is — the toolbar shows a name over numbers. */
 function presetOf(viewport) {
   for (const [key, preset] of Object.entries(VIEWPORT_PRESETS)) {
@@ -95,6 +119,14 @@ function fitViewport(viewport, bounds) {
  *  approaching this means there is no frame coming. */
 const CAPTURE_TIMEOUT_MS = 8_000;
 const CAPTURE_TIMEOUT_MESSAGE = "Screenshot timed out — the page has no frame to capture.";
+/**
+ * THE FROZEN FRAME'S CEILING (#475). A menu appears on a click, and the
+ * capture that has to land before the view goes down is spent out of that
+ * same moment — so this is a budget, not a timeout for a hung page. Past it
+ * the view is hidden plainly, exactly as it was before the frame existed.
+ */
+const FREEZE_TIMEOUT_MS = 150;
+const FREEZE_TIMEOUT_MESSAGE = "The page did not produce a frame in time to freeze.";
 const HIBERNATE_GRACE_MS = RPC_TIMEOUT_MS;
 const MAX_LOG_ITEMS = 200;
 /**
@@ -168,20 +200,6 @@ const HUMAN_ACTIVE_MS = 1_500;
  *  answered with "the human is still interacting" — never an indefinite lock. */
 const DEFER_MAX_MS = 5_000;
 const DEFER_POLL_MS = 100;
-/** How long ONE frame's credential-safety probe may take before the resume
- *  treats it as unresponsive (fails closed with an actionable message). A
- *  responsive page answers in a few ms; a wedged background frame must not
- *  hang the resume — that was the never-clearing-banner bug. */
-const CREDENTIAL_PROBE_TIMEOUT_MS = 750;
-/** Distinguishes a probe that timed out from one that answered. */
-const PROBE_TIMEOUT = Symbol("probe-timeout");
-const BLOCKING_CREDENTIAL_SELECTOR = 'input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"], input[autocomplete="one-time-code"]';
-/** How often the automatic-release loop re-checks whether the credential
- *  interaction is over. Short enough to feel immediate after a submit. */
-const AUTO_RELEASE_POLL_MS = 300;
-/** The whole cross-tab credential probe is bounded to this, independent of
- *  how many tabs/frames it must ask (they run in parallel). */
-const CREDENTIAL_STATUS_BUDGET_MS = 1_500;
 
 function humanActiveOn(tab, index) {
   return `The human is interacting with tab ${index} — ${tab.title || tab.url || "untitled"} — right now. Wait a moment and look again (snapshot or screenshot), or work in another tab.`;
@@ -465,10 +483,168 @@ function axValue(node, key) {
   return value === undefined || value === null ? "" : String(value);
 }
 
+// --- What an agent reads back: the tree, the console, the network -----------
+// The three answers that are as big as the page rather than as big as the
+// question. They are PURE FUNCTIONS out here, away from the tab and the
+// debugger, for one reason: the only way to know what a heavy page costs a
+// model is to run the renderer over a heavy fixture, and nothing that needs a
+// live CDP session can be handed two thousand nodes in a unit test. The engine
+// puts a byte ceiling on all three (`apps/engine/src/browser/bounds.ts`); the
+// narrowing arguments below are what its marker tells a model to reach for, so
+// they have to actually narrow something.
+
+/** Roles a later call can address. An `img` is in because describing one is
+ *  half of what a model asks a page for. */
+const SNAPSHOT_TARGETABLE_ROLES = new Set([
+  "button", "checkbox", "combobox", "link", "menuitem", "radio", "searchbox",
+  "slider", "spinbutton", "switch", "tab", "textbox", "treeitem",
+]);
+/** Indentation stops nesting here; the tree keeps going. Twelve levels of two
+ *  spaces is already a quarter of a line spent on whitespace. */
+const SNAPSHOT_MAX_INDENT = 12;
+const SNAPSHOT_MAX_LINES = 500;
+
+/** Every node's true depth, iteratively. Recursion here is a stack overflow on
+ *  a page with a deep enough chain, which is a crash in the host process for
+ *  the sake of a snapshot. */
+function snapshotDepths(nodes, byId) {
+  const depths = new Map();
+  for (const node of nodes) {
+    if (depths.has(node.nodeId)) continue;
+    const chain = [];
+    let walk = node;
+    while (walk && !depths.has(walk.nodeId)) {
+      chain.push(walk);
+      walk = walk.parentId ? byId.get(walk.parentId) : undefined;
+    }
+    let depth = walk ? depths.get(walk.nodeId) : -1;
+    for (let i = chain.length - 1; i >= 0; i--) depths.set(chain[i].nodeId, ++depth);
+  }
+  return depths;
+}
+
+/**
+ * The accessibility tree, rendered.
+ *
+ * `rootNodeId` narrows to one subtree — what `browser_snapshot {target}` means
+ * — and `maxDepth` cuts the tree off at a relative depth, which is what
+ * `{depth}` means. Both are relative to the ROOT of what is being rendered, so
+ * `{target: "e7", depth: 1}` reads "e7 and its children" whatever e7's
+ * absolute depth in the document happens to be.
+ *
+ * Refs are minted fresh on every render, including a narrowed one: a ref is a
+ * handle into the snapshot that produced it and was never portable between
+ * two of them.
+ */
+function renderSnapshot(nodes, { title = "", url = "", rootNodeId = null, maxDepth = null } = {}) {
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+  const depths = snapshotDepths(nodes, byId);
+  const scoped = new Map();
+  const inScope = (node) => {
+    if (rootNodeId === null) return true;
+    const chain = [];
+    let walk = node;
+    while (walk && !scoped.has(walk.nodeId)) {
+      if (walk.nodeId === rootNodeId) break;
+      chain.push(walk);
+      walk = walk.parentId ? byId.get(walk.parentId) : undefined;
+    }
+    const answer = walk ? (walk.nodeId === rootNodeId ? true : scoped.get(walk.nodeId)) : false;
+    for (const link of chain) scoped.set(link.nodeId, answer);
+    return answer;
+  };
+  const rootDepth = rootNodeId === null ? 0 : depths.get(rootNodeId) ?? 0;
+  const lines = [`Page: ${title}`, `URL: ${url}`, ""];
+  const refs = new Map();
+  let nextRef = 1;
+  for (const node of nodes) {
+    if (node.ignored) continue;
+    if (!inScope(node)) continue;
+    const relative = (depths.get(node.nodeId) ?? 0) - rootDepth;
+    if (relative < 0) continue;
+    if (maxDepth !== null && relative > maxDepth) continue;
+    const role = axValue(node, "role");
+    const name = axValue(node, "name").replace(/\s+/g, " ").trim();
+    const value = axValue(node, "value").replace(/\s+/g, " ").trim();
+    const backendNodeId = Number(node.backendDOMNodeId || 0);
+    const canTarget = backendNodeId > 0 && (SNAPSHOT_TARGETABLE_ROLES.has(role) || role === "img");
+    if (!name && !value && !canTarget) continue;
+    let ref = "";
+    if (canTarget) {
+      ref = `e${nextRef++}`;
+      refs.set(ref, backendNodeId);
+    }
+    const label = [role || "node", name ? `"${name}"` : "", value ? `value="${value}"` : "", ref ? `[ref=${ref}]` : ""]
+      .filter(Boolean)
+      .join(" ");
+    lines.push(`${"  ".repeat(Math.min(SNAPSHOT_MAX_INDENT, relative))}- ${label}`);
+    if (lines.length >= SNAPSHOT_MAX_LINES) {
+      lines.push("- … snapshot truncated");
+      break;
+    }
+  }
+  return { text: lines.join("\n"), refs };
+}
+
+/**
+ * How loud a console entry is. `level` on `browser_console_messages` is a
+ * FLOOR — the schema has defaulted it to "info" since the tool shipped, and
+ * until now the host ignored it and answered with everything, debug lines
+ * included. Honouring it is what makes the engine's "narrow with `level`"
+ * marker true rather than an instruction that changes nothing.
+ *
+ * `all: true` is the way back to everything.
+ */
+const CONSOLE_LEVEL_RANK = { debug: 0, verbose: 0, trace: 0, log: 1, info: 1, warning: 2, warn: 2, error: 3 };
+const CONSOLE_DEFAULT_RANK = 1;
+
+function consoleRank(level) {
+  const rank = CONSOLE_LEVEL_RANK[String(level || "").toLowerCase()];
+  return rank === undefined ? CONSOLE_DEFAULT_RANK : rank;
+}
+
+/** Console entries as text, oldest first — the order they happened in. The
+ *  engine's bound keeps the TAIL, so the newest lines are the ones that get
+ *  the budget without anything here having to reorder them. */
+function renderConsole(entries, { level = "info", all = false } = {}) {
+  const floor = all ? Number.NEGATIVE_INFINITY : consoleRank(level);
+  const kept = entries.filter((entry) => consoleRank(entry.level) >= floor);
+  if (kept.length === 0) {
+    return entries.length === 0
+      ? "No console messages captured."
+      : `No console messages at ${level} or above (${entries.length} quieter ones captured — pass all: true for those).`;
+  }
+  return kept.map((entry) => `[${entry.level}] ${entry.text}`).join("\n");
+}
+
+/** Network rows as text, oldest first. `filter` is a plain substring over the
+ *  URL, which is what the tool has always documented. */
+function renderNetwork(entries, { filter = "" } = {}) {
+  const needle = String(filter || "");
+  const kept = entries.filter((entry) => !needle || entry.url.includes(needle));
+  if (kept.length === 0) {
+    return entries.length === 0
+      ? "No network requests captured."
+      : `No network requests matching "${needle}" (${entries.length} captured).`;
+  }
+  return kept.map((entry) => `${entry.method} ${entry.url}`).join("\n");
+}
+
 function navigationFlag(webContents, method) {
   const history = webContents.navigationHistory;
   return Boolean(history && typeof history[method] === "function" && history[method]());
 }
+
+/**
+ * ⌘1..⌘9 WHILE A PAGE HAS THE KEYS (#660).
+ *
+ * The literal chords, not command ids, for the same reason the palette's
+ * `QUICK_PICK_CHORDS` is a list of chords: this surface wants ⌘-and-a-digit and
+ * has no opinion about which command is sitting on that chord today. Move the
+ * rail's jumps to ⌥1..⌥9 in Settings and this claim suppresses nothing, while
+ * the tab keys go on working.
+ */
+const TAB_SELECT_CHORDS = Array.from({ length: 9 }, (_, index) => `CommandOrControl+${index + 1}`);
 
 class DesktopBrowserManager {
   constructor(window, dependencies = {}) {
@@ -483,6 +659,21 @@ class DesktopBrowserManager {
      * that reads this file. A test hands in its own; nothing else does.
      */
     this.electron = dependencies.electron || (() => require("electron"));
+    /**
+     * THE HALF OF #660 THE RENDERER CANNOT DO: told which chords this browser's
+     * pages have taken, so the shell can strip those accelerators.
+     *
+     * A claim from the cockpit renderer (`claimChords`) covers the panel's own
+     * chrome, because that has DOM focus and a keydown to answer with. It cannot
+     * cover a focused `WebContentsView`: the renderer gets no keydown at all
+     * there, and the native focus is in another process. So this manager — which
+     * is where that fact lives — publishes its own scope, and main UNIONS the
+     * two rather than letting either overwrite the other.
+     */
+    this.onChordScope = dependencies.onChordScope || (() => {});
+    /** The tab whose page currently holds the keys, or null. Id, not object, so
+     *  a closed tab cannot keep a claim alive by being referenced. */
+    this.keyFocusedTabId = null;
     this.tabs = [];
     /**
      * THE TAB THE HUMAN IS LOOKING AT. This drives visibility and the panel's
@@ -528,6 +719,16 @@ class DesktopBrowserManager {
      * wrote the global rect and re-placed the OTHER session's view with it.
      */
     this.boundsByScope = new Map();
+    /**
+     * AND SO IS THE CORNER RADIUS (#475). The page fills the panel edge to
+     * edge in fit mode, so the native view has to wear the panel's own
+     * rounded corner or it overhangs it — and the panel's radius is a CSS
+     * token the main process cannot read, so the renderer publishes it with
+     * the rect it belongs to. Per scope for the same reason bounds are: a
+     * late publish for a session the renderer has left must not round the
+     * view another session is showing.
+     */
+    this.radiusByScope = new Map();
     this.version = 0;
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
     this.rpcTimeoutMs = dependencies.rpcTimeoutMs || RPC_TIMEOUT_MS;
@@ -542,30 +743,24 @@ class DesktopBrowserManager {
     // The shell forwards these to the engine journal (browser.control.changed)
     // and the renderer hears them through the ordinary state push.
     this.onControlChanged = dependencies.onControlChanged || null;
-    /** `(scopeKey, url)` after a SUCCESSFUL top-level http(s) navigation,
-     *  outside a private interaction — what feeds the start page's recent
-     *  sites. Never an extension page, never a failed load, never a URL
-     *  seen while a person signs in. */
+    /** `(scopeKey, url)` after a SUCCESSFUL top-level http(s) navigation —
+     *  what feeds the start page's recent sites. Never an extension page,
+     *  never a failed load. */
     this.onVisited = dependencies.onVisited || null;
-    // Credential field events are protected independently of extension chrome.
-    this.privacy = dependencies.privacy || new PrivateInteraction({ now: this.now, onChange: (state) => this.onPrivacyChange(state) });
-    // Only actual credential entry starts the automatic protection lifecycle.
+    /** Extension surfaces that are open (popup, extension window), by id.
+     *  Tracked for the leak diagnostics only: an open popup pauses nothing. */
     this.uiHolds = new Map(); // id → reason (popup, extension window)
-    this.credentialHold = false;
     /**
      * THE LOGIN OFFER'S CAPTURE (AUTH-001, #195; login-offer.js). When a value
      * lands in a credential field, the page's ADDRESS, the tab's IDENTITY and
      * the moment are recorded here — metadata only, and IMMUTABLE: a redirect
      * after sign-in must not broaden what a later grant names, so nothing ever
-     * rewrites a held capture. Handed to `onCredentialEntryFinished` when the
-     * automatic release decides the entry is over; the offer flow re-checks it
-     * again at confirmation time.
+     * rewrites a held capture. Handed to `onLoginEntryFinished` when the tab
+     * that reported it navigates away; the offer flow re-checks it again at
+     * confirmation time.
      */
     this.heldLoginCapture = null;
-    this.onCredentialEntryFinished = dependencies.onCredentialEntryFinished || null;
-    this.holdRevision = 0;
-    this.privacyStuck = false;
-    this._autoReleaseRunning = false;
+    this.onLoginEntryFinished = dependencies.onLoginEntryFinished || null;
     this._disposed = false;
     /** One inventory walk per turn of the event loop — see `persist`. */
     this._persistScheduled = false;
@@ -868,6 +1063,48 @@ class DesktopBrowserManager {
     return this.extensionHosts.get(tab.partition) || null;
   }
 
+  /**
+   * THE ORIGINS WITH A PAGE ON SCREEN, PER PARTITION — what the runaway-worker
+   * watchdog asks so it can tell a service worker that is still serving
+   * somebody from one whose pages all closed half an hour ago (#487).
+   *
+   * A LIVE VIEW, NOT A REMEMBERED TAB. A hibernated tab is a URL and no
+   * renderer, and its origin's worker is exactly the kind that outlives its
+   * pages — counting it would make every runaway look busy. The address is
+   * read from the record rather than the WebContents when the view has not
+   * committed one yet, so a tab mid-navigation still answers for where it is
+   * going.
+   */
+  liveOriginsByPartition() {
+    const byPartition = new Map();
+    for (const tab of this.tabs) {
+      const wc = tab.view && !tab.view.webContents?.isDestroyed?.() ? tab.view.webContents : null;
+      if (!wc || !tab.partition) continue;
+      let origin = null;
+      try {
+        origin = new URL(wc.getURL?.() || tab.url || "about:blank").origin;
+      } catch {
+        origin = null;
+      }
+      // "null" is what a URL with no host answers (about:blank, data:). A page
+      // with no origin owns no service worker.
+      if (!origin || origin === "null") continue;
+      if (!byPartition.has(tab.partition)) byPartition.set(tab.partition, new Set());
+      byPartition.get(tab.partition).add(origin);
+    }
+    return byPartition;
+  }
+
+  /** Every partition this manager has put a view in, plus any that got an
+   *  extension host without one. What the watchdog walks to find workers. */
+  activePartitions() {
+    return new Set([
+      ...this.preparedPartitions,
+      ...this.extensionHosts.keys(),
+      ...this.tabs.map((tab) => tab.partition).filter(Boolean),
+    ]);
+  }
+
   /** The extension host for a scope's profile, created on demand. Null when
    *  the scope is not bound yet or extensions are off — the caller then shows
    *  "unavailable" rather than throwing. */
@@ -1006,21 +1243,6 @@ class DesktopBrowserManager {
     this.window.webContents.send("telar:browser:permission-denied", { origin: context.origin, kinds: context.kinds, reason: context.reason });
   }
 
-  /** Privacy began or ended. On BEGIN every tab's captured console and
-   *  network log is dropped: a line captured a moment before the popup
-   *  opened may already be part of the sign-in (a redirect URL with a
-   *  token, a form's own logging), and nothing captured before is worth
-   *  more than what it could leak. */
-  onPrivacyChange(state) {
-    if (state.private) {
-      for (const tab of this.tabs) {
-        tab.console = [];
-        tab.network = [];
-      }
-    }
-    this.emitPrivacy();
-  }
-
   /** Push fresh state to every scope with tabs — what a change to the profile
    *  REGISTRY (a rename, a new default) needs, since it is not scoped to one
    *  session but every panel shows it. */
@@ -1028,181 +1250,16 @@ class DesktopBrowserManager {
     for (const scope of new Set([...this.tabs.map((tab) => tab.scopeKey), ...this.scopeProfiles.keys()])) this.emitState(scope);
   }
 
-  emitPrivacy() {
-    const scopes = new Set(this.tabs.map((tab) => tab.scopeKey));
-    for (const scope of scopes) this.emitState(scope);
-    if (!scopes.size && !this.window.isDestroyed()) this.window.webContents.send("telar:browser:privacy", this.privacyState());
-  }
-
-  /** The privacy state the renderer reads: the epoch boundary PLUS whether the
-   *  automatic release is stuck (a probe would not answer) so the UI can show
-   *  a specific recovery instead of a bare spinner. */
-  privacyState() {
-    return { ...this.privacy.state(), stuck: this.privacyStuck };
-  }
-
-  // ── automatic credential lifecycle ──────────────────────────────────────
-
-  /** Track extension windows without pausing the browser. */
+  /** An extension surface opened (popup, extension window). Tracked by id so
+   *  the leak diagnostics can count them; nothing about the browser pauses. */
   addUiHold(id, reason) {
     const key = String(id);
-    if (!this.uiHolds.has(key)) {
-      this.uiHolds.set(key, reason || "1Password");
-      this.holdRevision += 1;
-      // Extension chrome is not a page tool target. Opening it does not
-      // pause unrelated tabs or require a manual handoff.
-    }
+    if (!this.uiHolds.has(key)) this.uiHolds.set(key, reason || "1Password");
   }
 
-  /** Closing extension chrome does not require page probes or Resume. */
+  /** That surface closed. */
   removeUiHold(id) {
-    const key = String(id);
-    if (this.uiHolds.delete(key)) {
-      this.holdRevision += 1;
-      if (!this.uiHolds.size) this.blurEmptyCredentialFocus().catch(() => {});
-    }
-  }
-
-  async blurEmptyCredentialFocus() {
-    const live = this.tabs.filter((tab) => tab.view && !tab.view.webContents.isDestroyed());
-    await Promise.all(live.map(async (tab) => {
-      const wc = tab.view.webContents;
-      const frames = wc.mainFrame ? wc.mainFrame.framesInSubtree : [];
-      await Promise.all(frames.map((frame) => frame.executeJavaScript(
-        `(() => {
-          const active = document.activeElement;
-          if (!(active instanceof HTMLInputElement)) return false;
-          if (!active.matches(${JSON.stringify(BLOCKING_CREDENTIAL_SELECTOR)})) return false;
-          if (active.value.length > 0) return false;
-          active.blur();
-          return true;
-        })()`,
-        true,
-      ).catch(() => false)));
-    }));
-  }
-
-  /** A credential field was focused, typed, or filled: hold privacy until a
-   *  clean, focus-aware probe says the entry is over. */
-  noteCredentialHold(reason) {
-    this.credentialHold = true;
-    this.holdRevision += 1;
-    this.privacy.begin(reason || "credentials", null);
-    this.ensureAutoRelease();
-    this.emitPrivacy();
-  }
-
-  /** Start the release loop if it is not already running. Catches its own
-   *  failures, and — the race guard — if privacy is still active when the loop
-   *  exits (a hold/credential event landed as it was finishing), restarts it,
-   *  so an active window can never be left with no loop watching it. */
-  ensureAutoRelease() {
-    if (this._autoReleaseRunning || this._disposed) return;
-    this._autoReleaseRunning = true;
-    void this.autoReleaseLoop()
-      .catch(() => {})
-      .finally(() => {
-        this._autoReleaseRunning = false;
-        if (!this._disposed && this.privacy.isActive()) this.ensureAutoRelease();
-      });
-  }
-
-  /**
-   * Poll until it is SAFE to end privacy. Safe = the
-   * cross-tab probe says no blocking field is filled or focused, with the
-   * `holdRevision` unchanged across the probe (so a fill or a popup that
-   * arrived mid-probe re-arms the wait). A probe that cannot answer marks the
-   * interaction stuck and keeps it private — it never releases on a timeout.
-   */
-  async autoReleaseLoop() {
-    while (!this._disposed && this.privacy.isActive()) {
-      await this.wait(AUTO_RELEASE_POLL_MS);
-      if (this._disposed || !this.privacy.isActive()) break;
-      const rev = this.holdRevision;
-      const status = await this.credentialStatus();
-      // Something changed during the probe (a fill, a new popup): re-check.
-      if (this.holdRevision !== rev) continue;
-      if (status === "clear") { this.autoRelease(); break; }
-      // "active" (typing/filled) or "unresponsive" (probe stuck): stay private.
-      this.setPrivacyStuck(status === "unresponsive");
-    }
-  }
-
-  /** End the private window: clear the credential hold, bump every tab's
-   *  generation (so in-flight agent reads are stale), and bump the epoch (so
-   *  results decided under privacy are discarded on return). */
-  autoRelease() {
-    this.credentialHold = false;
-    this.privacyStuck = false;
-    for (const tab of this.tabs) {
-      tab.generation += 1;
-      tab.staleReason = "a private interaction ended";
-      tab.credentialFieldsAt = undefined;
-    }
-    this.privacy.end();
-    // THE ENTRY IS OVER (which is NOT proof the sign-in succeeded — the offer
-    // is phrased as a permission question, login-offer.js). Hand the captured
-    // metadata to the offer flow, once: the held capture is consumed here so
-    // the next entry starts clean.
-    const capture = this.heldLoginCapture;
-    this.heldLoginCapture = null;
-    if (capture && this.onCredentialEntryFinished) {
-      try {
-        this.onCredentialEntryFinished(capture);
-      } catch {
-        // The offer must never break the release path under it.
-      }
-    }
-  }
-
-  setPrivacyStuck(value) {
-    if (this.privacyStuck === value) return;
-    this.privacyStuck = value;
-    this.emitPrivacy();
-  }
-
-  /**
-   * The credential state across the tabs that could hold one — those that
-   * reported a field, plus the active tab of each scope — probed IN PARALLEL
-   * under one overall budget so the check does not grow with tab count.
-   * Returns "clear" | "active" | "unresponsive".
-   */
-  async credentialStatus() {
-    // EVERY live tab, in parallel: a background tab a reporter missed can still
-    // hold a filled field, so narrowing to reported/active tabs would let one
-    // slip through. Parallel + a shared deadline keeps this bounded regardless
-    // of tab count.
-    const live = this.tabs.filter((tab) => tab.view && !tab.view.webContents.isDestroyed());
-    if (live.length === 0) return "clear";
-    const deadline = this.now() + CREDENTIAL_STATUS_BUDGET_MS;
-    const results = await Promise.all(live.map((tab) => this.tabHoldsCredentials(tab, deadline)));
-    if (results.includes("active")) return "active";
-    if (results.includes("unresponsive")) return "unresponsive";
-    return "clear";
-  }
-
-  /**
-   * The human's EXPLICIT recovery, kept for the stuck case (the automatic
-   * lifecycle handles the normal flow). Ends privacy only if the page is
-   * clean now; otherwise returns an actionable refusal. Never releases while
-   * a blocking field is filled/focused or a probe will not answer.
-   */
-  async resumeFromPrivate() {
-    const rev = this.holdRevision;
-    const status = await this.credentialStatus();
-    // Same guard as the auto loop: a popup or a fill that arrived DURING the
-    // probe must not be bypassed by a result decided before it.
-    if (this.holdRevision !== rev) {
-      return { ...this.privacyState(), refused: "A credential interaction is still in progress. Try again in a moment." };
-    }
-    if (status !== "clear") {
-      const message = status === "unresponsive"
-        ? "A sign-in page is not responding to the safety check. Reload or close it, then try again."
-        : "A credential field is still in use. Submit or clear it, or leave the page, then try again.";
-      return { ...this.privacyState(), refused: message };
-    }
-    this.autoRelease();
-    return this.privacyState();
+    this.uiHolds.delete(String(id));
   }
 
   /** Whether a human has touched this tab within HUMAN_ACTIVE_MS. */
@@ -1289,21 +1346,18 @@ class DesktopBrowserManager {
   }
 
   /**
-   * THE PAGE REPORTED A CREDENTIAL FIELD IN USE — focus on, or a value
-   * landing in, a password/OTP/username field (browser-tab-preload.js).
-   * That is a private interaction whether it came from the toolbar, an
-   * inline suggestion, or the human's own typing: begin privacy here, and
-   * remember which tab, so Resume can check it is safe.
+   * A VALUE LANDED IN A LOGIN FIELD — typed, pasted, or filled by the password
+   * manager (browser-tab-preload.js). The ONLY thing this drives is the login
+   * offer: nothing is paused, nothing is refused, and no agent tool notices.
+   *
+   * The origin is the TAB's top-level address at this moment — the same address
+   * a fill's grant matching reads (secret-fill.ts uses originOf(tab.url)) —
+   * captured now so a redirect cannot move it. `captureEntry` refuses non-web
+   * schemes and missing identity.
    */
-  noteCredentialFieldFromWebContents(webContents, detail = {}) {
+  noteLoginEntryFromWebContents(webContents, detail = {}) {
     const tab = this.tabs.find((candidate) => candidate.view && candidate.view.webContents === webContents);
     if (!tab) return;
-    tab.credentialFieldsAt = this.now();
-    // AN ENTRY (typed or filled — never mere focus) is what the login offer
-    // may later ask about. The origin is the TAB's top-level address at this
-    // moment — the same address a fill's grant matching reads (secret-fill.ts
-    // uses originOf(tab.url)) — captured now so a redirect cannot move it.
-    // `captureEntry` refuses focus, non-web schemes and missing identity.
     const capture = captureEntry({
       kind: detail.kind,
       origin: tab.url,
@@ -1312,10 +1366,30 @@ class DesktopBrowserManager {
       tabUid: tab.id,
       at: this.now(),
     });
-    if (capture) this.heldLoginCapture = capture;
-    // A credential HOLD, cleared only by a clean focus-aware probe — not by
-    // any close event. The automatic loop ends privacy when the entry is over.
-    this.noteCredentialHold(detail.kind === "fill" ? "credentials filled" : "credential entry");
+    if (!capture) return;
+    this.heldLoginCapture = capture;
+    // Which tab is mid-entry, so the navigation off it can close the entry.
+    tab.loginEntryAt = this.now();
+  }
+
+  /**
+   * THE ENTRY IS OVER (which is NOT proof the sign-in succeeded — the offer is
+   * phrased as a permission question, login-offer.js). Leaving the page a
+   * credential was typed into is what ends it: a form submit navigates, and a
+   * page the person walked away from is not one to ask about any more.
+   *
+   * Consumed ONCE — the held capture is cleared here so the next entry starts
+   * clean and one sign-in raises one question.
+   */
+  finishLoginEntry() {
+    const capture = this.heldLoginCapture;
+    this.heldLoginCapture = null;
+    if (!capture || !this.onLoginEntryFinished) return;
+    try {
+      this.onLoginEntryFinished(capture);
+    } catch {
+      // The offer must never break the navigation path under it.
+    }
   }
 
   /**
@@ -1340,57 +1414,24 @@ class DesktopBrowserManager {
     });
   }
 
-  /**
-   * Whether a tab still has an ACTIVE credential interaction — a blocking
-   * field (password/current-password/new-password/one-time-code) that is
-   * filled OR focused-while-empty (the human is about to type). Asked through
-   * the preload's own probe; values are never read.
-   *
-   * Returns "clear" | "active" | "unresponsive". EVERY FRAME is asked, IN
-   * PARALLEL, and the result FAILS CLOSED: a frame with no probe, a frame that
-   * throws, or a background frame whose `executeJavaScript` never settles all
-   * count as NOT clear. Per-frame probes are bounded and the whole tab is
-   * bounded by `deadline`, so the check never hangs — a timeout is
-   * "unresponsive" (privacy stays on), never a bypass.
-   */
-  async tabHoldsCredentials(tab, deadline = this.now() + CREDENTIAL_STATUS_BUDGET_MS) {
-    // No document, no fields: a hibernated tab holds nothing.
-    if (!tab.view || tab.view.webContents.isDestroyed()) return "clear";
-    const wc = tab.view.webContents;
-    const frames = wc.mainFrame ? wc.mainFrame.framesInSubtree : [];
-    if (!frames.length) return "unresponsive";
-    const answers = await Promise.all(frames.map((frame) => this.probeFrame(frame, deadline).catch(() => PROBE_TIMEOUT)));
-    if (answers.includes(PROBE_TIMEOUT)) return "unresponsive";
-    if (answers.includes(null)) return "unresponsive"; // a frame with no probe can't vouch
-    if (answers.some((answer) => answer === true)) return "active";
-    return "clear";
-  }
-
-  /** Ask one frame's entry-active probe, bounded by both the per-frame timeout
-   *  and the overall `deadline`. Resolves to a boolean, null (no probe), or the
-   *  PROBE_TIMEOUT sentinel. */
-  probeFrame(frame, deadline = this.now() + CREDENTIAL_PROBE_TIMEOUT_MS) {
-    const probe = frame.executeJavaScript(
-      "typeof globalThis.__telarCredentialEntryActive === 'function' ? globalThis.__telarCredentialEntryActive() : null",
-      true,
-    );
-    const budget = Math.max(0, Math.min(CREDENTIAL_PROBE_TIMEOUT_MS, deadline - this.now()));
-    let timer;
-    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(PROBE_TIMEOUT), budget); });
-    return Promise.race([probe, timeout]).finally(() => clearTimeout(timer));
-  }
-
-  /** A navigation committed: the page the agent observed is gone. */
+  /** A navigation committed: the page the agent observed is gone. If a login
+   *  value had landed in that page, leaving it is what ends the entry — the
+   *  offer is asked here, once. The next document speaks for itself (an OTP
+   *  step, a second factor) and raises its own entry if it has one. */
   noteNavigation(tab) {
     tab.generation += 1;
     tab.staleReason = "the page navigated";
+    if (tab.loginEntryAt !== undefined) {
+      tab.loginEntryAt = undefined;
+      this.finishLoginEntry();
+    }
   }
 
   /** A committed top-level navigation → `onVisited`, if it is one worth
    *  remembering: http(s), not an error page (status < 400; Electron reports
-   *  0 for a non-HTTP/failed commit), and not during a private interaction. */
+   *  0 for a non-HTTP/failed commit). */
   noteVisited(tab, url, httpResponseCode) {
-    if (!this.onVisited || this.privacy.isActive()) return;
+    if (!this.onVisited) return;
     if (typeof httpResponseCode === "number" && (httpResponseCode === 0 || httpResponseCode >= 400)) return;
     let parsed;
     try { parsed = new URL(String(url || "")); } catch { return; }
@@ -1428,9 +1469,6 @@ class DesktopBrowserManager {
   checkpoint(action) {
     const { tab } = action;
     const index = () => Math.max(0, this.scopeTabs(tab.scopeKey).indexOf(tab));
-    // The credential boundary, between steps: a fill or a slow type must
-    // not continue into a private interaction that began under it.
-    if (this.privacy.isActive() || this.privacy.epoch !== action.privacyEpoch) throw new Error(`Stopped: ${this.privacy.refusal()}`);
     if (action.cancelled) throw new Error("Stopped: this action timed out.");
     if (!this.tabs.includes(tab)) throw new Error("The tab was closed.");
     if (action.ticket !== tab.ticket) throw new Error("Stopped: a later action on this tab has started.");
@@ -1564,6 +1602,13 @@ class DesktopBrowserManager {
          *  still being reported as open. */
         devtools: this.devToolsOpen(tab),
         viewport: this.viewportInfo(tab),
+        /** The page zoom the options menu reads back (#473). */
+        zoom: tab.zoom || 1,
+        /** What this tab emulates for `prefers-color-scheme`. */
+        colorScheme: tab.colorScheme || "system",
+        /** This tab is in a window of its own right now, so the panel draws
+         *  no page for it — see `openPreview`. */
+        preview: this.previewing(tab),
         canGoBack: tab.view ? navigationFlag(tab.view.webContents, "canGoBack") : false,
         canGoForward: tab.view ? navigationFlag(tab.view.webContents, "canGoForward") : false,
       })),
@@ -1579,7 +1624,6 @@ class DesktopBrowserManager {
       })(),
       screenshot: null,
       error: null,
-      privacy: this.privacyState(),
       version: this.version,
     };
   }
@@ -1737,6 +1781,14 @@ class DesktopBrowserManager {
     if (!view || view.webContents.isDestroyed?.()) return;
     const place = () => {
       if (tab.view !== view || view.webContents.isDestroyed?.()) return;
+      this.applyBorderRadius(tab, view);
+      // PREVIEWED: the view fills its own window and the panel's visibility
+      // rules do not apply to it (#473).
+      if (this.previewing(tab)) {
+        view.setVisible(true);
+        view.setBounds(this.previewRect(tab));
+        return;
+      }
       // Shown = the visible scope's active tab, bounds or not (a panel that
       // has not published bounds yet still owns the view); the fit SCALE is
       // what waits for real bounds (isTabVisible, in viewportTarget).
@@ -1760,6 +1812,10 @@ class DesktopBrowserManager {
     const debug = await this.ensureDebuggerOnly(tab);
     if (tab.view !== view) return;
     await this.syncViewport(tab, debug);
+    // Zoom and appearance ride the same pipeline (#473): both are page-level
+    // facts a new document forgets, and dom-ready runs this.
+    this.applyZoom(tab);
+    if (this.needsColorScheme(tab)) await this.applyColorScheme(tab, debug);
     // The state may have moved while the emulation was in flight; the
     // coalesced follow-up run handles that. This re-assert covers the case
     // where nothing else changed but the view's bounds were written before
@@ -1767,9 +1823,41 @@ class DesktopBrowserManager {
     place();
   }
 
+  /**
+   * THE PANEL'S CORNER, ON THE NATIVE VIEW (#475).
+   *
+   * A `WebContentsView` ignores the CSS radius of the element it is glued to —
+   * it is composited above this renderer's DOM, not clipped by it — which is
+   * why the host used to sit 8px inside the panel card to clear its corner.
+   * Now the page fills the panel instead, and `setBorderRadius` is what keeps
+   * it from overhanging the panel's own rounded rectangle. Electron rounds all
+   * four corners with one number; the two that meet the address row above read
+   * as the page tucking under the toolbar.
+   *
+   * WRITTEN ONLY ON A CHANGE. It is called from `place()`, which runs on every
+   * bounds publish (the renderer's self-heal resends the same rect), and a
+   * re-round per frame is a compositor change per frame for nothing.
+   * OPTIONAL CALL: the API landed in Electron 36, and a square view is the
+   * honest fallback below that rather than a crash on a panel bounds sync.
+   */
+  applyBorderRadius(tab, view) {
+    // A previewed tab fills a window of its own, whose corners are the OS's
+    // to round — the panel's radius is not its (#473).
+    const radius = this.previewing(tab) ? 0 : this.radiusByScope.get(tab.scopeKey) || 0;
+    if (tab.borderRadius === radius) return;
+    tab.borderRadius = radius;
+    view.setBorderRadius?.(radius);
+  }
+
   applyVisibility() {
     for (const tab of this.tabs) {
       if (!tab.view) continue;
+      // A previewed tab is its own window's; the pipeline still re-places it
+      // there, but nothing here may hide it (#473).
+      if (this.previewing(tab)) {
+        this.applyGeometry(tab).catch(() => {});
+        continue;
+      }
       const active = tab.scopeKey === this.visibleScopeKey && tab.id === this.activeTabIds.get(tab.scopeKey);
       // Hide immediately (a switched-away tab must not linger a frame);
       // the shown one is placed by the pipeline with its emulation.
@@ -1787,6 +1875,10 @@ class DesktopBrowserManager {
     };
     const scope = this.requireScope(scopeKey);
     this.boundsByScope.set(scope, next);
+    // The panel's own corner, in device-independent pixels, rides the rect it
+    // applies to (#475). Absent — an older renderer, or a fixed viewport whose
+    // stage sits inside a padded host — means a square view, as before.
+    this.radiusByScope.set(scope, Math.max(0, Math.round(Number(input?.radius) || 0)));
     // ANOTHER SCOPE'S RECT NEVER MOVES THE VISIBLE VIEW: remembered for when
     // that scope is shown, applied to nothing now.
     if (this.visibleScopeKey && this.visibleScopeKey !== scope) return;
@@ -1826,6 +1918,56 @@ class DesktopBrowserManager {
     await this.applyVisibilityAsync(scope);
   }
 
+  /**
+   * HIDE THE VIEW BEHIND A MENU WITHOUT THE PAGE BLINKING OUT (#475).
+   *
+   * Every menu in the right panel takes the native view down while it is open
+   * — it has to, because Electron composites the view ABOVE this renderer's
+   * DOM and a portal menu under it is the same as no menu at all
+   * (`lib/native-view-overlay.ts`). What the person sees is the page vanish
+   * and come back on every ⋯.
+   *
+   * There is no way to draw DOM over a `WebContentsView`, so the honest trick
+   * is a FROZEN FRAME: the last pixels of the page, handed to the renderer to
+   * paint into the host at the view's own rect, so the panel still looks like
+   * the page is there while the menu is open. Nothing about it is live — it is
+   * a picture, and it goes the moment the real view is back.
+   *
+   * ONE CALL, BECAUSE THE ORDER IS THE WHOLE POINT. Capture, THEN hide. A
+   * renderer that hid first and captured after would be asking a view with no
+   * compositor frame for one — the blink this exists to remove, with a stall
+   * on top. A capture that fails or outruns FREEZE_TIMEOUT_MS answers null and
+   * the view is hidden plainly, exactly as it was before this existed.
+   */
+  async freezeView(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    const frame = await this.captureFrozenFrame(scope);
+    await this.setVisible(scopeKey, false);
+    return frame;
+  }
+
+  /** The visible page's own pixels and the rect they occupy, or null when
+   *  there is nothing to freeze (no tab, a blank one, a tab in a window of
+   *  its own, a capture that failed or ran past its budget). */
+  async captureFrozenFrame(scope) {
+    if (this.visibleScopeKey !== scope) return null;
+    const tab = this.scopeTabs(scope).length ? this.activeTab(scope) : null;
+    if (!tab?.view || tab.view.webContents.isDestroyed?.()) return null;
+    // The same three cases that make the view invisible in `place()`: there
+    // are no pixels behind a start page, a previewed tab or a 1×1 panel.
+    if (!this.isTabVisible(tab) || this.isBlank(tab) || this.previewing(tab)) return null;
+    const rect = this.nativeRect(tab);
+    try {
+      const image = await withTimeout(tab.view.webContents.capturePage(), FREEZE_TIMEOUT_MS, FREEZE_TIMEOUT_MESSAGE);
+      if (!image || image.isEmpty()) return null;
+      return { data: image.toPNG().toString("base64"), mimeType: "image/png", rect };
+    } catch {
+      // A page with no frame to give is not an error anyone can act on: the
+      // menu still has to open, and the view still has to go down for it.
+      return null;
+    }
+  }
+
   /** applyVisibility, awaiting the scope's active tab's own placement. */
   async applyVisibilityAsync(scope) {
     this.applyVisibility();
@@ -1855,28 +1997,58 @@ class DesktopBrowserManager {
     this.emitState(scope);
   }
 
+  /** What a tab of this partition renders under. A POPUP never gets these —
+   *  Chromium fixes an opened window's preferences from its opener's and hands
+   *  the WebContents over already built (see `adoptPopupTab`) — so this is for
+   *  the two paths that do make their own: an ordinary tab, and the popup
+   *  fallback for an Electron that gave us no guest to adopt. */
+  tabWebPreferences(tab) {
+    return {
+      partition: tab.partition,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // Runs the (sandboxed, isolated) preload in SUBFRAMES too, so a login
+      // form inside an iframe reports its entry. Despite the name this
+      // enables no Node in any frame: sandbox stays on.
+      nodeIntegrationInSubFrames: true,
+      // The human-input reporter (see browser-tab-preload.js) — how a click
+      // in the page becomes a control-model takeover in the main process.
+      preload: require("node:path").join(__dirname, "browser-tab-preload.js"),
+      // Chromium's built-in PDF viewer is a "plugin"; without this a PDF
+      // navigation downloads instead of rendering. Enables nothing else.
+      plugins: true,
+    };
+  }
+
   createViewForTab(tab) {
     // BEFORE THE VIEW, NOT AFTER: a page may ask for the camera on its first
     // frame, and a session with no handler denies without asking (#422).
     this.preparePartition(tab.partition);
-    const view = this.createView({
-      webPreferences: {
-        partition: tab.partition,
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        // Runs the (sandboxed, isolated) preload in SUBFRAMES too, so a
-        // credential field inside an iframe is reported and probed. Despite
-        // the name this enables no Node in any frame: sandbox stays on.
-        nodeIntegrationInSubFrames: true,
-        // The human-input reporter (see browser-tab-preload.js) — how a click
-        // in the page becomes a control-model takeover in the main process.
-        preload: require("node:path").join(__dirname, "browser-tab-preload.js"),
-        // Chromium's built-in PDF viewer is a "plugin"; without this a PDF
-        // navigation downloads instead of rendering. Enables nothing else.
-        plugins: true,
-      },
-    });
+    return this.attachView(tab, this.createView({ webPreferences: this.tabWebPreferences(tab) }));
+  }
+
+  /**
+   * A POPUP'S VIEW: the WebContents already exists and is ADOPTED rather than
+   * replaced. `new WebContentsView({ webContents })` is the Electron API for
+   * exactly that, and it is what keeps `window.opener` alive — see
+   * `decidePopup` for why a second WebContents is not an option here.
+   *
+   * `guest` absent is the belt-and-braces path for an Electron that called
+   * `createWindow` without handing one over: a view of our own, on the
+   * OPENER'S partition, which loses the opener edge but never the identity.
+   */
+  adoptViewForTab(tab, guest) {
+    this.preparePartition(tab.partition);
+    const view = guest
+      ? this.createView({ webContents: guest })
+      : this.createView({ webPreferences: this.tabWebPreferences(tab) });
+    return this.attachView(tab, view);
+  }
+
+  /** Everything a fresh view needs once it exists, whoever made the
+   *  WebContents inside it. */
+  attachView(tab, view) {
     // Let the themed renderer host show through while a page is navigating.
     // An opaque white native underlay otherwise appears as a strip whenever
     // its bounds update a frame ahead of the surrounding right-panel layout.
@@ -1892,6 +2064,9 @@ class DesktopBrowserManager {
     tab.debuggerListenersBound = false;
     // A new WebContents has no emulation: forget what the old one was told.
     tab.viewportOverride = undefined;
+    tab.colorSchemeApplied = undefined;
+    // A new view is square, whatever the old one had been rounded to (#475).
+    tab.borderRadius = undefined;
     this.bindTab(tab);
     // THE INTRINSIC VIEWPORT APPLIES TO EVERY VIEW, NOT ONLY AGENT-INSPECTED
     // ONES. The emulation rides the debugger, and the debugger used to attach
@@ -2067,7 +2242,17 @@ class DesktopBrowserManager {
 
   hibernateTab(tab) {
     if (!tab.view) return;
+    // THE ONE TEARDOWN PATH, so it is where a key claim is given back (#660).
+    // Closing the tab, evicting it, and the window quitting all arrive here, and
+    // a destroyed web contents emits no `blur` — without this the shell would
+    // keep the rail's ⌘1..⌘9 stripped with no way back but a restart. A no-op
+    // for a tab that was not holding the keys.
+    this.noteTabKeyFocus(tab, false);
     this.cancelDeferredHibernate(tab);
+    // A PREVIEW WINDOW IS THE TAB'S TOO, and this is the one teardown path —
+    // so a window showing a page that is about to stop existing is closed
+    // here, and its view handed back before anything detaches it (#473).
+    this.endPreview(tab);
     // DEVTOOLS ARE THE TAB'S AND GO WITH IT. This is the ONE teardown path —
     // closing a tab, hibernating it, the live-view budget evicting it, the
     // window quitting all arrive here — so a detached DevTools window cannot
@@ -2232,15 +2417,150 @@ class DesktopBrowserManager {
     return task;
   }
 
+  /**
+   * THE POPUP TABS EXIST — not that their pages have loaded. Since #615 the
+   * first navigation is CHROMIUM'S (it owns the guest and starts it the moment
+   * the handler answers), not a `loadTab` this manager awaits, so a caller that
+   * needs the popup's URL has to wait for the URL. Waiting here instead would
+   * hang on the blank popup an OAuth client opens before it has somewhere to
+   * send it — `window.open("")` then `popup.location = …` is the common shape.
+   */
   async settlePopupTabs() {
     await Promise.allSettled([...this.pendingPopupTabs]);
   }
 
-  async openPopupTab(opener, rawUrl) {
-    if (!this.tabs.includes(opener)) return null;
-    const url = normalizePopupUrl(rawUrl);
-    if (!url) return null;
-    return this.createTab(opener.scopeKey, url, this.popupOpener(opener));
+  /**
+   * CHROMIUM'S OWN POPUP, ADOPTED — the whole of #615.
+   *
+   * This used to answer `window.open` with `{ action: "deny" }` and then open
+   * the same URL again as an ordinary tab. The page loaded, so it looked
+   * right; but a tab Telar opened has no opener relationship with the page
+   * that asked for it, and every popup sign-in on the web hands its result
+   * back through exactly that relationship:
+   *
+   *   - `window.opener.postMessage(result, origin)` — `opener` was null, so
+   *     the call threw and the flow died in silence (signing into Cloudflare
+   *     with Google: the leftover tab just sat on the callback URL);
+   *   - `window.close()` — Chromium will not let script close a tab script did
+   *     not open, so the popup never went away;
+   *   - the opener polling `popup.closed` — `window.open()` had returned null.
+   *
+   * So the popup has to be CHROMIUM'S, not ours. `createWindow` is the seam
+   * (Electron 30+): Chromium has already built the guest WebContents — with
+   * the opener edge, the opener's session and the opener's webPreferences on
+   * it — and offers it instead of constructing a BrowserWindow. Adopting that
+   * into a `WebContentsView` lands it in the panel as an ordinary Telar tab
+   * with the relationship intact. Proven against real Electron in
+   * browser-popup.electron-test.js, which asserts the postMessage arrives and
+   * that `window.close()` closes the tab — not what this function returns.
+   *
+   * `disposition` IS DELIBERATELY NOT READ, having looked. Routing only
+   * `disposition: "new-window"` here and leaving `foreground-tab` on the old
+   * deny path is the obvious-looking split and it is the wrong one: the opener
+   * rules are Chromium's own, and a `target="_blank"` anchor and an explicit
+   * `noopener` both arrive here with the opener edge ALREADY severed upstream
+   * (measured: both report `foreground-tab`). Filtering on disposition could
+   * only re-break the flows this fixes. `features`, `referrer` and `postBody`
+   * are Chromium's to apply for the same reason — the guest already carries
+   * them, which is the point of not building a second WebContents.
+   */
+  decidePopup(opener, details) {
+    // THE SCHEME FENCE IS HERE, BEFORE THE ALLOW: adoption must not become a
+    // way around `normalizePopupUrl`. A refusal opens nothing and says
+    // nothing, exactly as it did.
+    if (!normalizePopupUrl(details?.url)) return { action: "deny" };
+    if (!this.tabs.includes(opener)) return { action: "deny" };
+    if (this.scopeTabs(opener.scopeKey).length >= MAX_TABS_PER_SCOPE) return { action: "deny" };
+    // WHOSE GESTURE THIS IS, decided NOW — at the `window.open` itself, which
+    // is the moment the question is about. `createWindow` runs later and the
+    // grace window in `popupOpener` would have moved by then.
+    const openedBy = this.popupOpener(opener);
+    return {
+      action: "allow",
+      /**
+       * A POPUP OUTLIVES ITS OPENER, the way it does in every browser — and
+       * here it must, for a reason of our own: `hibernateTab` closes an
+       * opener's WebContents when the live-view budget evicts it, and with
+       * Electron's default (`false`) that would take a half-finished sign-in
+       * down because some tab nobody was looking at got swapped out.
+       */
+      outlivesOpener: true,
+      createWindow: (options) => this.adoptPopupTab(opener, options, openedBy),
+    };
+  }
+
+  /**
+   * SYNCHRONOUS BY CONTRACT. Chromium is holding the guest open waiting for
+   * the WebContents this returns, so the tab record, the view and the adoption
+   * all happen here; the slow tail (the extension host, the view budget) goes
+   * to `finishPopupTab` and is tracked, which is what `settlePopupTabs` — and
+   * so every test that awaits a popup — is still waiting on.
+   */
+  adoptPopupTab(opener, options, openedBy) {
+    const guest = options?.webContents || null;
+    /**
+     * THE POPUP STAYS ON THE OPENER'S IDENTITY. Chromium gives a guest its
+     * opener's session, so this holds; it is checked rather than assumed
+     * because the failure it guards — an OAuth cookie written into a profile
+     * the person never signed in under — is a worse bug than the one being
+     * fixed here, and a silent one. A guest that is somehow elsewhere is
+     * refused: handed back so Electron's own bookkeeping completes, then
+     * closed, and no tab is ever filed for it.
+     */
+    const expected = this.sessionFor(opener.partition);
+    if (guest && expected && guest.session && guest.session !== expected) {
+      queueMicrotask(() => { try { guest.close(); } catch { /* already gone */ } });
+      return guest;
+    }
+    const scope = opener.scopeKey;
+    // THE OPENER'S PROFILE, NOT THE SCOPE'S CURRENT ONE. A tab's identity is
+    // fixed at creation (`createTab`), so a session that switched profiles
+    // since the opener was opened must not re-file its popup elsewhere.
+    const tab = this.newTabRecord(scope, { partition: opener.partition, id: opener.profileId }, openedBy);
+    const wasEmpty = this.scopeTabs(scope).length === 0;
+    this.tabs.push(tab);
+    // The same rule `createTab` applies: an agent's new tab does not take the
+    // screen, and the human's view follows only their own gesture.
+    if (openedBy === "human" || wasEmpty) this.activeTabIds.set(scope, tab.id);
+    if (openedBy === "agent") {
+      this.agentTabIds.set(scope, tab.id);
+      this.agentTabClosed.delete(scope);
+    }
+    const view = this.adoptViewForTab(tab, guest);
+    // Nobody has observed this page yet — the first mutation on it needs a
+    // look first, the same as any tab a person opened.
+    if (openedBy === "human") tab.lastHumanInputAt = this.now();
+    this.journalControl(tab, openedBy === "human" ? "human" : "agent");
+    this.applyVisibility();
+    this.emitState(scope);
+    this.trackPopupTab(this.finishPopupTab(tab, view));
+    return view.webContents;
+  }
+
+  /**
+   * A POPUP CANNOT WAIT FOR THE EXTENSION HOST the way `createTab` does:
+   * Chromium is already navigating it, and there is no before-the-first-
+   * navigation to wait in. Registering is all that is left — and in practice
+   * the host is warm, because the opener's own tab readied it.
+   */
+  async finishPopupTab(tab, view) {
+    const scope = tab.scopeKey;
+    const humanTabBefore = this.activeTabIds.get(scope);
+    await this.readyHostForTab(tab, view);
+    // AND THE EXTENSION HOST DOES NOT MOVE THE HUMAN'S VIEW EITHER — the
+    // second door `createTab` guards, on the same library call.
+    if (
+      tab.openedBy === "agent" &&
+      humanTabBefore !== undefined &&
+      this.activeTabIds.get(scope) !== humanTabBefore &&
+      this.tabs.some((candidate) => candidate.id === humanTabBefore)
+    ) {
+      this.activeTabIds.set(scope, humanTabBefore);
+    }
+    this.enforceLiveViewBudget(tab);
+    this.applyVisibility();
+    this.emitState(scope);
+    return tab;
   }
 
   /** A tab record with no WebContents — what createTab and the inventory
@@ -2259,6 +2579,20 @@ class DesktopBrowserManager {
        *  browser, and keeps the last seen size while hidden) or "fixed" (an
        *  explicit preset / custom size / drag — opt-in). */
       viewportMode: "fit",
+      /** The page zoom the options menu's − / + walk (#473). A page-level
+       *  factor, not a presentation scale: it changes what the page lays out
+       *  as, so the agent sees what the human set. */
+      zoom: 1,
+      /** What `prefers-color-scheme` answers in this tab — "system" is no
+       *  override at all, which is the default a page would see anyway. */
+      colorScheme: "system",
+      /** The scheme currently pushed to this WebContents, so a resync does not
+       *  re-send it. Cleared with the view, like `viewportOverride`. */
+      colorSchemeApplied: undefined,
+      /** This tab's own window while it is previewed out of the panel (#473).
+       *  The view lives in that window's `contentView` meanwhile; the cockpit
+       *  neither places nor hides it — see `previewing`. */
+      previewWindow: null,
       /** The serialized geometry pipeline — see applyGeometry. */
       geometry: null,
       /** Restored from the inventory and not yet woken in this process. */
@@ -2312,11 +2646,37 @@ class DesktopBrowserManager {
       this.emitState(tab.scopeKey);
     };
     if (typeof wc.setWindowOpenHandler === "function") {
-      wc.setWindowOpenHandler(({ url }) => {
-        this.trackPopupTab(this.openPopupTab(tab, url)).catch(() => {});
-        return { action: "deny" };
-      });
+      wc.setWindowOpenHandler((details) => this.decidePopup(tab, details || {}));
     }
+    /**
+     * THE PAGE HAS THE KEYS, OR HAS GIVEN THEM BACK (#660).
+     *
+     * This is the focus condition the issue asked for, read where it is actually
+     * knowable. A claim keyed to the panel being MOUNTED would suppress the
+     * rail's ⌘1..⌘9 for as long as the panel is open, which is a worse bug than
+     * the one it fixes; a claim keyed to DOM focus cannot see this state at all,
+     * because focus here is native and in another process.
+     *
+     * BLUR RELEASES UNCONDITIONALLY, and `noteTabKeyFocus` ignores a blur from a
+     * tab that no longer holds the claim. A suppression that leaks leaves the
+     * rail's shortcut dead with no way back but a restart — so every edge that
+     * can end this (closing the tab, destroying the manager, another tab taking
+     * focus) releases through the same one place.
+     */
+    wc.on("focus", () => this.noteTabKeyFocus(tab, true));
+    wc.on("blur", () => this.noteTabKeyFocus(tab, false));
+    /**
+     * AND THE HALF THAT ANSWERS. Stripping the accelerator only stops the rail
+     * from jumping — without this, ⌘2 would fall through to the web page, which
+     * is a different bug rather than a fix. The cockpit's own `onKeys` cannot
+     * serve it: this keydown never reaches that renderer.
+     *
+     * `before-input-event` is the earliest point the main process can see a key
+     * headed for this page, and it only ever fires for these chords once the
+     * menu has stood down — macOS matches a key equivalent ahead of the focused
+     * view, so the claim above is what makes this handler reachable at all.
+     */
+    wc.on("before-input-event", (event, input) => this.handleTabKey(tab, event, input));
     /**
      * A hidden view is a background renderer and Chromium stops flushing its
      * input queue — a CDP click never resolves; unthrottled it lands in
@@ -2381,6 +2741,17 @@ class DesktopBrowserManager {
     wc.on("destroyed", () => {
       if (tab.hibernating || tab.view !== view) return;
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+      /**
+       * THE DEAD VIEW GOES WITH THE TAB. This used to be a crash path only,
+       * where one orphaned child view in the window hardly mattered. Since
+       * #615 it is also the ROUTINE one — `window.close()` from an adopted
+       * popup destroys its WebContents, which is how an OAuth popup is
+       * supposed to end — so a view left parented to the window would now
+       * accumulate once per sign-in.
+       */
+      tab.view = null;
+      { const host = this.hostOfTab(tab); if (host) { try { host.removeTab(wc); } catch { /* host already gone */ } } }
+      try { this.window.contentView.removeChildView(view); } catch { /* never parented */ }
       this.noteAgentTabClosed(tab);
       const scoped = this.scopeTabs(tab.scopeKey);
       if (this.activeTabIds.get(tab.scopeKey) === tab.id) {
@@ -2456,6 +2827,122 @@ class DesktopBrowserManager {
     else this.openDevTools(tab);
     this.emitState(scope);
     return this.state(scope);
+  }
+
+  // --- The options menu's own verbs (#473) -----------------------------------
+
+  /**
+   * THE TAB, IN A WINDOW OF ITS OWN — not a second page at the same address.
+   *
+   * The live `WebContentsView` is MOVED: out of the cockpit's `contentView`
+   * and into the new window's. A copy would be a different page — its own
+   * scroll, its own form state, its own login step half-finished — and
+   * "preview this tab" would then be a control that shows you something else.
+   * Moving it is also why there is nothing to reconcile when it comes back.
+   *
+   * THE PANEL IS LEFT EMPTY ON PURPOSE while the tab is away, and says so
+   * (`preview` in the tab's state). A page cannot be composited in two places,
+   * and a panel that silently showed a different tab would lose the person's
+   * place in this one.
+   *
+   * Sized to the tab's intrinsic viewport, because that is the size the page
+   * is laid out for — a previewed tab is not "shown" in the panel
+   * (`isTabShown`), so it keeps its own viewport rather than adopting a stage
+   * it has left.
+   */
+  async openPreview(scopeKey, index) {
+    const scope = this.requireScope(scopeKey);
+    const tab = index === undefined ? this.activeTab(scope) : this.tabAt(scope, index);
+    await this.wakeTab(tab);
+    if (this.previewing(tab)) {
+      try { tab.previewWindow.focus(); } catch { /* a window mid-close */ }
+      return this.state(scope);
+    }
+    const { BrowserWindow } = this.electron();
+    if (!BrowserWindow) throw new Error("This build cannot open a separate window for a tab.");
+    const viewport = this.viewportOf(tab);
+    const win = new BrowserWindow({
+      width: viewport.width,
+      height: viewport.height,
+      useContentSize: true,
+      title: tab.title || "Preview",
+      backgroundColor: "#00000000",
+      show: true,
+    });
+    try {
+      this.window.contentView.removeChildView(tab.view);
+      win.contentView.addChildView(tab.view);
+    } catch (error) {
+      // The move failed halfway: put the view back where it belongs rather
+      // than leaving it parented to nothing.
+      try { this.window.contentView.addChildView(tab.view); } catch { /* already there */ }
+      try { win.destroy(); } catch { /* never opened */ }
+      throw new Error(`Could not open a separate window for this tab: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    tab.previewWindow = win;
+    win.on?.("resize", () => { this.applyGeometry(tab).catch(() => {}); });
+    // CLOSING THE WINDOW IS HOW THE TAB COMES BACK. `closed` fires after the
+    // window is gone, so `endPreview` finds `isDestroyed()` true and only
+    // re-parents — which is exactly what is left to do.
+    win.on?.("closed", () => {
+      if (!tab.previewWindow) return;
+      tab.previewWindow = null;
+      this.reclaimView(tab);
+      this.applyVisibility();
+      try { this.emitState(tab.scopeKey); } catch { /* the scope went with it */ }
+    });
+    this.applyVisibility();
+    this.emitState(scope);
+    return this.state(scope);
+  }
+
+  /** Bring a previewed tab back into the panel and shut its window. Safe on a
+   *  tab that is not previewed, and on one whose window is already gone. */
+  endPreview(tab) {
+    const win = tab?.previewWindow;
+    if (!win) return;
+    tab.previewWindow = null;
+    this.reclaimView(tab);
+    try { if (!win.isDestroyed?.()) win.destroy(); } catch { /* already gone */ }
+  }
+
+  /** Re-parent a returning preview's view to the cockpit window. */
+  reclaimView(tab) {
+    if (!tab.view) return;
+    try { this.window.contentView.addChildView(tab.view); } catch { /* the cockpit went first */ }
+  }
+
+  /** The human's "bring it back", from the panel rather than the window. */
+  closePreview(scopeKey, index) {
+    const scope = this.requireScope(scopeKey);
+    const tab = index === undefined ? this.activeTab(scope) : this.tabAt(scope, index);
+    this.endPreview(tab);
+    this.applyVisibility();
+    this.emitState(scope);
+    return this.state(scope);
+  }
+
+  /**
+   * CLEAR COOKIES / CACHE, FOR THE PROFILE THIS TAB BROWSES IN.
+   *
+   * THE SCOPE IS THE PARTITION, NOT THE SITE, and the panel's confirm says so
+   * in those words: a Chromium session is cleared whole, and offering a row
+   * that read "clear cookies for example.com" while signing the profile out of
+   * everything would be this menu lying about what it does. The site is named
+   * beside it because it is the page in front of the person — what they are
+   * about to be signed out of, not the limit of what is.
+   */
+  async clearBrowsingData(scopeKey, kind) {
+    const scope = this.requireScope(scopeKey);
+    const tabs = this.scopeTabs(scope);
+    if (!tabs.length) throw new Error("There is no tab here to clear anything for.");
+    const tab = this.activeTab(scope);
+    const ses = this.sessionFor(tab.partition);
+    if (!ses) throw new Error("This browser profile has no Chromium session to clear.");
+    if (kind === "cookies") await ses.clearStorageData({ storages: ["cookies"] });
+    else if (kind === "cache") await ses.clearCache();
+    else throw new Error(`Unknown browsing data ${JSON.stringify(kind)}. Use cookies or cache.`);
+    return { ok: true, kind, partition: tab.partition, profile: this.profiles.get(tab.profileId)?.label ?? null };
   }
 
   // --- The page's context menu (#423) ----------------------------------------
@@ -2667,6 +3154,65 @@ class DesktopBrowserManager {
     }
   }
 
+  /**
+   * A TAB'S PAGE TOOK OR GAVE BACK THE KEYS (#660).
+   *
+   * Last-writer-wins on a single id rather than a set: exactly one web contents
+   * has native focus at a time, and a stale blur — Chromium delivers focus to
+   * the new view before blurring the old one on some paths — must not release a
+   * claim the NEXT tab has already taken. Hence the id check on the way out.
+   */
+  noteTabKeyFocus(tab, focused) {
+    if (focused) {
+      if (this.keyFocusedTabId === tab.id) return;
+      this.keyFocusedTabId = tab.id;
+    } else {
+      if (this.keyFocusedTabId !== tab.id) return;
+      this.keyFocusedTabId = null;
+    }
+    this.publishChordScope();
+  }
+
+  /** Tell the shell what this browser's pages have taken — the nine while a page
+   *  holds the keys, nothing otherwise. Idempotent; main rebuilds its menu. */
+  publishChordScope() {
+    try {
+      this.onChordScope(this.keyFocusedTabId ? TAB_SELECT_CHORDS : []);
+    } catch {
+      // A shell that cannot take the scope is not a reason to break the tab.
+    }
+  }
+
+  /**
+   * ⌘1..⌘9 ON A FOCUSED PAGE: select the Nth tab of that page's own scope.
+   *
+   * The digit is a POSITION in the strip, which is what `tabAt` already means
+   * and what the cockpit's `onKeys` already did — so the key and the strip
+   * cannot come to disagree. A digit past the end does nothing and is NOT
+   * swallowed: ⌘7 with four tabs open should reach the page, not vanish.
+   *
+   * Bare ⌘/⌃ only. ⌥⌘1 and ⇧⌘1 are other things in other apps and this must not
+   * eat them.
+   */
+  handleTabKey(tab, event, input) {
+    if (!input || input.type !== "keyDown" || input.alt || input.shift) return;
+    if (!(input.meta || input.control)) return;
+    if (!/^[1-9]$/.test(String(input.key))) return;
+    let scoped;
+    try {
+      scoped = this.scopeTabs(tab.scopeKey);
+    } catch {
+      return; // A scope torn down under a still-live view.
+    }
+    // The position IS the index the panel's strip and `tabAt` both mean — the
+    // state a tab is serialized into numbers it the same way (`state`), so the
+    // key and the strip cannot come to disagree about which tab ⌘2 is.
+    const position = Number(input.key) - 1;
+    if (!scoped[position]) return;
+    event.preventDefault();
+    this.selectTab(tab.scopeKey, position).catch(() => {});
+  }
+
   /** The HUMAN's view moves to a tab — the tab strip, the keyboard shortcuts,
    *  the extension host. Leaves the agent's focus exactly where it was. */
   async selectTab(scopeKey, index) {
@@ -2731,6 +3277,7 @@ class DesktopBrowserManager {
     const scope = this.requireScope(scopeKey);
     this.activeTabIds.delete(scope);
     this.boundsByScope.delete(scope);
+    this.radiusByScope.delete(scope);
     if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
     this.applyVisibility();
     this.emitState(scope, { ended: true });
@@ -2764,6 +3311,37 @@ class DesktopBrowserManager {
      * background agent should be able to do.
      */
     if (kind === "toggle-devtools") return this.toggleDevTools(scope);
+    /**
+     * THE OPTIONS MENU'S VERBS (#473) SIT HERE FOR THE SAME REASON DEVTOOLS
+     * DOES: they are the cockpit's own chrome. Zoom and appearance change what
+     * the page lays out as, which an agent's snapshot then describes — the
+     * human sets those, and `performAction` is the switch agents share.
+     */
+    if (kind === "hard-reload") {
+      const tab = await this.wakeTab(action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index));
+      this.noteHumanInput(scope, { force: true });
+      await this.beforeNavigation(tab);
+      // The whole point of the row: the HTTP cache is bypassed, so a rebuilt
+      // asset is fetched rather than re-read.
+      tab.view.webContents.reloadIgnoringCache();
+      return this.state(scope);
+    }
+    if (kind === "zoom") {
+      const tab = await this.wakeTab(action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index));
+      tab.zoom = zoomStep(tab.zoom, action.direction);
+      this.applyZoom(tab);
+      this.emitState(scope);
+      return this.state(scope);
+    }
+    if (kind === "appearance") {
+      const tab = await this.wakeTab(action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index));
+      tab.colorScheme = resolveColorScheme(action.scheme);
+      await this.applyGeometry(tab);
+      this.emitState(scope);
+      return this.state(scope);
+    }
+    if (kind === "preview") return this.openPreview(scope, action.index);
+    if (kind === "end-preview") return this.closePreview(scope, action.index);
     if (kind === "new") return (await this.createTab(scope, action.url || "about:blank", "human"), this.state(scope));
     if (kind === "close") return (this.closeTab(scope, action.index, "human"), this.state(scope));
     // The toolbar's viewport control: a preset or a custom size for the
@@ -2858,9 +3436,6 @@ class DesktopBrowserManager {
     if (!debug.isAttached()) debug.attach("1.3");
     if (!tab.debuggerListenersBound) {
       debug.on("message", (_event, method, params) => {
-        // NOTHING IS CAPTURED DURING A PRIVATE INTERACTION: a console line or
-        // a request URL made while a person signs in is theirs, not the log's.
-        if (this.privacy.isActive()) return;
         if (method === "Runtime.consoleAPICalled") {
           // Each ARGUMENT is bounded before the join, so a single huge one
           // cannot build a huge intermediate on its way to being truncated.
@@ -2946,6 +3521,44 @@ class DesktopBrowserManager {
     tab.viewportOverride = wanted;
   }
 
+  /** The tab's zoom, pushed to its live WebContents. A no-op for a sleeping
+   *  tab — waking it runs the pipeline, which lands here again. */
+  applyZoom(tab) {
+    const wc = this.contentsOf(tab);
+    if (!wc?.setZoomFactor) return;
+    try { wc.setZoomFactor(tab.zoom || 1); } catch { /* a page mid-teardown */ }
+  }
+
+  /**
+   * IS THERE ANY APPEARANCE TO SEND? Asked separately so the geometry pipeline
+   * can skip the `await` entirely in the ordinary case — an await on a settled
+   * no-op still costs that run a microtask, and how far the run gets before
+   * the next one is queued is observable (the debugger binds inside it).
+   *
+   * `undefined` = a fresh WebContents emulating nothing, which IS "system":
+   * clearing it would be a round trip to assert the status quo on every tab.
+   */
+  needsColorScheme(tab) {
+    const wanted = tab.colorScheme || "system";
+    if (tab.colorSchemeApplied === wanted) return false;
+    return !(wanted === "system" && tab.colorSchemeApplied === undefined);
+  }
+
+  /**
+   * WHAT `prefers-color-scheme` ANSWERS IN THIS TAB. "system" clears the
+   * override rather than asserting the host's own scheme — a page then reads
+   * whatever it would have read with nobody emulating anything, which is what
+   * "system" means. Recorded only once the command lands, like the viewport
+   * override, so a refusal is not remembered as applied.
+   */
+  async applyColorScheme(tab, debug) {
+    const wanted = tab.colorScheme || "system";
+    await debug.sendCommand("Emulation.setEmulatedMedia", {
+      features: wanted === "system" ? [] : [{ name: "prefers-color-scheme", value: wanted }],
+    });
+    tab.colorSchemeApplied = wanted;
+  }
+
   /** What the emulation for this tab should be right now. */
   viewportTarget(tab) {
     if (this.isNativeFit(tab)) return { emulate: false, width: this.bounds.width, height: this.bounds.height, scale: 1 };
@@ -3011,49 +3624,35 @@ class DesktopBrowserManager {
     this.applyVisibility();
   }
 
-  async snapshot(tab) {
+  /**
+   * The page's accessibility tree, optionally narrowed.
+   *
+   * `args.target` is a ref from the PREVIOUS snapshot of this tab — it has to
+   * be resolved against `tab.refs` before the re-mint clears them, which is
+   * the only ordering subtlety here. An unknown ref is refused by name rather
+   * than quietly widened back to the whole page: a model that asked about one
+   * region and got the document would read the answer as the region.
+   */
+  async snapshot(tab, args = {}) {
     const debug = await this.ensureDebugger(tab);
-    const result = await debug.sendCommand("Accessibility.getFullAXTree", { depth: 40 });
-    tab.refs.clear();
-    const nodes = Array.isArray(result.nodes) ? result.nodes : [];
-    const byId = new Map(nodes.map((node) => [node.nodeId, node]));
-    const depths = new Map();
-    const depthOf = (node) => {
-      if (!node?.parentId) return 0;
-      if (depths.has(node.nodeId)) return depths.get(node.nodeId);
-      const depth = Math.min(12, depthOf(byId.get(node.parentId)) + 1);
-      depths.set(node.nodeId, depth);
-      return depth;
-    };
-    const interactive = new Set([
-      "button", "checkbox", "combobox", "link", "menuitem", "radio", "searchbox",
-      "slider", "spinbutton", "switch", "tab", "textbox", "treeitem",
-    ]);
-    const lines = [`Page: ${tab.title}`, `URL: ${tab.url}`, ""];
-    let nextRef = 1;
-    for (const node of nodes) {
-      if (node.ignored) continue;
-      const role = axValue(node, "role");
-      const name = axValue(node, "name").replace(/\s+/g, " ").trim();
-      const value = axValue(node, "value").replace(/\s+/g, " ").trim();
-      const backendNodeId = Number(node.backendDOMNodeId || 0);
-      const canTarget = backendNodeId > 0 && (interactive.has(role) || role === "img");
-      if (!name && !value && !canTarget) continue;
-      let ref = "";
-      if (canTarget) {
-        ref = `e${nextRef++}`;
-        tab.refs.set(ref, backendNodeId);
-      }
-      const label = [role || "node", name ? `\"${name}\"` : "", value ? `value=\"${value}\"` : "", ref ? `[ref=${ref}]` : ""]
-        .filter(Boolean)
-        .join(" ");
-      lines.push(`${"  ".repeat(depthOf(node))}- ${label}`);
-      if (lines.length >= 500) {
-        lines.push("- … snapshot truncated");
-        break;
-      }
+    const target = String(args.target || "").trim();
+    const backendNodeId = target ? tab.refs.get(target) : undefined;
+    if (target && !backendNodeId) {
+      throw new Error(`Unknown browser target ${target}. Take a fresh browser_snapshot first.`);
     }
-    return okText(lines.join("\n"));
+    const result = await debug.sendCommand("Accessibility.getFullAXTree", { depth: 40 });
+    const nodes = Array.isArray(result.nodes) ? result.nodes : [];
+    let rootNodeId = null;
+    if (backendNodeId) {
+      const root = nodes.find((node) => Number(node.backendDOMNodeId || 0) === backendNodeId);
+      if (!root) throw new Error(`${target} is no longer on the page. Take a fresh browser_snapshot first.`);
+      rootNodeId = root.nodeId;
+    }
+    const maxDepth = Number.isInteger(args.depth) && args.depth >= 0 ? args.depth : null;
+    const rendered = renderSnapshot(nodes, { title: tab.title, url: tab.url, rootNodeId, maxDepth });
+    tab.refs.clear();
+    for (const [ref, id] of rendered.refs) tab.refs.set(ref, id);
+    return okText(rendered.text);
   }
 
   backendNode(tab, target) {
@@ -3289,14 +3888,149 @@ class DesktopBrowserManager {
     }
   }
 
+  /**
+   * THE COCKPIT'S OWN SCREENSHOT (#474) — the camera button in the address
+   * row, and the frozen frame the annotate overlay draws on.
+   *
+   * NOT `callTool("browser_take_screenshot")`, and the difference is WHOSE TAB
+   * IT IS. A tool call reads the AGENT's tab (`peekTarget`) and waits behind
+   * that tab's queue — both correct for an agent, and both wrong for a person
+   * pressing a camera on the page in front of them. This reads the tab THEY
+   * are looking at.
+   *
+   * AT THE TAB'S OWN SCALE, NEVER THE PANEL'S FIT SCALE. `screenshot` resolves
+   * to `captureIntrinsic`'s explicit scale-1 clip, so a page laid out at
+   * 1280×800 inside a 640px column comes back 1280×800 — not a third of one in
+   * the corner of a blank frame, which is what a plain capture under a fit
+   * scale returns (measured; see `captureIntrinsic`). The viewport travels with
+   * the image because the overlay draws ON it and has to know what a pixel is.
+   */
+  async capture(scopeKey, options = {}) {
+    const scope = this.requireScope(scopeKey);
+    if (!this.scopeTabs(scope).length) throw new Error("There is no page here to capture.");
+    const tab = await this.wakeTab(this.activeTab(scope));
+    // The same refusal every tool path wears: an extension's own pages are
+    // nobody's to photograph, least of all a password manager's unlock.
+    if (isProtectedUrl(tab.url)) throw new Error("That tab is showing an extension page. Telar does not capture extension pages.");
+    if (this.isBlank(tab)) throw new Error("There is no page loaded in this tab to capture.");
+    const fullPage = Boolean(options.fullPage);
+    const outcome = await this.screenshot(tab, { type: "png", fullPage });
+    const image = outcome.content?.find((entry) => entry.type === "image");
+    if (!image?.data) throw new Error("The page produced no frame to capture.");
+    const viewport = this.effectiveViewport(tab);
+    return {
+      data: image.data,
+      mimeType: image.mimeType,
+      url: tab.url,
+      title: tab.title,
+      fullPage,
+      width: viewport.width,
+      height: viewport.height,
+      ...(options.elements ? { elements: await this.elementBoxes(tab) } : {}),
+    };
+  }
+
+  /**
+   * WHAT THE ANNOTATE OVERLAY CAN PICK (#474): every element worth pointing
+   * at, with the rect it occupies in the SAME CSS pixels the capture above is
+   * measured in, and enough about it to name in a message — its role, its
+   * accessible name, and a selector that finds it again.
+   *
+   * GEOMETRY, WHICH IS WHY IT IS NOT `snapshot`. That one emits refs and text
+   * off the AX tree and carries no rects; the overlay hit-tests in the
+   * renderer while the native view is HIDDEN behind a frozen frame, so a
+   * per-hover round trip is not available to it either. One evaluate, taken at
+   * the same instant as the frame it is about, is both cheaper and truer than
+   * asking the live page where things are after it has been hidden.
+   *
+   * SMALLEST AREA FIRST, so a hit test can take the first box containing the
+   * point and get the innermost element rather than the <body> around it.
+   * Offscreen and zero-area elements never appear: nothing can be under the
+   * pointer that is not on screen.
+   */
+  async elementBoxes(tab) {
+    const debug = await this.ensureDebugger(tab);
+    const { result } = await debug.sendCommand("Runtime.evaluate", {
+      expression: `(() => {
+        const selectorFor = (el) => {
+          if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) return '#' + CSS.escape(el.id);
+          const parts = [];
+          for (let node = el; node && node.nodeType === 1 && parts.length < 5; node = node.parentElement) {
+            const tag = node.localName;
+            if (node.id && document.querySelectorAll('#' + CSS.escape(node.id)).length === 1) { parts.unshift('#' + CSS.escape(node.id)); break; }
+            const siblings = node.parentElement ? [...node.parentElement.children].filter((other) => other.localName === tag) : [tag];
+            parts.unshift(siblings.length > 1 ? tag + ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')' : tag);
+          }
+          return parts.join(' > ');
+        };
+        const nameOf = (el) => (
+          el.getAttribute('aria-label') ||
+          (el.labels && el.labels[0] && el.labels[0].textContent) ||
+          el.getAttribute('alt') ||
+          el.getAttribute('placeholder') ||
+          el.getAttribute('title') ||
+          (el.value && typeof el.value === 'string' ? el.value : '') ||
+          el.textContent ||
+          ''
+        ).replace(/\\s+/g, ' ').trim().slice(0, 120);
+        const roleOf = (el) => el.getAttribute('role') || el.localName;
+        const boxes = [];
+        for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) continue;
+          if (rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth) continue;
+          const style = getComputedStyle(el);
+          if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
+          boxes.push({
+            role: roleOf(el),
+            name: nameOf(el),
+            selector: selectorFor(el),
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          });
+          if (boxes.length >= 1500) break;
+        }
+        return boxes.sort((a, b) => a.width * a.height - b.width * b.height);
+      })()`,
+      returnByValue: true,
+    });
+    return Array.isArray(result?.value) ? result.value : [];
+  }
+
   /** Nothing loaded and nothing loading: the start page's case. */
   isBlank(tab) {
     const url = tab.view && !tab.view.webContents.isDestroyed?.() ? tab.view.webContents.getURL() || tab.url : tab.url;
     return (!url || url === "about:blank") && !tab.loading && tab.navigationPending === 0;
   }
 
-  /** The visible scope's active tab — what the native view shows. */
+  /**
+   * THE TAB IS IN A WINDOW OF ITS OWN (#473), so the cockpit's panel is not
+   * where it is drawn. Every place that places, sizes or hides a view asks
+   * this first: the view is a child of the preview window's `contentView`
+   * while this is true, and a `setVisible(false)` meant for the panel would
+   * blank the window a person is looking at.
+   */
+  previewing(tab) {
+    return Boolean(tab?.previewWindow && !tab.previewWindow.isDestroyed?.());
+  }
+
+  /** The rect the previewed view fills inside its own window. */
+  previewRect(tab) {
+    const [width, height] = tab.previewWindow?.getContentSize?.() || [];
+    const viewport = this.viewportOf(tab);
+    return { x: 0, y: 0, width: Math.max(1, Math.round(width || viewport.width)), height: Math.max(1, Math.round(height || viewport.height)) };
+  }
+
+  /**
+   * The visible scope's active tab — what the native view shows. A PREVIEWED
+   * tab is shown in its own window instead, so it is not this panel's: it
+   * keeps its intrinsic viewport (no fit adoption, no presentation scale)
+   * rather than following a panel it has left.
+   */
   isTabShown(tab) {
+    if (this.previewing(tab)) return false;
     return tab.scopeKey === this.visibleScopeKey && tab.id === this.activeTabIds.get(tab.scopeKey);
   }
 
@@ -3326,7 +4060,7 @@ class DesktopBrowserManager {
            * addresses a tab by its index in this list (`tabAt`), so closing a
            * tab renumbers the ones after it and an index captured a moment ago
            * can name a different page. Callers that must act on the SAME tab
-           * they inspected — the credential path — compare this instead.
+           * they inspected — the login path — compare this instead.
            */
           const meta = [`tab=${tab.id}`, `controller=${this.tabActivity(tab)}`, `opened-by=${tab.openedBy || "agent"}`];
           /**
@@ -3357,27 +4091,7 @@ class DesktopBrowserManager {
 
   async callTool(scopeKey, name, args = {}) {
     const scope = this.requireScope(scopeKey);
-    // THE CREDENTIAL BOUNDARY FIRST. Reads and mutations alike, every scope:
-    // the partition is shared, so a person's sign-in in one session is not
-    // another session's page to read. The interaction is managed
-    // automatically (no manual Resume in the normal flow), so a call arriving
-    // while it is open gets an ACTIONABLE, RETRIABLE status — not a terminal
-    // unexplained failure — and the loop clears the window shortly after the
-    // person finishes.
-    if (this.privacy.isActive()) return this.privacyBusyResult();
-    const epochAtStart = this.privacy.epoch;
-    const outcome = await this.callToolInner(scope, name, args);
-    return this.privacy.admit(outcome, epochAtStart);
-  }
-
-  /** The result a tool call gets while a credential interaction is open:
-   *  retriable and specific. When the automatic release is stuck (a probe will
-   *  not answer) it names the recovery instead of promising an auto-clear. */
-  privacyBusyResult() {
-    const text = this.privacyStuck
-      ? "The browser is waiting on a sign-in page that is not responding. Reload or close that page; browser tools resume automatically once it is clear."
-      : "A person is signing in or handling credentials. Browser tools are paused and resume automatically when they finish — retry in a moment.";
-    return { content: [{ type: "text", text: `Error: ${text}` }], isError: true, retriable: true };
+    return this.callToolInner(scope, name, args);
   }
 
   async callToolInner(scope, name, args) {
@@ -3472,8 +4186,6 @@ class DesktopBrowserManager {
       if (this.now() >= deadline) return errorResult(new Error(humanActiveOn(tab, index())));
       await this.wait(DEFER_POLL_MS);
     }
-    // Queued behind a deferral: privacy may have begun meanwhile.
-    if (this.privacy.isActive()) return this.privacyBusyResult();
     if (!this.tabs.includes(tab)) return errorResult(new Error(`Browser tab ${index()} was closed.`));
     // A deliberate navigation or tab-set change LEAVES the current page; it
     // does not act on it, so it needs no fresh view of it. Everything that
@@ -3486,7 +4198,7 @@ class DesktopBrowserManager {
     }
     const generationAtStart = tab.generation;
     tab.interruptedAt = undefined;
-    const action = { tab, ticket: this.nextTicket(tab), generation: generationAtStart, startedAt: this.now(), cancelled: false, privacyEpoch: this.privacy.epoch };
+    const action = { tab, ticket: this.nextTicket(tab), generation: generationAtStart, startedAt: this.now(), cancelled: false };
     tab.agentBusy += 1;
     this.lastAgentInputAt.set(scope, this.now());
     this.journalControl(tab, "agent");
@@ -3552,7 +4264,7 @@ class DesktopBrowserManager {
           return okText(`Navigated to ${tab.view.webContents.getURL()}.`);
         }
         case "browser_navigate_back": await this.goBack(await target()); return okText("Navigated back.");
-        case "browser_snapshot": return this.snapshot(await this.wakeTab(this.tabFor(scope, args)));
+        case "browser_snapshot": return this.snapshot(await this.wakeTab(this.tabFor(scope, args)), args);
         case "browser_click": return this.click(await target(), args, action);
         case "browser_type": return this.type(await target(), args, action);
         case "browser_fill_form": return this.fillForm(await target(), args, action);
@@ -3578,14 +4290,12 @@ class DesktopBrowserManager {
         case "browser_console_messages": {
           const tab = await this.wakeTab(this.tabFor(scope, args));
           await this.ensureDebugger(tab);
-          return okText(tab.console.map((entry) => `[${entry.level}] ${entry.text}`).join("\n") || "No console messages captured.");
+          return okText(renderConsole(tab.console, { level: args.level, all: args.all === true }));
         }
         case "browser_network_requests": {
           const tab = await this.wakeTab(this.tabFor(scope, args));
           await this.ensureDebugger(tab);
-          const filter = String(args.filter || "");
-          const rows = tab.network.filter((entry) => !filter || entry.url.includes(filter));
-          return okText(rows.map((entry) => `${entry.method} ${entry.url}`).join("\n") || "No network requests captured.");
+          return okText(renderNetwork(tab.network, { filter: args.filter }));
         }
         default: throw new Error(`Unsupported desktop browser tool: ${name}.`);
       }
@@ -3622,6 +4332,7 @@ class DesktopBrowserManager {
     this.scopeProjects.delete(scope);
     this.scopeProfileOverrides.delete(scope);
     this.boundsByScope.delete(scope);
+    this.radiusByScope.delete(scope);
     this.lastAgentInputAt.delete(scope);
     this.activeToolCalls.delete(scope);
     this.activeTabIds.delete(scope);
@@ -3748,6 +4459,7 @@ class DesktopBrowserManager {
         this.scopeProjects.size +
         this.scopeProfileOverrides.size +
         this.boundsByScope.size +
+        this.radiusByScope.size +
         this.lastAgentInputAt.size +
         this.activeToolCalls.size +
         this.activeTabIds.size +
@@ -3776,6 +4488,7 @@ class DesktopBrowserManager {
     this.agentTabIds.clear();
     this.agentTabClosed.clear();
     this.boundsByScope.clear();
+    this.radiusByScope.clear();
     this.lastAgentInputAt.clear();
     this.activeToolCalls.clear();
     // The hosts hold a partition session's listener and a module-level
@@ -3829,4 +4542,4 @@ function managerForScope(managers, scopeKey, fallback = null) {
   return best;
 }
 
-module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, DEFAULT_VIEWPORT, VIEWPORT_PRESETS };
+module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };

@@ -8,10 +8,9 @@ import { fileURLToPath } from "node:url";
  * NO INVISIBLE CHARACTERS IN SOURCE.
  *
  * THIS EXISTS BECAUSE IT HAPPENED TWICE IN ONE DAY. An editing pass wrote a
- * literal NUL byte into a comment in `apps/engine/src/spool/store.ts`, and a
- * second one wrote a NUL into a React key in `components/spool/queue-view.tsx`
- * — where it sat inside a string literal, rendered as part of the key, and
- * passed `tsc`, `eslint` and 400 tests without a murmur.
+ * literal NUL byte into a comment in an engine store, and a second one wrote a
+ * NUL into a React key — where it sat inside a string literal, rendered as part
+ * of the key, and passed `tsc`, `eslint` and 400 tests without a murmur.
  *
  * THAT IS THE WHOLE ARGUMENT FOR THIS FILE. A control character inside a string
  * is legal TypeScript, legal JSX and legal JavaScript. Every gate this repo has
@@ -42,8 +41,9 @@ const FORBIDDEN = new Map<number, string>([
   [0xfeff, "BYTE ORDER MARK"],
 ]);
 
-/** The trees this repo actually authors. `web_old` and `packages/core` are the
- *  frozen donor and are not ours to police; `node_modules` is nobody's. */
+/** The trees this repo actually authors. `web_old` and `packages/core` were the
+ *  frozen donor, never policed here and now deleted outright; `node_modules` is
+ *  nobody's. */
 const TREES = [
   "apps/engine/src",
   "apps/engine/test",

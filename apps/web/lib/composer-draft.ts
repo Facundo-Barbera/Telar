@@ -65,9 +65,9 @@ function resolve(storage?: DraftStorage): DraftStorage | undefined {
  * BOTH HALVES ARE OPTIONAL, and each absence means something different.
  *
  * No SESSION is a fresh canvas: it is keyed by project, which is the scope its
- * message will be created in anyway. No PROJECT is the Spool's master chat,
- * which has one — a project-less session always exists before anyone can type
- * into it, so the project half is never reached for it.
+ * message will be created in anyway. No PROJECT is a project-less session,
+ * which has a session id — one always exists before anyone can type into it, so
+ * the project half is never reached for it.
  *
  * The `new:` arm with neither is unreachable today and is spelled anyway rather
  * than asserted away: one shared key for "a composer belonging to nothing" is a

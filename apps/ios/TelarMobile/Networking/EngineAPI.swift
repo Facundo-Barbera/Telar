@@ -7,6 +7,44 @@ import Foundation
 protocol EngineAPI: Sendable {
     func health() async throws -> EngineHealth
     func liveSessions() async throws -> LiveSessions
+    /// THE SAME READ, WIDE — every session, settled ones included (#457).
+    ///
+    /// The Mac's default answer is the UNSETTLED rows alone: 7 of 291 on the
+    /// owner's store, where it used to fold and serialise all 291 every three
+    /// seconds for every device attached to it. This is what the settled shelf
+    /// asks with, and `LiveSessions.settledCount` on the narrow answer is what
+    /// draws the shelf that does the asking.
+    ///
+    /// DECLARED HERE AND DEFAULTED BELOW, like `liveSessions(since:)`: a
+    /// conformer that does not implement it (the test doubles) falls back to
+    /// the plain read, which on a Mac too old to filter IS the whole list.
+    func liveSessions(all: Bool) async throws -> LiveSessions
+    /// THE SAME READ, CONDITIONAL ON AN ETAG (#457) — what the inbox poll uses.
+    ///
+    /// `liveSessions(since:)` below is this in the body and is still served;
+    /// the tag is what the poll sends, because the tag carries the MODE as well
+    /// as the revision. A cursor is a number about the Mac's store, so one
+    /// earned against the unsettled list and spent against `all` is answered
+    /// "unchanged" — and the settled shelf a reader has just opened stays empty
+    /// until something else happens over there. A 304 also carries no body at
+    /// all, where the cursor's cheapest answer is sixty bytes.
+    ///
+    /// `live == nil` MEANS NOT MODIFIED: keep what you have. Distinct from a
+    /// `LiveSessions` with no rows, which would empty the list.
+    ///
+    /// AND IT CARRIES THE BYTES (#499), which is what the cache is written from
+    /// now. The store used to warm it with a SECOND full read of this same
+    /// route immediately after this one — 318 KB on the owner's Mac, for rows
+    /// it had just been handed. One read serves the screen and the cache.
+    ///
+    /// `since` IS THE LEGACY CURSOR, offered here so that path returns bytes
+    /// too. It is mutually exclusive with `etag` in every caller: only the
+    /// NARROW read may use a cursor, for the reason above.
+    ///
+    /// DECLARED HERE AND DEFAULTED BELOW: a conformer that does not implement
+    /// it (the test doubles) falls back to an unconditional read, which is also
+    /// what a Mac too old to mint a tag leaves this phone with.
+    func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead
     /// THE SAME READ, CONDITIONALLY (#459) — what the inbox poll should use.
     ///
     /// Hand back the `revision` from last time and a Mac with nothing new
@@ -20,12 +58,21 @@ protocol EngineAPI: Sendable {
     /// requirement is on the protocol rather than only in the extension.
     func liveSessions(since: Int) async throws -> LiveSessions
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot
+    /// THE SAME READ, KEEPING THE BYTES (#499) — what the phone records for
+    /// when the Mac is away (SnapshotCache). The wire types decode only, so the
+    /// durable form is the cockpit's own JSON.
+    ///
+    /// ONE READ, NOT TWO. The sync engine used to hydrate a WINDOWED snapshot
+    /// for the screen and then fetch the same session UNWINDOWED — the whole
+    /// run, up to 4.5 MB — purely to warm that cache. The window the screen
+    /// asked for is the window the cache keeps, and it is the same answer, so
+    /// the second read is gone rather than merely shrunk.
+    ///
+    /// DECLARED HERE AND DEFAULTED BELOW: a conformer that does not implement
+    /// it makes the plain read and reports no bytes, which simply leaves it
+    /// with nothing to record.
+    func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead
     func events(_ id: EngineID, after: Int) async throws -> EventPage
-    /// THE SAME TWO READS, AS BYTES — what the phone keeps for when the Mac is
-    /// away (SnapshotCache). The wire types decode only, so the durable form
-    /// is the cockpit's own JSON; these hand it over unparsed.
-    func sessionData(_ id: EngineID) async throws -> Data
-    func liveSessionsData() async throws -> Data
     /// The bytes behind `ProjectRef.icon`. `icon` rides as `?v=` so the
     /// cockpit's immutable cache header is honest; the route does not read it.
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data
@@ -37,6 +84,105 @@ protocol EngineAPI: Sendable {
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
     ) async throws
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws
+    /// ── THE BUILT-IN AGENT (#531) ───────────────────────────────────────────
+    ///
+    /// NOT UNDER `api/sessions/`, because the Agent is not one: its conversation
+    /// is a thread rather than a journal, and a phone that reached it through a
+    /// session route would be told a conversation exists that `sessionEvents`
+    /// cannot open.
+    ///
+    /// THE SIDEBAR CALLS NONE OF THESE. It reads `agent: { enabled }` off the
+    /// live list it already polls, which is all a row showing a word needs.
+    ///
+    /// DEFAULTED IN THE EXTENSION BELOW, like `sidebarLayout()`: a double that
+    /// models the transcript should not have to implement four routes it will
+    /// never be asked for.
+    func agent() async throws -> AgentAnswer
+    /// A SHORT-LIVED TRANSCRIPTION TOKEN (#544). The phone holds no Deepgram
+    /// key; it asks the Mac for one dictation's worth of credential and opens
+    /// its own socket with it — the audio never passes through the cockpit.
+    ///
+    /// DECLARED HERE AND DEFAULTED BELOW, like `sidebarLayout`: a double that
+    /// models the transcript has no business minting credentials, and should
+    /// not have to implement one to compile.
+    func dictationToken() async throws -> DictationTokenAnswer
+    /// WHY THE LAST DICTATION FAILED (#711). Asked AFTER a socket has dropped,
+    /// never before one opens: this phone cannot read why its own socket was
+    /// refused, and the Mac holds the key that can ask.
+    ///
+    /// DEFAULTED BELOW TO A THROW, like `dictationToken`: a double has nothing
+    /// to diagnose, and every caller already has to survive this failing.
+    func dictationDiagnosis() async throws -> DictationDiagnosisAnswer
+    /// WHETHER THAT MAC DICTATES AT ALL, read before the mic button is drawn.
+    /// `provider` is `off` by default and there is no button until it is
+    /// something else — the phone's own keyboard dictation already works on the
+    /// composer, so an uninvited one would be Telar claiming a job somebody may
+    /// have given elsewhere.
+    ///
+    /// DEFAULTED BELOW TO `off`, which is the honest answer for a double and
+    /// for a Mac too old to serve the route: no button either way.
+    func dictation() async throws -> DictationAnswer
+    /// Choose a provider on that Mac, choose a language, or paste its key.
+    ///
+    /// EVERY FIELD BY PRESENCE: a patch naming no provider must not switch
+    /// dictation off, one naming no language must not reset it, and one naming
+    /// no key must not clear it. The key goes DOWN only — nothing ever sends it
+    /// back, so the phone's field shows whether one is saved and never what it
+    /// is.
+    ///
+    /// `vocabulary` IS THE WHOLE LIST, EVERY TIME (#581) — it is a box of
+    /// terms rather than a row of fields, so a save is what it now contains and
+    /// an EMPTY ARRAY clears it. Absent still means "leave it alone".
+    ///
+    /// DEFAULTED BELOW TO A REFUSAL rather than a lie: a double that quietly
+    /// accepted a write would have a settings screen report a change that
+    /// never happened.
+    func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer
+    /// The transcript forward from a cursor. Bounded by a count AND a byte
+    /// budget, whichever is reached first — page until `more` is false.
+    ///
+    /// THIS IS THE POLL, NOT THE OPEN (#580). A screen opening a conversation
+    /// asks for `agentThreadTail` and walks back with `agentThread(before:)`;
+    /// this is what keeps it up to date once it has.
+    func agentThread(after: Int) async throws -> AgentThreadPage
+    /// THE LAST PAGE, which is the one somebody opening the Agent is looking at
+    /// (#580). `cursor` comes back as the thread's TIP, so the forward poll
+    /// starts from the end rather than from the top of this window.
+    func agentThreadTail(limit: Int) async throws -> AgentThreadPage
+    /// One page FURTHER BACK, exclusive of `before` — what pulling down at the
+    /// top of the transcript asks for. `oldest` is the next `before`, and
+    /// `more` says whether anything older is left.
+    func agentThread(before: Int, limit: Int) async throws -> AgentThreadPage
+    func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted
+    /// `stopped: false` means there was nothing left to stop, which is a fact
+    /// rather than an error — a Stop pressed a beat late must not paint a
+    /// failure over a turn that worked.
+    func cancelAgentTurn(_ runId: String) async throws
+    /// BY ID, so a phone holding a stale question cannot approve the one that
+    /// replaced it. Two decisions and not three: the Agent's gate is decided
+    /// per call, so there is nothing an "always" could attach to.
+    func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws
+    /// THE WAKE INBOX (#541 A) — what a completion on a session the Agent
+    /// subscribed to writes now that it no longer starts a turn. `unreadOnly` is
+    /// the strip above the composer; without it this pages the whole inbox.
+    ///
+    /// DEFAULTED BELOW TO AN EMPTY PAGE, like the routes beside it: a double
+    /// that models the transcript should not have to implement one, and a Mac
+    /// too old to serve it answers the same thing — no strip.
+    func agentInbox(after: Int, unreadOnly: Bool) async throws -> AgentInboxPage
+    /// Mark rows read BY ID, so a phone holding a stale list cannot clear rows
+    /// that landed after it last looked.
+    func markAgentInboxRead(_ ids: [Int]) async throws
+    /// WHAT THE AGENT MAY RUN — the composer's model pill (#539).
+    ///
+    /// FAILS SOFT rather than throwing: a Mac that could not reach OpenCode Go,
+    /// or has no key yet, answers an EMPTY list and a `message`. An empty picker
+    /// carrying the reason beats one full of ids that 404.
+    func agentModels() async throws -> AgentModelList
+    /// THE THREE COMPOSER PILLS' WRITE — the same route that Mac's own Settings
+    /// uses, so the phone and the desktop read one value. Fields are sent BY
+    /// PRESENCE, and `""` clears one.
+    func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer
     /// REMOVE A SESSION AND EVERYTHING IT OWNS — transcript included. No undo,
     /// and the engine refuses while a turn is in flight (`EngineStore
     /// .deleteSession` throws a conflict on a queued, claimed or running one),
@@ -110,6 +256,33 @@ struct SnapshotWindow: Sendable {
     }
 }
 
+/// ONE LIVE-LIST READ, SERVING BOTH THE SCREEN AND THE CACHE (#499).
+///
+/// The store used to poll this route and then immediately read it again,
+/// whole, to warm the phone's copy. `data` is why it no longer does: the
+/// cockpit's own bytes, kept exactly as they arrived, so the durable form
+/// stays the protocol's rather than a second encoding of it.
+struct LiveSessionsRead: Sendable {
+    /// NIL MEANS NOT MODIFIED — keep what you have. Never "there is nothing".
+    var live: LiveSessions?
+    /// What to send back as `If-None-Match` next time. Restated by the Mac on
+    /// a 304, so a caller that dropped it there would pay for a full read.
+    var etag: String?
+    /// The body as the Mac sent it. Nil on a 304 (there is no body) and from a
+    /// conformer that cannot hand its bytes over — both mean "nothing new to
+    /// record", never "record emptiness".
+    var data: Data?
+}
+
+/// The same bargain for one session's snapshot (#499): the window the screen
+/// asked for, and the bytes to record it with.
+struct SessionRead: Sendable {
+    var snapshot: SessionSnapshot
+    /// Nil from a conformer that cannot hand its bytes over; the cache then
+    /// keeps whatever it last held.
+    var data: Data?
+}
+
 extension EngineAPI {
     /// The unwindowed read older call sites mean.
     func session(_ id: EngineID) async throws -> SessionSnapshot {
@@ -119,6 +292,56 @@ extension EngineAPI {
     /// A double that models the transcript and not the rail answers "nobody has
     /// arranged anything", which is a real arrangement and not an error.
     func sidebarLayout() async throws -> SidebarLayout { SidebarLayout() }
+
+    /// A double that models the transcript models no Agent — which is also what
+    /// a Mac that has never switched one on answers, so the screen's "off"
+    /// state is what a caller gets rather than a failure.
+    func agent() async throws -> AgentAnswer { AgentAnswer(agent: AgentState(enabled: false), credential: nil) }
+    func agentThread(after: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: after, more: false) }
+    func agentThreadTail(limit: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: 0, more: false) }
+    func agentThread(before: Int, limit: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: 0, more: false) }
+    func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted { AgentTurnAccepted(runId: "", queued: 0, agent: nil) }
+    func cancelAgentTurn(_ runId: String) async throws {}
+    func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {}
+    func agentInbox(after: Int, unreadOnly: Bool) async throws -> AgentInboxPage { AgentInboxPage(rows: [], cursor: after) }
+    func markAgentInboxRead(_ ids: [Int]) async throws {}
+    func agentModels() async throws -> AgentModelList { AgentModelList(models: [], message: nil) }
+    func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer { AgentAnswer(agent: AgentState(enabled: false), credential: nil) }
+
+    /// A DOUBLE CANNOT MINT A CREDENTIAL, and must not pretend to: every other
+    /// default here answers with a real, empty state, but there is no empty
+    /// token — one would be handed to a websocket and fail at the handshake
+    /// with nothing explaining why. So this refuses in the sentence a Mac with
+    /// no key would use, which is also what the button already knows how to
+    /// show.
+    func dictationToken() async throws -> DictationTokenAnswer {
+        throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
+    }
+
+    /// AND A DOUBLE HAS NOTHING TO DIAGNOSE. It throws for `dictationToken`'s
+    /// reason, and every caller of this already has to survive it failing — a
+    /// Mac too old for the route answers 404 and the honest sentence stands.
+    func dictationDiagnosis() async throws -> DictationDiagnosisAnswer {
+        throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
+    }
+
+    /// OFF IS THE ORDINARY ANSWER, so a double says it rather than throwing —
+    /// and so does a cockpit too old to serve the route. Either way there is no
+    /// mic button, which is the right outcome in both cases.
+    func dictation() async throws -> DictationAnswer {
+        // NO LANGUAGES RATHER THAN A GUESSED LIST: they are the Mac's to name,
+        // and a double that invented some would have a picker offering choices
+        // nothing could honour.
+        DictationAnswer(
+            dictation: DictationAnswer.State(
+                provider: DictationProvider.off, configured: false, language: DictationLanguages.automatic, languages: []
+            )
+        )
+    }
+
+    func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer {
+        throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot change dictation settings.", status: 409)
+    }
 
     /// A double that models no registry has nothing to remove, and says so by
     /// returning rather than throwing: a test standing in for one endpoint
@@ -139,6 +362,29 @@ extension EngineAPI {
     /// full one — which is what a Mac too old to count would force anyway.
     func liveSessions(since: Int) async throws -> LiveSessions {
         try await liveSessions()
+    }
+
+    /// Likewise the WIDE read (#457): a conformer that has not learned to ask
+    /// for the settled rows makes the plain read, which against a Mac too old
+    /// to hold any back is already every row there is.
+    func liveSessions(all: Bool) async throws -> LiveSessions {
+        try await liveSessions()
+    }
+
+    /// And likewise the conditional one: a conformer that cannot send a tag
+    /// makes the unconditional read and reports no tag, so the caller never
+    /// has one to hand back and every read stays a full one. No bytes either,
+    /// which leaves it with nothing to record — the right answer, since the
+    /// alternative is recording a snapshot nobody can vouch for.
+    func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead {
+        if let since { return LiveSessionsRead(live: try await liveSessions(since: since), etag: nil, data: nil) }
+        return LiveSessionsRead(live: try await liveSessions(all: all), etag: nil, data: nil)
+    }
+
+    /// And the session snapshot: a conformer that cannot hand its bytes over
+    /// still answers the screen, and simply records nothing.
+    func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead {
+        SessionRead(snapshot: try await session(id, window: window), data: nil)
     }
 }
 
@@ -395,35 +641,138 @@ struct HTTPEngineAPI: EngineAPI {
         try await get("api/health")
     }
 
+    /// THE UNSETTLED ROWS (#457) — 7 of 291 on the owner's store, where this
+    /// route used to fold and serialise all 291 every three seconds for every
+    /// device attached to the Mac. `LiveSessions.settledCount` says how many it
+    /// held back, which is what draws the shelf that asks for them.
     func liveSessions() async throws -> LiveSessions {
         try await get("api/sessions/live")
     }
 
+    /// And every row, settled ones included — what the settled shelf asks with.
+    ///
+    /// SPELLED AS ITS OWN METHOD rather than a defaulted argument on the one
+    /// above: a default argument does not witness a protocol requirement that
+    /// takes no argument, and both spellings are requirements here.
+    func liveSessions(all: Bool) async throws -> LiveSessions {
+        try await get("api/sessions/live", query: all ? [URLQueryItem(name: "all", value: "1")] : [])
+    }
+
+    /// THE SAME LIST, CONDITIONALLY — and always the NARROW one. `all` is
+    /// deliberately not offered here: the revision counts writes, so it does not
+    /// move when a reader opens the shelf, and a cursor earned against one list
+    /// and spent against the other would be answered "unchanged" and leave the
+    /// shelf empty. The wide ask pays for itself; see the engine's route.
     func liveSessions(since: Int) async throws -> LiveSessions {
         try await get("api/sessions/live", query: [URLQueryItem(name: "since", value: String(since))])
     }
 
-    func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot {
+    /// THE POLL'S READ (#457): conditional on an `ETag`, which — unlike the
+    /// cursor above — carries the MODE, so it is safe for the wide list too.
+    ///
+    /// A 304 IS NOT AN ERROR, and that is why this does not go through
+    /// `perform`: that envelope treats anything outside 2xx as a failure and
+    /// decodes a body, and the cheapest answer here has neither a 2xx nor a
+    /// body. `nil` back means "keep what you have" — never "there is nothing".
+    ///
+    /// THE TAG COMES BACK EVEN ON A 304, because the Mac restates it, and a
+    /// caller that dropped it there would make the next tick a full read.
+    ///
+    /// AND THE BYTES COME BACK WITH IT (#499). They are already in hand here;
+    /// handing them over is what let the store stop re-reading this whole route
+    /// a second time just to warm its cache.
+    ///
+    /// `since` IS THE LEGACY CURSOR, carried so that path keeps its bytes too.
+    /// Callers send one or the other, never both — a cursor is a number about
+    /// the Mac's store and cannot be spent on the wide list.
+    func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead {
         var query: [URLQueryItem] = []
-        if let window {
-            query.append(URLQueryItem(name: "turns", value: String(window.turns)))
-            if let before = window.before {
-                query.append(URLQueryItem(name: "before", value: before))
-            }
+        if all { query.append(URLQueryItem(name: "all", value: "1")) }
+        if let since { query.append(URLQueryItem(name: "since", value: String(since))) }
+        var request = makeRequest(url("api/sessions/live", query: query))
+        if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        // The URL cache stays out of this: the tag bookkeeping is the store's
+        // own, and a cache revalidating underneath it would answer from a copy
+        // this code never saw.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw EngineAPIError.transport(error)
         }
-        return try await get("api/sessions/\(escape(id))", query: query)
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        let fresh = http?.value(forHTTPHeaderField: "Etag")
+        if status == 304 { return LiveSessionsRead(live: nil, etag: fresh ?? etag, data: nil) }
+        guard (200..<300).contains(status) else {
+            if let body = try? JSONDecoder().decode(EngineErrorBody.self, from: data) {
+                throw EngineAPIError.engine(code: body.error.code, message: body.error.message, status: status)
+            }
+            throw EngineAPIError.badResponse(status: status)
+        }
+        // DECODED OFF THE CALLER'S EXECUTOR, exactly as `perform` does it and
+        // for the same reason: the only caller is `@MainActor`, and this is the
+        // list of every unsettled session on the Mac, parsed every three
+        // seconds while anything is live. Going around `perform` to read a 304
+        // must not also go around that.
+        //
+        // A 2xx that does not decode is version skew, not a wrong address —
+        // `incompatible`, exactly as `perform` classifies it.
+        let live = try await Task.detached(priority: .userInitiated) {
+            guard let live = try? JSONDecoder().decode(LiveSessions.self, from: data) else {
+                throw EngineAPIError.incompatible(status: status)
+            }
+            return live
+        }.value
+        // NOT THE BYTES OF AN `unchanged` ANSWER. The cursor's cheap reply is a
+        // 200 carrying no rows, and recording it would replace the phone's copy
+        // with emptiness — the one thing the cache exists not to show.
+        return LiveSessionsRead(live: live, etag: fresh, data: live.unchanged ? nil : data)
+    }
+
+    func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot {
+        try await get("api/sessions/\(escape(id))", query: sessionQuery(window))
+    }
+
+    /// THE SAME READ, KEEPING THE BYTES (#499) — one request that answers the
+    /// screen and records the phone's copy.
+    ///
+    /// The window is whatever the caller asked for, so the cache holds exactly
+    /// what the transcript opened on. It used to hold the UNWINDOWED run — a
+    /// separate GET of up to 4.5 MB, fired straight after a hydrate that had
+    /// deliberately asked for ten turns.
+    func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead {
+        let (data, status) = try await raw(makeRequest(url("api/sessions/\(escape(id))", query: sessionQuery(window))))
+        // Decoded off the caller's executor, exactly as `perform` does it: every
+        // caller here is `@MainActor`, and a session's tool outputs are the
+        // largest parse this app makes.
+        let snapshot: SessionSnapshot = try await Task.detached(priority: .userInitiated) {
+            do {
+                return try JSONDecoder().decode(SessionSnapshot.self, from: data)
+            } catch {
+                throw EngineAPIError.incompatible(status: status)
+            }
+        }.value
+        return SessionRead(snapshot: snapshot, data: data)
+    }
+
+    private func sessionQuery(_ window: SnapshotWindow?) -> [URLQueryItem] {
+        guard let window else { return [] }
+        var query = [URLQueryItem(name: "turns", value: String(window.turns))]
+        if let before = window.before {
+            query.append(URLQueryItem(name: "before", value: before))
+        }
+        return query
     }
 
     func events(_ id: EngineID, after: Int) async throws -> EventPage {
+        // NO `limit` SENT: the engine's own default (200) is the page size this
+        // phone wants, and naming it here would only be a second opinion to
+        // drift from it. The radio is the reason paging matters at all —
+        // 36.5 MB of journal over cellular was the cost #494 removed.
         try await get("api/sessions/\(escape(id))/events", query: [URLQueryItem(name: "after", value: String(after))])
-    }
-
-    func sessionData(_ id: EngineID) async throws -> Data {
-        try await raw(makeRequest(url("api/sessions/\(escape(id))")))
-    }
-
-    func liveSessionsData() async throws -> Data {
-        try await raw(makeRequest(url("api/sessions/live")))
     }
 
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data {
@@ -459,6 +808,100 @@ struct HTTPEngineAPI: EngineAPI {
 
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {
         let _: IgnoredBody = try await send("PATCH", "api/sessions/\(escape(id))", body: patch)
+    }
+
+    // ── THE BUILT-IN AGENT (#531) ────────────────────────────────────────────
+
+    func agent() async throws -> AgentAnswer {
+        try await get("api/agent")
+    }
+
+    func agentThread(after: Int) async throws -> AgentThreadPage {
+        try await get("api/agent/thread", query: [URLQueryItem(name: "after", value: String(after))])
+    }
+
+    func agentThreadTail(limit: Int) async throws -> AgentThreadPage {
+        try await get("api/agent/thread", query: [
+            URLQueryItem(name: "tail", value: "1"),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ])
+    }
+
+    func agentThread(before: Int, limit: Int) async throws -> AgentThreadPage {
+        try await get("api/agent/thread", query: [
+            URLQueryItem(name: "before", value: String(before)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ])
+    }
+
+    func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted {
+        try await post("api/agent/turns", body: ["text": AnyEncodable(text)])
+    }
+
+    func cancelAgentTurn(_ runId: String) async throws {
+        let _: IgnoredBody = try await post("api/agent/turns/\(escape(runId))/cancel", body: [:])
+    }
+
+    func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {
+        let _: IgnoredBody = try await post(
+            "api/agent/requests/\(escape(requestId))", body: ["decision": AnyEncodable(accept ? "accept" : "decline")]
+        )
+    }
+
+    func agentInbox(after: Int, unreadOnly: Bool) async throws -> AgentInboxPage {
+        var query = [URLQueryItem(name: "after", value: String(after))]
+        if unreadOnly { query.append(URLQueryItem(name: "unread", value: "1")) }
+        return try await get("api/agent/inbox", query: query)
+    }
+
+    func markAgentInboxRead(_ ids: [Int]) async throws {
+        let _: IgnoredBody = try await post("api/agent/inbox/read", body: ["ids": AnyEncodable(ids)])
+    }
+
+    func agentModels() async throws -> AgentModelList {
+        try await get("api/agent/models")
+    }
+
+    func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer {
+        try await send("PATCH", "api/agent", body: patch)
+    }
+
+    // ── DICTATION (#544) ─────────────────────────────────────────────────────
+
+    /// POST because it MINTS: every call spends a round trip against the
+    /// transcription service and produces a new credential, and a GET that did
+    /// that would be cached by something eventually. The refusals arrive as
+    /// themselves — 409 is "no key on that Mac", 502 is the service refusing —
+    /// so the button has a sentence rather than a status.
+    func dictationToken() async throws -> DictationTokenAnswer {
+        try await post("api/dictation/token", body: [:])
+    }
+
+    /// POST for the mint's reason: it spends a handshake against the service
+    /// every time it is called. ASKED AFTER A SOCKET DROPS, never before one
+    /// opens — the Mac is not on this phone's network and a pre-flight would
+    /// answer about a different request (#711).
+    func dictationDiagnosis() async throws -> DictationDiagnosisAnswer {
+        try await post("api/dictation/diagnose", body: [:])
+    }
+
+    /// GET because it MINTS NOTHING: it reads a setting and whether a key is
+    /// there. The key never comes back over this wire — `configured` is the
+    /// whole of what is said about it.
+    func dictation() async throws -> DictationAnswer {
+        try await get("api/dictation")
+    }
+
+    /// BY PRESENCE, every field — an absent one is "leave it alone", which is
+    /// what lets the provider picker, the language picker and the key field be
+    /// three separate saves on one screen without any of them undoing another.
+    func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer {
+        var patch: [String: AnyEncodable] = [:]
+        if let provider { patch["provider"] = AnyEncodable(provider) }
+        if let apiKey { patch["apiKey"] = AnyEncodable(apiKey) }
+        if let language { patch["language"] = AnyEncodable(language) }
+        if let vocabulary { patch["vocabulary"] = AnyEncodable(vocabulary) }
+        return try await send("PATCH", "api/dictation", body: patch)
     }
 
     func deleteSession(_ id: EngineID) async throws {

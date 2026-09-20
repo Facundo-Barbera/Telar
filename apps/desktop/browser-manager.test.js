@@ -3,7 +3,7 @@ const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
-const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress } = require("./browser-manager");
+const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress, zoomStep, ZOOM_STEPS, TAB_SELECT_CHORDS } = require("./browser-manager");
 
 class FakeDebugger extends EventEmitter {
   constructor() {
@@ -67,6 +67,16 @@ class FakeWebContents extends EventEmitter {
     this.inspected = [];
     this.edits = [];
     this.downloads = [];
+    // The options menu's page-level verbs (#473): which reloads were asked
+    // for, and the zoom factor the menu reads back.
+    this.reloads = [];
+    this.zoomFactor = 1;
+    // The frozen frame's capture seam (#475) — see `capturePage`.
+    this.captures = [];
+    this.captureGate = null;
+    this.captureError = null;
+    this.captureEmpty = false;
+    this.view = null;
     this.navigationHistory = {
       canGoBack: () => false,
       canGoForward: () => false,
@@ -74,31 +84,6 @@ class FakeWebContents extends EventEmitter {
       goForward: () => {},
     };
     this.windowOpenHandler = null;
-    // The credential probe, per frame: tests set `probeAnswers` to one
-    // answer per frame (false = empty, true = filled, null = probe missing,
-    // an Error = the frame threw).
-    this.probeAnswers = [false];
-    const self = this;
-    this.mainFrame = {
-      get framesInSubtree() {
-        return self.probeAnswers.map((answer) => ({
-          executeJavaScript: (source) => {
-            if (String(source).includes("active.blur()")) {
-              if (answer && typeof answer === "object" && answer.emptyFocused) {
-                answer.blurred = true;
-                answer.probe = false;
-                return Promise.resolve(true);
-              }
-              return Promise.resolve(false);
-            }
-            if (answer === "__hang__") return new Promise(() => {}); // never settles
-            if (answer instanceof Error) return Promise.reject(answer);
-            if (answer && typeof answer === "object" && "probe" in answer) return Promise.resolve(answer.probe);
-            return Promise.resolve(answer);
-          },
-        }));
-      },
-    };
   }
 
   getURL() {
@@ -117,16 +102,51 @@ class FakeWebContents extends EventEmitter {
     this.windowOpenHandler = handler;
   }
 
-  openWindow(url) {
+  /**
+   * `window.open`, as much of Chromium's half of it as the manager's handler
+   * meets (#615). The guest WebContents is built FIRST and handed to
+   * `createWindow` — that ordering is the whole fix, because the guest is what
+   * carries the opener edge — and Chromium, not the handler, navigates it once
+   * the handler has answered. `opener` here stands in for that edge: a real
+   * `window.opener` cannot exist without a renderer, so the relationship is
+   * asserted against real Electron in browser-popup.electron-test.js and only
+   * PLUMBED here.
+   */
+  openWindow(url, details = {}) {
     if (!this.windowOpenHandler) return { action: "allow" };
-    return this.windowOpenHandler({ url });
+    const response = this.windowOpenHandler({
+      url,
+      frameName: "",
+      features: "",
+      disposition: "new-window",
+      ...details,
+    });
+    if (response?.action !== "allow" || typeof response.createWindow !== "function") return response;
+    const guest = new FakeWebContents();
+    guest.opener = this;
+    guest.session = this.session;
+    response.adopted = response.createWindow({ webContents: guest, webPreferences: {} });
+    guest.loadURL(new URL(url).href);
+    return response;
   }
 
-  // A hidden view's capture path (see DesktopBrowserManager.screenshot):
-  // Electron's NativeImage, narrowed to what the manager reads.
+  /**
+   * A hidden view's capture path (see DesktopBrowserManager.screenshot), and
+   * the frozen frame's (#475): Electron's NativeImage, narrowed to what the
+   * manager reads.
+   *
+   * EVERY CALL RECORDS WHETHER ITS VIEW WAS STILL SHOWN, which is how the
+   * capture-before-hide order is pinned without an Electron. `captureGate`
+   * holds a capture open (a never-settling one is the ceiling's case),
+   * `captureError` makes it fail, `captureEmpty` makes it answer a blank
+   * frame.
+   */
   async capturePage() {
+    this.captures.push({ visibleAtCapture: this.view ? this.view.visible : null });
+    if (this.captureGate) await this.captureGate;
+    if (this.captureError) throw this.captureError;
     return {
-      isEmpty: () => false,
+      isEmpty: () => Boolean(this.captureEmpty),
       toPNG: () => Buffer.from("png"),
       toJPEG: () => Buffer.from("jpg"),
     };
@@ -141,7 +161,23 @@ class FakeWebContents extends EventEmitter {
     this.emit("did-stop-loading");
   }
 
-  reload() {}
+  reload() {
+    this.reloads.push("reload");
+  }
+
+  // "Hard reload" is a DIFFERENT call, not a flag on the same one — recorded
+  // separately so a test can tell a cache bypass from an ordinary reload.
+  reloadIgnoringCache() {
+    this.reloads.push("reload-ignoring-cache");
+  }
+
+  setZoomFactor(factor) {
+    this.zoomFactor = factor;
+  }
+
+  getZoomFactor() {
+    return this.zoomFactor;
+  }
 
   // DevTools, as much of them as the manager touches (#423). `inspected` is
   // the point "Inspect" aimed them at.
@@ -191,13 +227,25 @@ class FakeWebContents extends EventEmitter {
 }
 
 class FakeView {
-  constructor() {
-    this.webContents = new FakeWebContents();
+  /** `webContents` present means ADOPTION — Electron's
+   *  `new WebContentsView({ webContents })`, the popup path (#615). */
+  constructor(options = {}) {
+    this.webContents = options.webContents || new FakeWebContents();
+    // The capture records whether its own view was still shown (#475).
+    this.webContents.view = this;
     this.visible = false;
     this.bounds = null;
+    // Every radius this view was TOLD, in order — the manager writes only on
+    // a change, so the list is the claim, not the last value.
+    this.radii = [];
   }
 
   setBackgroundColor() {}
+
+  /** Electron 36+. Recorded rather than performed. */
+  setBorderRadius(radius) {
+    this.radii.push(radius);
+  }
 
   setVisible(visible) {
     this.visible = visible;
@@ -208,11 +256,86 @@ class FakeView {
   }
 }
 
+/**
+ * A tab's own window (#473), as much of one as `openPreview` touches: a
+ * `contentView` to re-parent the view into, a content size for the rect, the
+ * two events the manager listens for, and a `destroy` that emits `closed` the
+ * way Electron's does — which is what makes "the person closed the window" a
+ * thing a test can do.
+ */
+class FakePreviewWindow {
+  constructor(options = {}) {
+    this.options = options;
+    this.destroyed = false;
+    this.focused = 0;
+    this.children = new Set();
+    this.listeners = new Map();
+    this.contentView = {
+      addChildView: (view) => this.children.add(view),
+      removeChildView: (view) => this.children.delete(view),
+    };
+  }
+
+  getContentSize() {
+    return [this.options.width, this.options.height];
+  }
+
+  on(event, listener) {
+    const bound = this.listeners.get(event) || [];
+    bound.push(listener);
+    this.listeners.set(event, bound);
+    return this;
+  }
+
+  emit(event) {
+    for (const listener of this.listeners.get(event) || []) listener();
+  }
+
+  focus() {
+    this.focused += 1;
+  }
+
+  isDestroyed() {
+    return this.destroyed;
+  }
+
+  destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.emit("closed");
+  }
+}
+
 function makeHarness(options = {}) {
   const views = [];
   const messages = [];
   const waits = [];
   const children = new Set();
+  // Every window `openPreview` opened, newest last.
+  const previewWindows = [];
+  // Per partition, the Chromium session "Clear cookies"/"Clear cache" reach.
+  // OPT-IN (options.sessions): handing every test a live session would send
+  // them all through `preparePartition`'s permission install.
+  const sessions = new Map();
+  const sessionFor = (partition) => {
+    if (!sessions.has(partition)) {
+      sessions.set(partition, {
+        partition,
+        storageCleared: [],
+        cachesCleared: 0,
+        async clearStorageData(input) { this.storageCleared.push(input); },
+        async clearCache() { this.cachesCleared += 1; },
+        // `preparePartition` installs the #422 handlers on any session it can
+        // reach; accepted and ignored, so this stays a fixture for clearing
+        // rather than a second permissions harness.
+        setPermissionRequestHandler() {},
+        setPermissionCheckHandler() {},
+        setDisplayMediaRequestHandler() {},
+        setDevicePermissionHandler() {},
+      });
+    }
+    return sessions.get(partition);
+  };
   let nextId = 1;
   // The one Electron seam the page context menu needs (#423): the native Menu
   // it pops, and the clipboard "Copy Link" writes to. Every built menu is kept
@@ -228,6 +351,13 @@ function makeHarness(options = {}) {
         return menu;
       },
     },
+    // The one more Electron seam the options menu needs (#473).
+    BrowserWindow: class extends FakePreviewWindow {
+      constructor(windowOptions) {
+        super(windowOptions);
+        previewWindows.push(this);
+      }
+    },
   });
   const window = {
     isDestroyed: () => false,
@@ -242,8 +372,8 @@ function makeHarness(options = {}) {
   const manager = new DesktopBrowserManager(window, {
     electron,
     createId: () => `tab-${nextId++}`,
-    createView: () => {
-      const view = new FakeView();
+    createView: (viewOptions = {}) => {
+      const view = new FakeView(viewOptions);
       views.push(view);
       return view;
     },
@@ -255,8 +385,10 @@ function makeHarness(options = {}) {
     ...(options.now ? { now: options.now } : {}),
     ...(options.onControlChanged ? { onControlChanged: options.onControlChanged } : {}),
     ...(options.onVisited ? { onVisited: options.onVisited } : {}),
-    ...(options.onCredentialEntryFinished ? { onCredentialEntryFinished: options.onCredentialEntryFinished } : {}),
+    ...(options.onChordScope ? { onChordScope: options.onChordScope } : {}),
+    ...(options.onLoginEntryFinished ? { onLoginEntryFinished: options.onLoginEntryFinished } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
+    ...(options.sessions ? { sessionFor } : {}),
   });
   // Most tests do not care about profiles; a scope auto-binds the explicit
   // `none` profile on first tab so they exercise the rest of the manager.
@@ -267,12 +399,7 @@ function makeHarness(options = {}) {
     if (scopeKey && !manager.profileOf(scopeKey)) manager.declareProfile(scopeKey, "none");
     return origCreate(scopeKey, ...rest);
   };
-  // The automatic-release loop polls on a real interval; with the harness's
-  // immediate-resolve `wait` it would busy-spin. Tests that exercise the loop
-  // pass `lifecycle: true` and drive it with a manual clock; the rest keep the
-  // old explicit model (privacy ends via resumeFromPrivate/autoRelease).
-  if (!options.lifecycle) manager.ensureAutoRelease = () => {};
-  return { children, clipboard, manager, menus, messages, views, waits };
+  return { children, clipboard, manager, menus, messages, previewWindows, sessions, views, waits };
 }
 
 /** Fire a real right-click on a tab's page and return the rows Chromium's menu
@@ -385,11 +512,21 @@ describe("DesktopBrowserManager", () => {
     ]);
   });
 
-  test("opens target-blank web links as managed browser tabs", async () => {
+  test("opens target-blank web links as managed browser tabs, adopting Chromium's own popup", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("session-a", "https://one.example/", "human");
 
-    expect(views[0].webContents.openWindow("https://popup.example/path")).toEqual({ action: "deny" });
+    // ALLOW, not deny (#615). Denying and re-opening the URL ourselves is what
+    // severed `window.opener`; the tab must be Chromium's popup, adopted.
+    const response = views[0].webContents.openWindow("https://popup.example/path");
+    expect(response.action).toBe("allow");
+    // The guest is what the manager hosted — not a second WebContents of its
+    // own, which is the only way the opener edge survives.
+    expect(response.adopted).toBe(views[1].webContents);
+    expect(views[1].webContents.opener).toBe(views[0].webContents);
+    // And it must outlive its opener: hibernating a tab closes its
+    // WebContents, and Electron's default would take the popup with it.
+    expect(response.outlivesOpener).toBe(true);
     await manager.settlePopupTabs();
 
     const state = manager.state("session-a");
@@ -399,6 +536,36 @@ describe("DesktopBrowserManager", () => {
     ]);
   });
 
+  test("a popup keeps the OPENER's profile, not whichever one the session switched to", async () => {
+    const { manager, views } = makeHarness();
+    manager.declareProfile("session-a", `project_${"a".repeat(32)}`);
+    await manager.createTab("session-a", "https://one.example/", "human");
+    const opener = manager.scopeTabs("session-a")[0];
+    // The person switches this session's profile while the sign-in is open.
+    // Already-open tabs keep their identity (setScopeProfile aims the NEXT
+    // one) — and a popup belongs to the page that asked for it, not to "next".
+    const other = manager.profiles.create({ label: "Personal" });
+    manager.setScopeProfile("session-a", other.id);
+
+    views[0].webContents.openWindow("https://popup.example/oauth");
+    await manager.settlePopupTabs();
+
+    const popup = manager.scopeTabs("session-a")[1];
+    expect(popup.partition).toBe(opener.partition);
+    expect(popup.profileId).toBe(opener.profileId);
+    expect(popup.partition).not.toBe(manager.partitionOf("session-a"));
+  });
+
+  test("a popup past the per-session tab limit is refused, and opens nothing", async () => {
+    const { manager, views } = makeHarness();
+    for (let i = 0; i < 12; i += 1) await manager.createTab("session-a", `https://tab${i}.example/`, "human");
+
+    expect(views[0].webContents.openWindow("https://popup.example/oauth")).toEqual({ action: "deny" });
+    await manager.settlePopupTabs();
+
+    expect(manager.state("session-a").tabs).toHaveLength(12);
+  });
+
   test("keeps agent-triggered popups off the human's current browser tab", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("session-a", "https://human.example/", "human");
@@ -406,7 +573,7 @@ describe("DesktopBrowserManager", () => {
     const agentTab = manager.scopeTabs("session-a")[1];
     agentTab.agentBusy = 1;
 
-    expect(views[1].webContents.openWindow("https://popup.example/oauth")).toEqual({ action: "deny" });
+    expect(views[1].webContents.openWindow("https://popup.example/oauth").action).toBe("allow");
     await manager.settlePopupTabs();
     agentTab.agentBusy = 0;
 
@@ -588,6 +755,51 @@ describe("DesktopBrowserManager", () => {
         .filter((command) => command.method === "Input.dispatchMouseEvent")
         .map((command) => command.params.type),
     ).toEqual(["mouseMoved", "mousePressed", "mouseReleased"]);
+  });
+
+  test("snapshot narrows to a ref's subtree, and refuses a ref it never minted", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+
+    // The ref has to be resolved against the PREVIOUS snapshot's refs, which
+    // the next render clears — the one ordering subtlety in `snapshot`.
+    expect(textOf(await manager.callTool("session-a", "browser_snapshot"))).toContain('button "Count 0" [ref=e1]');
+    const narrowed = await manager.callTool("session-a", "browser_snapshot", { target: "e1" });
+    expect(narrowed.isError).toBeUndefined();
+    // Only the addressed subtree, with the ref minted fresh inside it.
+    expect(textOf(narrowed)).toContain('button "Count 0" [ref=e1]');
+    // The page header stays (it says WHERE the region is); the document root
+    // above the addressed node does not.
+    expect(textOf(narrowed)).toContain("Page: Fixture");
+    expect(textOf(narrowed)).not.toContain("- RootWebArea");
+    expect(textOf(await manager.callTool("session-a", "browser_snapshot"))).toContain("- RootWebArea");
+    // The ref still works afterwards: the re-mint is what keeps it usable.
+    expect((await manager.callTool("session-a", "browser_click", { target: "e1" })).isError).toBeUndefined();
+
+    // A ref from no snapshot is named, not quietly widened to the document.
+    await manager.callTool("session-a", "browser_snapshot");
+    const unknown = await manager.callTool("session-a", "browser_snapshot", { target: "e404" });
+    expect(unknown.isError).toBe(true);
+    expect(textOf(unknown)).toContain("Unknown browser target e404");
+  });
+
+  test("snapshot depth stops at a level; console level is a floor the host now honours", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+
+    // depth 0 is the root alone — the button is one level down.
+    const shallow = await manager.callTool("session-a", "browser_snapshot", { depth: 0 });
+    expect(textOf(shallow)).toContain("Fixture");
+    expect(textOf(shallow)).not.toContain("Count 0");
+    expect(textOf(await manager.callTool("session-a", "browser_snapshot", { depth: 1 }))).toContain("Count 0");
+
+    const tab = manager.scopeTabs(manager.requireScope("session-a"))[0];
+    tab.console.push({ level: "debug", text: "chatter" }, { level: "error", text: "boom" });
+    expect(textOf(await manager.callTool("session-a", "browser_console_messages", { level: "error" }))).toBe("[error] boom");
+    // The schema has defaulted to "info" since the tool shipped; the host used
+    // to answer with everything regardless.
+    expect(textOf(await manager.callTool("session-a", "browser_console_messages", { level: "info" }))).not.toContain("chatter");
+    expect(textOf(await manager.callTool("session-a", "browser_console_messages", { all: true }))).toContain("chatter");
   });
 
   test("returns a bounded tool error for stale accessibility refs", async () => {
@@ -1140,150 +1352,42 @@ describe("the shared-browser interaction model — human input wins, agent defer
   });
 });
 
-describe("the credential boundary — private interaction gates every browser tool in every scope", () => {
-  test("while private, reads and mutations in ANY scope are refused with the reason; logs are not captured", async () => {
+/**
+ * THE LOCK-DOWN THAT IS GONE (#524). A person entering credentials used to
+ * pause EVERY agent browser tool in EVERY session until a focus-aware probe
+ * said the entry was over — and when a page would not answer that probe, the
+ * browser was dead in every session at once with no way out but killing Telar.
+ * The feature is removed, not softened: there is no flag and no degraded mode.
+ *
+ * What a login entry still does is tell the login offer about itself, and
+ * nothing else. What is still refused is an EXTENSION PAGE — a password
+ * manager's popup or unlock is not a page an agent reads — which is a rule
+ * about the target, not about what a person is doing.
+ */
+describe("a sign-in never pauses a browser tool", () => {
+  test("a tool call during a credential entry returns the tool's own result", async () => {
     const { manager, views } = makeHarness();
-    await manager.createTab("s1", "https://one.example");
+    await manager.createTab("s1", "https://login.example");
     await manager.createTab("s2", "https://two.example");
-    await manager.callTool("s2", "browser_snapshot", {});
-    manager.privacy.begin("1Password", "s1");
-    for (const [scope, name, args] of [["s1", "browser_snapshot", {}], ["s2", "browser_snapshot", {}], ["s2", "browser_click", { target: "e1" }], ["s2", "browser_take_screenshot", {}], ["s2", "browser_console_messages", {}], ["s2", "browser_tabs", { action: "list" }]]) {
+    // The whole of what used to lock the browser down: the extension popup is
+    // open, and the page's preload reports a value landing in a password field.
+    manager.addUiHold("p:popup", "1Password");
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "fill" });
+    for (const [scope, name, args] of [["s1", "browser_snapshot", {}], ["s2", "browser_snapshot", {}], ["s1", "browser_click", { target: "e1" }], ["s2", "browser_take_screenshot", {}], ["s1", "browser_console_messages", {}], ["s2", "browser_tabs", { action: "list" }]]) {
       const result = await manager.callTool(scope, name, args);
-      expect(result.isError).toBe(true);
-      // Actionable + retriable, not a terminal unexplained failure.
-      expect(result.retriable).toBe(true);
-      expect(textOf(result)).toMatch(/signing in|resume automatically/i);
+      expect(result.isError).toBeUndefined();
     }
-    // A console line emitted during privacy is dropped, not stored.
-    const debug = views[1].webContents.debugger;
-    await manager.ensureDebugger(manager.activeTab("s2"));
-    debug.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: "secret-ish" }] });
-    expect(manager.activeTab("s2").console).toEqual([]);
-    expect(manager.state("s2").privacy).toMatchObject({ private: true, reason: "1Password" });
-  });
-
-  test("a read in flight when privacy begins is discarded on return, and resume makes every page stale", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s", "https://example.com");
-    await manager.callTool("s", "browser_snapshot", {});
-    let release;
-    const gate = new Promise((resolve) => (release = resolve));
-    const debug = views[0].webContents.debugger;
-    const original = debug.sendCommand.bind(debug);
-    debug.sendCommand = async (method, params) => {
-      if (method === "Accessibility.getFullAXTree") await gate; // every tree read waits on ONE gate
-      return original(method, params);
-    };
-    const pending = manager.callTool("s", "browser_snapshot", {});
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    manager.privacy.begin("1Password", "s");
-    release();
-    const result = await pending;
-    expect(result.isError).toBe(true);
-    expect(result.discarded).toBe(true);
-    await manager.resumeFromPrivate();
-    expect(manager.state("s").privacy.private).toBe(false);
-    // The agent's earlier snapshot no longer blesses the page.
-    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
-    expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toContain("a private interaction ended");
-    await manager.callTool("s", "browser_snapshot", {});
-    expect((await manager.callTool("s", "browser_click", { target: "e1" })).isError).toBeUndefined();
-  });
-
-  test("a credential field in use begins privacy on its own — inline fill included — and Resume is refused while a password field is still filled", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s", "https://example.com");
-    await manager.callTool("s", "browser_snapshot", {});
-    // The page's preload reports a fill landing in a password field.
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    expect(manager.state("s").privacy).toMatchObject({ private: true, reason: "credentials filled" });
-    expect((await manager.callTool("s", "browser_snapshot", {})).isError).toBe(true);
-    // The page still holds a filled password field: resume is refused.
-    views[0].webContents.probeAnswers = [true];
-    const refused = await manager.resumeFromPrivate();
-    expect(refused.private).toBe(true);
-    expect(refused.refused).toContain("credential field is still in use");
-    // The human submits/clears; now resume goes through and the page is stale.
-    views[0].webContents.probeAnswers = [false];
-    const ended = await manager.resumeFromPrivate();
-    expect(ended.private).toBe(false);
-    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
-    expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toContain("a private interaction ended");
-  });
-
-  test("Resume asks EVERY frame of EVERY tab and fails closed: a filled iframe, a missing probe, or a throwing frame all refuse — even on a tab that never reported a field", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("a", "https://one.example");
-    await manager.createTab("b", "https://two.example");
-    manager.privacy.begin("1Password", "a");
-    // Tab b never reported a credential field; its login iframe is filled.
-    views[1].webContents.probeAnswers = [false, true];
-    expect((await manager.resumeFromPrivate()).refused).toContain("credential field is still in use");
-    // A frame whose probe is missing cannot vouch for itself.
-    views[1].webContents.probeAnswers = [false, null];
-    expect((await manager.resumeFromPrivate()).refused).toBeDefined();
-    // A frame that throws (torn down mid-question) is no better.
-    views[1].webContents.probeAnswers = [new Error("frame gone")];
-    expect((await manager.resumeFromPrivate()).refused).toBeDefined();
-    // A tab with no frames at all cannot answer either.
-    views[1].webContents.probeAnswers = [];
-    expect((await manager.resumeFromPrivate()).refused).toBeDefined();
-    views[1].webContents.probeAnswers = [false, false];
-    expect((await manager.resumeFromPrivate()).private).toBe(false);
-  });
-
-  test("a frame whose safety probe NEVER resolves refuses the resume with an actionable message — it does not hang", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.privacy.begin("1Password", "s");
-    // A background frame wedged so its executeJavaScript never settles.
-    views[0].webContents.probeAnswers = [false, "__hang__"];
-    const started = Date.now();
-    const result = await manager.resumeFromPrivate();
-    // Resolved (bounded), refused, and told the human what to do.
-    expect(Date.now() - started).toBeLessThan(4000);
-    expect(result.private).toBe(true);
-    expect(result.refused).toContain("not responding to the safety check");
-    expect(result.refused).toContain("Reload or close it");
-    // The page settles (frame responds clean); resume now goes through.
-    views[0].webContents.probeAnswers = [false, false];
-    expect((await manager.resumeFromPrivate()).private).toBe(false);
-  });
-
-  test("a clean page after sign-in (no filled fields) resumes and makes every page stale", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s", "https://example.com");
-    await manager.callTool("s", "browser_snapshot", {});
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    expect(manager.state("s").privacy.private).toBe(true);
-    // Signed in: the form submitted, the password field is gone/empty.
-    views[0].webContents.probeAnswers = [false];
-    const ended = await manager.resumeFromPrivate();
-    expect(ended.private).toBe(false);
-    expect(ended.refused).toBeUndefined();
-    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
-    expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toContain("a private interaction ended");
-  });
-
-  test("privacy beginning drops every tab's captured console and network log, in every scope", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s1", "https://one.example");
-    await manager.createTab("s2", "https://two.example");
-    for (const [i, scope] of [[0, "s1"], [1, "s2"]]) {
-      await manager.ensureDebugger(manager.activeTab(scope));
-      views[i].webContents.debugger.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: "before" }] });
-      views[i].webContents.debugger.emit("message", {}, "Network.requestWillBeSent", { request: { method: "GET", url: "https://login.example/?token=abc" } });
-    }
+    // And a console line from the page is captured, not dropped on the floor.
+    await manager.ensureDebugger(manager.activeTab("s1"));
+    views[0].webContents.debugger.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: "still logging" }] });
     expect(manager.activeTab("s1").console).toHaveLength(1);
-    expect(manager.activeTab("s2").network).toHaveLength(1);
-    manager.privacy.begin("1Password", "s1");
-    for (const scope of ["s1", "s2"]) {
-      expect(manager.activeTab(scope).console).toEqual([]);
-      expect(manager.activeTab(scope).network).toEqual([]);
-    }
+  });
+
+  test("the state the renderer reads carries no pause to draw", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://login.example");
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "fill" });
+    expect(manager.state("s").privacy).toBeUndefined();
   });
 
   test("a read or navigation whose tab lands on an extension page DURING the call is refused, not returned", async () => {
@@ -1309,38 +1413,6 @@ describe("the credential boundary — private interaction gates every browser to
     const nav = await manager.callTool("s", "browser_navigate", { url: "https://sso.example/start" });
     expect(nav.isError).toBe(true);
     expect(textOf(nav)).toContain("now showing an extension page");
-  });
-
-  test("a QUEUED or IN-FLIGHT mutation stops at its next step when privacy begins under it", async () => {
-    const clock = { t: 1_000_000 };
-    const { manager, views } = makeHarness({ now: () => clock.t, wait: async (ms) => { clock.t += ms; } });
-    await manager.createTab("s", "https://example.com");
-    await manager.callTool("s", "browser_snapshot", {});
-    const debug = views[0].webContents.debugger;
-    const original = debug.sendCommand.bind(debug);
-    let inserted = 0;
-    debug.sendCommand = async (method, params) => {
-      const result = await original(method, params);
-      if (method === "Input.insertText" && ++inserted === 2) manager.privacy.begin("credential entry", "s");
-      return result;
-    };
-    const typing = await manager.callTool("s", "browser_type", { target: "e1", text: "hello", slowly: true });
-    expect(typing.isError).toBe(true);
-    // Either the mid-action checkpoint ("Stopped:") or the on-return discard —
-    // both carry the sign-in reason; the point is it did not run to completion.
-    expect(textOf(typing)).toMatch(/sign-in|Stopped/);
-    expect(inserted).toBeLessThan(5);
-    // Queued behind a human deferral, privacy begins before it runs: refused before any input.
-    await manager.resumeFromPrivate();
-    await manager.callTool("s", "browser_snapshot", {});
-    manager.noteHumanInput("s", { force: true });
-    const before = debug.commands.length;
-    const queued = manager.callTool("s", "browser_click", { target: "e1" });
-    manager.privacy.begin("1Password", "s");
-    clock.t += 5_000;
-    const result = await queued;
-    expect(result.isError).toBe(true);
-    expect(debug.commands.slice(before).filter((c) => c.method === "Input.dispatchMouseEvent")).toHaveLength(0);
   });
 
   test("an extension page is never a target: not read, not acted on, not navigated to, and named but not exposed in the list", async () => {
@@ -1395,125 +1467,83 @@ describe("hidden screenshots", () => {
   }, 15_000);
 });
 
-describe("the automatic credential lifecycle", () => {
-  // Real (tiny) timers so the poll loop actually yields between iterations
-  // instead of busy-spinning; the loop cadence is compressed to ~1ms.
-  function lifecycleHarness() {
-    return makeHarness({ lifecycle: true, wait: async () => new Promise((r) => setTimeout(r, 1)) });
-  }
-  // Let a few poll cycles run and observe the result.
-  const settle = async () => { await new Promise((r) => setTimeout(r, 40)); };
-  // Wait until a predicate holds (bounded) — for transitions gated on a real
-  // probe timeout (~750ms), not just a poll tick.
-  // 15 s, the bound the engine suite's `eventually`/`until` helpers carry,
-  // under the 20 s bunfig ceiling: every caller asserts the predicate came
-  // true, so a healthy run leaves on the first passing poll and only a loaded
-  // runner ever spends the budget (#458).
-  const until = async (fn, ms = 15_000) => {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) { if (fn()) return true; await new Promise((r) => setTimeout(r, 20)); }
-    return fn();
-  };
-
-  test("a credential fill holds privacy until a clean probe, then auto-releases (no manual Resume)", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [true]; // filled
-    expect(manager.state("s").privacy.private).toBe(true);
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(true); // still filled → held
-    // The person submits: fields clear. The loop auto-releases with no Resume.
-    views[0].webContents.probeAnswers = [false];
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(false);
-    // The agent's next mutation is stale until it re-observes.
-    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
-    expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toContain("a private interaction ended");
+/**
+ * THE COCKPIT'S CAMERA (#474) — `capture`, which the address row's camera
+ * button and the annotate overlay's frozen frame both go through.
+ *
+ * WHAT THESE PIN is the one thing a screenshot under a fit scale gets wrong:
+ * the SCALE. A page laid out at 1280×800 inside a 640px column must come back
+ * 1280×800, because the overlay draws on those pixels and a person marking up
+ * a third-size frame in the corner of a blank one is the bug.
+ */
+describe("the cockpit's own capture", () => {
+  test("a fixed tab under a 0.5 fit scale is captured at the tab's own scale, not the panel's", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    await manager.resizeTab(manager.activeTab("s"), { preset: "default" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The panel is showing it at half size...
+    expect(manager.state("s").presentation.scale).toBe(0.5);
+    const shot = await manager.capture("s");
+    // ...and the capture is the INTRINSIC page: an explicit scale-1 clip at
+    // the tab's own viewport, which is what travels back with the image.
+    const clip = views[0].webContents.debugger.commands.filter((c) => c.method === "Page.captureScreenshot").at(-1);
+    expect(clip.params).toMatchObject({ clip: { x: 0, y: 0, width: 1280, height: 800, scale: 1 }, captureBeyondViewport: true, fromSurface: true });
+    expect(shot).toMatchObject({ data: "cG5n", mimeType: "image/png", url: "https://one.example/", width: 1280, height: 800, fullPage: false });
   });
 
-  test("a focused-but-empty password field keeps privacy (active entry), then releases when blurred/cleared", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "focus" });
-    views[0].webContents.probeAnswers = [true]; // entry-active probe: focused OR filled
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(true);
-    views[0].webContents.probeAnswers = [false];
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(false);
+  test("it reads the HUMAN's active tab, never the agent's", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    // A tab the agent opened and works in; the human stays on the first.
+    await manager.callTool("s", "browser_tabs", { action: "new", url: "https://agent.example/" });
+    await manager.action("s", { action: "select", index: 0 });
+    expect(manager.activeTab("s").url).toBe("https://one.example/");
+    expect((await manager.capture("s")).url).toBe("https://one.example/");
   });
 
-  test("closing extension chrome blurs empty credential focus so privacy can auto-release", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    const password = { probe: true, emptyFocused: true, blurred: false };
-    views[0].webContents.probeAnswers = [password];
-    manager.addUiHold("p:popup", "1Password");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "focus" });
-    expect(manager.state("s").privacy.private).toBe(true);
-    manager.removeUiHold("p:popup");
-    expect(await until(() => manager.state("s").privacy.private === false)).toBe(true);
-    expect(password.blurred).toBe(true);
+  test("a full-page capture asks for the document's height, and says it did", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    manager.setBounds("s", { x: 0, y: 0, width: 1280, height: 800 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const debug = views[0].webContents.debugger;
+    const originalSend = debug.sendCommand.bind(debug);
+    debug.sendCommand = async (method, params) => {
+      if (method === "Runtime.evaluate" && String(params?.expression).includes("scrollHeight")) return { result: { value: { width: 1280, height: 4000 } } };
+      return originalSend(method, params);
+    };
+    const shot = await manager.capture("s", { fullPage: true });
+    expect(shot.fullPage).toBe(true);
+    expect(debug.commands.filter((c) => c.method === "Page.captureScreenshot").at(-1).params.clip).toMatchObject({ height: 4000, scale: 1 });
   });
 
-  test("opening and closing 1Password never pauses browser tools, even if page probes cannot answer", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    views[0].webContents.probeAnswers = [new Promise(() => {})];
-    manager.addUiHold("p:popup", "1Password");
-    manager.addUiHold("w:extwin", "1Password");
-    expect(manager.state("s").privacy.private).toBe(false);
-    expect((await manager.callTool("s", "browser_tabs", { action: "list" })).isError).not.toBe(true);
-    manager.removeUiHold("p:popup");
-    manager.removeUiHold("w:extwin");
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(false);
+  test("element boxes ride the same call, so the frame and what can be picked on it are one moment", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const debug = views[0].webContents.debugger;
+    const originalSend = debug.sendCommand.bind(debug);
+    debug.sendCommand = async (method, params) => {
+      if (method === "Runtime.evaluate" && String(params?.expression).includes("getBoundingClientRect")) {
+        return { result: { value: [{ role: "button", name: "Save", selector: "#save", x: 10, y: 20, width: 80, height: 32 }] } };
+      }
+      return originalSend(method, params);
+    };
+    expect((await manager.capture("s", { elements: true })).elements).toEqual([
+      { role: "button", name: "Save", selector: "#save", x: 10, y: 20, width: 80, height: 32 },
+    ]);
+    // Not asked for, not gathered — the camera button pays for no DOM walk.
+    expect((await manager.capture("s")).elements).toBeUndefined();
   });
 
-  test("a fill landing WHILE a popup is open keeps privacy after the popup closes", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.addUiHold("p:popup", "1Password");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [true]; // inline fill left a filled field
-    manager.removeUiHold("p:popup");
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(true); // fill still holds
-    views[0].webContents.probeAnswers = [false];
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(false);
-  });
-
-  test("a probe that never answers keeps privacy and marks it stuck — it never auto-releases on timeout", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [false, "__hang__"];
-    // The wedged frame's probe must time out (~750ms) before "stuck" is set.
-    expect(await until(() => manager.state("s").privacy.stuck === true)).toBe(true);
-    expect(manager.state("s").privacy.private).toBe(true);
-    // The agent gets the specific stuck recovery, not a promise of auto-clear.
-    const busy = await manager.callTool("s", "browser_snapshot", {});
-    expect(busy.isError).toBe(true);
-    expect(textOf(busy)).toContain("not responding");
-    // Recovery: the page clears; privacy releases and stuck lifts.
-    views[0].webContents.probeAnswers = [false];
-    expect(await until(() => manager.state("s").privacy.private === false)).toBe(true);
-    expect(manager.state("s").privacy.stuck).toBe(false);
-  });
-
-  test("destroy stops the loop", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [true];
-    await settle();
-    manager.destroy();
-    expect(manager._autoReleaseRunning === false || manager._disposed === true).toBe(true);
-    await settle();
-    expect(manager._disposed).toBe(true);
+  test("a blank tab and an empty scope are refused with a sentence, not an empty PNG", async () => {
+    const { manager } = makeHarness();
+    await expect(manager.capture("s")).rejects.toThrow(/no page here/i);
+    await manager.createTab("s", "about:blank");
+    await expect(manager.capture("s")).rejects.toThrow(/no page loaded/i);
   });
 });
 
@@ -2166,7 +2196,7 @@ describe("navigation replacement — ERR_ABORTED from a superseded load is not a
 });
 
 describe("the start page's contract — onVisited and the hidden blank view", () => {
-  test("onVisited fires for a committed http(s) top-level navigation only: not blank, not an error status, not an extension page, not while private", async () => {
+  test("onVisited fires for a committed http(s) top-level navigation only: not blank, not an error status, not an extension page", async () => {
     const visited = [];
     const { manager, views } = makeHarness({ onVisited: (scopeKey, url) => visited.push([scopeKey, url]) });
     await manager.createTab("s", "https://one.example/");
@@ -2175,8 +2205,6 @@ describe("the start page's contract — onVisited and the hidden blank view", ()
     wc.url = "https://err.example/"; wc.emit("did-navigate", null, "https://err.example/", 404);
     wc.url = "chrome-extension://abc/x.html"; wc.emit("did-navigate", null, "chrome-extension://abc/x.html", 200);
     wc.url = "about:blank"; wc.emit("did-navigate", null, "about:blank", 0);
-    manager.privacy.begin("popup", "s");
-    wc.url = "https://login.example/"; wc.emit("did-navigate", null, "https://login.example/", 200);
     expect(visited).toEqual([["s", "https://one.example/"], ["s", "https://two.example/path"]]);
   });
 
@@ -2285,6 +2313,121 @@ describe("bounds are per scope — a stale scope's publish never moves the visib
     await manager.activeTab("B").geometry.queue;
     expect(manager.visibleScopeKey).toBe("B");
     expect(views[1].visible).toBe(true);
+  });
+});
+
+/**
+ * #475 — THE PAGE FILLS THE PANEL, AND STAYS PUT BEHIND A MENU.
+ *
+ * Two complaints, one shape: the native view is composited ABOVE the cockpit's
+ * DOM, so neither the panel's rounded corner nor a menu drawn over it means
+ * anything to it. The corner it has to be TOLD (the renderer publishes it with
+ * the rect, because a CSS token is not something the main process can read),
+ * and the menu it has to be taken down for — which is what made the page blink
+ * out on every ⋯, and what the frozen frame replaces.
+ */
+describe("the panel's corner, and the frozen frame a menu opens over", () => {
+  /** A visible scope showing one real page in a real panel rect. */
+  async function shown(bounds = {}) {
+    const harness = makeHarness();
+    await harness.manager.createTab("s", "https://example.com/");
+    harness.manager.setBounds("s", { x: 12, y: 40, width: 640, height: 400, ...bounds });
+    await harness.manager.setVisible("s", true);
+    const tab = harness.manager.activeTab("s");
+    await tab.geometry.queue;
+    return { ...harness, tab, view: harness.views[0] };
+  }
+
+  test("the radius the renderer publishes is written to the view, and only when it changes", async () => {
+    const { manager, view } = await shown({ radius: 14 });
+    expect(view.radii.at(-1)).toBe(14);
+
+    // The renderer republishes the SAME rect as its self-heal, on every
+    // layout change and every frame of a panel animation. Re-rounding there
+    // would be a compositor change per frame for nothing.
+    const written = view.radii.length;
+    manager.setBounds("s", { x: 12, y: 40, width: 640, height: 400, radius: 14 });
+    await manager.activeTab("s").geometry.queue;
+    expect(view.radii.length).toBe(written);
+
+    // A device toolbar publishes 0: a fixed viewport's stage is centred
+    // inside a padded host and never reaches the panel's corner.
+    manager.setBounds("s", { x: 12, y: 40, width: 640, height: 400, radius: 0 });
+    await manager.activeTab("s").geometry.queue;
+    expect(view.radii.at(-1)).toBe(0);
+  });
+
+  test("an older renderer, which publishes no radius at all, leaves the view square", async () => {
+    const { view } = await shown();
+    expect(view.radii.every((radius) => radius === 0)).toBe(true);
+  });
+
+  test("a tab in a window of its own is square — the panel's corner is not its", async () => {
+    const { manager, view } = await shown({ radius: 14 });
+    expect(view.radii.at(-1)).toBe(14);
+    await manager.action("s", { action: "preview" });
+    await manager.applyGeometry(manager.scopeTabs("s")[0]);
+    expect(view.radii.at(-1)).toBe(0);
+  });
+
+  /**
+   * THE ORDER IS THE WHOLE POINT, and it is why freezing is one call rather
+   * than a capture the renderer follows with a hide. A view that is already
+   * down has no compositor frame to give — asking it for one is the blink
+   * this exists to remove, with a stall on top.
+   */
+  test("the capture finishes while the page is still shown, and the hide follows it", async () => {
+    const { manager, tab, view } = await shown({ radius: 14 });
+    let release;
+    tab.view.webContents.captureGate = new Promise((resolve) => { release = resolve; });
+
+    const freezing = manager.freezeView("s");
+    await Promise.resolve();
+    expect(tab.view.webContents.captures).toEqual([{ visibleAtCapture: true }]);
+    expect(view.visible).toBe(true);
+
+    release();
+    const frame = await freezing;
+    expect(frame).toEqual({
+      data: Buffer.from("png").toString("base64"),
+      mimeType: "image/png",
+      // The view's own rect, in the window coordinates `setBounds` was given,
+      // so the renderer can paint the frame exactly where the page was.
+      rect: { x: 12, y: 40, width: 640, height: 400 },
+    });
+    expect(view.visible).toBe(false);
+  });
+
+  test("a capture that outruns the ceiling hides plainly, the way it did before the frame existed", async () => {
+    const { manager, tab, view } = await shown({ radius: 14 });
+    // A page that never answers: the menu still has to open.
+    tab.view.webContents.captureGate = new Promise(() => {});
+    expect(await manager.freezeView("s")).toBeNull();
+    expect(view.visible).toBe(false);
+  });
+
+  test("a capture that fails, and one that comes back blank, hide plainly too", async () => {
+    const failing = await shown({ radius: 14 });
+    failing.tab.view.webContents.captureError = new Error("no frame");
+    expect(await failing.manager.freezeView("s")).toBeNull();
+    expect(failing.view.visible).toBe(false);
+
+    const empty = await shown({ radius: 14 });
+    empty.tab.view.webContents.captureEmpty = true;
+    expect(await empty.manager.freezeView("s")).toBeNull();
+    expect(empty.view.visible).toBe(false);
+  });
+
+  test("a blank tab is never captured — the start page is DOM, and its view is already down", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s");
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400, radius: 14 });
+    await manager.setVisible("s", true);
+    await manager.activeTab("s").geometry.queue;
+
+    expect(await manager.freezeView("s")).toBeNull();
+    expect(views[0].webContents.captures).toEqual([]);
+    expect(views[0].visible).toBe(false);
   });
 });
 
@@ -2483,20 +2626,19 @@ test("only an interruption is reported as the human taking the browser", async (
 // The manager's half of login-offer.js: WHEN a capture is taken (a value in a
 // credential field, never mere focus), WHAT it holds (the tab's top-level
 // address and identity at that moment — metadata only), and WHEN it is handed
-// on (the automatic release that ends the private window). The offer's own
+// on (the tab leaving the page the value was typed into). The offer's own
 // decisions are covered in login-offer.test.js and login-offer-flow.test.js.
 describe("the login offer capture", () => {
   test("an entry captures the tab's address and identity; focus captures nothing", async () => {
-    const finished = [];
     const clock = { t: 50_000 };
-    const { manager, views } = makeHarness({ now: () => clock.t, onCredentialEntryFinished: (capture) => finished.push(capture) });
+    const { manager, views } = makeHarness({ now: () => clock.t });
     await manager.createTab("s", "https://accounts.example.com/signin?next=/inbox");
     const wc = views[0].webContents;
 
-    manager.noteCredentialFieldFromWebContents(wc, { kind: "focus" });
+    manager.noteLoginEntryFromWebContents(wc, { kind: "focus" });
     expect(manager.heldLoginCapture).toBeNull();
 
-    manager.noteCredentialFieldFromWebContents(wc, { kind: "fill" });
+    manager.noteLoginEntryFromWebContents(wc, { kind: "fill" });
     expect(manager.heldLoginCapture).toMatchObject({
       origin: "https://accounts.example.com",
       tabUid: manager.scopeTabs("s")[0].id,
@@ -2506,32 +2648,36 @@ describe("the login offer capture", () => {
   });
 
   test("the capture is taken AT ENTRY and a later navigation does not move it", async () => {
-    const { manager, views } = makeHarness();
+    const finished = [];
+    const { manager, views } = makeHarness({ onLoginEntryFinished: (capture) => finished.push(capture) });
     await manager.createTab("s", "https://accounts.example.com/signin");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "input" });
-    // The sign-in redirects; the held capture still names the typed-into page.
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "input" });
+    // The sign-in redirects; the capture handed on still names the typed-into
+    // page, not where the redirect landed.
     await views[0].webContents.loadURL("https://mail.example.com/u/0");
-    expect(manager.heldLoginCapture.origin).toBe("https://accounts.example.com");
+    expect(finished.at(-1)?.origin ?? manager.heldLoginCapture.origin).toBe("https://accounts.example.com");
   });
 
-  test("the automatic release hands the capture on, once", async () => {
+  test("leaving the page hands the capture on, once", async () => {
     const finished = [];
-    const { manager, views } = makeHarness({ onCredentialEntryFinished: (capture) => finished.push(capture) });
-    await manager.createTab("s", "https://accounts.example.com/signin");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "input" });
-    manager.autoRelease();
+    const { manager, views } = makeHarness({ onLoginEntryFinished: (capture) => finished.push(capture) });
+    const tab = await manager.createTab("s", "https://accounts.example.com/signin");
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "input" });
+    // Nothing is asked while the person is still on the form.
+    expect(finished.length).toBe(0);
+    manager.noteNavigation(tab);
     expect(finished.length).toBe(1);
     expect(finished[0].origin).toBe("https://accounts.example.com");
     expect(manager.heldLoginCapture).toBeNull();
-    // A release with nothing held (the next one) hands nothing on.
-    manager.autoRelease();
+    // A later navigation with nothing held hands nothing on.
+    manager.noteNavigation(tab);
     expect(finished.length).toBe(1);
   });
 
   test("a page that cannot carry a grant is never captured", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("s", "about:blank");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "input" });
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "input" });
     expect(manager.heldLoginCapture).toBeNull();
   });
 
@@ -2591,6 +2737,48 @@ describe("what the main process holds — the heap log's counts (#296)", () => {
       await manager.wakeTab(tab);
     }
     expect(manager.diagnostics()).toMatchObject({ liveViews: 1, wcListeners: fresh });
+  });
+});
+
+/**
+ * ISSUE #487. What the runaway-worker watchdog asks the manager: which origins
+ * still have a page on screen, per partition. Everything else about the
+ * decision is pure and lives in service-worker-watchdog.test.js.
+ */
+describe("the origins with a live page, per partition (#487)", () => {
+  test("a live tab's origin answers for its partition; a hibernated one does not", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://github.com/facundo/telar");
+    await manager.createTab("s", "https://www.youtube.com/watch?v=1");
+    const partition = manager.partitionOf("s");
+
+    expect(manager.liveOriginsByPartition().get(partition)).toEqual(
+      new Set(["https://github.com", "https://www.youtube.com"]),
+    );
+
+    // THE WHOLE POINT: the page closes, the worker does not. A hibernated tab
+    // must stop vouching for its origin or every runaway looks busy.
+    manager.requestHibernate(manager.scopeTabs("s")[0]);
+    expect(manager.liveOriginsByPartition().get(partition)).toEqual(new Set(["https://www.youtube.com"]));
+
+    manager.requestHibernate(manager.scopeTabs("s")[1]);
+    expect(manager.liveOriginsByPartition().has(partition)).toBe(false);
+  });
+
+  test("a page with no origin of its own vouches for nothing", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "about:blank");
+    expect(manager.liveOriginsByPartition().size).toBe(0);
+  });
+
+  test("the partitions to walk include one whose every tab has hibernated", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://github.com/");
+    const partition = manager.partitionOf("s");
+    manager.requestHibernate(manager.scopeTabs("s")[0]);
+    // No live view left, and that is exactly the partition whose workers are
+    // still running — it must not drop out of the walk.
+    expect(manager.activePartitions().has(partition)).toBe(true);
   });
 });
 
@@ -3078,5 +3266,334 @@ describe("view-source: is the one non-web scheme the tabs render", () => {
     expect(() => normalizeUrl("view-source:file:///etc/passwd")).toThrow("only views the source of http and https");
     expect(() => normalizeUrl("view-source:view-source:https://example.com/")).toThrow("only views the source of http and https");
     expect(() => normalizeUrl("view-source:not a url")).toThrow("only views the source of http and https");
+  });
+});
+
+/**
+ * THE OPTIONS MENU'S OWN VERBS (#473).
+ *
+ * The panel gained one `⋯` menu holding what a browser keeps behind one:
+ * hard reload, DevTools, a window of its own, appearance, zoom, the profile,
+ * and clearing this profile's cookies or cache. DevTools already had #423's
+ * tests above; the rest are here.
+ *
+ * ALL OF THEM ARE THE HUMAN'S, which is why they live on `action` beside
+ * `toggle-devtools` rather than in `performAction`: zoom and appearance change
+ * what the page lays out as, and an agent's snapshot then describes a layout
+ * nobody asked it to choose.
+ */
+describe("the browser's options menu", () => {
+  test("the zoom ladder is Chromium's, and it stops at both ends", () => {
+    expect(zoomStep(1, "in")).toBe(1.1);
+    expect(zoomStep(1, "out")).toBe(0.9);
+    expect(zoomStep(1, "reset")).toBe(1);
+    // A factor BETWEEN rungs lands on the next real one either way, so a zoom
+    // set by the page (or by an older ladder) still steps sensibly.
+    expect(zoomStep(1.2, "in")).toBe(1.25);
+    expect(zoomStep(1.2, "out")).toBe(1.1);
+    // Clamped: the ends are rungs, not a wrap-around and not an error.
+    expect(zoomStep(ZOOM_STEPS.at(-1), "in")).toBe(ZOOM_STEPS.at(-1));
+    expect(zoomStep(ZOOM_STEPS[0], "out")).toBe(ZOOM_STEPS[0]);
+    // Reset from anywhere is 1, including from a factor off the ladder.
+    expect(zoomStep(3.7, "reset")).toBe(1);
+    expect(() => zoomStep(1, "sideways")).toThrow("Unknown zoom direction");
+  });
+
+  test("zoom walks the ladder on the page itself, and the panel reads it back", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const wc = views[0].webContents;
+
+    await manager.action("session-a", { action: "zoom", direction: "in" });
+    expect(wc.getZoomFactor()).toBe(1.1);
+    expect(manager.state("session-a").tabs[0].zoom).toBe(1.1);
+
+    await manager.action("session-a", { action: "zoom", direction: "in" });
+    expect(manager.state("session-a").tabs[0].zoom).toBe(1.25);
+    await manager.action("session-a", { action: "zoom", direction: "reset" });
+    expect(wc.getZoomFactor()).toBe(1);
+    expect(manager.state("session-a").tabs[0].zoom).toBe(1);
+  });
+
+  test("a zoomed tab is still zoomed after it is hibernated and woken", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const tab = manager.scopeTabs("session-a")[0];
+    await manager.action("session-a", { action: "zoom", direction: "out" });
+    expect(views[0].webContents.getZoomFactor()).toBe(0.9);
+
+    // A new WebContents starts at 1; the geometry pipeline is what puts the
+    // tab's own factor back, the same way it re-applies the viewport.
+    manager.requestHibernate(tab);
+    await manager.wakeTab(tab);
+    await manager.applyGeometry(tab);
+    expect(views.at(-1).webContents.getZoomFactor()).toBe(0.9);
+    expect(manager.state("session-a").tabs[0].zoom).toBe(0.9);
+  });
+
+  test("hard reload is a cache bypass, not the ordinary reload with a flag", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const wc = views[0].webContents;
+
+    await manager.action("session-a", { action: "reload" });
+    await manager.action("session-a", { action: "hard-reload" });
+    expect(wc.reloads).toEqual(["reload", "reload-ignoring-cache"]);
+    // Both are the human's hand on the tab, so an agent defers.
+    expect(manager.state("session-a").tabs[0].controller).toBe("human");
+  });
+
+  test("appearance emulates prefers-color-scheme, and system clears the override", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const debug = views[0].webContents.debugger;
+    const media = () => debug.commands.filter((entry) => entry.method === "Emulation.setEmulatedMedia");
+
+    // A FRESH PAGE EMULATES NOTHING, which is what "system" already means:
+    // asserting it would be a round trip to change nothing.
+    expect(media()).toEqual([]);
+
+    await manager.action("session-a", { action: "appearance", scheme: "dark" });
+    expect(media().at(-1).params).toEqual({ features: [{ name: "prefers-color-scheme", value: "dark" }] });
+    expect(manager.state("session-a").tabs[0].colorScheme).toBe("dark");
+
+    await manager.action("session-a", { action: "appearance", scheme: "system" });
+    // Now there IS something to clear, so the empty feature list is sent.
+    expect(media().at(-1).params).toEqual({ features: [] });
+    expect(manager.state("session-a").tabs[0].colorScheme).toBe("system");
+
+    await expect(manager.action("session-a", { action: "appearance", scheme: "sepia" })).rejects.toThrow("Unknown appearance");
+  });
+
+  test("appearance is re-applied to a tab's NEW WebContents, not lost with the old one", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const tab = manager.scopeTabs("session-a")[0];
+    await manager.action("session-a", { action: "appearance", scheme: "dark" });
+
+    manager.requestHibernate(tab);
+    await manager.wakeTab(tab);
+    await manager.applyGeometry(tab);
+    const media = views.at(-1).webContents.debugger.commands.filter((entry) => entry.method === "Emulation.setEmulatedMedia");
+    expect(media.at(-1).params).toEqual({ features: [{ name: "prefers-color-scheme", value: "dark" }] });
+  });
+
+  describe("a tab in a window of its own", () => {
+    /** A visible scope with one page and a real panel rect — the state a
+     *  person is looking at when they reach for "open a separate window". */
+    async function shown() {
+      const harness = makeHarness();
+      await harness.manager.createTab("session-a", "https://example.com");
+      harness.manager.setBounds("session-a", { x: 0, y: 0, width: 900, height: 600 });
+      await harness.manager.setVisible("session-a", true);
+      return harness;
+    }
+
+    test("the LIVE view moves out of the cockpit — a preview is the tab, not a copy of it", async () => {
+      const { children, manager, previewWindows, views } = await shown();
+      expect(children.has(views[0])).toBe(true);
+
+      await manager.action("session-a", { action: "preview" });
+      const window = previewWindows.at(-1);
+      // One page, one place: out of the cockpit's tree and into the new
+      // window's. A second WebContents would be a different page.
+      expect(views).toHaveLength(1);
+      expect(children.has(views[0])).toBe(false);
+      expect(window.children.has(views[0])).toBe(true);
+      expect(manager.state("session-a").tabs[0].preview).toBe(true);
+    });
+
+    test("it is sized to the page's own viewport and fills its window", async () => {
+      const { manager, previewWindows, views } = await shown();
+      // Fit mode adopted the 900×600 stage before the preview.
+      expect(manager.state("session-a").tabs[0].viewport).toMatchObject({ width: 900, height: 600 });
+
+      await manager.action("session-a", { action: "preview" });
+      await manager.applyGeometry(manager.scopeTabs("session-a")[0]);
+      expect(previewWindows.at(-1).options).toMatchObject({ width: 900, height: 600, useContentSize: true });
+      expect(views[0].visible).toBe(true);
+      expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 900, height: 600 });
+    });
+
+    test("the panel neither places nor hides a previewed tab — its own window would go blank", async () => {
+      const { manager, views } = await shown();
+      await manager.action("session-a", { action: "preview" });
+
+      // Every path that hides a view for the panel's sake: another scope
+      // becoming visible, this one being taken away, a fresh bounds publish.
+      await manager.setVisible("session-a", false);
+      manager.setBounds("session-a", { x: 0, y: 0, width: 400, height: 300 });
+      await manager.applyGeometry(manager.scopeTabs("session-a")[0]);
+      expect(views[0].visible).toBe(true);
+      // And it keeps ITS OWN viewport rather than adopting a stage it left.
+      expect(manager.state("session-a").tabs[0].viewport).toMatchObject({ width: 900, height: 600 });
+    });
+
+    test("closing the window is how the tab comes back", async () => {
+      const { children, manager, previewWindows, views } = await shown();
+      await manager.action("session-a", { action: "preview" });
+      const window = previewWindows.at(-1);
+
+      window.destroy(); // the person clicked the window's own close button
+      expect(children.has(views[0])).toBe(true);
+      expect(manager.state("session-a").tabs[0].preview).toBe(false);
+      await manager.applyGeometry(manager.scopeTabs("session-a")[0]);
+      expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 900, height: 600 });
+    });
+
+    test("the panel can bring it back too, and asking twice only focuses the window", async () => {
+      const { children, manager, previewWindows, views } = await shown();
+      await manager.action("session-a", { action: "preview" });
+      await manager.action("session-a", { action: "preview" });
+      expect(previewWindows).toHaveLength(1);
+      expect(previewWindows[0].focused).toBe(1);
+
+      await manager.action("session-a", { action: "end-preview" });
+      expect(previewWindows[0].isDestroyed()).toBe(true);
+      expect(children.has(views[0])).toBe(true);
+      expect(manager.state("session-a").tabs[0].preview).toBe(false);
+    });
+
+    test("closing the TAB takes its window with it — never a window addressing nothing", async () => {
+      const { manager, previewWindows } = await shown();
+      await manager.action("session-a", { action: "preview" });
+      manager.closeTab("session-a", 0, "human");
+      expect(previewWindows[0].isDestroyed()).toBe(true);
+    });
+
+    test("an agent cannot open a window over the person's screen", async () => {
+      const { manager, previewWindows } = await shown();
+      await expect(manager.performAction("session-a", { action: "preview" })).rejects.toThrow("Unknown desktop browser action");
+      expect(previewWindows).toHaveLength(0);
+    });
+  });
+
+  describe("clearing this profile's cookies and cache", () => {
+    test("the scope is the PARTITION — the whole identity, which is what the panel's confirm says", async () => {
+      const { manager, sessions } = makeHarness({ sessions: true });
+      await manager.createTab("session-a", "https://example.com");
+      const partition = manager.scopeTabs("session-a")[0].partition;
+
+      expect(await manager.clearBrowsingData("session-a", "cookies")).toMatchObject({ ok: true, kind: "cookies", partition });
+      expect(sessions.get(partition).storageCleared).toEqual([{ storages: ["cookies"] }]);
+      expect(sessions.get(partition).cachesCleared).toBe(0);
+
+      expect(await manager.clearBrowsingData("session-a", "cache")).toMatchObject({ ok: true, kind: "cache", partition });
+      expect(sessions.get(partition).cachesCleared).toBe(1);
+      // The cookies call is not repeated by the cache one.
+      expect(sessions.get(partition).storageCleared).toHaveLength(1);
+    });
+
+    test("it refuses what it cannot do rather than reporting a clear that did not happen", async () => {
+      const { manager } = makeHarness({ sessions: true });
+      manager.declareProfile("session-a", "none");
+      // No tab: there is no partition to name, so there is nothing to clear.
+      await expect(manager.clearBrowsingData("session-a", "cookies")).rejects.toThrow("no tab here");
+
+      await manager.createTab("session-a", "https://example.com");
+      await expect(manager.clearBrowsingData("session-a", "history")).rejects.toThrow("Unknown browsing data");
+    });
+
+    test("with no Chromium session to reach it says so — never a silent success", async () => {
+      // The default harness injects no `sessionFor`, which is the unit layer's
+      // "there is no Electron here".
+      const { manager } = makeHarness();
+      await manager.createTab("session-a", "https://example.com");
+      await expect(manager.clearBrowsingData("session-a", "cookies")).rejects.toThrow("no Chromium session");
+    });
+  });
+});
+
+/**
+ * #660: ⌘1..⌘9 SELECT A TAB WHILE THE PAGE HAS THE KEYS.
+ *
+ * The half the cockpit renderer cannot do. A keydown on a focused
+ * `WebContentsView` never reaches that renderer — native focus is in another
+ * process — so both the claim that stands the menu down and the handler that
+ * answers the key live here. These drive the real `webContents` events.
+ */
+describe("a focused page owns ⌘1..⌘9 (#660)", () => {
+  /** A key headed for the page, shaped like Electron's `before-input-event`. */
+  function press(view, key, modifiers = { meta: true }) {
+    let prevented = false;
+    const event = { preventDefault: () => { prevented = true; } };
+    view.webContents.emit("before-input-event", event, { type: "keyDown", key, alt: false, shift: false, control: false, meta: false, ...modifiers });
+    return prevented;
+  }
+
+  async function withTabs(count) {
+    const scopes = [];
+    const harness = makeHarness({ onChordScope: (chords) => scopes.push(chords) });
+    harness.manager.declareProfile("s1", "none");
+    for (let n = 0; n < count; n += 1) await harness.manager.createTab("s1", `https://${n}.example/`, "human");
+    return { ...harness, scopes };
+  }
+
+  test("focus claims the nine and blur gives them back — the menu only stands down while a page holds them", async () => {
+    const { manager, views, scopes } = await withTabs(2);
+    expect(scopes).toEqual([]); // Merely having tabs claims nothing.
+
+    views[0].webContents.emit("focus");
+    expect(scopes.at(-1)).toEqual(TAB_SELECT_CHORDS);
+
+    views[0].webContents.emit("blur");
+    expect(scopes.at(-1)).toEqual([]);
+    // Claiming on MOUNT would have left the rail's ⌘1..⌘9 dead for as long as
+    // the panel was open, which is the bug this shape exists to avoid.
+    expect(manager.keyFocusedTabId).toBeNull();
+  });
+
+  test("⌘2 selects the second tab and the page never sees the key", async () => {
+    const { manager, views } = await withTabs(3);
+    await manager.selectTab("s1", 0);
+    views[0].webContents.emit("focus");
+
+    expect(press(views[0], "2")).toBe(true);
+    await Promise.resolve();
+    expect(manager.scopeTabs("s1").indexOf(manager.activeTab("s1"))).toBe(1);
+  });
+
+  test("⌃2 works too, and a digit past the last tab is left for the page", async () => {
+    const { manager, views } = await withTabs(2);
+    await manager.selectTab("s1", 0);
+
+    expect(press(views[0], "2", { control: true })).toBe(true);
+    await Promise.resolve();
+    expect(manager.scopeTabs("s1").indexOf(manager.activeTab("s1"))).toBe(1);
+
+    // ⌘7 with two tabs open must reach the page rather than vanish.
+    expect(press(views[0], "7")).toBe(false);
+  });
+
+  test("⌥⌘1, ⇧⌘1, a bare 1 and a keyUp are all somebody else's", async () => {
+    const { manager, views } = await withTabs(3);
+    await manager.selectTab("s1", 2);
+    for (const input of [{ meta: true, alt: true }, { meta: true, shift: true }, {}]) {
+      expect(press(views[0], "1", input)).toBe(false);
+    }
+    let prevented = false;
+    views[0].webContents.emit("before-input-event", { preventDefault: () => { prevented = true; } }, { type: "keyUp", key: "1", meta: true });
+    expect(prevented).toBe(false);
+    // Nothing moved the human's view.
+    expect(manager.scopeTabs("s1").indexOf(manager.activeTab("s1"))).toBe(2);
+  });
+
+  test("a second tab taking focus does not let the first one's late blur release the claim", async () => {
+    const { views, scopes } = await withTabs(2);
+    views[0].webContents.emit("focus");
+    // Chromium delivers focus to the new view before blurring the old one on
+    // some paths; the stale blur must not hand back keys the new page holds.
+    views[1].webContents.emit("focus");
+    views[0].webContents.emit("blur");
+    expect(scopes.at(-1)).toEqual(TAB_SELECT_CHORDS);
+  });
+
+  test("closing the focused tab releases the claim — a destroyed page emits no blur", async () => {
+    const { manager, views, scopes } = await withTabs(2);
+    views[1].webContents.emit("focus");
+    expect(scopes.at(-1)).toEqual(TAB_SELECT_CHORDS);
+    manager.closeTab("s1", 1, "human");
+    // A leak here leaves the rail's shortcut dead with no way back but a restart.
+    expect(scopes.at(-1)).toEqual([]);
   });
 });

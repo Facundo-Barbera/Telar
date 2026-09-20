@@ -1,7 +1,7 @@
 /**
  * THE `notes` TOOLKIT — the project notebook as a tool wall.
  *
- * Modelled on `../spool/tools.ts` and `../sessions-tools/tools.ts` down to the
+ * Modelled on `../sessions-tools/tools.ts` down to the
  * seams: a capability PORT, a wall built over it, `tool` arriving as an argument
  * so no test needs the provider SDK, and every rule about a note implemented
  * ONCE, in `../notes.ts`, rather than here.
@@ -13,7 +13,7 @@
  * `test/notes-socket.test.ts` asserts the two lists are equal.
  *
  * ── THE ONE DELETE ON ANY TELAR WALL, AND ITS FENCE ─────────────────────────
- * `sessions-tools/tools.ts` and the spool both refuse a delete on principle: an
+ * `sessions-tools/tools.ts` refuses a delete on principle: an
  * agent that could delete could erase another agent's work, or a person's. This
  * wall carries one anyway, because the notebook has no retire to fall back on —
  * a project note is a scratchpad, and a strip whose job is to stay short cannot
@@ -27,7 +27,7 @@
  */
 import { z } from "zod";
 import type { ProjectNote } from "@telar/engine-client";
-import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
+import { err, failure, fillWithin, json, ok, type ToolFactory } from "../tool-kit";
 
 /**
  * What the toolkit may do.
@@ -72,6 +72,55 @@ const shape = (note: ProjectNote) => ({
   author: note.author,
 });
 
+/**
+ * HOW MUCH OF A BODY A LISTING SHOWS — issue #515.
+ *
+ * 120 characters is enough to tell two notes apart and to recognise the one you
+ * were looking for; it is deliberately not enough to work from, because a
+ * notebook of thirty runbooks handed over whole is thirty runbooks spent out of
+ * the caller's context to answer "which notes are there".
+ *
+ * EXPORTED BECAUSE `fleet_status` MAKES THE IDENTICAL JUDGMENT (#592). What a
+ * status row quotes of a session's last answer is the same question asked of
+ * different prose — enough to recognise which turn it was, not enough to work
+ * from — and it had drifted to 200 on its own. One number, so the two cannot
+ * drift apart again.
+ */
+export const PREVIEW_CHARS = 120;
+
+/**
+ * AND THE LISTING ITSELF IS BOUNDED, because a preview per note is still a
+ * per-note cost. A project that has accumulated 200 notes is a project that
+ * used its notebook, and 200 previews is past the backstop in `tool-kit.ts` —
+ * which clips characters, so the caller would get JSON with its tail cut off
+ * rather than a short list. Pinned notes sort first, so the notes a person
+ * wanted kept where they could see them are the notes that survive the bound.
+ */
+const LIST_LIMIT = 60;
+const LIST_CHARS = 9_000;
+
+/**
+ * One note in a LISTING: what it is, whose it is, and enough of it to choose.
+ *
+ * `notes_list` used to carry every body, and its own description said so —
+ * "Bodies ride along, so this is usually the only call you need." That was
+ * true of a notebook with three notes in it and false of every larger one,
+ * and the failure mode was silent: the answer looked complete because it was.
+ * `bodyChars` is what makes the abridgement legible, and `notes_read` is one
+ * call away.
+ */
+const listShape = (note: ProjectNote) => ({
+  id: note.id,
+  title: note.title,
+  ...(note.pinned ? { pinned: true } : {}),
+  author: note.author,
+  updated: note.updated.at,
+  bodyChars: note.body.length,
+  ...(note.body.length > 0
+    ? { preview: note.body.length <= PREVIEW_CHARS ? note.body : `${note.body.slice(0, PREVIEW_CHARS)}…` }
+    : {}),
+});
+
 /** The projectId a tool call means: the one it named, else the turn's own. The
  *  refusal names both halves so a caller on the socket learns what to pass. */
 function resolveProject(capability: NotesCapability, named: unknown): string | undefined {
@@ -87,8 +136,7 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
   return [
     tool(
       "notes_projects",
-      "Every project whose notebook you can read or write, with the id the other notes tools take. Read-only; it changes " +
-        "nothing. Use it first when you hold a project by NAME and need its id.",
+      "Every project whose notebook you can read or write, with the id the other notes tools take. Read-only.",
       {},
       async () => {
         try {
@@ -101,16 +149,29 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_list",
-      "The project's notebook — the quick notes kept beside the code: what the deploy incantation is, what the reviewer " +
-        "keeps asking for, the decisions somebody wrote down so they would not be asked twice. Pinned first, then the " +
-        "user's own order. Bodies ride along, so this is usually the only call you need. Inside a Telar session the " +
-        "project is implied; omit it.",
-      { projectId: z.string().optional().describe("Which project's notebook. Omit inside a session to read this one's.") },
+      "A project's notebook — the notes kept beside the code so nobody is asked twice. Pinned first; titles and a " +
+        "120-character preview, notes_read gives one whole.",
+      { projectId: z.string().optional().describe("Omit inside a session for this one's.") },
       async (args) => {
         const projectId = resolveProject(capability, args.projectId);
         if (!projectId) return err(NO_PROJECT);
         try {
-          return json((await capability.list(projectId)).map(shape));
+          const notes = await capability.list(projectId);
+          const { rows } = fillWithin(notes, listShape, { limit: LIST_LIMIT, chars: LIST_CHARS });
+          const abridged = notes.slice(0, rows.length).filter((note) => note.body.length > PREVIEW_CHARS).length;
+          return json({
+            notes: rows,
+            count: notes.length,
+            ...(notes.length > rows.length ? { notShown: notes.length - rows.length } : {}),
+            note:
+              notes.length === 0
+                ? "This project's notebook is empty."
+                : notes.length > rows.length
+                  ? `${rows.length} of ${notes.length} notes, pinned first. Read one whole with notes_read(noteId).`
+                  : abridged > 0
+                    ? `${abridged} of these are longer than the preview — read one whole with notes_read(noteId).`
+                    : "Every body is short enough to be here in full.",
+          });
         } catch (error) {
           return err(failure(error));
         }
@@ -119,9 +180,8 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_read",
-      "One note in full, by id, from whichever project holds it. `notes_list` already carries bodies — reach for this when " +
-        "you were handed a bare note id (a chat reference, an earlier tool result) and do not know its project.",
-      { noteId: z.string().describe("The note id, as `notes_list` reports it.") },
+      "One note in full, by id, from whichever project holds it — notes_list carries only a preview.",
+      { noteId: z.string() },
       async (args) => {
         try {
           const found = await capability.read(String(args.noteId));
@@ -135,17 +195,14 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_write",
-      "Write a note into a project's notebook, or edit one you can already see. Use it when the user ASKS you to keep " +
-        "something about this project — a command that works, a constraint, a decision — not for your own scratch notes " +
-        "and not to log what you just did. The note is stamped as an agent's, permanently: that provenance never changes, " +
-        "so a note you wrote stays marked as yours after the user rewrites every word of it. This is the project's own " +
-        "notebook, not the user's Spool shelf — cross-project knowledge belongs there (`spool_write_note`), not here.",
+      "Write or edit a note in a project's notebook. Use it when the user ASKS you to keep something — not for scratch " +
+        "notes and not to log what you just did. Stamped as an agent's, permanently.",
       {
-        projectId: z.string().optional().describe("Which project's notebook. Omit inside a session to write to this one's."),
-        title: z.string().optional().describe("What the note is about, in a few words. Required for a new note."),
-        body: z.string().optional().describe("The note itself, as markdown. The user's own words wherever possible."),
+        projectId: z.string().optional().describe("Omit inside a session for this one's."),
+        title: z.string().optional().describe("A few words. Required for a new note."),
+        body: z.string().optional().describe("Markdown; the user's own words."),
         pinned: z.boolean().optional().describe("Keep it at the top of the strip."),
-        noteId: z.string().optional().describe("Edit this existing note instead of writing a new one."),
+        noteId: z.string().optional().describe("Edit this note instead of writing a new one."),
       },
       async (args) => {
         const projectId = resolveProject(capability, args.projectId);
@@ -178,10 +235,9 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_delete",
-      "Delete a note an AGENT wrote. A note the user wrote is theirs and this refuses it — say so and let them delete it " +
-        "from the strip, rather than asking another session to do it for you. Deleting is real here, not a retire: the " +
-        "project notebook is a scratchpad, so tidying it up is ordinary. Nothing else on this wall removes anything.",
-      { noteId: z.string().describe("The note id, as `notes_list` reports it.") },
+      "Delete a note an AGENT wrote; one the user wrote is theirs and this refuses it. Deleting is real, not a retire. " +
+        "Nothing else on this wall removes anything.",
+      { noteId: z.string() },
       async (args) => {
         const id = String(args.noteId);
         try {

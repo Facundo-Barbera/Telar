@@ -19,7 +19,7 @@ const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
 /** Every `ipcMain.handle` for the browser panel, as source. */
 const handlers = main.slice(
   main.indexOf('ipcMain.handle("telar:browser:suggestions"'),
-  main.indexOf('ipcMain.on("telar:browser:credential-field"'),
+  main.indexOf('ipcMain.on("telar:browser:login-entry"'),
 );
 
 describe("a panel request is answered by its own window's host", () => {
@@ -64,13 +64,13 @@ describe("the registry follows the windows", () => {
   });
 
   test("a tab's own report is offered to every host, since a tab resolves to no window", () => {
-    const credential = main.slice(
-      main.indexOf('ipcMain.on("telar:browser:credential-field"'),
+    const loginEntry = main.slice(
+      main.indexOf('ipcMain.on("telar:browser:login-entry"'),
       main.indexOf("let engineDiscovery"),
     );
-    expect(credential).toContain("for (const manager of browserManagers) manager.noteCredentialFieldFromWebContents(event.sender");
-    expect(credential).toContain("for (const manager of browserManagers) manager.noteHumanInputFromWebContents(event.sender);");
-    expect(credential).not.toMatch(/\bbrowserManager\b(?!s)/);
+    expect(loginEntry).toContain("for (const manager of browserManagers) manager.noteLoginEntryFromWebContents(event.sender");
+    expect(loginEntry).toContain("for (const manager of browserManagers) manager.noteHumanInputFromWebContents(event.sender);");
+    expect(loginEntry).not.toMatch(/\bbrowserManager\b(?!s)/);
   });
 
   test("the agent's control server resolves the host by scope, never from the bare global", () => {

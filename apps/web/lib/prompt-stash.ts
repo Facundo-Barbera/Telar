@@ -103,8 +103,8 @@ export function writeStash(
 /**
  * READ, CHANGE, WRITE — never write from React state.
  *
- * Two composers can be mounted at once (a session cockpit and a Spool stance),
- * and each holds its own `useState` copy of this list. A write built from one
+ * Two composers can be mounted at once, and each holds its own `useState` copy
+ * of this list. A write built from one
  * component's copy silently discards whatever the other one stashed a second
  * ago. The list in state is a VIEW; storage is the source, and every mutation
  * re-reads it first.

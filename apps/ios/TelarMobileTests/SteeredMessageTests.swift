@@ -143,21 +143,65 @@ import Testing
     // MARK: what the row says
 
     @Test func aSteeredWakeSaysWhatItsQueuedTwinSays() {
+        // THE VERB COMES FROM THE STRUCTURED REASON, NOT THE WORDS ON THE ROW
+        // (#572). The notice used to BE the line, so a peer's result and the
+        // completion behind it both read "Session finished a turn." — one
+        // sentence printed twice for two different facts.
         let wake = UserMessageDetail(text: "[wake: completed] …", wakeReason: WakeReason(kind: "turn_completed"))
-        #expect(WakeRow(message: wake).line == "[wake: completed] …")
-        // The engine's own notice wins over the text, as it does on a turn.
+        #expect(WakeRow(message: wake).line == "Session finished a turn")
+        // The engine's own words are the HEAD now, under the verb, and the
+        // bracketed kind goes because the verb beside it already says it.
         var noticed = wake
-        noticed.notice = "Session finished a turn."
-        #expect(WakeRow(message: noticed).line == "Session finished a turn.")
+        noticed.notice = "[wake: completed] Session session_a — turn run_a completed."
+        let row = WakeRow(message: noticed)
+        #expect(row.line == "Session finished a turn")
+        #expect(row.head == "Session session_a — turn run_a completed.")
         // And a wake with nothing written on it still says what happened.
-        #expect(WakeRow(message: UserMessageDetail(text: "", wakeReason: WakeReason(kind: "turn_failed"))).line
-                == "A turn failed in another session.")
+        let bare = WakeRow(message: UserMessageDetail(text: "", wakeReason: WakeReason(kind: "turn_failed")))
+        #expect(bare.line == "Session failed a turn")
+        #expect(bare.head == nil)
+    }
+
+    /// THE BUG, AS A TEST — issue #572.
+    ///
+    /// A worker sends its coordinator a result and its turn ends seconds later.
+    /// #240 keeps those two facts on purpose; the screenshot that opened the
+    /// issue had both rows titled "Session finished a turn", 24 seconds apart.
+    @Test func aResultAndTheCompletionAfterItAreTwoDifferentLines() {
+        let result = NotificationDetail(kind: "peer_message", intent: "result",
+                                        summary: "[agent message · result] session session_a sent a result (run run_a, 5,793 chars)",
+                                        body: "b")
+        let completion = NotificationDetail(kind: "wake", wakeKind: "turn_completed",
+                                            summary: "[wake: completed] Session session_a — turn run_a completed.", body: "b")
+        #expect(describeNotification(result) == "A session sent a result")
+        #expect(describeNotification(completion) == "Session finished a turn")
+        #expect(describeNotification(result) != describeNotification(completion))
+        // The head is the second difference, for a reader who does not read verbs.
+        #expect(describeNotificationHead(result, message: "Three commits landed: the parser, its tests, the changelog.")
+                == "Three commits landed: the parser, its tests, the changelog.")
+        // Without the body on this side, the engine's summary line stands in.
+        #expect(describeNotificationHead(result) == "session session_a sent a result (run run_a, 5,793 chars)")
+        // A wake announces something in ANOTHER session's run and has none here.
+        #expect(describeNotificationHead(completion, message: "not this turn's") == nil)
+    }
+
+    @Test func aPeersHeadIsCutAndMarkedWhereItWasCut() {
+        #expect(notificationHead(nil) == nil)
+        #expect(notificationHead("   \n  ") == nil)
+        // A line that is ONLY the engine's kind has no head left once stripped.
+        #expect(notificationHead("[wake: completed]") == nil)
+        let long = notificationHead(String(repeating: "x", count: 500))
+        #expect(long?.count == notificationHeadChars)
+        #expect(long?.hasSuffix("…") == true)
+        // Exactly the limit is not cut.
+        let exact = String(repeating: "y", count: notificationHeadChars)
+        #expect(notificationHead(exact) == exact)
     }
 
     @Test func theCollapsedRowShowsTheNoticesFirstLineOnly() {
         // The rest of the notice tells the MODEL how to fetch the body; a row
         // one line tall has no use for it.
-        let notice = "[agent message · task] session session_x ASSIGNED work (run run_y, 2,158 chars).\n—\nIt opens: \"…\""
+        let notice = "[agent message · task] session session_x ASSIGNED work (run run_y, 2,158 chars).\nNone of it is in this notice. Read it with sessions_read(sessionId: \"session_z\", runId: \"run_y\") before acting on it."
         #expect(noticeFirstLine(notice) == "[agent message · task] session session_x ASSIGNED work (run run_y, 2,158 chars).")
         #expect(noticeFirstLine("one line") == "one line")
         #expect(noticeFirstLine("") == "")

@@ -17,7 +17,9 @@
  *   - `project`  — the same two directories under the session's CHECKOUT, which
  *                  is its worktree when it cut one. A worktree session must see
  *                  what its own copy of the repository holds, not the project
- *                  root's.
+ *                  root's. This includes the DIRECTORY-SCOPED ones: a monorepo
+ *                  keeps `apps/web/.claude/skills/deploy` beside the code it is
+ *                  about, and Claude Code addresses it `apps/web:deploy`.
  *   - `plugin`   — every installed plugin's `skills/` and `commands/`, read from
  *                  `~/.claude/plugins/installed_plugins.json`. Namespaced
  *                  `<plugin>:<name>`, which is how Claude Code itself addresses
@@ -40,7 +42,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderDriverKind, ProviderSkill, ProviderSkillSource, ProviderSkills } from "@telar/engine-client";
-import { requireCli } from "./cli-resolution";
+import { refuseCliSpawnUnderTest, requireCli } from "./cli-resolution";
 
 /**
  * How long to wait for the provider to list its own commands.
@@ -61,6 +63,25 @@ const MAX_ENTRIES_PER_SOURCE = 250;
  *  command as `<dir>:<name>`, so depth is a real feature — but three levels of
  *  colons is nobody's menu. */
 const MAX_COMMAND_DEPTH = 3;
+
+/** How far below the checkout a nested `.claude` is looked for. `apps/web` is
+ *  two, `packages/ui/src` is three; four is past where anybody puts one and is
+ *  what stops this from becoming a walk of the whole repository. */
+const MAX_NESTED_DEPTH = 4;
+
+/** A cap on how many directory-scoped `.claude` roots are read. A monorepo has
+ *  a handful; a tree with fifty is a tree this should stop walking. */
+const MAX_NESTED_ROOTS = 32;
+
+/**
+ * Directories the nested walk never descends into.
+ *
+ * `node_modules` is the one that matters — a walk that entered it would read
+ * every dependency's tree on a keystroke, and a package that ships a `.claude`
+ * is not this project's skill. The rest are build output, which is the same
+ * argument. Dot-directories are skipped wholesale below, `.claude` excepted.
+ */
+const NEVER_DESCEND = new Set(["node_modules", "dist", "build", "out", "target", "vendor", "coverage", "tmp"]);
 
 /** Where this machine keeps Claude's own configuration, honouring the same
  *  variable the CLI reads. Mirrors `defaultScanRoots` in usage.ts. */
@@ -265,6 +286,50 @@ export async function readCommandDirectory(root: string, source: ProviderSkillSo
 }
 
 /* ------------------------------------------------------------------ *
+ * Directory-scoped `.claude` roots.
+ * ------------------------------------------------------------------ */
+
+/**
+ * EVERY `.claude` BELOW THE CHECKOUT, and the path that namespaces what is in
+ * it — `apps/web/.claude` becomes the scope `apps/web`.
+ *
+ * WHY THIS HAS TO EXIST RATHER THAN BE ASKED FOR. `supportedCommands()` is the
+ * provider's own list and it was the obvious place to get these from, but the
+ * CLI only surfaces a directory-scoped skill when its cwd is INSIDE that
+ * directory: asked in a fixture checkout's root it answered 97 rows without
+ * `apps/web`'s skill, and asked again from `apps/web` it answered 98 with it.
+ * A session runs at its checkout root, so the row can never arrive that way —
+ * which makes reading the directories the only honest route to them.
+ *
+ * BOUNDED IN FOUR WAYS, because this is reached from a keystroke: depth,
+ * a count of roots, the skipped directories above, and dot-directories. The
+ * root's own `.claude` is NOT returned — it is read unprefixed as `project`,
+ * and a scope of `""` would namespace it `:name`.
+ */
+export async function findScopedClaudeRoots(checkout: string, maxDepth = MAX_NESTED_DEPTH): Promise<{ scope: string; root: string }[]> {
+  const found: { scope: string; root: string }[] = [];
+
+  const walk = async (directory: string, segments: string[]): Promise<void> => {
+    if (segments.length >= maxDepth || found.length >= MAX_NESTED_ROOTS) return;
+    for (const entry of await entriesOf(directory)) {
+      if (found.length >= MAX_NESTED_ROOTS) return;
+      const full = path.join(directory, entry);
+      if (entry === ".claude") {
+        // Depth zero is the checkout's own, already read as `project`.
+        if (segments.length > 0 && (await isDirectory(full))) found.push({ scope: segments.join("/"), root: full });
+        continue;
+      }
+      if (entry.startsWith(".") || NEVER_DESCEND.has(entry)) continue;
+      if (!(await isDirectory(full))) continue;
+      await walk(full, [...segments, entry]);
+    }
+  };
+
+  await walk(checkout, []);
+  return found;
+}
+
+/* ------------------------------------------------------------------ *
  * Installed plugins.
  * ------------------------------------------------------------------ */
 
@@ -326,9 +391,18 @@ export type LoadProviderCommands = (input: { driver: ProviderDriverKind; cwd: st
  * project's `.claude/commands` are only in the list when the CLI was started
  * where they are.
  */
+/** The SDK, behind the test gate — issue #532, and the same reasoning as
+ *  `loadClaudeModelSdk`: exported so a test can hold the gate directly rather
+ *  than infer it from an empty list this function also returns when there is no
+ *  install at all. */
+export async function loadClaudeCommandSdk(): Promise<ClaudeCommandSdk> {
+  refuseCliSpawnUnderTest("the Claude Agent SDK skills probe");
+  return (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeCommandSdk;
+}
+
 export async function readClaudeSupportedCommands(
   cwd: string,
-  loadSdk: () => Promise<ClaudeCommandSdk> = () => import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<ClaudeCommandSdk>,
+  loadSdk: () => Promise<ClaudeCommandSdk> = loadClaudeCommandSdk,
   timeoutMs = SUPPORTED_COMMANDS_TIMEOUT_MS,
 ): Promise<ProviderSkill[]> {
   let sdk: ClaudeCommandSdk;
@@ -357,6 +431,11 @@ export async function readClaudeSupportedCommands(
         cwd,
         permissionMode: "default",
         abortController: controller,
+        // NO TRANSCRIPT FOR A HANDSHAKE — issue #532, same as the model probe.
+        // This one is worse for being per-checkout: it runs in the session's
+        // own directory, so its leavings were spread across a projects folder
+        // per worktree rather than one.
+        persistSession: false,
         ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       },
     });
@@ -427,34 +506,54 @@ function dedupe(groups: readonly ProviderSkill[][]): ProviderSkill[] {
   return kept;
 }
 
-export async function readProviderSkills(input: ProviderSkillsInput): Promise<ProviderSkills> {
+/**
+ * The answer, plus the directories it was read from.
+ *
+ * The second half is the cache's business rather than a caller's: a stamp can
+ * only watch the directory-scoped roots once something has gone and found them.
+ * `readProviderSkills` is the public shape and drops it.
+ */
+export async function readProviderSkillsWithRoots(input: ProviderSkillsInput): Promise<{ value: ProviderSkills; watched: string[] }> {
   if (input.driver !== "claude") {
     // Codex and OpenCode expose no inventory to read. Two empty lists is the
     // true answer, and the composer draws nothing rather than a wrong heading.
-    return { skills: [], commands: [] };
+    return { value: { skills: [], commands: [] }, watched: [] };
   }
 
   const home = claudeHome(input.env);
   const project = path.join(input.checkout, ".claude");
-  const pluginRoots = await installedPluginRoots(home);
+  const [pluginRoots, scopedRoots] = await Promise.all([installedPluginRoots(home), findScopedClaudeRoots(input.checkout)]);
 
-  const [userSkills, projectSkills, userCommands, projectCommands, pluginSkills, pluginCommands, providerCommands] = await Promise.all([
-    readSkillDirectory(path.join(home, "skills"), "user"),
-    readSkillDirectory(path.join(project, "skills"), "project"),
-    readCommandDirectory(path.join(home, "commands"), "user"),
-    readCommandDirectory(path.join(project, "commands"), "project"),
-    Promise.all(pluginRoots.map((entry) => readSkillDirectory(path.join(entry.root, "skills"), "plugin", entry.plugin))).then((all) => all.flat()),
-    Promise.all(pluginRoots.map((entry) => readCommandDirectory(path.join(entry.root, "commands"), "plugin", entry.plugin))).then((all) => all.flat()),
-    (input.loadProviderCommands ?? loadClaudeCommands)({ driver: input.driver, cwd: input.checkout }),
-  ]);
+  const [userSkills, projectSkills, scopedSkills, userCommands, projectCommands, scopedCommands, pluginSkills, pluginCommands, providerCommands] =
+    await Promise.all([
+      readSkillDirectory(path.join(home, "skills"), "user"),
+      readSkillDirectory(path.join(project, "skills"), "project"),
+      // NAMESPACED BY THE DIRECTORY THAT SCOPES THEM — `apps/web:deploy`, which
+      // is how Claude Code lists and addresses one, and therefore the only name
+      // that does anything when it is typed.
+      Promise.all(scopedRoots.map((entry) => readSkillDirectory(path.join(entry.root, "skills"), "project", entry.scope))).then((all) => all.flat()),
+      readCommandDirectory(path.join(home, "commands"), "user"),
+      readCommandDirectory(path.join(project, "commands"), "project"),
+      Promise.all(scopedRoots.map((entry) => readCommandDirectory(path.join(entry.root, "commands"), "project", entry.scope))).then((all) => all.flat()),
+      Promise.all(pluginRoots.map((entry) => readSkillDirectory(path.join(entry.root, "skills"), "plugin", entry.plugin))).then((all) => all.flat()),
+      Promise.all(pluginRoots.map((entry) => readCommandDirectory(path.join(entry.root, "commands"), "plugin", entry.plugin))).then((all) => all.flat()),
+      (input.loadProviderCommands ?? loadClaudeCommands)({ driver: input.driver, cwd: input.checkout }),
+    ]);
 
-  const skills = dedupe([projectSkills, userSkills, pluginSkills]);
+  const skills = dedupe([projectSkills, scopedSkills, userSkills, pluginSkills]);
   // A name already claimed by a SKILL.md is not ALSO a command: Claude reports
   // its skills through `supportedCommands()` too, and listing one under both
   // headings would double every skill on the machine.
   const claimed = new Set(skills.map((skill) => skill.name));
-  const commands = dedupe([projectCommands, userCommands, pluginCommands, providerCommands]).filter((command) => !claimed.has(command.name));
-  return { skills, commands };
+  const commands = dedupe([projectCommands, scopedCommands, userCommands, pluginCommands, providerCommands]).filter(
+    (command) => !claimed.has(command.name),
+  );
+  const watched = scopedRoots.flatMap((entry) => [entry.root, path.join(entry.root, "skills"), path.join(entry.root, "commands")]);
+  return { value: { skills, commands }, watched };
+}
+
+export async function readProviderSkills(input: ProviderSkillsInput): Promise<ProviderSkills> {
+  return (await readProviderSkillsWithRoots(input)).value;
 }
 
 /* ------------------------------------------------------------------ *
@@ -462,24 +561,32 @@ export async function readProviderSkills(input: ProviderSkillsInput): Promise<Pr
  * ------------------------------------------------------------------ */
 
 /**
- * A READ IS A HANDFUL OF STATS AND, ONCE, A SUBPROCESS — so it is cached per
- * session, and the cache has two ways to go stale.
+ * A READ IS A HANDFUL OF STATS AND, ONCE, A SUBPROCESS — so it is cached, and
+ * the cache has two ways to go stale.
+ *
+ * KEYED BY WHOEVER ASKED, WHICH IS A SESSION OR A PROJECT. A session's key is
+ * its id, because its checkout is its own worktree; a canvas with no session
+ * yet asks about the PROJECT, whose key is its id and whose checkout is the
+ * project root. Two keys rather than one because the two checkouts genuinely
+ * differ, and one worktree's `.claude` is not the project's.
  *
  * THE STAMP is the modification time of the directories that hold the answer:
- * the checkout's `.claude`, its `skills` and `commands`, and the machine's own.
- * Adding a skill, removing one, or renaming a command file moves its parent's
- * mtime, so the very next `$` sees it — which is what "refreshed when the
- * checkout's `.claude` changes" has to mean in practice.
+ * the checkout's `.claude`, its `skills` and `commands`, the machine's own, and
+ * every directory-scoped `.claude` the LAST read found. Adding a skill,
+ * removing one, or renaming a command file moves its parent's mtime, so the
+ * very next `$` sees it — which is what "refreshed when the checkout's
+ * `.claude` changes" has to mean in practice.
  *
  * THE CLOCK covers what a directory mtime cannot: editing a `SKILL.md`'s
- * description IN PLACE changes the file and not the directory around it. A
- * minute is short enough that a person editing a skill and reopening the menu
- * sees their words, and long enough that holding `$` down is not a subprocess
- * per keystroke.
+ * description IN PLACE changes the file and not the directory around it, and —
+ * because the stamp can only watch roots that have already been found — a
+ * `.claude` created in a subdirectory for the FIRST time. A minute is short
+ * enough that a person editing a skill and reopening the menu sees their words,
+ * and long enough that holding `$` down is not a subprocess per keystroke.
  */
 const CACHE_TTL_MS = 60_000;
 
-type CacheEntry = { stamp: string; at: number; value: ProviderSkills };
+type CacheEntry = { stamp: string; at: number; value: ProviderSkills; watched: string[] };
 const cache = new Map<string, CacheEntry>();
 
 async function directoryStamp(directories: readonly string[]): Promise<string> {
@@ -498,7 +605,9 @@ async function directoryStamp(directories: readonly string[]): Promise<string> {
 }
 
 export type CachedProviderSkillsInput = ProviderSkillsInput & {
-  sessionId: string;
+  /** Whose answer this is — a session id, or a project id for a canvas that
+   *  has no session yet. */
+  cacheKey: string;
   now?: () => number;
 };
 
@@ -506,26 +615,30 @@ export async function readProviderSkillsCached(input: CachedProviderSkillsInput)
   const now = (input.now ?? Date.now)();
   const home = claudeHome(input.env);
   const project = path.join(input.checkout, ".claude");
-  const stamp = await directoryStamp([
+  const fixed = [
     project,
     path.join(project, "skills"),
     path.join(project, "commands"),
     path.join(home, "skills"),
     path.join(home, "commands"),
     path.join(home, "plugins", "installed_plugins.json"),
-  ]);
+  ];
 
-  const hit = cache.get(input.sessionId);
-  if (hit && hit.stamp === stamp && now - hit.at < CACHE_TTL_MS) return hit.value;
+  const hit = cache.get(input.cacheKey);
+  if (hit && now - hit.at < CACHE_TTL_MS && hit.stamp === (await directoryStamp([...fixed, ...hit.watched]))) return hit.value;
 
-  const value = await readProviderSkills(input);
-  cache.set(input.sessionId, { stamp, at: now, value });
+  const { value, watched } = await readProviderSkillsWithRoots(input);
+  // STAMPED AFTER THE READ, over the roots the read actually found. Stamping
+  // before it could only watch the previous answer's directories, so every
+  // second call would compare a stamp of six paths against one of nine and
+  // miss — a cache that never hits is worse than no cache at all.
+  cache.set(input.cacheKey, { stamp: await directoryStamp([...fixed, ...watched]), at: now, value, watched });
   return value;
 }
 
 /** For tests, and for a daemon shutting down. Nothing in the cache outlives the
  *  process, so there is nothing here to persist. */
-export function clearProviderSkillsCache(sessionId?: string): void {
-  if (sessionId === undefined) cache.clear();
-  else cache.delete(sessionId);
+export function clearProviderSkillsCache(cacheKey?: string): void {
+  if (cacheKey === undefined) cache.clear();
+  else cache.delete(cacheKey);
 }

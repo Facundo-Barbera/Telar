@@ -3,13 +3,21 @@
 // The app sidebar, ported from the frozen app's components/app-sidebar.tsx.
 //
 // STRUCTURE, TOP TO BOTTOM: a 56px header with the collapse trigger and the
-// wordmark; a search field wearing its ⌘K hint, with reveal / add-project /
-// new-conversation in one pill beside it; then the five bands —
+// wordmark; a search field wearing a project filter at its head and its ⌘K hint
+// at its tail, with add-project / new-conversation in one pill beside it; then
+// the five bands —
 //
-// NO PROJECT FILTER ANYWHERE IN THAT HEAD (#400). There was a scope dropdown on
-// a row of its own, then the same menu as a chip inside the field; both were a
-// second way to do what the collapsible project groups below already do, and
-// only one of them could be left switched on by accident.
+// THE FILTER IS A SET, AND THAT IS WHY IT IS BACK (#470). A scope dropdown on a
+// row of its own became a single-select chip in the field (#395) and then went
+// altogether (#400), on the argument that the collapsible project groups below
+// already answer "fewer rows". They do — one project at a time. "These three
+// and not the other eleven" is the thing they cannot say, and it is what this
+// control is for: nothing checked is every project, n checked is those n.
+//
+// AND IT NARROWS WHAT IS DRAWN, NOTHING ELSE. The old chip was a scope, so the
+// rail could read "the project at hand" off it and point New conversation and
+// Reveal at it. A set of three has no such answer, so every guess in this file
+// is exactly the one it makes with no filter set.
 //
 //   drafts    above everything, unheaded, and DELIBERATELY THE SMALLEST ROWS
 //             in the rail: a conversation you started writing and did not send
@@ -37,26 +45,37 @@
 // while you scroll past it is a third behaviour nobody asked for.
 //
 // WHAT IS NOT HERE, AND WHY. The donor's header also carried four nav glyphs —
-// Overview, Projects, Looms, Workspace. Three are still out of scope, and a
-// glyph that navigates nowhere is worse than a header without one. The Unread
-// chip is gone because `readAt` is unmodelled, and a chip with an unbackable
-// count is a lie with a number on it.
+// Overview, Projects, Looms, Workspace. None of the four arrived, and a glyph
+// that navigates nowhere is worse than a header without one. The Unread chip is
+// gone because `readAt` is unmodelled, and a chip with an unbackable count is a
+// lie with a number on it.
 //
-// THE FOURTH ARRIVED, AND THEN MOVED AGAIN. The donor's Workspace is this
-// app's Spool. It first got a footer button beside Settings, because it read
-// as a place rather than a filter over the list — but a place lived beside
-// the wordmark all along without anyone naming it: "telar" WAS a place, the
-// one this rail already showed. `docs/spool-loops.md` §11 names the two
-// places and turns the wordmark into the switcher between them (see
-// `PlaceSwitcher`), so the footer button retires — the switcher is chrome,
-// not routing, and it occupies the switcher's OWN slot rather than adding a
-// second door beside the one it replaces.
+// SESSIONS ARE THE ONLY PLACE THIS RAIL SHOWS, so the wordmark is a wordmark
+// rather than a switcher between places. Two other places did exist and were
+// decommissioned (#501); nothing replaced them here, because the list this rail
+// already drew was what people opened Telar for.
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
+
+/**
+ * THE PALETTE IS A CHUNK, AND THE PROJECT PALETTE COMES WITH IT (#492).
+ *
+ * `command-palette.tsx` imports `project-palette.tsx`, so a static import here
+ * put 68 kB of two dialogs into the rail — which is mounted on every route in
+ * the cockpit — for a surface that opens on ⌘K and nothing else. See the
+ * palette state's `asked` field below: the split only pays if the rail also
+ * stops mounting it on sight.
+ *
+ * NO `ssr: false`: the latch below already keeps this out of every server
+ * render, and `dynamic({ ssr: false })` renders permanently nothing under this
+ * suite's environment — a spelling that buys nothing here and costs any future
+ * test of the palette.
+ */
+const CommandPalette = dynamic(() => import("@/components/command-palette").then((mod) => mod.CommandPalette));
 import {
   ChevronRightIcon,
-  FolderOpenIcon,
   FolderPlusIcon,
   FoldVerticalIcon,
   MessageSquareIcon,
@@ -66,17 +85,22 @@ import {
   XIcon,
 } from "lucide-react";
 import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
-import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
-import { LoomsNav } from "@/components/loom/looms-nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
+import { SidebarProjectFilter } from "@/components/sidebar-project-filter";
 import type { InboxPolicy, Project, SidebarLayout } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
 import { useCommandHandlers, useCommandKeys } from "@/lib/use-command-keys";
-import { workspaceOpener } from "@/lib/workspace-open";
+import {
+  appliedProjectFilter,
+  filterSessionsToProjects,
+  projectFilterKey,
+  useProjectFilter,
+} from "@/lib/project-filter";
 import { DraftRow } from "@/components/session/draft-row";
+import { AgentEntryLive, agentEntryActive, agentEntryShown, agentHref } from "@/components/session/agent-entry";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
 import {
   activeSessionFromPathname,
@@ -93,7 +117,8 @@ import {
   type SessionBand,
   type SidebarSession,
 } from "@/lib/session-list";
-import { hostFetcher } from "@/lib/hosts/client";
+import { applyRowChange, type SessionRowChange, type SessionRowChanged } from "@/lib/session-mutations";
+import { hostFetcher, hostFromPathname } from "@/lib/hosts/client";
 import { projectPlaces } from "@/lib/hosts/project-places";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import type { PublicHost } from "@/lib/hosts/store";
@@ -125,10 +150,11 @@ import {
   SESSION_ROW_MIME,
   railJumpSlots,
   railRowsForCommandKeys,
+  railSessionSlots,
   useCollapsedGroups,
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
-import { CommandPalette, type CommandPalettePage } from "@/components/command-palette";
+import type { CommandPalettePage } from "@/components/command-palette";
 import type { NewConversationTarget } from "@/components/project-palette";
 import { Button } from "@/components/ui/button";
 import { KeyHint } from "@/components/ui/key-hint";
@@ -166,18 +192,9 @@ const APP_SIDEBAR_RESIZABLE = {
  * rather than assumed.
  */
 /**
- * The desktop shell never appears or disappears mid-session, so the store this
- * rail reads it through has nothing to subscribe to and nothing to answer on the
- * server. Both are module constants because `useSyncExternalStore` compares them
- * by identity — inline arrows would resubscribe on every render.
- */
-const subscribeNothing = () => () => {};
-const serverNoBridge = () => undefined;
-
-/**
  * ⌘B ON THE COLLAPSE TRIGGER while ⌘ is held — issue #401. The hint sits beside
  * the glyph rather than inside `SidebarTrigger`: the primitive is shared with
- * the Spool's rail and the panel, and only THIS one is what `toggle-rail` binds.
+ * the panel, and only THIS one is what `toggle-rail` binds.
  */
 function TelarSidebarHeader() {
   return (
@@ -190,8 +207,8 @@ function TelarSidebarHeader() {
       <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide sidebar" title="Hide sidebar" className="app-no-drag shrink-0" />
         <KeyHint command="toggle-rail" />
-        {/* NO PLACE SWITCHER. Sessions are the product; Spool and Looms keep
-            their routes and data but are not offered from the main rail. */}
+        {/* A WORDMARK, NOT A SWITCHER. Sessions are the product and the only
+            place this rail shows, so there is nothing to switch between. */}
         <span className="px-1.5 font-heading text-lg font-semibold tracking-tight">Telar</span>
       </div>
     </SidebarHeader>
@@ -244,8 +261,8 @@ function SidebarEmpty({
  * "Pinned" named a state the rows can wear themselves. Both went; what is left
  * here is a control, so it is unconditionally a <button>.
  *
- * THE LABEL'S SCALE MATCHES THE SPOOL'S CAPTION — the web pass that shared
- * the two rails' grammar. `CAPTION` (10px, semibold, uppercase,
+ * THE LABEL'S SCALE IS THE SHARED SECTION CAPTION — the web pass that gave
+ * every rail one grammar. `CAPTION` (10px, semibold, uppercase,
  * tracking-wider) now lives in `lib/idiom.ts` and this label reads it from
  * there; it used to sit at 11px, regular weight, sentence case — a difference
  * between two "small grey word beside a rule" treatments with no reason
@@ -285,7 +302,7 @@ function SessionShelf({
   activeSessionId,
   renderedAt,
   bandFor,
-  onRefresh,
+  onRowChanged,
 }: {
   label: string;
   count: number;
@@ -301,7 +318,7 @@ function SessionShelf({
    *  differently from the list that put it there (a paired Mac's row is
    *  banded by that Mac's clock; see `windowFor`). */
   bandFor: (session: SidebarSession) => SessionBand;
-  onRefresh: () => void;
+  onRowChanged: SessionRowChanged;
 }) {
   if (count === 0) return null;
   return (
@@ -321,7 +338,7 @@ function SessionShelf({
               variant="slim"
               band={bandFor(session)}
               renderedAt={renderedAt}
-              onRefresh={onRefresh}
+              onRowChanged={onRowChanged}
             />
           ))}
           {hasMore && onShowMore && (
@@ -350,21 +367,43 @@ type HostPage = {
   daemonId?: string;
   policy?: InboxPolicy;
   layout?: SidebarLayout;
+  /** How many SETTLED rows this Mac did not send (#457). The rows above are the
+   *  unsettled ones unless the shelf is open; this is what draws the header that
+   *  opens it. Absent from an engine that predates the filter — which means "you
+   *  have everything", so the count is taken from the rows instead. */
+  settledCount?: number;
+  /** Whether THIS Mac has a built-in Agent (#531). Rides the same read for
+   *  `policy`'s reason, and absent from an engine older than the feature —
+   *  which reads as off, exactly as a `false` does. */
+  agent?: { enabled: boolean };
 };
 
 function SidebarBody() {
   const pathname = usePathname();
-  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`, the
-  // looms floor plan on `/looms`, Telar's own session list everywhere else.
-  // The header above it (trigger, switcher) is common to all; only what is
-  // below it changes.
-  const inSpool = pathname.startsWith("/spool");
-  const inLooms = pathname.startsWith("/looms");
   const router = useRouter();
-  const { isMobile, setOpenMobile, toggleSidebar } = useSidebar();
+  // `open` is here for the palette's Quick settings row, which reports which
+  // way Toggle Rail would go — the rail is what knows, so the rail says.
+  const { isMobile, open: railOpen, setOpenMobile, toggleSidebar } = useSidebar();
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<SidebarSession[]>([]);
+  /**
+   * WHICH MACS HAVE AN AGENT — one boolean per host, and `undefined` for a Mac
+   * that has not answered yet (#531).
+   *
+   * A MAP RATHER THAN ONE FLAG, which is the difference from the Main entry
+   * this replaces. That row was the LOCAL Mac's coordinator and only ever
+   * that, so one value served. The Agent's row is the VIEWED Mac's: walking
+   * into
+   * `/hosts/<id>/…` must swap which Agent it opens, and a single flag would have
+   * drawn this cockpit's own answer over somebody else's machine.
+   *
+   * FILLED BY THE FAN-OUT THAT WAS HAPPENING ANYWAY. Every paired Mac is
+   * already read once per pass; this takes one field off each answer. A Mac
+   * that did not answer is simply absent, and an absent Mac draws no row —
+   * see `agentEntryShown`.
+   */
+  const [agentHosts, setAgentHosts] = useState<ReadonlyMap<string, boolean>>(new Map());
   /**
    * Started conversations with no session behind them yet.
    *
@@ -390,6 +429,10 @@ function SidebarBody() {
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
   const { collapsed: collapsedGroups, toggle: toggleGroup, collapseOthers, collapseAll, expandAll } = useCollapsedGroups();
+  /** WHICH PROJECTS THE RAIL IS NARROWED TO — the head of the search field.
+   *  Per client, like the fold state above and for the same reason; see
+   *  lib/project-filter.ts. */
+  const projectFilter = useProjectFilter();
   /**
    * WHERE EACH PROJECT GROUP SITS, from the engine — so the desktop shell, a
    * browser tab and a paired phone draw the same arrangement. The fold state
@@ -423,6 +466,15 @@ function SidebarBody() {
   const [settledLimit, setSettledLimit] = useState(SETTLED_PAGE_SIZE);
   const [unavailable, setUnavailable] = useState(false);
   /**
+   * HOW MANY SETTLED ROWS THE ENGINES ARE HOLDING BACK (#457), across every Mac
+   * in the rail. State rather than a ref because the shelf header draws it.
+   *
+   * Zero from an engine that predates the filter, which sent every row — so the
+   * shelf is counted off the rows in hand, exactly as it always was, and this
+   * adds nothing to it.
+   */
+  const [shelvedOnEngines, setShelvedOnEngines] = useState(0);
+  /**
    * THE OTHER MACS, and which of them did not answer on the last read. The
    * book is re-read on every poll (it is one small local file) so a Mac
    * paired from Settings shows up on the next tick without a reload. A host
@@ -454,12 +506,32 @@ function SidebarBody() {
    * a search that turned out to be a bigger question than the rail can answer
    * does not have to be typed twice.
    */
-  const [palette, setPalette] = useState<{ open: boolean; page: CommandPalettePage; query: string }>({
+  /**
+   * `asked` IS THE LATCH THAT KEEPS THE PALETTE OUT OF THE RAIL'S BUNDLE (#492).
+   *
+   * The palette used to render unconditionally, closed, on every route — 26 kB
+   * of it plus the 42 kB project palette behind it, in a rail that is mounted
+   * everywhere, for a dialog most sessions never open. It is a chunk of its own
+   * now (see the `dynamic` call at the top of this file), and that only pays if
+   * the rail also stops mounting it on sight.
+   *
+   * ONCE TRUE IT STAYS TRUE, rather than rendering on `open`: the dialog
+   * animates on close, and a component that vanishes the instant `open` goes
+   * false has nothing left to animate with. So the chunk is fetched once, by
+   * whoever first presses ⌘K, and never again for the life of the tab.
+   *
+   * IN THE STATE ITSELF, not a ref read during render and not an effect. Both
+   * of those are lint errors here and both deserve to be — one reads mutable
+   * state mid-render, the other spends a whole extra render on a value the
+   * updater already knew. Every path that can open the palette sets it.
+   */
+  const [palette, setPalette] = useState<{ open: boolean; asked: boolean; page: CommandPalettePage; query: string }>({
     open: false,
+    asked: false,
     page: "root",
     query: "",
   });
-  const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, page, query: seed });
+  const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, asked: true, page, query: seed });
   /** Each Mac's own settling window, read with its rows — keyed like the
    *  sidebar cache (LOCAL_HOST for this engine). See `loadHost`. */
   const [hostWindows, setHostWindows] = useState<Map<string, number | null>>(() => new Map());
@@ -469,20 +541,41 @@ function SidebarBody() {
   const composing = useRef(false);
   const loadAllRunning = useRef(false);
   /**
-   * THE CONDITIONAL READ'S TWO HALVES, per host (#459): the cursor that was
-   * handed back last time, and the page it described.
+   * THE CONDITIONAL READ'S TWO HALVES, per host (#459, #457): the `ETag` that
+   * was handed back last time, and the page it described.
+   *
+   * AN ETAG RATHER THAN THE REVISION CURSOR, because the tag carries the MODE as
+   * well as the revision. The cursor is a number about the store, so one earned
+   * against the unsettled list and spent against `?all=1` is answered
+   * "unchanged" — and the Settled shelf a reader has just opened stays empty
+   * until something else happens on the machine. The cursor is still served, for
+   * anything that sends one; this rail sends a tag.
    *
    * REFS RATHER THAN STATE, because neither is rendered and both are written
    * inside the read: putting them in state would re-render the rail once a tick
-   * to store a number nothing draws — which is most of what this issue is about.
+   * to store a string nothing draws — which is most of what this issue is about.
    * Keyed like the sidebar cache (`LOCAL_HOST` for this engine), so one Mac's
-   * cursor can never be spent against another's revision.
+   * tag can never be spent against another's revision.
    *
-   * A HOST THAT ANSWERS NO REVISION KEEPS NO ENTRY, so an engine too old to
-   * count simply goes on making full reads.
+   * A HOST THAT ANSWERS NO ETAG KEEPS NO ENTRY, so an engine too old to mint one
+   * simply goes on making full reads.
    */
+  const tags = useRef(new Map<string, string>());
+  /** The older spelling of the same cursor (#459), kept as the floor for a Mac
+   *  whose engine mints no tag — that pair loses nothing it had. */
   const revisions = useRef(new Map<string, number>());
   const pages = useRef(new Map<string, HostPage>());
+  /**
+   * WHETHER THIS RAIL IS ASKING FOR THE SHELF'S ROWS (#457) — `settledOpen`, in
+   * a ref because `loadHost` reads it.
+   *
+   * A REF AND NOT A DEP, for the reason the two above are refs: `loadAll` is
+   * held by an interval, and making it depend on this would tear the timer down
+   * and build it again every time somebody opened a shelf. The ref is written in
+   * `toggleSettled` BEFORE the read it triggers, so the pass that opens the
+   * shelf is already the wide one.
+   */
+  const wantsSettled = useRef(false);
 
   // On a phone the rail is a sheet OVER the content, so following a link has to
   // close it — otherwise the destination is behind the thing you just used.
@@ -546,14 +639,60 @@ function SidebarBody() {
      * should not happen — a cursor with no page behind it — because answering
      * an unchanged read with no rows would empty the rail.
      */
+    /**
+     * AND ONLY THE ROWS A RAIL DRAWS (#457), UNLESS THE SHELF IS OPEN.
+     *
+     * The engine answers the unsettled rows by default — 7 of 291 on the owner's
+     * store — and `settledCount` beside them is what lets this rail draw
+     * "Settled (284)" without holding 284 rows. Opening that shelf is what asks
+     * for them, and the wide read is deliberately NOT conditional on either side:
+     * the revision counts writes, so it does not move when a reader opens a
+     * shelf, and a cursor spent across the two lists would answer the wide ask
+     * with "unchanged" and leave the shelf empty until something else happened.
+     */
+    /**
+     * AND IT IS CONDITIONAL ON AN ETAG (#457) RATHER THAN ON `?since=`.
+     *
+     * The cursor came first (#459) and still answers for anything that sends
+     * one; this rail sends a tag because the tag carries the MODE. A cursor is
+     * a number about the store, so one earned against the unsettled list and
+     * spent against `?all=1` is answered "unchanged" — and the Settled shelf
+     * this rail has just opened stays empty until somebody happens to write
+     * something on the machine. With the mode inside the tag, both reads are
+     * conditional and neither can be answered with the other's list. A 304 also
+     * carries no body at all, where the cursor's cheapest answer is sixty bytes.
+     *
+     * UNCHANGED STILL MEANS "KEEP WHAT YOU HAVE", so the held page is returned
+     * verbatim and nothing re-renders. The fallback below is for the case that
+     * should not happen — a tag with no page behind it — because answering a
+     * not-modified read with no rows would empty the rail.
+     */
     const key = host?.id ?? LOCAL_HOST;
-    const known = revisions.current.get(key);
-    const answer = known === undefined ? await hostApi.liveSessions() : await hostApi.liveSessionsSince(known);
-    if (answer.unchanged) {
+    const wide = wantsSettled.current;
+    const known = tags.current.get(key);
+    /**
+     * THE CURSOR IS THE FLOOR, NOT THE DEAD PATH. A Mac too old to mint a tag
+     * answers 200 with none, and this rail then falls back to `?since=` — which
+     * is exactly what it did before, so a mixed-version pair loses nothing. Only
+     * the NARROW read may use a cursor; the wide one is refused one for the
+     * reason above and simply pays.
+     */
+    const cursor = revisions.current.get(key);
+    const answer = known === undefined && !wide && cursor !== undefined
+      ? await hostApi.liveSessionsSince(cursor).then((page) => (page.unchanged ? { notModified: true as const, etag: "" } : { ...page, notModified: false as const, etag: undefined }))
+      : await hostApi.liveSessionsMatching({
+        ...(known === undefined ? {} : { etag: known }),
+        ...(wide ? { all: true } : {}),
+      });
+    if (answer.notModified) {
       const held = pages.current.get(key);
       if (held) return held;
     }
-    const result = answer.unchanged ? await hostApi.liveSessions() : answer;
+    const result = answer.notModified ? await hostApi.liveSessions({ all: wide }) : answer;
+    // THE TAG IS WHAT THE NEXT TICK ASKS WITH. An engine too old to mint one
+    // leaves no entry, and the cursor above carries the tick instead.
+    if (answer.etag) tags.current.set(key, answer.etag);
+    else tags.current.delete(key);
     if (result.revision === undefined) revisions.current.delete(key);
     else revisions.current.set(key, result.revision);
     const daemonId = result.daemonId;
@@ -570,6 +709,10 @@ function SidebarBody() {
     // that is true on more than one Mac, and so the only thing two Macs'
     // registrations of the same work can be recognised by. See `projectGroupKey`.
     const remotes = new Map(result.projects.map((project) => [project.id, project.remoteUrl]));
+    // WHETHER EACH PROJECT'S DISK IS HERE (#534) — off this same read, because
+    // the badge is drawn on every pass and a second request per host per tick
+    // for one enum per project is exactly what this route exists to avoid.
+    const availability = new Map(result.projects.map((project) => [project.id, project.availability]));
     // WHO EACH SETTLED DELEGATE DID ITS WORK FOR — issue #378. Resolved once
     // here, off the list already in hand, because `settledBy` carries an id
     // (ids survive renames) and a row that went looking for a title would be a
@@ -577,10 +720,9 @@ function SidebarBody() {
     // and the hint says what happened without naming it.
     const titles = new Map(result.sessions.map((session) => [session.id, session.title]));
     const sessions = result.sessions.map((session) =>
-      // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
-      // project-scoped list and the Spool's master chat is a destination, not a
-      // conversation in it — the aggregate route already excludes it, and this
-      // keeps that true if one ever arrives by another path.
+      // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a project-scoped
+      // list — the aggregate route already excludes one, and this keeps that
+      // true if one ever arrives by another path.
       toSidebarSession(
         session,
         session.projectId ? names.get(session.projectId) : undefined,
@@ -594,6 +736,7 @@ function SidebarBody() {
         session.projectId ? remotes.get(session.projectId) : undefined,
         session.projectId ? glyphs.get(session.projectId) : undefined,
         session.settledBy ? titles.get(session.settledBy.coordinatorSessionId) : undefined,
+        session.projectId ? availability.get(session.projectId) : undefined,
       ),
     );
     const page: HostPage = {
@@ -605,10 +748,18 @@ function SidebarBody() {
       // only meaningful for THIS Mac, whose document holds the keys this rail
       // mints. A remote Mac's own arrangement is of ITS rail, not of ours.
       ...(result.layout ? { layout: result.layout } : {}),
+      // HOW MANY THIS MAC HELD BACK (#457). Absent from an engine that predates
+      // the filter, and absent must read as "it sent everything" — the shelf is
+      // then counted off the rows, exactly as it always was.
+      ...(result.settledCount === undefined ? {} : { settledCount: result.settledCount }),
+      // WHETHER THIS MAC HAS AN AGENT (#531), off the same read — the entry
+      // costs the rail no request of its own, per host, per tick.
+      ...(result.agent === undefined ? {} : { agent: result.agent }),
     };
-    // Held so the next unchanged answer has something to BE. Only alongside a
-    // revision: without one every read is a full one and nothing reads this.
-    if (result.revision !== undefined) pages.current.set(key, page);
+    // Held so the next not-modified answer has something to BE. Only alongside
+    // a tag or a cursor: with neither, every read is a full one and nothing
+    // reads this.
+    if (tags.current.has(key) || revisions.current.has(key)) pages.current.set(key, page);
     return page;
   }, []);
 
@@ -640,6 +791,15 @@ function SidebarBody() {
       }
       setUnavailable(false);
       setProjects(local.value.projects);
+      /**
+       * THE LOCAL MAC'S DESIGNATION, AND ONLY IT (#522).
+       *
+       * A paired Mac may have a Main session of its own, and its rows are in
+       * this list — but the entry above the bands says "the conversation I
+       * coordinate FROM", which is a fact about the cockpit you are sitting in.
+       * One entry, as the issue asks; a remote Mac's coordinator is still an
+       * ordinary row inside its project group, exactly where it always was.
+       */
       // THE ARRANGEMENT ANOTHER DEVICE MADE. It rides this Mac's live read, so
       // a drag on the phone or in another tab reaches this rail on the poll it
       // was making anyway — and `observeSidebarLayout` drops it while a drag of
@@ -647,9 +807,16 @@ function SidebarBody() {
       // cannot put the group back under the pointer.
       observeSidebarLayout(local.value.layout);
       const away = new Set<string>();
-      const reads: { daemonId?: string; sessions: SidebarSession[] }[] = [local.value];
+      const reads: { daemonId?: string; sessions: SidebarSession[]; settledCount?: number }[] = [local.value];
       const remoteProjects: RemoteProject[] = [];
       const windows = new Map<string, number | null>();
+      // WHICH MACS HAVE AN AGENT, gathered on the pass that was reading them
+      // anyway (#531). Only Macs that ANSWERED go in: a host that is away is
+      // absent rather than `false`, so its row does not blink off and back on
+      // across one failed poll — it is simply not the Mac being viewed, or it
+      // is and the rail is already saying it cannot be reached.
+      const agents = new Map<string, boolean>();
+      if (local.value.agent) agents.set(LOCAL_HOST_ID, local.value.agent.enabled);
       if (local.value.policy) windows.set(LOCAL_HOST, local.value.policy.autoSettleAfterHours);
       // Each Mac's last read, kept so a host going away dims its rows instead
       // of vanishing them. The local engine writes under LOCAL_HOST; every
@@ -661,6 +828,7 @@ function SidebarBody() {
           next = rememberRows(next, host.id, page.value.sessions);
           reads.push(page.value);
           if (page.value.policy) windows.set(host.id, page.value.policy.autoSettleAfterHours);
+          if (page.value.agent) agents.set(host.id, page.value.agent.enabled);
           // A paired Mac that is THIS Mac offers nothing the local list does
           // not; its projects are the local ones, reachable without the hop.
           if (!page.value.daemonId || page.value.daemonId !== local.value.daemonId) {
@@ -682,12 +850,71 @@ function SidebarBody() {
       }
       setStaleByHost(remembered);
       setUnreachable(away);
+      setAgentHosts(agents);
+      // WHAT THE ENGINES KEPT (#457), summed over the Macs that answered. Not
+      // deduplicated the way the rows are: two addresses onto one engine would
+      // double it, which is the same caveat the closed shelf's count carries and
+      // for the same reason — it is an affordance, not a figure.
+      setShelvedOnEngines(reads.reduce((total, read) => total + (read.settledCount ?? 0), 0));
       setSessions(dedupeAcrossHosts(reads));
       setRenderedAt(Date.now());
     } finally {
       loadAllRunning.current = false;
     }
   }, [loadHost]);
+
+  /**
+   * ONE ROW CHANGED — THE RAIL'S HALF OF #495, and what `onRefresh` used to be.
+   *
+   * WHAT IT REPLACED. Every mutation on every row called `onRefresh`, and this
+   * rail answered it with `loadAll()`: `hosts()`, then one live read PER PAIRED
+   * MAC, to learn one field of one session the mutation's own response already
+   * carried. Pin, settle, snooze, rename and delete each cost that fan-out,
+   * which is the whole of "pin/settle take a while for the app to react".
+   *
+   * BOTH COPIES, AND THE SECOND ONE IS NOT OPTIONAL. `sessions` is what the
+   * list derives from; `pages.current` is what a NOT-MODIFIED answer hands back
+   * verbatim (#457/#459). Patching only the first would leave the held page
+   * carrying the row as it was — so a poll already in flight when the mutation
+   * landed, answered 304 against a tag minted before the write, would put the
+   * stale row straight back and the settle would appear to bounce.
+   *
+   * THE LIST IS THE POLL'S BUSINESS, STILL. This changes what a row LOOKS like
+   * and nothing about what the rail CONTAINS: no row is inserted, the bands are
+   * re-derived from the patched row on the next render, and anything else that
+   * moved on the machine arrives on the tick that was happening anyway.
+   */
+  const onRowChanged = useCallback((change: SessionRowChange) => {
+    setSessions((rows) => applyRowChange(rows, change));
+    for (const [key, page] of pages.current) {
+      const next = applyRowChange(page.sessions, change);
+      if (next.length !== page.sessions.length || next.some((row, index) => row !== page.sessions[index])) {
+        pages.current.set(key, { ...page, sessions: next });
+      }
+    }
+  }, []);
+
+  /**
+   * OPEN OR CLOSE THE SHELF, AND FETCH WHAT IT NEEDS.
+   *
+   * The engine sends the settled rows only when asked (#457), so opening the
+   * shelf has to ASK — and has to ask now rather than on the next tick, or the
+   * reader clicks "Settled (284)" and watches an empty shelf for three seconds.
+   * The ref is set before the read so that read is already the wide one.
+   *
+   * CLOSING KEEPS THE ROWS IT ALREADY HAS. They cost nothing to hold, they band
+   * to a shelf that is now shut, and dropping them would mean re-fetching all of
+   * them the next time the reader glanced at the list.
+   */
+  const toggleSettled = useCallback(() => {
+    // Off the REF rather than through a state updater: the updater is called
+    // twice under StrictMode, and a fetch fired from inside one is a side
+    // effect in a place React is allowed to re-run.
+    const next = !wantsSettled.current;
+    wantsSettled.current = next;
+    setSettledOpen(next);
+    if (next) void loadAll();
+  }, [loadAll]);
 
   useEffect(() => {
     const task = window.setTimeout(() => void loadAll(), 0);
@@ -761,16 +988,34 @@ function SidebarBody() {
    * looks unfiled, and the human checking "did this land in the right project"
    * gets no answer.
    *
-   * IT USED TO BE CONDITIONAL, on a per-project filter this rail no longer has
-   * (#400). Scoped to one project the name was genuinely redundant — the chip
-   * said it — and with the chip gone there is no state in which it is, so the
-   * flag went with it. A row inside a project GROUP still passes `false`: that
-   * header names the project one line above, which is the same argument and
-   * the reason `SessionRow` keeps the prop.
+   * IT USED TO BE CONDITIONAL, on the single-project scope chip (#400). Scoped
+   * to one project the name was genuinely redundant — the chip said it — and
+   * #470's filter is a SET, which never makes it redundant: three projects
+   * selected is three names worth saying. A row inside a project GROUP still
+   * passes `false`: that header names the project one line above, which is the
+   * same argument and the reason `SessionRow` keeps the prop.
    */
   const activeSessionId = activeSessionFromPathname(pathname);
+  /**
+   * THE FILTER, APPLIED ONCE, HERE — over the rows rather than over the groups.
+   *
+   * Hiding whole groups is what the reader asked for and filtering the ROWS is
+   * how it is delivered: a group with nothing left in it is not drawn, and the
+   * same pass narrows Needs-you and Pinned, which sit outside the groups and
+   * would otherwise go on showing a project the reader had just hidden.
+   *
+   * `sessions` ITSELF IS UNTOUCHED, and every other reader of it stays whole on
+   * purpose: the palette searches every conversation (a filter over the rail is
+   * not an instruction about what ⌘K may find), and the poll's cadence follows
+   * what is live on this Mac rather than what is on screen.
+   */
+  const knownProjectKeys = [
+    ...projects.map((project) => projectFilterKey(project.id)),
+    ...remoteProjects.map((project) => projectFilterKey(project.id, project.hostId)),
+  ];
+  const projectsShown = appliedProjectFilter(projectFilter.selected, knownProjectKeys);
   const list = deriveSessionList({
-    sessions,
+    sessions: filterSessionsToProjects(sessions, projectsShown),
     query,
     ...(activeSessionId ? { activeSessionId } : {}),
     now: renderedAt,
@@ -783,6 +1028,16 @@ function SidebarBody() {
   // renders dimmed under a line saying so, and "Engine unavailable" is left for
   // the browser that has nothing cached to show instead.
   const showingStale = unavailable && sessions.length > 0;
+  /**
+   * THE AGENT'S ROW — the VIEWED Mac's, or none (#531).
+   *
+   * NOTHING IS LOOKED UP IN `sessions`, which is the whole difference from the
+   * line above: the Agent is not a session, so there is no id to find and no
+   * title to read. One flag off the live answer decides, and the rule lives
+   * beside the component that draws it so a test can hold it.
+   */
+  const viewedHost = hostFromPathname(pathname);
+  const showAgentEntry = agentEntryShown(agentHosts, viewedHost);
   // The counting pass that badged the chips went with them: nothing displays a
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
@@ -939,6 +1194,11 @@ function SidebarBody() {
   const openCanvasProject = canvasProjectFromPathname(pathname);
   const needle = query.trim().toLocaleLowerCase();
   const draftRows = drafts
+    // A DRAFT IS A ROW IN THE RAIL, so the project filter reaches it too — a
+    // band of scraps from a project the reader has just hidden is the same
+    // contradiction as a session from it. Drafts are this Mac's only, hence the
+    // bare key.
+    .filter((draft) => projectsShown.size === 0 || projectsShown.has(projectFilterKey(draft.projectId)))
     .filter((draft) => (needle ? draft.text.toLocaleLowerCase().includes(needle) : true))
     .map((draft) => ({ ...draft, projectName: projects.find((project) => project.id === draft.projectId)?.name }))
     .filter((draft) => draft.projectName !== undefined);
@@ -965,16 +1225,29 @@ function SidebarBody() {
    */
   // THE GROUPS AS DRAWN, withheld rows and all: a number key that selected a row
   // its project group is no longer showing would count something invisible.
-  const jumpRows = grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9);
+  //
+  // AND THE AGENT'S ROW SPENDS THE FIRST NUMBER (#569). It is drawn above every
+  // band, so `showAgentEntry` leaves eight slots for conversations — read once,
+  // here, and handed to the rows, the badges and the dispatcher alike.
+  const jumpAgentEntry = { agentEntry: showAgentEntry };
+  /** ⌘1's destination when the rail draws the Agent — the VIEWED Mac's, the
+   *  same address the row itself links to. `undefined` when there is no row,
+   *  and then the nine are the conversations exactly as they were. */
+  const jumpAgentHref = showAgentEntry
+    ? agentHref(viewedHost === LOCAL_HOST_ID ? undefined : viewedHost)
+    : undefined;
+  const jumpRows = grouped
+    ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups, jumpAgentEntry)
+    : list.sessions.slice(0, railSessionSlots(showAgentEntry));
   /**
    * THE SAME ROWS, AS THE NUMBERS THEY WEAR while ⌘ is held — issue #401.
    *
    * Derived from `jumpRows` rather than alongside it, which is the only
    * arrangement in which the hint on a row and the key that fires it cannot
    * disagree: one array, read twice, so a folded group or a shelf is skipped by
-   * both or by neither.
+   * both or by neither — and the Agent's row shifts both or neither.
    */
-  const jumpSlots = railJumpSlots(jumpRows);
+  const jumpSlots = railJumpSlots(jumpRows, jumpAgentEntry);
   const jumpSlotFor = (key: string) => jumpSlots.get(key);
   /** Spread rather than passed, because most rows have no slot and the prop is
    *  optional — the same shape every other optional prop in this file takes. */
@@ -1004,12 +1277,12 @@ function SidebarBody() {
      * Escape after.
      */
     "search-sessions": () =>
-      setPalette((current) => (current.open ? { ...current, open: false } : { open: true, page: "root", query })),
+      setPalette((current) => (current.open ? { ...current, open: false } : { open: true, asked: true, page: "root", query })),
     // The rail's own collapse. It used to be a hand-rolled listener inside the
     // sidebar primitive, which is precisely why it appeared on no keybindings
     // pane and could not be changed. One registry, one dispatcher.
     "toggle-rail": () => toggleSidebar(),
-  });
+  }, jumpAgentHref);
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 
@@ -1095,55 +1368,28 @@ function SidebarBody() {
   };
 
   /**
-   * THE DESKTOP SHELL, READ THROUGH A STORE rather than during render.
+   * THE RAIL NO LONGER ANSWERS "REVEAL IN FINDER" — issue #470.
    *
-   * `workspaceOpener()` answers `undefined` on the server and an object in the
-   * shell, so reading it straight would make the first client render disagree
-   * with the markup it hydrates. The store's server snapshot is what keeps them
-   * in step — the same arrangement `OpenWorkspaceButton` makes for the opener
-   * preference. It never changes after load, so the subscribe is a no-op.
+   * It used to, from the bottom of the command stack: a guess at "the project
+   * at hand" behind a button in the header pill. The verb is not gone — it is on
+   * every project group's own menu (`project-group.tsx`) and on the session's
+   * Reveal button (`session/open-workspace-button.tsx`), both of which name the
+   * folder they will open instead of guessing at one. What went with the button
+   * is the guess: a rail-wide ⌘O whose target the reader had to infer from a
+   * tooltip, and which was wrong exactly when they had several projects open.
+   *
+   * THE CHORD FOLLOWS THE BINDING, which is the point. The palette lists a
+   * command only when a mounted component can run it, and the held-⌘ hints read
+   * the same registry — so outside a conversation, ⌘O now promises nothing
+   * rather than promising a folder nobody chose.
+   *
+   * `project-settings` stays: it is the same guess, but it navigates inside the
+   * app rather than opening something on the machine, and it is the rail's only
+   * answer to that command.
    */
-  const revealBridge = useSyncExternalStore(subscribeNothing, workspaceOpener, serverNoBridge);
-
-  /**
-   * WHICH FOLDER THE FINDER BUTTON WOULD SHOW.
-   *
-   * THE RAIL'S OWN GUESS — the project you are reading, then the one you touched
-   * last — which is what `New conversation` already acts on. It used to prefer
-   * the scoped project ahead of that guess; with the scope chip gone (#400) the
-   * guess is the whole answer, and it is named in the button's `title` so the
-   * reader never has to infer which folder is about to open.
-   *
-   * THIS MAC'S PROJECTS ONLY. A paired Mac's checkout is on that Mac; revealing
-   * a same-named path here would show somebody the wrong folder, which is the
-   * refusal `workspaceOpenBlocker` makes everywhere else.
-   */
-  const revealProject = (() => {
-    const local = composerTarget && !composerTarget.hostId ? projects.find((project) => project.id === composerTarget.projectId) : undefined;
-    return local?.root ? { name: local.name, root: local.root } : undefined;
-  })();
-
-  /**
-   * THE RAIL'S ANSWER TO TWO COMMANDS ABOUT "THE PROJECT YOU ARE IN" — and it
-   * is deliberately the BOTTOM of the stack rather than an override.
-   *
-   * `bindCommands` keeps a stack per command and the newest binder wins, so a
-   * session's own Reveal button (session/open-workspace-button.tsx) outranks
-   * this one while that session is open and this is what answers everywhere
-   * else. Passed as overrides, the rail would have shadowed it — and ⌘O inside
-   * a conversation would have opened the rail's guess instead of the workspace
-   * you were looking at.
-   *
-   * NEITHER IS BOUND WHEN THERE IS NOTHING TO OPEN, which is what keeps the
-   * palette honest: it lists a command only when something can run it, so
-   * "Reveal in Finder" is absent from a browser tab rather than present and
-   * inert.
-   */
-  const reveal = revealBridge && revealProject ? () => void revealBridge.reveal(revealProject.root) : undefined;
   const localProjectId = composerTarget && !composerTarget.hostId ? composerTarget.projectId : undefined;
   useCommandHandlers(
     {
-      ...(reveal ? { "reveal-in-finder": reveal } : {}),
       ...(localProjectId
         ? {
             "project-settings": () => {
@@ -1153,24 +1399,34 @@ function SidebarBody() {
           }
         : {}),
     },
-    [Boolean(reveal), localProjectId],
+    [localProjectId],
   );
 
   /**
-   * NO PROJECT-SCOPE CHIP — issue #400.
+   * THE FILTER AT THE HEAD OF THE FIELD — issue #470, and see
+   * `sidebar-project-filter.tsx` for what it is and is not.
    *
-   * #395 folded the old "All projects ▾" row into the search field as a chip,
-   * which was a smaller version of a control the rail should not have had at
-   * all: the collapsible project groups already answer "fewer rows", and they
-   * answer it without hiding the rest of the list behind a menu a reader can
-   * leave set and forget. A filter inside a search box is furniture on top of
-   * that. Its one non-filter verb — the gear beside each project — lives on the
-   * group header's own menu (`project-group.tsx`), which is where a per-project
-   * verb belongs.
+   * ABSENT ON A COCKPIT WITH ONE PROJECT, unchanged from the chip it replaces:
+   * "every project" and "that one project" select the same rows, so the control
+   * would be furniture eating the width of the field. A selection stored from a
+   * time when there were more is harmless — `appliedProjectFilter` narrows it to
+   * the projects this cockpit can see, and one known key selects the one group
+   * there is.
    *
-   * The three verbs at the field's right (reveal, add project, new
-   * conversation) stay exactly as #395 built them.
+   * ITS PER-PROJECT VERBS STAYED WHERE #400 PUT THEM. The old chip's menu
+   * carried a gear beside each project; that row lives on the group header's own
+   * menu, which is where a per-project verb belongs, and this popover is a
+   * filter and only a filter.
    */
+  const projectFilterControl =
+    pickerTargets.length > 1 ? (
+      <SidebarProjectFilter
+        targets={pickerTargets}
+        selected={projectsShown}
+        onToggle={projectFilter.toggle}
+        onClear={projectFilter.clear}
+      />
+    ) : undefined;
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -1207,13 +1463,14 @@ function SidebarBody() {
           THE RAIL IS WHAT FEEDS IT. The projects and the conversations it
           searches are the ones already in hand — so the palette costs no read of
           its own, and can never offer a row the rail does not have. */}
-      <CommandPalette
+      {palette.asked && <CommandPalette
         open={palette.open}
         page={palette.page}
         query={palette.query}
-        onOpenChange={(open) => setPalette((current) => ({ ...current, open }))}
+        onOpenChange={(open) => setPalette((current) => ({ ...current, open, asked: current.asked || open }))}
         targets={pickerTargets}
         sessions={sessions}
+        railOpen={railOpen}
         onRun={run}
         onChooseProject={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
         onOpenSession={(session) => {
@@ -1221,28 +1478,15 @@ function SidebarBody() {
           router.push(sessionHref(session));
         }}
         onRegistered={() => void loadAll()}
-      />
+      />}
       <TelarSidebarHeader />
       {/* The "Settings session" entry was removed from the product UI: it did
           not work reliably and duplicated the real Settings (in the footer). */}
       <SidebarContent>
-        {/* THE SPOOL'S PLACE REPLACES THIS BODY, NOT THE SWITCHER ABOVE IT.
-            §11's warehouse nav is what the rail shows on `/spool` — search,
-            apertures, the Areas tree, lanes, tags — instead of the sessions
-            list, which is Telar's own inbox and has no meaning inside the
-            Spool's place. The header (trigger, switcher) stays common. */}
-        {inSpool ? (
-          <SpoolWarehouseNav />
-        ) : inLooms ? (
-          <LoomsNav />
-        ) : (
-        <>
-        {/* THE SEARCH FIELD'S CHROME IS SHARED WITH THE SPOOL'S RAIL — see
-            `sidebar-search-field.tsx`. This inset (px-2, matching the p-2
-            every `SidebarGroup` below already carries) used to be px-3, one
-            step wider than everything under it for no reason beyond the two
-            areas having been built separately; the web pass that shared the
-            search chrome brought the inset in line too. */}
+        {/* THE SEARCH FIELD'S INSET IS px-2, matching the p-2 every
+            `SidebarGroup` below already carries. It used to be px-3, one step
+            wider than everything under it for no reason beyond this rail and
+            the one that shared its chrome having been built separately. */}
         <div className="px-2 pb-2 pt-3">
           <div className="flex items-center gap-1.5">
             <SidebarSearchField
@@ -1266,6 +1510,7 @@ function SidebarBody() {
               aria-expanded={Boolean(query)}
               aria-controls="sidebar-session-results"
               aria-activedescendant={query && selectedSearchIndex >= 0 ? `sidebar-session-${list.sessions[selectedSearchIndex]?.id}` : undefined}
+              {...(projectFilterControl ? { start: projectFilterControl } : {})}
               end={
                 query ? (
                   <button
@@ -1295,20 +1540,23 @@ function SidebarBody() {
               }
             />
             {/*
-              THREE VERBS IN ONE PILL, at the field's right — T3's header, and
-              the reason the rail is a line shorter than it was.
+              TWO VERBS IN ONE PILL, at the field's right — T3's header, and the
+              reason the rail is a line shorter than it was.
 
-              WHAT WENT: a second row under the field holding "All projects ▾"
-              and a lone `+`. It spent a whole line of a narrow rail on a filter
-              most cockpits never change, and it put the two things you press
-              most (add a project, start a conversation) on different rows at
-              opposite ends. The filter moved into the field as a chip and then
-              went altogether (#400) — the project groups below already narrow
-              the list, and they do it without a mode to leave set.
+              WHAT WENT, TWICE OVER. First a second row under the field holding
+              "All projects ▾" and a lone `+`: it spent a whole line of a narrow
+              rail, and it put the two things you press most (add a project,
+              start a conversation) on different rows at opposite ends. The
+              filter is back at the HEAD of the field (#470), where it narrows
+              the same list the field narrows. Then Reveal in Finder, which was a
+              third button here (#470 again): it acted on a guess at "the project
+              at hand", and the two places that can name the folder instead of
+              guessing — a project group's menu, a session's own Reveal — both
+              still carry it.
 
-              THE PILL IS ONE BORDER AROUND THREE BUTTONS rather than three
-              loose glyphs, because they are one cluster of verbs about the rail
-              and the space beside the field is not theirs to float in.
+              THE PILL IS ONE BORDER AROUND ITS BUTTONS rather than loose glyphs,
+              because they are one cluster of verbs about the rail and the space
+              beside the field is not theirs to float in.
             */}
             {/* EACH VERB IS A COMMAND, PRESSED (#402). The buttons used to do
                 the work themselves — reach for the bridge, set the palette's
@@ -1316,23 +1564,6 @@ function SidebarBody() {
                 slightly different things. They ask the dispatcher now, exactly
                 as the keyboard and the palette's own rows do. */}
             <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-sidebar-border/60 p-0.5">
-              {/* HIDDEN IN A BROWSER TAB, never disabled: `workspaceOpenBlocker`
-                  is the one place that decides whether a folder can be opened
-                  from this window, and a greyed Finder button in a tab would be
-                  the platform explained forever. Disabled is only for the case
-                  the desktop CAN do and there is simply nothing chosen yet. */}
-              {revealBridge && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={!revealProject}
-                  aria-label="Reveal in Finder"
-                  title={revealProject ? `Reveal ${revealProject.name} in Finder` : "Reveal in Finder — choose a project first"}
-                  onClick={() => run("reveal-in-finder")}
-                >
-                  <FolderOpenIcon />
-                </Button>
-              )}
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -1361,6 +1592,37 @@ function SidebarBody() {
             </div>
           </div>
         </div>
+
+        {/*
+          THE AGENT, ABOVE EVERYTHING INCLUDING DRAFTS (#531).
+
+          It is not a band and not an entry in the list: it is the row that is
+          always in the same place, which is the whole of what a built-in
+          coordinator buys. The bands under it are untouched.
+
+          A CARD-LIKE ROW WITH ONE STATUS LINE (#539) — the only row in this
+          rail taller than a conversation. No branch and no provider: there is
+          no checkout and no provider session, so those are still questions it
+          does not have. But "is it working, is it waiting for me" is one it
+          does, and answering nothing made the one always-present entry the
+          least informative thing in the list. Its rule sits underneath, exactly
+          like drafts and pinned, because the boundary that exists is between
+          this and what follows.
+
+          IT IS THE VIEWED MAC'S AGENT, not this cockpit's — see `agentHosts`.
+        */}
+        {showAgentEntry && (
+          <SidebarGroup className="shrink-0 pb-0">
+            <SidebarGroupContent>
+              <AgentEntryLive
+                {...(viewedHost === LOCAL_HOST_ID ? {} : { hostId: viewedHost })}
+                active={agentEntryActive(pathname, viewedHost)}
+                onNavigate={onNavigate}
+              />
+            </SidebarGroupContent>
+            <div aria-hidden className="mx-2 mt-1.5 h-px bg-sidebar-border" />
+          </SidebarGroup>
+        )}
 
         {/*
           DRAFTS SIT ABOVE EVERYTHING, AND COST ONE LINE EACH.
@@ -1428,7 +1690,7 @@ function SidebarBody() {
                   variant="card"
                   band={bandFor(session)}
                   renderedAt={renderedAt}
-                  onRefresh={() => void loadAll()}
+                  onRowChanged={onRowChanged}
                   {...jumpProp(sessionKey(session))}
                 />
               ))}
@@ -1515,7 +1777,7 @@ function SidebarBody() {
                     variant="card"
                     band="pinned"
                     renderedAt={renderedAt}
-                    onRefresh={() => void loadAll()}
+                    onRowChanged={onRowChanged}
                     // THE BAND IS ITS OWN SCOPE: pinned rows arrange among
                     // themselves, and unpinning is what takes a row out of
                     // here. Only in the banded view — a search flattens the
@@ -1552,10 +1814,21 @@ function SidebarBody() {
               // reader they have "No sessions yet" contradicts the four rows
               // they can see.
               (list.flat || !(list.settledCount || list.snoozedCount || list.pinned.length)) ? (
+              /* THREE ANSWERS, AND THE FILTERED ONE IS BACK (#470). A rail
+                 emptied by a filter is not a rail with nothing in it, and
+                 "No sessions yet" over a cockpit full of work is the sentence
+                 that makes a reader think they lost something. The arm is
+                 reachable again exactly because a filter can now produce it. */
               <SidebarEmpty
                 icon={MessageSquareIcon}
-                title={query ? "No sessions found" : "No sessions yet"}
-                detail={query ? "Try another title or project." : "Start one from the button above."}
+                title={query ? "No sessions found" : projectsShown.size ? "No sessions in the selected projects" : "No sessions yet"}
+                detail={
+                  query
+                    ? "Try another title or project."
+                    : projectsShown.size
+                      ? "Clear the filter at the head of the field to see the rest."
+                      : "Start one from the button above."
+                }
               />
             ) : grouped ? (
               drawnGroups.map((group) => {
@@ -1589,7 +1862,7 @@ function SidebarBody() {
                     {...(activeSessionId ? { activeSessionId } : {})}
                     renderedAt={renderedAt}
                     bandFor={bandFor}
-                    onRefresh={() => void loadAll()}
+                    onRowChanged={onRowChanged}
                     dragging={draggingGroup === group.key}
                     insert={groupInsert?.key === group.key ? groupInsert.position : null}
                     onDragStart={onGroupDragStart(group.key)}
@@ -1644,7 +1917,7 @@ function SidebarBody() {
                   searchSelected={Boolean(query) && index === selectedSearchIndex}
                   searchable={Boolean(query)}
                   renderedAt={renderedAt}
-                  onRefresh={() => void loadAll()}
+                  onRowChanged={onRowChanged}
                   // A search flattens the rail and ⌘1..⌘9 count the results, so
                   // the numbers follow them here rather than staying on rows
                   // that are no longer where they were.
@@ -1686,7 +1959,7 @@ function SidebarBody() {
                       variant="slim"
                       band={bandFor(session)}
                       renderedAt={renderedAt}
-                      onRefresh={() => void loadAll()}
+                      onRowChanged={onRowChanged}
                     />
                   ))}
                 </div>
@@ -1741,11 +2014,23 @@ function SidebarBody() {
               {...(activeSessionId ? { activeSessionId } : {})}
                             renderedAt={renderedAt}
               bandFor={bandFor}
-              onRefresh={() => void loadAll()}
+              onRowChanged={onRowChanged}
             />
             <SessionShelf
               label="Settled"
-              count={list.settledCount}
+              // THE ENGINE'S COUNT WHEN THE ROWS ARE NOT HERE (#457). The live
+              // read holds the settled rows back until this shelf is open, so
+              // banding what is in hand would say "0" and the header would not
+              // be drawn at all — a shelf with no way to open it. `Math.max` so
+              // the local band still wins when it is larger, which is what an
+              // engine too old to send the count leaves us with.
+              //
+              // THE CLOSED COUNT IS THE WHOLE MACHINE'S, and under a project
+              // filter that is more than this rail would list. It is an
+              // affordance rather than a figure — it says "there are settled
+              // conversations behind this" — and the moment the shelf opens the
+              // rows are here and the number is the filtered one.
+              count={settledOpen ? list.settledCount : Math.max(list.settledCount, shelvedOnEngines)}
               rows={list.settled}
               // NOT forced open while it holds the session you are reading.
               // It used to be, so the open row stayed visible in the rail —
@@ -1755,18 +2040,16 @@ function SidebarBody() {
               // "you are inside settled history" now; the shelf opens only
               // when asked.
               open={settledOpen}
-              onToggle={() => setSettledOpen((open) => !open)}
+              onToggle={toggleSettled}
               hasMore={list.hasMoreSettled && settledLimit < list.settledCount}
               onShowMore={() => setSettledLimit((limit) => limit + SETTLED_PAGE_SIZE)}
               limit={settledLimit}
               {...(activeSessionId ? { activeSessionId } : {})}
                             renderedAt={renderedAt}
               bandFor={bandFor}
-              onRefresh={() => void loadAll()}
+              onRowChanged={onRowChanged}
             />
           </>
-        )}
-        </>
         )}
       </SidebarContent>
 
@@ -1779,13 +2062,6 @@ function SidebarBody() {
     </>
   );
 }
-
-// `SpoolButton` RETIRED — §11. It lived here, in the footer beside Settings,
-// because the Spool read as a place rather than a filter over the list. It
-// still is one; the place just moved into `PlaceSwitcher`, at the top of the
-// rail, where "telar" already was. See that component's docblock for why
-// the switcher is where this button's job — and its "no count on it" law —
-// went.
 
 // `UsageButton` / `SettingsButton` moved into app-sidebar-footer.tsx as icon
 // buttons (the words live on in tooltips and aria-labels), joined on the

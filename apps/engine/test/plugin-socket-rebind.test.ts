@@ -33,6 +33,15 @@ import { setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";
 import type { PluginToolModule } from "../src/plugins/tool-module";
 import { stubModels } from "./stub-models";
+import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";
+
+/** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
+ *  its daemon's Claude driver resolves one before every claim, against stubbed models.
+ *  So this file opts past issue #532’s no-spawn gate, for its own scope only.
+ *  See ./allow-cli.ts. */
+allowCliInThisFile();
+/** And pin WHICH claude, so the resolve cannot depend on this machine (#752). */
+pinFakeClaudeInThisFile();
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -75,14 +84,26 @@ const secondModule: PluginToolModule = {
 function recordingDriver(options: {
   /** Dispatched over the lease WHILE the turn is live, as a provider would. */
   duringTurn?: (lease: { url: string; token: string }, prompt: string) => Promise<void>;
+  /**
+   * Which turns this driver is the SUBJECT of — matched on the prompt.
+   *
+   * Since #631 part 2 a `sessions_send` to an idle session starts a turn there,
+   * so the recipient runs through this same embedded worker and would otherwise
+   * be counted among the sockets under test — and, worse, its own `duringTurn`
+   * would send again, to itself, without end. The subject here is the SENDER's
+   * lease across its two turns; the recipient's turns are real and are supposed
+   * to happen, they are just not what is being measured.
+   */
+  subject?: (prompt: string) => boolean;
 } = {}): { driver: TurnDriver; sockets: { url: string; token: string; generation: string }[] } {
   const sockets: { url: string; token: string; generation: string }[] = [];
+  const isSubject = options.subject ?? (() => true);
   return {
     sockets,
     driver: {
       run: async ({ prompt, telarSocketLease }: DriverRun) => {
-        if (telarSocketLease) sockets.push(telarSocketLease);
-        if (telarSocketLease && options.duringTurn) await options.duringTurn(telarSocketLease, prompt);
+        if (telarSocketLease && isSubject(prompt)) sockets.push(telarSocketLease);
+        if (telarSocketLease && isSubject(prompt) && options.duringTurn) await options.duringTurn(telarSocketLease, prompt);
         return { text: `echo:${prompt}` };
       },
     },
@@ -216,6 +237,9 @@ test("a REUSED lease serves the current turn's capabilities, not the ones it was
   setPluginToolModules([helloToolModule]);
   const sends: { prompt: string; error: boolean; text: string }[] = [];
   const { driver, sockets } = recordingDriver({
+    // Only `session_one`'s own two turns; `session_two` now runs a turn for each
+    // message it receives, and those are not the lease under test.
+    subject: (prompt) => prompt === "one" || prompt === "two",
     duringTurn: async (lease, prompt) => {
       const sent = await call(lease, "sessions_send", { sessionId: "session_two", input: prompt });
       sends.push({

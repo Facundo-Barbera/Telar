@@ -48,8 +48,8 @@ export function PageHeader({
          * which leaves the three macOS traffic lights floating over whatever
          * the page draws at the top-left — so with the rail hidden they sat
          * directly on top of the title. The cockpit and the rail had both
-         * reserved room for years; this header never had, and the Spool is
-         * where that showed.
+         * reserved room for years; this header never had, and a full-width
+         * page was where that showed.
          *
          * `--titlebar-height` RATHER THAN A LITERAL `h-14`. Same 56px, but the
          * lights are parked at a fixed point derived from that number in

@@ -54,15 +54,25 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // The tab strip's "Open in system browser". http/https only, decided in
     // the main process — see the handler there.
     openExternal: (url) => ipcRenderer.invoke("telar:browser:open-external", { url }),
+    // The options menu's "Clear cookies" / "Clear cache" (#473). Destructive
+    // and PROFILE-WIDE, so the main process refuses anyone but the cockpit's
+    // own top frame — see the handler there.
+    clearBrowsingData: (scopeKey, kind) => ipcRenderer.invoke("telar:browser:clear-data", { scopeKey, kind }),
+    // The camera button, and the frozen frame annotate mode draws on (#474).
+    // The human's ACTIVE tab at its own scale — not the agent's tab, and not
+    // the panel's fit scale. Cockpit-only, refused in the main process.
+    capture: (scopeKey, options) => ipcRenderer.invoke("telar:browser:capture", { scopeKey, ...(options || {}) }),
     callTool: (scopeKey, name, args) => ipcRenderer.invoke("telar:browser:tool", { scopeKey, name, args }),
     setBounds: (scopeKey, bounds) => ipcRenderer.invoke("telar:browser:set-bounds", { scopeKey, bounds }),
     setVisible: (scopeKey, visible) => ipcRenderer.invoke("telar:browser:set-visible", { scopeKey, visible }),
+    // A menu is opening over the panel (#475): take the page's last frame,
+    // THEN put the view down, so the panel can keep showing the page while
+    // the menu is up. One call because that order is the whole point.
+    freezeView: (scopeKey) => ipcRenderer.invoke("telar:browser:freeze-view", { scopeKey }),
     releaseScope: (scopeKey, destroy = false) => ipcRenderer.invoke("telar:browser:release-scope", { scopeKey, destroy }),
     adoptScope: (fromScopeKey, toScopeKey) => ipcRenderer.invoke("telar:browser:adopt-scope", { fromScopeKey, toScopeKey }),
     onState: (listener) => on("telar:browser:state", listener),
     onPointer: (listener) => on("telar:browser:pointer", listener),
-    // The password manager: its status, its toolbar popup, and the human's
-    // explicit resume from a private interaction.
     // Per-project browser profile: the cockpit binds a session's scope to its
     // project before showing the panel, so a human-opened tab lands in the
     // right cookie jar even before the first agent turn.
@@ -81,7 +91,6 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     setScopeProfile: (scopeKey, profileId) => ipcRenderer.invoke("telar:browser:set-scope-profile", { scopeKey, profileId }),
     extensionStatus: (scopeKey) => ipcRenderer.invoke("telar:browser:extension-status", scopeKey),
     openExtensionPopup: (scopeKey, anchorRect) => ipcRenderer.invoke("telar:browser:extension-popup", { scopeKey, anchorRect }),
-    resumeFromPrivate: () => ipcRenderer.invoke("telar:browser:private-resume"),
     onExtension: (listener) => on("telar:browser:extension", listener),
     // SITE PERMISSIONS (#422): camera, microphone, notifications, location,
     // clipboard and screen share, asked with Telar's own prompt over the address
@@ -119,6 +128,23 @@ contextBridge.exposeInMainWorld("telarDesktop", {
    */
   dialog: {
     chooseDirectory: (options) => ipcRenderer.invoke("telar:dialog:choose-directory", options ?? {}),
+  },
+  /**
+   * WHERE THIS INSTALL KEEPS ITS STORE, and moving it (#630).
+   *
+   * The shell's, not the engine's — the root is decided before the engine
+   * exists and read once at launch, so a move reports `restartRequired` rather
+   * than pretending it already took. `preflight` exists so a folder can be
+   * refused with a reason while somebody is still choosing it, instead of after
+   * they have committed to a copy.
+   */
+  store: {
+    status: () => ipcRenderer.invoke("telar:store:status"),
+    preflight: (path) => ipcRenderer.invoke("telar:store:preflight", { path }),
+    move: (path) => ipcRenderer.invoke("telar:store:move", { path }),
+    removeOld: () => ipcRenderer.invoke("telar:store:remove-old"),
+    keepOld: () => ipcRenderer.invoke("telar:store:keep-old"),
+    onProgress: (listener) => on("telar:store:progress", listener),
   },
   /**
    * Open a workspace folder in the system's own handler, or reveal it in the
@@ -159,6 +185,18 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // refuses anything that leaves that origin — see window-target.js.
     openWindow: (path) => ipcRenderer.invoke("telar:app:open-window", { path }),
   },
+  /**
+   * Settings → Remote access → Push notifications (#579). Writes the relay
+   * credential into the login Keychain, which the cockpit's server reads on
+   * every push and must never be able to write itself.
+   *
+   * Answers `{ ok: true }` or `{ ok: false, error }`. The error is a sentence
+   * about what to do and never quotes what was pasted; the value goes to
+   * `security` on stdin rather than into argv. See main.js and push-relay.js.
+   */
+  push: {
+    provisionRelay: (config) => ipcRenderer.invoke("telar:push:provision-relay", config),
+  },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),
     // ANSWERS WHAT IT DID WITH THE PRESS — `{ status: "restarting" }` for the
@@ -196,5 +234,11 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // a key equivalent before the page ever sees the keydown, so without this
     // the pane could not record any chord the menu already carries.
     capture: (capturing) => ipcRenderer.invoke("telar:keybindings:capture", capturing),
+    // A surface on screen has claimed these chords (#656) — the menu drops the
+    // accelerators that collide with them, for exactly as long as the claim
+    // lasts. Same reason as `capture` above: macOS matches a key equivalent
+    // before the page sees the keydown, so a palette that numbers its rows ⌘1..⌘9
+    // could not answer any of them while the File menu carried those chords.
+    scope: (chords) => ipcRenderer.invoke("telar:keybindings:scope", chords),
   },
 });

@@ -26,7 +26,7 @@
  * isomorphic and browser-safe, and `@telar/core` already depends on it at the
  * same major, so this introduces no new library to the repo.
  *
- * House style is `packages/core/src/schemas.ts`: `z.enum`, `z.number().int()`,
+ * House style is the engine's `schemas.ts` (ported from the retired core package): `z.enum`, `z.number().int()`,
  * and a schema and its inferred type sharing one exported name. Ids are NOT
  * branded — core does not brand, and matching the surrounding code wins over a
  * safety property no other module in this repo has asked for.
@@ -67,8 +67,22 @@ export type Timestamp = z.infer<typeof Timestamp>;
 export const EnvironmentId = z.literal("local");
 export type EnvironmentId = z.infer<typeof EnvironmentId>;
 
-/** WHAT runs a session: the agent CLI/SDK behind it. Mirrors core's
- *  `ProviderId` vocabulary so the two never disagree about the word "claude". */
+/**
+ * WHAT runs a session: the agent CLI/SDK behind it. Mirrors core's
+ * `ProviderId` vocabulary so the two never disagree about the word "claude".
+ *
+ * EVERY MEMBER NAMES A HARNESS SOMEBODY ELSE INSTALLED. `telar` was briefly a
+ * fourth member (#526) for the engine's own agent loop and was withdrawn with
+ * the Main session (#531) — the Agent is not a provider a session routes to, it
+ * is its own thing with its own key, and giving it a driver kind put a row in
+ * the provider registry that no login was ever behind.
+ *
+ * RETIRING A MEMBER OF THIS ENUM IS A MIGRATION, and the stores that already
+ * wrote the old word are the ones that pay for it. `readProviderInstances` in
+ * `state.ts` drops a row whose driver this build no longer has, rather than
+ * refusing to read the registry at all; anything else added here and later
+ * removed needs that same courtesy.
+ */
 export const ProviderDriverKind = z.enum(["claude", "codex", "opencode"]);
 export type ProviderDriverKind = z.infer<typeof ProviderDriverKind>;
 
@@ -87,7 +101,7 @@ export const PROVIDER_CAPABILITIES: Record<ProviderDriverKind, { liveSteering: b
  * during the driver/instance migration… once every producer populates it,
  * routing flips to instance-id-only and the legacy field is removed". Doing it
  * in that order means a migration across every event and every persisted model
- * selection. Telar's account registry (`packages/core/src/accounts.ts`) is the
+ * selection. Telar's account registry (the engine's `accounts.ts`) is the
  * natural source of instances.
  */
 export const ProviderInstanceId = Id;
@@ -214,7 +228,7 @@ export type RateLimitType = z.infer<typeof RateLimitType>;
  * Tokens for one unit of work.
  *
  * THE FOUR-WAY SPLIT IS NOT ARBITRARY — it is the same pair-plus-cache shape
- * `UltraTokens` (`packages/core/src/ultra/surface.ts`) and core's `UsageEntry`
+ * the retired Ultra surface's `UltraTokens` and the usage ledger's `UsageEntry`
  * already store, so a figure derived from this is comparable with the session
  * ledger's rather than being a second definition of "tokens". AD-18/FR-RF-2:
  * one spend, one number.
@@ -400,6 +414,192 @@ export const UsageLimits = z.object({
   readAt: Timestamp,
 });
 export type UsageLimits = z.infer<typeof UsageLimits>;
+
+/**
+ * ══ WHAT TELAR KEEPS ON DISK, BY CATEGORY — issue #642 ══
+ *
+ * A CLOSED SET, AND `other` IS WHY IT CAN STAY CLOSED. Everything under the
+ * store root is attributed to exactly one of these, so the categories sum to
+ * the total and nothing is quietly left out of the figure a person reads. A
+ * file a later version writes lands in `other` rather than in no row at all,
+ * which is the failure this list is arranged to avoid: the whole argument for
+ * the pane is that `execution.sqlite` was a gigabyte nobody had ever seen.
+ *
+ * IDS, NOT COPY. The engine says what the categories ARE and how big each one
+ * is; the cockpit says what they are CALLED, because "Session checkouts" is a
+ * sentence written for a reader and the engine has no readers. See
+ * `components/settings/storage-section.tsx` for the words.
+ *
+ * TELAR'S OWN FOOTPRINT AND NOTHING ELSE. There is no category here for Docker,
+ * for a toolchain, or for the projects a person works on, however much disk
+ * those take — a pane that grew opinions about the whole machine would be a
+ * disk cleaner, which is a different product.
+ */
+export const StorageCategory = z.enum([
+  /** Session checkouts. Reproducible: the engine re-cuts one from a recorded
+   *  base sha, which is what makes it the one category worth relocating (#642
+   *  part 2) — with only this away, Telar still starts completely. */
+  "worktrees",
+  /** `execution.sqlite` and its WAL — every turn, item and receipt. */
+  "journal",
+  /** Transcripts and what each session was asked. Irreplaceable. */
+  "sessions",
+  /** Interpreters and packages the data-science plugin installed. */
+  "python",
+  /** Chromium partitions for Telar's own browser. */
+  "browser-profiles",
+  /** The parsed-transcript cache behind Usage, and its price list. */
+  "usage",
+  /** The cockpit Agent's own thread, memory and checkpoints. */
+  "agent",
+  /** Project notebooks. */
+  "notes",
+  "dictation",
+  /** Per-run mounts. */
+  "run",
+  /** Worker diagnostics. */
+  "diagnostics",
+  /** Projects, providers, appearance — this install's configuration. */
+  "settings",
+  /** Attributed to nothing above, so the rows still sum to the total. */
+  "other",
+]);
+export type StorageCategory = z.infer<typeof StorageCategory>;
+
+/**
+ * One category's measured size and the path a person can be taken to.
+ *
+ * `path` IS WHAT "REVEAL" OPENS, and `kind` is what tells the shell whether to
+ * select a file in its folder or open the folder itself — the journal's row
+ * points at `execution.sqlite`, and a row for a group of loose files points at
+ * the store root they sit in.
+ */
+export const StorageEntry = z.object({
+  category: StorageCategory,
+  bytes: z.number().min(0),
+  path: z.string().min(1),
+  kind: z.enum(["directory", "file"]),
+});
+export type StorageEntry = z.infer<typeof StorageEntry>;
+
+/**
+ * The whole measurement, AS OF A MOMENT — never as of now.
+ *
+ * `measuredAt` IS PART OF THE ANSWER rather than a detail the client could
+ * infer, because sizing a 13 GB tree takes seconds and the honest thing to show
+ * is a figure with a timestamp and a refresh beside it. Nothing polls this: it
+ * is measured when a reader first asks and again when one presses refresh (#629
+ * is open because four timers in the rail cost ~97,000 requests a day, and a
+ * directory's size does not change by the second).
+ *
+ * `partial` WHEN SOMETHING COULD NOT BE READ — a permission, a volume that went
+ * away mid-walk. The total is then a floor rather than a figure, and the pane
+ * says so instead of quietly under-reporting.
+ */
+export const StorageReport = z.object({
+  /** Where the store is, which is the other half of "what is Telar keeping". */
+  root: z.string().min(1),
+  total: z.number().min(0),
+  entries: z.array(StorageEntry),
+  measuredAt: Timestamp,
+  /** How long the walk took. Shown to nobody; it is what makes a pane that got
+   *  slow diagnosable without re-measuring by hand. */
+  tookMs: z.number().min(0),
+  partial: z.boolean(),
+});
+export type StorageReport = z.infer<typeof StorageReport>;
+
+/**
+ * WHAT ONE PRESS OF RECLAIM RETURNED — issue #646.
+ *
+ * BEFORE AND AFTER, NOT A SAVING, because the difference is not the only thing
+ * a person is owed: a press that moved nothing should read as "already
+ * compact", and only both numbers say that. The file is the database plus its
+ * `-wal` and `-shm`, so a WAL truncated by the same work is counted where
+ * somebody would look for it.
+ *
+ * `deltas` AND `starts` ARE ROWS, NOT BYTES, and they are here so the sentence
+ * can name what went. Both kinds are superseded by the `item.completed` of
+ * their own turn — no turn, item or answer is ever dropped — and saying
+ * "570,951 rows" without saying which would read like history going away.
+ */
+export const JournalReclaim = z.object({
+  before: z.number().min(0),
+  after: z.number().min(0),
+  deltas: z.number().min(0),
+  starts: z.number().min(0),
+  sessions: z.number().min(0),
+});
+export type JournalReclaim = z.infer<typeof JournalReclaim>;
+
+/**
+ * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
+ *
+ * FOUR KINDS AND NOT A PATH, because three of them are things a person has to
+ * be told rather than a location to quietly use: nothing chosen, chosen and
+ * present, chosen and on a drive that is not connected, and a record this
+ * build cannot read.
+ *
+ * THERE IS NO `restartRequired` HERE, and its absence is a finding rather than
+ * an omission. The root is consulted at exactly one moment — planning where a
+ * new checkout lands — and everything afterwards addresses a worktree by the
+ * absolute path recorded on its session, including the prune guard that
+ * derives its root per-worktree from that path. So a new root takes effect on
+ * the next cut. #630's store move genuinely cannot apply until the next
+ * launch; this one can, and inheriting the restart out of symmetry would cost
+ * somebody a restart they do not need.
+ *
+ * `blocker` IS THE WHOLE SENTENCE, not a code to switch on. It names the drive
+ * by the label recorded when it was chosen, because the moment it is needed is
+ * the moment the drive is not there to be asked.
+ */
+export const WorktreesRoot = z.object({
+  kind: z.enum(["default", "configured", "absent", "unreadable"]),
+  /** Where checkouts go, or would go. Absent only when the record is
+   *  unreadable — the one state with no location to name. */
+  root: z.string().min(1).optional(),
+  /** Where they would go with nothing configured. What "put it back" means. */
+  default: z.string().min(1),
+  volume: z.object({ mount: z.string(), uuid: z.string() }).partial({ uuid: true }).optional(),
+  /** The drive's name the day it was chosen. */
+  label: z.string().optional(),
+  /** Why no worktree session can be cut right now, in words a person can act
+   *  on. Absent when one can. */
+  blocker: z.string().optional(),
+});
+export type WorktreesRoot = z.infer<typeof WorktreesRoot>;
+
+/**
+ * WHAT MOVING THE CHECKOUTS ALREADY CUT DID — issue #642 part 2.
+ *
+ * ONE REASON PER SKIPPED CHECKOUT, NOT A TOTAL, because the reasons lead a
+ * person to different places: commit your work, versus a branch that no longer
+ * exists and cannot be re-cut from, versus git said something nobody predicted.
+ * A single "3 could not be moved" would send them looking for the wrong thing.
+ *
+ * A PARTIAL RESULT IS A SUCCESS, and that is safe here in a way it would not be
+ * for a copy-based move: checkouts are moved by being re-cut from their own
+ * branch, one at a time, each with its own state rewrite. Skipping one changes
+ * nothing about the others, and the operation is re-runnable — commit the work
+ * and press it again.
+ */
+export const WorktreeMoveSkip = z.object({
+  sessionId: z.string().min(1),
+  path: z.string().min(1),
+  reason: z.enum(["dirty", "branch-gone", "detached", "failed"]),
+  /** Git's own words, or the branch that has gone. Never a substitute for
+   *  `reason`: a sentence from git is diagnostic, not copy. */
+  detail: z.string().optional(),
+});
+export type WorktreeMoveSkip = z.infer<typeof WorktreeMoveSkip>;
+
+export const WorktreeMoveResult = z.object({
+  moved: z.array(z.object({ sessionId: z.string().min(1), from: z.string().min(1), to: z.string().min(1) })),
+  skipped: z.array(WorktreeMoveSkip),
+  /** The whole thing said in a sentence, composed where the reasons are known. */
+  summary: z.string(),
+});
+export type WorktreeMoveResult = z.infer<typeof WorktreeMoveResult>;
 
 /**
  * The untranslated provider payload behind a normalized event.
@@ -696,7 +896,7 @@ export type McpServer = z.infer<typeof McpServer>;
  */
 /**
  * `projectId` IS OPTIONAL, and absence is meaningful rather than a missing
- * argument: a project-less session (the Spool's master) gets the environment's
+ * argument: a project-less session gets the environment's
  * GLOBAL servers and no project's, which is exactly what the filter below
  * already produces when nothing matches the scoped arm.
  */
@@ -727,6 +927,215 @@ export const ProviderInstanceEnvVar = z.object({
   valueRedacted: z.boolean().optional(),
 });
 export type ProviderInstanceEnvVar = z.infer<typeof ProviderInstanceEnvVar>;
+
+/**
+ * WHEN A CLAUDE CODE SESSION COMPACTS ITSELF — three states over the
+ * environment a login already carries.
+ *
+ * THERE IS ONE MECHANISM, WHICH IS THE ENVIRONMENT. Claude Code's own dials are
+ * these three variables, the SDK forwards them to the child, and a person could
+ * always have typed them into the Environment variables list by hand. So the
+ * control does not store a setting of its own beside them: it WRITES those rows
+ * and READS them back. A hand-typed pair and the control are the same fact, and
+ * cannot drift apart because there is nothing for them to drift between.
+ *
+ * WHAT THE CLI ACTUALLY DOES WITH THEM, read out of the installed binary
+ * (2.1.273 — the bundle is plain JS inside the executable) rather than inferred
+ * from the names. All three sit on the SDK's forwarding allowlist, which proves
+ * they REACH the child and nothing about what they mean:
+ *
+ *   · `DISABLE_AUTO_COMPACT` is a boolean over `1`/`true`/`yes`/`on`, trimmed
+ *     and case-insensitive. Anything else — including `0` and `false` — is not
+ *     "off", it is INERT, and the CLI carries on as if the variable were absent.
+ *   · `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is a TOKEN COUNT, not a percentage. It
+ *     is raised to 100,000, capped at 1,000,000, and then clamped down to the
+ *     model's own window. So it pins the denominator, DOWNWARD ONLY — which is
+ *     the fact this whole conversion rests on, and the reason no model window
+ *     has to be guessed to honour "compact after N tokens".
+ *   · `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is a percentage on 0–100 (exclusive of
+ *     0, inclusive of 100), read with `parseFloat`, so fractions are allowed and
+ *     an out-of-range value is ignored. It can only LOWER the threshold:
+ *     `min(floor(effective × pct / 100), effective − 13,000)`.
+ *
+ * where `effective = window − min(the model's max output tokens, 20,000)`. Both
+ * halves move the REAL trigger and not merely the meter — and a window from the
+ * environment additionally makes the CLI compact deterministically at that
+ * threshold instead of possibly deferring to the API's prompt-too-long.
+ *
+ * AND ALL THREE WERE WATCHED DOING IT, because reading a bundle is still reading
+ * rather than measuring. Against 2.1.273: `/context` reports the declared window
+ * verbatim (120k, 183k, 400k on a 1M model) with a fixed 33k of reserve beside
+ * it — which is 20,000 + 13,000, the two constants below, arriving from the
+ * other direction. A two-turn session holding 41,843 tokens compacted on the
+ * second turn under a percentage that put the threshold at 10,000, did NOT
+ * compact with the same window and no percentage, and did NOT compact again once
+ * `DISABLE_AUTO_COMPACT=1` was added. Three states, three observations.
+ *
+ * THE TWO CONSTANTS BELOW ARE THE CLI'S, and they are the one thing here that
+ * can rot. If a future CLI moves its 20,000 output reservation or its 13,000
+ * summary buffer, a threshold lands off by the DIFFERENCE — tens of tokens to a
+ * few thousand — rather than off by a factor, because the window carries the
+ * token count and the percentage only agrees with it.
+ */
+export const CLAUDE_COMPACTION_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+export const CLAUDE_COMPACTION_PERCENT_ENV = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
+export const CLAUDE_COMPACTION_DISABLE_ENV = "DISABLE_AUTO_COMPACT";
+
+/** Every variable the control owns. A row named here is the control's to write;
+ *  every other row in the list is untouched by it. */
+export const CLAUDE_COMPACTION_ENV_NAMES: readonly string[] = [
+  CLAUDE_COMPACTION_WINDOW_ENV,
+  CLAUDE_COMPACTION_PERCENT_ENV,
+  CLAUDE_COMPACTION_DISABLE_ENV,
+];
+
+/**
+ * What the CLI holds back from the window for the model's own reply — capped at
+ * this, so it is this for every model Claude Code runs (the smallest reports
+ * 32,000 output tokens). A model reporting FEWER than 20,000 would reserve less
+ * and compact that much later than asked; none exists today, and the drift would
+ * be at most 20,000 tokens rather than a factor.
+ */
+const OUTPUT_RESERVE = 20_000;
+/** What it holds back again for the summary compaction is about to write. */
+const SUMMARY_BUFFER = 13_000;
+/** The CLI raises a smaller declared window to this, and caps a larger one at
+ *  the ceiling. Both are its own bounds, not Telar's. */
+const WINDOW_FLOOR = 100_000;
+const WINDOW_CEILING = 1_000_000;
+
+/**
+ * THE LARGEST THRESHOLD THAT CAN BE STATED HONESTLY.
+ *
+ * Above this the declared window would exceed the CLI's own 1,000,000 ceiling,
+ * the CLI would cap it, and the session would compact EARLIER than the number on
+ * screen. A control that accepted such a number would be lying about the only
+ * thing it says, so the number is refused instead — and "compact very late" was
+ * never what anyone meant by it anyway; that is what Never compact is for.
+ */
+export const CLAUDE_COMPACTION_MAX_TOKENS = WINDOW_CEILING - OUTPUT_RESERVE - SUMMARY_BUFFER;
+
+export type ClaudeCompaction =
+  /** Send nothing. Claude Code's own behaviour, and what every login has today. */
+  | { mode: "default" }
+  /** Compact once the conversation passes this many tokens. */
+  | { mode: "after"; tokens: number }
+  /** `DISABLE_AUTO_COMPACT`. Manual `/compact` still works — that is
+   *  `DISABLE_COMPACT`, a different variable this never writes. */
+  | { mode: "never" };
+
+/** The CLI's own truthiness, so a value it ignores is one this reads as absent
+ *  rather than as "off". */
+const TRUTHY = new Set(["1", "true", "yes", "on"]);
+
+/** Declared, then bounded the way the CLI bounds it. */
+function resolvedWindow(declared: number): number {
+  return Math.max(WINDOW_FLOOR, Math.min(declared, WINDOW_CEILING));
+}
+
+/**
+ * The window to declare so that `tokens` is reachable inside it — and, because
+ * the CLI clamps a declared window down to the model's own, ALSO the smallest
+ * model context this threshold lands exactly on. Exported for the sentence that
+ * says so: computing it twice is how the number on screen drifts from the number
+ * in the variable.
+ */
+export function claudeCompactionWindowFor(tokens: number): number {
+  return resolvedWindow(tokens + OUTPUT_RESERVE + SUMMARY_BUFFER);
+}
+
+/**
+ * The percentage that lands the threshold on `tokens` inside that window.
+ *
+ * BOTH ARMS OF THE CLI'S `min` ARE MADE TO NAME THE SAME NUMBER, which is what
+ * makes the pair robust rather than clever: above ~67,000 the window's own
+ * `effective − 13,000` already IS the answer and the percentage merely agrees,
+ * and below it — where the CLI's 100,000 window floor means the window alone
+ * cannot express the number — the percentage is what carries it.
+ *
+ * ROUNDED UP, at six decimals. Rounding down would put the percentage arm a
+ * token or two BELOW the window arm on some inputs, and `min` would then pick
+ * the rounding error instead of the number that was typed.
+ */
+function percentFor(tokens: number): string {
+  const effective = claudeCompactionWindowFor(tokens) - OUTPUT_RESERVE;
+  return String(Math.ceil(((tokens / effective) * 100) * 1e6) / 1e6);
+}
+
+/** Only a plain run of digits. A hand-typed value spelled any other way is one
+ *  this cannot be SURE the CLI reads the same, so it reports that it cannot
+ *  summarise the login rather than printing a number it guessed. */
+function digits(value: string | undefined): number | undefined {
+  const trimmed = value?.trim() ?? "";
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * WHAT THIS LOGIN'S ENVIRONMENT ALREADY SAYS, which is also how a variable
+ * somebody typed by hand reaches the control.
+ *
+ * The arithmetic below is the CLI's, re-run: given a window and a percentage,
+ * this is the token count that login will actually compact at. So the control
+ * reflects a hand-typed pair as the number it really produces, rather than only
+ * recognising pairs it wrote itself.
+ *
+ * `undefined` MEANS "I CANNOT STATE THIS AS A TOKEN COUNT" and is a real answer,
+ * not an error: a percentage on its own is a percentage of a window nobody
+ * pinned, so the threshold depends on which model the session runs. Naming a
+ * number there would be exactly the fabrication this feature exists to avoid.
+ */
+export function claudeCompactionOf(env: readonly ProviderInstanceEnvVar[]): ClaudeCompaction | undefined {
+  const byName = new Map(env.map((variable) => [variable.name, variable.value]));
+  if (TRUTHY.has((byName.get(CLAUDE_COMPACTION_DISABLE_ENV) ?? "").trim().toLowerCase())) return { mode: "never" };
+
+  const rawWindow = byName.get(CLAUDE_COMPACTION_WINDOW_ENV);
+  const rawPercent = byName.get(CLAUDE_COMPACTION_PERCENT_ENV);
+  const percent = rawPercent === undefined ? undefined : Number.parseFloat(rawPercent.trim());
+  const usablePercent = percent !== undefined && Number.isFinite(percent) && percent > 0 && percent <= 100 ? percent : undefined;
+
+  const declared = digits(rawWindow);
+  if (declared === undefined) {
+    // A window the CLI would ignore is a window it does not have. With a live
+    // percentage still in the list there is no denominator to divide by.
+    if (rawWindow !== undefined || usablePercent !== undefined) return undefined;
+    return { mode: "default" };
+  }
+
+  const effective = resolvedWindow(declared) - OUTPUT_RESERVE;
+  const byWindow = effective - SUMMARY_BUFFER;
+  const tokens = usablePercent === undefined ? byWindow : Math.min(Math.floor((effective * usablePercent) / 100), byWindow);
+  return { mode: "after", tokens };
+}
+
+/**
+ * The same list with this login's compaction rows replaced.
+ *
+ * `null` REFUSES rather than clamping: a threshold this cannot express is one
+ * the person has to see refused, because silently moving their number is the
+ * failure mode the whole design is arranged against.
+ *
+ * Every other variable keeps its place and its order. Default removes the rows
+ * entirely — an empty string is a value the CLI reads, and `DISABLE_AUTO_COMPACT=""`
+ * would leave a variable on the process that says nothing.
+ */
+export function applyClaudeCompaction(
+  env: readonly ProviderInstanceEnvVar[],
+  next: ClaudeCompaction,
+): ProviderInstanceEnvVar[] | null {
+  if (next.mode === "after" && !(Number.isSafeInteger(next.tokens) && next.tokens > 0 && next.tokens <= CLAUDE_COMPACTION_MAX_TOKENS)) {
+    return null;
+  }
+  const kept = env.filter((variable) => !CLAUDE_COMPACTION_ENV_NAMES.includes(variable.name));
+  if (next.mode === "default") return kept;
+  if (next.mode === "never") return [...kept, { name: CLAUDE_COMPACTION_DISABLE_ENV, value: "1", sensitive: false }];
+  return [
+    ...kept,
+    { name: CLAUDE_COMPACTION_WINDOW_ENV, value: String(claudeCompactionWindowFor(next.tokens)), sensitive: false },
+    { name: CLAUDE_COMPACTION_PERCENT_ENV, value: percentFor(next.tokens), sensitive: false },
+  ];
+}
 
 /**
  * A CONFIGURED PROVIDER — which is to say, an account.
@@ -975,6 +1384,87 @@ export const ProviderModel = z.object({
   source: z.enum(["provider", "user"]).default("provider"),
 });
 export type ProviderModel = z.infer<typeof ProviderModel>;
+
+/**
+ * WHICH OF OPENCODE GO'S THREE ENDPOINTS A MODEL ANSWERS ON (#551).
+ *
+ * Go publishes three request shapes — OpenAI's `chat/completions`, an
+ * Anthropic-shaped `/messages`, and OpenAI's `/responses` — and a model belongs
+ * to exactly one. The Agent builds a client per shape since #571 and speaks all
+ * three, so this rides as a per-row BADGE rather than as a refusal; whether a
+ * row can be picked is `AgentModel.supported`, which the engine decides and
+ * which no surface may second-guess from this field.
+ *
+ * `unknown` IS THIS BUILD ADMITTING IT DOES NOT KNOW, not a fourth endpoint.
+ * The mapping exists in one table on opencode.ai/docs/go and nowhere machine-
+ * readable, so the engine carries a transcription of it; an id Go starts
+ * serving before anybody updates that table lands here.
+ */
+export const GoRoute = z.enum(["chat", "messages", "responses", "unknown"]);
+export type GoRoute = z.infer<typeof GoRoute>;
+
+/**
+ * ONE MODEL THE BUILT-IN AGENT MAY RUN — Go's id, described.
+ *
+ * ── WHY IT EXTENDS `ProviderModel` RATHER THAN REPLACING IT ─────────────────
+ * The fields below `route` are the new ones and the reason this type exists:
+ * Go's `/models` answers `{ id, object, created, owned_by }` and nothing else,
+ * so a picker built on it is raw strings in arbitrary order. models.dev
+ * describes them, the engine merges the two, and these are the merged facts.
+ *
+ * The `ProviderModel` half is a COMPATIBILITY TAIL, and it is deliberate. An
+ * iPhone ships from the App Store on its own clock and talks to whatever engine
+ * the Mac is running; `AgentModelList` decodes its rows as `ProviderModel` and
+ * DROPS any it cannot read, so an engine that answered only the new shape would
+ * empty the model pill on every phone that had not updated — silently, and with
+ * no message to explain it. Six keys is a cheap price for that not happening.
+ * A later release may retire them once no supported client reads them.
+ */
+export const AgentModel = ProviderModel.extend({
+  /** models.dev's display name — "Kimi K3" — or the id when nobody described
+   *  it. `label` carries the same string for the older clients. */
+  name: z.string().min(1),
+  /** The section a picker files it under: "GLM", "Kimi", "DeepSeek". Derived by
+   *  the engine from the id, NOT models.dev's own `family`, which files three
+   *  Qwens as three families and leaves other models without one. */
+  family: z.string().min(1),
+  route: GoRoute,
+  /** Whether Telar's Agent client can actually run it. `chat` and `unknown`
+   *  yes; `messages` and `responses` no — see `GoRoute`. */
+  supported: z.boolean(),
+  /** Whether models.dev had anything to say. False leaves every optional field
+   *  below absent, and the row still lists: an id you can run is worth showing
+   *  whether or not a third party has described it. */
+  described: z.boolean(),
+  reasoning: z.boolean().optional(),
+  toolCall: z.boolean().optional(),
+  attachment: z.boolean().optional(),
+  /** Tokens in and tokens out. Absent rather than zero when undescribed. */
+  context: z.number().int().positive().optional(),
+  output: z.number().int().positive().optional(),
+  /** `YYYY-MM-DD`, models.dev's own — what "newest first" is sorted on. */
+  releaseDate: z.string().min(1).optional(),
+});
+export type AgentModel = z.infer<typeof AgentModel>;
+
+/**
+ * `GET /v2/agent/models` — what the Agent may run, and where each half came
+ * from.
+ *
+ * THE TWO SOURCES FAIL INDEPENDENTLY, which is why they are reported
+ * separately rather than as one "ok" flag. `go: null` means Go did not answer
+ * and `models` is empty — the only state with no picker. `modelsDev: null`
+ * means the descriptions are missing and every row is `described: false`, which
+ * is a worse-looking but entirely usable list. A surface says which happened by
+ * reading these, never by inferring it from a row.
+ */
+export const AgentModelCatalogue = z.object({
+  models: z.array(AgentModel),
+  source: z.object({ go: Timestamp.nullable(), modelsDev: Timestamp.nullable() }),
+  /** The service's own words when a half failed. Never invented. */
+  message: z.string().min(1).optional(),
+});
+export type AgentModelCatalogue = z.infer<typeof AgentModelCatalogue>;
 
 /** Where a catalogue came from, so a surface can say whether it is asking or
  *  guessing. `builtin` is this cockpit's own list and is a known gap. */

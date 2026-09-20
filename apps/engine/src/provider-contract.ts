@@ -1,16 +1,16 @@
 import type { TelarToolSocket } from "./telar-socket";
 // Provider-neutral execution boundary. Adapters report observations; only the engine writes state.
-import type { McpServer, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
-import type { SpoolCapability } from "./spool/tools";
+import type { Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./notes-tools/tools";
+import type { PromptsCapability } from "./prompts-tools/tools";
 import type { DsCapability } from "./ds/capability";
 import type { DisplayCapability } from "./display/tools";
 import type { RunCapability } from "./run/capability";
 import type { LatexCapability } from "./latex/capability";
 import type { SteerMailbox } from "./steering";
 
-export type { SpoolCapability, SessionsCapability, NotesCapability, DsCapability, DisplayCapability, LatexCapability };
+export type { SessionsCapability, NotesCapability, PromptsCapability, DsCapability, DisplayCapability, LatexCapability };
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -52,6 +52,28 @@ export type DriverRun = {
    */
   promptFromHuman?: boolean;
   /**
+   * THIS TURN IS A NOTIFICATION, AND `prompt` IS ITS NOTICE — issue #550.
+   *
+   * `promptFromHuman` is the NEGATIVE fact ("not the person") and it left the
+   * driver with nothing to do about it: every sender still went down the user
+   * channel, and the only thing distinguishing a peer's report from a person's
+   * instruction was a paragraph of prose at the top of the text. Prose is not a
+   * role — it is content, indistinguishable from content a peer could write.
+   *
+   * THIS IS THE POSITIVE FACT, and each provider has somewhere honest to put it:
+   *   - Claude: `origin: {kind:"peer"|"task-notification"}` on the SDK message,
+   *     which is the CLI's own provenance channel, plus a `<system-reminder>`
+   *     wrapper so the text is system-authored rather than user-authored.
+   *   - Codex: a per-turn `developerInstructions` — the developer role, which is
+   *     exactly what an engine announcement is.
+   *   - OpenCode: a text part marked `synthetic`, the SDK's own word for "this
+   *     was generated, not typed".
+   *
+   * ABSENT MEANS A PERSON'S MESSAGE OR AN ORDINARY TURN. A driver that ignores
+   * it degrades to the previous behaviour rather than to a wrong one.
+   */
+  notification?: NotificationDetail;
+  /**
    * WHICH SESSION THIS TURN BELONGS TO — the key the Claude driver holds its
    * live runtime under (see ./claude-runtime.ts). Without it every turn is an
    * island and nothing a turn leaves running can survive the turn's end,
@@ -60,7 +82,16 @@ export type DriverRun = {
    * their parent at every turn boundary.
    */
   sessionId: string;
-  cwd: string;
+  /**
+   * WHERE THE PROVIDER RUNS — and OPTIONAL since #526, mirroring
+   * `WorkerClaim.projectRoot`.
+   *
+   * ABSENT MEANS THERE IS NO DIRECTORY, not "pick one". A driver that spawns a
+   * process must refuse rather than fall back to the worker's own cwd, which
+   * would start a coding agent inside Telar's application-support folder. The
+   * `telar` driver spawns nothing and simply never reads this.
+   */
+  cwd?: string;
   signal: AbortSignal;
   /**
    * SEND NOW: text a human pushed into this running turn. The worker fills
@@ -72,26 +103,14 @@ export type DriverRun = {
    */
   steer?: SteerMailbox;
   /**
-   * The session's door to the user's item store.
-   *
-   * PER-RUN, NOT PER-DRIVER, unlike `browser`. A browser is a machine resource
-   * the deployment owns and every session borrows; the spool arrives already
-   * SCOPED to the project this turn belongs to, and that scope is a fact about
-   * the turn. Capturing one at construction would give every session the first
-   * session's slice.
-   *
-   * ABSENT MEANS NO SPOOL TOOLS, which is what a test gets and what an older
-   * worker produces — not an empty spool. The difference matters: a model told
-   * "no items" would report that as the truth.
-   */
-  spool?: SpoolCapability;
-  /**
    * The session's door to OTHER sessions — create, send, read, status, stop,
    * diff.
    *
-   * PER-RUN, like the spool and for a related reason: it is assembled out of
-   * the worker's own client, so a deployment with no client has no toolkit
-   * rather than a broken one.
+   * PER-RUN, NOT PER-DRIVER, unlike `browser` — the rule every capability below
+   * follows. A browser is a machine resource the deployment owns and every
+   * session borrows; this one is assembled out of the worker's own client, so a
+   * deployment with no client has no toolkit rather than a broken one, and
+   * capturing one at construction would give every session the first session's.
    *
    * ABSENT MEANS NO SESSIONS TOOLS, which is what a test gets and what an older
    * worker produces — never an empty engine. A model told "no sessions exist"
@@ -107,7 +126,7 @@ export type DriverRun = {
    * The session's door to the PROJECT'S NOTEBOOK — the quick notes the person
    * keeps beside the code, which the composer's foot also draws.
    *
-   * PER-RUN and SCOPED, like the spool and for the same reason: it carries
+   * PER-RUN and SCOPED, like `sessions` and for the same reason: it carries
    * `self.projectId`, so `notes_list()` with no argument means "this project"
    * and an agent asked "what does the deploy note say?" has somewhere to look.
    *
@@ -117,9 +136,21 @@ export type DriverRun = {
    */
   notes?: NotesCapability;
   /**
+   * The session's door to THE PROJECT'S PROMPT SHELF — where a turn leaves a
+   * prepared message for the human instead of acting on it.
+   *
+   * PER-RUN and SCOPED like `notes`, and it carries one thing the notebook's
+   * does not: `self.sessionId`, because a drafted follow-up belongs in THIS
+   * conversation's composer and a shelf-wide default would scatter it.
+   *
+   * ABSENT MEANS NO PROMPT TOOLS — a project-less session, an older worker, a
+   * test. Never an empty shelf.
+   */
+  prompts?: PromptsCapability;
+  /**
    * The session's kernel, notebooks and analysis tools — present only when
-   * the project opted in (the claim carried `dataScience`). Per-run like the
-   * spool: assembled from the worker's client, scoped to this session.
+   * the project opted in (the claim carried `dataScience`). Per-run like
+   * `sessions`: assembled from the worker's client, scoped to this session.
    * ABSENT MEANS THE TOOLKITS DO NOT EXIST, never an empty kernel.
    */
   ds?: DsCapability;
@@ -142,9 +173,9 @@ export type DriverRun = {
   plugins?: Record<string, unknown>;
   /**
    * The session's door to the human's SCREEN — `display_open`, the tool that
-   * shows one workspace file in the cockpit's right panel. Per-run like the
-   * spool: the worker assembles it around this turn's checkout, so the fence
-   * is the turn's own. ABSENT MEANS THE TOOL DOES NOT EXIST, which is what a
+   * shows one workspace file in the cockpit's right panel. Per-run like
+   * `sessions`: the worker assembles it around this turn's checkout, so the
+   * fence is the turn's own. ABSENT MEANS THE TOOL DOES NOT EXIST, which is what a
    * test gets and what an older worker produces.
    */
   display?: DisplayCapability;
@@ -173,12 +204,23 @@ export type DriverRun = {
    * person turned it off, or the worker is older than this field, or it is a
    * test. Never a default paragraph invented here.
    *
-   * A WARP CHILD DOES NOT GET ONE, and neither does the spool's canvas: both
-   * are spawned outside this contract with a prompt that already states what
-   * they are and what they may do. Orienting them a second time would be a
-   * paragraph about a cockpit neither of them is sitting in.
+   * A WARP CHILD DOES NOT GET ONE: it is spawned outside this contract with a
+   * prompt that already states what it is and what it may do. Orienting it a
+   * second time would be a paragraph about a cockpit it is not sitting in.
    */
   orientation?: string;
+  /**
+   * WHAT THE DESIGNATED COORDINATOR IS TOLD — the Main session briefing, already
+   * resolved by the engine (see `main-session/briefing.ts` and `MainSession`).
+   * Injected through the SAME seam as `orientation` and the per-surface
+   * briefings, once per turn.
+   *
+   * THE TEXT, NOT A FLAG, and it arrives on the claim — `orientation`'s own
+   * reason, and the decision it encodes is narrower: this session is the one
+   * this machine calls main, and the switch was on when the turn was claimed.
+   * ABSENT MEANS INJECT NOTHING, which is every session but at most one.
+   */
+  mainBriefing?: string;
   /**
    * Files the human attached to THIS message, already on disk.
    *
@@ -252,6 +294,26 @@ export type DriverRun = {
    * down. Same key, same tool names, same approvals.
    */
   telarSocketLease?: { url: string; token: string; generation: string };
+  /**
+   * THE SESSION'S OWN TRANSCRIPT ROWS, for a driver that has no provider-side
+   * conversation to resume (#526).
+   *
+   * Claude, Codex and OpenCode each hand their provider a session id and let it
+   * remember; `providerSessionId` below is that continuity. Telar's own loop
+   * talks to a stateless HTTP API, so the conversation it sends is rebuilt from
+   * the rows the engine already wrote — and the worker holds no store handle,
+   * so the read comes back over the same client as every other capability here.
+   *
+   * PER-RUN AND A THUNK, like `sessions` and for the same reasons: it is
+   * assembled from the worker's client (a deployment with none has no history
+   * rather than a broken one), and it must be read AT the turn rather than
+   * captured before it, so a message that arrived while the turn was queued is
+   * in the history the model sees.
+   *
+   * ABSENT MEANS NO HISTORY — a test, an older worker — and a driver must treat
+   * that as an empty conversation rather than as an error.
+   */
+  transcript?(options?: { turns?: number }): Promise<Item[]>;
   /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
   /**
@@ -336,6 +398,27 @@ export type TurnDriver = {
    */
   stopTask?(sessionId: string, providerTaskId: string): Promise<boolean>;
 };
+
+/**
+ * THE DIRECTORY A SPAWNING DRIVER CANNOT DO WITHOUT (#526).
+ *
+ * `DriverRun.cwd` became optional so a project-less session is expressible, and
+ * every driver that starts a CLI still needs a folder to start it in. Refusing
+ * HERE, by name, is what keeps the failure legible: the alternative was each
+ * driver falling back to the worker's own cwd, which would run a coding agent
+ * inside Telar's application-support directory and look like a bug in the
+ * agent rather than a session that should never have been routed here.
+ *
+ * It is a routing mistake rather than a user error — the engine only mints a
+ * project-less session on the `telar` driver — so the sentence says which
+ * provider and which session shape disagreed.
+ */
+export function requireCwd(cwd: string | undefined, provider: string): string {
+  if (cwd === undefined) {
+    throw new Error(`${provider} runs inside a working directory, and this session has none. Sessions with no checkout run on Telar's own driver.`);
+  }
+  return cwd;
+}
 
 export class ProviderUnavailableError extends Error {
   constructor(message: string) {

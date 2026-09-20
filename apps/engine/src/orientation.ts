@@ -5,7 +5,7 @@
  * it had was tool names (`mcp__telar__*`, `telar-browser`) and one MCP
  * instruction block about the browser — so "the browser" read as this Mac's
  * Chrome, "session" as the CLI's own history, and "the panel", "the rail",
- * "Spool", "Looks", "a surface" meant nothing at all. The confusion was
+ * "Looks", "a surface" meant nothing at all. The confusion was
  * structural: the harness never stated where the agent was, so every session
  * re-derived it from tool names or got it wrong. The owner's words for the
  * failure: "when I say browser I most of the time mean the Telar browser and
@@ -38,7 +38,7 @@ import path from "node:path";
 
 /** Bumped whenever the words below change. The skill's front matter carries it,
  *  so a file on disk says which release wrote it. */
-export const ORIENTATION_VERSION = 1;
+export const ORIENTATION_VERSION = 2;
 
 /** The skill's name, which is also its directory and the `$telar` a person or a
  *  model types. One constant so the writer, the remover and the preamble that
@@ -64,7 +64,7 @@ export const TELAR_ORIENTATION =
   '"The browser" is Telar\'s own integrated browser, driven by the `telar-browser` tools and sharing its tabs with them — not this Mac\'s Chrome or Safari, unless they say so outright. ' +
   'A "session" or "conversation" is a Telar session, reached through the `mcp__telar` tools, not this CLI\'s own history. ' +
   'The "panel" is the cockpit\'s right pane, the "rail" its list of sessions, and a "surface" one thing drawn in either; ' +
-  '"Spool" is their own desk of tasks and notes, "Looks" the cockpit\'s themes, and a "Warp" a fan-out of sub-agents. ' +
+  '"Looks" are the cockpit\'s themes, and a "Warp" a fan-out of sub-agents. ' +
   `The \`${TELAR_SKILL_NAME}\` skill has the detail. When one of these words could mean two things here, ask which.`;
 
 /**
@@ -74,7 +74,7 @@ export const TELAR_ORIENTATION =
  * toolkit with a recording factory and asserts that every name it reports
  * appears below — so a tool added, renamed or removed fails the suite instead
  * of leaving a reference that quietly lies. That test is the reason this is a
- * list rather than prose about "the spool verbs".
+ * list rather than prose about "the notebook verbs".
  *
  * THE FRONT MATTER CARRIES `telar:` — the marker `syncTelarSkill` checks before
  * it overwrites or deletes anything. A person who wrote their own `telar` skill
@@ -82,7 +82,7 @@ export const TELAR_ORIENTATION =
  */
 export const TELAR_SKILL = `---
 name: ${TELAR_SKILL_NAME}
-description: What Telar is and what its words mean — the cockpit's panel, rail and surfaces, sessions and how they are assigned and settled, Warps, the integrated browser's tab rules, and the Spool. Read this when a request uses a word like "the browser", "the panel", "a session", "Spool" or "a Look" and you are not certain it means what you would assume outside Telar.
+description: What Telar is and what its words mean — the cockpit's panel, rail and surfaces, sessions and how they are assigned and settled, Warps, the integrated browser's tab rules, and the project notebook. Read this when a request uses a word like "the browser", "the panel", "a session" or "a Look" and you are not certain it means what you would assume outside Telar.
 telar: generated v${ORIENTATION_VERSION}
 ---
 
@@ -97,8 +97,8 @@ agents. Everything below is about THIS app, not about the machine it runs on.
 - **The rail** — the left sidebar. Every live session, grouped by project.
   Settled ones are shelved out of it rather than deleted.
 - **The panel** — the right pane beside the conversation. It has tabs: the
-  files the session changed, the browser, the run output, the Spool, whatever
-  the session opened. \`display_open\` is how you put one file in front of the
+  files the session changed, the browser, the run output, whatever the session
+  opened. \`display_open\` is how you put one file in front of the
   person there; it is deliberate foreground, so use it for something you made
   FOR them to look at, not for a file you are merely editing.
 - **A surface** — one thing drawn in the window: a session, a panel tab, a
@@ -127,11 +127,58 @@ It is not this CLI's own notion of a session, and not a chat thread.
   resumable; nothing is deleted, and nothing about the work is approved by it.
   Whether work is good enough to keep is a human's decision, made elsewhere:
   there is no tool here that merges, lands or accepts anything.
+- **Creating costs the person something.** There is no cap, so the discipline is
+  yours: sessions do not clean themselves up — one you start stays live until a
+  human archives it — and every worktree session is a whole checkout on their
+  disk. Create what the work needs and nothing more.
+- **Do not acknowledge acknowledgements.** A \`report\` back saying "received" is
+  a turn somebody pays for. Completion already arrives on its own.
 
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
 \`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,
 \`sessions_subscribe\`, \`sessions_unsubscribe\`, \`sessions_subscriptions\`,
-\`sessions_requests\`, \`sessions_resolve_request\`.
+\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_report_window\`.
+
+### Reading a peer without spending your context on it
+
+Every answer these tools give lands in YOUR context window, so each one is
+bounded and each says where its bound fell. Read the notes in the answers; they
+name the exact next call.
+
+- \`sessions_list\` answers the UNSETTLED sessions, 50 at a time. \`settled: true\`
+  adds the shelf, \`projectId\` narrows, \`after\` pages. An engine with hundreds
+  of conversations is ordinary and almost all of them are shelved.
+- \`sessions_status\` is the cheap "is it finished yet": an activity, a turn
+  count, and the last few turns. Ask it before you read anything.
+- \`sessions_read\` FOLDS by default: recent turns, a line each — what it was
+  asked, what it did, how it answered — which is what "what has it been doing"
+  means, and a fifth of the size of the journal it stands in for. \`mode:
+  "events"\` is the raw journal, for debugging a run's tool trace; within it,
+  \`from: "start"\` reads from the beginning, \`after\` walks forward from a
+  cursor, and \`verbose: true\` restores the token counts and auto-approved
+  requests that are dropped by default.
+- **A wake or a peer's message is a PING.** It names a session and a run and
+  carries no body. \`sessions_read(sessionId, runId)\` fetches the whole thing —
+  the answer, and a peer's message in full — and long ones come back in verbatim
+  slices on \`resultAfter\` / \`messageAfter\` that concatenate exactly. Fetch when
+  it matters; skip when it does not.
+
+### Being told on a clock instead of one at a time
+
+With several peers reporting, the interleaving is what becomes unreadable, not
+the size of any one message. \`sessions_report_window(minutes)\` holds ROUTINE
+traffic — a \`report\`, and a \`result\` nobody subscribed for — and delivers
+whatever piled up as ONE notification at most that often. \`minutes: null\` goes
+back to being told as each arrives.
+
+- It is YOUR OWN cadence. There is no session argument, and no session can set
+  another's.
+- A \`task\`, a \`blocker\` and a \`result\` you subscribed to are never held.
+- Nothing is lost while it waits: \`sessions_status\` lists what is held and the
+  window it is waiting on. A window that closes with nothing in it costs nothing
+  and delivers nothing.
+- Set it when you are about to dispatch several peers, not after they start
+  talking.
 
 ### What a coordinating session can and cannot do
 
@@ -154,6 +201,53 @@ or when confidence matters more than speed (independent attempts, adversarial
 verification). It spawns a real process per concurrent child, so a single
 straight line of work should stay a single straight line of work. Tool: \`warp\`.
 
+### Writing the script
+
+The script must begin with a pure object literal — no variables, no calls, no
+interpolation:
+
+    export const meta = { name: 'find-flaky-tests', description: 'Find flaky tests and propose fixes', phases: [{ title: 'Scan' }, { title: 'Fix' }] }
+
+Then write statements at the top level. Top-level \`await\` and top-level
+\`return\` both work; whatever you return becomes the tool's result.
+Available as globals:
+
+- \`agent(prompt, opts?)\` -> Promise<any>. One sub-agent. Resolves to its
+  final text, or — with \`opts.schema\` (a JSON Schema) — to a validated
+  object, which is what makes the code between stages ordinary code instead of
+  another agent hired to read the last one's paragraphs. Resolves to
+  \`null\` if the child died, so \`.filter(Boolean)\` before using
+  results. \`opts\`: { model, effort, schema, label, phase, maxTurns,
+  agentType }. Omit \`model\` to inherit the session's.
+- \`parallel(thunks)\` -> Promise<any[]>. Concurrent, WITH A BARRIER:
+  everything settles before it resolves. Correct only when the next step
+  genuinely needs all of the previous one at once — a dedupe across the whole
+  set, an early exit on a total, a prompt that compares one finding against the
+  others.
+- \`pipeline(items, ...stages)\` -> Promise<any[]>. Each item through every
+  stage independently, NO barrier. This is the default for multi-stage work:
+  item A can be in stage 3 while item B is still in stage 1, so the run costs
+  the slowest single chain rather than the sum of the slowest-per-stage. Every
+  stage receives \`(previousResult, originalItem, index)\`. A stage that
+  throws drops that item to \`null\` and keeps the others flowing.
+- \`phase(title)\` opens a progress group; \`log(message)\` narrates to
+  the human; \`args\` is the JSON value passed alongside the script.
+
+### What a script cannot do
+
+\`Date.now()\`, \`new Date()\` and \`Math.random()\` THROW — a
+script that branched on the clock could not be replayed. \`require\`,
+\`import\`, \`process\` and \`fs\` are absent; a script orchestrates
+agents and does not touch the host. A script that cannot parse, is missing its
+\`meta\`, or reaches for a banned name is refused before anything is spent,
+with the line number.
+
+A Warp child may not create work that outlives the run or escapes the script:
+fan-out (Agent, Task, Workflow), scheduling (cron, wake-ups), messaging other
+sessions, and switching worktrees are all withheld from it. So the script is the
+only place parallelism is expressed. Children run in the same checkout as this
+session and inherit its permissions.
+
 ## The browser
 
 Telar has its OWN integrated browser, shared between you and the person. When
@@ -167,28 +261,20 @@ they say "the browser" in Telar, this is what they mean.
 - \`browser_fill_secret\` fills a login from their 1Password without the value
   ever entering this conversation. Use it instead of asking them to paste one.
 
-## The Spool
+## The project notebook
 
-The person's own desk: tasks in lanes, open questions, a shelf of notes, and
-what Telar observed in their repositories. It is THEIRS. You file and read;
-you do not invent structure in it.
+The quick notes kept beside the code — deploy incantations, constraints, the
+decisions somebody wrote down so they would not be asked twice. A note belongs
+to a PROJECT, so every session on it opens the same notebook. It is THEIRS:
+write one when the person asks you to keep something, not to log what you did.
 
-- Never create a lane, resolve a relative date ("Friday", "next week") into a
-  calendar day, invent a deadline, or pick a colour or tag uninvited.
-- A task filed here is PREPARED, never started.
-- The project notebook (\`notes_*\`) is the notes kept beside the code — deploy
-  incantations, decisions. The shelf (\`spool_write_note\`) is the person's own
-  cross-project knowledge. They are different places.
+- A note you write is stamped as an agent's, permanently.
+- \`notes_delete\` removes only notes an agent wrote. The person's own are
+  theirs; say so rather than asking another session to delete one for you.
+- \`notes_list\` shows titles and the first 120 characters. \`notes_read\` gives
+  one note whole — ask for the ones you actually need.
 
-Tools: \`spool_list_items\`, \`spool_list_lanes\`, \`spool_list_threads\`,
-\`spool_create_item\`, \`spool_update_item\`, \`spool_pin\`, \`spool_search\`,
-\`spool_look\`, \`spool_shelf\`, \`spool_write_note\`, \`spool_open_question\`,
-\`spool_answer_question\`, \`spool_mark_waiting\`, \`spool_settle_thread\`,
-\`spool_set_focus\`, \`spool_end_focus\`, \`spool_set_terrain\`,
-\`spool_set_subject_identity\`, \`spool_set_area_permits\`,
-\`spool_consult_expert\`.
-
-Project notebook: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
+Tools: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
 \`notes_projects\`.
 
 ## Showing and running

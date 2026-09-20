@@ -182,7 +182,7 @@ import UIKit
                 } else {
                     Spacer(minLength: 0)
                 }
-                ComposerView(draft: $model.draft, focus: $model.focused, store: store, onSend: {})
+                ComposerView(draft: $model.draft, focus: $model.focused, host: SessionComposerHost(store: store), onSend: {})
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { model.composerHeight = $0 }
                     .padding(.horizontal, 16)
             }
@@ -205,8 +205,6 @@ private struct SilentAPI: EngineAPI {
     func liveSessions() async throws -> LiveSessions { fatalError("unused") }
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot { fatalError("unused") }
     func events(_ id: EngineID, after: Int) async throws -> EventPage { fatalError("unused") }
-    func sessionData(_ id: EngineID) async throws -> Data { fatalError("unused") }
-    func liveSessionsData() async throws -> Data { fatalError("unused") }
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data { fatalError("unused") }
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult { fatalError("unused") }
     func stopSession(_ id: EngineID) async throws {}

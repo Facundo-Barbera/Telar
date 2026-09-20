@@ -404,6 +404,250 @@ describe("the text scale", () => {
   });
 });
 
+/**
+ * A CARD MUST PAINT — issue #691, and the half of the wash contract that had no
+ * test at all.
+ *
+ * `globals.css` argues the rule out at length and `globals.test.ts` checked it
+ * from the stylesheet's side only: that the wash thins nothing it does not own,
+ * that the opt-in is a class, that the floors are declared once. None of that
+ * can see a CALL SITE, and the call sites are where it broke. The Git surfaces
+ * drew a comment card as `rounded-md border border-border` with an author bar
+ * and no fill of its own — correct-looking for as long as the panel behind it was
+ * opaque, and a 1px hairline over the desktop holding a paragraph the moment it
+ * was not. The rule was never disputed; nothing enforced it.
+ *
+ * THE RULE IS DRAWN BY WHAT A SURFACE HOLDS, not by what it is:
+ *
+ *   - A READING SURFACE NEVER THINS. A comment body, a diff hunk, a CI log, a
+ *     file view, the composer — anything read word by word, at 100% at every
+ *     slider setting.
+ *   - CHROME MAY THIN FREELY. The rail, the panel shell, section headers, tab
+ *     strips, gutters, chips, a `kbd`. This is where glass reads as glass.
+ *
+ * WHICH IS WHY THE THREE GUARDS BELOW HAVE TWO DIFFERENT SCOPES, and the split is
+ * the honest part rather than a shortcut. "Holds prose" is not a property of a
+ * class string: `rounded-full border px-2.5` is a filter chip in one file and a
+ * status pill in another, and a guard that called both a card would have to be
+ * satisfied by painting forty chips that are correct as they are. So the first
+ * assertion is APP-WIDE, over the one shape that cannot be anything but a card —
+ * a bordered box that CLIPS its children is a wrapper around content, always —
+ * and the two that need to know what a surface holds run over the surfaces that
+ * have been brought under the rule. #691 seeded that list with the Git surfaces;
+ * a surface joins it in the commit that makes it pass.
+ */
+describe("cards must paint", () => {
+  /**
+   * The unprefixed classes in a class string. A variant is dropped on purpose:
+   * `hover:bg-muted` is not a resting fill and `focus-visible:ring-2` is not an
+   * edge, and counting either would let a box with no fill at rest pass because
+   * it lights up under the pointer.
+   */
+  function classes(value: string): string[] {
+    return value.split(/\s+/).filter((name) => name && !name.includes(":"));
+  }
+
+  /** The sides, for telling a box's edge from a divider. */
+  const SIDES = new Set(["t", "b", "l", "r", "x", "y", "s", "e"]);
+
+  /**
+   * Whether a class string draws an edge a reader can see, all the way round.
+   * `border-b` is a divider between rows, `border-transparent` reserves the
+   * layout a border would occupy without drawing one, and `border-0`/`-none`
+   * remove it.
+   */
+  function drawsAnEdge(value: string): boolean {
+    const names = classes(value);
+    if (names.some((name) => name === "border-transparent" || name === "border-0" || name === "border-none")) return false;
+    return names.some((name) => {
+      if (name === "border") return true;
+      if (name === "ring-1" || name === "ring-2") return true;
+      if (!name.startsWith("border-") || name.startsWith("border-spacing")) return false;
+      return !SIDES.has(name.slice("border-".length).split("-")[0] ?? "");
+    });
+  }
+
+  /** Whether the box supplies its own background. */
+  function paints(value: string): boolean {
+    return classes(value).some((name) => name.startsWith("bg-"));
+  }
+
+  /** Every quoted string mentioning a radius — how a card is written here. */
+  const CARD_SHAPED = /"([^"\n]*\brounded[^"\n]*)"|'([^'\n]*\brounded[^'\n]*)'/g;
+
+  test("a bordered box that clips its children paints", () => {
+    /**
+     * `overflow-hidden` or `divide-y` on a bordered, rounded box says the box
+     * exists to WRAP something: it is clipping children to its own corners, or
+     * ruling lines between them. That is a card by construction, whatever it
+     * holds — and a card with no fill is borrowing an ancestor's, which is the
+     * exact thing translucency takes away.
+     *
+     * A BOX WHOSE WHOLE CONTENT IS AN IMAGE IS EXEMPT, because an image paints
+     * its own pixels: there is no ground to show through and a fill behind it
+     * would never be seen. `aspect-*`, `size-full` and `object-*` are how those
+     * are written (look-thumb, the studio's scene previews).
+     */
+    const offenders: string[] = [];
+    for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
+      const source = withoutProse(file);
+      for (const hit of source.matchAll(CARD_SHAPED)) {
+        const value = hit[1] ?? hit[2] ?? "";
+        const names = classes(value);
+        const clips = names.some((name) => name === "overflow-hidden" || name.startsWith("divide-y"));
+        const holdsAnImage = names.some((name) => name.startsWith("aspect-") || name === "size-full" || name.startsWith("object-"));
+        if (!clips || holdsAnImage || paints(value) || !drawsAnEdge(value)) continue;
+        offenders.push(`${path.relative(path.join(here, ".."), file)}: ${value}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * The surfaces held to the reading-surface half of the rule — #691 brought the
+   * Git surfaces in as the first of them. Anything outside this set is unaudited,
+   * not exempt; a surface joins in the commit that makes it pass.
+   *
+   * BY PREFIX RATHER THAN BY FILENAME, and that is the lesson of #692 landing on
+   * top of this: that change extracted `EntryCard`, `ForgeFacts` and
+   * `MergeFooter` out of one 1000-line surface, and a guard naming three exact
+   * files would have gone on passing while the card it was written for moved to a
+   * `github-detail-*.tsx` beside it and quietly lost its fill. Every
+   * `github-*`/`diff-*` module under components/session is in, whether it existed
+   * when this was written or not — which is the whole point of a lint over a
+   * review note.
+   */
+  const READING_SURFACE_PREFIXES = ["github-", "diff-"] as const;
+
+  const readingSurfaces = sources(["components/session"], /\.tsx?$/)
+    .filter((file) => READING_SURFACE_PREFIXES.some((prefix) => path.basename(file).startsWith(prefix)))
+    .map((file) => ({ file: path.relative(path.join(here, ".."), file), source: withoutProse(file) }));
+
+  test("the reading-surface set is not empty, and holds the surfaces #691 brought in", () => {
+    // Every assertion below iterates this set: an empty one would report a clean
+    // sweep of nothing. The three named are the ones the issue starts from —
+    // whatever #692's restructure renames around them.
+    const names = readingSurfaces.map(({ file }) => path.basename(file));
+    expect(names).toContain("diff-surface.tsx");
+    expect(names).toContain("github-surface.tsx");
+    expect(names.some((name) => name.startsWith("github-detail"))).toBe(true);
+  });
+
+  test("every <pre> on a reading surface carries a fill, and an opaque one", () => {
+    // A `<pre>` is prose or code read line by line — the least arguable reading
+    // surface there is. `bg-muted/40` is not a fill: it is 40% of one over
+    // whatever is behind, which was the panel's `bg-sidebar` right up until the
+    // slider thinned it to --sidebar-wash.
+    let found = 0;
+    const offenders: string[] = [];
+    for (const { file, source } of readingSurfaces) {
+      for (const tag of source.matchAll(/<pre\b[^>]*>/g)) {
+        found += 1;
+        const value = [...tag[0].matchAll(/"([^"]*)"/g)].map(([, quoted]) => quoted).join(" ");
+        const fill = classes(value).find((name) => name.startsWith("bg-"));
+        if (fill === undefined) offenders.push(`${file}: a <pre> with no fill — ${value.slice(0, 60)}`);
+        else if (fill.includes("/")) offenders.push(`${file}: ${fill} is an alpha, not a fill`);
+      }
+    }
+    /**
+     * A regex that matched nothing would make this vacuous rather than failing.
+     *
+     * ONE, NOT TWO, SINCE #694. The Diff surface used to hold the second: a
+     * `<pre>` that split a patch on newlines and tinted each line by its first
+     * character. It renders through `@pierre/diffs` now, whose viewer is a
+     * custom element with a shadow root — so there is no `<pre>` in our source
+     * to hold to this rule, and this guard lost a patient. The test below is
+     * where it went: the viewer's fills are derived in `.diff-code-view` from
+     * the same --tint-floor against the same --card, which is the rule this one
+     * enforces by a different means for a surface that is no longer ours.
+     */
+    expect(found, "the Git surfaces still render a <pre>").toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * THE DIFF VIEWER IS HELD TO THE SAME FLOOR, through tokens rather than
+   * through class strings — #694.
+   *
+   * `@pierre/diffs` renders into a shadow root, so none of the guards above can
+   * see inside it and none of them ever will. What they CAN see is the one
+   * place the app tells it what to paint: a custom-property block in this
+   * stylesheet. If that block ever stops deriving the semantic fills from
+   * --tint-floor against --card, the diff goes back to being a colour nobody
+   * chose over a ground that can thin — which is #691 exactly, arriving through
+   * the one door #691's guards cannot watch.
+   */
+  test("the diff viewer's fills come from the tint floor, against the card", () => {
+    const viewer = block(".diff-code-view");
+    // Both semantic fills, both through the floor, both against the card.
+    for (const [override, token] of [
+      ["--diffs-bg-addition-override", "--success"],
+      ["--diffs-bg-deletion-override", "--destructive"],
+    ] as const) {
+      expect(viewer, `${override} mixes ${token} through the floor against the card`).toContain(
+        `${override}: color-mix(in oklab, var(${token}) var(--tint-floor), var(--card));`,
+      );
+    }
+    // The ground itself is the card, in BOTH arms of Pierre's light-dark():
+    // its shadow root sets `color-scheme: light dark`, so the arm it picks
+    // follows the SYSTEM scheme while this app's scheme is the `.dark` class.
+    // Feeding both arms a token that already carries the scheme is what makes
+    // the mismatch unobservable.
+    for (const arm of ["--diffs-light-bg", "--diffs-dark-bg"]) expect(viewer).toContain(`${arm}: var(--card);`);
+    // ...and the other half of that fix: the host is told the scheme outright.
+    expect(viewer).toContain("color-scheme: light;");
+    expect(block(".dark .diff-code-view")).toContain("color-scheme: dark;");
+  });
+
+  test("a semantic tint on a reading surface goes through the floor, not through an alpha", () => {
+    // `bg-success/10` is 10% of the theme's green and 90% of the scene, with no
+    // floor under it anywhere — the gap #434 closed for --muted-foreground and
+    // left open here. The `.tint-*` classes mix the same colour INTO the card
+    // instead; globals.css carries the argument and the number.
+    //
+    // `(?<!:)` DROPS A VARIANT-PREFIXED MATCH, which is the same rule `classes()`
+    // above applies and it is here for a sharper reason than consistency. A
+    // `hover:bg-warning/15` composites over the element's own RESTING fill, so
+    // once that fill paints there is nothing left over the scene to dissolve —
+    // and an alpha is the right tool for a hover precisely because it deepens
+    // what it sits on, which an opaque `.tint-*` cannot. Forcing the class onto
+    // a hover state would make the interaction worse, not safer. A resting fill
+    // is the thing this guard is about.
+    const alpha = /(?<!:)\bbg-(success|destructive|warning|info|verify)\/\d+\b/g;
+    const offenders: string[] = [];
+    for (const { file, source } of readingSurfaces) {
+      for (const hit of source.matchAll(alpha)) offenders.push(`${file}: ${hit[0]} → tint-${hit[1]}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("the tints mix against the card, and the floor is one number", () => {
+    // Mixing against `transparent` is the defect itself, written out: it is what
+    // `bg-x/NN` compiles to. The second colour has to be a surface.
+    //
+    // READ OFF THE STYLESHEET rather than from a list of two, so a third tone
+    // added next year is held to the same shape in the commit that adds it — the
+    // discipline the text-scale guard uses on the named steps. Each block is
+    // pulled out and asserted on its own, so a failure prints the one
+    // declaration that is wrong instead of the whole file.
+    const tints = [...code.matchAll(/\.tint-([a-z]+)\s*\{([^}]*)\}/g)].map(([, tone, body]) => ({ tone, body: body.trim() }));
+    // The two #691 introduced; a regex matching nothing would make this vacuous.
+    expect(tints.length).toBeGreaterThanOrEqual(2);
+    for (const { tone, body } of tints) {
+      // The tone has to BE one of the five state colours. `.tint-lavender` would
+      // be a sixth ramp by another route — see "the state vocabulary" below.
+      expect(["success", "destructive", "warning", "info", "verify"], `.tint-${tone} is not on the state vocabulary`).toContain(tone);
+      expect(body, `.tint-${tone} must mix the token into --card at the floor`).toBe(
+        `background-color: color-mix(in oklab, var(--${tone}) var(--tint-floor), var(--card));`,
+      );
+    }
+    // One declaration, so a re-tune cannot leave the two tints disagreeing.
+    const declarations = [...code.matchAll(/([^\n{]*)\{[^{}]*--tint-floor\s*:/g)].map(([, selector]) => selector.trim());
+    expect(declarations).toHaveLength(1);
+    expect(rootTokens.has("--tint-floor")).toBe(true);
+  });
+});
+
 describe("the state vocabulary", () => {
   /**
    * "Do not add a sixth ramp; keep new state colours on this vocabulary."

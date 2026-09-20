@@ -32,6 +32,8 @@ struct JournalItem: Identifiable, Equatable {
             return text
         case .userMessage(let message):
             return message.text
+        case .notification(let detail):
+            return detail.body
         default:
             return ""
         }
@@ -50,6 +52,7 @@ struct JournalItem: Identifiable, Equatable {
         case .webSearch(let query, _): return query
         case .error(let error): return error.message
         case .unknown(let label): return label ?? "unknown"
+        case .notification(let detail): return detail.summary
         case .userMessage: return "user_message"
         case .assistantMessage: return "assistant_message"
         case .reasoning: return "reasoning"
@@ -152,6 +155,8 @@ struct JournalTurn: Identifiable, Equatable {
     var assignmentScope: String?
     var wakeReason: WakeReason?
     var agentNotice: String?
+    /// This turn is a NOTIFICATION — see `NotificationDetail` (#550).
+    var notification: NotificationDetail?
     var providerReason: ProviderReason?
 
     var id: EngineID { runId }
@@ -245,6 +250,8 @@ private final class TurnBox {
     var assignmentScope: String?
     var wakeReason: WakeReason?
     var agentNotice: String?
+    /// This turn is a NOTIFICATION — see `NotificationDetail` (#550).
+    var notification: NotificationDetail?
     var providerReason: ProviderReason?
     init(turn: Turn) {
         runId = turn.runId
@@ -262,6 +269,7 @@ private final class TurnBox {
         assignmentScope = turn.assignmentScope
         wakeReason = turn.wakeReason
         agentNotice = turn.agentNotice
+        notification = turn.notification
         providerReason = turn.providerReason
     }
 }
@@ -450,6 +458,7 @@ func projectJournal(
             assignmentScope: turn.assignmentScope,
             wakeReason: turn.wakeReason,
             agentNotice: turn.agentNotice,
+            notification: turn.notification,
             providerReason: turn.providerReason
         )
     }

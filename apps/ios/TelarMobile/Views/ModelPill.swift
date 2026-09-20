@@ -15,6 +15,9 @@ struct ProviderIconView: View {
                 .frame(width: size, height: size)
                 .foregroundStyle(Theme.text)
         } else if driver == "opencode" {
+            // Proportional to its own square, like ProjectAvatar's glyphs:
+            // `size` is the caller's, so a bigger badge is asked for rather
+            // than derived. Correct as it stands, not waiting on #674.
             Text("OC").font(.system(size: size * 0.65, weight: .semibold)).frame(width: size, height: size)
         } else {
             Image("ProviderClaude")
@@ -48,6 +51,16 @@ struct ModelPillView: View {
     /// is not — the picker then lists one driver's families only.
     let driversSwitchable: Bool
     let onChange: (ModelChoice) -> Void
+
+    /// The capsule grows with the words in it (#674) — the label converted in
+    /// #248 but its frame did not, so at large text sizes it clipped the model
+    /// name it exists to show. Same seeds and same style as
+    /// `ComposerPillLabel`, which is the same control on the other screen.
+    @ScaledMetric(relativeTo: .subheadline) private var height: CGFloat = 44
+    @ScaledMetric(relativeTo: .subheadline) private var cap: CGFloat = 200
+    /// The provider mark is an image, not a glyph in a box, so it takes the
+    /// caller's `size` — scaled here so it keeps pace with the label.
+    @ScaledMetric(relativeTo: .subheadline) private var badge: CGFloat = 16
 
     private var models: [ProviderModel] {
         (catalogues[choice.driver]?.models ?? []).filter { !$0.hidden }
@@ -129,16 +142,23 @@ struct ModelPillView: View {
             }
         } label: {
             HStack(spacing: 8) {
-                ProviderIconView(driver: choice.driver, size: 16)
+                ProviderIconView(driver: choice.driver, size: badge)
+                // THIS PILL AND SESSIONVIEW'S TWIN NOW MATCH (#674). Both are
+                // icon + label + chevron in a height-fixed, width-CAPPED
+                // capsule, so neither was ever fixed in both dimensions and
+                // both convert under the sweep's rule; #449 had grouped
+                // SessionView's with the fixed 44pt hit targets, which is the
+                // one place that grouping did not hold. They were resolved by
+                // converting that one, not by reverting this one.
                 Text(label)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(Theme.subhead, weight: .semibold))
                     .lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
+                Image(systemName: "chevron.down").font(.system(Theme.caption, weight: .medium))
             }
             .foregroundStyle(Theme.text)
             .padding(.horizontal, 14)
-            .frame(height: 44)
-            .frame(maxWidth: 200)
+            .frame(height: height)
+            .frame(maxWidth: cap)
             .background(Theme.subtle)
             .clipShape(Capsule())
             .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))

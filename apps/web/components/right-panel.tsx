@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import dynamic from "next/dynamic";
 import {
   BotIcon,
   ChevronRightIcon,
@@ -33,10 +34,13 @@ import type {
   Item,
   Task,
   TaskState,
+  Turn,
   TurnState,
 } from "@telar/engine-client";
+import { diffTurns, type DiffTurn } from "@/lib/diff-turns";
+import { diffTabParams, readDiffTab, type DiffTab } from "@/lib/diff-scope";
 import { createEngineApi } from "@/lib/engine/client";
-import { DesktopBrowserSurface, desktopBrowserBridge } from "@/components/browser-live";
+import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import type { JournalTask } from "@/lib/engine/journal";
 import { browserPageReference, startReferenceDrag, taskReference, type TelarReference } from "@/lib/drag-reference";
 import { TranscriptItem } from "@/components/transcript";
@@ -61,24 +65,54 @@ import {
   RIGHT_PANEL_MIN_WIDTH,
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "@/lib/right-panel-layout";
-import { DiffSurface } from "@/components/session/diff-surface";
-import { EditorSurface } from "@/components/session/editor-surface";
-import { FileViewSurface } from "@/components/session/file-view-surface";
-import { NotebookSurface } from "@/components/session/notebook-surface";
-import { PdfSurface } from "@/components/session/pdf-surface";
-import { TableSurface } from "@/components/session/table-surface";
-import { DataSurface } from "@/components/session/data-surface";
-import { LatexSurface } from "@/components/session/latex-surface";
-import { RunPanel } from "@/components/run/run-panel";
-import { ImageLightbox } from "@/components/session/image-lightbox";
+import { RelatedConversations } from "@/components/session/related-conversations";
+import { ReportCadence } from "@/components/session/report-cadence";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
+import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspace";
 import { useCommandHandlers } from "@/lib/use-command-keys";
-import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
-import { GitHubSurface } from "@/components/session/github-surface";
-import { RelatedConversations } from "@/components/session/related-conversations";
 import { cn } from "@/lib/utils";
+
+/**
+ * ONE TAB IS OPEN; THE OTHER TWELVE SURFACES ARE NOT (#492).
+ *
+ * `PanelSurface` below is a ladder of `if`s over `tab.kind`, and exactly one arm
+ * ever returns. Statically imported, every arm's module was in the chunk the
+ * CONVERSATION route's first paint waited on — a Jupyter notebook renderer, a
+ * LaTeX previewer, a PDF viewer, a data grid, a code editor and the desktop
+ * browser, loaded in full to open a conversation whose panel is shut. The panel
+ * even starts CLOSED, so on the common path none of it was drawn at all.
+ *
+ * NO `ssr: false`, THOUGH IT WOULD READ AS THE OBVIOUS CHOICE — which tab is
+ * open comes out of localStorage, so the server renders none of these anyway,
+ * and dropping SSR would save nothing it does not already save. It would cost
+ * something real: `next/dynamic({ ssr: false })` renders permanently NOTHING
+ * under this suite's environment (bun + happy-dom, outside a Next build), so a
+ * surface declared that way is a surface no test can ever mount. Two annotate
+ * tests proved it by going red on exactly that. The client chunk splits either
+ * way — `ssr` decides where the component may render, not whether it is bundled
+ * separately — so the testable spelling is simply the better one.
+ *
+ * THE BROWSER IS THE ONE THAT NEEDED MORE THAN THIS. Its module was reachable
+ * by a second road — `desktopBrowserBridge()`, a `typeof window` check three
+ * modules make — so the import above had to move to `lib/desktop-browser-bridge.ts`
+ * before `dynamic` here could shift anything.
+ */
+const DesktopBrowserSurface = dynamic(() => import("@/components/browser-live").then((mod) => mod.DesktopBrowserSurface));
+const DiffSurface = dynamic(() => import("@/components/session/diff-surface").then((mod) => mod.DiffSurface));
+const EditorSurface = dynamic(() => import("@/components/session/editor-surface").then((mod) => mod.EditorSurface));
+const FileViewSurface = dynamic(() => import("@/components/session/file-view-surface").then((mod) => mod.FileViewSurface));
+const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface));
+const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then((mod) => mod.PdfSurface));
+const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface));
+const DataSurface = dynamic(() => import("@/components/session/data-surface").then((mod) => mod.DataSurface));
+const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface));
+const RunPanel = dynamic(() => import("@/components/run/run-panel").then((mod) => mod.RunPanel));
+const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface));
+/** Not a tab: an overlay over the whole panel, and only once an attachment is
+ *  pressed — so it is never on screen on arrival either. */
+const ImageLightbox = dynamic(() => import("@/components/session/image-lightbox").then((mod) => mod.ImageLightbox));
 
 /** The panel reads the engine directly for the one thing the journal cannot
  *  carry: the browser's current pixels. Everything else on this surface is a
@@ -171,6 +205,14 @@ const SURFACES = [
    * THE TWO NETWORK SURFACES, and the only two. Everything above folds records
    * the cockpit already holds; these go out to GitHub through the `gh` CLI, so
    * they never poll and they always say how old their answer is.
+   *
+   * EACH HOLDS ITS OWN DETAILS (#693), in a sub-strip like the Editor's files.
+   * One issue used to be a top-level tab of its own, and the argument against
+   * that is the one written above for files: issues arrive by the dozen, so a
+   * morning's triage pushed the surfaces you had arranged off the end of the
+   * strip. They are still TWO tabs and not one — that collapse was considered
+   * and deferred, because they hold separate filter state and "issues open
+   * beside pull requests" is an ordinary arrangement, not a duplicate.
    */
   { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues" },
   { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests" },
@@ -247,12 +289,21 @@ export function isFilePanelTab(value: string): boolean {
  * by `readPanelTabs`. The files themselves are not lost with the tabs: they are
  * restored INTO the Editor by `editorFromLegacyTabs`, which reads the same
  * stored ids before this collapses them (see the cockpit's restore effect).
+ *
+ * AND EVERY OPEN ISSUE BECOMES THE ISSUES SURFACE (#693), on the same terms:
+ * `issue:675` and `issue:9` both name `issues`, `readPanelTabs` leaves one tab
+ * where there were two, and the NUMBERS are read out first by
+ * `forgeFromLegacyTabs` and seeded as that surface's open set. Without that
+ * second half this rename would quietly close every issue anybody had open —
+ * the exact thing moving them inside the list is meant to stop happening.
  */
 export function migratePanelTab(value: string): string {
   if (LEGACY_DS_TABS.has(value)) return "data";
   // `files` was retired in favour of Editor (#193). A saved arrangement that
   // names it opens on Editor's tree rather than on nothing.
   if (value === "files") return "editor";
+  if (issuePanelNumber(value as PanelTab) !== undefined) return "issues";
+  if (pullPanelNumber(value as PanelTab) !== undefined) return "pulls";
   return isFilePanelTab(value) ? "editor" : value;
 }
 
@@ -275,6 +326,13 @@ function surfacesFor(dataScience: boolean, latex = false): typeof SURFACES[numbe
  * close when they are done with it. The alternative — a preview pane under the
  * tree — splits a 320px column into two unreadable halves (see
  * session/file-view-surface.tsx).
+ *
+ * THE FILE AND FORGE SHAPES BELOW ARE REQUESTS, NOT TABS, and have been since
+ * the Editor (#193) and #693 respectively. They stay in this union because the
+ * gestures that open a file or an issue still NAME one this way, from a dozen
+ * call sites; `showPanelTab` reads the subject back out and opens it inside the
+ * surface that holds it. `migratePanelTab` is what stops one ever reaching the
+ * strip, including out of a layout saved before either change.
  */
 export type PanelTab =
   | SurfaceId
@@ -305,9 +363,15 @@ export type PanelTabItem = PanelTabInstance<PanelTab>;
  * (in its own native scope — see `browserScopeKey`), and a Diff is a review you
  * can want two of when comparing one part of a change against another.
  *
- * A FILE, AN ISSUE AND A BROWSER PAGE ARE NOT ON THIS LIST and do not need to
- * be: their subject is already in the kind (`issue:322`), so two of them are
- * two kinds, and a second tab for the same issue would show the same thing.
+ * ISSUES AND PULL REQUESTS ARE FOLDS AND STAY SINGLETONS, even though each now
+ * holds its own open details (#693). A second Issues tab would show the same
+ * project's same list — the detail sub-strip inside it is the thing you wanted
+ * two of, and it already holds as many as you open. That is the Editor's
+ * arrangement exactly: the surface is one, its contents are many.
+ *
+ * A FILE, AN ISSUE AND A BROWSER PAGE ARE NOT ON THIS LIST either. A page
+ * carries its subject in the kind, so two of them are two kinds; a file and an
+ * issue are not kinds at all any more, but content inside a surface.
  */
 const MULTI_INSTANCE: ReadonlySet<string> = new Set<string>(["editor", "diff"]);
 
@@ -423,11 +487,24 @@ export function filePanelPath(tab: PanelTab): string | undefined {
    inside Editor reads it from there (session/editor-surface.tsx). */
 
 /**
- * ONE ISSUE OR ONE PULL REQUEST IS ALSO A TAB, and for the third time the same
- * argument: you opened it, several can be open, each closes on its own, and the
- * arrangement survives a reload. The alternative — a drill-down inside the list
- * surface with a back button — would make reading two issues at once impossible
- * and would put a navigation stack inside a panel that already has tabs.
+ * ONE ISSUE OR ONE PULL REQUEST IS A REQUEST, NOT A TAB (#693) — the same turn
+ * `file:` took when files moved into the Editor, and for the same reason.
+ *
+ * It WAS a tab, on the argument that you opened it, several can be open, and
+ * each closes on its own. All three are still true; what was wrong was the
+ * STRIP they were true in. Issues arrive by the dozen, so five of them pushed
+ * Diff and Browser off the end of a strip built to hold a handful of surfaces —
+ * and the answer the Editor already found is a sub-strip one level down, not a
+ * narrower top-level strip. So these ids still name "open issue #675", because
+ * that is the vocabulary the call sites speak — a conversation chip
+ * (session/prompt-text.tsx), a GitHub link in a message (the cockpit's
+ * `onConversationClick`), a saved layout from before this change. The cockpit
+ * reads the number back out and opens it INSIDE the Issues surface
+ * (`showPanelTab`), which is what let this land without rewriting every gesture.
+ *
+ * NOT A DRILL-DOWN WITH A BACK BUTTON, which is the shape this used to argue
+ * against: the list stays a chip in the sub-strip beside the details, so two
+ * issues are still two chips and the way back is not a navigation stack.
  */
 export function issuePanelTab(number: number): PanelTab {
   return `${ISSUE_PREFIX}${number}`;
@@ -472,19 +549,22 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => notebookPanelPath(tab) !== undefined,
   (tab) => tablePanelPath(tab) !== undefined,
   (tab) => pdfPanelPath(tab) !== undefined,
-  (tab) => issuePanelNumber(tab) !== undefined,
-  (tab) => pullPanelNumber(tab) !== undefined,
+  /* THE TWO GITHUB SURFACES OWN THEIR HEIGHT NOW (#693). They used to be plain
+     lists the panel scrolled; each holds a detail sub-strip and, behind it, a
+     thread with its own scroller and a merge footer pinned under it. That is an
+     `h-full` child, and one line of chrome above an `h-full` child pushes its
+     bottom past the bottom of the box — which is exactly how an issue's comments
+     became unreachable the first time. */
+  (tab) => tab === "issues",
+  (tab) => tab === "pulls",
   (tab) => tab === "editor",
   (tab) => tab === "data",
   (tab) => tab === "latex",
 ];
 
-/** Which numbers are already open, so a list row can say so instead of opening a
- *  second tab for the same issue. The same courtesy the file tree does. */
-export function openForgeNumbers(tabs: readonly PanelTabItem[], kind: "issue" | "pull"): number[] {
-  const read = kind === "issue" ? issuePanelNumber : pullPanelNumber;
-  return tabs.map((tab) => read(tab.kind)).filter((number): number is number => number !== undefined);
-}
+/* WHICH NUMBERS ARE ALREADY OPEN is no longer a question about the STRIP (#693).
+   A detail opens inside its list, so the list surface holds its own open set and
+   marks its own rows from it — see session/github-surface.tsx. */
 
 /** Anything shaped like a tab id this build understands — the validator for
  *  what comes back out of localStorage. A browser page whose id is no longer
@@ -824,6 +904,7 @@ function BrowserPageSurface({
   projectId,
   scopeKey,
   onEnded,
+  onAttach,
 }: {
   pageId: string;
   state?: BrowserState;
@@ -835,6 +916,10 @@ function BrowserPageSurface({
   /** The native browser's last tab closed (#383). Nothing for the screenshot
    *  fallback, which is a view of a browser it does not own. */
   onEnded?: () => void;
+  /** The camera's destination (#474) — the composer's attachment list and its
+   *  draft. Only the LIVE surface takes it: the screenshot fallback is a poll
+   *  of a browser on another machine, with no shell capture to hand over. */
+  onAttach?: (files: readonly File[], caption?: string) => void;
 }) {
   /**
    * IN THE SHELL, THE BROWSER IS REAL. The desktop bridge means a native
@@ -858,6 +943,7 @@ function BrowserPageSurface({
         scopeKey={scope}
         {...(projectId ? { projectId } : {})}
         {...(onEnded ? { onEnded } : {})}
+        {...(onAttach ? { onAttach } : {})}
       />
     );
   }
@@ -1212,12 +1298,29 @@ function AgentsSurface({
   visible?: boolean;
 }) {
   const { groups, agents: loose } = useMemo(() => splitRoster(tasks), [tasks]);
+  /**
+   * THE CADENCE INTRODUCES THE RELATIONSHIP REGION — issue #723, and the owner's
+   * own choice of home for it. How often this conversation is told about its
+   * peers is a property of the relationships listed underneath, so it sits
+   * directly above them rather than in the composer or the header.
+   *
+   * ALWAYS, NOT ONLY WHEN A PEER EXISTS. A window is what you set BEFORE
+   * dispatching several peers — a control that appeared once they were already
+   * talking would arrive exactly one decision too late.
+   */
   const related = (
-    <RelatedConversations
-      {...(sessionId ? { sessionId } : {})}
-      {...(hostId ? { hostId } : {})}
-      visible={visible}
-    />
+    <>
+      <ReportCadence
+        {...(sessionId ? { sessionId } : {})}
+        {...(hostId ? { hostId } : {})}
+        visible={visible}
+      />
+      <RelatedConversations
+        {...(sessionId ? { sessionId } : {})}
+        {...(hostId ? { hostId } : {})}
+        visible={visible}
+      />
+    </>
   );
   if (groups.length === 0 && loose.length === 0) {
     // NO EMPTY STATE OF ITS OWN WHEN SOMETHING IS RELATED. "Sub-agents appear
@@ -1305,6 +1408,7 @@ function ProcessesSurface({ tasks, focused }: { tasks: readonly JournalTask[]; f
 export function PanelSurface({
   tab,
   writes,
+  diffTurnList,
   tasks,
   focusedTask,
   browser,
@@ -1313,12 +1417,11 @@ export function PanelSurface({
   sessionTitle,
   projectId,
   branch,
-  openIssueNumbers,
-  openPullNumbers,
   onOpenTab,
   onOpenNewTab,
   onOpenFileInNewTab,
   onInsertReference,
+  onAttach,
   onTabParams,
   onCloseSelf,
   active,
@@ -1335,6 +1438,11 @@ export function PanelSurface({
   /** What the journal says was written, path → count. The Diff surface's half of
    *  the reconciliation — see `journalWrites`. */
   writes: ReadonlyMap<string, number>;
+  /** The turns that reported writing something, newest first — the Diff's
+   *  `turn` scope (#694). A fold over the same journal `writes` comes from,
+   *  kept separate because it carries the PATCHES and that is a different
+   *  amount of memory to hand every surface. */
+  diffTurnList?: readonly DiffTurn[];
   tasks: readonly JournalTask[];
   /** The sub-agent a transcript chip just asked for. */
   focusedTask?: TaskFocus;
@@ -1355,9 +1463,6 @@ export function PanelSurface({
   projectId?: string;
   /** The session's own branch, so its pull request can be marked as its own. */
   branch?: string;
-  /** Issues and pull requests already open as tabs, so a list row can say so. */
-  openIssueNumbers?: readonly number[];
-  openPullNumbers?: readonly number[];
   /**
    * The tree opens a file by naming it, which the cockpit routes — a surface
    * tab opens as a tab; a file-shaped id opens in the Editor. `intent` says how
@@ -1383,6 +1488,17 @@ export function PanelSurface({
    * owns this; absent (a canvas with no composer) simply hides the item.
    */
   onInsertReference?: (text: string) => void;
+  /**
+   * ATTACH FILES to the message being written, with an optional one-line
+   * caption inserted into the draft beside them (#474).
+   *
+   * The browser's camera is the caller: a screenshot is an attachment, and a
+   * picture of a page needs the page's address said in words or the agent
+   * cannot go look at it. The cockpit owns the draft AND the attachment list,
+   * so it owns this — absent (a canvas with no composer) simply hides the
+   * camera, rather than offering one that captures into nowhere.
+   */
+  onAttach?: (files: readonly File[], caption?: string) => void;
   /**
    * Rewrite THIS instance's params — what a surface calls when the thing that
    * identifies it changes, so the strip's label follows (#335). Bound to the
@@ -1500,12 +1616,6 @@ export function PanelSurface({
         {...(active ? { active } : {})}
       />
     );
-  const issueNumber = issuePanelNumber(kind);
-  if (issueNumber !== undefined)
-    return <ForgeDetailSurface kind="issue" number={issueNumber} {...(projectId ? { projectId } : {})} />;
-  const pullNumber = pullPanelNumber(kind);
-  if (pullNumber !== undefined)
-    return <ForgeDetailSurface kind="pull" number={pullNumber} {...(projectId ? { projectId } : {})} {...(branch ? { branch } : {})} />;
   const pageId = browserTabId(kind);
   if (pageId !== undefined)
     return (
@@ -1515,6 +1625,7 @@ export function PanelSurface({
         {...(sessionId ? { sessionId, scopeKey: browserScopeKey(sessionId, tab.id) } : {})}
         {...(projectId ? { projectId } : {})}
         {...(onCloseSelf ? { onEnded: onCloseSelf } : {})}
+        {...(onAttach ? { onAttach } : {})}
       />
     );
   if (kind === "diff")
@@ -1525,13 +1636,19 @@ export function PanelSurface({
         reported={writes}
         suggestion={sessionTitle?.trim() || "Session work"}
         {...(active ? { active } : {})}
-        // THIS instance's filter, read from and written back to the tab's own
-        // params — the same round trip the Editor's open file makes, which is
-        // what lets `panelTabSuffix` name the tab "Diff · apps/web/". An empty
-        // field clears the params rather than storing a blank, so a cleared
-        // filter leaves a tab that reads "Diff".
-        {...(tab.params.filter ? { filter: tab.params.filter } : {})}
-        {...(onTabParams ? { onFilterChange: (filter: string) => onTabParams(filter.trim() ? { filter } : {}) } : {})}
+        // THIS instance, whole — the scope it is looking at, the base and turn
+        // it remembers, and its filter — read from and written back to the
+        // tab's own params, the same round trip the Editor's open file makes.
+        // That is what lets `panelTabSuffix` name the tab "Diff · apps/web/"
+        // and what makes two windows on one session keep their own scope.
+        //
+        // ONE OBJECT IN AND ONE OBJECT OUT, because `setPanelTabParams` is a
+        // REPLACE: a handler writing `{ filter }` would erase the scope and one
+        // writing `{ scope }` would erase the filter. `diffTabParams` writes no
+        // key for a default, so an untouched tab persists exactly as it did.
+        tab={readDiffTab(tab.params)}
+        {...(onTabParams ? { onTabChange: (next: DiffTab) => onTabParams(diffTabParams(next)) } : {})}
+        {...(diffTurnList ? { turns: diffTurnList } : {})}
         // Derived from `onOpenTab`, exactly as LatexSurface's is above — a
         // changed file opens through the ONE route into the Editor rather than
         // a second one cut for this menu.
@@ -1548,8 +1665,17 @@ export function PanelSurface({
         kind={kind}
         {...(projectId ? { projectId } : {})}
         {...(branch ? { branch } : {})}
-        onOpen={(number) => onOpenTab(kind === "issues" ? issuePanelTab(number) : pullPanelTab(number))}
-        openNumbers={kind === "issues" ? openIssueNumbers : openPullNumbers}
+        // THIS instance's open details, read from and written back to the tab's
+        // own params — the same round trip the Diff's filter and the Editor's
+        // active file make. That is what persists the sub-strip across a reload
+        // and what keeps two windows on one session independent of each other.
+        open={readForgeOpen(tab.params)}
+        {...(onTabParams ? { onOpenChange: (next: ForgeOpen) => onTabParams(forgeParams(next)) } : {})}
+        // The two an issue row's session action needs (#695): which Mac the
+        // canvas it opens belongs to, and the live composer for the one case
+        // where this panel is already on that canvas.
+        {...(hostId ? { hostId } : {})}
+        {...(onInsertReference ? { onInsertReference } : {})}
       />
     );
   if (kind === "agents")
@@ -1765,8 +1891,8 @@ export function RightPanelResizeHandle({
   panelRef: RefObject<HTMLElement | null>;
   /**
    * WHICH PANEL'S WIDTH THIS REMEMBERS. Defaulted so every existing caller is
-   * unchanged, and parameterised because the Spool's panel is a different panel
-   * — sharing one key would make widening a packet resize the cockpit's diff.
+   * unchanged, and parameterised because a second panel is a different panel —
+   * sharing one key would make widening one resize the other.
    */
   storageKey?: string;
 }) {
@@ -1879,6 +2005,7 @@ export function RightPanel({
   projectId,
   branch,
   items = [],
+  turns = [],
   tasks = [],
   focusedTask,
   onOpenBrowser,
@@ -1891,6 +2018,7 @@ export function RightPanel({
   onOpenNewTab,
   onOpenFileInNewTab,
   onInsertReference,
+  onAttach,
   onCloseTab,
   onMoveTab,
   onClose,
@@ -1918,6 +2046,9 @@ export function RightPanel({
   projectId?: string;
   branch?: string;
   items?: readonly Item[];
+  /** The session's turns, for the Diff's `turn` scope: the journal says WHICH
+   *  run wrote a file, and these say what that run was asked to do (#694). */
+  turns?: readonly Turn[];
   tasks?: readonly JournalTask[];
   /** The sub-agent a transcript chip just asked for. Owned by the cockpit
    *  because the chip that names one lives over there. */
@@ -1946,6 +2077,8 @@ export function RightPanel({
   onOpenFileInNewTab?: (path: string) => void;
   /** Put a reference into the message being written — see `PanelSurface`. */
   onInsertReference?: (text: string) => void;
+  /** Attach files to the message being written — see `PanelSurface`. */
+  onAttach?: (files: readonly File[], caption?: string) => void;
   /** Rewrite one instance's params, so a surface can keep its own tab's label
    *  true — see `PanelSurface`. By id, like `onEditorChange`. */
   onTabParams?: (id: string, params: PanelTabParams) => void;
@@ -2027,6 +2160,10 @@ export function RightPanel({
   // what to open at when there is none — see `defaultRightPanelWidth`.
   const width = prefs.width ?? defaultRightPanelWidth(tabs);
   const writes = useMemo(() => journalWrites(items), [items]);
+  /** The same journal, folded the other way — by RUN rather than by path, and
+   *  carrying each turn's own reported patches (#694). Memoised beside
+   *  `writes` because both are folds of one list that changes on every item. */
+  const diffTurnList = useMemo(() => diffTurns(items, turns), [items, turns]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
   /** One native scope per open Browser tab, so the strip can name each of them
    *  from what that browser is actually showing. */
@@ -2035,8 +2172,6 @@ export function RightPanel({
     [sessionId, tabs],
   );
   const livePages = useLivePages(browserScopes);
-  const openIssueNumbers = useMemo(() => openForgeNumbers(tabs, "issue"), [tabs]);
-  const openPullNumbers = useMemo(() => openForgeNumbers(tabs, "pull"), [tabs]);
   /** The instance the panel is showing, resolved once. */
   const activeTab = useMemo(() => tabs.find((entry) => entry.id === tab), [tabs, tab]);
   /** Which kinds the strip holds more than one of — what decides whether a tab
@@ -2481,14 +2616,14 @@ export function RightPanel({
             <PanelSurface
               tab={activeTab}
               writes={writes}
+              diffTurnList={diffTurnList}
               tasks={tasks}
               {...(focusedTask ? { focusedTask } : {})}
-              openIssueNumbers={openIssueNumbers}
-              openPullNumbers={openPullNumbers}
               onOpenTab={onOpenTab}
               {...(onOpenNewTab ? { onOpenNewTab } : {})}
               {...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {})}
               {...(onInsertReference ? { onInsertReference } : {})}
+              {...(onAttach ? { onAttach } : {})}
               // Bound to THIS instance, exactly as `onEditorChange` below is —
               // a surface changes its own tab's params and no other's.
               {...(onTabParams ? { onTabParams: (params: PanelTabParams) => onTabParams(activeTab.id, params) } : {})}

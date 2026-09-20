@@ -41,8 +41,8 @@ const PAGE = 200;
  * and a sort you picked is a gesture that is over.
  *
  * THE TRIGGER IS INSIDE THE `<th>`, not around it, so the header's own
- * click-to-cycle keeps its whole hit area — the board card's rule in
- * `spool/idiom.test.ts`, applied to a control rather than a drag.
+ * click-to-cycle keeps its whole hit area — the app's trigger-inside rule,
+ * applied to a control rather than a drag.
  */
 function HeaderMenu({
   column,

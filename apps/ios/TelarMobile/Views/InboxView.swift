@@ -12,6 +12,8 @@ struct InboxView: View {
     @State private var inbox = MergedInbox()
     /// t3's pagination: 10 settled built initially, +25 per "Show more".
     @State private var settledLimit = 10
+    /// WHETHER ANY MAC CAN NOTIFY AT ALL (#579) — read, never written.
+    @State private var notifications = MobileNotifications.shared
     @Environment(\.scenePhase) private var scenePhase
 
     private var multiHost: Bool { settings.hosts.count > 1 }
@@ -24,18 +26,31 @@ struct InboxView: View {
 
     var body: some View {
         List {
+            // A MAC THAT CANNOT NOTIFY, SAID ON THE SCREEN SOMEBODY OPENS
+            // (#579). It answered `configured: false` — it has this phone's
+            // token and no relay to send with — and the only place that showed
+            // was a status line under a toggle in Settings ▸ Notifications.
+            // One row whatever the number of Macs: the sentence is the same and
+            // the fix is the same on each.
+            if !notifications.readiness.missingRelay.isEmpty {
+                PushRelayBanner()
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
+            }
+
             // One quiet row per unreachable Mac; the healthy ones keep
             // rendering underneath. Unauthorized escalates to red and taps
             // through — a retry can't fix a credential.
             ForEach(inbox.failures) { failure in
                 HStack(spacing: 6) {
                     Image(systemName: failure.needsPairing ? "lock.circle" : "wifi.exclamationmark")
-                        .font(.system(size: 11))
+                        .font(.system(Theme.caption))
                     // With a copy on the phone the rows stay and this line
                     // says how old they are; without one it says what went
                     // wrong, because the failure is all there is to show.
                     Text(failureLine(failure))
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                 }
                 .foregroundStyle(failure.needsPairing ? Theme.statusRed : Theme.statusAmber)
                 .listRowBackground(Color.clear)
@@ -67,7 +82,13 @@ struct InboxView: View {
                     }
             }
 
-            if !inbox.sections.tail.isEmpty {
+            // THE SETTLED ROWS ARE NOT HERE UNTIL ASKED FOR (#457). The Mac
+            // answers the unsettled list — 7 rows rather than 291 — and says
+            // how many it kept; `shelvedOnMacs` is that count, and it is what
+            // keeps this divider on screen so there is something to tap.
+            // Snoozed rows are never withheld, so the tail is non-empty on its
+            // own whenever any are sleeping.
+            if !inbox.sections.tail.isEmpty || inbox.shelvedOnMacs > 0 {
                 SettledDivider()
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -87,19 +108,30 @@ struct InboxView: View {
                             .tint(Theme.textMuted)
                         }
                 }
-                if inbox.sections.tail.count > settledLimit {
+                /**
+                 THE ROWS THE MAC KEPT, ASKED FOR ON A TAP (#457).
+
+                 It sends the unsettled list and a count, so until this is
+                 pressed there is nothing to page through — which is why this
+                 sits above the "Show more" button rather than replacing it.
+                 Once the rows arrive the Mac keeps sending them and this is
+                 gone, and paging takes over as it always did.
+                 */
+                if inbox.shelvedOnMacs > 0 && inbox.sections.settled.isEmpty {
+                    Button {
+                        Task { await inbox.showSettled() }
+                    } label: {
+                        shelfButtonLabel("Show settled (\(inbox.shelvedOnMacs))")
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                } else if inbox.sections.tail.count > settledLimit {
                     Button {
                         settledLimit += 25
                     } label: {
-                        Text("Show more (\(inbox.sections.tail.count - settledLimit) settled hidden)")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Theme.textMuted)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .strokeBorder(Theme.border, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                            )
+                        shelfButtonLabel("Show more (\(inbox.sections.tail.count - settledLimit) settled hidden)")
                     }
                     .buttonStyle(.plain)
                     .listRowBackground(Color.clear)
@@ -142,7 +174,7 @@ struct InboxView: View {
                         HStack(spacing: 4) {
                             Image(systemName: "desktopcomputer")
                             if let filter = inbox.filter {
-                                Text(hostName(filter)).font(.system(size: 13, weight: .medium))
+                                Text(hostName(filter)).font(.system(Theme.footnote, weight: .medium))
                             }
                         }
                     }
@@ -151,7 +183,7 @@ struct InboxView: View {
             }
         }
         .refreshable { await inbox.refresh() }
-        .task(id: fleetFingerprint) { inbox.sync(hosts: settings.hosts, settings: settings) }
+        .task(id: fleetFingerprint) { inbox.sync(hosts: settings.hosts, settings: settings, active: scenePhase == .active) }
         .onDisappear { inbox.stop() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { inbox.start() } else { inbox.stop() }
@@ -160,6 +192,20 @@ struct InboxView: View {
 
     private func hostName(_ id: HostID) -> String {
         settings.host(id)?.name ?? "Mac"
+    }
+
+    /// The dashed pill under the settled tail. Extracted when a second button
+    /// joined it (#457) so the two cannot drift apart visually.
+    @ViewBuilder private func shelfButtonLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(Theme.footnote, weight: .medium))
+            .foregroundStyle(Theme.textMuted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Theme.border, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            )
     }
 
     private func failureLine(_ failure: MergedInbox.Failure) -> String {
@@ -184,7 +230,7 @@ struct SettledDivider: View {
     var body: some View {
         HStack(spacing: 10) {
             Text("Settled")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
             Rectangle().fill(Theme.border).frame(height: 1)
         }
@@ -220,15 +266,15 @@ struct ThreadCardRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: "folder")
-                    .font(.system(size: 11))
+                    .font(.system(Theme.caption))
                     .foregroundStyle(Theme.textMuted)
                 Text(projectName ?? "No project")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(Theme.subhead, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
                     .lineLimit(1)
                 if let hostLabel {
                     Text(hostLabel)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(Theme.caption, weight: .medium))
                         .foregroundStyle(Theme.textMuted)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
@@ -242,28 +288,28 @@ struct ThreadCardRow: View {
                             SteppedPulseDot(color: status.color)
                         }
                         Text(status.label)
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(Theme.footnote, weight: .medium))
                             .foregroundStyle(status.color)
                     }
                 } else {
                     Text(relativeTime(session.activityAt ?? session.updatedAt))
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .tabularNumbers()
                 }
             }
             Text(session.title)
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(.callout, weight: .medium))
                 .foregroundStyle(Theme.text)
                 .lineLimit(2)
             HStack(spacing: 8) {
                 Text(session.workspace.branch ?? session.workspace.mode)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.system(Theme.footnote, design: .monospaced))
                     .foregroundStyle(Theme.textMuted)
                     .lineLimit(1)
                 Text("·").foregroundStyle(Theme.textMuted)
                 Text(session.driver)
-                    .font(.system(size: 13))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
                 Spacer(minLength: 0)
             }
@@ -283,16 +329,16 @@ struct SlimThreadRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: snoozed ? "clock" : "folder")
-                .font(.system(size: 12))
+                .font(.system(Theme.footnote))
                 .foregroundStyle(Theme.textMuted)
                 .opacity(0.4)
             Text(session.title)
-                .font(.system(size: 16))
+                .font(.system(.callout))
                 .foregroundStyle(Theme.textMuted)
                 .lineLimit(1)
             Spacer(minLength: 8)
             Text(relativeTime(session.updatedAt))
-                .font(.system(size: 14, design: .monospaced))
+                .font(.system(Theme.subhead, design: .monospaced))
                 .foregroundStyle(Theme.textMuted)
                 .tabularNumbers()
         }

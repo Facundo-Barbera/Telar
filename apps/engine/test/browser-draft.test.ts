@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
+import { worktreeReady } from "./worktree-ready";
 import type { GitRunner } from "../src/worktree";
 
 const roots: string[] = [];
@@ -25,7 +26,16 @@ function fixture() {
   return { store, root, git, calls, reject: () => { rejectWorktree = true; } };
 }
 
-test("a browser draft survives reload without a turn or worktree and materializes once on first send", () => {
+/**
+ * The cut runs in the background now (#496); the row is how you know it landed.
+ *
+ * THE SHARED ONE (#706). This was a third copy of the same loop with the same
+ * two-second ceiling — a budget picked as though the cut ran alone, against a
+ * git pool the whole suite shares.
+ */
+const settled = worktreeReady;
+
+test("a browser draft survives reload without a turn or worktree and materializes once on first send", async () => {
   const { store, root, git, calls } = fixture();
   const draft = store.createSession({ id: "session_draft", projectId: "project_draft", draft: true, title: "Browser draft", envMode: "worktree", baseRef: "main", branchName: "browser-work", driver: "codex" });
   store.updateSession(draft.id, { runtimeMode: "approval-required", model: { instanceId: draft.providerInstanceId, model: "fixture-model", effort: "medium" } });
@@ -40,18 +50,41 @@ test("a browser draft survives reload without a turn or worktree and materialize
   expect(reopened.getSession(draft.id)).toMatchObject({ title: input.input, envMode: "worktree", workspace: { mode: "worktree", branch: "browser-work" } });
   expect(reopened.getSession(draft.id).draft).toBeUndefined();
   expect(reopened.submitTurn(draft.id, input).replayed).toBe(true);
+  // THE PROMOTION IS SYNCHRONOUS AND THE CUT IS NOT (#496): the row above is
+  // already a worktree on its final branch, and the `worktree add` behind it
+  // has to be waited for — exactly once, however many sends arrive.
+  await settled(reopened, draft.id);
+  expect(reopened.getSession(draft.id).preparation).toBeUndefined();
   expect(calls.filter((args) => args[0] === "worktree" && args[1] === "add")).toHaveLength(1);
   expect(reopened.turns(draft.id)).toHaveLength(1);
 });
 
-test("a failed first-send workspace allocation leaves the browser draft intact and queues no turn", () => {
+test("a failed first-send workspace allocation lands on the row, and still runs nothing", async () => {
+  /**
+   * THIS CHANGED WITH #496 and the change is worth stating.
+   *
+   * The send used to throw `fixture refused worktree` back at the caller and
+   * leave the draft a draft, because the cut ran inside it. The cut is now
+   * behind the send, so by the time git refuses there is nobody to throw at:
+   * the draft has been promoted, the message is queued, and the failure is on
+   * the row with git's own words on it.
+   *
+   * WHAT DID NOT CHANGE IS THE PROPERTY THE TEST WAS PROTECTING: nothing runs
+   * in a checkout that does not exist. `claimTurn` is what holds it now rather
+   * than the throw, and the message keeps its place instead of being lost.
+   */
   const { store, reject } = fixture();
   const draft = store.createSession({ projectId: "project_draft", draft: true, envMode: "worktree" });
   reject();
-  expect(() => store.submitTurn(draft.id, { runId: "run_first", input: "Try work" })).toThrow(/fixture refused/);
-  expect(store.getSession(draft.id).draft).toBeDefined();
-  expect(store.getSession(draft.id).workspace.mode).toBe("local");
-  expect(store.turns(draft.id)).toHaveLength(0);
+  expect(() => store.submitTurn(draft.id, { runId: "run_first", input: "Try work" })).not.toThrow();
+
+  await settled(store, draft.id);
+  const session = store.getSession(draft.id);
+  expect(session.preparation?.state).toBe("failed");
+  expect(session.preparation?.error).toContain("fixture refused");
+  expect(session.draft).toBeUndefined();
+  expect(store.turns(draft.id)).toHaveLength(1);
+  expect(store.claimTurn(draft.id, "worker_one")).toBeUndefined();
 });
 
 test("discarding a browser draft never removes the project checkout", () => {

@@ -1,0 +1,1128 @@
+/**
+ * THE MIC BUTTON, END TO END, WITH A FAKE MICROPHONE (#544).
+ *
+ * The real `Composer` is mounted and the real composer registry is the write
+ * path, because every claim here is about that seam: interim words have to
+ * arrive in the draft React owns and be REPLACED there as Deepgram revises
+ * them, through the editor's own writes. A test that called the writer
+ * directly would pass with the button wired to nothing — `lib/dictation/
+ * interim.test.ts` is that test, and this is the one that holds the wiring.
+ *
+ * WHAT IS FAKED IS THE BROWSER, NOT THE FEATURE. `MediaRecorder`,
+ * `getUserMedia` and `WebSocket` do not exist in happy-dom, and the token route
+ * is on the other side of a fetch. Those three are stubbed; the hook, the
+ * reducer, the registry and the composer are the real ones.
+ */
+// @ts-expect-error bun:test has no types in this app's tsconfig
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { useState } from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { Composer } from "@/components/composer";
+import { resolveWebCommandKeyAction } from "@/lib/command-keys";
+import { keymapSnapshot, restoreDefaultKeymap, runCommand, setChord } from "@/lib/commands";
+import { installPageApi } from "@/lib/page-api";
+
+GlobalRegistrator.register({ url: "http://localhost/" });
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+afterAll(async () => {
+  // LET REACT FINISH BEFORE THE DOM IS TAKEN AWAY. The scheduler posts its work
+  // as a task and reads `window.event` when it runs; unregistering with one
+  // still queued throws `window is not defined` out of a test that has already
+  // passed, which is an unhandled error nobody can attribute.
+  await act(async () => {
+    await new Promise((settle) => setTimeout(settle, 0));
+  });
+  await GlobalRegistrator.unregister();
+});
+
+/* ------------------------------------------------------------------ *
+ * The browser this button needs and happy-dom does not have.
+ * ------------------------------------------------------------------ */
+
+/** The socket the hook opened, so a test can push frames down it. */
+let live: FakeSocket | undefined;
+/** Chunks the recorder handed to it — the proof audio actually went up. */
+let sent: unknown[] = [];
+/** Tracks the page is holding. All stopped after a press is the browser's
+ *  recording indicator going out, which is the one thing a microphone control
+ *  must not get wrong. */
+class FakeTrack {
+  stopped = false;
+  stop() {
+    this.stopped = true;
+  }
+}
+let tracks: FakeTrack[] = [];
+let tokenCalls = 0;
+/** What `GET /api/dictation` answers. The button's whole existence hangs on
+ *  it, so it is a knob rather than a constant. */
+let provider: "off" | "deepgram" = "deepgram";
+/** What the Mac says to transcribe (#560). It rides the TOKEN answer, which is
+ *  what the badge at the caret reads — so it is a knob for the same reason. */
+let language = "multi";
+/**
+ * WHAT THE MAC SAYS TO PRIME THE RECOGNISER WITH (#581).
+ *
+ * A knob rather than a constant for one case in particular: `undefined` is what
+ * an engine from before this field answers, and this button has to open the
+ * socket anyway. Dictating without a glossary is what it did for its whole life
+ * until now; refusing to dictate at all would be the regression.
+ */
+let keyterms: string[] | undefined = ["Telar", "Zarigüeya"];
+/**
+ * WHERE happy-dom SAYS THE CARET IS (#561).
+ *
+ * There is no layout in happy-dom, so `Range.getBoundingClientRect()` answers
+ * all zeros and `caretRectIn` would correctly conclude it has nothing to place
+ * a badge against. This is the layout engine's part, faked: a movable rect the
+ * test slides to prove the pill follows it.
+ */
+let caretAt = { x: 120, y: 400 };
+/**
+ * WHETHER THE PAGE IS A SECURE CONTEXT (#639).
+ *
+ * A knob, and one that has to be SET rather than read: happy-dom does not
+ * implement `window.isSecureContext` at all — it is `undefined` there, which
+ * `microphoneUnavailable` correctly reads as "not secure". Leaving it alone
+ * would make every test in this file an insecure-origin test by accident.
+ *
+ * `true` is the Mac this cockpit normally runs on, at `127.0.0.1`. `false` is
+ * the same cockpit opened from a phone over a tailnet IP, which is the case
+ * this file now holds claims about.
+ */
+let secure = true;
+
+class FakeSocket {
+  static OPEN = 1;
+  readyState = 0;
+  onopen?: () => void;
+  onmessage?: (event: { data: string }) => void;
+  onerror?: () => void;
+  onclose?: () => void;
+  readonly frames: unknown[] = [];
+  constructor(
+    readonly url: string,
+    /** The `Sec-WebSocket-Protocol` values — where the credential actually
+     *  goes, so this test can hold that claim. */
+    readonly protocols?: string | string[],
+  ) {}
+  send(data: unknown) {
+    this.frames.push(data);
+    sent.push(data);
+  }
+  close() {
+    this.readyState = 3;
+  }
+  /** What the network would do a tick later. */
+  open() {
+    this.readyState = 1;
+    act(() => this.onopen?.());
+  }
+  say(frame: unknown) {
+    act(() => this.onmessage?.({ data: JSON.stringify(frame) }));
+  }
+}
+
+class FakeRecorder {
+  static isTypeSupported = (type: string) => type.startsWith("audio/webm");
+  state = "inactive";
+  ondataavailable?: (event: { data: { size: number } }) => void;
+  constructor(
+    readonly stream: unknown,
+    readonly options?: { mimeType?: string },
+  ) {}
+  start() {
+    this.state = "recording";
+  }
+  stop() {
+    this.state = "inactive";
+  }
+}
+
+const results = (transcript: string, isFinal: boolean) => ({
+  type: "Results",
+  is_final: isFinal,
+  channel: { alternatives: [{ transcript }] },
+});
+
+beforeEach(() => {
+  live = undefined;
+  sent = [];
+  tracks = [];
+  tokenCalls = 0;
+  provider = "deepgram";
+  language = "multi";
+  keyterms = ["Telar", "Zarigüeya"];
+  caretAt = { x: 120, y: 400 };
+  secure = true;
+  Object.defineProperty(window, "isSecureContext", { configurable: true, get: () => secure });
+  // NOBODY'S REBINDING SURVIVES INTO THE NEXT TEST. The keymap is a module-level
+  // store backed by localStorage, so a test that moves Dictate onto another key
+  // would move it for every test after it.
+  restoreDefaultKeymap();
+  // A MAC KEYBOARD, because the caps are what the tooltip says and happy-dom's
+  // user agent is a Linux one — which would have every assertion below reading
+  // "Ctrl+D" while the app this ships in is a Mac app.
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+  });
+  // ONE LINE HIGH AND ZERO WIDE, which is what a real collapsed caret rect is.
+  // Height matters: `caretRectIn` reads a zero-height rect as "no layout yet"
+  // and falls through to its own fallbacks.
+  Range.prototype.getBoundingClientRect = function () {
+    return new DOMRect(caretAt.x, caretAt.y, 0, 18);
+  };
+  const media = globalThis as unknown as Record<string, unknown>;
+  media.MediaRecorder = FakeRecorder;
+  // `new` ON A FUNCTION THAT RETURNS AN OBJECT YIELDS THAT OBJECT, which is how
+  // the hook's own `new WebSocket(url)` hands the instance out here — the
+  // constructor is left alone rather than assigning itself to a module global.
+  const open = function (url: string, protocols?: string | string[]) {
+    live = new FakeSocket(url, protocols);
+    return live;
+  };
+  // The hook compares `readyState` against `WebSocket.OPEN` before every send,
+  // so the stand-in has to carry the constant as well as the constructor —
+  // without it every comparison is against `undefined` and nothing is ever
+  // sent, which fails as "the tail was not flushed" three tests away.
+  open.OPEN = FakeSocket.OPEN;
+  media.WebSocket = open;
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: {
+      getUserMedia: async () => {
+        tracks.push(new FakeTrack());
+        return { getTracks: () => tracks };
+      },
+    },
+  });
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(typeof input === "object" && "url" in input ? input.url : input);
+    if (url.includes("/api/dictation/token")) {
+      tokenCalls += 1;
+      return Response.json({ provider: "deepgram", token: "jwt-abc", expiresAt: Date.now() + 300_000, language, keyterms });
+    }
+    if (url.includes("/api/dictation")) return Response.json({ dictation: { provider, configured: provider !== "off" } });
+    return Response.json({});
+  }) as typeof fetch;
+});
+
+/* ------------------------------------------------------------------ *
+ * A composer whose draft is owned the way the cockpit owns it.
+ * ------------------------------------------------------------------ */
+
+function Box({ kind }: { kind: "session" | "agent" }) {
+  const [draft, setDraft] = useState("");
+  return (
+    <>
+      <p data-testid="draft">{draft}</p>
+      <Composer
+        draft={draft}
+        kind={kind}
+        ready
+        attachments={[]}
+        onAttach={() => {}}
+        busy={false}
+        sending={false}
+        backgroundTasks={0}
+        onDraftChange={setDraft}
+        onSubmit={() => {}}
+        onStop={() => {}}
+        onStopBackground={() => {}}
+        onRuntimeMode={() => {}}
+      />
+    </>
+  );
+}
+
+const roots: { root: Root; host: HTMLElement }[] = [];
+
+function mount(node: React.ReactNode): HTMLElement {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  act(() => root.render(node));
+  roots.push({ root, host });
+  return host;
+}
+
+/**
+ * Mount and let the provider setting land.
+ *
+ * THE BUTTON IS NOT THERE ON THE FIRST PAINT, by design: `off` is the default
+ * and the hook reports it until the engine answers, so a mic never flashes into
+ * a toolbar and back out. Every test here is about a Mac where dictation is on,
+ * so they all have to wait for that answer — which is a real macrotask, not a
+ * countable number of microtasks.
+ */
+async function mounted(node: React.ReactNode): Promise<HTMLElement> {
+  const host = mount(node);
+  await act(async () => {
+    await new Promise((settle) => setTimeout(settle, 0));
+  });
+  return host;
+}
+
+afterEach(() => {
+  for (const { root, host } of roots.splice(0)) {
+    act(() => root.unmount());
+    host.remove();
+  }
+});
+
+beforeAll(() => {
+  installPageApi();
+});
+
+const micIn = (host: HTMLElement): HTMLButtonElement => {
+  const button = host.querySelector<HTMLButtonElement>('button[aria-label="Dictate"], button[aria-label="Stop dictating"]');
+  if (!button) throw new Error("no mic button rendered");
+  return button;
+};
+
+const draftOf = (host: HTMLElement): string => host.querySelector('[data-testid="draft"]')?.textContent ?? "";
+
+/**
+ * Press, and let the token fetch and the permission prompt settle.
+ *
+ * A REAL TICK, not a handful of microtasks: `dictationToken()` awaits a
+ * `Response` and then its `json()`, and counting the microtasks that takes is
+ * counting an implementation detail of `fetch`. A macrotask drains all of them.
+ */
+async function press(button: HTMLButtonElement): Promise<void> {
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await new Promise((settle) => setTimeout(settle, 0));
+  });
+}
+
+/**
+ * ⌘D, THE WAY THE COCKPIT ACTUALLY DISPATCHES IT — issue #588.
+ *
+ * These two lines are `useCommandKeys`' own keydown handler: resolve the press
+ * against the LIVE keymap (so a rebind is honoured, and the focus rule gets a
+ * say), then run whatever component has claimed the command. Spelled out rather
+ * than mounting the hook, which wants a Next router and a rail full of rows this
+ * file has no business standing up; what is under test is the last hop, from the
+ * command to the one dictation, and that hop is real here.
+ *
+ * Answers whether anything was bound, which is how "the chord does nothing" is
+ * checked without asserting on the absence of side effects alone.
+ */
+async function chord(target?: unknown): Promise<boolean> {
+  let ran = false;
+  await act(async () => {
+    const id = resolveWebCommandKeyAction(keymapSnapshot(), { metaKey: true, key: "d", code: "KeyD", target });
+    ran = id ? runCommand(id) : false;
+    await new Promise((settle) => setTimeout(settle, 0));
+  });
+  return ran;
+}
+
+describe("whether there is a mic button at all", () => {
+  test("no button on a Mac where dictation is off — which is every Mac by default", async () => {
+    provider = "off";
+    const host = await mounted(<Box kind="session" />);
+    // NOT A DISABLED ONE. macOS dictation and Wispr Flow already work in this
+    // box, so an uninvited mic would be Telar claiming a job the reader may
+    // have given to something else.
+    expect(host.querySelector('button[aria-label="Dictate"]')).toBeNull();
+    expect(host.querySelector('button[aria-label="Stop dictating"]')).toBeNull();
+  });
+
+  test("nothing is even asked for while it is off", async () => {
+    provider = "off";
+    await mounted(<Box kind="session" />);
+    // No token minted, no microphone prompt — there is no control to press.
+    expect(tokenCalls).toBe(0);
+  });
+
+  test("it appears once a provider is chosen", async () => {
+    const host = await mounted(<Box kind="session" />);
+    expect(host.querySelector('button[aria-label="Dictate"]')).not.toBeNull();
+  });
+});
+
+/**
+ * THE COCKPIT OPENED FROM SOMEWHERE THAT IS NOT THIS MAC (#639).
+ *
+ * `getUserMedia` does not exist off a secure context, so `navigator.mediaDevices`
+ * is simply absent on `http://100.x.x.x:3000` — and until now the button and the
+ * chord answered that by drawing nothing and binding nothing. A feature that
+ * works at the desk and vanishes without a word on the phone is the symptom this
+ * file now holds a claim about: it is offered, it does not record, and it says
+ * why.
+ *
+ * THE UNAVAILABLE CONTROL IS FOUND BY ITS OWN LABEL, not by `micIn`. Its
+ * `aria-label` is deliberately not "Dictate": a screen reader reaching a control
+ * that announces itself as the thing it cannot do would be the missing button
+ * again, in a different modality.
+ */
+const unavailableMicIn = (host: HTMLElement): HTMLButtonElement => {
+  const button = host.querySelector<HTMLButtonElement>('button[aria-label="Dictation unavailable here"]');
+  if (!button) throw new Error("no unavailable mic button rendered");
+  return button;
+};
+const noticeTextIn = (host: HTMLElement): string => host.querySelector('[data-slot="dictation-notice"]')?.textContent ?? "";
+
+describe("a page that cannot be granted a microphone says so", () => {
+  beforeEach(() => {
+    // The tailnet IP, the LAN IP, any plain-HTTP origin that is not loopback.
+    secure = false;
+    // WHAT THE BROWSER ACTUALLY DOES THERE, rather than a flag: `mediaDevices`
+    // is not present at all off a secure context, which is the fact `canRecord`
+    // reads. Deleting it is the honest fake.
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
+  });
+
+  test("the button is drawn, and drawn unavailable", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = unavailableMicIn(host);
+    // `aria-disabled`, NOT `disabled` — a disabled button swallows the click,
+    // and the click is the only way the sentence gets read.
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect(button.hasAttribute("disabled")).toBe(false);
+  });
+
+  test("the tooltip carries the whole sentence, including the way out", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const title = unavailableMicIn(host).getAttribute("title") ?? "";
+    expect(title).toContain("not a secure context");
+    // THE ROUTE OUT IS THE HALF A PERSON CAN ACT ON. "Not secure" alone reads
+    // as "go and buy a certificate", which is the misconception #639 exists to
+    // correct: loopback is a secure context with no certificate at all.
+    expect(title).toContain("127.0.0.1");
+    expect(title).toContain("tunnel");
+  });
+
+  test("pressing it says why, where the refusal is already drawn", async () => {
+    const host = await mounted(<Box kind="session" />);
+    await press(unavailableMicIn(host));
+    expect(noticeTextIn(host)).toContain("not a secure context");
+  });
+
+  test("and the chord says the same thing, rather than doing nothing", async () => {
+    // A person who pressed ⌘D and got silence has no way at all to find out
+    // why — this is the one place that answer can reach them.
+    const host = await mounted(<Box kind="session" />);
+    expect(await chord()).toBe(true);
+    expect(noticeTextIn(host)).toContain("not a secure context");
+  });
+
+  test("saying why costs no token and opens no socket", async () => {
+    const host = await mounted(<Box kind="session" />);
+    await press(unavailableMicIn(host));
+    await chord();
+    expect(tokenCalls).toBe(0);
+    expect(live).toBeUndefined();
+    expect(tracks).toHaveLength(0);
+  });
+
+  test("a second press is a second refusal, not a repeat of the first", async () => {
+    // WHY THIS MATTERS RATHER THAN BEING PEDANTRY: `DictationNotice` hides
+    // itself on a `seq` it has already shown, so an identical sentence handed
+    // back with the SAME seq would stay hidden once the first had faded —
+    // pressing again would look like nothing happened. `seq` is what makes two
+    // identical sentences two pieces of news; `dictation-notice.test.tsx` holds
+    // the fading half of that claim, and this holds the counting half.
+    const host = await mounted(<Box kind="session" />);
+    const button = unavailableMicIn(host);
+    await press(button);
+    const first = noticeTextIn(host);
+    expect(first).toContain("not a secure context");
+    await press(button);
+    expect(noticeTextIn(host)).toBe(first);
+    // WHAT THIS DOES NOT PROVE, said rather than implied: the counter is not
+    // observable from here, and the caption's six seconds are not worth
+    // spending in a test. This holds that a repeat press still produces the
+    // sentence; `dictation-notice.test.tsx` holds that a fresh `seq` is what
+    // brings a faded caption back.
+  });
+
+  test("still nothing at all where nobody asked for dictation", async () => {
+    // THE SILENCE THAT WAS RIGHT STAYS. `provider === "off"` is not a broken
+    // feature, it is a feature nobody turned on, and explaining its absence
+    // would be an advertisement.
+    provider = "off";
+    const host = await mounted(<Box kind="session" />);
+    expect(host.querySelector('button[aria-label="Dictation unavailable here"]')).toBeNull();
+    expect(host.querySelector('button[aria-label="Dictate"]')).toBeNull();
+    expect(await chord()).toBe(false);
+  });
+});
+
+describe("a secure page whose browser still cannot record", () => {
+  test("it is told about its browser, not sent to fix a connection that is fine", async () => {
+    // THE ORDER IN `microphoneUnavailable` IS THE POINT. An old browser on
+    // loopback must not be told its connection is insecure, and a modern
+    // browser on a tailnet IP must not be told it is too old.
+    delete (globalThis as unknown as Record<string, unknown>).MediaRecorder;
+    const host = await mounted(<Box kind="session" />);
+    const title = unavailableMicIn(host).getAttribute("title") ?? "";
+    expect(title).toContain("cannot record audio");
+    expect(title).not.toContain("secure context");
+  });
+});
+
+describe("the mic button on a composer", () => {
+  test("interim words go into the draft React owns and are replaced in place", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+
+    await press(button);
+    live!.open();
+    expect(button.getAttribute("aria-label")).toBe("Stop dictating");
+
+    // Each guess REPLACES the last in the box rather than joining it — the
+    // whole of what changed here. Three guesses, one phrase on screen.
+    live!.say(results("fix", false));
+    expect(draftOf(host)).toBe("fix ");
+    live!.say(results("fix the", false));
+    expect(draftOf(host)).toBe("fix the ");
+
+    live!.say(results("fix the failing test", true));
+    expect(draftOf(host)).toBe("fix the failing test ");
+
+    // A second utterance continues the sentence rather than replacing it: the
+    // final settled the words and the span was forgotten.
+    live!.say(results("and push", false));
+    expect(draftOf(host)).toBe("fix the failing test and push ");
+    live!.say(results("and push it", true));
+    expect(draftOf(host)).toBe("fix the failing test and push it ");
+  });
+
+  test("nothing unconfirmed is printed beside the button any more", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+    live!.say(results("in the box", false));
+
+    expect(draftOf(host)).toBe("in the box ");
+    // THE CAPTION IS GONE. Its wrapper holds the button and a refusal and
+    // nothing else — a live transcription printed in two places on one screen
+    // is the thing that was taken out.
+    expect(button.parentElement!.textContent).toBe("Listening");
+  });
+
+  test("the same button, on the Agent's composer", async () => {
+    // The Agent screen renders this same component with `kind="agent"`, which
+    // is what keeps one button from becoming two.
+    const host = await mounted(<Box kind="agent" />);
+    await press(micIn(host));
+    live!.open();
+    live!.say(results("summarise the rail", true));
+    expect(draftOf(host)).toBe("summarise the rail ");
+  });
+
+  test("a person typing mid-guess keeps their keystrokes and the dictation carries on", async () => {
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    live!.open();
+    live!.say(results("recording", false));
+    expect(draftOf(host)).toBe("recording ");
+
+    // Typing into the box through the editor itself, which is what makes the
+    // writer's own guard fire: the draft is no longer the one it committed.
+    const editable = host.querySelector<HTMLElement>('[data-slot="composer-editor"]')!;
+    act(() => {
+      editable.textContent = "typed over it";
+      editable.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(draftOf(host)).toBe("typed over it");
+
+    live!.say(results("recording now", false));
+    // NOT ONE CHARACTER OF THEIRS IS EATEN. The stale span was dropped and the
+    // new guess opened a fresh one.
+    expect(draftOf(host)).toContain("typed over it");
+    expect(draftOf(host)).toContain("recording now");
+  });
+
+  test("it opens the socket with the token it was just minted, as the bearer subprotocol", async () => {
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(tokenCalls).toBe(1);
+    // THE WHOLE OF THE BUG #555 SHIPPED: the query parameter is refused by
+    // Deepgram with close 1002, and `["bearer", jwt]` is what opens.
+    expect(live!.protocols).toEqual(["bearer", "jwt-abc"]);
+    expect(new URL(live!.url).searchParams.get("access_token")).toBeNull();
+  });
+
+  test("and it primes the recogniser with the glossary the Mac sent (#581)", async () => {
+    // THE WHOLE OF THE BUG. The headset put up to forty of these on every
+    // socket and this button put none, which is why the VR client understood
+    // the app's own vocabulary and the cockpit did not.
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(new URL(live!.url).searchParams.getAll("keyterm")).toEqual(["Telar", "Zarigüeya"]);
+  });
+
+  test("a Mac that sends no glossary still opens the socket", async () => {
+    // An engine from before this field. Dictating with nothing primed is what
+    // every dictation did until now; a mic button that refused to open would
+    // be a regression shipped by an improvement.
+    keyterms = undefined;
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(live).toBeDefined();
+    expect(new URL(live!.url).searchParams.has("keyterm")).toBe(false);
+  });
+
+  test("audio only goes up once the socket is open, so the container header is not lost", async () => {
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    // Before `onopen` there is no recorder at all — a chunk produced now would
+    // be the WebM header, and losing it makes everything after it unreadable.
+    expect(sent).toHaveLength(0);
+    live!.open();
+    expect(sent).toHaveLength(0);
+  });
+
+  test("pressing again stops, flushes the tail, and puts the microphone down", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+    const socket = live!;
+
+    await press(button);
+    expect(button.getAttribute("aria-label")).toBe("Dictate");
+    // CloseStream before the close: Deepgram holds the tail of an utterance
+    // until it hears silence or this, and those are the words just spoken.
+    expect(socket.frames).toContain(JSON.stringify({ type: "CloseStream" }));
+    expect(socket.readyState).toBe(3);
+    // The browser's recording dot goes out because the track is stopped, not
+    // because the button changed colour.
+    expect(tracks.every((track) => track.stopped)).toBe(true);
+  });
+
+  test("leaving the screen mid-dictation releases the microphone", async () => {
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    live!.open();
+    for (const { root, host: node } of roots.splice(0)) {
+      act(() => root.unmount());
+      node.remove();
+    }
+    expect(tracks.every((track) => track.stopped)).toBe(true);
+    void host;
+  });
+
+  test("a refused microphone is said in the person's own terms, and nothing is left running", async () => {
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          const denial = new Error("Permission denied");
+          denial.name = "NotAllowedError";
+          throw denial;
+        },
+      },
+    });
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await press(button);
+    expect(button.getAttribute("aria-label")).toBe("Dictate");
+    expect(host.textContent).toContain("did not allow the microphone");
+  });
+
+  test("a refusal is a caption over the button, not a red sentence parked in the toolbar", async () => {
+    // THE DISPLAY THE OWNER RAISED SEPARATELY (#707). The alarm colour and the
+    // permanence were both wrong for a socket you can retry by pressing again;
+    // `dictation-notice.test.tsx` holds what the caption then does.
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          const denial = new Error("Permission denied");
+          denial.name = "NotAllowedError";
+          throw denial;
+        },
+      },
+    });
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    const notice = host.querySelector('[data-slot="dictation-notice"]');
+    expect(notice?.textContent).toContain("did not allow the microphone");
+    // ANCHORED OVER THE CONTROL, which needs a positioned parent — the thing
+    // that silently stops working if somebody drops `relative` from the row.
+    expect(micIn(host).parentElement?.className).toContain("relative");
+    expect(notice?.className).toContain("absolute");
+  });
+
+  /**
+   * WHAT #711 IS ABOUT: the sentence a refused socket leaves on screen.
+   *
+   * This tab cannot read why its `WebSocket` was refused and never will — the
+   * spec withholds it, because the status of a failed cross-origin handshake
+   * would be an oracle. So the engine is asked, and its answer replaces the
+   * honest-and-useless one. `Deepgram is never called`: the diagnosis route is
+   * a fetch like the token route, and it is stubbed the same way.
+   */
+  describe("when the socket is refused and only the engine can say why", () => {
+    /** The route answering, or refusing to. `fetch` is already the suite's
+     *  stub; this layers the one path over it. */
+    function engineSays(answer: () => Response): void {
+      const rest = globalThis.fetch;
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(typeof input === "object" && "url" in input ? input.url : input);
+        return url.includes("/api/dictation/diagnose") ? answer() : rest(input, init);
+      }) as typeof fetch;
+    }
+
+    /** The socket failing, and the round trip that follows it settling. A real
+     *  tick for `press`'s reason: the diagnosis is a `fetch` and a `json()`. */
+    async function fails(how: "onerror" | "onclose"): Promise<void> {
+      await act(async () => {
+        live?.[how]?.();
+        await new Promise((settle) => setTimeout(settle, 0));
+      });
+    }
+
+    const noticeIn = (host: HTMLElement): string => host.querySelector('[data-slot="dictation-notice"]')?.textContent ?? "";
+
+    test("Deepgram's own words replace the sentence the browser could honestly say", async () => {
+      // THE BUG THAT STARTED THIS. The owner saw "the connection to the
+      // transcription service failed" and replaced his Deepgram key, which
+      // could not possibly have worked — the glossary was over budget.
+      engineSays(() =>
+        Response.json({ fault: "refused", reason: "Deepgram refused the transcription connection: HTTP 400 — Keyterm limit exceeded." }),
+      );
+      const host = await mounted(<Box kind="session" />);
+      await press(micIn(host));
+      live?.open();
+      await fails("onerror");
+      expect(noticeIn(host)).toContain("Keyterm limit exceeded");
+      expect(noticeIn(host)).not.toContain("The connection to the transcription service failed");
+    });
+
+    test("a close nobody asked for is diagnosed too, because the same refusal arrives either way", async () => {
+      engineSays(() => Response.json({ fault: "refused", reason: "Deepgram refused the transcription connection: HTTP 403 — Project does not have access to the requested model." }));
+      const host = await mounted(<Box kind="session" />);
+      await press(micIn(host));
+      live?.open();
+      await fails("onclose");
+      expect(noticeIn(host)).toContain("does not have access to the requested model");
+    });
+
+    test("an engine that cannot answer leaves the honest sentence alone rather than blanking it", async () => {
+      // AN ENGINE TOO OLD FOR THE ROUTE, a Mac that is off, a failed fetch. The
+      // sentence a person already has is honest; losing it to report that a
+      // diagnosis failed would be Telar talking about its own plumbing.
+      engineSays(() => Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 }));
+      const host = await mounted(<Box kind="session" />);
+      await press(micIn(host));
+      live?.open();
+      await fails("onerror");
+      expect(noticeIn(host)).toContain("The connection to the transcription service failed");
+      expect(noticeIn(host)).toContain("Press the button to try again");
+    });
+
+    test("the honest sentence is shown at once and not held back waiting for the round trip", async () => {
+      // SILENCE AFTER A PRESS READS AS THE PRESS NOT REGISTERING, which is the
+      // property `seq` exists for (#707). A caption that waited on the engine
+      // would reintroduce exactly that, for as long as Deepgram takes.
+      // THE ROUTE LEFT HANGING, so "before the answer" is a state the test can
+      // actually stand in rather than a race it hopes to win.
+      let answer: ((value: Response) => void) | undefined;
+      const pending = new Promise<Response>((settle) => {
+        answer = settle;
+      });
+      engineSays(() => pending as unknown as Response);
+      const host = await mounted(<Box kind="session" />);
+      await press(micIn(host));
+      live?.open();
+      await fails("onerror");
+      // THE DIAGNOSIS HAS NOT ANSWERED and there is already a sentence up.
+      expect(answer).toBeDefined();
+      expect(noticeIn(host)).toContain("The connection to the transcription service failed");
+      await act(async () => {
+        answer?.(Response.json({ fault: "elsewhere", reason: "Deepgram accepted a connection from this Mac just now." }));
+        await new Promise((settle) => setTimeout(settle, 0));
+      });
+      expect(noticeIn(host)).toContain("accepted a connection from this Mac");
+    });
+  });
+
+  test("a Mac with a provider chosen but no key refuses with the engine's sentence, not a status", async () => {
+    // ONLY THE MINT REFUSES. The provider read still answers, because that is
+    // the state this Mac is actually in: dictation is switched on, so there IS
+    // a button, and pressing it is what finds out the key is missing.
+    const settings = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(typeof input === "object" && "url" in input ? input.url : input);
+      if (!url.includes("/api/dictation/token")) return settings(input, init);
+      return Response.json({ error: { code: "conflict", message: "No Deepgram key is configured on this Mac, so dictation cannot start." } }, { status: 409 });
+    }) as typeof fetch;
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(host.textContent).toContain("No Deepgram key is configured");
+  });
+
+  test("a provider this browser cannot drive is refused by name rather than opening the wrong socket", async () => {
+    const settings = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(typeof input === "object" && "url" in input ? input.url : input);
+      if (!url.includes("/api/dictation/token")) return settings(input, init);
+      // A Mac that has moved on to a provider this build does not know. Its
+      // socket, format and credential scheme are all different.
+      return Response.json({ provider: "openai", token: "jwt-abc", expiresAt: Date.now() + 300_000 });
+    }) as typeof fetch;
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(live).toBeUndefined();
+    expect(host.textContent).toContain("openai");
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * ⌘D — issue #588.
+ *
+ * The claim is ONE MICROPHONE, not two paths that each work. So the
+ * tests below deliberately cross the two callers: start with the
+ * chord and stop with the button, and the other way round. Two
+ * instances of `useDictation` would pass a test that only ever used
+ * one of them, and would leave a live socket under a button saying
+ * idle the first time somebody used both.
+ * ------------------------------------------------------------------ */
+
+describe("the chord and the button are one toggle", () => {
+  test("⌘D starts the dictation the button is drawing, and the button says so", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+
+    expect(await chord()).toBe(true);
+    live!.open();
+    // THE BUTTON'S OWN STATE MOVED. Nothing here touched it — it is reading the
+    // dictation the chord just started, because there is only the one.
+    expect(button.getAttribute("aria-label")).toBe("Stop dictating");
+
+    live!.say(results("spoken from the keyboard", true));
+    expect(draftOf(host)).toBe("spoken from the keyboard ");
+  });
+
+  test("started with the chord, stopped with the button", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await chord();
+    live!.open();
+    const socket = live!;
+
+    await press(button);
+    expect(button.getAttribute("aria-label")).toBe("Dictate");
+    // The real proof the second press reached the FIRST press's machinery: its
+    // socket was flushed and closed, and its track put down.
+    expect(socket.frames).toContain(JSON.stringify({ type: "CloseStream" }));
+    expect(socket.readyState).toBe(3);
+    expect(tracks.every((track) => track.stopped)).toBe(true);
+  });
+
+  test("started with the button, stopped with the chord", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+    const socket = live!;
+
+    expect(await chord()).toBe(true);
+    expect(button.getAttribute("aria-label")).toBe("Dictate");
+    expect(socket.readyState).toBe(3);
+    expect(tracks.every((track) => track.stopped)).toBe(true);
+  });
+
+  test("it fires with the caret in the message box, which is where it is pressed from", async () => {
+    // The composer holds focus essentially all the time in this cockpit. A
+    // dictation chord the focus rule suppressed would be a chord that never
+    // fired at all.
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    const editable = host.querySelector('[data-slot="composer-editor"]');
+    expect(await chord(editable)).toBe(true);
+    live!.open();
+    expect(micIn(host).getAttribute("aria-label")).toBe("Stop dictating");
+  });
+
+  test("a second press while it is still starting stops it, exactly as the button does", async () => {
+    // Starting is asynchronous and stopping is not, so this lands mid-`await`.
+    // Both callers go through the one generation fence.
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(await chord()).toBe(true);
+    expect(micIn(host).getAttribute("aria-label")).toBe("Dictate");
+    expect(tracks.every((track) => track.stopped)).toBe(true);
+  });
+});
+
+describe("the chord refuses wherever the button does", () => {
+  test("nothing on a Mac where dictation is off — no command, no microphone", async () => {
+    provider = "off";
+    const host = await mounted(<Box kind="session" />);
+    // NOT BOUND AT ALL, which is a stronger claim than "does nothing": the
+    // command palette asks exactly this question before it draws a row, so an
+    // always-bound handler would put a dead "Dictate" row in the list.
+    expect(await chord()).toBe(false);
+    expect(tokenCalls).toBe(0);
+    expect(live).toBeUndefined();
+    expect(host.querySelector('button[aria-label="Dictate"]')).toBeNull();
+  });
+
+  test("it never opens a microphone where the browser cannot record", async () => {
+    // BOUND, BUT IT DOES NOT DICTATE (#639). The chord used to be unbound here
+    // too; what must stay true either way is that nothing reaches the network.
+    delete (globalThis as unknown as Record<string, unknown>).MediaRecorder;
+    await mounted(<Box kind="session" />);
+    await chord();
+    expect(tokenCalls).toBe(0);
+    expect(live).toBeUndefined();
+  });
+
+  test("nothing on a screen with no message box on it", async () => {
+    // Settings, the projects list. Nobody has claimed the command, so the key
+    // is silent rather than beeping about a surface that is not there.
+    expect(await chord()).toBe(false);
+  });
+});
+
+describe("the tooltip names the chord that is actually bound", () => {
+  test("it reads the keymap, and says the same key the chord fires on", async () => {
+    const host = await mounted(<Box kind="session" />);
+    expect(micIn(host).getAttribute("title")).toBe("Dictate (⌘D) — speak into the message box");
+  });
+
+  test("and it says so while listening too, because that press is the one that stops it", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+    expect(button.getAttribute("title")).toBe("Stop dictating (⌘D)");
+  });
+
+  test("a rebind moves the tooltip with it", async () => {
+    // THE WHOLE POINT OF READING THE KEYMAP. A hardcoded "⌘D" would keep
+    // promising a key that now belongs to somebody else's command.
+    const host = await mounted(<Box kind="session" />);
+    await act(async () => {
+      setChord("toggle-dictation", "CommandOrControl+Shift+M");
+    });
+    // Caps in the registry's canonical modifier order, which is what every
+    // other surface that draws a chord already shows — the keybindings row, the
+    // rail's hints, the palette.
+    expect(micIn(host).getAttribute("title")).toBe("Dictate (⌘⇧M) — speak into the message box");
+    // And it is not a label the tooltip invented: the new chord is the one that
+    // now works, and the old one does nothing.
+    expect(await chord()).toBe(false);
+    expect(tokenCalls).toBe(0);
+  });
+
+  test("an unbound Dictate promises no key at all", async () => {
+    // "" is a real value in the keymap — deliberately cleared in the pane — and
+    // a tooltip with an empty bracket in it would be worse than none.
+    const host = await mounted(<Box kind="session" />);
+    await act(async () => {
+      setChord("toggle-dictation", "");
+    });
+    expect(micIn(host).getAttribute("title")).toBe("Dictate — speak into the message box");
+    // The button is still a button. Unbinding a chord takes the chord away, not
+    // the control.
+    await press(micIn(host));
+    expect(tokenCalls).toBe(1);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * THE BADGE AT THE CARET — issue #561.
+ *
+ * It is drawn into `document.body` through a portal rather than into
+ * the composer, so every query below is against the DOCUMENT and not
+ * against the host the composer was mounted in. That is as much the
+ * claim as it is the mechanics: a badge inside the editable would be a
+ * node `serialize()` walks and `paint()` destroys, and one inside the
+ * composer would be clipped by its own `overflow-y-auto` — which is
+ * exactly where the caret is when somebody starts talking.
+ * ------------------------------------------------------------------ */
+
+const pill = (): HTMLElement | null => document.querySelector('[data-slot="dictation-caret-pill"]');
+const dimmed = (): HTMLElement | null => document.querySelector("[data-dictation-interim]");
+
+/**
+ * PUT A CARET IN THE BOX, which is what a person does before they press the
+ * mic: they click into the message box, and then they speak.
+ *
+ * The other tests here never needed one — words go in at the end of the draft
+ * whether or not anything is focused — but the badge is anchored to the caret
+ * and is honestly absent when there is no caret to anchor to. happy-dom has no
+ * click-to-caret, so the selection is made the way the editor's own
+ * `placeCaret` makes one.
+ */
+function focusBox(host: HTMLElement): void {
+  const editable = host.querySelector<HTMLElement>('[data-slot="composer-editor"]');
+  if (!editable) throw new Error("no composer editor rendered");
+  act(() => {
+    editable.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editable);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+}
+
+describe("the badge at the caret", () => {
+  test("it is not there until the microphone is actually open", async () => {
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    expect(pill()).toBeNull();
+
+    const button = micIn(host);
+    await press(button);
+    // NOT WHILE STARTING EITHER. A press can still end in a refused permission
+    // prompt, and a badge saying "listening" through that dialog would be wrong
+    // for as long as somebody took to read it.
+    expect(pill()).toBeNull();
+
+    live!.open();
+    expect(pill()).not.toBeNull();
+  });
+
+  test("and it goes away when dictation stops", async () => {
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+    expect(pill()).not.toBeNull();
+
+    await press(button);
+    expect(pill()).toBeNull();
+  });
+
+  test("it says which language is being transcribed", async () => {
+    language = "es";
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    await press(micIn(host));
+    live!.open();
+    expect(pill()?.textContent).toContain("ES");
+  });
+
+  test("`multi` says AUTO, which is what the picker calls it", async () => {
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    await press(micIn(host));
+    live!.open();
+    expect(pill()?.textContent).toContain("AUTO");
+    expect(pill()?.textContent).not.toContain("MULTI");
+  });
+
+  test("it follows the caret as words land", async () => {
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    await press(micIn(host));
+    live!.open();
+    const before = pill()?.style.left;
+
+    // The caret moves because words were written at it — which is the only
+    // thing that moves it during a dictation, and the moment the hook is
+    // already in the middle of.
+    caretAt = { x: 260, y: 400 };
+    live!.say(results("fix the failing", false));
+
+    const after = pill()?.style.left;
+    expect(after).not.toBe(before);
+    expect(Number.parseFloat(after ?? "")).toBeGreaterThan(Number.parseFloat(before ?? ""));
+  });
+
+  test("it is not a control: no pointer events, and nothing for a screen reader", async () => {
+    // It sits over the words being typed. A tap target there would eat a caret
+    // placement mid-sentence, and the mic BUTTON is the thing with a name.
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    await press(micIn(host));
+    live!.open();
+    expect(pill()?.getAttribute("aria-hidden")).toBe("true");
+    expect(pill()?.className).toContain("pointer-events-none");
+  });
+
+  test("it is drawn outside the composer, never inside the editable", async () => {
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    await press(micIn(host));
+    live!.open();
+    const editable = host.querySelector('[data-slot="composer-editor"]');
+    expect(editable).not.toBeNull();
+    expect(editable?.contains(pill())).toBe(false);
+    expect(host.contains(pill())).toBe(false);
+  });
+});
+
+describe("the words still being revised", () => {
+  test("the unconfirmed run is drawn dimmer, and settles when the phrase does", async () => {
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    await press(micIn(host));
+    live!.open();
+
+    live!.say(results("fix the failing", false));
+    // THE GUESS IS MARKED, and it is exactly the guess — not the space the
+    // composer added in front of it when it spliced the words in.
+    expect(dimmed()?.textContent).toBe("fix the failing");
+
+    live!.say(results("fix the failing test", false));
+    expect(dimmed()?.textContent).toBe("fix the failing test");
+
+    // A FINAL LEAVES NOTHING DIM. The words are the person's now.
+    live!.say(results("fix the failing test", true));
+    expect(dimmed()).toBeNull();
+    expect(draftOf(host)).toBe("fix the failing test ");
+  });
+
+  test("the draft is the same string with the dim on it or without it", async () => {
+    const host = await mounted(<Box kind="session" />);
+    focusBox(host);
+    await press(micIn(host));
+    live!.open();
+
+    live!.say(results("hello there", false));
+    // THE COMPOSER'S ONE RULE, held: the dim is a drawing of the draft and not
+    // part of it, so what would be SENT is unchanged by its being there.
+    expect(draftOf(host)).toBe("hello there ");
+    expect(dimmed()).not.toBeNull();
+  });
+
+  test("stopping mid-guess leaves the words and takes the dim off them", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+
+    live!.say(results("half a sentence", false));
+    expect(dimmed()).not.toBeNull();
+
+    await press(button);
+    // They said it; they can edit it. What must not survive is the MARKING —
+    // greyed-out text in a box nobody is dictating into is the app lying.
+    expect(draftOf(host)).toBe("half a sentence ");
+    expect(dimmed()).toBeNull();
+  });
+
+  test("the caret is tinted while the microphone is open, and only then", async () => {
+    const host = await mounted(<Box kind="session" />);
+    const editable = () => host.querySelector('[data-slot="composer-editor"]');
+    expect(editable()?.hasAttribute("data-dictating")).toBe(false);
+
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+    // The quiet signal beside the loud one — and the one that survives the
+    // badge being scrolled out of view.
+    expect(editable()?.hasAttribute("data-dictating")).toBe(true);
+
+    await press(button);
+    expect(editable()?.hasAttribute("data-dictating")).toBe(false);
+  });
+});

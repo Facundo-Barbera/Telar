@@ -14,7 +14,7 @@
  *     the same fenced routes every panel surface uses.
  *   - Not a browser. A URL belongs in `browser_tabs new`; this takes a path.
  *   - Not gated. Showing a person a file they could open themselves changes
- *     nothing and risks nothing, the same judgement the spool's verbs got.
+ *     nothing and risks nothing, the same judgement every other wall's verbs got.
  *
  * The capability is the seam (tool-kit.ts): the WORKER implements `open` —
  * fence the path inside the turn's checkout, confirm it exists, report a
@@ -33,7 +33,15 @@ export type DisplayCapability = {
   open(input: { path: string; title?: string }): Promise<{ path: string }>;
 };
 
-const OPEN = `Show the human one file from this session's checkout, in the cockpit's right panel — rendered, not as source: markdown displays formatted, PDFs page, images and video display, code is highlighted. Use it when you have produced something FOR the person to look at now — a guide you wrote, a report, a rendered plot, a downloaded PDF — not for files you are merely working on. Give the path relative to the checkout root, and a short title if the filename alone would not tell them what they are looking at. This is deliberate foreground: it opens the panel in front of them, so reach for it when showing the file is the point, at most once or twice a turn.`;
+/**
+ * UNDER 350 CHARACTERS, ENFORCED BY A TEST (#515). This string is in every turn
+ * of every session whether or not a file is ever shown, so the examples and the
+ * rationale that used to live here — which file kinds render how, why the
+ * foreground is deliberate — moved to the `telar` skill, which is on disk and
+ * costs nothing until something asks for it. What stays is what a model needs
+ * to CHOOSE: what it does, what it is for, and the one restraint on it.
+ */
+const OPEN = `Show the human one file from this session's checkout in the cockpit's right panel, rendered rather than as source: markdown formatted, PDFs paged, images and video shown, code highlighted. For something you produced FOR them to look at now, not a file you are working on. Path is relative to the checkout root, and it takes the foreground.`;
 
 export function displayTools(tool: ToolFactory, capability: DisplayCapability): unknown[] {
   return [

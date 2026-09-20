@@ -41,12 +41,29 @@ test("the nine jumps are one row carrying the whole range", () => {
   expect(jump?.commandIds).toHaveLength(9);
 });
 
+test("the folded row SAYS what the numbers count, Agent included (#569)", () => {
+  // The row draws `⌘1–⌘9` and a title, and neither can say the thing somebody
+  // whose ⌘1 stopped opening their first conversation needs to read.
+  const jump = rowsWith().find((row) => row.id === "jump");
+  expect(jump?.hint).toContain("top to bottom as drawn");
+  expect(jump?.hint).toContain("Agent");
+  expect(jump?.hint).toContain("⌘1");
+  expect(jump?.hint).toContain("⌘2");
+  // It reaches the pane rather than sitting unread on the derivation.
+  expect(renderToStaticMarkup(<KeybindingsPage />)).toContain("it takes ⌘1 and conversations start at ⌘2");
+  // No other row grows a description off the back of this: every other binding
+  // is its own explanation.
+  expect(rowsWith().filter((row) => row.hint !== undefined)).toHaveLength(1);
+});
+
 test("the range is read off the registry, not hardcoded", () => {
   // A tenth slot must widen the row rather than go unlisted, and a registry with
   // one jump has no range to fold.
   const table: Command[] = [
-    { id: "jump-1" as never, label: "Jump 1", group: "Rail", defaultChord: "CommandOrControl+1", jump: 1 },
-    { id: "jump-2" as never, label: "Jump 2", group: "Rail", defaultChord: "CommandOrControl+2", jump: 2 },
+    // `icon` is carried because the registry's type requires one; this pane
+    // pointedly ignores it — a keybindings row is a chord, not a glyph.
+    { id: "jump-1" as never, label: "Jump 1", group: "Rail", icon: "hash", defaultChord: "CommandOrControl+1", jump: 1 },
+    { id: "jump-2" as never, label: "Jump 2", group: "Rail", icon: "hash", defaultChord: "CommandOrControl+2", jump: 2 },
   ];
   const keymap = { "jump-1": "CommandOrControl+1", "jump-2": "CommandOrControl+2" } as Keymap;
   expect(keybindingRows("mac", keymap, table)[0]?.title).toBe("Jump to conversation 1–2");

@@ -1,4 +1,4 @@
-import { OPENCODE_VERSION } from "./version";
+import { OPENCODE_VERSION, openCodeVersionVerdict } from "./version";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2";
@@ -11,8 +11,14 @@ export type OpenCodeRuntime = { client: OpencodeClient; closed: boolean; close()
 
 /**
  * WHAT THIS SESSION IS TOLD, in the order the other two drivers say it: the
- * orientation first (where the agent is, gated on the person), then one
- * paragraph per surface the session actually has.
+ * orientation first (where the agent is, gated on the person), then the Main
+ * session's role if this is that session, then one paragraph per surface the
+ * session actually has.
+ *
+ * THE TWO GATED ON WHO THIS SESSION IS COME BEFORE THE ONES GATED ON WHAT IT
+ * HAS. Orientation and the coordinator briefing both say what this conversation
+ * IS; the browser and run paragraphs are tool contracts, and they read in the
+ * vocabulary the first two teach.
  *
  * Exported so the per-provider test can assert the set without spawning a
  * server, exactly as `mcpConfiguration` is.
@@ -20,6 +26,7 @@ export type OpenCodeRuntime = { client: OpencodeClient; closed: boolean; close()
 export function openCodeBriefings(input: DriverRun): string[] {
   return [
     ...(input.orientation ? [input.orientation] : []),
+    ...(input.mainBriefing ? [input.mainBriefing] : []),
     ...(input.browserSocket ? [BROWSER_BRIEFING] : []),
     ...(input.run ? [RUN_BRIEFING] : []),
   ];
@@ -116,7 +123,16 @@ export async function startOpenCodeRuntime(input: DriverRun): Promise<OpenCodeRu
     const client = createOpencodeClient({ baseUrl: url, directory: input.cwd, throwOnError: true,
       headers: { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } });
     const health = await client.global.health({ throwOnError: true, signal: AbortSignal.timeout(10_000) });
-    if (health.data?.version !== OPENCODE_VERSION) throw new Error(`OpenCode ${health.data?.version ?? "unknown"} is not supported by this adapter; install opencode-ai@${OPENCODE_VERSION} or set this provider's binary path to that version.`);
+    /**
+     * THE SECOND OF THE TWO EXACT-VERSION GATES (#655). Refuses only a
+     * different protocol family now; a patch ahead runs, the same way the CLI
+     * resolution reports it as `drifted` rather than refusing. Leaving this one
+     * exact would have been worse than leaving both: the picker would fill with
+     * models that every session then refused to run.
+     */
+    if (openCodeVersionVerdict(health.data?.version) === "incompatible") {
+      throw new Error(`OpenCode ${health.data?.version ?? "unknown"} is not supported by this adapter; install opencode-ai@${OPENCODE_VERSION} or set this provider's binary path to that version.`);
+    }
     return { client, get closed() { return closed; }, close };
   } catch (error) { close(); throw error; }
 }

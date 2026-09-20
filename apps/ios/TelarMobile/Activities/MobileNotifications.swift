@@ -30,6 +30,14 @@ struct PushStatus: Decodable { var configured: Bool }
     var visibleSession: ScopedSessionID?
     var settings: AppSettings?
     var status = "Notifications are off"
+    /// WHICH MACS CANNOT PUSH, AND WHY — issue #579.
+    ///
+    /// This used to be one integer called `unavailable`, counting a Mac with no
+    /// relay and a Mac that did not answer as the same thing. They are not: one
+    /// is a credential somebody has to go and write, in a named screen, on that
+    /// machine; the other is a network. Kept apart so the banner and the status
+    /// line can point at the right one — see `PushReadiness`.
+    var readiness = PushReadiness()
     var activityError: String?
     var followed: Set<ScopedSessionID> = []
     private var token: String? = UserDefaults.standard.string(forKey: "telar.apns.token")
@@ -84,7 +92,11 @@ struct PushStatus: Decodable { var configured: Bool }
     var enabled = UserDefaults.standard.bool(forKey: "telar.notifications.enabled") {
         didSet { defaults.set(enabled, forKey: "telar.notifications.enabled") }
     }
-    var completions = UserDefaults.standard.bool(forKey: "telar.notifications.completions") {
+    /// ON BY DEFAULT (owner's decision, #584). `bool(forKey:)` answers `false`
+    /// for a key nobody has written, so every phone that had never opened this
+    /// setting was silently opted OUT of the completion alert it was told it
+    /// would get. `object(forKey:)` distinguishes "off" from "never set".
+    var completions = UserDefaults.standard.object(forKey: "telar.notifications.completions") as? Bool ?? true {
         didSet { defaults.set(completions, forKey: "telar.notifications.completions") }
     }
     var previews = UserDefaults.standard.bool(forKey: "telar.notifications.previews") {
@@ -134,7 +146,7 @@ struct PushStatus: Decodable { var configured: Bool }
         guard let token else { return }
         let authorization = await UNUserNotificationCenter.current().notificationSettings()
         let allowed = authorization.authorizationStatus == .authorized || authorization.authorizationStatus == .provisional
-        var unavailable = 0
+        var next = PushReadiness()
         for host in settings.hosts {
             guard let api = settings.api(for: host.id) else { continue }
             let activities = Activity<SessionActivityAttributes>.activities.filter { $0.attributes.hostId == host.id.uuidString }
@@ -155,10 +167,36 @@ struct PushStatus: Decodable { var configured: Bool }
                     mutedSessions: mutedSessions, activities: subscriptions,
                     liveActivities: liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled,
                     pushToStartToken: startToken, hostName: host.name))
-                if !reply.configured { unavailable += 1 }
-            } catch { unavailable += 1 }
+                // REGISTERED, AND TOLD IT WILL HEAR NOTHING. The Mac has this
+                // phone's token and no relay to send with; that is a fact about
+                // the Mac, and the banner says which one.
+                if !reply.configured { next.missingRelay.insert(host.id) }
+            } catch { next.unreachable.insert(host.id) }
         }
-        status = unavailable > 0 ? "Push unavailable on \(unavailable) Mac(s). Check connection and push setup." : (enabled && allowed ? "Push registration saved" : "Notifications are off")
+        readiness = next
+        status = next.statusLine(enabled: enabled, allowed: allowed)
+    }
+
+    /**
+     ASK ONCE, AFTER PAIRING — issue #579.
+
+     Nothing on this phone ever raised the system prompt. The only path to it
+     was the toggle in Settings ▸ Notifications, so an owner who never opened
+     that screen had an app which had never appeared in iOS's own Notifications
+     list, and no reason to suspect it. Pairing a Mac is the moment the app
+     first has something to notify anybody ABOUT, so it is the moment to ask.
+
+     ONCE PER INSTALL, AND NEVER AFTER AN ANSWER — see `NotificationPrompt`.
+     When it does not ask it still REGISTERS, because that round trip is how
+     the phone learns whether that Mac can push at all.
+     */
+    func promptAfterPairing() async {
+        guard NotificationPrompt.shouldAsk(asked: defaults.bool(forKey: NotificationPrompt.askedKey), enabled: enabled) else {
+            await syncRegistrations()
+            return
+        }
+        defaults.set(true, forKey: NotificationPrompt.askedKey)
+        await enable()
     }
 
     func refreshActivityPrivacy() async {

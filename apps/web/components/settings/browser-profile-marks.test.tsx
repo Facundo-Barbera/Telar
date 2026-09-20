@@ -175,8 +175,11 @@ describe("a mark, drawn", () => {
 describe("the browser panel's profile chip", () => {
   test("shows the profile's icon in its colour instead of its name", () => {
     expect(panel).toContain('<IdentityIcon icon={state.profile.icon} color={state.profile.color} className="size-3.5 shrink-0" />');
-    // The name was the widest thing on the toolbar and the first to truncate.
-    expect(panel).not.toContain("{state.profile.label}</span>");
+    // The name was the widest thing on the toolbar and the first to truncate;
+    // this is the shape #366 took off it. MENUS may still write the name out —
+    // the options menu's "Profile: <name>" row does (#473) — because a menu is
+    // not the toolbar and has the room the toolbar does not.
+    expect(panel).not.toContain('<span className="max-w-28 truncate">{state.profile.label}</span>');
   });
 
   test("the name is the tooltip and the accessible name — it is said, not dropped", () => {

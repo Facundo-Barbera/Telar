@@ -1,19 +1,18 @@
 "use client";
 
 /**
- * ONE SEARCH FIELD, TWO RAILS — the web pass that put Telar's "Search
- * sessions" and the Spool's "Search the Spool…" through the same chrome.
+ * ONE SEARCH FIELD, EVERY RAIL — the web pass that put every "search this
+ * list" input in the app through the same chrome.
  *
- * Before this pass the two inputs disagreed on height (h-8 vs h-7), icon
+ * Before this pass the inputs disagreed on height (h-8 vs h-7), icon
  * size and colour (size-3.5 sidebar-foreground/45 vs size-3
  * muted-foreground/60), text size (text-sm vs text-xs) and background
- * (Telar's transparent-until-hover treatment vs the Spool's default Input
- * chrome) — differences with no behavioural reason, just two components
+ * (a transparent-until-hover treatment vs the default Input
+ * chrome) — differences with no behavioural reason, just components
  * built months apart. BEHAVIOUR STAYS WHERE IT WAS: Telar's ⌘K binding is
- * still wired in `app-sidebar.tsx`, and the Spool's dropdown-on-focus stays
- * in `search.tsx` — this component owns only the shape both share (the
- * icon, the inset, the height, the position at the top of the rail), never
- * the wiring around it.
+ * still wired in `app-sidebar.tsx` — this component owns only the shape its
+ * callers share (the icon, the inset, the height, the position at the top of
+ * the rail), never the wiring around it.
  *
  * THE CHROME IS THE ROW, NOT THE INPUT, and that is what lets something sit
  * INSIDE the field. It used to be an absolutely-positioned icon over a
@@ -23,13 +22,12 @@
  * content may be any width. Every caller that passes no slot draws exactly what
  * it drew before.
  *
- * ONE SLOT, NOT TWO. There was a `start` as well, added for Telar's
- * project-scope chip, which REPLACED the search glyph rather than sitting
- * beside it. #400 removed that chip and no caller passes a leading anything, so
- * the slot went with it: an unused prop on a shared primitive is a shape three
- * rails have to keep agreeing about for nobody's sake. `end` stays — Telar's ⌘K
- * hint and clear button live there, and the Spool and the settings nav pass
- * neither.
+ * TWO SLOTS, AND `start` REPLACES THE SEARCH GLYPH rather than sitting beside
+ * it — two marks at the head of one field is one too many. It was added for
+ * Telar's project-scope chip, deleted with that chip in #400, and is back for
+ * the multi-select project filter #470 puts in the same place; the settings nav
+ * passes neither slot and draws the bare glyph. `end` is
+ * where Telar's ⌘K hint and clear button live.
  */
 import { forwardRef } from "react";
 import { SearchIcon } from "lucide-react";
@@ -38,8 +36,8 @@ import { cn } from "@/lib/utils";
 
 export const SidebarSearchField = forwardRef<
   HTMLInputElement,
-  React.ComponentProps<typeof Input> & { end?: React.ReactNode }
->(function SidebarSearchField({ end, className, ...props }, ref) {
+  React.ComponentProps<typeof Input> & { start?: React.ReactNode; end?: React.ReactNode }
+>(function SidebarSearchField({ start, end, className, ...props }, ref) {
   return (
     <div
       className={cn(
@@ -51,7 +49,7 @@ export const SidebarSearchField = forwardRef<
         className,
       )}
     >
-      <SearchIcon className="pointer-events-none size-3.5 shrink-0 text-sidebar-foreground/45" aria-hidden />
+      {start ?? <SearchIcon className="pointer-events-none size-3.5 shrink-0 text-sidebar-foreground/45" aria-hidden />}
       <Input
         ref={ref}
         {...props}

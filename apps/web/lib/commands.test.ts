@@ -17,6 +17,9 @@ import {
   COMMAND_GROUPS,
   bindCommands,
   chordForEvent,
+  claimChords,
+  claimedChords,
+  claimedCommandIds,
   commandHandler,
   defaultKeymap,
   isCapturingChord,
@@ -41,6 +44,7 @@ const EXPECTED_IDS: CommandId[] = [
   "focus-composer",
   "send",
   "stop-turn",
+  "toggle-dictation",
   "reveal-in-finder",
   "pin-session",
   "search-sessions",
@@ -159,6 +163,30 @@ describe("the registry is the one source of truth", () => {
     // And it is nobody else's chord — the guard above proves the table as a
     // whole, this names the collision #408 was warned about (#402's go-to-file).
     expect(keymapConflicts(defaultKeymap())["pin-session"]).toBeUndefined();
+  });
+
+  test("⌘D dictates, and it is a command rather than a menu row", () => {
+    // #588. It has to be in the registry for Settings › Keybindings to draw a
+    // rebindable row at all; it must NOT carry a menu, because dictation is off
+    // on every Mac until somebody chooses a provider and a permanently inert
+    // menu row is worse than none.
+    const dictate = COMMANDS.find((command) => command.id === "toggle-dictation");
+    expect(dictate).toMatchObject({ label: "Dictate", group: "Conversation", icon: "mic", defaultChord: "CommandOrControl+D" });
+    expect(dictate?.menu).toBeUndefined();
+    expect(defaultKeymap()["toggle-dictation"]).toBe("CommandOrControl+D");
+    // AND IT IS NOBODY ELSE'S CHORD. The table-wide guard above proves the set;
+    // this names the near miss the owner checked before choosing it — ⇧⌘D is
+    // Open Diff, and the two are different chords.
+    expect(keymapConflicts(defaultKeymap())["toggle-dictation"]).toBeUndefined();
+    expect(defaultKeymap()["open-diff"]).toBe("CommandOrControl+Shift+D");
+  });
+
+  test("⌘D still fires with the caret in the message box, which is where it is pressed from", () => {
+    // The focus rule only suppresses chords with no command/control modifier,
+    // and this one has one — but the composer holds focus essentially always,
+    // so a dictation chord that the focus rule ate would never fire at all.
+    const pressed = { metaKey: true, key: "d", code: "KeyD", target: { isContentEditable: true } };
+    expect(resolveWebCommandKeyAction(defaultKeymap(), pressed)).toBe("toggle-dictation");
   });
 
   test("only a toggle carries an alternate label", () => {
@@ -339,6 +367,64 @@ describe("recording suppresses everything else", () => {
     expect(isCapturingChord()).toBe(true);
     setChordCapture(false);
     expect(isCapturingChord()).toBe(false);
+  });
+});
+
+describe("a surface claiming chords (#656)", () => {
+  // The registry is module state, like the handler bus below — a leaked claim
+  // would leave the next test's ⌘1 suppressed.
+  test("nothing is claimed until something claims it", () => {
+    expect(claimedChords()).toEqual([]);
+    expect(claimedCommandIds(defaultKeymap())).toEqual([]);
+  });
+
+  test("a claim stands the colliding commands down, and releasing puts them back", () => {
+    const release = claimChords(["CommandOrControl+1", "CommandOrControl+2"]);
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1", "jump-2"]);
+    release();
+    expect(claimedCommandIds(defaultKeymap())).toEqual([]);
+  });
+
+  test("nested claims are a union, and the inner one releases without taking the outer's chords", () => {
+    // The command palette embeds the project palette's pages in its own dialog,
+    // so two claims are live at once and walking back out of the sub-page must
+    // not hand ⌘1 back while the rows that draw it are still on screen.
+    const outer = claimChords(["CommandOrControl+1"]);
+    const inner = claimChords(["CommandOrControl+1", "CommandOrControl+2"]);
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1", "jump-2"]);
+    inner();
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1"]);
+    outer();
+    expect(claimedCommandIds(defaultKeymap())).toEqual([]);
+  });
+
+  test("releasing twice is not an error", () => {
+    // StrictMode runs an effect's cleanup twice, and a double release that
+    // popped somebody else's claim would suppress a chord nobody holds.
+    const other = claimChords(["CommandOrControl+1"]);
+    const release = claimChords(["CommandOrControl+2"]);
+    release();
+    release();
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1"]);
+    other();
+    expect(claimedChords()).toEqual([]);
+  });
+
+  test("two surfaces claiming the same chord are two claims", () => {
+    // Identity is what releases, so the first one closing must not unsuppress a
+    // chord the second is still drawing on its rows.
+    const first = claimChords(["CommandOrControl+1"]);
+    const second = claimChords(["CommandOrControl+1"]);
+    first();
+    expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1"]);
+    second();
+    expect(claimedCommandIds(defaultKeymap())).toEqual([]);
+  });
+
+  test("the claim is canonical, so a surface may spell its chords loosely", () => {
+    const release = claimChords(["cmd+1"]);
+    expect(claimedChords()).toEqual(["CommandOrControl+1"]);
+    release();
   });
 });
 

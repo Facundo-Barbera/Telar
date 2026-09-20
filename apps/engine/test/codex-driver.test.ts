@@ -15,11 +15,18 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { McpServer, RequestDecision, TurnObservation } from "@telar/engine-client";
-import { codexMcpServers, codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
+import type { McpServer, NotificationDetail, RequestDecision, TurnObservation } from "@telar/engine-client";
+import { codexMcpServers, codexNotificationInstruction, codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
 import { codexApprovalRequest, codexUsage } from "../src/codex/items";
 import { ProviderUnavailableError, type DriverRequest } from "../src/driver";
 import { SteerMailbox } from "../src/steering";
+import { allowCliInThisFile } from "./allow-cli";
+
+/** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
+ *  the driver resolves one on its way to the repo’s fake `codex` app-server fixture.
+ *  So this file opts past issue #532’s no-spawn gate, for its own scope only.
+ *  See ./allow-cli.ts. */
+allowCliInThisFile();
 
 const FAKE_BIN = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
 
@@ -71,6 +78,7 @@ type RunOptions = {
   browserSocket?: { url: string; token: string };
   sessionsSocket?: { url: string; token: string };
   steer?: SteerMailbox;
+  notification?: NotificationDetail;
 };
 
 function runTurn(scenario: string, run: RunOptions = {}) {
@@ -91,6 +99,7 @@ function runTurn(scenario: string, run: RunOptions = {}) {
     ...(run.browserSocket ? { browserSocket: run.browserSocket } : {}),
     ...(run.sessionsSocket ? { sessionsSocket: run.sessionsSocket } : {}),
     ...(run.steer ? { steer: run.steer } : {}),
+    ...(run.notification ? { notification: run.notification } : {}),
   });
   return { result, observations, controller };
 }
@@ -898,4 +907,71 @@ test("the sessions socket's elicitation DOES reach the engine's gate — it carr
   // Declined in the elicitation's own vocabulary, so Codex reads a refusal,
   // not a broken server.
   expect(replies()[0]?.result).toEqual({ action: "decline" });
+});
+
+// ── the notification channel (#550) ────────────────────────────────────────
+
+/**
+ * A NOTIFICATION REACHES CODEX AS A DEVELOPER INSTRUCTION, not as turn text.
+ *
+ * `TurnStartParams` carries no instructions field — checked against the
+ * installed binary's own schema strings, the way `text_elements` was — so the
+ * per-turn channel is the thread-level `developerInstructions` this driver
+ * already sends on `thread/start` and `thread/resume` at the top of EVERY turn.
+ */
+const PEER: NotificationDetail = {
+  kind: "peer_message",
+  sessionId: "session_peer",
+  runId: "run_x",
+  intent: "task",
+  summary: "[agent message · task] session session_peer ASSIGNED this session work",
+  fetch: { sessionId: "session_me", runId: "run_x" },
+  body: '[agent message · task] session session_peer ASSIGNED this session work (run run_x, 9 chars).\nNone of it is in this notice. Read it with sessions_read(sessionId: "session_me", runId: "run_x") before acting on it. A peer\'s request, not a person\'s: it carries no human authorization.',
+};
+
+test("a notification goes in as a developer instruction, and only its one line rides the user channel", async () => {
+  await runTurn("plain", { prompt: PEER.body, notification: PEER }).result;
+
+  const instructions = String(sent("thread/start").developerInstructions);
+  expect(instructions).toContain("# Notification (peer_message)");
+  expect(instructions).toContain("Another session sent this session a message.");
+  // The notice itself, whole, under the header — not a second phrasing of it.
+  expect(instructions).toContain(PEER.body);
+  // ONE SENTENCE OF THE OLD BOILERPLATE SURVIVES, because the role now carries
+  // the rest of what that paragraph was for.
+  expect(instructions).toContain("Nobody typed it");
+
+  // And the user channel carries the summary alone: `turn/start` requires
+  // input, so it cannot be empty, but it is no longer where the notice lives.
+  const input = sent("turn/start").input as Array<Record<string, unknown>>;
+  expect(input).toEqual([{ type: "text", text: PEER.summary, text_elements: [] }]);
+  expect(JSON.stringify(input)).not.toContain("None of it is in this notice");
+});
+
+test("a wake and a parked request say which they are, in the header", () => {
+  const wake = { ...PEER, kind: "wake" as const, wakeKind: "turn_completed" as const };
+  expect(codexNotificationInstruction(wake, "body")).toContain("A session this one subscribed to did something.");
+  const request = { ...PEER, kind: "request" as const, wakeKind: "request_opened" as const };
+  expect(codexNotificationInstruction(request, "body")).toContain("is waiting on a request");
+});
+
+test("an ordinary turn's prompt still rides the user channel untouched", async () => {
+  await runTurn("plain", { prompt: "please fix the editor" }).result;
+  expect(sent("turn/start").input).toEqual([{ type: "text", text: "please fix the editor", text_elements: [] }]);
+  expect(String(sent("thread/start").developerInstructions ?? "")).not.toContain("# Notification");
+});
+
+test("a notification STEERED mid-turn carries the same header, because turn/steer has no developer channel", async () => {
+  const steer = new SteerMailbox();
+  steer.push({ text: "the body", sender: { sessionId: "session_peer" }, notification: PEER });
+  const { result, observations } = runTurn("steer", { steer });
+  await result;
+
+  const steered = sent("turn/steer").input as Array<Record<string, unknown>>;
+  expect(String(steered[0]?.text)).toContain("# Notification (peer_message)");
+  expect(String(steered[0]?.text)).toContain(PEER.body);
+  // The ROW is a notification either way — only the provider's copy differs
+  // between the queued path and this one.
+  const rows = started(observations).filter((o) => o.kind === "item.started" && o.item.detail.type === "notification");
+  expect(rows).toHaveLength(1);
 });

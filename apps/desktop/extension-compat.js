@@ -168,14 +168,72 @@ function sanitizePreloadSource(source) {
 }
 
 /**
+ * WHICH CONTEXT A PRELOAD LANDED IN — the gate both extension preloads run
+ * before they do anything (#487).
+ *
+ * Electron's `registerPreloadScript` takes no scheme and no scope, so a
+ * preload registered for `type: "service-worker"` runs in EVERY service worker
+ * of the partition: github's, youtube's, cloudflare's, and 1Password's alike.
+ * Upstream's own dispatch (`process.type === "service-worker" ||
+ * location.href.startsWith("chrome-extension://")`) makes that explicit — the
+ * service-worker arm never looks at an origin at all. So a site's worker was
+ * getting the whole extension API bridge injected into its main world, plus an
+ * `electron` object on the way in.
+ *
+ * `context` is what the isolated world could answer about itself: a `location`
+ * protocol (a frame has one), a service-worker `registration.scope`, and the
+ * extension id an already-installed `chrome.runtime` carries.
+ *
+ * UNKNOWN RUNS, DELIBERATELY. Electron gives a service-worker preload's
+ * isolated world no location and no chrome (that is what the probe in
+ * `registerShimPreload` records, and why upstream orders its condition the way
+ * it does), so a context that answers nothing is NOT evidence of a site — and
+ * refusing it would take 1Password's own worker preloads away with it and
+ * break the login flow. This gate only removes the contexts it can actually
+ * name; the main-world gates (`mainWorldShims`' pinned-id check, and the
+ * library reading `chrome.runtime.id` for itself) still refuse the rest.
+ */
+function isExtensionPreloadContext({ protocol = null, scope = null, runtimeId = null } = {}) {
+  // A frame's own location is authoritative and beats everything: a content
+  // script's isolated world carries a runtime id while the document is a site.
+  if (typeof protocol === "string" && protocol) return protocol === "chrome-extension:";
+  // A service worker that DOES expose its registration names its own origin.
+  if (typeof scope === "string" && scope) {
+    try { return new URL(scope).protocol === "chrome-extension:"; } catch { return true; }
+  }
+  if (typeof runtimeId === "string" && runtimeId) return true;
+  return true;
+}
+
+/** The isolated-world prelude that answers `isExtensionPreloadContext` where
+ *  the preload actually runs. Reading any of the three can throw in a context
+ *  that has none of them, so each is guarded on its own. */
+const GATE_SOURCE = `
+// #487: an extension preload must not run in a site's service worker.
+const __telarPreloadContext = { protocol: null, scope: null, runtimeId: null };
+try { __telarPreloadContext.protocol = globalThis.location?.protocol ?? null; } catch {}
+try { __telarPreloadContext.scope = globalThis.registration?.scope ?? globalThis.self?.registration?.scope ?? null; } catch {}
+try { __telarPreloadContext.runtimeId = globalThis.chrome?.runtime?.id ?? null; } catch {}
+const __telarIsExtensionContext = (${isExtensionPreloadContext.toString()})(__telarPreloadContext);
+`;
+
+/**
  * Write the sanitized preload beside the shims and return its path. The
  * library's own registration is replaced (same ids, `crx-mv2-preload` /
  * `crx-mv3-preload`) so exactly one copy runs.
+ *
+ * The sanitized source is wrapped in the #487 gate rather than edited: the
+ * sanitizer stays a function that only removes upstream's payload logs (its
+ * byte accounting is asserted in the tests), and the gate is a prelude around
+ * the whole IIFE. A block, not a top-level `return` — a preload that Electron
+ * ever loaded as a classic script would make that a SyntaxError, and a
+ * SyntaxError here is 1Password not loading.
  */
 function sanitizedPreloadPath(dir) {
   const upstream = require.resolve("electron-chrome-extensions/preload");
   const file = path.join(dir, "chrome-extension-api.preload.sanitized.js");
-  fs.writeFileSync(file, sanitizePreloadSource(fs.readFileSync(upstream, "utf8")));
+  const sanitized = sanitizePreloadSource(fs.readFileSync(upstream, "utf8"));
+  fs.writeFileSync(file, `${GATE_SOURCE}if (__telarIsExtensionContext) {\n${sanitized}\n}\n`);
   return file;
 }
 
@@ -395,10 +453,10 @@ function mainWorldShims(allowedIds) {
  * land in the extension's main world rather than the isolated preload world.
  */
 function registerShimPreload(session, dir, allowedIds) {
-  const source = `
+  const source = `${GATE_SOURCE}
 const { contextBridge } = require("electron");
 const allowedIds = ${JSON.stringify(allowedIds)};
-const diag = { protocol: null, host: null, hasExecute: "executeInMainWorld" in contextBridge, applied: false, error: null, via: null };
+const diag = { protocol: null, host: null, hasExecute: "executeInMainWorld" in contextBridge, applied: false, error: null, via: null, gated: !__telarIsExtensionContext };
 // A frame has a location; a service-worker preload does NOT (Electron gives
 // it none), so the origin is read from the worker's own registration scope
 // or, failing that, the extension id the isolated world's chrome.runtime
@@ -416,15 +474,15 @@ if (!diag.host) {
     if (typeof id === "string" && id) { diag.protocol = "chrome-extension:"; diag.host = id; diag.via = "runtime.id"; }
   } catch {}
 }
-// THE GATE LIVES IN THE MAIN WORLD, not here. A service-worker preload's
-// isolated world exposes no location, no chrome, no self (see probe); a frame
-// preload sees a location but the extension id is only authoritative from
-// the main world's chrome.runtime.id. So the bridge is executed
-// unconditionally — as the library does — and mainWorldShims itself refuses
-// every context whose chrome.runtime.id is not pinned (ordinary pages have
-// none) and any frame whose location origin disagrees with that id.
+// A CONTEXT THAT NAMED ITSELF AND IS NOT AN EXTENSION IS SKIPPED (#487); a
+// context that named nothing still runs, because on this Electron a service
+// worker's isolated world names nothing and one of those is 1Password's own.
+// For everything that gets through, THE REAL GATE IS THE MAIN WORLD's:
+// mainWorldShims refuses every context whose chrome.runtime.id is not pinned
+// (ordinary pages have none) and any frame whose location origin disagrees
+// with that id.
 try {
-  if (diag.hasExecute) { contextBridge.executeInMainWorld({ func: ${mainWorldShims.toString()}, args: [allowedIds] }); diag.applied = true; }
+  if (diag.hasExecute && __telarIsExtensionContext) { contextBridge.executeInMainWorld({ func: ${mainWorldShims.toString()}, args: [allowedIds] }); diag.applied = true; }
 } catch (error) {
   diag.error = String(error && error.message);
 }
@@ -447,4 +505,4 @@ console.info("telar-crx-shims " + JSON.stringify(diag));
   return file;
 }
 
-module.exports = { verifyCrx, unpackVerified, attachExtensionSupport, registerShimPreload, mainWorldShims, sanitizePreloadSource, sanitizedPreloadPath, disableLibraryDebug };
+module.exports = { verifyCrx, unpackVerified, attachExtensionSupport, registerShimPreload, mainWorldShims, sanitizePreloadSource, sanitizedPreloadPath, isExtensionPreloadContext, disableLibraryDebug };

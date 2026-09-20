@@ -722,13 +722,25 @@ test("a WAKE steered into a running turn reaches the driver's mailbox still stam
     async run({ prompt, steer }) {
       if (prompt !== "Long task") return { text: "child done" };
       await steer!.wake();
-      for (const message of steer!.drain()) heardWake.push({ text: message.text.slice(0, 16), wakeReason: message.wakeReason, sender: message.sender });
+      for (const message of steer!.drain())
+        heardWake.push({
+          // #550: the wake's prose rides the NOTIFICATION now. `text` carries
+          // whatever the turn's `input` is, which for an engine-written wake is
+          // a machine label.
+          notice: message.notification?.body.slice(0, 16),
+          kind: message.notification?.kind,
+          wakeReason: message.wakeReason,
+          sender: message.sender,
+        });
       return { text: "host done" };
     },
   };
   const { client, sessionId, worker } = await setup(driver);
   const child = await client.createSession({ id: "session_two", projectId: "project_one", title: "the worker" });
-  await client.subscribe(sessionId, { targetSessionId: child.session.id, events: ["turn_completed"] });
+  // `always` — #550 made the mid-turn steer the opt-in, and this test is about
+  // the mid-turn path. The default (`settled_only`) holds the wake instead, and
+  // `state.test.ts` pins that half.
+  await client.subscribe(sessionId, { targetSessionId: child.session.id, events: ["turn_completed"], completionWake: "always" });
 
   await client.submitTurn(sessionId, { runId: "run_host", input: "Long task" });
   await worker.tick();
@@ -750,18 +762,24 @@ test("a WAKE steered into a running turn reaches the driver's mailbox still stam
     expect(heardWake).toHaveLength(1);
   });
   expect(heardWake[0]).toMatchObject({
-    text: "[wake: completed",
+    notice: "[wake: completed",
+    kind: "wake",
     wakeReason: { kind: "turn_completed", sessionId: child.session.id, runId: "run_child" },
   });
   // A wake is nobody's message — not the person's, and not an agent's either.
   expect((heardWake[0] as { sender?: unknown }).sender).toBeUndefined();
 });
 
-test("a wake landing on an IDLE subscriber reaches the provider framed exactly as a steered one (#194)", async () => {
+test("a wake landing on an IDLE subscriber reaches the provider exactly as a steered one does (#194)", async () => {
   // The other half of the pair above. Same happening, other landing site: no
-  // turn is in flight, so the wake runs as its own turn and its framing comes
-  // from `framedTurnInput` instead of the steer path. If these two ever
-  // disagree, the model's evidence for "nobody typed this" depends on timing.
+  // turn is in flight, so the wake runs as its own turn and its words come from
+  // `framedTurnInput` instead of the steer path. If these two ever disagree,
+  // what the model is handed depends on timing.
+  //
+  // #550 CHANGED WHAT BOTH SIDES SAY, TOGETHER. The `[engine wake · …]` prose
+  // frame was a stand-in for a role the channel could not express; the role is
+  // now on the item and the channel, so the engine's own wake text goes over
+  // bare. The invariant under test is unchanged: the two paths agree.
   const prompts: string[] = [];
   const driver: TurnDriver = {
     async run({ prompt }) {
@@ -783,14 +801,14 @@ test("a wake landing on an IDLE subscriber reaches the provider framed exactly a
   await worker.tick();
 
   await eventually(() => {
-    expect(prompts.some((prompt) => prompt.startsWith("[engine wake · turn_completed · session "))).toBe(true);
+    expect(prompts.some((prompt) => prompt.startsWith("[wake: completed]"))).toBe(true);
   });
-  const framed = prompts.find((prompt) => prompt.startsWith("[engine wake · "))!;
-  expect(framed).toContain(child.session.id);
-  expect(framed).toContain("Nobody typed it and no agent sent it");
-  // The engine's own wake text is still all there, after the frame.
-  expect(framed).toContain("[wake: completed]");
-  // The child's own prompt was handed over bare — a person's words are not framed.
+  const delivered = prompts.find((prompt) => prompt.startsWith("[wake: completed]"))!;
+  expect(delivered).toContain(child.session.id);
+  // NOT WRAPPED IN A FRAME any more, on either path — the notification is what
+  // says whose words these are.
+  expect(delivered).not.toContain("[engine wake · ");
+  // The child's own prompt was handed over bare — a person's words never had a frame.
   expect(prompts).toContain("child work");
 });
 

@@ -9,21 +9,33 @@ name: Nightly iOS build
 # `ios-nightly-*` only: the desktop nightly owns `v*-nightly.*`, and one tag
 # pattern per artifact keeps the two from racing a shared version scheme.
 #
-# SIGNING IS CLOUD-MANAGED. There is no cert .p12 to import: xcodebuild with
-# -allowProvisioningUpdates plus the App Store Connect API key mints and
-# holds the Apple Distribution certificate on Apple's side. The three
-# APPLE_API_* secrets are the SAME key the desktop release uses to notarize —
-# one credential, both platforms (the key needs the App Manager role for
-# build uploads; notarization alone tolerates less).
+# SIGNING TAKES TWO CREDENTIALS, not one, and they do different jobs:
 #
-# ON THE MAC MINI, like the desktop nightly. GitHub's hosted macOS lane was
-# the reason this workflow existed: the Mac only had a BETA Xcode, and App
-# Store Connect refuses beta-built uploads. Since 2026-09-11 the Mac carries
-# the release Xcode at /Applications/Xcode.app, so the one thing the hosted
-# runner offered is on the desk — and the hosted lane had stopped starting
-# jobs at all (billing). `DEVELOPER_DIR` rather than `xcode-select`: the
-# runner's user has no passwordless sudo, and every script here honours the
-# variable. See docs/operations/mac-mini-runner-plan-2026-09-11.md.
+#   The App Store Connect API key (APPLE_API_*) authorises
+#   -allowProvisioningUpdates to fetch the provisioning profile, and
+#   authorises the upload. It is the SAME key the desktop release uses to
+#   notarize — one credential, both platforms (it needs the App Manager role
+#   for build uploads; notarization alone tolerates less).
+#
+#   A REAL Apple Distribution certificate (IOS_DIST_CERT_*) does the signing,
+#   imported into a temporary keychain below. This is NOT cloud-managed
+#   signing: Apple's upload validator refuses cloud-managed signatures
+#   outright (90035, measured twice on 2026-09-01), while the same archive
+#   re-signed from a keychain cert validated clean.
+#
+# This paragraph said the opposite until 2026-09-20 — "signing is cloud-
+# managed, there is no cert .p12 to import" — describing the workflow as it
+# was before that measurement, while the step below imported a .p12 anyway.
+# It sent at least one reader to the wrong conclusion about #757. Said
+# plainly here because a header that contradicts its own steps is worse than
+# no header.
+#
+# HOSTED (macos-latest) since 2026-09-20, with the rest of CI. It ran on the
+# maintainer's Mac mini from 2026-09-11, when the hosted lane stopped starting
+# jobs for billing and the Mac had gained a release Xcode; that is over.
+# `DEVELOPER_DIR` rather than `xcode-select` outlived the move — every script
+# here honours the variable, and naming the Xcode beats inheriting whatever
+# `xcode-select` points at. See docs/operations/mac-mini-runner-plan-2026-09-11.md.
 on:
   push:
     tags:
@@ -41,7 +53,37 @@ jobs:
   testflight:
     # Only trusted release triggers use the personal Mac.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, macOS, ARM64, telar-nightly]
+    # NEEDS macOS, NOT THIS PARTICULAR MAC — moved to hosted 2026-09-20 with
+    # the rest of CI. Nothing about credentials had to change: the certificate
+    # comes from repository secrets into a temporary per-run keychain, which is
+    # already the hosted-runner pattern.
+    #
+    # THIS COMMENT SAID "signing here is cloud-managed (no .p12 to import)"
+    # AND THAT WAS WRONG — the step below imports IOS_DIST_CERT_P12_BASE64, and
+    # cloud-managed signatures are exactly what Apple's validator refuses
+    # (90035). I wrote it from the old file header, which said the same thing
+    # and has since been corrected above. It is named here rather than quietly
+    # replaced because it was reasoned from twice: it is why the hosted probe
+    # archived WITHOUT signing rather than proving the real signing path, so
+    # the iOS signing route on a hosted runner is still unproven. #757.
+    #
+    # ⚠ KNOWN RED ON ARRIVAL, and moving it is not what broke it. Two separate
+    # faults, both pre-dating the move:
+    #
+    #   #757 — `exportArchive Copy failed`. The archive succeeds and the
+    #          EXPORT fails. Four consecutive failures ON THE MAC from
+    #          2026-09-19T03:45Z; last green 2026-09-18T21:35Z. Nobody was
+    #          told, because nothing notified on failure.
+    #   #758 — the ARCHIVE fails on a hosted runner: SessionView.swift's body
+    #          exceeds the Swift type checker's time budget. A THRESHOLD, not
+    #          a clean break — the maintainer's Mac finishes inside it and a
+    #          hosted runner does not, so a re-run may pass. Do not read a
+    #          green retry as a fix.
+    #
+    # So this was already failing before it moved, and it lost nothing that
+    # worked. #758 is what gets it BUILDING here; #757 is what gets it
+    # PUBLISHING. Fixing either alone does not produce a nightly.
+    runs-on: macos-latest
     timeout-minutes: 45
     env:
       # THE ONE XCODE ON THIS MAC, and it must be a release build: App Store

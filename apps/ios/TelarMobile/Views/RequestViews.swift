@@ -95,10 +95,10 @@ struct RequestCardView: View {
     private func header(_ title: String, icon: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.statusAmber)
             Text(title)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.text)
                 .lineLimit(2)
         }
@@ -122,10 +122,10 @@ struct RequestCardView: View {
                     Task { await store.resolve(request, decision: .cancel) }
                 }
             } label: {
+                // The menu's 28pt square scales with its glyph (#674).
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 12))
                     .foregroundStyle(Theme.textMuted)
-                    .frame(width: 28, height: 28)
+                    .scaledGlyphBox(28, glyph: 12)
                     .contentShape(Rectangle())
             }
             Spacer(minLength: 0)
@@ -157,10 +157,10 @@ struct GhostButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(tint)
                 .padding(.horizontal, 10)
-                .frame(height: 30)
+                .scaledHeight(30, relativeTo: .footnote)
                 .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())
@@ -202,7 +202,7 @@ struct SecretAccessCardView: View {
                             .foregroundStyle(Theme.textMuted)
                         if chosen == candidate.id {
                             Image(systemName: "checkmark")
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(.system(Theme.caption, weight: .semibold))
                                 .foregroundStyle(Theme.accent)
                         }
                     }
@@ -312,7 +312,7 @@ struct UserInputFormView: View {
                             Spacer(minLength: 0)
                             if picked {
                                 Image(systemName: "checkmark")
-                                    .font(.system(size: 11, weight: .semibold))
+                                    .font(.system(Theme.caption, weight: .semibold))
                                     .foregroundStyle(Theme.accent)
                             }
                         }

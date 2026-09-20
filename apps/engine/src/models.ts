@@ -28,9 +28,10 @@ import { promisify } from "node:util";
  * SPAWNING A SUBPROCESS TO FILL A MENU IS EXPENSIVE, so both reads are cached,
  * and the cache is what makes them acceptable to call from a popover.
  */
-import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
-import { requireCli } from "./cli-resolution";
+import type { AgentModelCatalogue, Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
+import { refuseCliSpawnUnderTest, requireCli } from "./cli-resolution";
 import { CodexAppServer, resolveCodexBinary } from "./codex/app-server";
+import { defaultAgentModel, readAgentCatalogue } from "./agent/catalogue";
 
 /**
  * How long to wait for a provider to describe itself.
@@ -152,8 +153,19 @@ function defaultModelListExecutable(): string | undefined {
  * abort in `finally` is what stops the process; without it the parked generator
  * would keep it alive for the life of the daemon.
  */
+/**
+ * The SDK, behind the test gate — issue #532. Named and exported rather than
+ * inlined as a default argument so the gate is something a test can hold this
+ * module to directly, instead of inferring it from an empty catalogue that a
+ * machine with no install produces too.
+ */
+export async function loadClaudeModelSdk(): Promise<ClaudeModelSdk> {
+  refuseCliSpawnUnderTest("the Claude Agent SDK model probe");
+  return (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeModelSdk;
+}
+
 export async function readClaudeModels(
-  loadSdk: () => Promise<ClaudeModelSdk> = () => import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<ClaudeModelSdk>,
+  loadSdk: () => Promise<ClaudeModelSdk> = loadClaudeModelSdk,
   timeoutMs = MODEL_LIST_TIMEOUT_MS,
   resolveExecutable: () => string | undefined = defaultModelListExecutable,
 ): Promise<{ models: ProviderModel[]; message?: string }> {
@@ -185,6 +197,14 @@ export async function readClaudeModels(
         cwd: process.cwd(),
         permissionMode: "default",
         abortController: controller,
+        /**
+         * NO TRANSCRIPT FOR A HANDSHAKE — issue #532. A query that never sends
+         * a message still opens a session, and an opened session is ~250 KB
+         * written under `~/.claude/projects/<slug-of-cwd>/` and kept forever.
+         * This probe exists to fill a menu; there is nothing here anybody would
+         * ever resume.
+         */
+        persistSession: false,
         ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       },
     });
@@ -295,13 +315,54 @@ export async function readOpenCodeModels(): Promise<{ models: ProviderModel[]; m
   } catch (error) { return { models: [], message: error instanceof Error ? error.message : "OpenCode did not answer models" }; }
 }
 
+/**
+ * WHAT THE BUILT-IN AGENT MAY RUN — OpenCode Go's public model list, described
+ * (#526, rehoused by #531, described by #551).
+ *
+ * NOT PART OF `readModelCatalogue`. That function is keyed by
+ * `ProviderDriverKind` and answers "what can this SESSION run"; the Agent is
+ * not a session and `telar` is no longer a driver kind.
+ *
+ * ── THE MERGE IS `agent/catalogue.ts`'S, AND ALL OF IT IS ───────────────────
+ * This is the thin part: it asks for the catalogue and puts the older
+ * `ProviderModel` fields back on each row for the clients that still read them
+ * (see `AgentModel`'s note on why the tail exists). Which ids exist, what they
+ * are called, which endpoint each answers on and whether this build can run it
+ * are decided there, once, so the phone and the desktop cannot disagree.
+ */
+export async function readAgentModels(agentDir?: string): Promise<AgentModelCatalogue> {
+  const catalogue = await readAgentCatalogue(agentDir ? { agentDir } : {});
+  const fallback = defaultAgentModel(catalogue.models);
+  return {
+    ...catalogue,
+    models: catalogue.models.map((model) => ({
+      ...model,
+      // THE COMPATIBILITY TAIL. `label` is the described name so an old client
+      // shows "Kimi K3" rather than the id it used to show; the rest are the
+      // shapes a provider catalogue carries and the Agent has no equivalent of.
+      label: model.name,
+      efforts: [],
+      isDefault: model.id === fallback,
+      hidden: false,
+      fastMode: false,
+      hiddenByUser: false,
+      source: "provider" as const,
+    })),
+  };
+}
+
 export async function readModelCatalogue(
   driver: ProviderDriverKind,
   now: () => number,
   readCodex: typeof readCodexModels = readCodexModels,
   readClaude: typeof readClaudeModels = readClaudeModels,
 ): Promise<ModelCatalogue> {
-  const answer = driver === "claude" ? await readClaude() : driver === "opencode" ? await readOpenCodeModels() : await readCodex();
+  const answer =
+    driver === "claude"
+      ? await readClaude()
+      : driver === "opencode"
+        ? await readOpenCodeModels()
+        : await readCodex();
   /**
    * A PROVIDER THAT COULD NOT BE ASKED FALLS BACK TO NOTHING — for both, now.
    *

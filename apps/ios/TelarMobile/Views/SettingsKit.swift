@@ -22,7 +22,7 @@ struct SettingsSectionLabel: View {
 
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(Theme.footnote, weight: .semibold))
             .kerning(0.6)
             .foregroundStyle(Theme.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -38,7 +38,7 @@ struct SettingsFootnote: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 13))
+            .font(.system(Theme.footnote))
             .foregroundStyle(Theme.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
@@ -63,18 +63,19 @@ struct CardRow<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            // The row's 27pt square scales with its glyph (#674), so the icon
+            // column keeps pace with the title beside it.
             Image(systemName: icon)
-                .font(.system(size: 17))
                 .foregroundStyle(iconColor)
-                .frame(width: 27, height: 27)
+                .scaledGlyphBox(27, glyph: 17)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(.callout, weight: .semibold))
                     .foregroundStyle(titleColor)
                     .lineLimit(1)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .lineLimit(1)
                 }
@@ -99,7 +100,7 @@ struct CardNavRow: View {
         Button(action: action) {
             CardRow(icon: icon, title: title, subtitle: subtitle) {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(Theme.footnote, weight: .medium))
                     .foregroundStyle(Theme.chevron)
             }
         }
@@ -114,18 +115,37 @@ struct CardField: View {
     @Binding var text: String
     var mono = false
     var keyboard: UIKeyboardType = .default
+    /// A SECRET IS TYPED INTO THE SAME FIELD, DOTTED. An API key pasted on a
+    /// phone somebody is holding in a room is the case this exists for, and a
+    /// second near-identical field type beside this one would drift from it.
+    /// The field never DISPLAYS a stored secret either way — that is the
+    /// caller's contract, and every caller here shows a placeholder instead.
+    var secure = false
+    /// A LIST, NOT A VALUE — the field grows with what is typed into it and
+    /// keeps its newlines, which is how a one-term-per-line box is written
+    /// (#581). The same field rather than a second one beside it, for the
+    /// reason `secure` gives: two near-identical field types drift.
+    var multiline = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
-            TextField(placeholder, text: $text)
-                .font(mono ? .system(size: 15, design: .monospaced) : .system(size: 16))
-                .foregroundStyle(Theme.text)
-                .keyboardType(keyboard)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+            Group {
+                if secure {
+                    SecureField(placeholder, text: $text)
+                } else if multiline {
+                    TextField(placeholder, text: $text, axis: .vertical).lineLimit(4...10)
+                } else {
+                    TextField(placeholder, text: $text)
+                }
+            }
+            .font(mono ? .system(Theme.subhead, design: .monospaced) : .system(.callout))
+            .foregroundStyle(Theme.text)
+            .keyboardType(keyboard)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -147,12 +167,12 @@ struct PrimaryActionButton: View {
                     ProgressView().tint(Theme.primaryGlyph)
                 } else {
                     Text(title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(enabled ? Theme.primaryGlyph : Theme.textMuted)
                 }
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 50)
+            .scaledHeight(50, relativeTo: .callout)
             .background(enabled ? AnyShapeStyle(Theme.primaryFill) : AnyShapeStyle(Theme.subtleStrong))
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
@@ -170,18 +190,18 @@ struct StatusBanner: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
+            // The same 27pt square as the row above, scaling the same way.
             Image(systemName: icon)
-                .font(.system(size: 17))
                 .foregroundStyle(color)
-                .frame(width: 27, height: 27)
+                .scaledGlyphBox(27, glyph: 17)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(Theme.subhead, weight: .medium))
                     .foregroundStyle(Theme.text)
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail {
                     Text(detail)
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }

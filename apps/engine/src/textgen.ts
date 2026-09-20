@@ -20,7 +20,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { defaultInstanceIdForDriver, type TextGenPolicy } from "@telar/engine-client";
+import { defaultInstanceIdForDriver, workspacePath, type SessionWorkspace, type TextGenPolicy } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
 
 export type TextGenEffort = "low" | "medium" | "high";
@@ -53,6 +53,29 @@ export type TextGenDriverInput = {
  * uses 180 s for the same call; titles do not need the margin.
  */
 const DEFAULT_TIMEOUT_MS = 120_000;
+
+/**
+ * THE KILL SWITCH — issue #532. `TELAR_TEXTGEN=off` means no generated title,
+ * no generated branch name, and no structured one-shot, whatever the stored
+ * preference says.
+ *
+ * READ HERE RATHER THAN IN `getTextGenPolicy`, deliberately: the environment is
+ * saying what this PROCESS may spend, not what the person prefers. Folding it
+ * into the stored policy would make the settings pane report titles as switched
+ * off, and a reader who then switched them "on" would change nothing. So the
+ * preference survives untouched and the two callers that can spend a model call
+ * consult this on the way past.
+ */
+export function textGenDisabledByEnv(): boolean {
+  return (process.env.TELAR_TEXTGEN ?? "").trim().toLowerCase() === "off";
+}
+
+/** The policy as this process may act on it. Both flags, because with titles
+ *  off the branch rename is unreachable anyway and saying so is clearer than
+ *  leaving a true beside a false that governs it. */
+function effectiveTextGenPolicy(policy: TextGenPolicy): TextGenPolicy {
+  return textGenDisabledByEnv() ? { ...policy, titles: false, renameBranches: false } : policy;
+}
 
 /** The one shape both generations share: a single required string field. */
 function oneStringSchema(key: string): object {
@@ -143,11 +166,22 @@ async function runStructured(input: TextGenDriverInput, prompt: string, schema: 
 /** `claude -p` with `--json-schema` prints one JSON envelope whose
  *  `structured_output` is the schema-shaped answer. Verified against the
  *  installed CLI; the flag set is t3 code's, minus its permission bypass —
- *  a schema-bound print run needs no tools, so denied-by-default is right. */
+ *  a schema-bound print run needs no tools, so denied-by-default is right.
+ *
+ *  `--no-session-persistence` IS NOT OPTIONAL HERE — issue #532. Claude Code
+ *  writes a full transcript for every session including a print-mode one-liner,
+ *  and it attaches environment, skill listing and prompt snapshots to each, so
+ *  one title cost ~250 KB under `~/.claude/projects/<slug-of-cwd>/` and the
+ *  dogfood machine had accumulated 8.2 GB of them. The flag (print mode only,
+ *  verified against 2.1.270) means the run is never saved and cannot be
+ *  resumed, which is exactly what a title call wants. A CLI too old to know the
+ *  flag fails the run, and a failed run keeps the placeholder — the same
+ *  best-effort contract as every other failure in this file. */
 async function runClaude(input: TextGenDriverInput, prompt: string, schema: object): Promise<Record<string, unknown> | undefined> {
   const executable = requireCli("claude", { ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}) });
   const args = [
     "-p",
+    "--no-session-persistence",
     "--output-format",
     "json",
     "--json-schema",
@@ -308,10 +342,15 @@ export async function runStructuredForPolicy(
   store: StructuredPolicyStore,
   input: { prompt: string; schema: object; model?: string; effort?: TextGenEffort; signal?: AbortSignal },
 ): Promise<Record<string, unknown> | undefined> {
+  // The environment's switch first: a process told not to generate does not
+  // generate, whatever the stored preference or the caller's schema says.
+  if (textGenDisabledByEnv()) return undefined;
   let policy: TextGenPolicy;
   let instance: ReturnType<StructuredPolicyStore["resolveProviderInstance"]>;
   try {
     policy = store.getTextGenPolicy();
+    // OpenCode cannot run a one-shot schema-bound prompt the way this helper
+    // needs: there is no `-p` equivalent.
     if (policy.driver === "opencode") return undefined;
     instance = store.resolveProviderInstance(defaultInstanceIdForDriver(policy.driver), policy.driver);
   } catch {
@@ -340,7 +379,7 @@ export async function runStructuredForPolicy(
  *  is testable without a daemon or a real harness. */
 export type RetitleStore = {
   getTextGenPolicy(): TextGenPolicy;
-  getSession(sessionId: string): { title: string; state: string; workspace: { path: string } };
+  getSession(sessionId: string): { title: string; state: string; workspace: SessionWorkspace };
   resolveProviderInstance(
     instanceId: string,
     driver: "claude" | "codex",
@@ -365,7 +404,7 @@ export async function maybeRetitleSession(
   /** The harness call, injectable so the flow is testable without one. */
   generate: typeof generateSessionTitle = generateSessionTitle,
 ): Promise<void> {
-  const policy = store.getTextGenPolicy();
+  const policy = effectiveTextGenPolicy(store.getTextGenPolicy());
   if (!policy.titles || policy.driver === "opencode") return;
   let session: ReturnType<RetitleStore["getSession"]>;
   try {
@@ -374,6 +413,15 @@ export async function maybeRetitleSession(
     return;
   }
   if (session.state !== "active" || !titleIsSeed(session.title, firstMessage)) return;
+  /**
+   * A SESSION WITH NO DIRECTORY KEEPS ITS PLACEHOLDER. The title is written by
+   * spawning a CLI, and a CLI has to be spawned somewhere; there is no honest
+   * answer for a `none` workspace, and the engine's own cwd would start a
+   * harness inside Telar's application-support folder. Same shape as every
+   * other early return here — the seed title stays, and nothing is surfaced.
+   */
+  const cwd = workspacePath(session.workspace);
+  if (cwd === undefined) return;
   const instance = store.resolveProviderInstance(defaultInstanceIdForDriver(policy.driver), policy.driver);
   if (!instance.enabled) return;
   const env: Record<string, string> = {};
@@ -382,7 +430,7 @@ export async function maybeRetitleSession(
     driver: policy.driver,
     ...(instance.binaryPath ? { binaryPath: instance.binaryPath } : {}),
     env,
-    cwd: session.workspace.path,
+    cwd,
     ...(policy.model ? { model: policy.model } : {}),
     message: firstMessage,
   });

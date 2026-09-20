@@ -24,7 +24,6 @@ import {
   issuePanelTab,
   journalWrites,
   latestBrowserState,
-  openForgeNumbers,
   panelTabForPath,
   pdfPanelPath,
   pdfPanelTab,
@@ -202,12 +201,17 @@ describe("issue and pull-request tabs", () => {
     expect(isPanelTab("pull:1.5")).toBe(false);
   });
 
-  test("the open set is read per kind, so a list marks its own rows only", () => {
-    // An issue #12 open as a tab must not put the "already open" mark on pull
-    // request #12 in the other list.
-    const tabs = (["issues", "issue:82", "issue:9", "pull:12", "file:a.ts"] as const).map((kind) => ({ id: kind, kind, params: {} }));
-    expect(openForgeNumbers(tabs, "issue")).toEqual([82, 9]);
-    expect(openForgeNumbers(tabs, "pull")).toEqual([12]);
+  test("a detail id is a REQUEST and never a tab of its own (#693)", () => {
+    // `issue:675` still NAMES an issue — a conversation chip, a GitHub link and
+    // a layout saved before the change all say it that way — but it resolves to
+    // the LIST surface, which opens the number inside itself. The same turn
+    // `file:` took when files moved into the Editor.
+    expect(migratePanelTab(issuePanelTab(675))).toBe("issues");
+    expect(migratePanelTab(pullPanelTab(666))).toBe("pulls");
+    // A malformed one is not a request for anything, so it is left alone and
+    // the validator drops it, exactly as before.
+    expect(migratePanelTab("issue:12abc")).toBe("issue:12abc");
+    expect(isPanelTab("issue:12abc")).toBe(false);
   });
 });
 

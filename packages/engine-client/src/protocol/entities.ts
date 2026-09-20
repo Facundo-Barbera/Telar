@@ -344,6 +344,30 @@ export type LatexPackagesAnswer = z.infer<typeof LatexPackagesAnswer>;
 export const LatexJob = DataScienceJob;
 export type LatexJob = z.infer<typeof LatexJob>;
 
+/**
+ * WHETHER A PROJECT'S FILES CAN BE READ RIGHT NOW — issue #534.
+ *
+ * DERIVED, NEVER STORED, like `branch` and `icon`: it is a fact about a cable,
+ * and a registry that remembered it would be wrong the first time somebody
+ * unplugged a drive without asking Telar. The engine re-probes on every listing
+ * — three `stat`s — so every surface reads one answer rather than asking the
+ * filesystem its own version of the question.
+ *
+ * THE TWO FAILURES ARE DIFFERENT FAILURES, and keeping them apart is the point.
+ * `unmounted` is the drive being away, which is recoverable: plug it in and the
+ * project comes back with its id, its sessions and its settings. `missing` is
+ * the folder being gone from a disk that is present, which is not. A surface
+ * that knew only "cannot read it" would have to tell somebody to re-register a
+ * project whose only problem is a cable — and re-registering is exactly what
+ * mints a new id and strands their sessions.
+ *
+ * ABSENT ON A REMOVED PROJECT. Its checkout is not polled at all (see
+ * `listProjects`), so there is no probe behind the field and a value here would
+ * be a claim nobody checked.
+ */
+export const ProjectAvailability = z.enum(["available", "unmounted", "missing"]);
+export type ProjectAvailability = z.infer<typeof ProjectAvailability>;
+
 export const Project = z.object({
   id: Id,
   environmentId: EnvironmentId,
@@ -474,6 +498,46 @@ export const Project = z.object({
    * to name it — its own settings page, offering to put it back — asks.
    */
   removedAt: Timestamp.optional(),
+  /**
+   * WHICH REMOVABLE DISK THIS CHECKOUT LIVES ON, when it lives on one.
+   *
+   * STORED, AND THE ONE THING HERE THAT SURVIVES AN UNPLUG. Every other answer
+   * about an external drive is re-derived from the filesystem; this is the
+   * identity that outlives it, and `uuid` is the field that does the work.
+   * macOS mounts a volume whose name is already taken at `<name> 1`, so the
+   * PATH changes on an ordinary replug — a registry that recognised the drive
+   * by `mount` would mint a new project for the same disk and strand every
+   * session's `projectId`, every MCP server scoped to it and every browser
+   * profile keyed to it. `mount` is kept as the last place it was seen, which
+   * is a hint; the uuid is what a remount is matched on.
+   *
+   * ABSENT FOR A PROJECT ON THIS MACHINE'S OWN DISK, which is every project
+   * registered before this existed, and they behave exactly as they always
+   * did. Absent too for a removable disk with no readable uuid — a network
+   * share, a filesystem `diskutil` has no `VolumeUUID` for — because without a
+   * uuid there is nothing to recover a remount against, and half of this
+   * feature is worse than today's behaviour.
+   */
+  volume: z
+    .object({
+      mount: z.string().min(1),
+      uuid: z.string().min(1),
+    })
+    .optional(),
+  /**
+   * WHETHER ITS FILES CAN BE READ RIGHT NOW — see `ProjectAvailability`.
+   *
+   * DERIVED ON LIST, like `branch`, `icon` and `remoteUrl` above, and for the
+   * sharpest version of their reason: a drive is unplugged by a hand, without
+   * telling the engine anything.
+   *
+   * OPTIONAL ON THE SHAPE, PRESENT ON EVERY LISTED PROJECT. It is absent on a
+   * removed one (nothing probes a put-away checkout) and on a record read
+   * straight off disk, so a client treats absence as "nobody has said" rather
+   * than as a fourth state — which is what lets a cockpit that predates this
+   * field go on working against an engine that has it, and the other way round.
+   */
+  availability: ProjectAvailability.optional(),
   /** Opt-in data-science tooling. Stored, not derived. See `DataScienceConfig`. */
   dataScience: DataScienceConfig.optional(),
   /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */
@@ -501,8 +565,7 @@ export type SessionState = z.infer<typeof SessionState>;
  * The `sessions` toolkit lets one session create another. It does NOT create a
  * parent, a child, a depth or an attachment: the two are peers the moment the
  * second one exists, and nothing here records WHICH session made the call. What
- * it records is the same thing `SpoolItem.provenance` records about a filed
- * task — that an agent asked, not a hand — and it exists for exactly one
+ * it records is that an agent asked, not a hand — and it exists for exactly one
  * mechanical reason: with no depth rule, a plain COUNT of live agent-made
  * sessions is the only thing standing between a loop and forty worktrees.
  *
@@ -543,8 +606,21 @@ export type SessionActivity = z.infer<typeof SessionActivity>;
 
 /**
  * Where a session's work lands on disk. `worktree` sessions get a checkout of
- * their own, created through `packages/core/src/vcs.ts`, so N detached sessions
+ * their own, created through the engine's `vcs.ts`, so N detached sessions
  * on one project do not collide.
+ *
+ * `none` IS A THIRD ANSWER AND NOT AN EMPTY ONE (#526). The Main conversation
+ * has no project, no checkout and no branch: it inspects and delegates, and
+ * repository work belongs to the sessions it delegates to. Before this, every
+ * session had a `path` — so "no working directory" could only be spelled as a
+ * path that happens to be wrong, which is exactly the shape that makes a
+ * provider spawn somewhere nobody chose.
+ *
+ * IT CARRIES NO `path` FIELD AT ALL, deliberately. An optional-and-absent path
+ * reads identically to a path a caller forgot to set, and every consumer would
+ * have to remember which. Readers narrow on `mode` — the discriminant the other
+ * two variants already made them narrow on — and a reader that needs a real
+ * directory refuses rather than inventing one.
  */
 export const SessionWorkspace = z.discriminatedUnion("mode", [
   z.object({
@@ -570,8 +646,64 @@ export const SessionWorkspace = z.discriminatedUnion("mode", [
     /** The commit the worktree was cut from, so a stale one is detectable. */
     baseRef: z.string().min(1).optional(),
   }),
+  /** No directory anywhere — see the note above. Nothing rides along: there is
+   *  no branch to name and no base to diff against. */
+  z.object({ mode: z.literal("none") }),
 ]);
 export type SessionWorkspace = z.infer<typeof SessionWorkspace>;
+
+/**
+ * The workspace's directory, or nothing — the one narrowing every reader that
+ * only wants the path should use.
+ *
+ * `undefined` IS THE ANSWER, NOT A FAILURE. A project-less session genuinely has
+ * no directory, and a reader that treated absence as an error would turn a valid
+ * session into a bug report (the rule `Session.projectId` already states).
+ */
+export function workspacePath(workspace: SessionWorkspace): string | undefined {
+  return workspace.mode === "none" ? undefined : workspace.path;
+}
+
+/** The commit a session is measured against, where it has one. Absent for a
+ *  `none` workspace and for a `local` session created before `baseRef`. */
+export function workspaceBaseRef(workspace: SessionWorkspace): string | undefined {
+  return workspace.mode === "none" ? undefined : workspace.baseRef;
+}
+
+/**
+ * THE CHECKOUT IS NOT THERE YET, OR NEVER WILL BE — issue #496.
+ *
+ * `git worktree add` on a large checkout is seconds, and it used to run
+ * synchronously inside `POST /v2/sessions`, which froze the daemon's event loop
+ * for the duration: every cockpit's poll and every agent's stream stopped
+ * together while one person opened one conversation. It runs in the background
+ * now, so the route answers immediately and the row says what is still true —
+ * that its workspace is being made.
+ *
+ * ABSENT MEANS READY, and that is the state almost every row is in: a `local`
+ * session never has one, and a worktree session carries it for the seconds
+ * between its creation and its cut. Readers must treat absence as ready rather
+ * than as unknown — a client that waited for a positive "ready" would hang on
+ * every session written before this field existed.
+ *
+ * NOT A `SessionState`. That enum is the CONVERSATION's lifecycle — active or
+ * archived, a thing a person decides — and this is a fact about a directory.
+ * Folding them together would have made `state !== "active"` (which the engine
+ * asks in a dozen places, and the phone in several) quietly mean "or still being
+ * prepared", and a preparing session would have been treated as one that is
+ * over.
+ *
+ * `error` IS GIT'S OWN STDERR, not a rewrite of it. A cut fails for reasons a
+ * sentence of ours would flatten — a branch that exists, a locked index, a full
+ * disk — and the person who can act on it is the one reading the row.
+ */
+export const SessionPreparation = z.object({
+  state: z.enum(["preparing", "failed"]),
+  /** Only ever on `failed`, and only what git said. */
+  error: z.string().optional(),
+  at: Timestamp,
+});
+export type SessionPreparation = z.infer<typeof SessionPreparation>;
 
 /**
  * WHY A ROW IS ON THE SHELF, WHEN THE ENGINE PUT IT THERE — issue #378.
@@ -602,26 +734,74 @@ export const SessionSettledBy = z.object({
 });
 export type SessionSettledBy = z.infer<typeof SessionSettledBy>;
 
+/**
+ * ONE OF THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, as `/resume`'s picker has
+ * to show it (#616).
+ *
+ * EVERY FIELD HERE EXISTS TO TELL TWO CONVERSATIONS APART, and the shape is
+ * what it is because the obvious design was measured and fails. The CLI's own
+ * titles do NOT distinguish conversations: six identically-titled sessions were
+ * produced deliberately in one directory and the CLI itself refused to resolve
+ * between them — `--resume "PINEAPPLE-7742" matches 6 sessions`. A picker
+ * listing titles would reproduce that failure in Telar, where the person has
+ * even less context to guess with.
+ *
+ * So `title` is never the only thing a row can show. `firstPrompt` says what
+ * the conversation was ABOUT in the person's own opening words,
+ * `lastActivityAt` when they were last in it, `cwd` which project it belongs
+ * to, and `bytes` how much of it there is — four independent handles, of which
+ * at least one differs between any two real conversations.
+ */
+export const ClaudeConversation = z.object({
+  sessionId: z.string().min(1),
+  /** Custom title, else the CLI's auto-title, else the first prompt. Not, on
+   *  its own, an identifier — see above. */
+  title: z.string(),
+  /** The first real user prompt, when the CLI extracted one. */
+  firstPrompt: z.string().optional(),
+  /** Set only when the person renamed it themselves, via `/rename`. Worth
+   *  distinguishing: a name somebody CHOSE is trustworthy in a way a generated
+   *  one is not. */
+  customTitle: z.string().optional(),
+  lastActivityAt: Timestamp,
+  createdAt: Timestamp.optional(),
+  /** The working directory the conversation happened in. */
+  cwd: z.string().optional(),
+  gitBranch: z.string().optional(),
+  /** Transcript size on disk. The rough measure of how much conversation there
+   *  is, and the one that tells a long thread from a one-line question. */
+  bytes: z.number().int().nonnegative().optional(),
+});
+export type ClaudeConversation = z.infer<typeof ClaudeConversation>;
+
+/**
+ * THE BOUNDS ON A REPORT WINDOW — `Session.reportWindowMinutes`, issue #723.
+ *
+ * A MINUTE IS THE FLOOR rather than a second, because a window measured in
+ * seconds is not a cadence: it delays each report by less than the turn it
+ * would open and gives a reader the same interleaving it was set to fix. A day
+ * is the ceiling on the same argument from the other end — past that, "held"
+ * and "lost" are the same experience, and the mailbox cap (`MAX_COHORT_ENTRIES`)
+ * would be doing the deciding instead of the window.
+ */
+export const MIN_REPORT_WINDOW_MINUTES = 1;
+export const MAX_REPORT_WINDOW_MINUTES = 24 * 60;
+
 export const Session = z.object({
   id: Id,
   /**
    * WHICH PROJECT THIS SESSION BELONGS TO — and OPTIONAL, which is new and is
    * the whole of what makes a project-less session expressible.
    *
-   * Every ordinary session has one. The exception is the Spool's master chat:
-   * `SPEC-organization-workspace` CAP-1 makes it "one project-less
-   * conversation — the module's front door", and the reason is structural
-   * rather than cosmetic. The master answers "where did I stop" ACROSS
-   * projects, and its per-project experts are each scoped to their own — so a
-   * master that carried a project would be scoped to the one thing it must not
-   * be scoped to.
+   * Every ordinary session has one. A session that answers across projects
+   * must not carry one, because carrying a project would scope it to the one
+   * thing it must not be scoped to.
    *
    * ABSENT IS NOT "UNKNOWN". It is a positive statement that this session has
-   * no project, and readers must treat it as one: the spool toolkit reads it as
-   * "every project's items", MCP resolution reads it as "the environment's
-   * global servers and no project's", and a project-scoped list simply does not
-   * contain it. A reader that treats absence as an error turns the front door
-   * into a bug report.
+   * no project, and readers must treat it as one: MCP resolution reads it as
+   * "the environment's global servers and no project's", and a project-scoped
+   * list simply does not contain it. A reader that treats absence as an error
+   * turns a valid session into a bug report.
    */
   projectId: Id.optional(),
   environmentId: EnvironmentId,
@@ -654,6 +834,8 @@ export const Session = z.object({
   model: ModelSelection.optional(),
 
   workspace: SessionWorkspace,
+  /** Absent means the workspace is ready. See `SessionPreparation`. */
+  preparation: SessionPreparation.optional(),
   envMode: EnvMode,
   /** Browser-only conversation. Workspace creation is deferred until first send. */
   draft: z.object({ baseRef: z.string().optional(), branchName: z.string().optional(), branchSlug: z.string().optional() }).optional(),
@@ -836,6 +1018,54 @@ export const Session = z.object({
    * It never holds or replays an old backlog. */
   agentMessagesBlocked: z.boolean().optional(),
 
+  /**
+   * WHEN THE PERSON PRESSED STOP — the companion stamp to the latch above, set
+   * and cleared with it.
+   *
+   * It exists because one sender is EXEMPT from the latch and still has to be
+   * told about it: the built-in Agent, which a human is driving turn by turn
+   * (#539). Its `sessions_send` goes through, and its tool answer says the
+   * session was stopped by the person and when — a sentence that needs a time,
+   * and `updatedAt` is not one (any later touch moves it). A peer session's
+   * send is still refused outright, so only the Agent ever reads this.
+   *
+   * ABSENT ON A RECORD LATCHED BEFORE THIS FIELD EXISTED, which is why every
+   * reader treats the time as optional and says "stopped by the person" without
+   * a time rather than inventing one.
+   */
+  agentMessagesBlockedAt: Timestamp.optional(),
+
+  /**
+   * HOW LONG ROUTINE PEER REPORTS ARE HELD BEFORE ONE MERGED DELIVERY — the
+   * report cadence, issue #723.
+   *
+   * ABSENT MEANS TODAY'S BEHAVIOUR, which is the only safe default: a routine
+   * report reaching an idle session is delivered on arrival (#631 part 2, so it
+   * is not silently lost). That is right for one sender and unreadable for five
+   * — a coordinator with five workers is woken five times, and the interleaving
+   * rather than the per-message cost is what made hand-run orchestration
+   * illegible. With a window set, those arrivals are HELD in the session's
+   * mailbox instead and the window's close delivers them as ONE turn.
+   *
+   * IT BELONGS TO THE RECIPIENT, and that is the whole reason it lives on
+   * `Session` rather than on an assignment or a subscription. The mailbox is
+   * keyed per recipient and so is the cohort merge, so "one merged notice per
+   * window" is only well-defined when one window governs one box. A
+   * sender-owned interval would put five clocks on one mailbox, which is the
+   * per-event problem with extra steps.
+   *
+   * ONLY ROUTINE TRAFFIC IS HELD: a `report`, and a `result` nobody is awaiting
+   * — exactly the set that is `passive` today. A `task` is work arriving, a
+   * `blocker` is a peer asking for intervention now, and an awaited `result` is
+   * the event a coordinator called `sessions_subscribe` to be woken for. A
+   * window that delayed any of those three would be flattening the distinction
+   * #199 exists to keep.
+   *
+   * MINUTES, because it is a cadence a person states out loud ("report every
+   * 25 minutes") and no reader of this field wants to count zeros.
+   */
+  reportWindowMinutes: z.number().int().min(MIN_REPORT_WINDOW_MINUTES).max(MAX_REPORT_WINDOW_MINUTES).optional(),
+
   /** Legacy pause metadata, accepted when reading older state. Startup and
    * session Stop settle its held backlog and remove the latch without replay.
    * New clients use session Stop; no command creates a pause latch. */
@@ -887,8 +1117,13 @@ export const LiveSessionRow = Session.omit({
   resumeCursor: true,
   resumeAfterRateLimit: true,
   agentMessagesBlocked: true,
+  agentMessagesBlockedAt: true,
   paused: true,
   unsettledAssignments: true,
+  /** A delivery cadence, which no row renders — it decides WHEN a session is
+   *  told something, not what a reader of a list sees. Same argument as the
+   *  latches above; a surface that configures it reads the whole record. */
+  reportWindowMinutes: true,
 });
 export type LiveSessionRow = z.infer<typeof LiveSessionRow>;
 
@@ -1027,6 +1262,92 @@ export type SessionDefaults = z.infer<typeof SessionDefaults>;
  *  that never opens the settings page behaves exactly as it always has. */
 export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
 
+/**
+ * THE BUILT-IN AGENT, AND EVERYTHING THIS MACHINE REMEMBERS ABOUT IT (#531).
+ *
+ * WHAT IT REPLACED, AND WHY THE SHAPE CHANGED. `MainSession` DESIGNATED a
+ * conversation: it named a session id, and the coordinator was an ordinary
+ * session wearing a briefing. The Agent is not a session at all — it has its
+ * own identity, its own history and its own lifecycle, and Telar sessions are
+ * resources it operates on through tools. So the id this document carries is a
+ * THREAD id, and nothing in the rail has to exist for it to be real.
+ *
+ * ENVIRONMENT-SCOPED, like the documents above it: remote web, the desktop
+ * shell and a paired phone must agree about whether the Agent exists, and a
+ * per-browser copy would put an entry in one client's rail and not another's.
+ */
+export const AgentSettings = z.object({
+  /** Off out of the box. A user who never opens the setting sees exactly the
+   *  Telar they had: no entry above the rail, no thread, no document. */
+  enabled: z.boolean(),
+  /**
+   * THE CONVERSATION, as LangGraph's `thread_id` and as OpenCode Go's
+   * `x-opencode-session`. One id, one conversation, both sides.
+   *
+   * IT OUTLIVES `enabled`, on the requirement the designation had before it:
+   * switching the Agent off keeps the thread, so switching it
+   * back on resumes the conversation that was already there rather than minting
+   * a second one. Absent means the Agent has never been switched on.
+   */
+  threadId: z.string().min(1).max(120).optional(),
+  /**
+   * WHICH MODEL THE AGENT RUNS, as the provider's own identifier. Absent means
+   * the default in `agent/go.ts` — a real id rather than a concept, spelled
+   * once so this document does not become a second place it lives. Never
+   * interpreted: it is whatever OpenCode Go serves, passed through.
+   */
+  model: z.string().min(1).max(120).optional(),
+  /**
+   * WHICH CONVERSATION THIS IS — bumped by a RESET and by nothing else.
+   *
+   * NARROW ON PURPOSE. Enabling or disabling does not start a new conversation
+   * — only a reset does, so only a reset moves this. It is
+   * what a client compares to know its cached transcript is about a thread that
+   * no longer exists.
+   *
+   * ABSENT MEANS ZERO, so a document written before this field parses rather
+   * than costing the thread.
+   */
+  generation: z.number().int().nonnegative().optional(),
+  /**
+   * HOW HARD THE MODEL SHOULD THINK — `reasoning_effort` on the wire (#539).
+   *
+   * THE NAME IS THE API'S, NOT OURS. OpenCode Go's surface is
+   * OpenAI-compatible, and `reasoning_effort` is that API's spelling for
+   * exactly this: a depth, not a token count. Three values rather than the
+   * seven OpenAI now accepts (`none` … `max`) because three is what a composer
+   * pill can be read at a glance, and because low/medium/high are the ones
+   * every model that supports the parameter at all understands.
+   *
+   * ABSENT MEANS THE PARAMETER IS NOT SENT — the provider's own default, and
+   * what every conversation before this field did. That distinction is the
+   * whole reason it is optional rather than defaulting to "medium": a model
+   * with no reasoning mode must not start receiving a field it will refuse.
+   */
+  effort: z.enum(["low", "medium", "high"]).optional(),
+  /**
+   * WHETHER THE AGENT ASKS BEFORE THE GATED CALLS (#539).
+   *
+   * `ask` is what shipped and stays the default: the approval gate parks an
+   * `interrupt()` and a person answers it. `auto` resolves those interrupts BY
+   * POLICY — the same `resolvedBy: "policy"` a session's runtime mode uses —
+   * so the Agent runs unattended.
+   *
+   * THE GATED LIST DOES NOT WIDEN, and that is the load-bearing half. `auto` is
+   * about who ANSWERS the question, never about which calls raise one:
+   * `needsApproval` is untouched, so the same calls are still gated, still
+   * ledgered and still written to the transcript as decisions. A setting that
+   * quietly enlarged what the Agent may do would be a different feature wearing
+   * this one's name.
+   */
+  access: z.enum(["ask", "auto"]).optional(),
+});
+export type AgentSettings = z.infer<typeof AgentSettings>;
+
+/** Off, and no thread yet — what an install that never opens Settings keeps
+ *  doing, and what an unreadable document falls back to. */
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = { enabled: false };
+
 /** Generous: a rail with a thousand project groups has other problems. The cap
  *  exists so a runaway client cannot grow this document without bound. */
 export const MAX_SIDEBAR_PROJECT_ORDER = 1000;
@@ -1103,21 +1424,34 @@ export const ComputerUseBackend = z.enum(["cua", "sky"]);
 export type ComputerUseBackend = z.infer<typeof ComputerUseBackend>;
 
 /**
- * WHOSE SESSIONS TELAR'S OWN COMPUTER USE IS FOR — Claude and OpenCode.
+ * WHOSE SESSIONS TELAR'S OWN COMPUTER USE IS FOR — every provider Telar drives.
  *
- * NOT CODEX, and that is the whole of the rule. Codex ships its own
- * computer-use provider, so a Codex thread already has a desktop; injecting
- * Telar's would hand that model a second one under a second name, which is the
- * failure the driver used to work around by switching Codex's native feature
- * OFF. Withholding is the simpler and more honest answer: each provider drives
- * the desktop it came with.
+ * CODEX IS HERE TOO, AND #368 SAID IT SHOULD NOT BE. That rule read: Codex
+ * ships its own computer-use provider, so a Codex thread already has a desktop,
+ * and injecting Telar's would hand the model a second one under a second name.
+ * What #521 reported is that the substitute never arrived: a Codex session
+ * asked for the `mac` tools answered that it had not been given them. Whatever
+ * Codex's native feature does on its own, it is not the surface Telar's
+ * sessions are built on — the approval pipeline, the runtime modes, the
+ * settings pane's grant and every tool name in a Telar prompt are this injected
+ * server's. Withholding did not hand Codex an equivalent desktop under another
+ * name; it handed it nothing Telar can see, gate or speak about, while the
+ * Agent tools pane told the reader Codex was covered.
+ *
+ * TWO DESKTOPS STILL CANNOT HAPPEN, and that guard is the reason this is safe
+ * rather than a revert: the Codex driver reads a `mac` server in the claim as
+ * the signal to send `features.computer_use = false` on `thread/start`
+ * (`claimHasComputerUse`). That switch was written for exactly this shape and
+ * outlived the withholding it was paired with. Injected and native are mutually
+ * exclusive per thread, whichever put the server there.
  *
  * ONE FACT, ONE PLACE. The engine folds this into a claim (`withComputerUse`)
  * and the Agent tools pane badges its Computer use row from it, so the pane
  * cannot promise a provider the claim withholds it from — the drift #368 was
- * filed about. A fourth provider is one entry here.
+ * filed about, and #521 is the same drift pointing the other way. A fourth
+ * provider is one entry here.
  */
-export const COMPUTER_USE_DRIVERS: readonly ProviderDriverKind[] = ["claude", "opencode"];
+export const COMPUTER_USE_DRIVERS: readonly ProviderDriverKind[] = ["claude", "codex", "opencode"];
 
 /** Whether Telar supplies this provider's desktop. See `COMPUTER_USE_DRIVERS`. */
 export function driverTakesComputerUse(driver: ProviderDriverKind): boolean {
@@ -1411,12 +1745,125 @@ export const Subscription = z.object({
   events: z.array(WakeKind).min(1),
   /** Removed after it fires once. */
   once: z.boolean().optional(),
+  /**
+   * WHETHER A WAKE MAY INTERRUPT A SUBSCRIBER THAT IS WORKING.
+   *
+   * `settled_only` — the DEFAULT, and the default because interrupting is the
+   * expensive choice. A wake arriving while the subscriber has a live turn is
+   * HELD in that session's notification mailbox and delivered when it next
+   * settles, merged with everything else that arrived meanwhile. A coordinator
+   * with four workers used to take four mid-turn interruptions in the middle of
+   * its own reasoning; it now takes one notification when it comes up for air.
+   *
+   * `always` — steer it in the moment it lands, which is what every wake did
+   * before this existed. For a subscriber whose whole job is to react.
+   *
+   * ABSENT MEANS `settled_only`, so every subscription written before this
+   * field gets the quieter behaviour. The loud one has to be asked for.
+   */
+  completionWake: z.enum(["settled_only", "always"]).optional(),
   createdAt: Timestamp,
 });
 export type Subscription = z.infer<typeof Subscription>;
 
 export const AgentMessageIntent = z.enum(["task", "report", "result", "blocker"]);
 export type AgentMessageIntent = z.infer<typeof AgentMessageIntent>;
+
+/**
+ * WHAT A NOTIFICATION IS ABOUT — issue #550.
+ *
+ * Three happenings reach a session without anybody typing at it: a peer sent
+ * it a message, a session it subscribed to did something, or one of them parked
+ * a request. All three used to arrive as a TURN whose `input` was engine-authored
+ * prose on the channel that is otherwise the person's — so the transcript drew
+ * the engine's words in the user's bubble and the model read an announcement as
+ * an instruction. `attribution.ts`'s prose frames exist to counteract exactly
+ * that, in words, every time.
+ *
+ * The fix is structural rather than textual: the happening becomes an ITEM with
+ * an honest role, the drivers deliver it on a channel that is not the user's,
+ * and the clients draw it as a notification row.
+ *
+ * AND THE PROSE THEN HAS TO ACTUALLY LEAVE — issue #636. One sentence of it
+ * ("carries no human authorization: keep asking the person for anything that
+ * needs their approval") outlived the fix by living inside the notification
+ * BODY rather than in the frames, so the compensation for a channel that could
+ * not express a role kept riding on the channel that now can. Four sessions
+ * read it as written and refused work the person had authorised. What is left
+ * is the true half — a peer relays a decision, it does not make one — said once
+ * per driver on the channel header, and nowhere in the body.
+ */
+export const NotificationKind = z.enum(["wake", "peer_message", "request"]);
+export type NotificationKind = z.infer<typeof NotificationKind>;
+
+/**
+ * ONE HAPPENING INSIDE A NOTIFICATION — the unit the cohort merge folds.
+ *
+ * A notification is usually one of these. It is more than one when several
+ * wakes were held for a session that was busy: they arrive as ONE item listing
+ * them rather than as four interruptions, which is the whole point of holding
+ * them. See `NotificationDetail.entries`.
+ */
+export const NotificationEntry = z.object({
+  kind: NotificationKind,
+  /** The session this is ABOUT — the peer that sent, or the session that acted.
+   *  Absent when the sender is an agent outside any session. */
+  sessionId: Id.optional(),
+  /** That session's run: the one holding a peer's body, or the one that ended. */
+  runId: Id.optional(),
+  requestId: Id.optional(),
+  /** For a wake: which of the four transitions. */
+  wakeKind: WakeKind.optional(),
+  /** For a peer message: what the sender said it was. */
+  intent: AgentMessageIntent.optional(),
+  /** One line. What a collapsed row and an outline page show. */
+  summary: z.string().max(1_000),
+});
+export type NotificationEntry = z.infer<typeof NotificationEntry>;
+
+export const NotificationDetail = z.object({
+  kind: NotificationKind,
+  sessionId: Id.optional(),
+  runId: Id.optional(),
+  requestId: Id.optional(),
+  wakeKind: WakeKind.optional(),
+  intent: AgentMessageIntent.optional(),
+  /** One line, the row's label and the outline's `input`. */
+  summary: z.string().max(1_000),
+  /**
+   * THE CALL THAT FETCHES WHAT THIS ANNOUNCES — named rather than implied,
+   * because a recipient told only that "more exists" tends to act on the teaser.
+   * For a peer message it is the RECIPIENT's own session and the receiving run,
+   * which is where the body is stored; for a wake or a request it is the target
+   * session and the turn in question.
+   */
+  fetch: z.object({ sessionId: Id, runId: Id }),
+  /**
+   * THE WHOLE TEXT THE MODEL WAS HANDED. The summary is the line a row shows;
+   * this is the notice itself — who, which run, how big, the fetch call.
+   *
+   * CARRIED ON THE ITEM so that `Turn.agentNotice` can be DERIVED from it rather
+   * than minted a second time: one string, one author, and no way for the row,
+   * the prompt and a later `sessions_read` to disagree about what the turn was
+   * told. See `agent-notice.ts`.
+   */
+  body: z.string().max(8_000),
+  /** Present only when more than one happening was folded in. The first is also
+   *  reflected in the fields above, so a client that ignores this still shows
+   *  something true. */
+  entries: z.array(NotificationEntry).max(50).optional(),
+  /**
+   * HOW MANY TIMES THIS HAS BEEN HANDED TO A MODEL — the cap in #550 clause 3.
+   *
+   * A notification is delivered at most TWICE: once when it lands, and once more
+   * if a newer fact about the same run supersedes it. Past that it is not queued
+   * again — it updates in place and stays PENDING in the session's mailbox,
+   * where `sessions_status` reports it. That is what stops a chatty child from
+   * spending a busy coordinator's context on the same errand indefinitely.
+   */
+  deliveries: z.number().int().positive().optional(),
+});
+export type NotificationDetail = z.infer<typeof NotificationDetail>;
 
 export const Turn = z.object({
   /**
@@ -1439,8 +1886,16 @@ export const Turn = z.object({
    * before, so the history read as the human typing a slash command — three
    * times in a row, on one measured session, because nothing refused a
    * second one while the first was in flight.
+   *
+   * `import` IS THE SAME LESSON AGAIN, for `/resume` (#616). Adopting a Claude
+   * Code conversation writes one turn that nobody typed and no worker ran: it
+   * holds the imported history as its items, and `input` is the engine's own
+   * one-line description of the adoption. A renderer must not draw that as the
+   * person's words — which is exactly what happened to `/compact` before this
+   * enum had a second member — so the kind is what says so, structurally,
+   * rather than a prefix on the text that somebody has to remember to strip.
    */
-  kind: z.enum(["message", "compact"]).optional(),
+  kind: z.enum(["message", "compact", "import"]).optional(),
   /**
    * WHO STARTED THIS TURN. Absent means a human (or another session, through
    * `sessions_send`) sent a message. `provider` is a turn the CLI started ON
@@ -1493,6 +1948,24 @@ export const Turn = z.object({
    * finds it missing falls back to `input` — see `framedTurnInput`.
    */
   agentNotice: z.string().max(4_000).optional(),
+  /**
+   * THIS TURN IS A NOTIFICATION — issue #550.
+   *
+   * The same object the turn's FIRST ITEM carries, minted once in
+   * `notification.ts` and stored in both places. On the item because that is
+   * what the drivers deliver and the clients render; on the TURN because
+   * `turn_summary` and `sessions_outline` have to show a turn's summary line
+   * without reading its items, and because `claimTurn` hands a worker the turn
+   * alone.
+   *
+   * WHEN IT IS PRESENT, `input` IS NOT THE PERSON'S WORDS and nothing should
+   * draw it as one. For a wake or a request `input` is a short machine label and
+   * the notice is `notification.body`. For a peer's message `input` is still the
+   * message EXACTLY AS SENT — that is the durable record `sessions_read` hands
+   * back, and moving it would abridge the one copy there is — but the model is
+   * handed `notification.body` instead, on a channel that is not the user's.
+   */
+  notification: NotificationDetail.optional(),
   /**
    * WHAT THE SENDER SAID THIS TASK COVERS, on the task turn itself.
    *
@@ -1659,6 +2132,23 @@ export type GitWorktreeEntry = z.infer<typeof GitWorktreeEntry>;
 export const GitChangeStatus = z.enum(["added", "modified", "deleted", "renamed", "untracked"]);
 export type GitChangeStatus = z.infer<typeof GitChangeStatus>;
 
+/**
+ * WHY A GIT READ IS NOT AN ANSWER — issue #650, and the vocabulary #654 reuses.
+ *
+ * `timeout` is a child the engine killed at its bound, and it is the case this
+ * exists for: on a loaded machine git exits non-zero without having looked, and
+ * every field it feeds used to become a FACT — no branches, a clean tree, no
+ * worktrees, no changes. Retrying is the honest offer. `failed` is everything
+ * else, where it usually is not.
+ *
+ * DECLARED HERE, ABOVE BOTH READERS THAT NEED IT. It arrived beside the ref
+ * listing because that is where the bug was found, but the distinction is not
+ * the picker's — `SessionDiff` below says the same thing about its own
+ * sub-reads.
+ */
+export const GitReadFailure = z.enum(["timeout", "failed"]);
+export type GitReadFailure = z.infer<typeof GitReadFailure>;
+
 export const GitFileChange = z.object({
   path: z.string().min(1),
   status: GitChangeStatus,
@@ -1709,17 +2199,113 @@ export const SessionDiff = z.object({
    * so. Present is the full answer.
    */
   base: z.string().min(1).optional(),
+  /**
+   * SET WHEN NOTHING CONFIRMED THE BASE ABOVE — issue #654.
+   *
+   * The base is still what this diff is measured from: the session RECORDED it
+   * when its worktree was cut, and a `rev-parse --verify` the engine killed is
+   * corroboration that did not arrive, not a ref that does not exist. Dropping
+   * it there used to reframe the review as `HEAD…worktree` and report `base`
+   * absent — so a session that had committed all of its work read as having
+   * done none of it, above the sentence "no starting commit was recorded".
+   *
+   * A base that genuinely does not resolve is still ABSENT rather than marked;
+   * only a read that did not answer lands here.
+   */
+  baseUnverified: GitReadFailure.optional(),
   ahead: z.number().int().nonnegative().optional(),
   behind: z.number().int().nonnegative().optional(),
   files: z.array(GitFileChange),
+  /**
+   * WHY `files` IS NOT THE WHOLE CHANGE — issue #654, and the field that matters
+   * most on this contract.
+   *
+   * The list is three reads — `diff --numstat`, `diff --name-status` and
+   * `status -uall` — and a non-zero exit from any of them used to produce FEWER
+   * ROWS rather than an error. One of the ways they exit non-zero is the
+   * engine's own 30-second bound, so a diff that timed out said "this session
+   * changed nothing": an empty review is a claim a person acts on directly, and
+   * unlike a short branch list there is no search box to blame and nothing to
+   * make them suspicious. An agent reading this answer will report it to a
+   * person as fact.
+   *
+   * WHAT DID ARRIVE IS KEPT, per #650 — including `linesAdded`/`linesRemoved`,
+   * which stay honest sums over the rows that made it. Set means they
+   * under-count and the rows may be short or mislabelled; ABSENT is the only
+   * state in which an empty `files` means "nothing differs".
+   */
+  filesIncomplete: GitReadFailure.optional(),
   commits: z.array(GitCommitEntry),
+  /**
+   * WHY `commits` IS NOT THE WHOLE SET — issue #654. `git log base..HEAD` is its
+   * own read and fails on its own, and "0 commits" for a session that committed
+   * its work is the same wrong claim as an empty file list. Never set when
+   * `base` is absent: there is no range to ask about then, which the surface
+   * already explains.
+   */
+  commitsIncomplete: GitReadFailure.optional(),
   linesAdded: z.number().int().nonnegative(),
   linesRemoved: z.number().int().nonnegative(),
   /** The file list is capped. Reported so a truncated review cannot read as a
    *  complete one. */
   truncated: z.boolean(),
+  /**
+   * THE CHECKOUT IS SHARED, SO THIS IS NOT NECESSARILY THIS SESSION'S WORK —
+   * issue #690.
+   *
+   * `base…worktree` equals "what this session did" only if the session started
+   * from a tree nobody else writes to. That holds in a `worktree` session, which
+   * owns its checkout, and is false in a `local` one, which shares the project
+   * checkout with the editor and with every other local session. A design
+   * conversation that wrote no code was shown 92 files and a banner accusing it
+   * of running a formatter; every one of them was already dirty when it started.
+   *
+   * THE FIGURES DO NOT CHANGE — they are a true description of the checkout.
+   * What this licenses is the WORDING around them, and it withdraws the one
+   * inference the shared case cannot support: that a row the transcript never
+   * mentioned is a surprise this session produced.
+   *
+   * ABSENT ON A PROJECT DIFF, which has no session to misattribute anything to
+   * and already says "this project" in as many words.
+   */
+  shared: z.boolean().optional(),
+  /**
+   * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534.
+   *
+   * WHY IT RIDES THIS ANSWER rather than being fetched beside it. `repository:
+   * false` is what git reports for a path it cannot read, so an unplugged drive
+   * produced a diff that said "not a git repository, no changes" — a surface
+   * reading CLEAN when the truth is that nobody looked. The surface cannot tell
+   * those apart from the fields above, and asking it to fetch the project list
+   * to find out would make every review screen do a second read to explain the
+   * first.
+   *
+   * Absent when the engine has no project to ask about — a session with no
+   * checkout, an older engine — which reads as "nobody said", so the existing
+   * `repository: false` rendering is still what an unversioned directory gets.
+   */
+  availability: ProjectAvailability.optional(),
 });
 export type SessionDiff = z.infer<typeof SessionDiff>;
+
+/**
+ * ONE FILE'S PATCH, fetched when a row is opened rather than carried on the
+ * review — a two-hundred-file diff with every patch is a megabyte on a poll.
+ *
+ * `incomplete` EXISTS BECAUSE `patch: ""` MEANT TWO THINGS — issue #654. A
+ * `git diff` that exited past 1 returned the empty string, and every surface
+ * reads an empty non-binary patch as "this file is binary, there is no textual
+ * diff". So a subprocess the engine killed said something specific, confident
+ * and wrong about the file's contents.
+ */
+export const GitFilePatch = z.object({
+  patch: z.string(),
+  binary: z.boolean(),
+  /** Set when git did not produce the patch. An empty `patch` means "no textual
+   *  diff" ONLY when this is absent. */
+  incomplete: GitReadFailure.optional(),
+});
+export type GitFilePatch = z.infer<typeof GitFilePatch>;
 
 /**
  * One ref a worktree session could be cut from. `remote` names come qualified
@@ -1738,18 +2324,33 @@ export type GitRefEntry = z.infer<typeof GitRefEntry>;
 export const GitOverview = z.object({
   repository: z.boolean(),
   branch: z.string().optional(),
-  dirtyFiles: z.number().int().nonnegative(),
+  /** ABSENT when git did not answer — never 0, which a reader takes for a clean
+   *  working tree somebody actually looked at. */
+  dirtyFiles: z.number().int().nonnegative().optional(),
   /** Both absent when the branch has no upstream — which is NOT zero/zero. */
   ahead: z.number().int().nonnegative().optional(),
   behind: z.number().int().nonnegative().optional(),
-  worktrees: z.array(GitWorktreeEntry),
+  /** Absent when `git worktree list` did not answer; `[]` only when there
+   *  genuinely are none. */
+  worktrees: z.array(GitWorktreeEntry).optional(),
   /**
    * Local and remote-tracking branches, newest commit first, capped — the
    * base-ref picker's menu. Remote entries are whatever the last fetch saw:
    * the engine's git surface stays read-only, so it never fetches to freshen
    * them. Absent (never empty) on a non-repository.
+   *
+   * MAY BE PARTIAL. Read `refsIncomplete` before treating a name's absence from
+   * this list as "that branch does not exist".
    */
   refs: z.array(GitRefEntry).optional(),
+  /**
+   * WHY THE LISTING IS NOT THE WHOLE LISTING — issue #650. The refs are read one
+   * namespace at a time, and a half that was killed used to arrive as a SHORT
+   * list rather than an error: the picker drew it as the repository, and the
+   * person picked a base that was not the one they meant. Set means the picker
+   * must say git did not answer and offer to ask again.
+   */
+  refsIncomplete: GitReadFailure.optional(),
   /**
    * The remote's default branch (`origin/main`), when remote-tracking state
    * exists — what a fresh worktree is cut from unless the person picks
@@ -1758,8 +2359,341 @@ export const GitOverview = z.object({
    * HEAD", which is also what absent always meant.
    */
   defaultBase: z.string().min(1).optional(),
+  /**
+   * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534, and `SessionDiff`'s
+   * argument. Every number above is zero or absent for a path git cannot read,
+   * and the environment strip drew those as facts: no branch, a clean tree, no
+   * worktrees. Absent when the engine has no project to ask about.
+   */
+  availability: ProjectAvailability.optional(),
 });
 export type GitOverview = z.infer<typeof GitOverview>;
+
+/**
+ * ══ WHAT IS BEING KEPT, AND WHICH OF IT CAN GO — issue #671 ══
+ *
+ * THE CLASSIFICATION IS THE FEATURE; A LIST IS NOT. Telar knows whether a
+ * checkout is merged, clean, and whether anything still needs it. A surface
+ * that drew the same four columns and left the person to reason from them
+ * would be the count with extra steps — they would check three things by hand
+ * before daring to delete, which is exactly what nobody does, which is how
+ * 7.3 GB accumulates behind sessions that finished weeks ago.
+ *
+ * SO THE VERDICT IS THE PAYLOAD AND THE EVIDENCE IS BESIDE IT, never the other
+ * way round. The chips exist so a person can check Telar's reasoning; the
+ * verdict exists so they do not have to.
+ */
+
+/**
+ * WHO STILL NEEDS THIS CHECKOUT — the replacement for the old surface's "active
+ * loom", which cannot be ported straight across because looms are gone (#501).
+ *
+ * IT DID NOT TRANSLATE ONE-FOR-ONE, AND THAT IS THE INTERESTING PART. A loom
+ * had one axis: running, or not. A session has two that matter independently —
+ * its LIFECYCLE (is the record live or archived) and its SHELF (is it settled).
+ * Settled is the state the old vocabulary had no word for, and it is the one
+ * doing the accumulating: `archiveSession` releases a checkout and settling
+ * deliberately does not, because "settled is a shelf, not an ending, and a
+ * settled session's checkout is still the thing it would resume into". That
+ * policy is right and this contract does not touch it. What it does is make
+ * the consequence VISIBLE, which is all that was ever missing.
+ */
+export const WorktreeOwner = z.discriminatedUnion("kind", [
+  /**
+   * NOTHING CLAIMS IT. No session record names this path. Nothing will ever
+   * resume it, and no count derived from sessions or from `git worktree list`
+   * can show it — which is why the inventory reads the checkouts root itself.
+   * This is the class the issue was filed about.
+   */
+  z.object({ kind: z.literal("none") }),
+  z.object({
+    kind: z.literal("session"),
+    sessionId: Id,
+    title: z.string().optional(),
+    /**
+     * `live` — the session is active and on the rail. Its checkout is what it
+     * is working in or would resume into.
+     * `settled` — shelved. Still resumable, still holding its checkout, and
+     * the state this feature exists to surface.
+     * `archived` — put down, and its checkout should already have been given
+     * back. Finding one here means the release did not happen (it is
+     * best-effort and skips an unavailable disk), so the bytes are still out
+     * there with nothing left that could ever use them.
+     */
+    lifecycle: z.enum(["live", "settled", "archived"]),
+  }),
+]);
+export type WorktreeOwner = z.infer<typeof WorktreeOwner>;
+
+/**
+ * WHY A CHECKOUT CANNOT BE REMOVED AT ALL. No affordance reaches these and no
+ * force overrides them — the old surface's rule, kept, because a force that can
+ * reach everything teaches people to type it without reading.
+ */
+export const WorktreeLockReason = z.enum([
+  /**
+   * NOBODY LOOKED. The checkouts' drive is not mounted, or the project's is.
+   *
+   * IT IS THE FIRST QUESTION ASKED AND NOT A FOOTNOTE, because every other
+   * proof below reads the disk. An unmounted volume is a state to sit in, not
+   * an absence to act on: a checkout that cannot be seen is not a checkout that
+   * has gone, and classifying one as an orphan would offer to reclaim things
+   * that are merely out of the room.
+   */
+  "unreadable",
+  /**
+   * A SESSION IS WORKING IN IT RIGHT NOW, and this is a refusal a person can
+   * only be told in advance.
+   *
+   * NOT GIT'S LOCK, WHICH IS A DIFFERENT GUARD AGAINST A DIFFERENT PARTY.
+   * #641 locks every session worktree so that `gh pr merge --delete-branch`
+   * cannot delete one out from under a running agent — an OUTSIDER's removal.
+   * Telar's own teardown unlocks first and deliberately
+   * (`removeSessionWorktreeAsync`), so there is no lock error here to surface
+   * and no failure to render honestly: a reclaim would simply SUCCEED and take
+   * the directory an agent is writing in. The refusal has to be Telar's own
+   * policy, asserted before the press — the same predicate `moveWorktrees`
+   * refuses wholesale on and `deleteSession` refuses on.
+   */
+  "in-use",
+  /** The repository's own main checkout, or the tree this engine runs from. */
+  "protected",
+  /**
+   * A live, unsettled session's checkout — somebody's current work, whether or
+   * not a turn is in flight this second. Removing it does not free a session;
+   * nothing re-cuts a missing worktree, so it would leave a record naming a
+   * directory that is not there and a session that fails on its next read.
+   */
+  "active",
+]);
+export type WorktreeLockReason = z.infer<typeof WorktreeLockReason>;
+
+/**
+ * WHY A CHECKOUT NEEDS A TYPED CONFIRMATION RATHER THAN A CHECKBOX. Each of
+ * these is a proof that did not come back clean, and they are separate because
+ * they send a person to different places: push your branch, versus commit your
+ * work, versus go and look because Telar could not tell.
+ */
+export const WorktreeForceReason = z.enum([
+  /** Uncommitted or untracked files. The work is only here. */
+  "dirty",
+  /** The branch is not an ancestor of the project's default base. The commits
+   *  are only here. */
+  "unmerged",
+  /**
+   * TELAR COULD NOT TELL, AND THAT IS ITS OWN ANSWER — never quietly folded
+   * into "not merged" and never into "merged".
+   *
+   * A git read that exits non-zero is not a fact about the repository (#650,
+   * #654 — the same lesson, twice, in two other surfaces). On a loaded machine
+   * a killed `merge-base` would otherwise mark a merged branch unmerged, which
+   * is merely annoying, or a `status` that timed out would mark a dirty tree
+   * clean, which loses work. So an unproven checkout is removable and asks for
+   * the typed force, exactly like a dirty one.
+   */
+  "unknown",
+  /**
+   * NO BRANCH TO CHECK. Either the checkout is detached, or its branch is gone
+   * from the repository — the state #641 could produce, where a merge deleted
+   * the branch and the checkout outlived it. Nothing can be proved merged
+   * without a branch, so it is never assumed.
+   */
+  "no-branch",
+]);
+export type WorktreeForceReason = z.infer<typeof WorktreeForceReason>;
+
+/**
+ * THE LADDER'S ANSWER FOR ONE ROW. First reason that holds is the row's reason;
+ * a row that reaches the bottom with nothing against it is reclaimable.
+ *
+ * THE ORDER IS NOT COSMETIC — it is the order of certainty, and each rung's
+ * read is only sound if the ones above it passed. Asking "is it merged" about a
+ * checkout on a drive that is not mounted produces an answer about nothing.
+ */
+export const WorktreeVerdict = z.discriminatedUnion("kind", [
+  /** Merged, clean, and nothing needs it. Selected by default: this is the
+   *  proof done FOR the person, which is the whole point of the surface. */
+  z.object({ kind: z.literal("reclaimable") }),
+  /** Removable, but at least one proof failed or could not be made. */
+  z.object({ kind: z.literal("needs-force"), reasons: z.array(WorktreeForceReason).min(1) }),
+  /** Not removable. Force can never reach it. */
+  z.object({ kind: z.literal("locked"), reason: WorktreeLockReason }),
+]);
+export type WorktreeVerdict = z.infer<typeof WorktreeVerdict>;
+
+/**
+ * ONE CHECKOUT, CLASSIFIED.
+ *
+ * EVERY PROOF FIELD IS OPTIONAL AND ABSENT MEANS "NOT ASKED OR NOT ANSWERED",
+ * never a default. `merged: false` is a claim somebody made a read to support;
+ * absent is the honest shape for a branch that does not exist, a drive that is
+ * not there, and a git command that was killed. This is `GitOverview`'s own
+ * discipline — "ABSENT when git did not answer — never 0, which a reader takes
+ * for a clean working tree somebody actually looked at".
+ */
+export const WorktreeRow = z.object({
+  /** The absolute path, which is this row's identity everywhere: it is what
+   *  the session records, what git registers, and what a reclaim names. */
+  path: z.string().min(1),
+  basename: z.string().min(1),
+  /** Absent on a detached checkout, which is a real state and not a name. */
+  branch: z.string().optional(),
+  projectId: Id.optional(),
+  /** What a person calls the project. The path is not it. */
+  projectName: z.string().optional(),
+  owner: WorktreeOwner,
+  /**
+   * WHETHER GIT STILL HAS A REGISTRATION FOR IT. A directory git has pruned is
+   * no longer a worktree at all — it is a folder full of somebody's files, and
+   * removing it is `rm`, not `git worktree remove`. Rendered because the two
+   * are different promises.
+   */
+  registered: z.boolean(),
+  /** Whether the directory is there. Meaningful ONLY when the row is readable:
+   *  see `unreadable`, and never infer a removal from a drive being out. */
+  onDisk: z.boolean(),
+  /** Telar's #641 lock is on it. Shown as evidence, never as a verdict — it
+   *  guards against outsiders and Telar's own teardown takes it off. */
+  gitLocked: z.boolean().optional(),
+  /** What it costs, measured the way the storage pane measures (allocated
+   *  blocks, symlinks never followed, hard links counted once), so the rows sum
+   *  to the figure that sent the person here. */
+  bytes: z.number().min(0).optional(),
+  /** When the checkout was last written to. */
+  updatedAt: Timestamp.optional(),
+  /** `git status --porcelain` came back empty. Absent = not proven either way. */
+  clean: z.boolean().optional(),
+  /** The branch is an ancestor of `mergedInto`. Absent = not proven either
+   *  way, which is a different thing from `false`. */
+  merged: z.boolean().optional(),
+  /** What `merged` was measured against — the same default base the cut picker
+   *  uses. Absent when there was nothing to measure against. */
+  mergedInto: z.string().optional(),
+  /** Set when a git read did not answer, so a surface can offer to ask again
+   *  rather than presenting a killed subprocess as a finding. */
+  incomplete: GitReadFailure.optional(),
+  verdict: WorktreeVerdict,
+});
+export type WorktreeRow = z.infer<typeof WorktreeRow>;
+
+/**
+ * THE WHOLE INVENTORY, AS OF A MOMENT.
+ *
+ * `roots` IS PLURAL BECAUSE A MOVE CAN BE HALF-DONE. Changing where checkouts
+ * go affects the next cut; the ones already cut stay where they are until they
+ * are moved or their sessions end (#642 part 2). An inventory that read only
+ * the configured root would omit exactly the gigabytes somebody changed the
+ * setting to shed — the same reason `measureStorage` walks both.
+ *
+ * `unreadable` IS A ROOT-LEVEL FACT AS WELL AS A PER-ROW ONE. When the drive
+ * holding the checkouts is out there are no rows to draw at all, and "0
+ * checkouts" would be the reassuring lie this whole contract is built to avoid
+ * — the same care the composer's count already takes when `git worktree list`
+ * cannot answer.
+ */
+export const WorktreeInventory = z.object({
+  rows: z.array(WorktreeRow),
+  roots: z.array(z.string().min(1)),
+  /** Why the inventory is not a full answer, in words a person can act on.
+   *  Absent when it is. */
+  blocker: z.string().optional(),
+  /** Something under a root could not be read — a permission, a drive that went
+   *  away mid-walk. The sizes are then a floor rather than a figure. */
+  partial: z.boolean(),
+  measuredAt: Timestamp,
+});
+export type WorktreeInventory = z.infer<typeof WorktreeInventory>;
+
+/**
+ * ONE CHECKOUT A PERSON ASKED TO HAVE BACK.
+ *
+ * ADDRESSED BY PATH, which is this row's identity in all three witnesses — the
+ * session records it, git registers it, and the disk holds it. A session id
+ * would not do: the rows that matter most have no session.
+ *
+ * `confirm` IS THE BASENAME, TYPED. Required for every `needs-force` row and
+ * meaningless on a reclaimable one. The typing is not ceremony: these rows are
+ * the ones where Telar could NOT prove the work is safe, so the person is being
+ * asked to say they looked — which a checkbox cannot express and a second
+ * "are you sure" does not either.
+ */
+export const WorktreeReclaimItem = z.object({
+  path: z.string().min(1),
+  confirm: z.string().optional(),
+});
+export type WorktreeReclaimItem = z.infer<typeof WorktreeReclaimItem>;
+
+/**
+ * WHY ONE ITEM WAS NOT DONE. Machine-stable, so the surface renders the
+ * sentence and the wire carries the reason — the old surface's one good lesson,
+ * kept: "the server's per-item refusals are rendered honestly."
+ *
+ * THE LOCK REASONS APPEAR HERE AGAIN, AND THAT IS NOT DUPLICATION. The row said
+ * them before the press so the person could predict them; the server says them
+ * again at the press because the inventory it was read from may be seconds old
+ * and a session can start working in that window. A refusal predicted and then
+ * re-proved is the design — the prediction is the courtesy, the re-proof is the
+ * guarantee.
+ */
+export const WorktreeReclaimRefusal = z.enum([
+  /** Nothing at that path any more — already gone, or never there. */
+  "not-found",
+  /** The drive went away between the listing and the press. */
+  "unreadable",
+  /** A session started working in it. See `WorktreeLockReason`. */
+  "in-use",
+  "protected",
+  "active",
+  /** A `needs-force` row arrived with no typed confirmation. */
+  "needs-confirm",
+  /** It arrived with one that did not match the basename. */
+  "confirm-mismatch",
+  /** Git or the archive said something this does not model. `detail` carries
+   *  its words, which are diagnostic and never copy. */
+  "failed",
+]);
+export type WorktreeReclaimRefusal = z.infer<typeof WorktreeReclaimRefusal>;
+
+/**
+ * WHAT ONE RECLAIM ACTUALLY DID — and the two are genuinely different acts,
+ * so they are never merged into "cleaned up".
+ *
+ * `archived` — the checkout belonged to a settled session, and giving it back
+ * means ARCHIVING THAT SESSION. That is the only supported way: settling
+ * deliberately does not release a checkout, because a settled session's
+ * checkout is still the thing it would resume into, and nothing re-cuts a
+ * missing worktree. So the session is ended, which is a decision about the
+ * session and only incidentally about the disk. The confirm says so in those
+ * words rather than naming the space — a confirm that names the gigabytes and
+ * hides the session is the kind people click and regret.
+ *
+ * `removed` — nothing claimed it: no session, or an archived one whose release
+ * never happened. There is no session to end, so the directory goes.
+ */
+export const WorktreeReclaimResult = z.object({
+  path: z.string().min(1),
+  ok: z.boolean(),
+  action: z.enum(["archived", "removed"]).optional(),
+  /** The session that was archived, when one was. */
+  sessionId: Id.optional(),
+  refusal: WorktreeReclaimRefusal.optional(),
+  detail: z.string().optional(),
+  /** What it gave back, as last measured. A figure from the inventory rather
+   *  than a fresh walk: the directory is gone, so there is nothing left to
+   *  measure, and re-walking before removal would double the work for a number
+   *  already on the row. */
+  bytes: z.number().min(0).optional(),
+});
+export type WorktreeReclaimResult = z.infer<typeof WorktreeReclaimResult>;
+
+export const WorktreeReclaimOutcome = z.object({
+  results: z.array(WorktreeReclaimResult),
+  /** The whole thing in a sentence, composed where the reasons are known —
+   *  `WorktreeMoveResult`'s discipline, for the same reason. */
+  summary: z.string(),
+});
+export type WorktreeReclaimOutcome = z.infer<typeof WorktreeReclaimOutcome>;
+
 
 /**
  * WHAT IS IN A CHECKOUT — the flat list a file tree is built from.
@@ -1795,6 +2729,14 @@ export const WorkspaceListing = z.object({
    *  repository — a tree that silently stops is worse than one that says it did. */
   truncated: z.boolean(),
   readAt: Timestamp,
+  /**
+   * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534, and `SessionDiff`'s
+   * argument exactly. An unplugged drive walked nothing and listed nothing, and
+   * an empty `files` array is indistinguishable from an empty repository: the
+   * tree read as a project with no files in it rather than as one nobody could
+   * open.
+   */
+  availability: ProjectAvailability.optional(),
 });
 export type WorkspaceListing = z.infer<typeof WorkspaceListing>;
 

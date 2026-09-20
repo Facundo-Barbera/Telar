@@ -4,14 +4,29 @@
 # stale copies as part of the source test gate.
 pathIgnorePatterns = ["**/release/**", "**/.next-desktop/**"]
 
-# The first normalises an inherited NODE_ENV=production, which otherwise makes
+# The first is the per-test ceiling (#740), and it is registered here because
+# this is where a hand-typed `bun test apps/engine/test/one.test.ts` reads its
+# configuration from — that invocation used to run on bun's 5 s default while CI
+# ran on 20 s, with nothing anywhere saying they differed.
+#
+# The second normalises an inherited NODE_ENV=production, which otherwise makes
 # every .tsx render test fail on a jsxDEV that React's production build
 # deliberately does not export; scripts/test-setup.mjs has the full story. The
-# second lends the UI primitives a DOM for the one import at which they decide
+# third lends the UI primitives a DOM for the one import at which they decide
 # whether their layout effects exist, so a test that CLICKS a menu finds a live
 # one; apps/web/scripts/test-dom.mjs has that story, and apps/web/bunfig.toml
-# carries the same set for the workspace CI actually runs. The third gives
+# carries the same set for the workspace CI actually runs. The fourth gives
 # Next's server modules the `AsyncLocalStorage` global they read once at import
 # and bun does not provide; apps/web/scripts/test-async-storage.mjs has that
-# story.
-preload = ["./scripts/test-setup.mjs", "./apps/web/scripts/test-dom.mjs", "./apps/web/scripts/test-async-storage.mjs"]
+# story. The fifth stops a bare `bun test` here — which sweeps up
+# apps/engine/test/*.test.ts as well — from spawning a real `claude` for session
+# titles, model lists and skills probes; apps/engine/test/no-providers.ts has
+# that story, and apps/engine/bunfig.toml carries the same registration for the
+# workspace the engine suite actually runs from.
+preload = [
+  "./scripts/test-ceiling.mjs",
+  "./scripts/test-setup.mjs",
+  "./apps/web/scripts/test-dom.mjs",
+  "./apps/web/scripts/test-async-storage.mjs",
+  "./apps/engine/test/no-providers.ts",
+]

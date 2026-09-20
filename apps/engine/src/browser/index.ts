@@ -34,6 +34,7 @@ import { ScopedRuntimePool, type ScopedRuntimeResource } from "./pool";
 import { installBrowser, PlaywrightMcpTransport, type BrowserTransportOptions } from "./transport";
 import { BrowserToolResult, parseBrowserToolInput } from "./tools";
 
+export * from "./bounds";
 export * from "./desktop";
 export * from "./helpers";
 export * from "./pool";

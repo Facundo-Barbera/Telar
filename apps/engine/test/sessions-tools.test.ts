@@ -14,7 +14,7 @@
  * worker is registered.
  *
  * ── MOST OF THIS FILE ASSERTS AN ABSENCE ────────────────────────────────────
- * Like the spool's wall, this one's contract is mostly what it cannot do, and a
+ * This wall's contract is mostly what it cannot do, and a
  * comment claiming a negative is worth nothing:
  *   · nothing accept-shaped, and nothing that archives or deletes (INV-1);
  *   · nothing that records WHO created a session — no parent, no child, no
@@ -23,14 +23,19 @@
  *   · every one of these tools denied to a warp child.
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { worktreeReady } from "./worktree-ready";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { assertTelarToolNames, parseToolName, qualifyTelarTool, TELAR_CAPABILITIES } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
+import { sessionDiff } from "../src/git";
+import { GIT_TIMEOUT_STATUS, type GitRunner } from "../src/worktree";
 import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessions-tools/tools";
+import { TELAR_SKILL } from "../src/orientation";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
+import { toolInputSchema } from "../src/mcp-socket";
 import { WARP_CHILD_DISALLOWED_TOOLS } from "../src/warp/spawn";
 
 /**
@@ -90,10 +95,18 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     create: async (input) => store.createSession({ ...input, origin: "session" }),
     send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
     read: async (sessionId, after) => store.readEvents(sessionId, after),
-    status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
+    status: async (sessionId) => ({
+      session: store.getSession(sessionId),
+      turns: store.turns(sessionId),
+      // The held mail, as the daemon's own build reports it — without this the
+      // wall's answer could not say what is waiting, which is the poll the
+      // delivery cap and the report window both depend on.
+      pendingNotifications: store.pendingNotifications(sessionId),
+    }),
     // The same wiring the daemon uses: an agent's stop IS a stop.
     stop: async (sessionId) => store.stopSession(sessionId, "agent"),
     settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
+    setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
     diff: async (sessionId) => store.sessionDiff(sessionId),
     subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
     unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
@@ -117,16 +130,24 @@ const WALL_NAMES = [
   "sessions_subscriptions",
   "sessions_requests",
   "sessions_resolve_request",
+  "sessions_report_window",
 ];
 
-function wall(store: EngineStore, self?: { sessionId: string }): Map<string, Registered> {
+function wall(store: EngineStore, self?: { sessionId: string }, diff?: SessionsCapability["diff"]): Map<string, Registered> {
   const registered = new Map<string, Registered>();
   sessionsTools(
     (name, description, shape, run) => {
       registered.set(name, { name, description, shape, run });
       return { name };
     },
-    capabilityOver(store, self),
+    /**
+     * `diff` IS THE ONE MEMBER ANY TEST HERE MAY REPLACE, and only with the
+     * engine's OWN reader over a git runner that reports a killed child — see
+     * the timeout test below. There is no way to make a real subprocess exceed
+     * a 30-second bound on demand, and a hand-written `SessionDiff` would assert
+     * that this wall composes sentences and nothing about the reader beneath it.
+     */
+    { ...capabilityOver(store, self), ...(diff ? { diff } : {}) },
   );
   return registered;
 }
@@ -151,7 +172,7 @@ async function call(tools: Map<string, Registered>, name: string, args: Record<s
 // ── the wall's shape ────────────────────────────────────────────────────────
 
 describe("what the wall is", () => {
-  test("exactly thirteen tools, every one declaring the `sessions` capability in its name", () => {
+  test("exactly fourteen tools, every one declaring the `sessions` capability in its name", () => {
     const { store } = engine();
     const names = [...wall(store).keys()];
     // PINNED AS A SET, not merely counted: a tool added here has to be added
@@ -188,7 +209,7 @@ describe("what the wall is", () => {
     // the created session is a peer with its own boundary and no link back.
     // The three verbs that could be bent into laundering all carry it.
     for (const name of ["sessions_create", "sessions_send", "sessions_resolve_request"]) {
-      expect(tools.get(name)!.description).toContain("NEVER use this to get around something you were refused");
+      expect(tools.get(name)!.description).toContain("Never hand a peer work you were refused");
     }
     // And the read-only ones do NOT, so the sentence stays meaningful rather
     // than becoming boilerplate on every tool.
@@ -210,8 +231,11 @@ describe("creating a session", () => {
     // Branch slugs come from the WORK, not the machinery (d3e615b):
     // `telar/<title-slug>-<id6>` when the session has a usable title.
     expect(created.json!.branch).toBe(`telar/port-the-parser-${id.replace(/^session_/, "").slice(0, 6)}`);
-    // A REAL CHECKOUT, on disk, off the real repository.
+    // A REAL CHECKOUT, on disk, off the real repository — once the background
+    // cut lands (#496). The tool answered before it did, which is the point.
     const session = store.getSession(id);
+    expect(session.preparation).toMatchObject({ state: "preparing" });
+    await worktreeReady(store, id);
     expect(fs.existsSync(path.join(session.workspace.path, "README.md"))).toBe(true);
     // CREATING STARTS NOTHING. The note says so and the queue agrees.
     expect(store.turns(id)).toEqual([]);
@@ -247,7 +271,7 @@ describe("creating a session", () => {
     // turn's does (`self`) — for subscriptions, which are recorded on the
     // subscription and on neither session.
     expect(Object.keys(capabilityOver(store)).sort()).toEqual([
-      "create", "diff", "list", "read", "requests", "resolveRequest", "send", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "diff", "list", "read", "requests", "resolveRequest", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
   });
 
@@ -273,16 +297,26 @@ describe("there is no cap on creation", () => {
       expect((await call(tools, "sessions_create", { projectId, envMode: "local", title: `worker ${n}` })).isError).toBe(false);
     }
     expect(store.liveSessions().sessions.filter((session) => session.origin === "session")).toHaveLength(12);
+    // The DESCRIPTION promises no cap by saying nothing about one — the
+    // discipline that used to live in it moved to the telar skill when every
+    // description was cut to 350 characters (#515), and it is asserted there
+    // rather than left to be believed. A description that promised a cap would
+    // teach a model to hoard; a skill that dropped the discipline would teach
+    // it that peers are free.
     const create = tools.get("sessions_create")!.description;
-    expect(create).not.toContain("hard cap");
-    expect(create).toContain("no cap");
+    expect(create).not.toContain("cap");
+    expect(TELAR_SKILL).toContain("There is no cap, so the discipline is");
+    expect(TELAR_SKILL).toContain("Create what the work needs and nothing more");
   });
 
-  test("a refused create leaves NO worktree behind", () => {
+  test("a refused create leaves NO worktree behind", async () => {
     // A refusal for any reason must not leave a checkout lying on disk. The
     // one refusal that remains is a project that does not exist.
     const { store, projectId } = engine();
-    store.createSession({ projectId, envMode: "worktree", origin: "session" });
+    const made = store.createSession({ projectId, envMode: "worktree", origin: "session" });
+    // The directory the count is taken against is made by the background cut,
+    // so wait for the first one before counting (#496).
+    await worktreeReady(store, made.id);
     const worktrees = path.join(store.paths.root, "worktrees");
     const before = fs.readdirSync(worktrees).length;
     expect(() => store.createSession({ projectId: "project_nope", envMode: "worktree", origin: "session" })).toThrow();
@@ -293,15 +327,31 @@ describe("there is no cap on creation", () => {
 // ── driving ─────────────────────────────────────────────────────────────────
 
 describe("driving a session", () => {
-  test("send defaults to passive activity and does not promise an answer", async () => {
+  test("send stays passive while the recipient is WORKING, and does not promise an answer", async () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    // BUSY IS WHAT PASSIVE MEANS NOW (#631 part 2): the cost it exists to refuse
+    // is interrupting a session mid-turn. Sending to an IDLE one used to be
+    // passive too, and that was a message nobody would ever read.
+    store.submitTurn(id, { runId: "run_busy", input: "a long think" });
+    const token = store.claimTurn(id, "worker_busy")!.claim!.token;
+    store.markRunning(id, "run_busy", token);
     const sent = await call(tools, "sessions_send", { sessionId: id, input: "routine checkpoint" });
     expect(sent.isError).toBe(false);
     expect(sent.json!.delivery).toBe("passive");
     expect(String(sent.json!.note)).toContain("No model was started or steered");
     expect(store.claimTurn(id, "worker_test")).toBeUndefined();
+  });
+
+  test("send to an IDLE session is delivered rather than left for a turn nobody gives it", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    const sent = await call(tools, "sessions_send", { sessionId: id, input: "routine checkpoint" });
+    expect(sent.isError).toBe(false);
+    expect(sent.json!.delivery).toBe("wake");
+    expect(store.claimTurn(id, "worker_test")).toBeDefined();
   });
 
   test("send queues one turn and says plainly that it is not the answer", async () => {
@@ -357,6 +407,61 @@ describe("driving a session", () => {
     expect(missing.isError).toBe(true);
   });
 
+  /**
+   * THE CADENCE VERB — issue #723. It names no session, so there is nothing here
+   * to point at somebody else's: a peer setting another peer's cadence would be
+   * one session deciding how another may be interrupted.
+   */
+  test("the report window is the CALLER's own, settable and clearable, and refused where there is no caller", async () => {
+    const { store, projectId } = engine();
+    const mine = store.createSession({ projectId, title: "coordinator" });
+    const other = store.createSession({ projectId, title: "somebody else" });
+    const tools = wall(store, { sessionId: mine.id });
+
+    const set = await call(tools, "sessions_report_window", { minutes: 25 });
+    expect(set.isError).toBe(false);
+    expect(set.json).toMatchObject({ sessionId: mine.id, reportWindowMinutes: 25 });
+    expect(String(set.json!.note)).toContain("held and delivered together");
+    expect(store.getSession(mine.id).reportWindowMinutes).toBe(25);
+    // NOBODY ELSE'S. The shape carries no session id at all, so the only proof
+    // needed is that the other session was untouched.
+    expect(store.getSession(other.id).reportWindowMinutes).toBeUndefined();
+
+    const off = await call(tools, "sessions_report_window", { minutes: null });
+    expect(off.json).toMatchObject({ reportWindowMinutes: null });
+    expect(String(off.json!.note)).toContain("as they arrive");
+    expect(store.getSession(mine.id).reportWindowMinutes).toBeUndefined();
+
+    // Out of bounds is the store's refusal, surfaced rather than swallowed.
+    const bad = await call(tools, "sessions_report_window", { minutes: 0 });
+    expect(bad.isError).toBe(true);
+
+    // And on the outward socket there is no session to set a cadence for.
+    const socket = wall(store);
+    const nobody = await call(socket, "sessions_report_window", { minutes: 25 });
+    expect(nobody.isError).toBe(true);
+    expect(nobody.text).toContain("no session");
+  });
+
+  test("status reports a window beside the mail it is holding, so held never reads as lost", async () => {
+    const { store, projectId } = engine();
+    const host = store.createSession({ projectId, title: "coordinator" });
+    const worker = store.createSession({ projectId, title: "worker" });
+    const tools = wall(store, { sessionId: host.id });
+    await call(tools, "sessions_report_window", { minutes: 25 });
+
+    // A routine report from a proven sender, which the window now holds.
+    store.submitTurn(worker.id, { runId: "run_source", input: "work" });
+    const token = store.claimTurn(worker.id, "worker_one")!.claim!.token;
+    store.markRunning(worker.id, "run_source", token);
+    store.submitAgentTurn(host.id, { runId: "run_report", input: "progress", intent: "report" }, { sessionId: worker.id, runId: "run_source", claimToken: token });
+
+    const status = await call(tools, "sessions_status", { sessionId: host.id });
+    expect(status.json!.reportWindowMinutes).toBe(25);
+    expect((status.json!.pendingNotifications as string[]).length).toBe(1);
+    expect(String(status.json!.note)).toContain("at most every 25 minutes");
+  });
+
   test("stop STOPS the session: the running turn ends, what was queued is settled, and it is idle after", async () => {
     // `sessions_stop` used to mean PAUSE — an agent stopping a peer latched it
     // until a person pressed Resume, while the Stop button did something else.
@@ -397,11 +502,55 @@ describe("driving a session", () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "worktree" })).json!.id as string;
+    await worktreeReady(store, id);
     fs.writeFileSync(path.join(store.getSession(id).workspace.path, "new-file.txt"), "written by the session\n");
 
     const diff = await call(tools, "sessions_diff", { sessionId: id });
     expect((diff.json!.files as Array<{ path: string }>).map((file) => file.path)).toContain("new-file.txt");
     expect(String(diff.json!.note)).toContain("Nothing here merges, lands or approves");
+    // Everything answered, so the answer says nothing about unknowns.
+    expect(diff.json!.filesIncomplete).toBeUndefined();
+    expect(diff.json!.askAgain).toBeUndefined();
+  });
+
+  test("a diff that timed out is never reported as a session that changed nothing", async () => {
+    /**
+     * WHY THIS TEST IS HERE AND NOT ONLY IN `git.test.ts` — issue #654.
+     *
+     * Of the three surfaces that read a diff, this is the one where a wrong
+     * answer travels furthest: an agent reads it, concludes "no changes", and
+     * reports that to a person in its own words, as fact. So the engine carrying
+     * `filesIncomplete` is worth nothing unless this tool's own `note` — the one
+     * line a reader skims — stops being able to say it.
+     *
+     * IT DRIVES A KILLED CHILD, never a plain non-zero: they are the same exit
+     * status, so a test of the second would have called this covered.
+     */
+    const { store, projectId } = engine();
+    const id = (await call(wall(store), "sessions_create", { projectId, envMode: "worktree" })).json!.id as string;
+    await worktreeReady(store, id);
+    const killed: GitRunner = (_cwd, args) =>
+      // Only the probe answers: the review has to get past "is this a
+      // repository" to reach the reads this issue is about.
+      args[0] === "rev-parse" && args[1] === "--is-inside-work-tree"
+        ? { status: 0, stdout: "true\n", stderr: "" }
+        : { status: GIT_TIMEOUT_STATUS, stdout: "", stderr: "git did not finish within 30000ms and was killed", timedOut: true };
+    const tools = wall(store, undefined, async (sessionId) =>
+      sessionDiff(killed, { cwd: store.getSession(sessionId).workspace.path, baseRef: "base000" }),
+    );
+
+    const diff = await call(tools, "sessions_diff", { sessionId: id });
+    expect(diff.isError).toBe(false);
+    // The unknowns are fields a structured reader can branch on…
+    expect(diff.json!).toMatchObject({ filesIncomplete: "timeout", commitsIncomplete: "timeout", baseUnverified: "timeout", askAgain: true });
+    expect(diff.json!.fileCount).toBe(0);
+    // …and they own the note, in the words an agent would otherwise have used.
+    const note = String(diff.json!.note);
+    expect(note).not.toContain("changed nothing in its checkout");
+    expect(note).toContain("do not report this session as having changed nothing");
+    expect(note).toContain("read it again");
+    // The tool's own description warns before the call, not only after it.
+    expect(tools.get("sessions_diff")!.description).toContain("An empty answer may be unread, not unchanged");
   });
 
   test("a session that does not exist refuses identically on every verb", async () => {
@@ -459,28 +608,176 @@ describe("sessions_read is bounded", () => {
     const whole = store.readEvents(id, 0);
     expect(whole.length).toBeGreaterThan(50);
 
-    const first = await call(tools, "sessions_read", { sessionId: id });
+    // `from: "start"` IS THE OLD DEFAULT, kept and named (#515). `mode:
+    // "events"` is the raw journal, which is no longer the default shape (#608);
+    // within it, the bare call reads the END — asserted below.
+    const first = await call(tools, "sessions_read", { sessionId: id, mode: "events", from: "start" });
     const page = first.json!.events as Array<{ id: number }>;
     expect(first.json!.more).toBe(true);
     expect(page.length).toBeLessThanOrEqual(50);
     // THE CURSOR IS THE LAST EVENT ON THE PAGE, never the last one read — a
     // cursor that ran ahead would silently drop everything the budget trimmed.
     expect(first.json!.cursor).toBe(page.at(-1)!.id);
-    expect(String(first.json!.note)).toContain("This is a PAGE, not the whole journal");
+    expect(String(first.json!.note)).toContain("A PAGE, not the whole journal");
     expect(String(first.json!.note)).toContain(`after: ${first.json!.cursor}`);
 
     // Paging forward loses NOTHING: the pages, concatenated, are the journal.
-    const seen: number[] = page.map((event) => event.id);
-    let cursor = first.json!.cursor as number;
+    // Only the rows a page is allowed to drop are missing — `verbose` keeps
+    // them, so this walk asks for them and expects every id back.
+    const seen: number[] = (
+      (await call(tools, "sessions_read", { sessionId: id, mode: "events", from: "start", verbose: true })).json!.events as Array<{ id: number }>
+    ).map((event) => event.id);
+    let cursor = seen.at(-1)!;
     let more = true;
     for (let guard = 0; more && guard < 20; guard++) {
-      const next = await call(tools, "sessions_read", { sessionId: id, after: cursor });
+      const next = await call(tools, "sessions_read", { sessionId: id, mode: "events", after: cursor, verbose: true });
       for (const event of next.json!.events as Array<{ id: number }>) seen.push(event.id);
       cursor = next.json!.cursor as number;
       more = next.json!.more === true;
     }
     expect(more).toBe(false);
     expect(seen).toEqual(whole.map((event) => event.id));
+  });
+
+  /**
+   * ── THE DEFAULT IS THE END OF THE JOURNAL (#515) ──────────────────────────
+   *
+   * The tool used to page from event one, every time. On the owner's engine
+   * that meant a session with 61,933 events answered "what has this been doing"
+   * with its first fifty — 1,238 pages away from anything current, and no
+   * caller ever walked them. The bare call is the one a model actually makes,
+   * so the bare call is the one that has to answer the question it means.
+   */
+  test("an events read with no cursor reads the LATEST page, and says what is behind it", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    for (let lap = 0; lap < 40; lap++) {
+      await call(tools, "sessions_send", { intent: "task", sessionId: id, input: `message ${lap}` });
+      store.stopTurn(id);
+    }
+    const whole = store.readEvents(id, 0);
+    const latest = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
+    const page = latest.json!.events as Array<{ id: number }>;
+    expect(page.length).toBeGreaterThan(0);
+    // The page ENDS at the journal's end — that is what "latest" means.
+    expect(page.at(-1)!.id).toBe(whole.at(-1)!.id);
+    expect(latest.json!.cursor).toBe(whole.at(-1)!.id);
+    // Nothing is AHEAD of the end, and the answer says so rather than handing
+    // back a `more` a caller would poll on forever.
+    expect(latest.json!.more).toBe(false);
+    // What is BEHIND it is a different question, and it has its own word.
+    expect(latest.json!.earlier).toBe(true);
+    expect(String(latest.json!.note)).toContain("LATEST");
+    expect(String(latest.json!.note)).toContain('from: "start"');
+    // And the page begins later than the journal does: this is the tail.
+    expect(page[0]!.id).toBeGreaterThan(whole[0]!.id);
+  });
+
+  test("a short journal comes back whole from the tail, with nothing behind it", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one" });
+    const read = await call(tools, "sessions_read", { sessionId: id, mode: "events", verbose: true });
+    expect(read.json!.earlier).toBe(false);
+    expect((read.json!.events as Array<{ id: number }>).map((event) => event.id)).toEqual(store.readEvents(id, 0).map((event) => event.id));
+  });
+
+  /**
+   * THE ROWS A PAGE SPENDS NOTHING ON, and the ones it always keeps.
+   *
+   * `usage.updated` is a meter reading; a request the POLICY opened and closed
+   * in one instant is "the engine allowed what it was always going to allow".
+   * A request a PERSON or a SESSION answered is a decision somebody made, and
+   * dropping it would hide exactly what an auditing caller came for.
+   */
+  test("meter rows and auto-approved requests are dropped, counted, and restored by verbose", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "work" });
+    const run = store.turns(id).at(-1)!.runId;
+    const token = store.claimTurn(id, "worker_budget")!.claim!.token;
+    store.markRunning(id, run, token);
+    store.ingestObservations(id, run, token, [
+      { kind: "usage", usage: { tokens: { input: 1, output: 1, cacheRead: 0, cacheCreate: 0 }, contextUsed: 2, contextMax: 10 } },
+    ]);
+
+    const quiet = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
+    const types = (quiet.json!.events as Array<{ type: string }>).map((event) => event.type);
+    expect(types).not.toContain("usage.updated");
+    expect(quiet.json!.quietEvents).toBeGreaterThan(0);
+
+    const loud = await call(tools, "sessions_read", { sessionId: id, mode: "events", verbose: true });
+    expect((loud.json!.events as Array<{ type: string }>).map((event) => event.type)).toContain("usage.updated");
+    expect(loud.json!.quietEvents).toBeUndefined();
+  });
+
+  /** A long session answered in a few hundred bytes a turn — what it was asked,
+   *  what it did, what it concluded. */
+  test("mode: summary folds turns instead of listing events", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    for (let lap = 0; lap < 8; lap++) {
+      await call(tools, "sessions_send", { intent: "task", sessionId: id, input: `line ${lap}\nand a second line nobody needs` });
+      store.stopTurn(id);
+    }
+    const summary = await call(tools, "sessions_read", { sessionId: id, mode: "summary" });
+    const turns = summary.json!.turns as Array<{ runId: string; asked: string }>;
+    expect(summary.json!.mode).toBe("summary");
+    expect(summary.json!.turnCount).toBe(8);
+    // The DEFAULT window, not every turn — and the FIRST line of each input.
+    expect(turns).toHaveLength(5);
+    expect(turns.at(-1)!.asked).toBe("line 7");
+    expect(summary.json!.events).toBeUndefined();
+    // Smaller than the events it stands in for, which is the entire point.
+    expect(summary.text.length).toBeLessThan((await call(tools, "sessions_read", { sessionId: id, mode: "events" })).text.length);
+  });
+
+  /**
+   * ── AND THE FOLD IS WHAT A BARE CALL GETS (#608) ──────────────────────────
+   *
+   * Measured: 8,568 characters of raw events on one turn, 9,107 and 12,953 on
+   * two others — one of them reporting `quietEvents: 69`, sixty-nine rows the
+   * tool had already judged not worth showing, inside a payload charged in full.
+   * Every one of those questions was "what has this session been doing", which
+   * is the shape below and a fifth of the size.
+   */
+  test("the bare call is the summary, and the raw journal has to be asked for", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    for (let lap = 0; lap < 8; lap++) {
+      await call(tools, "sessions_send", { intent: "task", sessionId: id, input: `line ${lap}` });
+      store.stopTurn(id);
+    }
+    const bare = await call(tools, "sessions_read", { sessionId: id });
+    expect(bare.json!.mode).toBe("summary");
+    expect(bare.json!.events).toBeUndefined();
+    // The description says so too — it is what a model reads while choosing.
+    expect(tools.get("sessions_read")!.description).toContain("by default a turn-by-turn summary");
+    expect(tools.get("sessions_read")!.description).toContain('mode: events');
+
+    // A CURSOR DOES NOT SILENTLY BUY THE EVENTS SHAPE BACK. The measured waste
+    // carried `after: 4100` on a turn that had made no read to get a cursor
+    // from, so "has an `after`" is not evidence that raw events were wanted.
+    // It still narrows WHICH events the summary's "did" lines are drawn from.
+    const withCursor = await call(tools, "sessions_read", { sessionId: id, after: 0 });
+    expect(withCursor.json!.mode).toBe("summary");
+
+    const raw = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
+    expect(raw.json!.mode).toBeUndefined();
+    expect((raw.json!.events as unknown[]).length).toBeGreaterThan(0);
+    expect(bare.text.length).toBeLessThan(raw.text.length);
+
+    // A RUN-SCOPED READ IS UNTOUCHED — a wake names a run, and that read was
+    // never the waste. It wins over the default outright.
+    const runId = store.turns(id).at(-1)!.runId;
+    const scoped = await call(tools, "sessions_read", { sessionId: id, runId });
+    expect(scoped.json!.mode).toBeUndefined();
+    expect(scoped.json!.runId).toBe(runId);
   });
 
   test("a run-scoped read answers with THAT turn's events and its final text, without paging", async () => {
@@ -686,17 +983,20 @@ describe("sessions_read is bounded", () => {
     expect(String(silent.json!.note)).toContain("no answer text");
   });
 
-  test("without a runId nothing changed: the same page, the same cursor", async () => {
-    // Backwards compatibility, asserted rather than assumed.
+  test("without a runId there is no run scoping: no runId, no answer, just events", async () => {
+    // Backwards compatibility, asserted rather than assumed. `from` is now
+    // where the PAGE begins rather than always zero — see the tail tests above.
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one" });
-    const read = await call(tools, "sessions_read", { sessionId: id });
-    expect(read.json!.from).toBe(0);
+    const read = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
     expect(read.json!.runId).toBeUndefined();
     expect(read.json!.result).toBeUndefined();
     expect((read.json!.events as unknown[]).length).toBeGreaterThan(0);
+    // An explicit cursor is still a forward walk from exactly there.
+    const forward = await call(tools, "sessions_read", { sessionId: id, mode: "events", after: 0 });
+    expect(forward.json!.from).toBe(0);
   });
 
   test("one enormous event is clamped and MARKED, and never squeezes the page to nothing", async () => {
@@ -705,7 +1005,7 @@ describe("sessions_read is bounded", () => {
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "x".repeat(60_000) });
 
-    const read = await call(tools, "sessions_read", { sessionId: id });
+    const read = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
     const text = read.text;
     // The clamp says where it happened rather than truncating silently.
     expect(text).toContain("more characters, not shown");
@@ -773,15 +1073,28 @@ describe("sessions_read returns the message a notice stands in for", () => {
     expect(read.json!.messageMore).toBe(false);
     expect(read.json!.messageIntent).toBe("report");
     /**
-     * AND IT ESCAPES THE EVENT CLAMP, which is the whole reason `message` is
-     * handed over from the TURN rather than left to be dug out of the journal.
-     * The same body inside `turn.accepted` is cut at 2,000 characters and
-     * marked — so a recipient that followed the notice into the events would
-     * have got a longer truncation of the thing it was fetching.
+     * AND IT IS HERE EXACTLY ONCE (#515).
+     *
+     * `message` is the copy that is whole and sliceable, so it is the one that
+     * stays. The same body used to land twice more in the same answer — inside
+     * the `turn.accepted` event's `input`, clamped to 2,000 characters, and
+     * again as that event's `agentNotice` — which made a 3,809-character
+     * message cost 34,669 bytes to fetch. Both are now a line naming where the
+     * text actually is, rather than a truncation of it a reader might act on.
      */
-    const accepted = (read.json!.events as Array<{ type: string; turn?: { input: string } }>).find((event) => event.type === "turn.accepted");
-    expect(accepted!.turn!.input).toContain("more characters, not shown");
+    const accepted = (read.json!.events as Array<{ type: string; turn?: { input: string; agentNotice?: string } }>).find(
+      (event) => event.type === "turn.accepted",
+    );
+    expect(accepted!.turn!.input).toContain("the `message` field");
+    expect(accepted!.turn!.input).not.toContain("The parser drops the column");
+    expect(accepted!.turn!.agentNotice).not.toContain("The parser drops the column");
     expect(String(read.json!.message)).not.toContain("more characters, not shown");
+    // A person's words are the one thing this may never strip: they live in
+    // that event and nowhere else.
+    store.submitTurn(id, { runId: "run_person", input: "the editor eats my cursor" });
+    const typed = await call(tools, "sessions_read", { sessionId: id, runId: "run_person" });
+    const theirs = (typed.json!.events as Array<{ type: string; turn?: { input: string } }>).find((event) => event.type === "turn.accepted");
+    expect(theirs!.turn!.input).toBe("the editor eats my cursor");
   });
 
   test("a body past the budget is read whole in verbatim slices", async () => {
@@ -814,9 +1127,19 @@ describe("sessions_read returns the message a notice stands in for", () => {
   test("the wall tells senders and recipients what actually travels", () => {
     const { store } = engine();
     const tools = wall(store);
-    expect(tools.get("sessions_send")!.description).toContain("THE RECIPIENT IS HANDED A NOTICE, NOT YOUR TEXT");
-    expect(tools.get("sessions_read")!.description).toContain("AND IT IS WHAT AN AGENT-MESSAGE NOTICE NAMES");
-    expect(tools.get("sessions_subscribe")!.description).toContain("so is every message a peer sends you");
+    expect(tools.get("sessions_send")!.description).toContain("handed a NOTICE naming sessions_read, not your text");
+    // The description names the call and the arguments; the mechanics of the
+    // notice moved to the telar skill with everything else that would not fit
+    // in 350 characters (#515), and both halves are asserted.
+    //
+    // THE PEER-MESSAGE HALF NOW RIDES ON `runId` RATHER THAN ON THE TOOL'S OWN
+    // PROSE (#563). The rule is unchanged and is still stated exactly once —
+    // where the caller is choosing the argument that fetches it — and the
+    // sentence it used to live in was one the Agent resent on every lap.
+    expect(JSON.stringify(toolInputSchema(tools.get("sessions_read")!.shape))).toContain("a peer message in full");
+    expect(TELAR_SKILL).toContain("A wake or a peer's message is a PING");
+    expect(TELAR_SKILL).toContain("sessions_read(sessionId, runId)");
+    expect(tools.get("sessions_subscribe")!.description).toContain("It is a PING");
   });
 });
 
@@ -880,7 +1203,10 @@ describe("subscribing and answering", () => {
     const subscribed = await call(tools, "sessions_subscribe", { sessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
     expect(subscribed.isError).toBe(false);
     expect(subscribed.json).toMatchObject({ subscriberSessionId: host.id, targetSessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
-    expect(String(subscribed.json!.note)).toContain("[wake");
+    // #550: the wake is a NOTIFICATION now, and the note says when it lands —
+    // `settled_only` by default, so it waits rather than interrupting.
+    expect(String(subscribed.json!.note)).toContain("woken with a notification");
+    expect(String(subscribed.json!.note)).toContain("waits for you to finish the turn you are in");
 
     const listed = await call(tools, "sessions_subscriptions");
     expect((listed.json!.subscriptions as unknown[]).length).toBe(1);
@@ -957,15 +1283,15 @@ describe("subscribing and answering", () => {
 describe("a warp child may not reach these tools", () => {
   test("every tool on the wall is denied to a warp child, by name", () => {
     // STRUCTURAL, not a copied list: the names come from the wall itself, so a
-    // thirteenth tool fails this until it is denied too. `sessions_create` is
+    // fourteenth tool fails this until it is denied too. `sessions_create` is
     // fan-out wearing another hat, and the rest are steering a session from
     // inside a script that cannot see it.
     const names = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
-    expect(names.length).toBe(13);
+    expect(names.length).toBe(14);
     for (const name of names) {
       expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(qualifyTelarTool(name));
     }
     // ANTI-VACUITY: the list is not simply "everything".
-    expect(WARP_CHILD_DISALLOWED_TOOLS).not.toContain(qualifyTelarTool("spool_list_items"));
+    expect(WARP_CHILD_DISALLOWED_TOOLS).not.toContain(qualifyTelarTool("display_open"));
   });
 });

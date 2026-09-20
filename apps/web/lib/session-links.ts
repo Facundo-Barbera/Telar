@@ -28,7 +28,7 @@
  * in the wrong place.
  */
 
-import { desktopBrowserBridge } from "@/components/browser-live";
+import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher } from "@/lib/hosts/client";
 

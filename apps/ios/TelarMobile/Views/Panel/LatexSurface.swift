@@ -37,7 +37,7 @@ struct LatexSurface: View {
                         diagnostics(status)
                     } else if statusError == nil {
                         Text("Nothing has been compiled in this session yet. Type a .tex path and press Compile, or ask the agent; its latex_compile lands here too.")
-                            .font(.system(size: 13)).foregroundStyle(Theme.textMuted)
+                            .font(.system(Theme.footnote)).foregroundStyle(Theme.textMuted)
                     }
                 }
                 .padding(12)
@@ -55,19 +55,19 @@ struct LatexSurface: View {
     private var header: some View {
         HStack(spacing: 8) {
             TextField(defaultFile.map { "Default: \($0)" } ?? "report/main.tex", text: $target)
-                .font(.system(size: 11, design: .monospaced))
+                .font(.system(Theme.caption, design: .monospaced))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .padding(.horizontal, 8).frame(height: 26)
+                .padding(.horizontal, 8).scaledHeight(26, relativeTo: .caption)
                 .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 6))
                 .accessibilityLabel("LaTeX document to compile")
             Button { Task { await compile() } } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: compiling ? "hourglass" : "play.fill").font(.system(size: 10))
-                    Text(compiling ? "Compiling…" : "Compile").font(.system(size: 12, weight: .medium))
+                    Image(systemName: compiling ? "hourglass" : "play.fill").font(.system(Theme.caption))
+                    Text(compiling ? "Compiling…" : "Compile").font(.system(Theme.footnote, weight: .medium))
                 }
                 .foregroundStyle(Theme.text)
-                .padding(.horizontal, 10).frame(height: 26)
+                .padding(.horizontal, 10).scaledHeight(26, relativeTo: .footnote)
                 .background(Theme.subtleStrong, in: RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)
@@ -78,8 +78,8 @@ struct LatexSurface: View {
             if let pdf = status?.pdfPath {
                 Button { panel.openFile(pdf) } label: {
                     HStack(spacing: 3) {
-                        Image(systemName: "doc.richtext").font(.system(size: 10))
-                        Text("Open PDF").font(.system(size: 12, weight: .medium))
+                        Image(systemName: "doc.richtext").font(.system(Theme.caption))
+                        Text("Open PDF").font(.system(Theme.footnote, weight: .medium))
                     }
                     .foregroundStyle(Theme.accent)
                 }
@@ -87,7 +87,7 @@ struct LatexSurface: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(height: 38)
+        .scaledHeight(38, relativeTo: .footnote)
         .background(Theme.sheet)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
     }
@@ -101,7 +101,7 @@ struct LatexSurface: View {
         case .never, .unknown: (status.rawValue, Theme.textMuted)
         }
         return Text(label)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(Theme.caption, weight: .semibold))
             .foregroundStyle(tone)
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(tone.opacity(0.12), in: Capsule())
@@ -109,8 +109,8 @@ struct LatexSurface: View {
 
     private func note(_ title: String, _ body: String, tone: Color) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(tone)
-            Text(body).font(.system(size: 12)).foregroundStyle(Theme.text).textSelection(.enabled)
+            Text(title).font(.system(Theme.footnote, weight: .semibold)).foregroundStyle(tone)
+            Text(body).font(.system(Theme.footnote)).foregroundStyle(Theme.text).textSelection(.enabled)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -122,11 +122,11 @@ struct LatexSurface: View {
         let warnings = status.diagnostics.filter { $0.severity == .warning }
         return VStack(alignment: .leading, spacing: 10) {
             if let path = status.path {
-                Text(path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                Text(path).font(.system(Theme.caption, design: .monospaced)).foregroundStyle(Theme.textMuted)
             }
             if status.diagnostics.isEmpty && status.status == .ok {
                 Label("Clean compile — no errors, no warnings.", systemImage: "checkmark.circle")
-                    .font(.system(size: 12)).foregroundStyle(Theme.statusEmerald)
+                    .font(.system(Theme.footnote)).foregroundStyle(Theme.statusEmerald)
             }
             ForEach(status.diagnostics) { diagnostic in
                 Button {
@@ -134,23 +134,23 @@ struct LatexSurface: View {
                 } label: {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: diagnostic.severity == .error ? "xmark.octagon" : "exclamationmark.triangle")
-                            .font(.system(size: 11))
+                            .font(.system(Theme.caption))
                             .foregroundStyle(diagnostic.severity == .error ? Theme.statusRed : Theme.statusAmber)
                             .padding(.top, 2)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(diagnostic.message).font(.system(size: 12)).foregroundStyle(Theme.text).multilineTextAlignment(.leading)
+                            Text(diagnostic.message).font(.system(Theme.footnote)).foregroundStyle(Theme.text).multilineTextAlignment(.leading)
                             HStack(spacing: 6) {
                                 if let file = diagnostic.file {
-                                    Text(diagnostic.line.map { "\(file):\($0)" } ?? file).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                                    Text(diagnostic.line.map { "\(file):\($0)" } ?? file).font(.system(Theme.caption, design: .monospaced)).foregroundStyle(Theme.textMuted)
                                 }
-                                if let code = diagnostic.code { Text(code).font(.system(size: 10)).foregroundStyle(Theme.textMuted) }
+                                if let code = diagnostic.code { Text(code).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted) }
                             }
                             if let suggestion = diagnostic.suggestion {
-                                Text(suggestion).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                                Text(suggestion).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                             }
                         }
                         Spacer(minLength: 0)
-                        if diagnostic.file != nil { Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(Theme.textMuted) }
+                        if diagnostic.file != nil { Image(systemName: "chevron.right").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted) }
                     }
                     .padding(8)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: 8))
@@ -164,8 +164,8 @@ struct LatexSurface: View {
                     withAnimation(.easeInOut(duration: 0.2)) { logOpen.toggle() }
                 } label: {
                     HStack(spacing: 5) {
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).rotationEffect(.degrees(logOpen ? 90 : 0))
-                        Text("Log tail").font(.system(size: 12, weight: .medium))
+                        Image(systemName: "chevron.right").font(.system(Theme.captionTiny, weight: .semibold)).rotationEffect(.degrees(logOpen ? 90 : 0))
+                        Text("Log tail").font(.system(Theme.footnote, weight: .medium))
                     }
                     .foregroundStyle(Theme.textMuted)
                 }
@@ -175,7 +175,7 @@ struct LatexSurface: View {
                 }
             }
             Text("\(errors.count) error\(errors.count == 1 ? "" : "s") · \(warnings.count) warning\(warnings.count == 1 ? "" : "s")")
-                .font(.system(size: 10)).foregroundStyle(Theme.textMuted)
+                .font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
         }
     }
 

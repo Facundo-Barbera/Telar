@@ -154,19 +154,20 @@ struct DevicesView: View {
     @ViewBuilder
     private func deviceRow(_ device: RemoteDevice, isSelf: Bool) -> some View {
         HStack(spacing: 12) {
+            // The row's 27pt square scales with its glyph (#674), the same
+            // icon column as SettingsKit's rows.
             Image(systemName: platformSymbol(device.platform))
-                .font(.system(size: 17))
                 .foregroundStyle(Theme.textMuted)
-                .frame(width: 27, height: 27)
+                .scaledGlyphBox(27, glyph: 17)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(device.name)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(.callout, weight: .semibold))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
                     if isSelf {
                         Text("This iPhone")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(Theme.caption, weight: .medium))
                             .foregroundStyle(Theme.accent)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 2)
@@ -174,7 +175,7 @@ struct DevicesView: View {
                     }
                 }
                 Text(subtitle(device))
-                    .font(.system(size: 13))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
                     .tabularNumbers()
             }
@@ -221,16 +222,16 @@ struct DevicesView: View {
     private func roleChip(_ role: String) -> some View {
         HStack(spacing: 5) {
             Image(systemName: role == "observer" ? "eye" : "checkmark.shield")
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(Theme.caption, weight: .medium))
             Text(role == "observer" ? "View only" : "Full")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(Theme.footnote, weight: .semibold))
             if canManage {
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium))
+                Image(systemName: "chevron.down").font(.system(Theme.captionTiny, weight: .medium))
             }
         }
         .foregroundStyle(role == "observer" ? Theme.statusAmber : Theme.text)
         .padding(.horizontal, 12)
-        .frame(height: 32)
+        .scaledHeight(32, relativeTo: .footnote)
         .background(Theme.subtle)
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))

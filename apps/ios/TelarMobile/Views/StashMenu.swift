@@ -29,7 +29,7 @@ struct StashSheet: View {
                             } label: {
                                 HStack(spacing: 10) {
                                     Image(systemName: entry.images.isEmpty ? "text.alignleft" : "photo.on.rectangle")
-                                        .font(.system(size: 14))
+                                        .font(.system(Theme.subhead))
                                         .foregroundStyle(Theme.textMuted)
                                         .frame(width: 20)
                                     VStack(alignment: .leading, spacing: 2) {
@@ -91,16 +91,18 @@ struct StashButton: View {
                 if hasDraft { onStash() } else { onOpen() }
             } label: {
                 ZStack(alignment: .topTrailing) {
+                    // The tray's circle scales with its glyph, the same
+                    // affordance as the composer's circles (#674). The count
+                    // badge above it has no frame and takes a token instead.
                     Image(systemName: hasDraft ? "tray.and.arrow.down" : "tray.full")
-                        .font(.system(size: 15))
                         .foregroundStyle(Theme.text)
-                        .frame(width: 44, height: 44)
+                        .scaledGlyphBox(44, glyph: 15)
                         .background(Theme.subtle)
                         .clipShape(Circle())
                         .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                     if count > 0 {
                         Text("\(count)")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(Theme.caption, weight: .semibold))
                             .foregroundStyle(Theme.primaryGlyph)
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Theme.accent, in: Capsule())

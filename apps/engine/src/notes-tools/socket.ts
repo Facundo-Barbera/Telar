@@ -1,7 +1,7 @@
 /**
  * THE NOTES SOCKET — the project notebook as an OUTWARD MCP server.
  *
- * The third door through `../mcp-socket.ts`, after the spool's and the sessions'
+ * The second door through `../mcp-socket.ts`, after the sessions wall's
  * and for the same stated reason: the user asked for "an API facing outwards for
  * this, for an implementation on another app". Any LLM client they own — Claude
  * Desktop, an agent in another repo, the app they are about to write — reaches

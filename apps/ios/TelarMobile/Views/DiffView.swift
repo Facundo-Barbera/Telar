@@ -14,6 +14,8 @@ struct DiffView: View {
     /// is how a diff is read there: several files at once, in place. A tap
     /// still pushes the full-page patch; this is the menu's half.
     @State private var expanded: Set<String> = []
+    /// The status letter's column, off the letter's own style (#674).
+    @ScaledMetric(relativeTo: .footnote) private var statusColumn: CGFloat = 14
     @Environment(\.panel) private var panel
 
     var body: some View {
@@ -44,10 +46,10 @@ struct DiffView: View {
                             ForEach(diff.commits) { commit in
                                 HStack(spacing: 10) {
                                     Text(commit.shortSha)
-                                        .font(.system(size: 12, design: .monospaced))
+                                        .font(.system(Theme.footnote, design: .monospaced))
                                         .foregroundStyle(Theme.textMuted)
                                     Text(commit.subject)
-                                        .font(.system(size: 14))
+                                        .font(.system(Theme.subhead))
                                         .foregroundStyle(Theme.text)
                                         .lineLimit(1)
                                 }
@@ -57,14 +59,19 @@ struct DiffView: View {
                             }
                         } header: {
                             Text("Commits")
-                                .font(.system(size: 13, weight: .medium))
+                                .font(.system(Theme.footnote, weight: .medium))
                                 .foregroundStyle(Theme.textMuted)
                         }
                     }
                     if diff.files.isEmpty && diff.commits.isEmpty {
-                        Text("No changes yet.")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Theme.textMuted)
+                        // "NO CHANGES YET" IS A CLAIM ABOUT THE CHECKOUT (#654),
+                        // and it is only safe when the reads that would have
+                        // contradicted it answered. A diff the engine killed
+                        // under load arrived here empty and this row read as a
+                        // session that had done no work.
+                        Text(diff.filesIncomplete == nil ? "No changes yet." : "Nothing was listed — which is not the same as nothing having changed.")
+                            .font(.system(Theme.subhead))
+                            .foregroundStyle(diff.filesIncomplete == nil ? Theme.textMuted : Theme.statusAmber)
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
                     }
@@ -101,31 +108,67 @@ struct DiffView: View {
             HStack(spacing: 8) {
                 if let branch = diff.branch {
                     Text(branch)
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(.system(Theme.footnote, design: .monospaced))
                         .foregroundStyle(Theme.textMuted)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 Text("+\(diff.linesAdded)")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(Theme.footnote, weight: .medium))
                     .foregroundStyle(Theme.statusEmerald)
                     .tabularNumbers()
                 Text("−\(diff.linesRemoved)")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(Theme.footnote, weight: .medium))
                     .foregroundStyle(Theme.statusRed)
                     .tabularNumbers()
             }
             if diff.base == nil {
                 Text("No recorded base — committed work is not included.")
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.statusAmber)
+            }
+            /// WHAT GIT DID NOT ANSWER (#654), above the rows rather than in
+            /// place of them: the files that arrived are real changes worth
+            /// reading, and the counts beside them are honest sums over those.
+            /// Three sentences because they are three different doubts — a
+            /// `git log` that was killed says nothing about the file list.
+            ///
+            /// PULL TO REFRESH IS THIS SCREEN'S "ask git again", and a timeout
+            /// is the failure that clears on its own, so it is named.
+            ForEach(unknowns(diff), id: \.self) { sentence in
+                Text(sentence)
+                    .font(.system(Theme.footnote))
+                    .foregroundStyle(Theme.statusAmber)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if diff.truncated {
                 Text("File list truncated.")
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
             }
         }
+    }
+
+    private func unknowns(_ diff: SessionDiff) -> [String] {
+        var sentences: [String] = []
+        if let files = diff.filesIncomplete {
+            sentences.append(
+                files == "timeout"
+                    ? "git did not answer in time — this list may be missing files and the counts may be low. Pull to ask again."
+                    : "git could not read this checkout's changes — this list may be missing files and the counts may be low."
+            )
+        }
+        if let commits = diff.commitsIncomplete {
+            sentences.append(
+                commits == "timeout"
+                    ? "git did not answer in time for this session's commits — work it has already committed may not be listed. Pull to ask again."
+                    : "git could not read this session's commits — work it has already committed may not be listed."
+            )
+        }
+        if diff.baseUnverified != nil {
+            sentences.append("Nothing confirmed the starting point — it is the one recorded when this checkout was cut.")
+        }
+        return sentences
     }
 
     /// The desktop's diff-row menu. A DELETED FILE HAS NOTHING TO OPEN, so
@@ -151,30 +194,35 @@ struct DiffView: View {
 
     private func fileRow(_ file: GitFileChange) -> some View {
         HStack(spacing: 10) {
+            // THE STATUS LETTER'S COLUMN SCALES WITH THE LETTER (#674). The
+            // frame is width-only, so the sweep converted the font under the
+            // both-dimensions rule and was right to — but one dimension is
+            // still a dimension, and at the accessibility sizes a bold M in
+            // 14 points of column clips sideways. Same style as the letter.
             Text(statusLetter(file.status))
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .font(.system(Theme.footnote, design: .monospaced, weight: .bold))
                 .foregroundStyle(statusColor(file.status))
-                .frame(width: 14)
+                .frame(width: statusColumn)
             Text(file.path)
-                .font(.system(size: 13, design: .monospaced))
+                .font(.system(Theme.footnote, design: .monospaced))
                 .foregroundStyle(Theme.text)
                 .lineLimit(1)
                 .truncationMode(.head)
             Spacer(minLength: 8)
             if file.binary == true {
                 Text("binary")
-                    .font(.system(size: 11))
+                    .font(.system(Theme.caption))
                     .foregroundStyle(Theme.textMuted)
             } else {
                 if let added = file.linesAdded {
                     Text("+\(added)")
-                        .font(.system(size: 12))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.statusEmerald)
                         .tabularNumbers()
                 }
                 if let removed = file.linesRemoved {
                     Text("−\(removed)")
-                        .font(.system(size: 12))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.statusRed)
                         .tabularNumbers()
                 }
@@ -214,8 +262,20 @@ struct PatchView: View {
     var body: some View {
         Group {
             if let patch {
-                if patch.binary {
+                // GIT DID NOT ANSWER IS NOT A FACT ABOUT THE FILE (#654). An
+                // unread patch used to arrive as the empty string, and an empty
+                // non-binary patch drew as a blank page — or, on the row below,
+                // as "binary".
+                if let incomplete = patch.incomplete {
+                    ContentUnavailableView(
+                        "git did not read this patch",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(incomplete == "timeout" ? "It did not answer in time. Open it again." : "It could not produce a diff for this file.")
+                    )
+                } else if patch.binary {
                     ContentUnavailableView("Binary file", systemImage: "doc", description: Text("No text diff to show."))
+                } else if patch.patch.isEmpty {
+                    ContentUnavailableView("No textual difference", systemImage: "equal", description: Text("git compared this file and found nothing changed."))
                 } else {
                     ScrollView([.vertical, .horizontal]) {
                         PatchLines(patch: patch.patch).padding(12)
@@ -256,14 +316,14 @@ struct PatchLines: View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(shown.enumerated()), id: \.offset) { _, line in
                 Text(String(line))
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(Theme.caption, design: .monospaced))
                     .foregroundStyle(patchLineColor(line))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(patchLineBackground(line))
             }
             if shown.count < all.count {
                 Text("\(all.count - shown.count) more lines — tap the row to read the whole patch.")
-                    .font(.system(size: 11))
+                    .font(.system(Theme.caption))
                     .foregroundStyle(Theme.textMuted)
                     .padding(.top, 4)
             }
@@ -287,9 +347,18 @@ private struct InlinePatch: View {
     var body: some View {
         Group {
             if let patch {
-                if patch.binary {
+                // Same three cases the pushed page tells apart — see `PatchView`.
+                if let incomplete = patch.incomplete {
+                    Text(incomplete == "timeout" ? "git did not answer in time — try again." : "git could not produce a diff for this file.")
+                        .font(.system(Theme.caption))
+                        .foregroundStyle(Theme.statusAmber)
+                } else if patch.binary {
                     Text("Binary file — no text diff to show.")
-                        .font(.system(size: 11))
+                        .font(.system(Theme.caption))
+                        .foregroundStyle(Theme.textMuted)
+                } else if patch.patch.isEmpty {
+                    Text("No textual difference.")
+                        .font(.system(Theme.caption))
                         .foregroundStyle(Theme.textMuted)
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -298,7 +367,7 @@ private struct InlinePatch: View {
                     .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             } else if let error {
-                Text(error).font(.system(size: 11)).foregroundStyle(Theme.statusRed)
+                Text(error).font(.system(Theme.caption)).foregroundStyle(Theme.statusRed)
             } else {
                 ProgressView().frame(maxWidth: .infinity)
             }

@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
+  type ClaudeConversation,
   type EngineRequest,
   type RequestDecision,
   type Item,
@@ -22,14 +23,16 @@ import {
   type Turn,
   type TurnAttachment,
   type TurnState,
+  workspacePath,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { rememberedProjectName, writeFrontDoorNote } from "@/lib/composer-project";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { actionableRequests } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
+import { newSessionId } from "@/lib/session-mutations";
 import { sessionLink } from "@/lib/session-link";
 import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
@@ -43,20 +46,24 @@ import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { isCompactDraft } from "@/lib/composer-completions";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
+import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
 import { insertReference } from "@/lib/drag-reference";
 import { sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/lib/engine/session-connection";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows } from "@/lib/engine/session-sync";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
+import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
 import { decideStale } from "@/lib/stale-state";
-import { Composer } from "./composer";
+import { Composer, MAX_ATTACHMENTS } from "./composer";
 // `sessionWakeLabel` lives in ./transcript because BOTH surfaces name a wake
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
-// turn header here. One vocabulary, or the two spellings drift apart.
-import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
-import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
-import { desktopBrowserBridge } from "./browser-live";
+// turn header here. It is now an adapter onto `notificationLabel`, which is the
+// one function every notification verb in this app comes from (#572) — so this
+// header cannot name a happening differently from the row below it.
+import { ActivityGroup, groupNotificationTurns, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
+import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
@@ -94,6 +101,7 @@ import {
   type EditorState,
   type OpenIntent,
 } from "@/lib/editor-workspace";
+import { forgeFromLegacyTabs, forgeParams, openForge, readForgeOpen } from "@/lib/forge-workspace";
 import {
   buildSessionActionMenuItems,
   type SessionActionHandlers,
@@ -106,7 +114,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { ConversationContent, ConversationScrollButton, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
+import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
 import { Message, MessageContent, MessageMenu, MessageResponse } from "@/components/ui/message";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -127,10 +135,6 @@ const api = createEngineApi();
  *  hold their minimum widths at once. Chosen as rail (16rem) + conversation
  *  floor (24rem) + panel floor (20rem), rounded up. */
 const NARROW_WINDOW = 1280;
-/** The masthead's "Spin into loom" entrance — off until the flow is ready to
- *  live in every session's header. See the render site for why off means
- *  absent rather than greyed. */
-const SPIN_ENTRANCE_ENABLED = false;
 const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, string> = {
   completed: "Completed",
   failed: "Failed",
@@ -267,6 +271,14 @@ function usePanelPresence(open: boolean, durationMs = 200): { mounted: boolean; 
  * NO BOTTOM BORDER, and a translucent blurred ground instead. The transcript
  * scrolls UNDER this bar; a hard rule would cut the column, where
  * `bg-background/65 backdrop-blur` lets the text approach and dissolve.
+ *
+ * NOT ON THE SOLO ROUTE, WHICH IS WHY THIS TAKES NO `solo` PROP (#576). The
+ * headset's plate carries a transcript, a composer and nothing that spans the
+ * top of the window — so the bar is not rendered there at all, rather than
+ * rendered thinner or emptier. `SoloTools` below carries the two controls that
+ * survived it; everything else here — the breadcrumb out to the canvas, the
+ * title, the rename and the action menu — is gone from that route by decision,
+ * not by oversight. A conversation a headset cannot leave is the point of it.
  */
 function SessionMasthead({
   projectId,
@@ -276,11 +288,13 @@ function SessionMasthead({
   session,
   onRename,
   panel,
-  readOnly = false,
   onWatchRun,
   menu,
 }: {
-  projectId: string;
+  /** Absent for a conversation that belongs to no project (#526) — the
+   *  breadcrumb then names Telar rather than linking into a project that is
+   *  not there. */
+  projectId?: string;
   /** Which Mac the project is on — the breadcrumb's link must stay there. */
   hostId: string;
   /** Resolved from THIS host's project record. Absent until it loads, and
@@ -300,9 +314,6 @@ function SessionMasthead({
    *  masthead stays identity-only and does not acquire the session record's
    *  items, tasks, turns and events just to hand them straight through. */
   panel: React.ReactNode;
-  /** Observe mode: the title is a fact, not a field, and there is no spin —
-   *  a loom-owned session cannot be spun into another loom. */
-  readOnly?: boolean;
   /** Opens the right panel's Run tab. Monitoring lives there; the masthead's
    *  Run control only configures, starts and stops. */
   onWatchRun?: () => void;
@@ -415,12 +426,20 @@ function SessionMasthead({
               project — on its canvas, which is what "this project, right now"
               looks like. It pointed at the retired `/projects` table, which named
               every project and therefore answered a question nobody had asked. */}
-          <Link
-            href={canvasHref(projectId, hostId)}
-            className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {projectLabel({ name: projectName, hostName: hostName(hostId), resolved: projectResolved === true })}
-          </Link>
+          {/* A CONVERSATION WITH NO PROJECT HAS NO CRUMB TO PRESS. It reads as
+              plain text rather than as a dead link or a link into
+              `/projects/undefined`, and it says "Main" because that is what the
+              rail's own entry calls this one thing (#526). */}
+          {projectId === undefined ? (
+            <span className="shrink-0 truncate text-muted-foreground">Main</span>
+          ) : (
+            <Link
+              href={canvasHref(projectId, hostId)}
+              className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {projectLabel({ name: projectName, hostName: hostName(hostId), resolved: projectResolved === true })}
+            </Link>
+          )}
           <span className="text-border">/</span>
           {editing ? (
             <Input
@@ -468,7 +487,7 @@ function SessionMasthead({
                     }}
                     onDoubleClick={() => {
                       cancelPendingOpen();
-                      if (!readOnly) beginRename();
+                      beginRename();
                     }}
                   >
                     {title}
@@ -524,7 +543,12 @@ function SessionMasthead({
         {/* KEYED BY HOST AND SESSION: a different machine is a different
             mount, so no answer, latch or poll from the previous one can reach
             this one. Two hosts can hold the same session id. */}
-        {session && !readOnly && (
+        {/* A RUN IS A PROCESS IN A DIRECTORY, so a conversation with neither
+            does not offer one (#526). Absent rather than disabled: a greyed
+            Run button invites somebody to work out why, and the answer —
+            "this conversation has no checkout" — is already the shape of the
+            screen around it. */}
+        {session && workspacePath(session.workspace) !== undefined && (
           <RunHeaderControl
             key={`${hostId}:${session.id}`}
             sessionId={session.id}
@@ -536,32 +560,70 @@ function SessionMasthead({
             desktop shell, and states its own limits (remote sessions). */}
         {/* No `hostLabel`: this masthead knows the host's ID, not its name, and
             "another machine" is true where a guessed name would not be. */}
-        {session && <OpenWorkspaceButton path={session.workspace.path} hostId={hostId} />}
-        {/* SPIN INTO LOOM (docs/loom-model-v1.md): when this conversation has
-            produced enough shape, hand it to the weaver. The session becomes
-            the loom's origin and detaches — it leaves this surface and lives
-            in the loom's room from then on.
-
-            PARKED, NOT SHIPPED. The flow behind this glyph needs more work
-            before it earns a place in every session's header, and a disabled
-            button would be chrome apologising for itself — so nothing renders
-            until the flag flips. The Looms place stays reachable through the
-            place switcher; only this entrance is closed. */}
-        {SPIN_ENTRANCE_ENABLED && session && !readOnly && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Spin into loom"
-            title="Spin into loom"
-            render={<Link href={`/looms/new?spin=${encodeURIComponent(session.id)}`} />}
-          >
-            <WorkflowIcon />
-          </Button>
+        {session && workspacePath(session.workspace) !== undefined && (
+          <OpenWorkspaceButton path={workspacePath(session.workspace)} hostId={hostId} />
         )}
         {panel}
       </div>
     </header>
+  );
+}
+
+/**
+ * THE TWO CONTROLS THAT OUTLIVED THE MASTHEAD, on the solo route only (#576).
+ *
+ * The bar is gone from the headset's plate; these are not, and the reason is
+ * the same for both: each is THE LAST DOOR to something the route still needs.
+ *
+ *  - NOTES. `WorkspaceInspector` is the only place in the whole app a note can
+ *    be WRITTEN — `ProjectNoteEditor` has no other mount site. The composer's
+ *    `@` menu reads the same notebook, so dropping this would have left the
+ *    headset able to quote notes and unable to write one, which is a worse
+ *    screen than either having it or not.
+ *  - RUN. `RunHeaderControl` likewise has no second mount site: setup, start
+ *    and stop live here or nowhere. Only "Watch output" went, because watching
+ *    happens in a right panel this route does not have.
+ *
+ * IT COSTS THE TRANSCRIPT NO HEIGHT, which is the whole reason the route
+ * exists. A zero-height flex child (`h-0`) holds an absolutely-positioned
+ * cluster, so the column lays out exactly as if nothing were here and the
+ * conversation still starts at the top of the plate.
+ *
+ * IT DOES NOT SIT OVER THE WORDS EITHER. The transcript is centred at
+ * `max-w-[50rem]`, so on the 1100px plate this route is built for there is
+ * ~150px of gutter each side; two `size-7` buttons and their inset come to
+ * ~76px, and the cluster lives in that gutter rather than on the text.
+ */
+function SoloTools({
+  projectId,
+  hostId,
+  session,
+}: {
+  /** The route's project. `session.projectId` wins once the record lands — same
+   *  precedence the masthead's own inspector used. */
+  projectId?: string;
+  hostId: string;
+  session?: Session;
+}) {
+  const notesProjectId = session?.projectId ?? projectId;
+  /** A run is a process in a directory, so a conversation with neither offers
+   *  none — the same rule the masthead stated, kept rather than restated. */
+  const runnable = session !== undefined && workspacePath(session.workspace) !== undefined;
+  // Nothing to carry: no empty box, no stray inset over the first turn.
+  if (notesProjectId === undefined && !runnable) return null;
+  return (
+    <div className="relative z-20 h-0 shrink-0">
+      {/* `app-no-drag` for the same reason the masthead's cluster had it: these
+          are controls, and on the desktop shell the region they sit in is the
+          window's own titlebar band. */}
+      <div className="app-no-drag absolute right-3 top-3 flex items-center gap-2">
+        {/* KEYED BY HOST AND SESSION, as in the masthead: a different machine is
+            a different mount, so no answer or poll from the previous one can
+            reach this one. No `onWatchOutput` — there is nowhere to watch. */}
+        {runnable && <RunHeaderControl key={`${hostId}:${session.id}`} sessionId={session.id} hostId={hostId} />}
+        {notesProjectId !== undefined && <WorkspaceInspector projectId={notesProjectId} />}
+      </div>
+    </div>
   );
 }
 
@@ -607,13 +669,13 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
  * ONE TURN, RENDERED — your message, then everything the agent did about it.
  *
  * EXPORTED, AND IT COSTS NOTHING TO EXPORT: this component reads `projectId`
- * zero times. It was written for the project cockpit and turns out to be the
- * shared conversation shell the Spool's master chat needed — the extraction the
+ * zero times. It was written for the project cockpit and turns out to be a
+ * project-agnostic conversation shell — the extraction the
  * donor planned, already done by accident because nothing in a rendered turn is
  * a property of a repository.
  *
- * So the master chat consumes THIS rather than hand-rebuilding a second
- * transcript. The donor's own rule for that situation was to stop rather than
+ * So any second transcript surface consumes THIS rather than hand-rebuilding
+ * one. The donor's own rule for that situation was to stop rather than
  * build the second one, and the reason is visible here: approvals, sub-agent
  * chips, the activity fold, the live step window and the ambiguous-turn recovery
  * are all decided in this function. A copy would start identical and drift.
@@ -697,50 +759,7 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
   );
 }
 
-/**
- * ONE FOLD PER PASSIVE REPORT (#239).
- *
- * A routine peer report used to be wrapped in a SECOND disclosure here — a
- * "Session activity · report received" row whose only child was the turn body,
- * whose only child in turn is the `AgentMessageBubble` that ALREADY collapses a
- * peer's message to its notice. A passive turn never runs (the engine completes
- * it on arrival with no items and no result — see `state.ts`, `passive`), so
- * that wrapper added nothing but a second chevron: the reader had to open two
- * folds, one nested inside the other, to reach one report.
- *
- * The bubble is the fold, and it is the SAME one a peer's message gets when it
- * lands mid-turn as a steered row — which is the point. A report should not look
- * like a different kind of thing for having arrived between turns rather than
- * during one.
- */
-export { SessionTurnBody as SessionTurn };
-
-function SessionTurnBody({
-  turn,
-  requests,
-  sending,
-  live,
-  now,
-  quiet = false,
-  onDecide,
-  onRetry,
-  onOpenAgent,
-  onOpenTab,
-  onResumeNow,
-  onInsert,
-  onOpenFile,
-  onOpenFileInNewTab,
-  roster = [],
-}: {
-  /**
-   * CONVERSATION FIRST, TELEMETRY BEHIND A FOLD. The Spool's chat sets this:
-   * there, a settled turn's step summary and token count read as telemetry
-   * presented as conversation, so both fold behind one quiet disclosure and
-   * the answer leads. The cockpit leaves it unset and renders exactly as it
-   * always has — a LIVE turn ignores it too, because the step window is the
-   * one part of the work worth watching while it happens.
-   */
-  quiet?: boolean;
+type SessionTurnProps = {
   requests: EngineRequest[];
   onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
   /** Pressing a sub-agent's chip: the transcript names it, the cockpit opens
@@ -769,17 +788,7 @@ function SessionTurnBody({
   sending: boolean;
   /** This turn is the one currently executing. Drives the live step window. */
   live: boolean;
-  now: number;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
-  /** Abandon an ambiguous run's execution and keep talking — the recovery
-   *  card's primary verb. Distinct from `onContinue`, which prepares a draft on
-   *  an ordinary FAILED turn and submits nothing. */
-  /** A held message the person re-read and still means — it runs in its
-   *  original place in the queue. */
-  /** ...or no longer wants. An ordinary stop; it is still a queued turn. */
-  /** How many messages are queued behind an undecided ambiguous turn. The
-   *  engine holds them; the card says so rather than letting the session look
-   *  stuck. */
   /** Offered on the ONE failed turn the session can continue from (see
    *  `recoverableFailedTurn`). Absent everywhere else — the cockpit decides,
    *  the turn only renders. */
@@ -787,7 +796,202 @@ function SessionTurnBody({
   /** Don't wait for the usage limit to lift. Offered only on a `rate_limited`
    *  failure; the cockpit decides, the turn only renders. */
   onResumeNow?: () => void;
-}) {
+};
+
+/**
+ * THE GESTURES WHOSE PRESENCE CHANGES THE PICTURE.
+ *
+ * Their IDENTITY does not, and that is the one liberty `sameTurnRender` takes:
+ * the cockpit writes most of these as inline arrows, so comparing them would
+ * mean never bailing out at all. None is read during a render — they run on a
+ * press — and each is a thin router into cockpit state (`showPanelTab`,
+ * `decideRequest`) reached through setters rather than a captured value. A
+ * turn's own `runId` is the only thing the closures below bind, and React's key
+ * means a memoised turn is never handed another turn's props.
+ */
+const TURN_GESTURES = ["onOpenAgent", "onOpenTab", "onInsert", "onOpenFile", "onOpenFileInNewTab", "onContinue", "onResumeNow"] as const;
+
+/**
+ * WHETHER TWO READINGS OF A TURN WOULD DRAW THE SAME THING (#498).
+ *
+ * The cockpit tails once a second, and any queue-changing event brings a
+ * companion snapshot whose rows are fresh objects off `JSON.parse`. The
+ * projector rebuilds every turn from those (`createJournalProjector`'s whole-
+ * journal fallback), so an ordinary tick during a live run handed all ten
+ * mounted turns a new-but-identical `JournalTurn` — and React re-rendered the
+ * lot. What changed was one turn; what re-rendered was the conversation.
+ *
+ * SO THIS COMPARES CONTENT, NOT IDENTITY. Identity is still the fast path (the
+ * projector reuses a settled turn's fold, so `prev.turn === next.turn` is the
+ * common case); everything below it is the fallback for the snapshot tick.
+ *
+ * `prompt` IS DELIBERATELY NOT READ. It is the turn's `input` row, which the
+ * engine writes once and never rewrites, and the `runId` key means this
+ * function only ever compares one turn against a later reading of itself.
+ */
+function sameTurnRender(prev: SessionTurnProps, next: SessionTurnProps): boolean {
+  if (prev.live !== next.live || prev.sending !== next.sending) return false;
+  for (const gesture of TURN_GESTURES) if (Boolean(prev[gesture]) !== Boolean(next[gesture])) return false;
+  if (!sameRequests(prev.requests, next.requests)) return false;
+  // The roster is read by ONE row — the wake-up line — and only on a turn that
+  // names the task that woke it. Everywhere else it is a prop the body never
+  // opens, so comparing it would be work for an answer nobody reads.
+  if (next.turn.wokenBy !== undefined && !sameRoster(prev.roster, next.roster)) return false;
+  return sameTurnContent(prev.turn, next.turn);
+}
+
+function sameRequests(prev: readonly EngineRequest[], next: readonly EngineRequest[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    if (before.id !== after.id || before.state !== after.state || before.decision !== after.decision) return false;
+  }
+  return true;
+}
+
+function sameRoster(prev: readonly JournalTask[] = [], next: readonly JournalTask[] = []): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    // What the wake-up row draws off a task: which one it is, and its name.
+    if (before.id !== after.id || before.title !== after.title || before.kind !== after.kind) return false;
+  }
+  return true;
+}
+
+/** Every field of a turn the body branches on or prints. */
+function sameTurnContent(prev: JournalTurn, next: JournalTurn): boolean {
+  if (prev === next) return true;
+  return (
+    prev.runId === next.runId &&
+    prev.state === next.state &&
+    prev.held === next.held &&
+    prev.heldReason === next.heldReason &&
+    prev.kind === next.kind &&
+    prev.origin === next.origin &&
+    prev.wokenBy === next.wokenBy &&
+    prev.wakeReason?.kind === next.wakeReason?.kind &&
+    prev.wakeReason?.sessionId === next.wakeReason?.sessionId &&
+    prev.sender?.sessionId === next.sender?.sessionId &&
+    prev.agentDelivery === next.agentDelivery &&
+    prev.agentIntent === next.agentIntent &&
+    prev.agentNotice === next.agentNotice &&
+    prev.notification?.summary === next.notification?.summary &&
+    prev.notification?.deliveries === next.notification?.deliveries &&
+    prev.assignmentScope === next.assignmentScope &&
+    prev.attachments?.length === next.attachments?.length &&
+    prev.startedAt === next.startedAt &&
+    prev.lastActivityAt === next.lastActivityAt &&
+    prev.resultText === next.resultText &&
+    prev.failure === next.failure &&
+    prev.failureCode === next.failureCode &&
+    prev.resumeAt === next.resumeAt &&
+    prev.limitType === next.limitType &&
+    prev.resumedAfterRateLimit === next.resumedAfterRateLimit &&
+    prev.usage?.tokens.input === next.usage?.tokens.input &&
+    prev.usage?.tokens.output === next.usage?.tokens.output &&
+    sameItems(prev.items, next.items) &&
+    sameTurnTasks(prev.tasks, next.tasks)
+  );
+}
+
+/**
+ * THE ITEM IDS AND THE TEXT, which is what the issue calls the hash.
+ *
+ * The string itself rather than a digest of it: JavaScript compares equal
+ * strings by length first and interned ones by pointer, so hashing would only
+ * be a slower way of reading every character.
+ */
+function sameItems(prev: readonly JournalItem[], next: readonly JournalItem[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    if (before.id !== after.id || before.status !== after.status || before.taskId !== after.taskId) return false;
+    if (before.detail !== after.detail) {
+      /**
+       * A ROW STILL OPEN CAN CHANGE WITHOUT CHANGING ITS STATUS — a browser step
+       * moving to a new URL, a command growing its output preview. Such a row is
+       * on the live turn by construction, and the live turn is re-rendering
+       * anyway, so answering "changed" costs nothing. A CLOSED row's detail is
+       * terminal: the fresh object is the same snapshot read twice.
+       */
+      if (after.status === "inProgress" || before.detail.type !== after.detail.type) return false;
+    }
+    if (itemText(before) !== itemText(after)) return false;
+  }
+  return true;
+}
+
+/** A turn's own sub-agents: the chips, and what each one says. */
+function sameTurnTasks(prev: readonly JournalTask[], next: readonly JournalTask[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    if (
+      before.id !== after.id ||
+      before.state !== after.state ||
+      before.kind !== after.kind ||
+      before.title !== after.title ||
+      before.backgrounded !== after.backgrounded ||
+      before.resultText !== after.resultText ||
+      before.failure !== after.failure ||
+      before.items.length !== after.items.length
+    ) {
+      return false;
+    }
+    if (!sameItems(before.items, after.items)) return false;
+  }
+  return true;
+}
+
+/**
+ * ONE FOLD PER PASSIVE REPORT (#239).
+ *
+ * A routine peer report used to be wrapped in a SECOND disclosure here — a
+ * "Session activity · report received" row whose only child was the turn body,
+ * whose only child in turn is the `AgentMessageBubble` that ALREADY collapses a
+ * peer's message to its notice. A passive turn never runs (the engine completes
+ * it on arrival with no items and no result — see `state.ts`, `passive`), so
+ * that wrapper added nothing but a second chevron: the reader had to open two
+ * folds, one nested inside the other, to reach one report.
+ *
+ * The bubble is the fold, and it is the SAME one a peer's message gets when it
+ * lands mid-turn as a steered row — which is the point. A report should not look
+ * like a different kind of thing for having arrived between turns rather than
+ * during one.
+ *
+ * MEMOISED, on what it DRAWS rather than on what it is handed (#498) — see
+ * `sameTurnRender` below for the whole argument.
+ */
+export const SessionTurn = memo(SessionTurnBody, sameTurnRender);
+
+function SessionTurnBody({
+  turn,
+  requests,
+  sending,
+  live,
+  onDecide,
+  onRetry,
+  onOpenAgent,
+  onOpenTab,
+  onResumeNow,
+  onInsert,
+  onOpenFile,
+  onOpenFileInNewTab,
+  roster = [],
+}: SessionTurnProps) {
   /**
    * THE CLOSING PROSE IS SEPARATED FROM THE WORK.
    *
@@ -815,7 +1019,7 @@ function SessionTurnBody({
    * `responses.length === 1` is every turn nobody steered, and it renders
    * exactly as it did before. See `splitAtMessageBoundaries`.
    */
-  const responses = splitAtMessageBoundaries(turn.items);
+  const responses = splitAtMessageBoundaries(withoutOpeningNotification(turn));
   const answering = responses.at(-1)!;
   const earlier = responses.slice(0, -1);
   // The closing-prose split applies to the LAST response only: that is the one
@@ -824,10 +1028,30 @@ function SessionTurnBody({
   const activity = lastProse === -1 ? answering.items : answering.items.slice(0, lastProse);
   const closing = lastProse === -1 ? [] : answering.items.slice(lastProse);
   const streamedAnswer = closing.some((item) => itemText(item));
-  /** The quiet fold's own toggle. Per turn, never persisted — looking at how
-   *  one answer was made is a glance, not a mode. */
-  const [workShown, setWorkShown] = useState(false);
-  const folded = quiet && !live;
+  /**
+   * AN ANSWER AREA WITH NOTHING IN IT IS NOT DRAWN — issue #577.
+   *
+   * The assistant's lane below is unconditional, so a turn that has produced
+   * nothing yet — a wake the engine queued behind the work in flight — still
+   * paid for an empty flex child and the gap above it. Under a one-line
+   * notification row that gap is most of the row's own height, and it read as
+   * an answer that had not loaded.
+   *
+   * IT LISTS WHAT THE LANE DRAWS, and nothing else: add a row down there and it
+   * belongs in this expression too, or a turn will render it invisibly.
+   */
+  const answerLane =
+    live ||
+    requests.length > 0 ||
+    answering.items.length > 0 ||
+    Boolean(turn.resultText) ||
+    Boolean(turn.failure) ||
+    Boolean(turn.usage) ||
+    turn.resumedAfterRateLimit !== undefined ||
+    turn.state === "stopped" ||
+    turn.state === "discarded" ||
+    turn.state === "failed";
+
 
   /**
    * THE COMPACTION GESTURE IS NOT A MESSAGE. A press of the Compact button
@@ -864,7 +1088,12 @@ function SessionTurnBody({
       {/* THE ORDINARY MESSAGE, from the one component that defines what that
           looks like — the same one a message steered into a running turn now
           uses, so the two cannot drift apart. See `conversation-message.tsx`. */}
-      {turn.origin !== "provider" && turn.origin !== "session" && (
+      {/* AN IMPORT TURN HAS NO MESSAGE. `prompt` is the engine's own line about
+          an adopted conversation (#616) — nobody typed it, and drawing it in a
+          bubble would be the `/compact` mistake again, with a whole
+          conversation's history underneath it rather than one row. Its own
+          first item says what happened. */}
+      {turn.kind !== "import" && turn.origin !== "provider" && turn.origin !== "session" && (
         // `markdown={false}`: this is the draft the person typed, chips and
         // all — "Copy as Markdown" would offer the same string again under a
         // name that claims something about it which is not true.
@@ -882,7 +1111,13 @@ function SessionTurnBody({
               model. No human typed anything, so no bubble: the wake-up is a
               row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
               turn's work follows it exactly as after any other row. */}
-          {turn.origin === "session" && turn.sender ? (
+          {/* A NOTIFICATION TURN IS A NOTIFICATION ROW — #550, and FIRST,
+              because it is the honest description of every session-origin turn
+              the engine now writes. The two arms under it are what a turn
+              stored before this existed still falls back to. */}
+          {turn.notification ? (
+            <NotificationRow detail={turn.notification} {...(turn.sender ? { message: turn.prompt } : {})} />
+          ) : turn.origin === "session" && turn.sender ? (
             <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.agentNotice ? { notice: turn.agentNotice } : {})} {...(turn.agentIntent ? { intent: turn.agentIntent } : {})} {...(turn.assignmentScope ? { scope: turn.assignmentScope } : {})} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
           ) : (turn.origin === "provider" || turn.origin === "session") && (
             <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />
@@ -919,6 +1154,7 @@ function SessionTurnBody({
         </div>
       )}
 
+      {answerLane && (
       <Message from="assistant">
         <MessageContent from="assistant">
           {requests.map((request) => (
@@ -935,9 +1171,7 @@ function SessionTurnBody({
             <LiveActivity items={answering.items} tasks={turn.tasks} {...rowGestures} />
           ) : (
             <>
-              {!folded && (
-                <ActivityGroup items={activity} tasks={turn.tasks} live={false} {...rowGestures} />
-              )}
+              <ActivityGroup items={activity} tasks={turn.tasks} live={false} {...rowGestures} />
               {closing.map((item) => (
                 <TranscriptItem key={item.id} item={item} tasks={turn.tasks} {...rowGestures} />
               ))}
@@ -966,38 +1200,12 @@ function SessionTurnBody({
               compacting={isCompacting(turn)}
               startedAt={turn.startedAt}
               {...(turn.lastActivityAt ? { lastActivityAt: turn.lastActivityAt } : {})}
-              now={now}
             />
           )}
-          {!folded && turn.usage && !live && (
+          {turn.usage && !live && (
             <p className="font-mono text-3xs text-muted-foreground/70 tabular-nums">
               {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
             </p>
-          )}
-          {folded && (activity.length > 0 || turn.usage) && (
-            <div>
-              {/* A quiet INLINE control in the message flow, not floating mono
-                  micro-text — the Spool's transcript is the only caller of the
-                  quiet fold, and this is its one disclosure. */}
-              <button
-                type="button"
-                aria-expanded={workShown}
-                onClick={() => setWorkShown((v) => !v)}
-                className="mt-1 inline-flex items-center gap-1 rounded-md text-2xs text-muted-foreground/70 transition-colors hover:text-foreground"
-              >
-                {workShown ? "hide the work" : "how it did this"}
-              </button>
-              {workShown && (
-                <div className="mt-2 space-y-2">
-                  <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...rowGestures} />
-                  {turn.usage && (
-                    <p className="font-mono text-3xs text-muted-foreground/70 tabular-nums">
-                      {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
           )}
           {/* NO RECOVERY CHOICE AND NO HELD MESSAGE. A turn the app lost is
               stopped, not ambiguous, and nothing waits behind it — so there is
@@ -1006,8 +1214,65 @@ function SessionTurnBody({
           {turn.state === "failed" && <p className="mt-2 text-sm text-muted-foreground">This turn ended early. Your history is saved; send a new message to continue.</p>}
         </MessageContent>
       </Message>
+      )}
     </div>
   );
+}
+
+/**
+ * A TURN NOWHERE NEAR THE VIEWPORT COSTS ITS BOX AND NOTHING ELSE (#498).
+ *
+ * Paging history in mounts turns and never unmounts them, so a reader who walks
+ * back through a long session ends up with two hundred turns' worth of layout,
+ * style and paint live in one document — and every one of them is re-laid-out
+ * when anything above changes. `content-visibility: auto` is the browser's own
+ * answer: it skips the rendering work for a subtree that is far enough off
+ * screen, and does it again the moment the subtree comes near.
+ *
+ * NO VIRTUAL LIST, deliberately. A windowing library would own the scroll
+ * container, which this conversation already gives to use-stick-to-bottom, and
+ * it would need a height for a turn before the turn exists — the thing nobody
+ * can know here, where one turn is a sentence and the next is forty tool calls.
+ *
+ * WHICH IS WHY THE SIZE IS MEASURED RATHER THAN GUESSED. A skipped subtree
+ * still has to occupy its space or the scrollbar lurches; `contain-intrinsic-
+ * size: auto <height>` gives the browser the height this turn actually rendered
+ * at, and the `auto` keyword lets it keep its own last-rendered size once it has
+ * one. The measurement is taken from the real render, so the element never
+ * changes height at the moment it starts being skipped.
+ *
+ * THE LIVE TURN IS NEVER SKIPPED. It is at the bottom of the window by
+ * definition — the only place `content-visibility` would do nothing — and its
+ * height changes with every delta, which would make one measurement a lie.
+ */
+export function TurnFrame({ skippable, children }: { skippable: boolean; children: React.ReactNode }) {
+  const frame = useRef<HTMLDivElement>(null);
+  /**
+   * WRITTEN STRAIGHT ONTO THE ELEMENT rather than held as state, because the
+   * value is a MEASUREMENT of the element it is then applied to — routing it
+   * through a render would mean a second render per turn to say something the
+   * DOM already knew. React never sets `style` here (this div has no `style`
+   * prop), so there is nothing for it to clobber.
+   */
+  useEffect(() => {
+    const element = frame.current;
+    if (!element) return;
+    if (!skippable) {
+      element.style.removeProperty("content-visibility");
+      element.style.removeProperty("contain-intrinsic-size");
+      return;
+    }
+    // Measured ONCE. A second reading, taken while the turn is skipped, would
+    // measure the PLACEHOLDER and lock it in — and a settled turn's height does
+    // not move on its own anyway: a fold the reader opens is rendered at natural
+    // height, and the `auto` keyword is what remembers the new one.
+    if (element.style.getPropertyValue("content-visibility")) return;
+    const measured = element.offsetHeight;
+    if (!measured) return;
+    element.style.setProperty("content-visibility", "auto");
+    element.style.setProperty("contain-intrinsic-size", `auto ${measured}px`);
+  }, [skippable]);
+  return <div ref={frame}>{children}</div>;
 }
 
 function EmptyTranscript({ loading }: { loading: boolean }) {
@@ -1030,23 +1295,53 @@ export function SessionCockpit({
   projectId,
   sessionId: routeSessionId,
   projectName: serverProjectName,
-  observe = false,
+  solo = false,
 }: {
-  projectId: string;
+  /**
+   * WHICH PROJECT THIS SCREEN IS ABOUT — and OPTIONAL since #526.
+   *
+   * The Main assistant's conversation belongs to no project (`/main`), so there
+   * is no breadcrumb to draw, no canvas to return to, no checkout to inspect
+   * and no draft to key. Absent is a positive statement about the session, not
+   * a prop somebody forgot: every branch below reads it that way and draws
+   * nothing rather than drawing a link into `/projects/undefined`.
+   */
+  projectId?: string;
   sessionId?: string;
   /** Resolved by the page, so the breadcrumb and the greeting never paint the
    *  raw id first and correct themselves a moment later. */
   projectName?: string;
   /**
-   * WATCHING, NOT DRIVING. A loom's worker thread is driven by its loom —
-   * brief, contract, conductor nudges — and a human typing into it would be
-   * a second boss. Observe mode keeps everything that informs (transcript,
-   * panel, diff) and removes everything that drives: the composer, rename,
-   * spin. Engine requests (an agent's explicit question) stay answerable —
-   * a parked question IS for a human. The conductor and origin sessions are
-   * never observed: talking there is steering, which is the human's job.
+   * ONE CONVERSATION AND NOTHING ELSE — the headset's route (#576).
+   *
+   * THE RIGHT PANEL IS NEVER MOUNTED HERE, not mounted at zero width and not
+   * hidden by a class: the whole point of the route is that a device with a
+   * WebView to spare does not pay for surfaces it cannot see. The rail is the
+   * shell's to skip (`isSoloRoute` in app-shell.tsx); the panel is this
+   * component's own, and this prop is the only thing that differs from the
+   * ordinary session page.
+   *
+   * AND NEITHER IS THE MASTHEAD. It survived the first pass on judgement and
+   * the owner has since ruled the other way: a transcript and a composer, plus
+   * the tools they need. The bar is not rendered, and the two controls that had
+   * no second door anywhere in the app — writing a note, starting and stopping
+   * a run — are rehomed into the conversation column as `SoloTools`. The
+   * breadcrumb, the title, the rename and the session action menu are gone
+   * from this route outright: a headset does not rename a conversation, and
+   * having no way out of it is wanted rather than tolerated.
+   *
+   * SO EVERY GESTURE THAT WOULD OPEN THE PANEL IS WITHDRAWN RATHER THAN
+   * NEUTERED. A file chip, a diff, a sub-agent chip and the panel's own toggle
+   * are all threaded gestures (`RowGestures` in transcript.tsx), and absent
+   * already means "not offered" for every one of them — so on this route they
+   * are simply not handed down, and the chips render as the plain text they
+   * describe instead of as buttons that answer nothing.
+   *
+   * Everything the conversation itself does is untouched: live updates, turn
+   * submission, dictation through `window.telar`, and an inline request's
+   * accept/decline.
    */
-  observe?: boolean;
+  solo?: boolean;
 }) {
   /**
    * THE SESSION ID IS STATE, NOT JUST A PROP.
@@ -1077,7 +1372,10 @@ export function SessionCockpit({
   // Every link this component builds carries it, so a remote session's
   // breadcrumb and its post-creation rewrite stay on the remote.
   const hostId = hostFromPathname(pathname);
-  const onCanvas = pathname === canvasHref(projectId, hostId);
+  // A session with no project has no canvas to be on — and `canvasHref` has no
+  // URL to build for it. Never on the canvas, rather than on a canvas whose
+  // address contains the word "undefined".
+  const onCanvas = projectId !== undefined && pathname === canvasHref(projectId, hostId);
   const sessionId = routeSessionId ?? (onCanvas ? undefined : createdSessionId);
   /** No session yet: the composer is the whole screen and nothing is polled. */
   const fresh = !sessionId;
@@ -1268,7 +1566,13 @@ export function SessionCockpit({
   const [editors, setEditors] = useState<Record<string, EditorState>>(() => ({}));
   // Keep the panel MOUNTED through its close animation so the shell can animate
   // out (see RightPanel `open`). `shown` drives the width; `mounted` the DOM.
-  const panelPresence = usePanelPresence(panel.open);
+  //
+  // AND `mounted` IS WHERE THE SOLO ROUTE IS ENFORCED (#576). One gate, at the
+  // one thing that decides whether the panel is in the tree at all, rather than
+  // a check at each of the several places that can ask for it to open: the
+  // restore below can rehydrate `open: true` from an arrangement this session
+  // was left in on the ordinary route, and a chord could ask for it too.
+  const panelPresence = usePanelPresence(!solo && panel.open);
   /**
    * SEEDED FROM THE SERVER when the page could resolve it, which is every case
    * that matters — the canvas. The client read below stays for the session
@@ -1315,6 +1619,55 @@ export function SessionCockpit({
   const syncSession = useRef(syncKey);
   const syncGeneration = useRef(0);
   const tailInFlight = useRef(false);
+  /** Whether what is on screen is this conversation's own transcript, rather
+   *  than the tail of the last one or a recording of this one. A fresh canvas
+   *  has nothing to read, so it is never mid-open.
+   *
+   *  COMPUTED HERE, BESIDE ITS TWO HALVES, rather than beside the render that
+   *  reads it (#497): the effects that hold `/projects` and `/browser` back
+   *  until the transcript lands name it in their dependency arrays, and a
+   *  dependency array is evaluated during render — so a `const` declared below
+   *  them would be a temporal-dead-zone throw rather than a deferral. */
+  const transcriptLanded = !sessionId || readKey === syncKey;
+
+  /**
+   * THE LAST SIXTEEN TRANSCRIPTS, PAINTED IN THE COMMIT THAT SWITCHES (#497).
+   *
+   * Switching back to a conversation you were reading a moment ago used to
+   * blank the screen for a round trip: this component does not remount between
+   * sessions, so it sits holding the PREVIOUS conversation's rows with
+   * `readKey !== syncKey` until the new read lands. The rows it needs are the
+   * ones this same tab folded and dropped seconds earlier, so
+   * `lib/transcript-cache.ts` keeps the last sixteen and this hands them back.
+   *
+   * DURING RENDER, NOT IN AN EFFECT, and that is the whole point: an effect
+   * commits a frame later, which is a frame of the blank this exists to remove.
+   * It is the same adjust-on-subject-change shape `nameSubject` above uses, and
+   * the reason both are written this way rather than as a `useEffect`.
+   *
+   * THE CURSOR IS DELIBERATELY NOT RESTORED. It is a ref, writing one during
+   * render is a side effect, and the sync effect below resets it to 0 on this
+   * very switch anyway — `hydrate` sets the real one when it lands, and until
+   * then a cursor of 0 costs nothing because nothing tails before hydrate.
+   */
+  const [transcriptSubject, setTranscriptSubject] = useState(syncKey);
+  if (transcriptSubject !== syncKey) {
+    setTranscriptSubject(syncKey);
+    const recalled = sessionId ? recallTranscript(transcriptKey(hostId ?? LOCAL_HOST, sessionId)) : undefined;
+    if (recalled) {
+      setSession(recalled.session);
+      setTurns(recalled.turns);
+      setItems(recalled.items);
+      setTasks(recalled.tasks);
+      setRequests(recalled.requests);
+      setEvents(recalled.events);
+      setPage(recalled.page);
+      // IN THE SAME COMMIT as the rows, for the reason `hydrate` gives: told a
+      // render later, the viewport treats the transcript's arrival as ordinary
+      // growth and animates it.
+      setReadKey(syncKey);
+    }
+  }
 
   useEffect(() => {
     if (syncSession.current === syncKey) return;
@@ -1354,6 +1707,25 @@ export function SessionCockpit({
    *  fetched values rather than from state, which has not committed yet. */
   const remember = useCallback((id: string, snapshot: SessionSnapshot & { events?: EngineEvent[] }) => {
     live();
+    /**
+     * THE IN-MEMORY HALF, AND IT IS FIRST FOR TWO REASONS (#497).
+     *
+     * BEFORE THE `store` GUARD, because a browser with no IndexedDB — a private
+     * window, a locked-down profile — still switches conversations, and the
+     * flash this removes has nothing to do with whether the outage recording
+     * can be written.
+     *
+     * BEFORE THE IDENTITY CHECK BELOW, because that check answers "is this
+     * worth photographing again", and the answer for the LRU is different: an
+     * unchanged transcript is exactly the one still being read, and letting it
+     * age out behind sixteen conversations opened once is how a cache evicts
+     * the entry it most needs. Re-remembering costs a `Map` delete and set.
+     */
+    rememberTranscript(transcriptKey(hostId ?? LOCAL_HOST, id), {
+      ...snapshot,
+      events: snapshot.events ?? [],
+      cursor: snapshot.cursor ?? 0,
+    });
     const store = snapshotStore();
     if (!store) return;
     /**
@@ -1518,7 +1890,10 @@ export function SessionCockpit({
    * visit and again the moment the first message landed — the surfaces you had
    * open to write that message vanished as it sent.
    */
-  const panelKey = sessionId ?? canvasPanelKey(projectId);
+  // A PROJECT-LESS COCKPIT ALWAYS HAS A SESSION, so the canvas half is
+  // unreachable there — `/main` renders a conversation that already exists, and
+  // there is no "new conversation in no project" to arrange a panel for.
+  const panelKey = sessionId ?? (projectId === undefined ? "main" : canvasPanelKey(projectId));
 
   useEffect(() => {
     // Deferred to a task rather than called in the effect body: a synchronous
@@ -1541,7 +1916,26 @@ export function SessionCockpit({
       // On desktop the native strip owns the pages: collapse any per-page
       // browser tabs persisted before this change into one "Browser" tab, so
       // an upgraded session does not still show the old per-page outer tabs.
-      const next = desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
+      const collapsed = desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
+      /**
+       * THE ISSUES SOMEBODY LEFT OPEN SURVIVE THE UPGRADE (#693) — the same
+       * two-step the Editor's files take above, for the same reason.
+       * `migratePanelTab` folds `issue:675` into `issues`, which on its own
+       * would silently close it, so the NUMBERS are read off the stored ids
+       * first and seeded as that surface's open set.
+       *
+       * ONLY ONTO A SURFACE WITH NOTHING OF ITS OWN. A session migrated once
+       * stays migrated: re-seeding a tab that already carries an open set would
+       * resurrect issues closed since, and the first write after the upgrade
+       * replaces those ids in storage anyway.
+       */
+      const legacyForge = forgeFromLegacyTabs(ids.tabs, ids.activeTab);
+      let next = collapsed;
+      for (const entry of collapsed.tabs) {
+        const seed = entry.kind === "issues" ? legacyForge.issues : entry.kind === "pulls" ? legacyForge.pulls : undefined;
+        if (!seed || readForgeOpen(entry.params).numbers.length > 0) continue;
+        next = setPanelTabParams(next, entry.id, forgeParams(seed));
+      }
       /**
        * THE FIRST EDITOR IS LOADED WHETHER OR NOT ITS TAB IS OPEN — closing the
        * Editor has never thrown away the files in it, and reopening must still
@@ -1586,6 +1980,19 @@ export function SessionCockpit({
    */
   const [browserCanStart, setBrowserCanStart] = useState(false);
   useEffect(() => {
+    /**
+     * AFTER THE TRANSCRIPT, NOT BESIDE IT (#497). This answers whether one
+     * button is offered. It used to go out on mount, which put it on the wire
+     * at the same instant as `/bootstrap` and `/projects` — three reads
+     * contending for two budget slots, with the one a person was waiting on
+     * able to come third. Nothing on this screen can want a browser before the
+     * conversation it would belong to has appeared.
+     *
+     * A CANVAS IS NOT HELD AT ALL: `transcriptLanded` is true from the first
+     * render when there is no session, which is the screen where this button is
+     * most likely to be the next thing pressed.
+     */
+    if (!transcriptLanded) return;
     let cancelled = false;
     // Deferred to a task, same rule as the panel restore above: a synchronous
     // setState in an effect body is a cascading render.
@@ -1619,7 +2026,7 @@ export function SessionCockpit({
       cancelled = true;
       window.clearTimeout(task);
     };
-  }, [sessionId, projectId, hostId]);
+  }, [sessionId, projectId, hostId, transcriptLanded]);
 
   /**
    * THREE COLUMNS DO NOT FIT A LAPTOP. Opening the panel on a narrow window
@@ -1723,6 +2130,30 @@ export function SessionCockpit({
         updatePanel((current) => openPanelTab(current, "editor"));
         return;
       }
+      /**
+       * AN ISSUE IS NOT A SURFACE EITHER (#693), and this is the other half of
+       * the same decision the file arm above makes. Every caller still names one
+       * `issue:675` — a chip in the conversation, a GitHub link in a message, a
+       * layout saved before this change — and the number is read back out here
+       * and opened INSIDE the list surface, which is brought forward.
+       *
+       * ONE UPDATE, not an open-then-focus pair: the tab has to exist before its
+       * params can be written, and doing it in two `updatePanel` calls would
+       * persist an Issues tab with an empty open set in between.
+       */
+      const issue = issuePanelNumber(tab);
+      const pull = issue === undefined ? pullPanelNumber(tab) : undefined;
+      if (issue !== undefined || pull !== undefined) {
+        const kind = issue !== undefined ? "issues" : "pulls";
+        const number = (issue ?? pull)!;
+        updatePanel((current) => {
+          const opened = openPanelTab(current, kind);
+          const target = activePanelTab(opened);
+          if (!target) return opened;
+          return setPanelTabParams(opened, target.id, forgeParams(openForge(readForgeOpen(target.params), number)));
+        });
+        return;
+      }
       updatePanel((current) => openPanelTab(current, tab));
     },
     [makeRoomForPanel, updatePanel, updateEditor, editorTargetId, dataScience],
@@ -1794,18 +2225,34 @@ export function SessionCockpit({
 
   useCommandHandlers(
     {
-      "toggle-panel": () => {
-        if (panelNow.current.open) {
-          updatePanel((current) => ({ ...current, open: false }));
-          return;
-        }
-        makeRoomForPanel();
-        updatePanel((current) => ({ ...current, open: true }));
-      },
-      "panel-next-tab": () => stepPanelTab(1),
-      "panel-previous-tab": () => stepPanelTab(-1),
-      "open-diff": () => showPanelTab("diff"),
-      "open-editor": () => showPanelTab("editor"),
+      /**
+       * NOT BOUND AT ALL ON THE SOLO ROUTE, which is what `deps` is for (see
+       * `useCommandHandlers`): there is no panel to open there, and a chord
+       * that claimed "open the Diff" and produced nothing would be the keyboard
+       * version of the dead button this route is careful not to draw.
+       */
+      ...(solo
+        ? {}
+        : {
+            "toggle-panel": () => {
+              if (panelNow.current.open) {
+                updatePanel((current) => ({ ...current, open: false }));
+                return;
+              }
+              makeRoomForPanel();
+              updatePanel((current) => ({ ...current, open: true }));
+            },
+            "panel-next-tab": () => stepPanelTab(1),
+            "panel-previous-tab": () => stepPanelTab(-1),
+            "open-diff": () => showPanelTab("diff"),
+            "open-editor": () => showPanelTab("editor"),
+            // The two surfaces a project opts into. Bound only while the plugin
+            // is on, so ⇧⌘B on a project with no notebooks does nothing rather
+            // than opening a tab whose surface is not there — hence the
+            // dependency array.
+            ...(dataScience ? { "open-data": () => showPanelTab("data") } : {}),
+            ...(latex ? { "open-latex": () => showPanelTab("latex") } : {}),
+          }),
       /**
        * PIN OR UNPIN THE CONVERSATION YOU ARE LOOKING AT (#408).
        *
@@ -1824,13 +2271,8 @@ export function SessionCockpit({
         if (!sessionId) return;
         void patchFromMenu({ settledOverride: pinToggleOverride(session?.settledOverride) }, "Could not change the session's pin.");
       },
-      // The two surfaces a project opts into. Bound only while the plugin is on,
-      // so ⇧⌘B on a project with no notebooks does nothing rather than opening a
-      // tab whose surface is not there — hence the dependency array.
-      ...(dataScience ? { "open-data": () => showPanelTab("data") } : {}),
-      ...(latex ? { "open-latex": () => showPanelTab("latex") } : {}),
     },
-    [dataScience, latex, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
+    [solo, dataScience, latex, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
   );
 
   /**
@@ -1881,6 +2323,26 @@ export function SessionCockpit({
   }, [setDraft, setDraftRunId]);
 
   /**
+   * A PICTURE FROM THE PANEL INTO THE MESSAGE — the browser's camera and its
+   * annotate mode (#474).
+   *
+   * THE PASTE PATH, NOT A SECOND ONE. A screenshot becomes exactly what a
+   * pasted image already is: a `File` on this list, drawn as a chip, uploaded
+   * by the same loop in `submit`, and counted against the same ceiling
+   * (`MAX_ATTACHMENTS`, imported rather than re-stated). The only thing the
+   * browser adds is the caption — the page's address, which a picture of a
+   * page does not otherwise carry — and it goes through `insertIntoComposer`,
+   * so what the agent is sent is what the box says.
+   *
+   * SILENTLY FULL IS NOT AN OPTION: at the ceiling the caption is still
+   * written, so pressing the camera never looks like nothing happened.
+   */
+  const attachFromPanel = useCallback((files: readonly File[], caption?: string) => {
+    if (files.length > 0) setAttachments((current) => [...current, ...files].slice(0, MAX_ATTACHMENTS));
+    if (caption) insertIntoComposer(caption);
+  }, [setAttachments, insertIntoComposer]);
+
+  /**
    * LINK CLICKS IN THE CONVERSATION, when the Links setting says "keep them
    * here" (`lib/link-policy.ts`): an issue or pull request OF THIS PROJECT
    * opens as its right-panel tab, anything else as a tab in the session's
@@ -1898,6 +2360,11 @@ export function SessionCockpit({
   const projectRepo = useRef<Promise<string | undefined> | undefined>(undefined);
   const onConversationClick = useCallback(
     (event: React.MouseEvent) => {
+      // ON THE SOLO ROUTE A LINK IS JUST A LINK (#576). Both destinations this
+      // policy has — a forge tab and the session browser's tab — are surfaces
+      // of the right panel, which is not mounted here, so intercepting the
+      // click would swallow it. Left alone, the anchor does what an anchor does.
+      if (solo) return;
       if (!openLinksInSessionBrowser()) return;
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const anchor = (event.target as HTMLElement).closest?.("a[href]");
@@ -1931,7 +2398,7 @@ export function SessionCockpit({
         window.open(href, "_blank", "noopener,noreferrer");
       })();
     },
-    [hostId, projectId, sessionId, showPanelTab, showSessionBrowser, updatePanel],
+    [solo, hostId, projectId, sessionId, showPanelTab, showSessionBrowser, updatePanel],
   );
 
   /**
@@ -1997,6 +2464,31 @@ export function SessionCockpit({
   }, [events, dataScience, showPanelTab]);
 
   /**
+   * A PROMPT THE AGENT DRAFTED MARKS THE STASH — and deliberately does not open
+   * it.
+   *
+   * The opposite end of the same judgement as the block above. `display_open`
+   * exists to put something in front of you, so it takes the panel; a drafted
+   * follow-up is an OFFER, and a menu that opened itself over the conversation
+   * would be the agent deciding what you look at next — the exact authority
+   * `prompt_draft` is built to leave with you. So this only says "go and re-read
+   * the shelf", and the badge's own tint is what tells you something is there.
+   *
+   * SAME TWO GUARDS as the displays above, for the same reasons: the journal
+   * replays from zero on every load, and an event must not act twice.
+   */
+  const seenDrafts = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (mountedAt.current === 0) mountedAt.current = Date.now();
+    const fresh = events.filter(
+      (event) => event.type === "prompt.drafted" && event.at >= mountedAt.current && !seenDrafts.current.has(event.id),
+    );
+    if (fresh.length === 0) return;
+    for (const event of fresh) seenDrafts.current.add(event.id);
+    announcePromptShelfChanged();
+  }, [events]);
+
+  /**
    * Restore an unsent draft, and keep it saved as it is typed.
    *
    * Read in an effect for the same reason the panel state is: `localStorage`
@@ -2023,7 +2515,7 @@ export function SessionCockpit({
    * learned its id, and treating that as a switch would empty it under anyone
    * who started typing a follow-up during the round trip.
    */
-  const owner = useRef<{ sessionId: string | undefined; projectId: string }>({ sessionId, projectId });
+  const owner = useRef<{ sessionId: string | undefined; projectId: string | undefined }>({ sessionId, projectId });
   /** The live text, readable from an effect that must not re-run per keystroke. */
   const draftText = useRef(draft);
   const [browserStart, setBrowserStart] = useState<BrowserStartState>({ status: "idle" });
@@ -2034,10 +2526,14 @@ export function SessionCockpit({
 
   async function ensureBrowserDraft(): Promise<string> {
     if (sessionId) return sessionId;
+    // A draft is a session waiting to be created IN A PROJECT. There is no such
+    // thing without one, and `/main` never reaches here: it always has a
+    // session already.
+    if (projectId === undefined) throw new EngineApiError("invalid_request", "This conversation has no project to open a draft in.");
     if (browserDraftFlight.current) return browserDraftFlight.current;
     const origin = window.location.pathname;
     if (browserDraftIdentity.current?.path !== origin) {
-      browserDraftIdentity.current = { path: origin, id: `session_${crypto.randomUUID().replaceAll("-", "")}` };
+      browserDraftIdentity.current = { path: origin, id: newSessionId() };
     }
     const id = browserDraftIdentity.current.id;
     // Keep both requests on the originating host if navigation changes mid-flight.
@@ -2082,6 +2578,75 @@ export function SessionCockpit({
     })();
     browserDraftFlight.current = flight;
     try { return await flight; } finally { browserDraftFlight.current = null; }
+  }
+
+  /**
+   * BRING IN A CLAUDE CODE CONVERSATION — `/resume` (#616).
+   *
+   * CREATES THE SESSION, THEN ADOPTS INTO IT, because adopting is something
+   * that happens TO a session: the fork's id becomes that session's resume
+   * cursor and the imported history becomes its journal. So this walks the same
+   * hand-off the first message does — mint the id, move the address, create,
+   * carry the panel arrangement over — and then makes one more call.
+   *
+   * THE TITLE COMES FROM THE CONVERSATION, not from the person: they picked a
+   * row rather than typing a sentence, and the row's own opening words are what
+   * they recognised it by. It is also what keeps the fork distinguishable from
+   * its parent in any list that shows both.
+   *
+   * THE ADDRESS GOES BACK IF EITHER HALF FAILS. A URL naming a session that was
+   * never created, or one holding a session with no conversation in it, both
+   * outlive the error message that explained them.
+   */
+  async function adoptConversation(conversation: ClaudeConversation): Promise<void> {
+    if (projectId === undefined) {
+      throw new EngineApiError("invalid_request", "This conversation has no project to create a session in.");
+    }
+    if (sessionId) {
+      // The engine refuses this too; saying it here means the person is told
+      // before a session is created rather than after.
+      throw new EngineApiError("conflict", "This conversation has already started. Open a new one to bring in another.");
+    }
+    const id = newSessionId();
+    const canvas = window.location.pathname;
+    const title = (conversation.customTitle || conversation.firstPrompt || conversation.title || "Claude Code conversation")
+      .replace(/\s+/g, " ")
+      .slice(0, 80);
+    const adoptApi = createEngineApi(hostFetcher(hostId));
+    window.history.replaceState(null, "", sessionHref({ id, projectId, hostId }));
+    let target: string;
+    try {
+      const created = await adoptApi.createSession(projectId, {
+        id,
+        title,
+        // ADOPTING A CLAUDE CONVERSATION MAKES THIS A CLAUDE SESSION, whatever
+        // the canvas's pill said. A Codex session holding a Claude fork's
+        // resume cursor would fail on its first turn, with nothing on screen
+        // explaining why.
+        driver: "claude",
+        envMode: draftEnvMode,
+        ...(draftEnvMode === "worktree" && draftBase.baseRef ? { baseRef: draftBase.baseRef } : {}),
+        ...(draftEnvMode === "worktree" && draftBase.branchName ? { branchName: draftBase.branchName } : {}),
+      });
+      target = created.session.id;
+      if (target !== id) window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
+      const adopted = await adoptApi.adoptClaudeConversation(target, conversation.sessionId);
+      setSession(adopted.session);
+    } catch (cause: unknown) {
+      window.history.replaceState(null, "", canvas);
+      throw cause;
+    }
+    // THE HAND-OFF, exactly as the first message performs it: the surfaces open
+    // while choosing are the surfaces wanted while reading.
+    writePanelTabs(target, panel, Date.now());
+    for (const [instance, state] of Object.entries(editors)) writeEditor(editorInstanceKey(target, instance), state, Date.now());
+    setTurns([]);
+    setItems([]);
+    setTasks([]);
+    setRequests([]);
+    setEvents([]);
+    owner.current = { sessionId: target, projectId };
+    setCreatedSessionId(target);
   }
 
   async function openBrowser() {
@@ -2156,6 +2721,17 @@ export function SessionCockpit({
   // resolves it; a failure leaves the breadcrumb on the id, which is worse to
   // read but never wrong.
   useEffect(() => {
+    /**
+     * AFTER THE TRANSCRIPT, NOT BESIDE IT (#497) — the same rule the browser
+     * probe above now follows, and this is the read it was contending with.
+     *
+     * NOTHING IS LOST BY WAITING, because the remembered name below already
+     * covers the gap this read was hurrying to close: the breadcrumb paints the
+     * name the last visit left within a tick, and this read exists to correct
+     * it for a rename or to say the project is not on this Mac. Neither is
+     * urgent enough to sit in front of the transcript.
+     */
+    if (!transcriptLanded) return;
     let cancelled = false;
     /**
      * THE NAME THE LAST VISIT LEFT, painted while the list is in flight (#407).
@@ -2179,7 +2755,7 @@ export function SessionCockpit({
     // eternity ahead of the fetch below, which is the whole point.
     const task = window.setTimeout(() => {
       if (cancelled || answered || !local) return;
-      const remembered = rememberedProjectName(projectId);
+      const remembered = projectId === undefined ? undefined : rememberedProjectName(projectId);
       if (remembered) setProjectName(remembered);
     }, 0);
     /**
@@ -2221,7 +2797,7 @@ export function SessionCockpit({
       cancelled = true;
       window.clearTimeout(task);
     };
-  }, [projectId, hostId]);
+  }, [projectId, hostId, transcriptLanded]);
 
   useEffect(() => {
     // A fresh canvas has nothing to hydrate and nothing to poll — and polling a
@@ -2247,6 +2823,17 @@ export function SessionCockpit({
       ?.read(snapshotKey(hostId ?? LOCAL_HOST, sessionId))
       .then((cached) => {
         if (!cached || cancelled || lastLiveAt.current !== undefined) return;
+        /**
+         * A WARM SWITCH HAS ALREADY PAINTED, SO THE RECORDING IS OLDER (#497).
+         *
+         * The in-memory LRU holds this conversation from seconds ago and seeded
+         * it during the render that switched; this read is a photograph from a
+         * previous run of the app. Landing it now would replace live rows with
+         * dated ones AND hang a "last true at" banner over a transcript that is
+         * nothing of the sort — the banner being the part a reader would
+         * actually notice.
+         */
+        if (recallTranscript(transcriptKey(hostId ?? LOCAL_HOST, sessionId))) return;
         setSession(cached.session);
         setTurns(cached.turns);
         setItems(cached.items);
@@ -2334,7 +2921,6 @@ export function SessionCockpit({
   // it, and the send button must not read as a Stop.
   const active =
     transcript.find((turn) => turn.state === "claimed" || turn.state === "running") ?? transcript.find((turn) => isActiveTurn(turn.state) && !turn.held);
-  const running = Boolean(transcript.find((turn) => turn.state === "claimed" || turn.state === "running"));
   /** The provider is squeezing its context right now — an open
    *  context_compaction row on the live turn. Gates the compact button so the
    *  client tells the same story the engine enforces. */
@@ -2345,12 +2931,28 @@ export function SessionCockpit({
    * the affordance. A turn Telar interrupted by quitting lands here too, which
    * is the whole point of recording it as a failure rather than as ambiguity.
    */
-  const [now, setNow] = useState(() => Date.now());
+  /**
+   * THE WALL CLOCK, AND IT IS NO LONGER THE TRANSCRIPT'S (#498).
+   *
+   * A 1 s `setInterval` used to live here and be threaded into every turn as a
+   * `now` prop, so one tick re-rendered the cockpit and all ten turns mounted
+   * under it in order to advance the elapsed seconds inside ONE
+   * `WorkingIndicator`. That clock belongs to the thing that reads it and now
+   * lives there (`useSecondsClock`, transcript.tsx).
+   *
+   * WHAT IS LEFT HERE READS AT HUMAN SCALE, and 30 s is generous for both of
+   * them: `isSettled`, whose window is hours and which returns false on a
+   * working session before it reads this at all, and the header menu's snooze
+   * presets, whose smallest offset is an hour. It is not a regression on the
+   * old clock either way — that one only ticked while a turn was RUNNING, so on
+   * an idle session both of these were already frozen at whatever the cockpit
+   * mounted with.
+   */
+  const [settlingNow, setSettlingNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    const timer = window.setInterval(() => setSettlingNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
-  }, [running]);
+  }, []);
 
   // Only OPEN requests on a turn that can still take the answer are actionable;
   // resolved ones are history, and one left on an ended turn has no worker
@@ -2359,13 +2961,11 @@ export function SessionCockpit({
   /**
    * The question the COMPOSER answers — the first open all-choice `user_input`
    * request. It leaves the turn's approval cards and meets the person at the
-   * box instead (see composer-question-drawer.tsx). Only while the composer
-   * exists: an observed session keeps the card, because there is no composer
-   * to host the drawer and the question must still be visible.
+   * box instead (see composer-question-drawer.tsx).
    */
   const composerQuestion = useMemo(
-    () => (observe ? undefined : openRequests.find((request) => questionFields(request).length > 0)),
-    [openRequests, observe],
+    () => openRequests.find((request) => questionFields(request).length > 0),
+    [openRequests],
   );
 
   /**
@@ -2606,14 +3206,61 @@ export function SessionCockpit({
        */
       let target = sessionId ?? browserTarget;
       if (!target) {
+        // UNREACHABLE FROM `/main`, and stated rather than assumed: that screen
+        // renders a session the engine already minted, so there is nothing to
+        // create — and a create with no project here would be a SECOND place
+        // that decides what a project-less session is.
+        if (projectId === undefined) {
+          setError(new EngineApiError("invalid_request", "This conversation has no project to create a session in."));
+          return;
+        }
+        /**
+         * THE ID IS MINTED HERE, AND THE ADDRESS MOVES BEFORE THE ENGINE
+         * ANSWERS — issue #495.
+         *
+         * WHAT WAS INSTANT AND WHAT WAS NOT. The composer empties the moment you
+         * press Send, and then the conversation sat on `/sessions/new` for a
+         * whole round trip — a worktree cut, a document written — before the URL
+         * became its own. Reload in that window and the message was gone; copy
+         * the address and it addressed a canvas.
+         *
+         * A CLIENT-MINTED ID IS THE INSTANT PART, NOT A FAKE ROW. Nothing is
+         * invented: this is the id the session WILL have, because the engine
+         * takes a caller's id and answers a repeat of the same create with the
+         * session it already stored (apps/engine/test/session-create-id.test.ts
+         * pins both, so a double-click is a silent no-op rather than a second
+         * worktree). The rail is deliberately left to its own poll — a row for a
+         * session that may yet fail to exist is exactly the fake row this
+         * approach avoids.
+         *
+         * THE SCREEN DOES NOT MOVE YET. `sessionId` reads `createdSessionId`,
+         * which is still unset — so `fresh` stays true, nothing is hydrated and
+         * nothing is polled until the record actually exists. What changes is
+         * the address, and what it costs if the create fails is one line below.
+         */
+        const id = newSessionId();
+        const canvas = window.location.pathname;
+        window.history.replaceState(null, "", sessionHref({ id, projectId, hostId }));
         const created = await api.createSession(projectId, {
+          id,
           title: text.replace(/\s+/g, " ").slice(0, 80),
           driver: draftDriver,
           envMode: draftEnvMode,
           ...(draftEnvMode === "worktree" && draftBase.baseRef ? { baseRef: draftBase.baseRef } : {}),
           ...(draftEnvMode === "worktree" && draftBase.branchName ? { branchName: draftBase.branchName } : {}),
+        }).catch((cause: unknown) => {
+          // THE ADDRESS GOES BACK. The catch below gives the words and the files
+          // back and puts the refusal in the composer; a URL left naming a
+          // session that was never created would survive all of that and 404 on
+          // the next reload.
+          window.history.replaceState(null, "", canvas);
+          throw cause;
         });
+        // RECONCILED, NOT ASSUMED. The engine honours a caller's id, and this is
+        // what makes that a fact about this run rather than a fact about the
+        // test suite.
         target = created.session.id;
+        if (target !== id) window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
         // EITHER HALF ALONE COUNTS. A canvas left on the provider default with
         // an effort chosen must still write that effort — which is exactly the
         // case that used to fall through this `if` and vanish.
@@ -2652,7 +3299,8 @@ export function SessionCockpit({
         setCreatedSessionId(target);
         // Only when the patch did not already give us a newer record.
         if (Object.keys(creationPatch).length === 0) setSession(created.session);
-        window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
+        // THE ADDRESS IS ALREADY THIS SESSION'S — written before the create went
+        // out, and reconciled against the id the engine answered with (#495).
       }
       /**
        * ATTACHMENTS UPLOAD AT SEND, NOT AT PICK.
@@ -2808,7 +3456,7 @@ export function SessionCockpit({
           working: session.activity === "working" || session.activity === "queued",
           waitingOnYou: session.activity === "blocked",
         },
-        { now, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours },
+        { now: settlingNow, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours },
       ),
   );
   const unsettle = async () => {
@@ -2868,7 +3516,7 @@ export function SessionCockpit({
             ...(session.projectId ? { projectId: session.projectId } : {}),
             ...(projectName ? { projectName } : {}),
             ...(hostId === LOCAL_HOST_ID ? {} : { hostId }),
-            workspacePath: session.workspace.path,
+            ...(workspacePath(session.workspace) ? { workspacePath: workspacePath(session.workspace)! } : {}),
             // Only a worktree session has a branch of its own; a local one runs
             // on the project's checkout, whose HEAD belongs to no conversation.
             ...(session.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {}),
@@ -2885,11 +3533,11 @@ export function SessionCockpit({
             working: session.activity === "working" || session.activity === "queued",
             waitingOnYou: session.activity === "blocked",
           },
-          now,
+          now: settlingNow,
           // `current` is unconditional here: this menu is only ever about the
           // session this screen is showing, so `Open` is the one verb it can
           // state and cannot perform.
-          capabilities: { remote: hostId !== LOCAL_HOST_ID, readOnly: observe, current: true },
+          capabilities: { remote: hostId !== LOCAL_HOST_ID, current: true },
           actions: {
             // Inert on this surface (see `current`), and still handed over: the
             // handler is the definition's contract, not this screen's guess at
@@ -2928,7 +3576,12 @@ export function SessionCockpit({
                 // DELETING THE SESSION YOU ARE READING MUST NOT MAROON YOU ON
                 // IT. A composer in the project you were just working in is
                 // where you were going anyway — the same landing the rail picks.
-                .then(() => router.push(canvasHref(session.projectId ?? projectId, hostId)))
+                // A session with no project has no canvas to land on — the
+                // front door is where the rail would have put you anyway.
+                .then(() => {
+                  const home = session.projectId ?? projectId;
+                  router.push(home === undefined ? "/" : canvasHref(home, hostId));
+                })
                 .catch((cause: unknown) =>
                   setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not delete the session.")),
                 );
@@ -2945,11 +3598,6 @@ export function SessionCockpit({
   // take it, and the person has to see what a pause (or a restart) is holding
   // in order to decide about it.
   const shown = transcript.filter((turn) => (turn.state !== "queued" || turn.held) && turn.state !== "steering" && turn.state !== "steered");
-  /** Whether what is on screen is this conversation's own transcript, rather
-   *  than the tail of the last one or a recording of this one. A fresh canvas
-   *  has nothing to read, so it is never mid-open. */
-  const transcriptLanded = !sessionId || readKey === syncKey;
-
   /**
    * WHERE THE TIME GOES WHEN A CONVERSATION OPENS (#407).
    *
@@ -3041,6 +3689,27 @@ export function SessionCockpit({
    *  every task rather than over the active turn's. */
   const backgroundTasks = tasks.filter((task) => isBackgroundWork(task) && (task.state === "running" || task.state === "pending")).length;
 
+  /**
+   * THE ROW GESTURES THAT END IN THE RIGHT PANEL, withheld on the solo route.
+   *
+   * `RowGestures` (transcript.tsx) already states the rule these follow: absent
+   * means the affordance is not rendered, and nothing falls back to a second
+   * route. So a file chip, a sub-agent chip and a tool row's "Open file in the
+   * Editor" are simply not offered here, rather than drawn and then answering
+   * nothing — which is the one thing a chromeless route must not ship.
+   *
+   * `onInsert` is deliberately NOT one of them: quoting a line into the
+   * composer is the conversation's own gesture and works here as anywhere.
+   */
+  const panelGestures = solo
+    ? {}
+    : {
+        onOpenAgent: showAgent,
+        onOpenTab: showPanelTab,
+        onOpenFile: (path: string) => showPanelTab(`file:${path}`),
+        onOpenFileInNewTab: openFileInNewPanelTab,
+      };
+
   return (
     /**
      * THE PANEL IS A COLUMN OF THE ROOM, NOT A SHEET OVER IT.
@@ -3078,31 +3747,45 @@ export function SessionCockpit({
           of the row, right at the panel's edge. Unpaint it there; the geometry
           stays, so the panel's `-ml-2` still lands on the row's edge. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-1 md:ring-1 md:ring-sidebar-border md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0">
-        <SessionMasthead
-          projectId={projectId}
-          hostId={hostId}
-          projectName={projectName}
-          projectResolved={projectResolved}
-          session={session}
-          {...(headerMenu ? { menu: headerMenu } : {})}
-          readOnly={observe}
-          onRename={(next) => void rename(next)}
-          // The masthead's Run control hands monitoring back to the panel
-          // through the same opener every other surface uses.
-          onWatchRun={() => showPanelTab("run")}
-          panel={
-            <>
-              <WorkspaceInspector projectId={session?.projectId ?? projectId} />
-              <RailToggle
-                open={panel.open}
-                onToggle={() => {
-                  makeRoomForPanel();
-                  updatePanel((current) => ({ ...current, open: true }));
-                }}
-              />
-            </>
-          }
-        />
+        {/* THE MASTHEAD IS NOT RENDERED ON THE SOLO ROUTE — not emptied, not
+            hidden, not collapsed to nothing (#576). The bar and everything it
+            carried that belongs to a cockpit rather than to a conversation —
+            the breadcrumb out to the project canvas, the title, the rename,
+            the action menu, the rail's restore trigger, Open-in-Finder — is
+            absent from the tree there. `SoloTools` carries the two that had no
+            second door, and nothing else crosses over. */}
+        {solo ? (
+          <SoloTools projectId={projectId} hostId={hostId} session={session} />
+        ) : (
+          <SessionMasthead
+            projectId={projectId}
+            hostId={hostId}
+            projectName={projectName}
+            projectResolved={projectResolved}
+            session={session}
+            {...(headerMenu ? { menu: headerMenu } : {})}
+            onRename={(next) => void rename(next)}
+            // The masthead's Run control hands monitoring back to the panel
+            // through the same opener every other surface uses.
+            onWatchRun={() => showPanelTab("run")}
+            panel={
+              <>
+                {/* THE CHECKOUT INSPECTOR NEEDS A CHECKOUT. Absent rather than
+                    empty: a panel reporting "no changes" about a repository this
+                    conversation does not have would be answering a question
+                    nobody asked. */}
+                {(session?.projectId ?? projectId) !== undefined && <WorkspaceInspector projectId={(session?.projectId ?? projectId)!} />}
+                <RailToggle
+                  open={panel.open}
+                  onToggle={() => {
+                    makeRoomForPanel();
+                    updatePanel((current) => ({ ...current, open: true }));
+                  }}
+                />
+              </>
+            }
+          />
+        )}
         {/* `display: contents` — a click boundary, never a layout box. */}
         <div className="contents" onClickCapture={onConversationClick}>
         <ConversationViewport className="min-w-0 flex-1" conversation={syncKey} landed={transcriptLanded} followRef={follow}>
@@ -3130,10 +3813,14 @@ export function SessionCockpit({
                 middle of the screen and is the whole interface; an empty-state
                 card above it would be a second thing competing to be read. */}
             {!error && !fresh && shown.length === 0 && <EmptyTranscript loading={loading} />}
-            {/* AN EXPLICIT CLICK, NOT A SCROLL TRIGGER. The reader asking for
-                history is the only thing that should fetch it — reaching the
-                top of the window to re-read something must stay free. */}
-            {page?.more && (
+            {/* REACHING THE TOP IS THE GESTURE, and the button is still here
+                for the reader who never scrolls (#498). Nothing is fetched
+                unless there is a page above and none is in flight, so arriving
+                at the top to re-read something is as free as it ever was; what
+                is gone is the wall it used to hit every twenty turns. The edge
+                also puts the viewport back where it was once the page lands —
+                see `ConversationTopEdge`. */}
+            <ConversationTopEdge more={Boolean(page?.more)} loading={loadingOlder} onReach={loadOlder}>
               <div className="mx-auto w-full max-w-[50rem]">
                 <Button
                   type="button"
@@ -3145,13 +3832,20 @@ export function SessionCockpit({
                   {loadingOlder ? "Loading earlier turns…" : "Load earlier turns"}
                 </Button>
               </div>
-            )}
+            </ConversationTopEdge>
             {/* WHERE THIS SESSION'S FILES ARE, so a row can tell the project's
                 own work from the harness reading its bundled skills out of a
                 temp directory (#354). One fact about the session, stated once,
                 rather than a prop on every row that never uses it. */}
-            <TranscriptWorkspace path={session?.workspace.path}>
-            {shown.map((turn) => (
+            <TranscriptWorkspace path={session ? workspacePath(session.workspace) : undefined}>
+            {/* CONSECUTIVE ARRIVALS ARE ONE BLOCK — #577. The lane's `gap-8` is
+                a TURN gap, and between two queued wakes there is no turn: a run
+                of notification rows is one thing that happened, and it is drawn
+                at the activity lane's own `gap-0.5`. A group of one is every
+                other turn in the conversation, rendered exactly as before.
+                See `groupNotificationTurns`. */}
+            {groupNotificationTurns(shown, active?.runId).map((group) => {
+              const turns = group.map((turn) => (
               /* THE END OF THIS ANSWER, when it is the newest one — the
                  position a read receipt is about. Inside the list rather than
                  after it, so a turn that started AFTER the answer (a running
@@ -3159,39 +3853,41 @@ export function SessionCockpit({
                  mistaken for having seen the answer above it, and vice versa.
                  See components/session/read-receipt.tsx. */
               <Fragment key={turn.runId}>
-              <SessionTurnBody
-                key={turn.runId}
+              <TurnFrame skippable={turn.runId !== active?.runId}>
+              <SessionTurn
                 turn={turn}
                 roster={roster}
                 live={turn.runId === active?.runId}
-                now={now}
                 requests={openRequests.filter((request) => request.runId === turn.runId && request.id !== composerQuestion?.id)}
                 sending={sending}
-                onOpenAgent={showAgent}
-                onOpenTab={showPanelTab}
                 onInsert={insertIntoComposer}
-                onOpenFile={(path) => showPanelTab(`file:${path}`)}
-                onOpenFileInNewTab={openFileInNewPanelTab}
+                {...panelGestures}
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
                 {...(turn.failureCode === "rate_limited" && turn.state === "failed"
                   ? { onResumeNow: () => void resumeNow(turn.runId) }
                   : {})}
               />
+              </TurnFrame>
+              {/* OUTSIDE THE FRAME. The receipt marker is watched by its own
+                  IntersectionObserver, and a skipped subtree is exactly the
+                  thing that must not be reported as seen. */}
               {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}
               </Fragment>
-            ))}
+              ));
+              return group.length === 1 ? (
+                <Fragment key={group[0]!.runId}>{turns}</Fragment>
+              ) : (
+                <div key={group[0]!.runId} className="flex flex-col gap-0.5" data-notification-strip={group.length}>
+                  {turns}
+                </div>
+              );
+            })}
             </TranscriptWorkspace>
           </ConversationContent>
           <ConversationScrollButton />
         </ConversationViewport>
         </div>
-        {observe ? (
-          <div className="mx-auto mb-4 flex w-full max-w-[50rem] items-center gap-2 rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-xs text-muted-foreground">
-            <EyeIcon className="size-3.5 shrink-0" />
-            Observing — this thread is driven by its loom. Talk to the conductor to steer it.
-          </div>
-        ) : (
         <Composer
           draft={draft}
           // A fresh canvas is READY: there is nothing to wait for, because the
@@ -3215,6 +3911,13 @@ export function SessionCockpit({
                   setDraftBase(next);
                   if (next.baseRef || next.branchName) chooseEnvMode("worktree");
                 },
+                // OFFERED ONLY ON A FRESH CANVAS, because that is the only
+                // place it can be taken: a conversation already under way has
+                // its own history, and splicing somebody else's into it would
+                // move the model's memory out from under the transcript (#616).
+                // Claude only in this pass — Codex and OpenCode have their own
+                // stores and their own shapes.
+                ...(draftDriver === "claude" ? { onAdopt: adoptConversation } : {}),
               }
             : {})}
           busy={Boolean(active)}
@@ -3251,10 +3954,15 @@ export function SessionCockpit({
           onRuntimeMode={fresh ? setDraftRuntimeMode : (mode) => void setRuntimeMode(mode)}
           {...(fresh ? {} : { onResumeAfterRateLimit: (next: boolean) => void setResumeAfterRateLimit(next) })}
           onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
-          onOpenChanges={() => showPanelTab("diff")}
+          // The composer's foot links its change count to the Diff surface —
+          // a right-panel tab, so on the solo route the count stays a count
+          // rather than becoming a link to nowhere.
+          {...(solo ? {} : { onOpenChanges: () => showPanelTab("diff") })}
         />
-        )}
       </div>
+      {/* NOT IN THE TREE AT ALL ON THE SOLO ROUTE — `panelPresence` is fed
+          `!solo && panel.open` above, so `mounted` never turns true there and
+          this subtree is never rendered, never measured and never animated. */}
       {panelPresence.mounted && (
         <RightPanel
           open={panelPresence.shown}
@@ -3264,6 +3972,10 @@ export function SessionCockpit({
           projectId={session?.projectId ?? projectId}
           {...(session?.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {})}
           items={items}
+          // The Diff's `turn` scope names a turn by what it was asked to do,
+          // which only the turn records know — the journal says which RUN wrote
+          // a file and nothing about why (#694).
+          turns={turns}
           tasks={roster}
           {...(focusedTask ? { focusedTask } : {})}
           {...(browserCanStart ? { onOpenBrowser: openBrowser, browserStart } : {})}
@@ -3275,6 +3987,7 @@ export function SessionCockpit({
           onOpenNewTab={showNewPanelTab}
           onOpenFileInNewTab={openFileInNewPanelTab}
           onInsertReference={insertIntoComposer}
+          onAttach={attachFromPanel}
           onCloseTab={(id) => updatePanel((current) => closePanelTab(current, id))}
           // A surface rewriting its own instance's params — the Diff's filter
           // (#335). Through the same `updatePanel` every other tab gesture

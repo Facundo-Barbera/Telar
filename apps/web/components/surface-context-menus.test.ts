@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
  * own surfaces: transcript rows, the composer's chrome, notebook cells, table
  * headers, diff rows and browser tabs.
  *
- * ASSERTED AS SOURCE TEXT, for the reason `spool/idiom.test.ts` gives: this app
+ * ASSERTED AS SOURCE TEXT, for the reason the app's other idiom tests give: it
  * has no DOM harness, and every claim here is structural rather than visual —
  * "there is ONE primitive", "every item fires a callback the surface already
  * wires", "no menu spells a second write path". Each is decidable by reading
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
  * THE RULE THE WHOLE ROUND TURNS ON: a menu item's handler is a function the
  * same surface already gives a VISIBLE control. A right-click that reached a
  * second `fetch` would be a second way for the same verb to go wrong, and the
- * Spool's own round established that it does not happen.
+ * earlier rounds established that it does not happen.
  */
 const dir = fileURLToPath(new URL(".", import.meta.url));
 const read = (name: string) => fs.readFileSync(path.join(dir, name), "utf8");
@@ -146,8 +146,8 @@ describe("the notebook cell's menu", () => {
 
 /**
  * THE TABLE. Two DIFFERENT menus on one surface — a header's and a cell's —
- * which is the point the Spool's calendar case makes about a day cell and a
- * pill: they are genuinely different objects, not one list reused twice.
+ * and the earlier rounds' point about a container and the thing inside it:
+ * they are genuinely different objects, not one list reused twice.
  */
 describe("the table's column header and its cells", () => {
   const tbl = () => code("session/table-surface.tsx");
@@ -227,9 +227,13 @@ describe("the diff surface's file row", () => {
   });
 
   test("Expand / Collapse patch toggles the SAME `open` the row's disclosure button toggles", () => {
+    // The row stopped holding its own `open` when the toolbar grew collapse-all
+    // (#694) — the surface owns the set and hands each row one callback. The
+    // case is unchanged and now harder to break: there is no second toggle to
+    // drift from, because there is no local state for one to close over.
     const source = dif();
-    expect(source).toContain('<ContextMenuItem onClick={() => setOpen((current) => !current)}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>');
-    expect(source).toContain("onClick={() => setOpen((current) => !current)}\n          title=");
+    expect(source).toContain('<ContextMenuItem onClick={onToggle}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>');
+    expect(source).toContain("onClick={onToggle}\n          title=");
   });
 
   test("stage, unstage and revert are absent — a refused design, and a menu is where it would creep back", () => {
@@ -261,12 +265,19 @@ describe("the diff surface's file row", () => {
   test("the header's filter field writes to the TAB's params, not to state of its own", () => {
     // A filter held locally would be invisible to the strip's label and lost on
     // every remount — see this surface's header and #335.
+    //
+    // IT WRITES THE WHOLE TAB NOW (#694), and that is the stronger form of the
+    // same rule rather than a relaxation of it. `setPanelTabParams` is a
+    // REPLACE, so once the tab also carries a scope and a base, a handler that
+    // wrote `{ filter }` alone would erase both — silently, and only for
+    // somebody who typed in this field after choosing a scope.
     const source = dif();
-    expect(source).toContain("onChange={(event) => onFilterChange(event.target.value)}");
+    expect(source).toContain("onChange={(event) => onTabChange({ ...tab, filter: event.target.value })}");
     expect(source).not.toMatch(/useState[^\n]*filter/i);
-    // Clearing the field clears the param rather than storing a blank.
-    expect(source).toContain('onClick={() => onFilterChange("")}');
-    expect(code("right-panel.tsx")).toContain("onFilterChange: (filter: string) => onTabParams(filter.trim() ? { filter } : {})");
+    // Clearing the field clears the param rather than storing a blank —
+    // `diffTabParams` writes no key for an empty filter.
+    expect(source).toContain('onClick={() => onTabChange({ ...tab, filter: "" })}');
+    expect(code("right-panel.tsx")).toContain("onTabChange: (next: DiffTab) => onTabParams(diffTabParams(next))");
   });
 
   test("the composer thread is the cockpit's, and it inserts TEXT rather than resolving anything", () => {
@@ -364,7 +375,11 @@ describe("the transcript's message and tool rows", () => {
   });
 
   test("Open file in the Editor goes through the cockpit's ONE door, showPanelTab with a file-shaped id", () => {
-    expect(code("session-cockpit.tsx")).toContain("onOpenFile={(path) => showPanelTab(`file:${path}`)}");
+    // WRITTEN AS A FIELD RATHER THAN A JSX PROP SINCE #576: the openers that
+    // end in the right panel are gathered into `panelGestures` so the solo
+    // route can withhold the lot of them at once. The door is unchanged — one
+    // call, one file-shaped id — which is what this test is about.
+    expect(code("session-cockpit.tsx")).toContain("onOpenFile: (path: string) => showPanelTab(`file:${path}`)");
   });
 
   test("every row in a turn gets the SAME gestures, so a live turn and a settled one cannot disagree", () => {

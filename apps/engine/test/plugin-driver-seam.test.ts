@@ -28,6 +28,16 @@ import { helloToolModule } from "../src/plugins/hello";
 import { HOST_RATIFIED_READ_TOOLS } from "../src/plugins/policy";
 import { PluginToolSocket } from "../src/plugins/socket";
 import { TelarToolSocket } from "../src/telar-socket";
+import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";
+
+/** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
+ *  both drivers resolve one on their way to a fake Claude SDK and the fake `codex` app-server.
+ *  So this file opts past issue #532’s no-spawn gate, for its own scope only.
+ *  See ./allow-cli.ts. */
+allowCliInThisFile();
+
+/** And pin WHICH claude, so the resolve cannot depend on this machine (#752). */
+pinFakeClaudeInThisFile();
 
 const sockets: PluginToolSocket[] = [];
 const telarSockets: TelarToolSocket[] = [];

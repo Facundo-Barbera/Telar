@@ -4,7 +4,7 @@
  * Asserted as SOURCE TEXT because all four are about ordering inside one
  * `onKeyDown` and one async callback, this app has no DOM harness, and every one
  * of them is decidable by reading the file — the same reasoning as
- * `session-cockpit.test.ts` and `spool/idiom.test.ts`. They are the claims whose
+ * `session-cockpit.test.ts`. They are the claims whose
  * violation is silent: a ⌘S that opens the browser's Save dialog, a stash that
  * clears the box on a write that did not land, a badge that greys the whole
  * composer. None of those fail loudly, and all four survive a refactor only if
@@ -61,7 +61,7 @@ describe("the menu can always be closed", () => {
     // close it. Escape must be the one key that does not need a row.
     const open = composer.indexOf("if (stashOpen) {");
     const escape = composer.indexOf('event.key === "Escape"', open);
-    const counted = composer.indexOf("stash.entries.length > 0", open);
+    const counted = composer.indexOf("shelf.rows.length > 0", open);
     expect(open).toBeGreaterThan(-1);
     expect(escape).toBeGreaterThan(open);
     expect(escape).toBeLessThan(counted);
@@ -94,10 +94,36 @@ describe("nothing the stash adds is ever disabled", () => {
     // Anchored AFTER the badge, not at the file's first `<LayersIcon`: the
     // chrome menu's Stash draft row wears the same glyph, and a slice taken
     // from the first one is empty — a test that passes by measuring nothing.
-    const at = composer.indexOf("aria-label=\"Stashed prompts\"");
+    // Anchored on the RENDER CONDITION rather than the label, because the label
+    // now names what is in the shelf (#87) and an agent's draft changes it.
+    const at = composer.indexOf("shelf.rows.length > 0 || stashing");
     const badge = composer.slice(at, composer.indexOf("<LayersIcon", at));
     expect(badge.length).toBeGreaterThan(0);
     expect(badge).not.toContain("disabled");
     expect(menu).not.toContain("disabled");
+  });
+});
+
+/**
+ * #500 — `$` DREW NOTHING IN A FRESH SESSION.
+ *
+ * Asserted as source text for the reason the rest of this file is: the claim is
+ * about which branch one async effect takes, this app has no DOM harness, and
+ * the failure is silent — an empty menu looks exactly like a project with no
+ * skills. The engine side is covered for real in `provider-skills.test.ts`.
+ */
+describe("the skills menu has something to ask before a session exists", () => {
+  test("a canvas asks the project rather than returning early", () => {
+    // The bug was the guard: `!sessionId` returned, so the one composer that
+    // has no session — the canvas — never fetched at all.
+    const effect = composer.slice(composer.indexOf("trigger?.kind !== \"skill\""));
+    expect(effect.slice(0, effect.indexOf("}, ["))).toContain("!sessionId && !projectId");
+    expect(composer).toContain("api.projectSkills(projectId!, menuDriver)");
+  });
+
+  test("the session's own answer still wins when there is a session", () => {
+    // A worktree session's `.claude` is its own copy's, not the project root's.
+    const read = composer.indexOf("sessionId ? await api.sessionSkills(sessionId)");
+    expect(read).toBeGreaterThan(-1);
   });
 });

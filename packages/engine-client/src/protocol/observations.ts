@@ -32,7 +32,7 @@ import {
   TurnAttachment,
   UsageSnapshot,
 } from "./common";
-import { AgentMessageIntent, Turn, WakeReason } from "./entities";
+import { AgentMessageIntent, NotificationDetail, Turn, WakeReason } from "./entities";
 import { ContentStream, ItemDetail, ItemStatus } from "./items";
 import { RequestDecision, RequestDetail, RequestKind, RequestResolver } from "./requests";
 import { TaskSeed } from "./tasks";
@@ -118,6 +118,25 @@ export const TurnObservation = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("display.opened"), path: z.string().min(1), title: z.string().optional() }),
 
   /**
+   * The agent put a PREPARED PROMPT on the project's shelf — the `prompt_draft`
+   * tool. The prompt itself was already written through the engine's own routes
+   * by the time this is reported, so this carries only enough to name what
+   * appeared: the composer re-reads the shelf rather than trusting a payload,
+   * for the reason `announceProjectNotesChanged` gives.
+   *
+   * IT IS A NUDGE, NOT THE DATA. Without it a draft an agent wrote mid-turn
+   * would sit unseen until the next focus event, which for the handoff case is
+   * precisely the wrong moment — the human is watching that turn end.
+   */
+  z.object({
+    kind: z.literal("prompt.drafted"),
+    promptId: Id,
+    title: z.string().min(1),
+    /** Present when it was prepared for one conversation — the handoff case. */
+    forSessionId: Id.optional(),
+  }),
+
+  /**
    * The provider's own session id, THE MOMENT THE DRIVER LEARNS IT.
    *
    * It used to travel only in the driver's RESULT, which `completeTurn` alone
@@ -170,7 +189,21 @@ export type TurnObservationBatch = z.infer<typeof TurnObservationBatch>;
  */
 export const WorkerClaim = z.object({
   sessionId: Id,
-  projectRoot: z.string().min(1),
+  /**
+   * WHERE A PROVIDER WOULD BE SPAWNED — and OPTIONAL since #526, because a
+   * session with `workspace.mode === "none"` genuinely has nowhere.
+   *
+   * ABSENT IS NOT "LOOK IT UP" AND NOT "USE THE WORKER'S OWN CWD". It is the
+   * positive statement that this turn runs with no working directory, and the
+   * worker acts on it as one: it skips the folder check entirely rather than
+   * stat-ing a path it invented, and hands the driver no `cwd`. A driver that
+   * needs a directory (every provider that spawns a CLI) is never selected for
+   * such a session — the `telar` driver is, and it spawns nothing.
+   *
+   * An older engine always sends one, so nothing about an ordinary session
+   * changes.
+   */
+  projectRoot: z.string().min(1).optional(),
   /**
    * The session's project, for the browser's PER-PROJECT profile: the worker
    * binds the session's browser scope to this before the turn's first tool
@@ -245,16 +278,45 @@ export const WorkerClaim = z.object({
    *
    * IT IS HERE FOR THE SAME REASON `projectRoot` AND `model` ARE — the worker
    * holds no store handle, so anything it needs to execute arrives with the
-   * work. What needs it is the spool toolkit: a spool item's `project` is a
-   * free-form LABEL, not an id, so scoping a session to its own slice means
-   * comparing names, and the worker has no registry to look one up in.
+   * work, and a toolkit that scopes by NAME rather than by id has no registry
+   * to look one up in.
    *
-   * ABSENT MEANS UNSCOPED, which is the project-less master's case — it sees
-   * every project's items, because having no project is the whole point of it.
-   * An older engine that sends nothing therefore degrades to the master's view
-   * rather than to an empty one, and the toolkit says which scope it resolved.
+   * ABSENT MEANS UNSCOPED, which is a project-less session's case. An older
+   * engine that sends nothing therefore degrades to the unscoped view rather
+   * than to an empty one.
+   *
+   * NOTE (#501): the Spool's toolkit was this field's only reader, and it was
+   * decommissioned. The field is kept because the wire carries it and an older
+   * engine still sends it; drop it in a deliberate protocol change, not here.
    */
   project: z.string().min(1).optional(),
+  /**
+   * PRESENT WHEN `projectRoot` ABOVE IS A PER-SESSION WORKTREE rather than the
+   * project's own checkout — issue #641.
+   *
+   * IT EXISTS FOR ONE SENTENCE, and that sentence was wrong for a year. When the
+   * directory a turn would spawn in is missing, the worker has only a path, and
+   * a path cannot tell you which of two unrelated things broke: a project that
+   * moved (re-register it) or a worktree that was removed (the project is fine;
+   * do NOT re-register it, which would mint a new id and orphan this session's
+   * history). It told everybody the first one. These two facts are what let it
+   * tell them apart and name the remedy — see `assertProjectRoot`.
+   *
+   * CARRIED ON THE CLAIM for this file's standing reason: the worker holds no
+   * store handle, so anything it needs to execute arrives with the work. An
+   * older engine sends nothing and the worker falls back to the path-only
+   * wording, which is what it always said.
+   */
+  worktree: z
+    .object({
+      /** The branch it was cut on — the handle on whatever it committed, and
+       *  the thing a person would cut a replacement from. */
+      branch: z.string().min(1),
+      /** The PROJECT's own checkout. A different directory, and the one that is
+       *  fine when the worktree is not. */
+      repoRoot: z.string().min(1),
+    })
+    .optional(),
   /** Provider continuity from the last completed turn, if any. */
   resumeCursor: z.string().min(1).optional(),
   /**
@@ -410,6 +472,17 @@ export const WorkerStatus = z.object({
          * only difference was whether a turn happened to be in flight.
          */
         wakeReason: WakeReason.optional(),
+        /**
+         * WHAT THIS DELIVERY IS, when it is not the person speaking — #550.
+         *
+         * Travels for the same reason `sender` and `wakeReason` do, and
+         * supersedes both at the driver: with it the seam knows to deliver on a
+         * channel that is not the user's (a peer origin on Claude, a developer
+         * instruction on Codex, a synthetic part on OpenCode) and to draw a
+         * notification row rather than a bubble. Without it a peer's message
+         * arriving mid-turn was, structurally, the person interrupting.
+         */
+        notification: NotificationDetail.optional(),
       }),
     )
     .default([]),

@@ -14,11 +14,8 @@
  * stores a component. Storing a name means an install that upgrades lucide keeps
  * every icon a person chose.
  *
- * THE COLOURS ARE THE SAME EIGHT `--subject-*` HUES the Spool already paints
- * identities with, and the law travels with them: an identity hue says WHOSE
- * something is, never how urgent. `IdentityColor` restates the token names rather
- * than importing `SpoolSubjectColor` because these are not Spool records — the
- * test pins the two lists together so they cannot drift.
+ * THE COLOURS ARE THE EIGHT `--subject-*` HUES, and the law travels with them:
+ * an identity hue says WHOSE something is, never how urgent.
  *
  * PURE DATA. No zod schema is imported by anything that only needs the list, and
  * nothing here reaches a DOM, a clock or a framework.

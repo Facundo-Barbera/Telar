@@ -62,7 +62,22 @@ function input(tree: string, cfg: RunConfiguration, extra: Partial<StartRunInput
   return { projectId: "proj_1", config: cfg, worktreePath: tree, sessionId: "sess_a", ...extra };
 }
 
-async function until(predicate: () => boolean, ms = 15_000): Promise<boolean> {
+/**
+ * THE BUDGET MUST FIT UNDER THIS FILE'S OWN CEILING (#706).
+ *
+ * It was 15 s, while three tests below cap themselves at 10 s and five more at
+ * 15 s. A wait that outlives the ceiling it runs under cannot fail cleanly:
+ * bun kills the test first, the assertion resolves into a dead test, and the
+ * run reports `this test timed out` with the real reason — a predicate that
+ * never came true — thrown away as an unhandled error between tests. That is
+ * what #706 was seeing, and it reproduced on two of three full-suite runs.
+ *
+ * Six seconds is not a number picked to make this pass; it is what every
+ * sibling already uses — `run-durability` and `run-integration` are both 6 s,
+ * `run-singleton` 4 s — against the same kind of child process. This file was
+ * the outlier.
+ */
+async function until(predicate: () => boolean, ms = 6_000): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < ms) {
     if (predicate()) return true;

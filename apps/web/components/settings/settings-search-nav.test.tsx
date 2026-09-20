@@ -10,9 +10,17 @@ import { SettingsSearchNav } from "./settings-search-nav";
  *
  * A static render cannot type, so the parts that only exist after a keystroke —
  * the results list, the empty line, Escape — are pinned against the file. That
- * is weaker than driving it, and it is the right trade for the three rules that
- * would otherwise be checked by nobody: `/` must not steal a slash from a text
- * field, the highlight must be announced, and clearing must put the panes back.
+ * is weaker than driving it, and it was the right trade for the three rules
+ * that would otherwise be checked by nobody: `/` must not steal a slash from a
+ * text field, the highlight must be announced, and clearing must put the panes
+ * back.
+ *
+ * IT IS NO LONGER THE ONLY TRADE AVAILABLE. This file predates #732's fix: a
+ * controlled field can now be typed into (`lib/testing/type-into.ts`), so these
+ * could be mounted and driven instead of matched against source. Doing that is
+ * a rewrite of this file rather than an edit, and it is left for whoever next
+ * touches this nav — the source pins are honest about what they are, and they
+ * are not wrong, only weak.
  */
 const source = readFileSync(new URL("./settings-search-nav.tsx", import.meta.url), "utf8");
 const shell = readFileSync(new URL("./settings-shell.tsx", import.meta.url), "utf8");

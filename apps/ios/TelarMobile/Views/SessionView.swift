@@ -229,299 +229,358 @@ struct SessionView: View {
         )
     }
 
+    // THE CHAIN IS CUT ON PURPOSE — issue #758. As a single expression this
+    // was a VStack plus some forty modifiers, and the Swift type checker
+    // budgets each expression separately: that one fit inside the budget on an
+    // M-series Mac and did NOT on a GitHub-hosted runner, so the iOS nightly
+    // failed to archive on hosted while compiling fine on the desk. A
+    // threshold rather than a clean break, which is the worst kind — every
+    // line added to the view moved it closer to the edge on more machines.
+    //
+    // Each layer below is its own expression with its own explicit `some
+    // View`, so the checker solves several small problems instead of one large
+    // one. Read them OUTSIDE-IN: `body` is the navigation chrome, over the
+    // panel's presentations, over three layers of lifecycle wiring, over the
+    // stack. Adding a modifier is fine; folding the layers back into one is
+    // what regressed.
     var body: some View {
-        VStack(spacing: 0) {
-            if let session = store.sync.session {
-                HStack(spacing: 6) {
-                    ActivityBadge(activity: session.activity)
-                    Text(session.activity == .blocked ? "Needs you" : session.activity.rawValue.capitalized)
-                    Spacer()
-                    // WHICH MAC THIS CONVERSATION IS ON — issue #244, and the
-                    // one fact the transcript could never supply. The title
-                    // above it is a name somebody chose, the branch beside it
-                    // is a name somebody chose, and two paired Macs can carry
-                    // the same of either; the machine is what tells them apart.
-                    //
-                    // TRAILING, BESIDE THE BRANCH, because the strip is already
-                    // read as two halves: what this conversation is DOING on the
-                    // leading edge, and WHERE its work lands on the trailing
-                    // one. The Mac is the outermost "where", so it sits just
-                    // outside the branch rather than interrupting the status.
-                    //
-                    // IT CARRIES A GLYPH, unlike the rail's badge. There the
-                    // shape is learned from company — a header's list of them,
-                    // rows above and below wearing the same mark. Here there is
-                    // exactly one, next to a branch name, and a bare rounded
-                    // rectangle would be a second piece of text to decode.
-                    if let hostLabel {
-                        HStack(spacing: 3) {
-                            Image(systemName: "desktopcomputer").font(.system(Theme.captionTiny))
-                            Text(hostLabel).lineLimit(1).truncationMode(.tail)
-                        }
-                        .padding(.horizontal, 4)
-                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel("On \(hostLabel)")
-                    }
-                    Text(session.workspace.branch ?? session.driver).lineLimit(1)
-                }
-                .font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)
-                .readingColumn(gutter: Theme.readingGutter)
+        presentations
+            .navigationTitle(store.sync.session?.title ?? "Session")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbarContent }
+            .alert("Rename session", isPresented: $renaming) {
+                TextField("Title", text: $renameDraft)
+                Button("Rename") { Task { await store.rename(renameDraft) } }
+                Button("Cancel", role: .cancel) {}
             }
-            ScrollView {
-                VStack(spacing: 0) {
-                    // AN EXPLICIT TAP, NOT A SCROLL TRIGGER — the reader
-                    // asking for history is the only thing that fetches it.
-                    // Prepending does not re-pin the tail: `contentFingerprint`
-                    // reads only the LAST turn (plus the count, which changes,
-                    // but `followTail` defers to `isPositionedByUser`, and a
-                    // reader at this button has scrolled).
-                    if store.sync.hasOlderTurns {
-                        loadEarlierButton
-                    }
-                    // Queued messages live below the composer (t3's queue
-                    // line), not in the transcript.
-                    // THE READING MEASURE. The web caps the message lane at
-                    // 50rem; at the phone's larger body size the same feel is
-                    // narrower, and on an iPad the column would otherwise
-                    // run the full width of the detail pane.
-                    TranscriptView(
-                        turns: visibleTurns,
-                        receiptMarker: receiptWorld.candidate?.runId,
-                        onReceiptMarkerVisible: { runId, visible in
-                            // Only ever claims or releases ITS OWN run, so a
-                            // marker unmounting cannot blank the answer that
-                            // replaced it.
-                            if visible { visibleReceiptRunId = runId }
-                            else if visibleReceiptRunId == runId { visibleReceiptRunId = nil }
+    }
+
+    /// Every surface the panel can appear on — the column beside the
+    /// transcript, the cover that fills the window, the push at a compact
+    /// width — and the watchers that keep exactly one of them raised.
+    private var presentations: some View {
+        presence
+            .environment(\.panel, panel)
+            .environment(\.kernelSignals, store.sync.kernelSignals)
+            .inspector(isPresented: $inspectorShown) {
+                NavigationStack {
+                    PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .column, canFillWindow: true, onClose: { panel.close() })
+                        .toolbar(.hidden, for: .navigationBar)
+                }
+                // The card draws its own surface, so the column behind it is the
+                // canvas the conversation sits on rather than a second sheet.
+                .background(Theme.canvas)
+                .inspectorColumnWidth(min: 360, ideal: 440, max: 640)
+            }
+            // FULL SCREEN IS THE SAME VIEW WITH THE SCREEN TO ITSELF. `PanelModel`
+            // owns the state, so the tab, the open files and their unsaved drafts
+            // cross unchanged — nothing is handed to a second instance.
+            //
+            // Its flag is `@State` for the reason every presentation flag here is:
+            // a `Binding` built in `body` is a new location on every pass, and
+            // `.fullScreenCover` compares the one it was given.
+            .fullScreenCover(isPresented: $fullScreenShown) {
+                NavigationStack {
+                    PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .page, canFillWindow: true, onClose: { panel.close() })
+                        .toolbar(.hidden, for: .navigationBar)
+                        .background {
+                            // A hardware Escape leaves full screen, the way it
+                            // leaves one on every other platform. Zero-sized so it
+                            // is a shortcut and not a control.
+                            Button("") { panel.setFullScreen(false) }
+                                .keyboardShortcut(.escape, modifiers: [])
+                                .opacity(0)
+                                .accessibilityHidden(true)
+                        }
+                }
+            }
+            .onChange(of: panel.isFullScreen, initial: true) { _, full in
+                let wanted = full && wantsColumn
+                if fullScreenShown != wanted { fullScreenShown = wanted }
+                raisePanel(panel.isOpen)
+            }
+            .onChange(of: fullScreenShown) { _, shown in
+                // The cover was pulled down by a gesture rather than the button.
+                if !shown, panel.isFullScreen { panel.setFullScreen(false) }
+            }
+            .navigationDestination(isPresented: $pushShown) {
+                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, onClose: { panel.close() })
+                    .navigationTitle("Panel")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .onChange(of: panel.isOpen, initial: true) { _, _ in
+                // THE MODEL AS IT IS NOW, never the value the change carried.
+                // `isOpen` can flip twice inside one update pass, and SwiftUI then
+                // delivers the superseded one too; raising the push off THAT put
+                // `pushShown` back up for a frame against a panel already closed.
+                raisePanel(panel.isOpen)
+                syncSidebar(open: panel.isOpen)
+            }
+            .onChange(of: inspectorShown) { _, open in
+                // THE COLUMN CLOSING BECAUSE WE WENT FULL SCREEN IS NOT THE READER
+                // CLOSING THE PANEL. Without this guard, expanding read as a
+                // dismissal: `panel.close()` ran, which also drops full screen, and
+                // the whole thing collapsed instead of filling the window.
+                guard wantsColumn, !panel.isFullScreen, PanelRaise.isDismissal(open) else { return }
+                panelDismissed()
+            }
+            .onChange(of: pushShown) { _, open in
+                if !wantsColumn, PanelRaise.isDismissal(open) { panelDismissed() }
+            }
+            // A rotation or a multitasking resize moves the panel between the
+            // column and the push; the model says whether it is showing at all.
+            .onChange(of: wantsColumn) { raisePanel(panel.isOpen) }
+            .task(id: "\(sessionId):plugins") { await readPlugins() }
+            .onChange(of: panel.generation) {
+                // A file opened from a chip or a `display.opened` event: make
+                // sure the panel is showing and the sidebar has made room.
+                //
+                // THE RAISE BELONGS HERE TOO, not only on `isOpen`. A panel the
+                // model already calls open flips nothing for that watcher to fire
+                // on, so at a compact width — where the panel is a push and not a
+                // column — the agent's file landed in a panel that never came up.
+                // `generation` goes up on every open, which is the one signal that
+                // survives the panel already being open.
+                guard panel.isOpen else { return }
+                raisePanel(true)
+                syncSidebar(open: true)
+            }
+            .onChange(of: store.sync.displayOpens.count) { watchDisplayOpens() }
+    }
+
+    /// Coming, going, handing off, and being sent away when the Mac does.
+    ///
+    /// The last of the three lifecycle layers — they are one chain cut into
+    /// three, in the order the modifiers were always applied, because eleven
+    /// of them in a row measured 459 ms against the 500 ms bar #758 argues
+    /// about. Under it, but not by enough to call finished.
+    private var presence: some View {
+        notices
+            .onDisappear {
+                store.sync.stop()
+                receipt?.dispose()
+                receipt = nil
+                if MobileNotifications.shared.visibleSession?.sessionId == sessionId && MobileNotifications.shared.visibleSession?.hostId == hostId {
+                    MobileNotifications.shared.visibleSession = nil
+                }
+            }
+            .userActivity("com.telar.session", isActive: cockpitBaseURL != nil && store.sync.session != nil) { activity in
+                guard let base = cockpitBaseURL, let session = store.sync.session else { return }
+                activity.title = session.title
+                activity.webpageURL = session.cockpitURL(base: base)
+                activity.isEligibleForHandoff = true
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // Poll only while someone is looking.
+                if phase == .active {
+                    store.sync.start()
+                    if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
+                } else { store.sync.stop(); MobileNotifications.shared.visibleSession = nil }
+            }
+            .onChange(of: store.sync.connection) { _, connection in
+                if connection == .gone { dismiss() }
+            }
+    }
+
+    /// What has to be told when this conversation changes: the notifier's idea
+    /// of which session is on screen, the draft on disk, and the composer's
+    /// pending reference.
+    private var notices: some View {
+        polling
+            .onAppear {
+                if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
+            }
+            .onChange(of: draft) { _, text in
+                if let hostId { UserDefaults.standard.set(text, forKey: "telar.draft.\(hostId).\(sessionId)") }
+            }
+            // "INSERT AS A REFERENCE", from wherever it was picked. The tree, the
+            // file body, a transcript row and a diff row all reach the composer
+            // through the panel model they already share; this is the other end.
+            .onChange(of: panel.pendingReference) { _, pending in
+                guard let pending else { return }
+                panel.clearReference()
+                draft = ComposerReference.insert(pending, into: draft)
+                // THE BOX IT LANDED IN HAS TO BE ON SCREEN. Beside the transcript
+                // the composer already is; as a push or filling the window the
+                // panel is covering it, and an insert with nothing to show for it
+                // reads as a menu item that did nothing.
+                if !wantsColumn || panel.isFullScreen { panel.close() }
+                composerFocused = true
+            }
+            .onChange(of: store.sync.session) { _, session in
+                if let session, let hostId { Task { await MobileNotifications.shared.update(session, hostId: hostId) } }
+            }
+            .alert("Live Activity", isPresented: Binding(get: { MobileNotifications.shared.activityError != nil }, set: { if !$0 { MobileNotifications.shared.activityError = nil } })) {
+                Button("OK") { MobileNotifications.shared.activityError = nil }
+            } message: { Text(MobileNotifications.shared.activityError ?? "") }
+    }
+
+    /// The poll loop, and the read receipt it feeds.
+    private var polling: some View {
+        stack
+            .task {
+                store.sync.start()
+                // One courier for the life of the mount. It owns an in-flight
+                // request and a dwell timer, so it is a subscription rather than a
+                // derived value — rebuilding it per render would lose both.
+                if receipt == nil {
+                    let api = self.api
+                    let sync = store.sync
+                    let report = self.onRead
+                    receipt = ReadReceiptCourier(
+                        send: { identity, runId in try await api.markSessionRead(identity.sessionId, runId: runId) },
+                        // BOTH SURFACES, from the one answer. The transcript's own
+                        // copy stops the gate re-firing; the report is what puts the
+                        // sidebar's row right without waiting for its poll.
+                        onRead: { _, session in
+                            sync.applyRead(session)
+                            report?(session)
                         }
                     )
-                    .readingColumn()
-                    .padding(.vertical, 12)
+                    sendReceiptIfEarned()
                 }
             }
-            .scrollPosition($position)
-            // THE CONVERSATION IS THE WAY OUT OF THE KEYBOARD. A tap on it, or
-            // scrolling it, puts the keyboard away — what every messaging app
-            // does, and the phone offered neither: the only exits were Send
-            // and the return key. `.immediately` rather than `.interactively`
-            // because scrolling UP to re-read is the common case, and the
-            // interactive mode only dismisses on a drag toward the keyboard.
-            // Buttons, links and long-presses inside the transcript still win;
-            // this catches only the tap nothing else wanted.
-            .scrollDismissesKeyboard(.immediately)
-            // AND THE SCROLL HALF, SAID OURSELVES. `.scrollDismissesKeyboard`
-            // works through SwiftUI's own focus, and the composer's field is a
-            // `UITextView` — outside that system, so the modifier alone scrolled
-            // the transcript with the keyboard still standing. `.interacting` is
-            // the finger on the glass, which is what `.immediately` means.
-            .onScrollPhaseChange { _, phase in
-                if phase == .interacting, composerFocused { composerFocused = false }
-            }
-            .onTapGesture { composerFocused = false }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height
-                    >= geometry.contentSize.height - 40
-            } action: { _, atBottom in
-                isAtBottom = atBottom
-            }
-            // THE CASE THAT WAS BROKEN: the transcript arrives a poll after the
-            // view does, so the first non-empty fill is the real "open", and
-            // that is when the tail has to be re-pinned.
-            .onChange(of: visibleTurns.isEmpty) { _, isEmpty in
-                guard !isEmpty else { return }
-                followTail()
-            }
-            .onChange(of: contentFingerprint) { followTail() }
-            // AND AS THE REVEAL PAINTS IT, not only as it arrives.
-            // `contentFingerprint` counts the RAW `streamedText`, so it moves
-            // when a poll lands — before the pacer has drawn a character of it.
-            // The height then grows for about a second with nothing re-pinning,
-            // and the last chunk of a reply has no arrival after it to correct
-            // the drift. Height is the signal that matches what the reader
-            // sees; re-pinning moves the offset, never the height, so this
-            // cannot feed itself.
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentSize.height
-            } action: { _, _ in
-                followTail()
-            }
-            .overlay(alignment: .bottomTrailing) {
-                jumpToBottomButton()
-                    .opacity(showsJumpButton ? 1 : 0)
-                    .allowsHitTesting(showsJumpButton)
-                    .animation(.easeInOut(duration: 0.15), value: showsJumpButton)
-            }
+            .onChange(of: receiptWorld) { sendReceiptIfEarned() }
+    }
+
+    /// The three bands of the conversation, top to bottom.
+    private var stack: some View {
+        VStack(spacing: 0) {
+            statusStrip
+            transcript
             footer
         }
         .background(Theme.canvas)
-        .task {
-            store.sync.start()
-            // One courier for the life of the mount. It owns an in-flight
-            // request and a dwell timer, so it is a subscription rather than a
-            // derived value — rebuilding it per render would lose both.
-            if receipt == nil {
-                let api = self.api
-                let sync = store.sync
-                let report = self.onRead
-                receipt = ReadReceiptCourier(
-                    send: { identity, runId in try await api.markSessionRead(identity.sessionId, runId: runId) },
-                    // BOTH SURFACES, from the one answer. The transcript's own
-                    // copy stops the gate re-firing; the report is what puts the
-                    // sidebar's row right without waiting for its poll.
-                    onRead: { _, session in
-                        sync.applyRead(session)
-                        report?(session)
+    }
+
+    /// The strip above the transcript, read as two halves: what this
+    /// conversation is DOING on the leading edge, and WHERE its work lands on
+    /// the trailing one.
+    @ViewBuilder private var statusStrip: some View {
+        if let session = store.sync.session {
+            HStack(spacing: 6) {
+                ActivityBadge(activity: session.activity)
+                Text(session.activity == .blocked ? "Needs you" : session.activity.rawValue.capitalized)
+                Spacer()
+                // WHICH MAC THIS CONVERSATION IS ON — issue #244, and the
+                // one fact the transcript could never supply. The title
+                // above it is a name somebody chose, the branch beside it
+                // is a name somebody chose, and two paired Macs can carry
+                // the same of either; the machine is what tells them apart.
+                //
+                // TRAILING, BESIDE THE BRANCH, because the strip is already
+                // read as two halves: what this conversation is DOING on the
+                // leading edge, and WHERE its work lands on the trailing
+                // one. The Mac is the outermost "where", so it sits just
+                // outside the branch rather than interrupting the status.
+                //
+                // IT CARRIES A GLYPH, unlike the rail's badge. There the
+                // shape is learned from company — a header's list of them,
+                // rows above and below wearing the same mark. Here there is
+                // exactly one, next to a branch name, and a bare rounded
+                // rectangle would be a second piece of text to decode.
+                if let hostLabel {
+                    HStack(spacing: 3) {
+                        Image(systemName: "desktopcomputer").font(.system(Theme.captionTiny))
+                        Text(hostLabel).lineLimit(1).truncationMode(.tail)
+                    }
+                    .padding(.horizontal, 4)
+                    .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("On \(hostLabel)")
+                }
+                Text(session.workspace.branch ?? session.driver).lineLimit(1)
+            }
+            .font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)
+            .readingColumn(gutter: Theme.readingGutter)
+        }
+    }
+
+    /// The conversation itself, and everything about staying at its tail.
+    private var transcript: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                // AN EXPLICIT TAP, NOT A SCROLL TRIGGER — the reader
+                // asking for history is the only thing that fetches it.
+                // Prepending does not re-pin the tail: `contentFingerprint`
+                // reads only the LAST turn (plus the count, which changes,
+                // but `followTail` defers to `isPositionedByUser`, and a
+                // reader at this button has scrolled).
+                if store.sync.hasOlderTurns {
+                    loadEarlierButton
+                }
+                // Queued messages live below the composer (t3's queue
+                // line), not in the transcript.
+                // THE READING MEASURE. The web caps the message lane at
+                // 50rem; at the phone's larger body size the same feel is
+                // narrower, and on an iPad the column would otherwise
+                // run the full width of the detail pane.
+                TranscriptView(
+                    turns: visibleTurns,
+                    receiptMarker: receiptWorld.candidate?.runId,
+                    onReceiptMarkerVisible: { runId, visible in
+                        // Only ever claims or releases ITS OWN run, so a
+                        // marker unmounting cannot blank the answer that
+                        // replaced it.
+                        if visible { visibleReceiptRunId = runId }
+                        else if visibleReceiptRunId == runId { visibleReceiptRunId = nil }
                     }
                 )
-                sendReceiptIfEarned()
+                .readingColumn()
+                .padding(.vertical, 12)
             }
         }
-        .onChange(of: receiptWorld) { sendReceiptIfEarned() }
-        .onAppear {
-            if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
+        .scrollPosition($position)
+        // THE CONVERSATION IS THE WAY OUT OF THE KEYBOARD. A tap on it, or
+        // scrolling it, puts the keyboard away — what every messaging app
+        // does, and the phone offered neither: the only exits were Send
+        // and the return key. `.immediately` rather than `.interactively`
+        // because scrolling UP to re-read is the common case, and the
+        // interactive mode only dismisses on a drag toward the keyboard.
+        // Buttons, links and long-presses inside the transcript still win;
+        // this catches only the tap nothing else wanted.
+        .scrollDismissesKeyboard(.immediately)
+        // AND THE SCROLL HALF, SAID OURSELVES. `.scrollDismissesKeyboard`
+        // works through SwiftUI's own focus, and the composer's field is a
+        // `UITextView` — outside that system, so the modifier alone scrolled
+        // the transcript with the keyboard still standing. `.interacting` is
+        // the finger on the glass, which is what `.immediately` means.
+        .onScrollPhaseChange { _, phase in
+            if phase == .interacting, composerFocused { composerFocused = false }
         }
-        .onChange(of: draft) { _, text in
-            if let hostId { UserDefaults.standard.set(text, forKey: "telar.draft.\(hostId).\(sessionId)") }
+        .onTapGesture { composerFocused = false }
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentOffset.y + geometry.containerSize.height
+                >= geometry.contentSize.height - 40
+        } action: { _, atBottom in
+            isAtBottom = atBottom
         }
-        // "INSERT AS A REFERENCE", from wherever it was picked. The tree, the
-        // file body, a transcript row and a diff row all reach the composer
-        // through the panel model they already share; this is the other end.
-        .onChange(of: panel.pendingReference) { _, pending in
-            guard let pending else { return }
-            panel.clearReference()
-            draft = ComposerReference.insert(pending, into: draft)
-            // THE BOX IT LANDED IN HAS TO BE ON SCREEN. Beside the transcript
-            // the composer already is; as a push or filling the window the
-            // panel is covering it, and an insert with nothing to show for it
-            // reads as a menu item that did nothing.
-            if !wantsColumn || panel.isFullScreen { panel.close() }
-            composerFocused = true
+        // THE CASE THAT WAS BROKEN: the transcript arrives a poll after the
+        // view does, so the first non-empty fill is the real "open", and
+        // that is when the tail has to be re-pinned.
+        .onChange(of: visibleTurns.isEmpty) { _, isEmpty in
+            guard !isEmpty else { return }
+            followTail()
         }
-        .onChange(of: store.sync.session) { _, session in
-            if let session, let hostId { Task { await MobileNotifications.shared.update(session, hostId: hostId) } }
+        .onChange(of: contentFingerprint) { followTail() }
+        // AND AS THE REVEAL PAINTS IT, not only as it arrives.
+        // `contentFingerprint` counts the RAW `streamedText`, so it moves
+        // when a poll lands — before the pacer has drawn a character of it.
+        // The height then grows for about a second with nothing re-pinning,
+        // and the last chunk of a reply has no arrival after it to correct
+        // the drift. Height is the signal that matches what the reader
+        // sees; re-pinning moves the offset, never the height, so this
+        // cannot feed itself.
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentSize.height
+        } action: { _, _ in
+            followTail()
         }
-        .alert("Live Activity", isPresented: Binding(get: { MobileNotifications.shared.activityError != nil }, set: { if !$0 { MobileNotifications.shared.activityError = nil } })) {
-            Button("OK") { MobileNotifications.shared.activityError = nil }
-        } message: { Text(MobileNotifications.shared.activityError ?? "") }
-
-        .onDisappear {
-            store.sync.stop()
-            receipt?.dispose()
-            receipt = nil
-            if MobileNotifications.shared.visibleSession?.sessionId == sessionId && MobileNotifications.shared.visibleSession?.hostId == hostId {
-                MobileNotifications.shared.visibleSession = nil
-            }
-        }
-        .userActivity("com.telar.session", isActive: cockpitBaseURL != nil && store.sync.session != nil) { activity in
-            guard let base = cockpitBaseURL, let session = store.sync.session else { return }
-            activity.title = session.title
-            activity.webpageURL = session.cockpitURL(base: base)
-            activity.isEligibleForHandoff = true
-        }
-        .onChange(of: scenePhase) { _, phase in
-            // Poll only while someone is looking.
-            if phase == .active {
-                store.sync.start()
-                if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
-            } else { store.sync.stop(); MobileNotifications.shared.visibleSession = nil }
-        }
-        .onChange(of: store.sync.connection) { _, connection in
-            if connection == .gone { dismiss() }
-        }
-        .environment(\.panel, panel)
-        .environment(\.kernelSignals, store.sync.kernelSignals)
-        .inspector(isPresented: $inspectorShown) {
-            NavigationStack {
-                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .column, canFillWindow: true, onClose: { panel.close() })
-                    .toolbar(.hidden, for: .navigationBar)
-            }
-            // The card draws its own surface, so the column behind it is the
-            // canvas the conversation sits on rather than a second sheet.
-            .background(Theme.canvas)
-            .inspectorColumnWidth(min: 360, ideal: 440, max: 640)
-        }
-        // FULL SCREEN IS THE SAME VIEW WITH THE SCREEN TO ITSELF. `PanelModel`
-        // owns the state, so the tab, the open files and their unsaved drafts
-        // cross unchanged — nothing is handed to a second instance.
-        //
-        // Its flag is `@State` for the reason every presentation flag here is:
-        // a `Binding` built in `body` is a new location on every pass, and
-        // `.fullScreenCover` compares the one it was given.
-        .fullScreenCover(isPresented: $fullScreenShown) {
-            NavigationStack {
-                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .page, canFillWindow: true, onClose: { panel.close() })
-                    .toolbar(.hidden, for: .navigationBar)
-                    .background {
-                        // A hardware Escape leaves full screen, the way it
-                        // leaves one on every other platform. Zero-sized so it
-                        // is a shortcut and not a control.
-                        Button("") { panel.setFullScreen(false) }
-                            .keyboardShortcut(.escape, modifiers: [])
-                            .opacity(0)
-                            .accessibilityHidden(true)
-                    }
-            }
-        }
-        .onChange(of: panel.isFullScreen, initial: true) { _, full in
-            let wanted = full && wantsColumn
-            if fullScreenShown != wanted { fullScreenShown = wanted }
-            raisePanel(panel.isOpen)
-        }
-        .onChange(of: fullScreenShown) { _, shown in
-            // The cover was pulled down by a gesture rather than the button.
-            if !shown, panel.isFullScreen { panel.setFullScreen(false) }
-        }
-        .navigationDestination(isPresented: $pushShown) {
-            PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, onClose: { panel.close() })
-                .navigationTitle("Panel")
-                .navigationBarTitleDisplayMode(.inline)
-        }
-        .onChange(of: panel.isOpen, initial: true) { _, _ in
-            // THE MODEL AS IT IS NOW, never the value the change carried.
-            // `isOpen` can flip twice inside one update pass, and SwiftUI then
-            // delivers the superseded one too; raising the push off THAT put
-            // `pushShown` back up for a frame against a panel already closed.
-            raisePanel(panel.isOpen)
-            syncSidebar(open: panel.isOpen)
-        }
-        .onChange(of: inspectorShown) { _, open in
-            // THE COLUMN CLOSING BECAUSE WE WENT FULL SCREEN IS NOT THE READER
-            // CLOSING THE PANEL. Without this guard, expanding read as a
-            // dismissal: `panel.close()` ran, which also drops full screen, and
-            // the whole thing collapsed instead of filling the window.
-            guard wantsColumn, !panel.isFullScreen, PanelRaise.isDismissal(open) else { return }
-            panelDismissed()
-        }
-        .onChange(of: pushShown) { _, open in
-            if !wantsColumn, PanelRaise.isDismissal(open) { panelDismissed() }
-        }
-        // A rotation or a multitasking resize moves the panel between the
-        // column and the push; the model says whether it is showing at all.
-        .onChange(of: wantsColumn) { raisePanel(panel.isOpen) }
-        .task(id: "\(sessionId):plugins") { await readPlugins() }
-        .onChange(of: panel.generation) {
-            // A file opened from a chip or a `display.opened` event: make
-            // sure the panel is showing and the sidebar has made room.
-            //
-            // THE RAISE BELONGS HERE TOO, not only on `isOpen`. A panel the
-            // model already calls open flips nothing for that watcher to fire
-            // on, so at a compact width — where the panel is a push and not a
-            // column — the agent's file landed in a panel that never came up.
-            // `generation` goes up on every open, which is the one signal that
-            // survives the panel already being open.
-            guard panel.isOpen else { return }
-            raisePanel(true)
-            syncSidebar(open: true)
-        }
-        .onChange(of: store.sync.displayOpens.count) { watchDisplayOpens() }
-        .navigationTitle(store.sync.session?.title ?? "Session")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
-        .alert("Rename session", isPresented: $renaming) {
-            TextField("Title", text: $renameDraft)
-            Button("Rename") { Task { await store.rename(renameDraft) } }
-            Button("Cancel", role: .cancel) {}
+        .overlay(alignment: .bottomTrailing) {
+            jumpToBottomButton()
+                .opacity(showsJumpButton ? 1 : 0)
+                .allowsHitTesting(showsJumpButton)
+                .animation(.easeInOut(duration: 0.15), value: showsJumpButton)
         }
     }
 
@@ -588,7 +647,7 @@ struct SessionView: View {
                 .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
                 .padding(.horizontal, 14)
-                .frame(height: 32)
+                .scaledHeight(32, relativeTo: .footnote)
                 .background(Theme.subtle)
                 .clipShape(Capsule())
                 .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
@@ -607,9 +666,8 @@ struct SessionView: View {
             }
         } label: {
             Image(systemName: "arrow.down")
-                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Theme.text)
-                .frame(width: 36, height: 36)
+                .scaledGlyphBox(36, glyph: 14, weight: .semibold)
                 .background(Theme.card)
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
@@ -663,7 +721,16 @@ struct SessionView: View {
                     }
                 }
             }
-            ComposerView(draft: $draft, focus: $composerFocused, store: store, onSend: { pinToTail() })
+            ComposerView(
+                draft: $draft,
+                focus: $composerFocused,
+                host: SessionComposerHost(store: store),
+                // See `ComposerView.api` — the dictation token is the one call
+                // the box makes that is not about this conversation.
+                api: store.api,
+                controls: AnyView(SessionComposerControls(store: store)),
+                onSend: { pinToTail() }
+            )
         }
         .padding(.horizontal, 16)
         .readingColumn(gutter: Theme.readingGutter)
@@ -823,7 +890,24 @@ struct ComposerView: View {
     /// SwiftUI's focus system has no view of its own to move focus to. The
     /// field mirrors its first-responder state into this flag instead.
     let focus: Binding<Bool>
-    let store: SessionStore
+    /// WHAT THIS BOX IS ATTACHED TO — a session, or the Agent (#539). See
+    /// `ComposerHost`: the composer names the handful of facts it reads rather
+    /// than a store, so the Agent screen gets THIS composer instead of a bare
+    /// `TextField` with a send button.
+    let host: any ComposerHost
+    /// HOW THE BOX ASKS FOR A DICTATION TOKEN (#544) — the one call it makes
+    /// that is not about this conversation, so it is handed in rather than
+    /// reached through `ComposerHost`.
+    ///
+    /// OPTIONAL, AND THE MIC IS ABSENT WITHOUT IT. Both screens pass one; the
+    /// default is for the layout tests, which build this box to measure it and
+    /// have no Mac to talk to. A button that appeared and then failed at the
+    /// first tap would be worse than none.
+    var api: (any EngineAPI)?
+    /// THE PILLS, SUPPLIED BY THE SCREEN. A session's three read a provider
+    /// catalogue and a runtime mode; the Agent's read `agent.json`. Neither is
+    /// this box's business — it owns the row they sit in and nothing else.
+    var controls: AnyView = AnyView(EmptyView())
     /// SENDING ALWAYS GOES TO THE END. The transcript's scroll lives a struct
     /// up, so the composer says "sent" and the transcript decides what that
     /// means for the viewport — the box has no business knowing about pins.
@@ -837,14 +921,37 @@ struct ComposerView: View {
     /// What just happened to the box — a stash, or a file turned away.
     @State private var note: String?
     @State private var dropping = false
+    /// PUSH-TO-TALK (#544). Built on first appearance rather than in an
+    /// initialiser because it needs the host's client, and `@State` is
+    /// constructed before the view's properties are available to it. Owned by
+    /// the box: a dictation that outlived this view would have nowhere to put
+    /// its words, and the microphone would stay live under nothing.
+    @State private var dictation: Dictation?
+    /// THE RUN STILL BEING REVISED (#561). This was deliberately NOT `@State`
+    /// while nothing drew it — a mutation per interim frame to no visible
+    /// effect. It is drawn now, so it has to be: the field dims exactly this
+    /// range, and a frame that moved it is a frame that must redraw.
+    @State private var interim: Range<Int>?
+    /// Where the caret is inside the field, for the badge to float beside
+    /// (#561). Written by the field only when it actually moves.
+    @State private var caretRect: CGRect?
+    /// WHETHER THAT MAC DICTATES AT ALL (#544). Read once from
+    /// `GET /api/dictation`; `off` is the default and there is no mic button
+    /// until somebody chooses a provider over there. FALSE UNTIL THE MAC
+    /// ANSWERS, so the button never blinks into a toolbar and back out.
+    @State private var canDictate = false
     @Environment(\.colorScheme) private var scheme
 
-    private var isRunning: Bool { store.hasRunningTurn }
-    private var queued: [JournalTurn] { store.queuedTurns }
+    private var isRunning: Bool { host.isRunning }
+    private var queued: [JournalTurn] { host.queuedTurns }
+    /// THE MICROPHONE IS ACTUALLY OPEN — not merely starting (#561). A badge
+    /// that said "listening" through a permission prompt would be wrong for as
+    /// long as somebody took to read the dialog.
+    private var isListening: Bool { dictation?.phase == .listening }
 
     private var canSend: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !store.pendingAttachments.isEmpty
+            || !host.pendingAttachments.isEmpty
     }
 
     var body: some View {
@@ -857,12 +964,74 @@ struct ComposerView: View {
                     .padding(.horizontal, 14)
                     .padding(.bottom, 6)
             }
+            // WHY THE MIC STOPPED, AND NOTHING ELSE (#544). The unconfirmed
+            // words used to be printed here; they are in the box now, rewritten
+            // in place as the service revises them. What is left is the one
+            // thing that still has nowhere else to go — a refusal — on the same
+            // line as `note`, which is where "what just happened to this
+            // message" is said.
+            if let dictation, let refusal = dictation.error {
+                Text(refusal)
+                    .font(.system(Theme.footnote))
+                    .foregroundStyle(Theme.statusRed)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
             surface
             if focused { toolbar }
             if !queued.isEmpty { queueLine }
         }
         .animation(.linear(duration: 0.22), value: focused)
         .animation(.linear(duration: 0.18), value: queued.count)
+        // ONE PER BOX, and only once: `??=` rather than an assignment, so a
+        // re-appearance (a tab switch, a push and a pop) does not replace a
+        // dictation that is still running with a fresh idle one and leave the
+        // microphone held by an object nothing can stop.
+        .onAppear {
+            guard dictation == nil, let api else { return }
+            let live = Dictation(api: api)
+            // THE BINDING, NOT `self.draft`. This closure outlives the render
+            // that made it, and a `String` copied out of that render would be
+            // whatever the box held when the mic was first mounted — every
+            // dictated phrase would then land on top of a stale draft.
+            let box = $draft
+            // THE SPAN LIVES BESIDE THE CLOSURE, not in `@State`: it is not
+            // drawn, and a `@State` mutation per interim frame would re-render
+            // the whole composer several times a second to no visible effect.
+            // Its own guard is the draft comparison inside it, which is what
+            // makes typing mid-guess safe — see `DictationDraftWriter`.
+            let words = DictationDraftBox()
+            live.onWords = { heard in
+                box.wrappedValue = words.write(heard, into: box.wrappedValue)
+                // AFTER THE WRITE, from the writer that just moved it — the one
+                // place that knows where the unconfirmed run now sits (#561).
+                interim = words.unconfirmed
+            }
+            live.onEnd = {
+                words.forget()
+                // THE DIM COMES OFF ON EVERY PATH OUT, which is what `onEnd`
+                // already is: a field left greying a run after the microphone
+                // has closed is the app lying about what it is doing.
+                interim = nil
+            }
+            dictation = live
+        }
+        // ASKED ONCE PER MOUNT, not polled: a provider is a decision somebody
+        // makes on the Mac twice a year, and a phone re-reading it on a timer
+        // would be a request a minute for a word that never changes. A Mac that
+        // is unreachable, or too old to serve the route, leaves this false —
+        // no button, which is the right outcome either way.
+        .task {
+            guard let api else { return }
+            let answer = try? await api.dictation()
+            canDictate = DictationProvider.canDictateHere(answer?.dictation.provider ?? DictationProvider.off)
+        }
+        // LEAVING THE SCREEN RELEASES THE MICROPHONE. Without this, walking
+        // back to the rail mid-dictation leaves a socket streaming the room
+        // with nothing on screen saying so.
+        .onDisappear { dictation?.stop() }
         .sheet(isPresented: $showingStash) {
             StashSheet { entry in restore(entry) }
         }
@@ -873,7 +1042,7 @@ struct ComposerView: View {
             Task {
                 for item in items {
                     if let data = try? await item.loadTransferable(type: Data.self) {
-                        await store.attach(
+                        await host.attach(
                             data: data,
                             name: (item.itemIdentifier ?? "photo") + ".jpg",
                             mediaType: item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
@@ -888,7 +1057,7 @@ struct ComposerView: View {
 
     private var surface: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if focused && !store.pendingAttachments.isEmpty {
+            if focused && !host.pendingAttachments.isEmpty {
                 attachmentStrip.padding(.bottom, 10)
             }
             // AT REST THE ROW IS CENTRED: the field sits on the pill's centre
@@ -901,16 +1070,34 @@ struct ComposerView: View {
                 // picture at all — see ComposerTextView.
                 ComposerTextView(
                     text: $draft,
-                    placeholder: "Ask the agent, or run a command…",
+                    placeholder: host.placeholder,
                     focused: focus,
                     maxLines: focused ? 7 : 1,
+                    listening: isListening,
+                    interim: interim,
+                    caretRect: $caretRect,
                     onPaste: { intake($0) }
                 )
                 .frame(minHeight: focused ? 80 : 44, alignment: focused ? .topLeading : .leading)
                 .padding(.vertical, focused ? 8 : 0)
+                // THE BADGE FLOATS OVER THE FIELD, anchored top-leading and
+                // offset to the caret — see `DictationCaretPill`. On the
+                // OVERLAY rather than in the text: nothing about it is part of
+                // the draft that gets sent.
+                .overlay(alignment: .topLeading) {
+                    if isListening, let caretRect {
+                        DictationCaretPill(language: dictation?.language)
+                            .offset(
+                                x: DictationCaretPill.origin(for: caretRect).x,
+                                y: DictationCaretPill.origin(for: caretRect).y
+                            )
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.linear(duration: 0.12), value: isListening)
                 if !focused {
-                    if !store.pendingAttachments.isEmpty {
-                        Text("+\(store.pendingAttachments.count)")
+                    if !host.pendingAttachments.isEmpty {
+                        Text("+\(host.pendingAttachments.count)")
                             .font(.system(Theme.footnote, weight: .bold))
                             .foregroundStyle(Theme.textMuted)
                             .frame(width: 30, height: 30)
@@ -969,7 +1156,7 @@ struct ComposerView: View {
         Task {
             let (files, refusals) = await composerFiles(from: providers)
             for file in files {
-                await store.attach(data: file.data, name: file.name, mediaType: file.mediaType)
+                await host.attach(data: file.data, name: file.name, mediaType: file.mediaType)
             }
             note = refusals.isEmpty ? nil : refusals.joined(separator: " ")
         }
@@ -980,15 +1167,15 @@ struct ComposerView: View {
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(store.pendingAttachments) { attachment in
+                ForEach(host.pendingAttachments) { attachment in
                     AttachmentChip(
                         name: attachment.name,
                         mediaType: attachment.mediaType,
-                        preview: store.attachmentPreviews[attachment.id],
-                        onRemove: { store.removeAttachment(attachment.id) }
+                        preview: host.attachmentPreviews[attachment.id],
+                        onRemove: { host.removeAttachment(attachment.id) }
                     )
                 }
-                if store.uploading {
+                if host.uploading {
                     ProgressView()
                         .frame(width: 72, height: 72)
                         .background(Theme.subtle)
@@ -1012,18 +1199,25 @@ struct ComposerView: View {
                     // could never be sent. The sheet is now presented from the
                     // composer's root (see `.photosPicker` on `body`), which
                     // outlives focus.
+                    // HIDDEN WHERE THE ROUTE CANNOT TAKE FILES — the Agent's
+                    // `POST /v2/agent/turns` takes `{ text }` and has no
+                    // attachment index to reference bytes by. A photo button
+                    // that uploaded into nowhere would be worse than none; see
+                    // `AgentComposerHost.acceptsAttachments`, the one line that
+                    // changes when the thread route grows attachments.
+                    if host.acceptsAttachments {
                     Button {
                         pickingPhotos = true
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 16))
                             .foregroundStyle(Theme.text)
-                            .frame(width: 44, height: 44)
+                            .scaledGlyphBox(44, glyph: 16)
                             .background(Theme.subtle)
                             .clipShape(Circle())
                             .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                     }
                     .accessibilityLabel("Attach photos")
+                    }
                     // NO PASTE CONTROL HERE ANY MORE. A screenshot on the
                     // clipboard goes in through the field's own Paste, which
                     // is where a person looks for it.
@@ -1031,34 +1225,51 @@ struct ComposerView: View {
                     // cluster is already "things that go into this message".
                     StashButton(hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                                 onStash: stashDraft, onOpen: { showingStash = true })
+                    // THE MIC, in the same cluster and for the same reason:
+                    // everything here is a way of getting words into this
+                    // message. It is on BOTH screens because the Agent renders
+                    // this same composer (#539) — one button, not two that
+                    // agree.
+                    // AND ONLY WHERE THAT MAC ACTUALLY DICTATES. `off` is the
+                    // default: the keyboard's own dictation already works in
+                    // this box, so an uninvited mic would be Telar claiming a
+                    // job somebody may have given elsewhere.
+                    if let dictation, canDictate {
+                        ToolbarPill(variant: dictation.phase == .listening ? .danger : .normal) {
+                            dictation.toggle()
+                        } label: {
+                            Image(systemName: dictation.phase == .listening ? "mic.fill" : "mic")
+                                .scaledGlyph(16)
+                                // A TOGGLE'S FAILURE MODE IS A RECORDING
+                                // SOMEBODY FORGOT, so the state is loud: the
+                                // pill turns red and the glyph fills.
+                                .symbolEffect(.pulse, isActive: dictation.phase == .listening)
+                        }
+                        .accessibilityLabel(dictation.phase == .listening ? "Stop dictating" : "Dictate")
+                        .disabled(dictation.phase == .starting)
+                    }
                     if isRunning {
                         ToolbarPill(variant: .danger) {
                             stop()
                         } label: {
-                            Image(systemName: "stop.fill").font(.system(size: 14))
+                            Image(systemName: "stop.fill").scaledGlyph(14)
                         }
                         .accessibilityLabel("Stop the running turn")
                     }
-                    modelPill
-                    labeledPill(icon: "slider.horizontal.3",
-                                label: ComposerView.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
-                        ForEach(ComposerView.runtimeModes, id: \.0) { mode, label in
-                            Button {
-                                Task { await store.setRuntimeMode(mode) }
-                            } label: {
-                                menuRow(label, selected: mode == runtimeMode)
-                            }
-                        }
-                    }
+                    // THE SCREEN'S OWN PILLS (#539). A session hands its model
+                    // and runtime-mode pills down; the Agent hands its model,
+                    // effort and access. The box owns the row, not the row's
+                    // contents — which is what let the Agent have this composer
+                    // at all.
+                    controls
                 }
             }
             Button {
                 submit()
             } label: {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(canSend ? Theme.primaryGlyph : Theme.textMuted)
-                    .frame(width: 44, height: 44)
+                    .scaledGlyphBox(44, glyph: 16, weight: .semibold)
                     .background(canSend ? Theme.primaryFill : Theme.subtleStrong)
                     .clipShape(Circle())
             }
@@ -1067,56 +1278,6 @@ struct ComposerView: View {
         }
         .padding(.top, 8)
         .padding(.bottom, 2)
-    }
-
-    private var runtimeMode: String {
-        store.sync.session?.runtimeMode ?? "approval-required"
-    }
-
-    /// The fused provider+model pill — driver fixed (a session belongs to
-    /// its provider), everything else changeable per turn.
-    private var modelPill: some View {
-        let driver = store.sync.session?.driver ?? "claude"
-        let selection = store.sync.session?.model
-        return ModelPillView(
-            catalogues: store.catalogue.map { [driver: $0] } ?? [:],
-            choice: ModelChoice(
-                driver: driver, model: selection?.model,
-                effort: selection?.effort, fastMode: selection?.fastMode
-            ),
-            driversSwitchable: false,
-            onChange: { next in Task { await store.setModelChoice(next) } }
-        )
-        .task { await store.loadModels() }
-    }
-
-    @ViewBuilder private func menuRow(_ label: String, selected: Bool) -> some View {
-        if selected {
-            Label(label, systemImage: "checkmark")
-        } else {
-            Text(label)
-        }
-    }
-
-    private func labeledPill<Items: View>(icon: String, label: String, @ViewBuilder items: () -> Items) -> some View {
-        Menu {
-            items()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: icon).font(.system(size: 14))
-                Text(label)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
-            }
-            .foregroundStyle(Theme.text)
-            .padding(.horizontal, 14)
-            .frame(height: 44)
-            .frame(maxWidth: 172)
-            .background(Theme.subtle)
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
-        }
     }
 
     // MARK: the queue
@@ -1156,9 +1317,9 @@ struct ComposerView: View {
                                 .textCase(.uppercase)
                                 .foregroundStyle(Theme.statusSky)
                         } else {
-                            if isRunning && store.sync.session?.driver != "opencode" {
+                            if isRunning && host.canPromoteQueued {
                                 Button {
-                                    Task { await store.promote(turn.runId) }
+                                    Task { await host.promote(turn.runId) }
                                 } label: {
                                     Image(systemName: "bolt.fill")
                                         .font(.system(Theme.footnote))
@@ -1168,7 +1329,7 @@ struct ComposerView: View {
                                 .accessibilityLabel("Send now — the running turn hears it without stopping")
                             }
                             Button {
-                                Task { await store.withdraw(turn.runId) }
+                                Task { await host.withdraw(turn.runId) }
                             } label: {
                                 Image(systemName: "xmark")
                                     .font(.system(Theme.caption, weight: .medium))
@@ -1199,11 +1360,11 @@ struct ComposerView: View {
         // screen and the conversation looked frozen. Unconditional, unlike
         // `followTail` — you wrote it, so you are going to it.
         onSend()
-        Task { await store.send(text) }
+        Task { await host.send(text) }
     }
 
     private func stop() {
-        Task { await store.stopActiveTurn() }
+        Task { await host.stop() }
     }
 
     /// The whole box, emptied — the one thing the composer could not do
@@ -1230,7 +1391,7 @@ struct ComposerView: View {
             return
         }
         draft = ""
-        note = store.pendingAttachments.isEmpty ? nil : "Stashed the text. The photos stay here."
+        note = host.pendingAttachments.isEmpty ? nil : "Stashed the text. The photos stay here."
     }
 
     /// A RESTORE NEVER EATS WHAT IS ALREADY IN THE BOX.
@@ -1239,6 +1400,127 @@ struct ComposerView: View {
         draft = StashRules.appendPrompt(draft, taken.prompt)
         note = taken.left > 0 ? "\(taken.left == 1 ? "1 image is" : "\(taken.left) images are") still in the stash — this app cannot restore pictures yet." : nil
         focus.wrappedValue = true
+    }
+
+}
+
+/// A 44pt labelled menu pill — the composer toolbar's own vocabulary (subtle
+/// fill, hairline, capsule, chevron). SHARED BY BOTH CONTROL ROWS (#539), so a
+/// session's pills and the Agent's cannot drift into two shapes.
+struct ComposerLabeledPill<Items: View>: View {
+    let icon: String
+    let label: String
+    @ViewBuilder let items: () -> Items
+
+    var body: some View {
+        Menu {
+            items()
+        } label: {
+            ComposerPillLabel(icon: icon, label: label)
+        }
+    }
+}
+
+/// THE PILL'S LOOK, WITHOUT THE MENU BEHIND IT.
+///
+/// Lifted out of `ComposerLabeledPill` (#551) because one control no longer
+/// opens a menu: the Agent's model pill opens a searchable SHEET, a `Menu`
+/// being unable to search or section thirty-eight described models. It must
+/// still be the same pill — that is the whole rule these shapes are shared
+/// under — so the drawing lives in one place and the two triggers wrap it.
+///
+/// `tint` IS THE ONE THING A CALLER MAY CHANGE, and only to warn: the Agent's
+/// pill turns its glyph amber when the model about to run is on an endpoint
+/// Telar cannot speak to.
+struct ComposerPillLabel: View {
+    let icon: String
+    let label: String
+    var tint: Color = Theme.text
+
+    /// A CAPPED WIDTH IS NOT A FIXED ONE (#674). #449 grouped this pill with
+    /// the composer's 44pt circles and held its sizes back; it does not belong
+    /// there. The circles are fixed in both dimensions, this is height-fixed
+    /// and width-CAPPED, and under the rule as every later sweep applied it
+    /// the text converts. It now matches `ModelPillView`, which is the same
+    /// control and converted on time — the two had drifted apart at large text
+    /// sizes and this is the half that was wrong.
+    ///
+    /// Height and cap scale off `.subheadline`, the label's own style, so the
+    /// capsule grows with the words in it instead of clipping them.
+    @ScaledMetric(relativeTo: .subheadline) private var height: CGFloat = 44
+    @ScaledMetric(relativeTo: .subheadline) private var cap: CGFloat = 172
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).font(.system(Theme.subhead)).foregroundStyle(tint)
+            Text(label)
+                .font(.system(Theme.subhead, weight: .semibold))
+                .lineLimit(1)
+                .foregroundStyle(Theme.text)
+            Image(systemName: "chevron.down").font(.system(Theme.caption, weight: .medium)).foregroundStyle(Theme.text)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: height)
+        .frame(maxWidth: cap)
+        .background(Theme.subtle)
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
+    }
+}
+
+/// A menu row with a tick where it is the one in force. Shared for the same
+/// reason as the pill above.
+@ViewBuilder func composerMenuRow(_ label: String, selected: Bool) -> some View {
+    if selected {
+        Label(label, systemImage: "checkmark")
+    } else {
+        Text(label)
+    }
+}
+
+/// THE SESSION'S TWO PILLS — model and runtime mode.
+///
+/// LIFTED OUT OF `ComposerView` (#539) so the box owns the ROW and not its
+/// contents: these read a provider catalogue and a session record, which is
+/// exactly what the Agent has none of. Nothing about what they draw changed.
+struct SessionComposerControls: View {
+    let store: SessionStore
+
+    private var runtimeMode: String {
+        store.sync.session?.runtimeMode ?? "approval-required"
+    }
+
+    /// The fused provider+model pill — driver fixed (a session belongs to
+    /// its provider), everything else changeable per turn.
+    private var modelPill: some View {
+        let driver = store.sync.session?.driver ?? "claude"
+        let selection = store.sync.session?.model
+        return ModelPillView(
+            catalogues: store.catalogue.map { [driver: $0] } ?? [:],
+            choice: ModelChoice(
+                driver: driver, model: selection?.model,
+                effort: selection?.effort, fastMode: selection?.fastMode
+            ),
+            driversSwitchable: false,
+            onChange: { next in Task { await store.setModelChoice(next) } }
+        )
+        .task { await store.loadModels() }
+    }
+
+    var body: some View {
+        modelPill
+        ComposerLabeledPill(
+            icon: "slider.horizontal.3",
+            label: SessionComposerControls.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration"
+        ) {
+            ForEach(SessionComposerControls.runtimeModes, id: \.0) { mode, label in
+                Button {
+                    Task { await store.setRuntimeMode(mode) }
+                } label: {
+                    composerMenuRow(label, selected: mode == runtimeMode)
+                }
+            }
+        }
     }
 
     static let runtimeModes: [(String, String)] = [
@@ -1259,9 +1541,8 @@ struct ControlPillButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: isRunning ? "stop.fill" : "arrow.up")
-                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(isRunning ? Theme.dangerGlyph : (canSend ? Theme.primaryGlyph : Theme.textMuted))
-                .frame(width: 44, height: 44)
+                .scaledGlyphBox(44, glyph: 16, weight: .semibold)
                 .background(isRunning ? Theme.dangerFill : (canSend ? Theme.primaryFill : Theme.subtleStrong))
                 .clipShape(Circle())
         }
@@ -1288,7 +1569,7 @@ struct ToolbarPill<Label: View>: View {
         Button(action: action) {
             label
                 .foregroundStyle(variant == .danger ? Theme.dangerGlyph : Theme.text)
-                .frame(width: 44, height: 44)
+                .scaledSquare(44)
                 .background(variant == .danger ? Theme.dangerFill : Theme.subtle)
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))

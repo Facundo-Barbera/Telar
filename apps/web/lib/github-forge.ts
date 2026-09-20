@@ -135,6 +135,11 @@ export function checkHeadline(summary: CheckSummary): string {
  *   - `UNSTABLE` means checks are failing that nothing requires. GitHub allows
  *     that merge, so this does too — with the failure named, because a person
  *     merging over a red check should have to see it.
+ *
+ * EVERY OPEN PULL REQUEST GETS A NOTE, including the one nothing is wrong with.
+ * The clean case used to return no sentence at all, which left the merge button
+ * standing alone with nothing beside it saying what it would do or whether GitHub
+ * would take it — a control that only explains itself when it is refusing.
  */
 export type MergeReadiness = {
   canMerge: boolean;
@@ -171,8 +176,11 @@ export function mergeReadiness(pull: Pick<GitHubPullDetail, "state" | "isDraft" 
       return { canMerge: true, caution: true, note: "GitHub has not finished working out whether this merges. Pressing merge is what asks it." };
     case "HAS_HOOKS":
       return { canMerge: true, caution: true, note: "The repository runs a pre-receive hook on merge, which may still refuse." };
+    // `CLEAN`, and any word this cockpit has not met. Both already enable the
+    // button, so both say the same thing: GitHub named nothing in the way. It is
+    // a report of what GitHub answered, not a promise about what it will do.
     default:
-      return { canMerge: true };
+      return { canMerge: true, note: `GitHub has nothing holding this back from ${pull.baseRefName ?? "its base branch"}.` };
   }
 }
 
@@ -206,6 +214,28 @@ export function pullStatus(pull: { state: string; isDraft: boolean; mergedAt?: n
   // Draft is checked AFTER merged and closed: a draft that was closed is closed,
   // and calling it a draft would suggest it is still waiting for somebody.
   return pull.isDraft ? "draft" : "open";
+}
+
+/**
+ * WHETHER THERE IS A MERGE CONTROL BEHIND THIS ROW — issue #703.
+ *
+ * NOT "WILL IT MERGE". That needs `mergeable` and `mergeStateStatus`, and a LIST
+ * row has neither: `gh pr list --json` is asked for thirteen fields
+ * (apps/engine/src/github.ts, `PULL_FIELDS`) and those two are not among them —
+ * they arrive only with the per-pull read. So this answers the one thing a row
+ * can answer honestly, which is also the thing the finding was about: that this
+ * cockpit merges pull requests AT ALL. `mergeReadiness` answers the other half,
+ * in the detail, where the data to answer it exists.
+ *
+ * THE ONE MERGE-RELEVANT FIELD A ROW DOES CARRY IS `isDraft`, and it is load
+ * bearing: `mergeReadiness` refuses a draft outright, so a row that pointed at
+ * one would be pointing at a control that is disabled the moment you arrive.
+ * Merged and closed rows are excluded for a stronger version of the same reason —
+ * `MergeFooter` renders nothing whatsoever for them. `pullStatus` already folds
+ * all three into one word, so "open" IS the condition, and the two cannot drift.
+ */
+export function offersMerge(pull: { state: string; isDraft: boolean; mergedAt?: number }): boolean {
+  return pullStatus(pull) === "open";
 }
 
 /** The word under a row. Short enough for a 320px column, and never a repeat of

@@ -33,24 +33,31 @@ struct AttachmentChip: View {
                 } else {
                     VStack(spacing: 6) {
                         Image(systemName: glyph)
-                            .font(.system(size: 20))
+                            // THE WHOLE CHIP SCALES AS ONE (#674): the 72pt
+                            // tile, the glyph in it, the name under it and the
+                            // 22pt remove badge all off `.body`, so the chip
+                            // grows without the label ever climbing over the
+                            // icon. The name keeps its literal rather than
+                            // taking `Theme.caption` for that reason — two
+                            // things stacked in a fixed tile have to scale by
+                            // one ratio or the stack outgrows the tile.
+                            .scaledGlyph(20)
                             .foregroundStyle(Theme.textMuted)
                         Text(name)
-                            .font(.system(size: 10))
+                            .scaledGlyph(10)
                             .foregroundStyle(Theme.textMuted)
                             .lineLimit(1)
                             .padding(.horizontal, 4)
                     }
                 }
             }
-            .frame(width: 72, height: 72)
+            .scaledSquare(72)
             .background(Theme.subtle)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             Button(action: onRemove) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 22, height: 22)
+                    .scaledGlyphBox(22, glyph: 9, weight: .bold)
                     .background(Color.black.opacity(0.55))
                     .clipShape(Circle())
             }

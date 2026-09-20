@@ -37,7 +37,18 @@
 
 import { useState } from "react";
 import { ArrowUpCircleIcon, ChevronDownIcon, DownloadIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import type { ProviderInstance, ProviderInstanceEnvVar, ProviderProbe } from "@telar/engine-client";
+import {
+  applyClaudeCompaction,
+  claudeCompactionOf,
+  claudeCompactionWindowFor,
+  CLAUDE_COMPACTION_MAX_TOKENS,
+  CLAUDE_COMPACTION_PERCENT_ENV,
+  CLAUDE_COMPACTION_WINDOW_ENV,
+  type ClaudeCompaction,
+  type ProviderInstance,
+  type ProviderInstanceEnvVar,
+  type ProviderProbe,
+} from "@telar/engine-client";
 import { cn } from "@/lib/utils";
 import { displayNameOf, DRIVER_LABEL, isDefaultInstance, providerSummary, STATUS_DOT, STATUS_LABEL, updateAdvisory, versionLabel } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";
@@ -261,6 +272,231 @@ function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange:
   );
 }
 
+/** The three answers, in the order a reader considers them: leave it alone,
+ *  move it, turn it off. */
+const COMPACTION_MODES: { value: ClaudeCompaction["mode"]; label: string }[] = [
+  { value: "default", label: "Default" },
+  { value: "after", label: "Compact after…" },
+  { value: "never", label: "Never compact" },
+];
+
+/**
+ * Where the field starts when somebody picks "Compact after…" on a login that
+ * has never had one.
+ *
+ * NOT AN ARBITRARY ROUND NUMBER: it is the largest round number that still
+ * lands exactly on a 200,000-token model (whose ceiling is 167,000 — see the
+ * clamp note below), so the first thing the field offers is a number that means
+ * the same on every model this login can run.
+ */
+const COMPACTION_SEED = 150_000;
+
+/**
+ * WHAT A TYPED THRESHOLD DOES TO THIS LOGIN'S VARIABLES — the whole of the
+ * field's decision, and the reason it is out here rather than inline.
+ *
+ * THE SPLIT `publishableEnv` ALREADY USES on this same card, and here it is not
+ * merely tidy: reaching this through the input would mean driving React's
+ * controlled-value plumbing, which this app's DOM harness does not manage —
+ * happy-dom's `input` event reaches `onInput` and never `onChange`. Exported,
+ * the rule is pinned by a test and the only thing left uncovered is React's own
+ * event delegation, which is the right place for that line to fall.
+ */
+export function compactionEdit(
+  env: readonly ProviderInstanceEnvVar[],
+  typed: string,
+): { env: ProviderInstanceEnvVar[] } | { refused: string } {
+  // Separators go in on the way out, so they have to come back off on the way
+  // in — a reader who edits "150,000" to "120,000" typed a number, not prose.
+  const wanted = Number(typed.replace(/[^\d]/g, ""));
+  const next = Number.isSafeInteger(wanted) ? applyClaudeCompaction(env, { mode: "after", tokens: wanted }) : null;
+  if (!next) {
+    return {
+      refused: `Between 1 and ${CLAUDE_COMPACTION_MAX_TOKENS.toLocaleString("en-US")} tokens. Past that Claude Code caps its own window and would compact earlier than the number here — which is Never compact with extra steps.`,
+    };
+  }
+  return { env: next };
+}
+
+/**
+ * WHEN THIS LOGIN'S SESSIONS COMPACT THEMSELVES.
+ *
+ * NOT A SETTING OF ITS OWN — a VIEW of three environment variables the list
+ * below already shows. Claude Code's dials ARE those variables, a person could
+ * always have typed them by hand, and a second store beside them would be a
+ * second answer to the same question. So this reads `instance.env` and writes
+ * `instance.env`, and a login somebody configured by hand arrives here already
+ * set.
+ *
+ * WHAT IS TYPED IS A TOKEN COUNT. The CLI's own dial is a percentage of a
+ * window, and the conversion lives in the contract package
+ * (`applyClaudeCompaction`) where the arithmetic is pinned against the CLI's
+ * formula rather than guessed at in a component.
+ *
+ * CLAUDE ONLY — see the call site. Codex compacts on its own terms and reads
+ * none of these.
+ */
+function CompactionField({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange: (next: ProviderInstanceEnvVar[]) => void }) {
+  const stored = claudeCompactionOf(env);
+  const [refused, setRefused] = useState<string | null>(null);
+  const tokens = stored?.mode === "after" ? stored.tokens : undefined;
+
+  const select = (mode: ClaudeCompaction["mode"]): void => {
+    const next =
+      mode === "after" ? applyClaudeCompaction(env, { mode, tokens: tokens ?? COMPACTION_SEED }) : applyClaudeCompaction(env, { mode });
+    if (next) {
+      setRefused(null);
+      onChange(next);
+    }
+  };
+
+  const commit = (typed: string): void => {
+    const edit = compactionEdit(env, typed);
+    if ("refused" in edit) {
+      setRefused(edit.refused);
+      return;
+    }
+    setRefused(null);
+    onChange(edit.env);
+  };
+
+  return (
+    <div>
+      <span className="text-xs font-medium text-foreground">Auto-compaction</span>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Auto-compaction">
+        {COMPACTION_MODES.map((option) => {
+          const on = stored?.mode === option.value;
+          return (
+            <Button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              variant={on ? "secondary" : "ghost"}
+              size="sm"
+              className={cn("h-7 px-2 text-xs", on ? "text-foreground" : "text-muted-foreground")}
+              onClick={() => select(option.value)}
+            >
+              {option.label}
+            </Button>
+          );
+        })}
+        {stored?.mode === "after" && (
+          <span className="flex items-center gap-1.5">
+            <BlurInput
+              // Re-keyed on the STORED number, so an accepted edit reseeds the
+              // draft from what was really kept. A refused one leaves the typed
+              // text alone with the reason under it — Escape is the way back.
+              key={tokens}
+              value={(tokens ?? 0).toLocaleString("en-US")}
+              onCommit={commit}
+              aria-label="Compact after how many tokens"
+              inputMode="numeric"
+              className="h-7 w-28 text-right font-mono text-xs"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <span className="text-2xs text-muted-foreground">tokens</span>
+          </span>
+        )}
+      </div>
+      {refused && <p className="mt-1 text-2xs leading-snug text-destructive">{refused}</p>}
+      {/* THE CLAMP IS THE ONE THING THAT CAN SURPRISE A READER, so it is what
+          the small print says. There is deliberately no "≈ N% of this model's
+          window" line: the conversion pins its own denominator and consults no
+          model, and a provider login has no single model to quote one for —
+          a percentage here would be about a session, not about this page. */}
+      {stored === undefined ? (
+        <p className="mt-1 text-2xs leading-snug text-muted-foreground">
+          Set by hand below. <code className="font-mono">{CLAUDE_COMPACTION_PERCENT_ENV}</code> without{" "}
+          <code className="font-mono">{CLAUDE_COMPACTION_WINDOW_ENV}</code> is a percentage of whichever model a session runs, so there is
+          no token count to show. Picking a state above replaces it.
+        </p>
+      ) : (
+        <p className="mt-1 text-2xs leading-snug text-muted-foreground">
+          {stored.mode === "default"
+            ? "Claude Code decides, which is what every session does today."
+            : stored.mode === "never"
+              ? `Sets DISABLE_AUTO_COMPACT. A session then grows until the model refuses the prompt; /compact by hand still works.`
+              : `Lands on exactly this number for any model with at least ${claudeCompactionWindowFor(stored.tokens).toLocaleString("en-US")} tokens of context. On a smaller one Claude Code clamps to that model's own window and compacts earlier — never later. Written as ${CLAUDE_COMPACTION_WINDOW_ENV} and ${CLAUDE_COMPACTION_PERCENT_ENV} below.`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** What the engine reported this login just stopped inheriting, and the two
+ *  ways out of it. */
+export type InheritanceNotice = {
+  /** NAMES ONLY, and that is the contract rather than the shape that happened
+   *  to be convenient: three of the names this list can hold are credentials. */
+  names: readonly string[];
+  onCarryOver: () => void;
+  onDismiss: () => void;
+};
+
+/**
+ * THE VARIABLES THIS LOGIN JUST STOPPED INHERITING — issue #594.
+ *
+ * WHY THIS EXISTS AT ALL. An instance is "configured" the moment it has one
+ * environment variable or a config folder, and a configured instance stops
+ * inheriting the variables its provider owns — its proxy, its Bedrock or Vertex
+ * routing, its API key. That rule is right: an inherited `ANTHROPIC_API_KEY`
+ * would silently move a subscription account onto metered billing. What was
+ * wrong is that it happened in SILENCE, and since the compaction control landed
+ * the first variable can be written by somebody who was thinking about
+ * compaction and nothing else. They would find out later, as an authentication
+ * error with no visible connection to the switch they touched.
+ *
+ * IT NAMES VARIABLES AND NEVER SHOWS A VALUE. `ANTHROPIC_AUTH_TOKEN` is on the
+ * list this can print. A notice that helpfully showed what was about to be lost
+ * would put a credential on a settings page — so the engine sends names, this
+ * renders names, and carrying one over sends a NAME back and lets the engine
+ * read the value from its own environment.
+ *
+ * IT IS NOT SHOWN WHEN NOTHING IS INHERITED, which on a Mac launched from the
+ * Dock is always: the engine checks its own environment first and says nothing
+ * when it is carrying none of them. A warning nobody can act on is one nobody
+ * reads.
+ */
+function InheritanceNotice({ driver, names, onCarryOver, onDismiss }: InheritanceNotice & { driver: ProviderInstance["driver"] }) {
+  return (
+    <div className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3" role="status">
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">
+          This login has stopped inheriting {names.length === 1 ? "a variable" : `${names.length} variables`} from Telar
+        </span>
+        <Button variant="ghost" size="icon-sm" aria-label="Dismiss" onClick={onDismiss}>
+          <XIcon className="size-3" />
+        </Button>
+      </div>
+      <p className="text-2xs leading-snug text-muted-foreground">
+        Configuring a login stops it picking up {DRIVER_LABEL[driver]}&rsquo;s own variables from the environment Telar was
+        launched with — otherwise an ambient key or proxy would silently replace this login&rsquo;s identity. Telar was passing
+        {names.length === 1 ? " this one" : " these"} down, and no longer will:
+      </p>
+      <ul className="flex flex-wrap gap-1">
+        {names.map((name) => (
+          <li key={name}>
+            {/* THE NAME, NOT THE VALUE. */}
+            <code className="rounded bg-muted/60 px-1 py-0.5 font-mono text-3xs text-foreground">{name}</code>
+          </li>
+        ))}
+      </ul>
+      <div className="flex items-center gap-2 pt-0.5">
+        <Button size="sm" className="h-7 px-2 text-xs" onClick={onCarryOver}>
+          Keep {names.length === 1 ? "it" : "them"} for this login
+        </Button>
+      </div>
+      <p className="text-2xs leading-snug text-muted-foreground/70">
+        Keeping {names.length === 1 ? "it" : "them"} copies the current value into this login&rsquo;s own environment below, where
+        it survives. The value is read by the engine and never shown here; a credential is stored as a secret. If this login is
+        meant to have its own identity, dismiss this instead.
+      </p>
+    </div>
+  );
+}
+
 export function ProviderInstanceCard({
   instance,
   probe,
@@ -272,6 +508,7 @@ export function ProviderInstanceCard({
   onUpdateCli,
   updating,
   error,
+  inheritance,
 }: {
   instance: ProviderInstance;
   probe?: ProviderProbe;
@@ -292,6 +529,10 @@ export function ProviderInstanceCard({
    *  disabled one. */
   onRemove?: () => void;
   error?: string | null;
+  /** What the engine said this login just stopped inheriting, when it said
+   *  anything (#594). Absent is the ordinary case and the only one on a Mac
+   *  launched from the Dock. */
+  inheritance?: InheritanceNotice;
 }) {
   const [tab, setTab] = useState<ProviderTab>("configuration");
   const title = displayNameOf(instance);
@@ -421,6 +662,7 @@ export function ProviderInstanceCard({
       <Collapsible open={expanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
           <div className="space-y-4 px-3 pb-4 pt-1 sm:px-4">
+            {inheritance && <InheritanceNotice driver={instance.driver} {...inheritance} />}
             {/* CONFIGURATION AND MODELS, the two things there are to say about a
                 login. They are tabs rather than two stacked sections because the
                 model list is long and is read for its own sake — scrolling past
@@ -546,6 +788,15 @@ export function ProviderInstanceCard({
                 set.
               </span>
             </label>
+
+            {/* CLAUDE ONLY, because only Claude Code reads these. Codex has its
+                own compaction and would be given a control that does nothing. */}
+            {instance.driver === "claude" && (
+              // Keyed like the env editor below, and for the same reason: both
+              // are views of `instance.env`, and a save has to reseed them from
+              // what the engine actually kept.
+              <CompactionField key={instance.updatedAt} env={instance.env} onChange={(env) => onPatch({ env })} />
+            )}
 
             <div>
               <span className="text-xs font-medium text-foreground">Environment variables</span>

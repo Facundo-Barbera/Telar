@@ -4,13 +4,17 @@
 # that copy for the one workspace whose tests render React; it is not an
 # override, so keep the two in step.
 [test]
-# The jsxDEV failure the first repairs only bites .tsx tests, which all live
-# here. The second gives this workspace a DOM before any test file imports a UI
+# The first is the per-test ceiling (#740). It used to be `--timeout 20000` on
+# the `test` script, which this workspace lost — along with NODE_ENV=test — the
+# moment anyone ran a single test file from the repo root instead.
+#
+# The jsxDEV failure the second repairs only bites .tsx tests, which all live
+# here. The third gives this workspace a DOM before any test file imports a UI
 # primitive, which is the only moment at which it can be given — see the file.
-# The third settles the other import-time decision a shared process makes once
+# The fourth settles the other import-time decision a shared process makes once
 # for everybody: the global Next's server modules look for and bun does not
 # have.
-preload = ["../../scripts/test-setup.mjs", "./scripts/test-dom.mjs", "./scripts/test-async-storage.mjs"]
+preload = ["../../scripts/test-ceiling.mjs", "../../scripts/test-setup.mjs", "./scripts/test-dom.mjs", "./scripts/test-async-storage.mjs"]
 
 # Build outputs copy web source, *.test.tsx included. Never run those stale
 # copies as part of the source test gate.

@@ -172,12 +172,15 @@ describe("the capability list", () => {
     // changed. Two ADDITIONS: `hello`, the proof plugin's prefix, which needs
     // declaring for its rows to be typed when the gate is on; and `run`, which
     // is CORE rather than a plugin and joins the list in the same change that
-    // mounts its toolkit.
-    for (const capability of ["browser", "spool", "sessions", "notebook", "ds", "latex", "display"]) {
+    // mounts its toolkit. `spool` LEFT in #501, with the toolkit it named —
+    // the same rule read the other way. `prompt` joined in #87 under the same
+    // rule as `run`: core, and listed in the change that mounts its wall.
+    for (const capability of ["browser", "sessions", "notebook", "ds", "latex", "display"]) {
       expect(TELAR_CAPABILITIES).toContain(capability);
     }
+    expect(TELAR_CAPABILITIES).not.toContain("spool");
     expect([...TELAR_CAPABILITIES].sort()).toEqual(
-      ["browser", "spool", "sessions", "notebook", "ds", "latex", "display", "run", "hello"].sort(),
+      ["browser", "sessions", "notebook", "ds", "latex", "display", "run", "prompt", "hello"].sort(),
     );
   });
 

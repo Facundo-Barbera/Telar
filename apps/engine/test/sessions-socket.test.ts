@@ -2,13 +2,13 @@
  * The sessions socket — the `sessions` toolkit as an outward MCP server,
  * driven over real HTTP because the transport IS the feature.
  *
- * The properties under test are the same four the spool's socket promises, and
- * they are asserted the same way for the same reason:
+ * The properties under test are the same four the notebook's socket promises,
+ * and they are asserted the same way for the same reason:
  *   · the SAME wall a session gets — tool-list parity is asserted against
  *     `sessionsTools` itself, not a copied list;
  *   · the wall's absences ride along — nothing here can accept, merge, archive
  *     or delete, and the socket's secret opens NOTHING else on the engine;
- *   · a dedicated secret, minted once, persisted, and DISTINCT from the spool
+ *   · a dedicated secret, minted once, persisted, and DISTINCT from the notes
  *     socket's as well as from the management token;
  *   · the store's guards ride along too — an argument the wall's schema
  *     refuses never reaches a handler, whichever door it came through.
@@ -23,6 +23,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
 import type { SessionsCapability } from "../src/sessions-tools/tools";
 import { stubModels } from "./stub-models";
+import { worktreeReady } from "./worktree-ready";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -80,7 +81,7 @@ async function callTool(daemon: EngineDaemon, secret: string, name: string, args
 const wallNames = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
 
 describe("the connect card and the secret", () => {
-  test("mcp-info answers behind the bearer with a secret that is neither the management token nor the spool's, persisted across restarts", async () => {
+  test("mcp-info answers behind the bearer with a secret that is neither the management token nor the notebook's, persisted across restarts", async () => {
     const directory = tmp("telar-sessions-socket-persist-");
     const first = await engine({ engineRoot: directory });
     const client = new EngineClient(first.discovery);
@@ -90,8 +91,8 @@ describe("the connect card and the secret", () => {
     expect(mcp.secret).not.toBe(first.discovery.token);
     expect(mcp.secret.length).toBeGreaterThanOrEqual(32);
     // TWO DOORS, TWO KEYS. Revoking a chat client's reach into sessions must
-    // not be the same act as revoking its reach into the spool.
-    expect(mcp.secret).not.toBe((await client.spoolMcpInfo()).mcp.secret);
+    // not be the same act as revoking its reach into the notebook.
+    expect(mcp.secret).not.toBe((await client.notesMcpInfo()).mcp.secret);
     expect(mcp.addCommand).toBe(
       `claude mcp add --transport http telar-sessions ${mcp.url} --header "Authorization: Bearer ${mcp.secret}"`,
     );
@@ -109,14 +110,14 @@ describe("the connect card and the secret", () => {
     const daemon = await engine();
     const client = new EngineClient(daemon.discovery);
     const { mcp } = await client.sessionsMcpInfo();
-    const spool = (await client.spoolMcpInfo()).mcp;
+    const notes = (await client.notesMcpInfo()).mcp;
     const ping = { jsonrpc: "2.0", id: 1, method: "ping" };
 
     expect((await rpc(daemon, daemon.discovery.token, ping)).status).toBe(401);
     expect((await rpc(daemon, "not-a-secret", ping)).status).toBe(401);
-    // …AND NOT THE SPOOL'S EITHER. Two sockets on one daemon that accepted each
-    // other's keys would be one socket wearing two names.
-    expect((await rpc(daemon, spool.secret, ping)).status).toBe(401);
+    // …AND NOT THE NOTEBOOK'S EITHER. Two sockets on one daemon that accepted
+    // each other's keys would be one socket wearing two names.
+    expect((await rpc(daemon, notes.secret, ping)).status).toBe(401);
     expect((await rpc(daemon, mcp.secret, ping)).status).toBe(200);
 
     // The socket secret grants NOTHING on the engine API — above all not the
@@ -168,7 +169,7 @@ describe("the protocol surface", () => {
     // so a tool added to the toolkit appears here in the same change or this
     // fails.
     expect(result.tools.map((tool) => tool.name)).toEqual(wallNames);
-    expect(result.tools.length).toBe(13);
+    expect(result.tools.length).toBe(14);
     for (const tool of result.tools) {
       expect(tool.name).not.toMatch(/accept|approve|merge|land|archive|delete|promote|finish|complete/);
       expect(tool.description.length).toBeGreaterThan(0);
@@ -177,7 +178,7 @@ describe("the protocol surface", () => {
     // The prose a model reads rides along whole rather than being re-authored
     // for the socket — including the sentence the wall can only say.
     expect(result.tools.find((tool) => tool.name === "sessions_create")!.description).toContain(
-      "NEVER use this to get around something you were refused",
+      "Never hand a peer work you were refused",
     );
   });
 
@@ -203,6 +204,9 @@ describe("the protocol surface", () => {
     const { session } = await client.session(made.id);
     expect(session.title).toBe("cut from a chat client");
     expect(session.origin).toBe("session");
+    // The cut runs behind the tool's answer now (#496) — the row is complete,
+    // the directory arrives a moment later.
+    await worktreeReady(daemon.store, made.id);
     expect(fs.existsSync(path.join(session.workspace.path, "README.md"))).toBe(true);
 
     // A tool the wall does not have is a -32602, not a silent success.
