@@ -459,32 +459,23 @@ type ClaudeSdk = {
 };
 
 /**
- * WHAT THE DIRECTING AGENT READS, and the only documentation of Warp that a
- * model ever sees.
+ * WHAT THE DIRECTING AGENT READS WHEN IT IS DECIDING.
  *
  * Written as instructions for choosing, not as a description of parameters: the
  * failure this guards against is not a malformed call, it is a warp launched for
  * work that one agent should have done in a straight line. A fan-out costs a
  * real process per child on the user's own machine.
+ *
+ * THE SCRIPT API IS NOT HERE, AND THAT IS THE POINT (#515). This string is in
+ * every turn of every session whether or not a Warp is ever run — it was 2,988
+ * characters of script reference that nobody reads until the moment they write
+ * a script, and at that moment they can read the `telar` skill, which is on disk
+ * and costs nothing until something asks for it. What stays here is only what a
+ * model needs to CHOOSE: what a Warp is, when it is the right shape, what it
+ * costs, and where the reference lives. Keep it under the 350-character cap
+ * `tool-budgets.test.ts` enforces; anything longer belongs in the skill.
  */
-const WARP_DESCRIPTION = `Run a Warp: a script that fans work out across several sub-agents and returns their combined result.
-
-The script is JavaScript and it is where the structure lives — loops, conditionals, fan-out and the plain code between stages are yours to write, and they run deterministically rather than being decided turn by turn. Reach for this when the work is wide (many files, many angles, many candidates) or when confidence matters more than speed (independent attempts, adversarial verification). For anything a single straight line of work covers, do it yourself — this spawns a real process per concurrent child.
-
-The script must begin with a pure object literal:
-
-  export const meta = { name: 'find-flaky-tests', description: 'Find flaky tests and propose fixes', phases: [{ title: 'Scan' }, { title: 'Fix' }] }
-
-Then write statements at the top level. Top-level await and top-level return both work; whatever you return becomes this tool's result. Available as globals:
-
-- agent(prompt, opts?) -> Promise<any>. One sub-agent. Resolves to its final text, or — with opts.schema (a JSON Schema) — to a validated object, which is what makes the code between stages ordinary code instead of another agent hired to read the last one's paragraphs. Resolves to null if the child died, so .filter(Boolean) before using results. opts: { model, effort, schema, label, phase, maxTurns, agentType }. Omit model to inherit the session's.
-- parallel(thunks) -> Promise<any[]>. Concurrent, WITH A BARRIER: everything settles before it resolves. Correct only when the next step genuinely needs all of the previous one at once — a dedupe across the whole set, an early exit on a total, a prompt that compares one finding against the others.
-- pipeline(items, ...stages) -> Promise<any[]>. Each item through every stage independently, NO barrier. This is the default for multi-stage work: item A can be in stage 3 while item B is still in stage 1, so the run costs the slowest single chain rather than the sum of the slowest-per-stage. Every stage receives (previousResult, originalItem, index). A stage that throws drops that item to null and keeps the others flowing.
-- phase(title) opens a progress group; log(message) narrates to the human; args is the JSON value passed alongside the script.
-
-Date.now(), new Date() and Math.random() THROW — a script that branched on the clock could not be replayed. require, import, process and fs are absent; the script orchestrates agents and does not touch the host itself. A script that cannot parse, is missing its meta, or reaches for a banned name is refused before anything is spent, with the line number.
-
-A Warp child may not create work that outlives the run or escapes the script: fan-out (Agent, Task, Workflow), scheduling (cron, wake-ups), messaging other sessions, and switching worktrees are all withheld from it. So the script is the only place parallelism is expressed. Children run in the same checkout as this session and inherit its permissions.`;
+export const WARP_DESCRIPTION = `Run a Warp: a JavaScript script that fans work across sub-agents and returns their combined result. Reach for it when the work is wide — many files, angles or candidates — or when confidence beats speed. Each concurrent child is a real process, so a straight line of work is not one. Begins with \`export const meta\`; script API in the \`telar\` skill.`;
 
 /**
  * `warp`, as an MCP tool.
