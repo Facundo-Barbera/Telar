@@ -8908,7 +8908,7 @@ export class EngineStore {
     };
     if (items.has(item.id)) return;
     items.set(item.id, item);
-    this.writeItems(sessionId, items);
+    this.writeItems(sessionId, items, new Set([item.id]));
     this.appendEvent(sessionId, { type: "item.started", item }, turn.runId);
     this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
   }
@@ -9498,7 +9498,7 @@ export class EngineStore {
       items.set(item.id, item);
       written.push(item);
     });
-    this.writeItems(sessionId, items);
+    this.writeItems(sessionId, items, new Set(written.map((row) => row.id)));
 
     this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, runId);
     for (const item of written) {
@@ -9532,7 +9532,7 @@ export class EngineStore {
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "task observations are invalid");
     const tasks = this.readTasks(sessionId);
-    const projection = { items: this.readItems(sessionId), tasks, itemsTouched: false, tasksTouched: false, turnTouched: false };
+    const projection = { items: this.readItems(sessionId), tasks, itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
     let accepted = 0;
     for (const observation of parsed.data) {
       /**
@@ -10355,7 +10355,7 @@ export class EngineStore {
     const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
-    const projection = { items: this.readItems(sessionId), tasks: this.readTasks(sessionId), itemsTouched: false, tasksTouched: false, turnTouched: false };
+    const projection = { items: this.readItems(sessionId), tasks: this.readTasks(sessionId), itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
     for (const observation of parsed.data) {
       this.journalObservation(sessionId, turn, observation, projection);
     }
@@ -10370,7 +10370,7 @@ export class EngineStore {
      * turn: 2.09 ms per delta, against 0.11 ms for the journal insert it was
      * wrapped around.
      */
-    if (projection.itemsTouched) this.writeItems(sessionId, projection.items);
+    if (projection.itemsTouched.size > 0) this.writeItems(sessionId, projection.items, projection.itemsTouched);
     // Most batches carry no task at all — a rewrite per batch would be a file
     // write per streamed provider message for nothing. Same rule for the
     // queue: only a `provider.session` observation ever mutates the turn.
@@ -12471,7 +12471,7 @@ export class EngineStore {
     }
     const item: Item = { ...existing, title: detail.summary, detail: { type: "notification", notification: detail } };
     items.set(item.id, item);
-    this.writeItems(sessionId, items);
+    this.writeItems(sessionId, items, new Set([item.id]));
     this.appendEvent(sessionId, { type: "item.updated", item }, turn.runId);
   }
 
@@ -13829,7 +13829,21 @@ export class EngineStore {
     return new Map(this.itemsById(sessionId));
   }
 
-  private writeItems(sessionId: string, items: Map<string, Item>): void {
+  /**
+   * THE SINGLE WRITER — and it now takes WHICH items moved, not whether any
+   * did (#658).
+   *
+   * Its callers always knew which; they had nowhere to say it, because the blob
+   * has to be rewritten whole regardless of how little of it changed. Carrying
+   * the set is what lets the storage stop rewriting the rest, and this commit
+   * is only the carrying: the blob path below ignores `touched` exactly as it
+   * always has.
+   *
+   * Absent means "all of them" — what a caller that rebuilt the map from
+   * somewhere other than a batch means. No caller REMOVES an item.
+   */
+  private writeItems(sessionId: string, items: Map<string, Item>, touched?: ReadonlySet<string>): void {
+    void touched;
     const rows = [...items.values()];
     this.writeIndexedDocument(
       itemsFile(this.paths, sessionId),
@@ -13963,16 +13977,18 @@ export class EngineStore {
   private closeOpenItemsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
     if (runIds.size === 0) return 0;
     const items = this.readItems(sessionId);
-    let closed = 0;
+    // WHICH rows were settled, not how many — #658. The count is the caller's
+    // answer; the set is what the write needs.
+    const closed = new Set<string>();
     for (const item of items.values()) {
       if (!runIds.has(item.runId) || item.status !== "inProgress") continue;
       const settled: Item = { ...item, status: "failed", completedAt: at };
       items.set(item.id, settled);
       this.appendEvent(sessionId, { type: "item.completed", item: settled }, item.runId);
-      closed += 1;
+      closed.add(item.id);
     }
-    if (closed > 0) this.writeItems(sessionId, items);
-    return closed;
+    if (closed.size > 0) this.writeItems(sessionId, items, closed);
+    return closed.size;
   }
 
   private closeOpenRequestsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
@@ -13996,16 +14012,16 @@ export class EngineStore {
 
   private closeOpenItems(sessionId: string, runId: string, at: number): number {
     const items = this.readItems(sessionId);
-    let closed = 0;
+    const closed = new Set<string>();
     for (const item of items.values()) {
       if (item.runId !== runId || item.status !== "inProgress") continue;
       const settled: Item = { ...item, status: "failed", completedAt: at };
       items.set(item.id, settled);
       this.appendEvent(sessionId, { type: "item.completed", item: settled }, runId);
-      closed += 1;
+      closed.add(item.id);
     }
-    if (closed > 0) this.writeItems(sessionId, items);
-    return closed;
+    if (closed.size > 0) this.writeItems(sessionId, items, closed);
+    return closed.size;
   }
 
   /**
@@ -14301,7 +14317,7 @@ export class EngineStore {
     sessionId: string,
     turn: Turn,
     observation: TurnObservation,
-    projection: { items: Map<string, Item>; tasks: Map<string, Task>; itemsTouched: boolean; tasksTouched: boolean; turnTouched: boolean },
+    projection: { items: Map<string, Item>; tasks: Map<string, Task>; itemsTouched: Set<string>; tasksTouched: boolean; turnTouched: boolean },
   ): void {
     const at = this.now();
     const items = projection.items;
@@ -14350,7 +14366,7 @@ export class EngineStore {
         ...(observation.detail ? { detail: observation.detail } : {}),
       };
       items.set(item.id, item);
-      projection.itemsTouched = true;
+      projection.itemsTouched.add(item.id);
       this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
       // The text lives in `detail` from here on, so the accumulator's copy is
       // dead weight. This is what bounds the map: one entry per OPEN item.
@@ -14546,7 +14562,7 @@ export class EngineStore {
       ...(seed.providerRefs ? { providerRefs: seed.providerRefs } : {}),
     };
     items.set(item.id, item);
-    projection.itemsTouched = true;
+    projection.itemsTouched.add(item.id);
     const written = this.appendEvent(sessionId, { type: started ? "item.started" : "item.updated", item }, turn.runId);
     // AN ITEM THAT JUST OPENED HAS NO EARLIER DELTAS, which is the only moment
     // the accumulator can know it holds the whole prefix. Every later extend
