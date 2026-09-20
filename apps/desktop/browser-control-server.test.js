@@ -144,6 +144,41 @@ describe("control state over the wire", () => {
   });
 });
 
+describe("the app's own process metrics (#488)", () => {
+  test("/metrics answers without a scope and without resolving any browser host", async () => {
+    let asked = 0;
+    const control = await startBrowserControlServer({
+      port: 0,
+      token: "secret",
+      getBrowserManager: () => { asked += 1; return { state: () => ({}) }; },
+      readProcessMetrics: () => ({ readAt: 42, windowMs: 2_000, totals: { cpuPercent: 96, memoryKb: 1, processes: 3 }, types: [], busiest: [] }),
+    });
+    try {
+      const unauthenticated = await fetch(`http://127.0.0.1:${control.port}/metrics`);
+      expect(unauthenticated.status).toBe(401);
+      const response = await fetch(`http://127.0.0.1:${control.port}/metrics`, { headers: { Authorization: "Bearer secret" } });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ readAt: 42, totals: { cpuPercent: 96 } });
+      // "What is burning a core" is worth asking of a shell with no window
+      // open, so the route must never be gated on one having claimed a scope.
+      expect(asked).toBe(0);
+    } finally {
+      await control.close();
+    }
+  });
+
+  test("a shell that cannot report metrics says so rather than answering an empty app", async () => {
+    const control = await startBrowserControlServer({ port: 0, token: "secret", getBrowserManager: () => ({}) });
+    try {
+      const response = await fetch(`http://127.0.0.1:${control.port}/metrics`, { headers: { Authorization: "Bearer secret" } });
+      expect(response.status).toBe(503);
+      expect((await response.json()).error).toContain("does not report process metrics");
+    } finally {
+      await control.close();
+    }
+  });
+});
+
 describe("opening a tab for the human", () => {
   test("/open routes to manager.action so the tab is stamped human, never through callTool", async () => {
     const actions = [];

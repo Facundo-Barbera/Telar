@@ -65,6 +65,7 @@
       "dev-update.html",
       "update-watchdog.js",
       "service-worker-watchdog.js",
+      "process-metrics.js",
       "update-install.js",
       "login-offer.js",
       "login-offer-flow.js",

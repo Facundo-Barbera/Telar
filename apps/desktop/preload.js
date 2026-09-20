@@ -197,6 +197,24 @@ contextBridge.exposeInMainWorld("telarDesktop", {
   push: {
     provisionRelay: (config) => ipcRenderer.invoke("telar:push:provision-relay", config),
   },
+  /**
+   * WHAT THIS APP'S PROCESSES ARE DOING RIGHT NOW — issue #488.
+   *
+   * `app.getAppMetrics()` lives in the main process and nowhere else; the
+   * cockpit's own server is a forked sibling and can no more reach it than any
+   * other program on the machine. So a window inside the shell asks over this
+   * bridge, and everything else (a phone, a second browser, the remote cockpit)
+   * goes the long way round through `/api/desktop/metrics`.
+   *
+   * ONE SAMPLE FOR THE WHOLE SHELL. The main process throttles and shares it,
+   * because `percentCPUUsage` averages over the gap since the last call to the
+   * API rather than since the last call by this caller — two windows polling
+   * freely must not become two windows stealing each other's baseline, nor the
+   * runaway-renderer watchdog's. See `process-metrics.js`.
+   */
+  metrics: {
+    read: () => ipcRenderer.invoke("telar:metrics:read"),
+  },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),
     // ANSWERS WHAT IT DID WITH THE PRESS — `{ status: "restarting" }` for the

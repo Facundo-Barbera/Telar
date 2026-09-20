@@ -4,7 +4,7 @@ const MAX_BODY_BYTES = 1_000_000;
 
 /** Every route this server answers. Anything else is a 404 before a body is
  *  read or a browser host is resolved. */
-const ROUTES = new Set(["GET /state", "POST /bind", "POST /tool", "POST /open"]);
+const ROUTES = new Set(["GET /state", "POST /bind", "POST /tool", "POST /open", "GET /metrics"]);
 
 function json(response, status, value) {
   response.writeHead(status, {
@@ -38,7 +38,7 @@ function readJson(request) {
   });
 }
 
-function startBrowserControlServer({ port, token, getBrowserManager }) {
+function startBrowserControlServer({ port, token, getBrowserManager, readProcessMetrics }) {
   if (!token) throw new Error("A browser control token is required.");
   const server = http.createServer(async (request, response) => {
     if (request.headers.authorization !== `Bearer ${token}`) {
@@ -51,6 +51,30 @@ function startBrowserControlServer({ port, token, getBrowserManager }) {
       const route = `${request.method} ${url.pathname}`;
       if (!ROUTES.has(route)) {
         json(response, 404, { error: "Not found." });
+        return;
+      }
+      /**
+       * WHAT THIS APP'S PROCESSES ARE DOING — issue #488, and the reason it is
+       * answered here rather than over the shell's IPC alone.
+       *
+       * The Usage page is served by the forked Next child, which is a SIBLING
+       * of the Electron main process and so can no more call
+       * `app.getAppMetrics()` than any other program on the machine. The shell
+       * already exports this server's port and token into that child's
+       * environment (`childEnv` in main.js), so this is the wire the cockpit's
+       * own route proxies — which is also what makes the figures reachable from
+       * a phone or a second browser, where there is no preload bridge at all.
+       *
+       * ANSWERED BEFORE ANY SCOPE IS RESOLVED: it is a fact about the app, not
+       * about a session's tabs, and a shell with no window open is exactly when
+       * "what is burning a core" is worth asking.
+       */
+      if (route === "GET /metrics") {
+        if (typeof readProcessMetrics !== "function") {
+          json(response, 503, { error: "This Telar shell does not report process metrics." });
+          return;
+        }
+        json(response, 200, await readProcessMetrics());
         return;
       }
       // The body is read BEFORE the host is resolved, because the scope it
