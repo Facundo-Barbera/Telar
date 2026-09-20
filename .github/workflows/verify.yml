@@ -346,8 +346,9 @@ jobs:
 
   # THE ELECTRON SUITE, WHICH NOTHING RAN UNTIL NOW (#622).
   #
-  # Twelve `*.electron-test.js` files drive a REAL Electron against real pages,
-  # the real OS clipboard and real popups. They are the only proof of several
+  # Thirteen `*.electron-test.js` files drive a REAL Electron against real pages,
+  # the real OS clipboard, real popups and a real pseudo-terminal. They are the
+  # only proof of several
   # browser behaviours — #618 and #621 both landed verified by nothing else —
   # and because no workflow invoked them and `test:desktop:unit` does not match
   # their name, they could rot silently. One had: `browser-persistence` had been
@@ -401,7 +402,7 @@ jobs:
       # a tier that cannot fail is the same bug as a tier that never runs.
       #
       # THE LOOP DOES NOT STOP AT THE FIRST FAILURE. One red test must not hide
-      # the state of the other eight; "what else is broken" is the question you
+      # the state of the other nine; "what else is broken" is the question you
       # ask next. Same reason `fail-fast: false` is on the matrix above.
       - name: Run the Electron tests, and prove each one reached its end
         working-directory: apps/desktop
@@ -440,6 +441,21 @@ jobs:
           # and `webContents.getOSProcessId()` line up, which is the join the
           # #487 signal is made of.
           run_case metrics         PROCESS_METRICS_OK
+          # THE MARKER IS A COUNT AND A PAIR OF OPPOSITE ANSWERS, not a name.
+          #
+          # A test-name grep is the dangerous idiom here — a SKIPPED test prints
+          # its own name, so the string a guard requires is present exactly when
+          # the thing it guards against has happened. This one cannot be
+          # satisfied that way: `10/10` is emitted only after all ten cases have
+          # passed, and `pty=tty pipe=not-a-tty` carries the two OPPOSITE
+          # answers the same run got from a pseudo-terminal and from a pipe. A
+          # run that short-circuits, throws, or drops the control arm prints
+          # nothing that matches.
+          #
+          # THE NUMBER IS MEANT TO BE EDITED. Adding a case changes it here too,
+          # deliberately, so a suite that quietly stopped running half of itself
+          # cannot keep reporting the same string.
+          run_case pty             "PTY_HOST_OK 10/10 pty=tty pipe=not-a-tty"
 
           # THE THREE THAT ARE NOT HERE, AND WHY — all one reason: they need
           # 1Password's official extension package, which is proprietary, is not

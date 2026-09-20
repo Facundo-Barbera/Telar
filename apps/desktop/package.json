@@ -29,6 +29,8 @@
     "test:desktop:webauthn": "env -u ELECTRON_RUN_AS_NODE electron ./webauthn-fixture.electron-test.js",
     "test:desktop:clipboard": "env -u ELECTRON_RUN_AS_NODE electron ./clipboard-write.electron-test.js",
     "test:desktop:metrics": "env -u ELECTRON_RUN_AS_NODE electron ./process-metrics.electron-test.js",
+    "//test:desktop:pty": "THE ONLY PLACE THE PTY IS PROVEN REAL. node-pty is a native addon loaded against Electron's ABI, so a bun unit test cannot exercise it — and more to the point, the property under test (`test -t 1` answers true) is one that every pipe-based spawn in this repo would FAIL. It lives here, in real Electron, or it is not measured at all.",
+    "test:desktop:pty": "env -u ELECTRON_RUN_AS_NODE electron ./pty-host.electron-test.js",
     "smoke": "bun run test:desktop:smoke",
     "pack": "bash ../../scripts/package-desktop.sh",
     "package:local": "bash ../../scripts/package-desktop.sh",
@@ -43,9 +45,16 @@
     "appId": "com.telar.desktop",
     "productName": "Telar",
     "asar": true,
+    "//asarUnpack": "THE FIRST NATIVE MODULE THIS APP SHIPS. A `.node` cannot be loaded from inside an asar archive, and node-pty needs a second file beside it — `spawn-helper`, which it `execl`s on macOS and resolves as a SIBLING of the addon. node-pty's own loader rewrites `app.asar` to `app.asar.unpacked` for that path, which is the package stating the requirement. Without this line the addon is sealed in the archive and every terminal fails at load; with it and without after-pack.js below, the helper is there but mode 0644 and every terminal fails at spawn with `posix_spawnp failed`. Both are verified on the built .app by build.afterPack rather than discovered by a user.",
+    "asarUnpack": [
+      "**/node_modules/node-pty/**"
+    ],
+    "//afterPack": "Proves the two facts above about the artefact that was just written, and sets the executable bit node-pty's npm tarball does not carry. A build-time failure instead of a runtime one, and it means an app installed on a read-only volume never has to write into its own bundle to run a shell.",
+    "afterPack": "./after-pack.js",
     "files": [
       "main.js",
       "chord-scope.js",
+      "terminal-host.js",
       "browser-manager.js",
       "browser-context-menu.js",
       "browser-suggestions.js",
@@ -147,7 +156,8 @@
   },
   "dependencies": {
     "electron-chrome-extensions": "4.9.0",
-    "electron-updater": "^6.6.2"
+    "electron-updater": "^6.6.2",
+    "node-pty": "1.1.0"
   },
   "devDependencies": {
     "electron": "^43.1.1",
