@@ -182,3 +182,27 @@ describe("the merge control", () => {
     expect(footer({ state: "MERGED" })).toBe("");
   });
 });
+
+/**
+ * WHICH SESSION WROTE THIS — issue #791, drawn beside the author because it is
+ * the same fact: the author is the ACCOUNT, and every agent comment in this
+ * repository has the same one.
+ */
+describe("a comment's session", () => {
+  test("is a link to the conversation, beside the author who is always the same account", () => {
+    const markup = renderToStaticMarkup(<EntryCard entry={entry({ author: "Facundo-Barbera", sessionId: "session_abc", body: "a finding" })} />);
+    expect(markup).toContain("session_abc");
+    expect(markup).toContain('href="/sessions/session_abc"');
+    // A LINK, NOT A BADGE — the marker is a claim, and the honest way to draw a
+    // claim is as somewhere to go and check.
+    expect(markup).toContain("<a");
+  });
+
+  test("a comment with no session draws nothing at all", () => {
+    // THE FAILURE DIRECTION. Without it, a card that always rendered the link
+    // (with an empty id) would satisfy every assertion above.
+    const markup = renderToStaticMarkup(<EntryCard entry={entry({ author: "Facundo-Barbera", body: "a finding" })} />);
+    expect(markup).not.toContain("/sessions/");
+    expect(markup).not.toContain("session");
+  });
+});

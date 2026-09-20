@@ -329,3 +329,34 @@ describe("the sentences", () => {
     expect(reviewLabel("SOMETHING_NEW")).toBe("something new");
   });
 });
+
+/**
+ * WHICH SESSION WROTE THIS — issue #791.
+ *
+ * The timeline's job here is only to carry the engine's answer through to the
+ * card. Whether a body CLAIMS a session is `parseComments`'s question and is
+ * tested against the real parser in `apps/engine/test/github.test.ts`; what
+ * must not drift is that an attributed comment arrives at the card with its
+ * session and an unattributed one arrives without one.
+ */
+describe("a comment's session", () => {
+  const withSession = (at: number, sessionId?: string) => ({
+    body: `c${at}`,
+    createdAt: at,
+    minimized: false,
+    url: `https://gh/c${at}`,
+    ...(sessionId ? { attribution: { sessionId } } : {}),
+  });
+
+  test("an attributed comment carries its session, an unattributed one carries none", () => {
+    const timeline = buildForgeTimeline({
+      body: "opened",
+      createdAt: 100,
+      comments: [withSession(200, "session_abc"), withSession(300)],
+    });
+    expect(timeline.find((entry) => entry.at === 200)?.sessionId).toBe("session_abc");
+    // THE FAILURE DIRECTION: without this, a builder that stamped every entry
+    // with the same id would satisfy the assertion above.
+    expect(timeline.find((entry) => entry.at === 300)?.sessionId).toBeUndefined();
+  });
+});
