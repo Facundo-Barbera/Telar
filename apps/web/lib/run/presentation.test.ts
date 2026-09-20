@@ -7,11 +7,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
-  appendOutput,
   draftProblems,
   describeReadiness,
-  droppedNotice,
-  emptyOutput,
   recentRuns,
   runAction,
   statusDetail,
@@ -160,39 +157,6 @@ describe("draftProblems", () => {
     expect(draftProblems(draft({ command: "" }))[0]!.field).toBe("command");
     const dupes = draftProblems(draft({ env: [{ key: "A", value: "1" }, { key: "A", value: "2" }] }));
     expect(dupes.some((problem) => problem.message.includes("twice"))).toBe(true);
-  });
-});
-
-describe("appendOutput", () => {
-  const line = (text: string) => ({ at: 1, stream: "stdout" as const, text });
-
-  test("polls append, and the cursor is what the next poll asks from", () => {
-    const first = appendOutput(emptyOutput, { lines: [line("a")], cursor: 1, dropped: 0 });
-    const second = appendOutput(first, { lines: [line("b")], cursor: 2, dropped: 0 });
-    expect(second.lines.map((entry) => entry.text)).toEqual(["a", "b"]);
-    expect(second.cursor).toBe(2);
-  });
-
-  test("a cursor that went backwards is a NEW run, so the old log is replaced", () => {
-    // A restart mints a new run whose output starts at zero. Appending would
-    // show two servers' logs as one continuous one.
-    const before = appendOutput(emptyOutput, { lines: [line("old-1"), line("old-2")], cursor: 2, dropped: 0 });
-    const after = appendOutput(before, { lines: [line("new-1")], cursor: 1, dropped: 0 });
-    expect(after.lines.map((entry) => entry.text)).toEqual(["new-1"]);
-  });
-
-  test("the buffer is bounded and the drop is reported rather than hidden", () => {
-    const many = Array.from({ length: 12 }, (_, index) => line(`line-${index}`));
-    const buffer = appendOutput(emptyOutput, { lines: many, cursor: 12, dropped: 30 }, 5);
-    expect(buffer.lines).toHaveLength(5);
-    expect(buffer.lines.at(-1)!.text).toBe("line-11");
-    expect(droppedNotice(buffer)).toContain("30");
-    expect(droppedNotice(emptyOutput)).toBeUndefined();
-  });
-
-  test("dropped is carried, not accumulated — the engine reports a total", () => {
-    const first = appendOutput(emptyOutput, { lines: [], cursor: 1, dropped: 10 });
-    expect(appendOutput(first, { lines: [], cursor: 2, dropped: 12 }).dropped).toBe(12);
   });
 });
 

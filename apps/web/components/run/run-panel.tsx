@@ -15,6 +15,18 @@
  * cadence backs off once nothing is live (`pollInterval`) so an idle project
  * costs one request every few seconds rather than four.
  *
+ * ITS OUTPUT IS A TERMINAL NOW, NOT A `<pre>` (#198). A run is a process on a
+ * pseudo-terminal and always was; what this panel showed was a degraded reading
+ * of that — lines, with every escape sequence in them drawn as text. `RunTerminal`
+ * draws the bytes and takes keystrokes back, so an installer's `Proceed (Y/n)`
+ * and a dev server's `r` are answerable here instead of being a screen that
+ * watches you.
+ *
+ * `/run/output` IS NOT RETIRED BY THAT. It is what `run_output` hands an agent,
+ * which wants lines rather than a stream with `CSI H` in it, and the byte view
+ * travels the same host-scoped path so a run on a paired Mac is readable either
+ * way. Both windows, one cursor contract.
+ *
  * IT IS PINNED TO ONE MAC. The default `runApi` resolves the host from the
  * address bar per call, so a two-leg poll could finish against another host —
  * and session ids are per-host and can collide, so the answer would describe a
@@ -30,10 +42,7 @@ import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { createRunApi } from "@/lib/run/api";
 import type { RunApi } from "@/lib/run/api";
 import {
-  appendOutput,
   describeReadiness,
-  droppedNotice,
-  emptyOutput,
   recentRuns,
   runAction,
   statusDetail,
@@ -41,10 +50,11 @@ import {
   statusTone,
   worktreeLabel,
 } from "@/lib/run/presentation";
-import type { RunOutputBuffer, RunTone } from "@/lib/run/presentation";
+import type { RunTone } from "@/lib/run/presentation";
 import type { RunConfigurationDraft, RunConfigurationView, RunStatusAnswer } from "@/lib/run/types";
 import { RunConfigEditor } from "./run-config-editor";
 import { RunControl } from "./run-control";
+import { RunTerminal } from "./run-terminal";
 
 /** Fast while something is live, slow when nothing is. */
 export function pollInterval(answer: RunStatusAnswer | undefined): number {
@@ -54,10 +64,12 @@ export function pollInterval(answer: RunStatusAnswer | undefined): number {
   return 5000;
 }
 
-/** Whether output is worth asking for at all: a run that ended still has its
- *  retained window, so this stays true for a finished run we are looking at. */
-export function shouldPollOutput(answer: RunStatusAnswer | undefined): boolean {
-  return Boolean(answer?.active);
+/** Whether the run can still say anything — the terminal's cadence, and
+ *  nothing else. A settled run keeps its last screen, which is most of the
+ *  value of keeping it at all. */
+export function outputIsLive(answer: RunStatusAnswer | undefined): boolean {
+  const status = answer?.active?.status;
+  return status === "starting" || status === "running" || status === "ready";
 }
 
 const toneClass: Record<RunTone, string> = {
@@ -110,10 +122,8 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
   const [configs, setConfigs] = useState<RunConfigurationView[]>([]);
   const [selected, setSelected] = useState<string>();
   const [editing, setEditing] = useState<{ config?: RunConfigurationView } | undefined>();
-  const [output, setOutput] = useState<RunOutputBuffer>(emptyOutput);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
-  const cursor = useRef(0);
 
   /** One per host, not one per render — see the note at the top of the file. */
   const api = useMemo(() => injected ?? createRunApi(hostFetcher(hostId ?? LOCAL_HOST_ID)), [injected, hostId]);
@@ -144,7 +154,6 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
     setAnswer(undefined);
     setConfigs([]);
     setSelected(undefined);
-    setOutput(emptyOutput);
     setError(undefined);
     // The open editor goes too. It holds a configuration id belonging to the
     // OLD subject, and saving it after the change would PATCH the new project
@@ -154,7 +163,6 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
 
   useEffect(() => {
     current.current = identity;
-    cursor.current = 0;
   }, [identity]);
 
   useEffect(() => {
@@ -182,6 +190,13 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
    * width through the close animation, and a hidden surface asking once a
    * second is cost with no reader. Re-running on `visible` is also the refresh:
    * a reopened panel asks immediately rather than waiting out a timer.
+   *
+   * THE OUTPUT LEG LEFT THIS LOOP with the emulator (#198). `RunTerminal` polls
+   * `/run/bytes` on its own cadence — a terminal that answers a keystroke a
+   * second later does not feel like a terminal, and a status poll that fast
+   * would be cost for nothing. It is mounted under this panel's identity and
+   * its run id, so the staleness rule below still covers it: a different Mac,
+   * session or run is a different mount.
    */
   useEffect(() => {
     if (!visible) return;
@@ -195,15 +210,6 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
         if (!usable()) return;
         setAnswer(next);
         setError(undefined);
-        if (shouldPollOutput(next)) {
-          const slice = await api.output(sessionId, { after: cursor.current });
-          if (!usable()) return;
-          setOutput((buffer) => {
-            const merged = appendOutput(buffer, slice);
-            cursor.current = merged.cursor;
-            return merged;
-          });
-        }
         if (usable()) timer = setTimeout(() => void tick(), pollInterval(next));
       } catch (cause) {
         if (!usable()) return;
@@ -229,8 +235,6 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
     try {
       await work();
       if (!mine(asked)) return;
-      cursor.current = 0;
-      setOutput(emptyOutput);
       const next = await api.status(sessionId);
       if (mine(asked)) setAnswer(next);
     } catch (cause) {
@@ -352,17 +356,21 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
         </p>
       ) : null}
 
-      {output.lines.length ? (
-        <section className="min-h-0 space-y-1" aria-label="Output">
-          {droppedNotice(output) ? <p className="text-xs text-muted-foreground">{droppedNotice(output)}</p> : null}
-          <pre className="max-h-80 overflow-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-xs">
-            {output.lines.map((line, index) => (
-              <div key={index} className={line.stream === "stderr" ? "text-destructive" : undefined}>
-                {line.text}
-              </div>
-            ))}
-          </pre>
-        </section>
+      {active ? (
+        /**
+         * KEYED BY SUBJECT AND RUN. A different Mac, session or run is a
+         * different terminal: reusing the emulator across them would append one
+         * process's bytes to another's screen, which does not look wrong — it
+         * looks like the first process printed something it never printed.
+         */
+        <RunTerminal
+          key={`${identity}\u0000${active.runId}`}
+          api={api}
+          sessionId={sessionId}
+          runId={active.runId}
+          live={outputIsLive(answer)}
+          visible={visible}
+        />
       ) : null}
 
       {answer && recentRuns(answer).length > 1 ? (

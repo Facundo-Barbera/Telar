@@ -16,8 +16,6 @@
 
 import type {
   RunConfigurationDraft,
-  RunOutputAnswer,
-  RunOutputLine,
   RunReadiness,
   RunStatus,
   RunStatusAnswer,
@@ -177,35 +175,20 @@ export function draftIsSavable(draft: RunConfigurationDraft): boolean {
   return draftProblems(draft).length === 0;
 }
 
-export type RunOutputBuffer = { lines: RunOutputLine[]; cursor: number; dropped: number };
-
-export const emptyOutput: RunOutputBuffer = { lines: [], cursor: 0, dropped: 0 };
-
 /**
- * Fold a poll into what is already on screen.
+ * THE LINE BUFFER LEFT HERE WITH THE `<pre>` (#198).
  *
- * THE CURSOR MOVING BACKWARDS MEANS A DIFFERENT RUN, not lost lines: a restart
- * mints a new run whose output starts at zero, and appending it to the previous
- * one would show two servers' logs as one. That case replaces rather than
- * appends. `dropped` is carried, not summed, because the engine reports the
- * total a run has discarded rather than a delta.
+ * `appendOutput`, `emptyOutput`, `droppedNotice` and `RunOutputBuffer` folded a
+ * `/run/output` poll into a list of lines on screen. Nothing in the cockpit
+ * shows a list of lines any more — the panel draws the run's bytes in an
+ * emulator, and the fold that shape needs is `lib/run/terminal-feed.ts`, where
+ * "the cursor went backwards" has to mean `term.reset()` rather than a replaced
+ * array.
+ *
+ * `/run/output` ITSELF IS NOT GONE and is not deprecated: `run_output` is an
+ * agent tool, and an agent wants lines rather than a stream with `CSI H` in it.
+ * What was removed is a client for it that no longer has a screen to draw on.
  */
-export function appendOutput(buffer: RunOutputBuffer, answer: RunOutputAnswer, limit = 2000): RunOutputBuffer {
-  const restarted = answer.cursor < buffer.cursor;
-  const lines = restarted ? answer.lines : [...buffer.lines, ...answer.lines];
-  return {
-    lines: lines.length > limit ? lines.slice(lines.length - limit) : lines,
-    cursor: answer.cursor,
-    dropped: answer.dropped,
-  };
-}
-
-/** What to say above a truncated log, so the gap is visible rather than a
- *  silently shorter history. */
-export function droppedNotice(buffer: RunOutputBuffer): string | undefined {
-  if (!buffer.dropped) return undefined;
-  return `${buffer.dropped.toLocaleString()} earlier ${buffer.dropped === 1 ? "line" : "lines"} are no longer kept.`;
-}
 
 /** Newest first, which is how a run list reads. History from the engine is
  *  already ordered; this makes the component independent of that. */

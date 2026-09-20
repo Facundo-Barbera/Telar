@@ -34,6 +34,9 @@ function stubClient() {
     restartRun: verb("restartRun"),
     releaseRun: verb("releaseRun"),
     runOutput: verb("runOutput"),
+    runBytes: verb("runBytes"),
+    writeRun: verb("writeRun"),
+    resizeRun: verb("resizeRun"),
   } as unknown as RunEngineVerbs;
   return { client, reached };
 }
@@ -72,6 +75,10 @@ async function everyCockpitCall() {
   await api.release("sess_1", "run_1");
   await api.output("sess_1");
   await api.output("sess_1", { runId: "run_1", after: 42 });
+  await api.bytes("sess_1");
+  await api.bytes("sess_1", { runId: "run_1", after: 42 });
+  await api.write("sess_1", { runId: "run_1", data: "y\r" });
+  await api.resize("sess_1", { runId: "run_1", cols: 120, rows: 30 });
   return calls;
 }
 
@@ -79,12 +86,12 @@ describe("the run route table", () => {
   test("serves every path the cockpit builds, and reaches a distinct verb for each", async () => {
     const { client, reached } = stubClient();
     const calls = await everyCockpitCall();
-    expect(calls.length).toBe(13);
+    expect(calls.length).toBe(17);
     for (const call of calls) await through(client, call);
     expect(reached.length).toBe(calls.length);
-    // All ten verbs exercised — a table missing one would still pass a
+    // All thirteen verbs exercised — a table missing one would still pass a
     // per-path assertion by falling into a neighbouring entry.
-    expect(new Set(reached.map((entry) => entry.verb)).size).toBe(10);
+    expect(new Set(reached.map((entry) => entry.verb)).size).toBe(13);
   });
 
   test("the config id survives the round trip, encoded and back", async () => {
@@ -119,7 +126,53 @@ describe("the run route table", () => {
     expect(reached).toHaveLength(0);
   });
 
+  test("the byte cursor is read the same way the line cursor is", () => {
+    // The two windows share a cursor contract on purpose — one poll shape, one
+    // host hop. A byte route that parsed `after` differently would drift
+    // invisibly: both answers carry their own cursor, so the poll would still
+    // work and would simply re-draw from the top forever.
+    const { client, reached } = stubClient();
+    return (async () => {
+      await through(client, { url: "/api/sessions/s/run/bytes?after=42&runId=run_1", method: "GET" });
+      expect(reached[0]).toEqual({ verb: "runBytes", args: ["s", { runId: "run_1", after: 42 }] });
+      await through(client, { url: "/api/sessions/s/run/bytes?after=later", method: "GET" });
+      expect(reached[1]!.args[1]).toEqual({});
+    })();
+  });
+
+  test("a write names the bytes it sends, and a resize names a usable geometry", async () => {
+    const { client, reached } = stubClient();
+    await through(client, { url: "/api/sessions/s/run/write", method: "POST", body: { runId: "run_1", data: "y\r" } });
+    expect(reached[0]).toEqual({ verb: "writeRun", args: ["s", { runId: "run_1", data: "y\r" }] });
+    // Empty is a legitimate thing to send and must not be confused with absent.
+    await through(client, { url: "/api/sessions/s/run/write", method: "POST", body: { data: "" } });
+    expect(reached[1]!.args[1]).toEqual({ data: "" });
+
+    await through(client, { url: "/api/sessions/s/run/resize", method: "POST", body: { cols: 120, rows: 30 } });
+    expect(reached[2]).toEqual({ verb: "resizeRun", args: ["s", { cols: 120, rows: 30 }] });
+  });
+
+  test("a shape this layer can judge is refused here rather than reaching the engine", async () => {
+    const { client, reached } = stubClient();
+    // No `data` at all: a caller that meant something and sent nothing.
+    await expect(through(client, { url: "/api/sessions/s/run/write", method: "POST", body: {} })).rejects.toBeInstanceOf(RunRouteRefusal);
+    // A geometry a PTY would read as zero, where every full-screen program
+    // draws nothing.
+    for (const body of [{ cols: 0, rows: 30 }, { cols: 120, rows: -1 }, { cols: "wide", rows: 30 }, {}]) {
+      await expect(through(client, { url: "/api/sessions/s/run/resize", method: "POST", body })).rejects.toBeInstanceOf(RunRouteRefusal);
+    }
+    expect(reached).toHaveLength(0);
+  });
+
   test("nothing else is a run route, and the method is part of the match", () => {
+    expect(matchRunRequest("GET", ["bytes"])).toBeDefined();
+    expect(matchRunRequest("POST", ["write"])).toBeDefined();
+    expect(matchRunRequest("POST", ["resize"])).toBeDefined();
+    // And `/run/output` is STILL a route: retiring it would take `run_output`
+    // — an agent tool — with it.
+    expect(matchRunRequest("GET", ["output"])).toBeDefined();
+    expect(matchRunRequest("POST", ["bytes"])).toBeUndefined();
+    expect(matchRunRequest("GET", ["write"])).toBeUndefined();
     expect(matchRunRequest("GET", ["status"])).toBeDefined();
     expect(matchRunRequest("POST", ["status"])).toBeUndefined();
     expect(matchRunRequest("GET", ["start"])).toBeUndefined();

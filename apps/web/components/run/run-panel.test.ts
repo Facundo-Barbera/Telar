@@ -5,9 +5,9 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import { hostFetcher, LOCAL_HOST_ID, pathnameFetcher } from "@/lib/hosts/client";
-import { createRunApi } from "@/lib/run/api";
+import { createRunApi, runPath } from "@/lib/run/api";
 import type { RunStatusAnswer, RunView } from "@/lib/run/types";
-import { pollInterval, runIdentity, shouldPollOutput, stillOurs } from "./run-panel";
+import { outputIsLive, pollInterval, runIdentity, stillOurs } from "./run-panel";
 
 const view = (status: RunView["status"]): RunView => ({
   runId: "run_1",
@@ -43,11 +43,20 @@ describe("pollInterval", () => {
   });
 });
 
-describe("shouldPollOutput", () => {
-  test("output is still fetched for a run that has ended, because it is retained", () => {
+describe("outputIsLive", () => {
+  test("a finished run's terminal is kept but not chased", () => {
+    // The distinction the terminal's cadence rests on, and it is not the same
+    // question as whether to SHOW one: a run that ended still has its last
+    // screen, which is most of the value of keeping it. What changes is that
+    // nothing more can arrive, so asking twice a second is cost with no answer.
     const answer: RunStatusAnswer = { history: [], active: view("exited") };
-    expect(shouldPollOutput(answer)).toBe(true);
-    expect(shouldPollOutput({ history: [] })).toBe(false);
+    expect(outputIsLive(answer)).toBe(false);
+    expect(outputIsLive({ history: [], active: view("running") })).toBe(true);
+    expect(outputIsLive({ history: [], active: view("starting") })).toBe(true);
+    expect(outputIsLive({ history: [], active: view("ready") })).toBe(true);
+    // A run Telar lost contact with will never say anything again through us.
+    expect(outputIsLive({ history: [], active: view("unknown") })).toBe(false);
+    expect(outputIsLive({ history: [] })).toBe(false);
   });
 });
 
@@ -112,6 +121,38 @@ describe("a panel is about one Mac", () => {
       "/api/hosts/host_a/sessions/sess_1/run/status",
       "/api/hosts/host_a/sessions/sess_1/run/output?after=3",
       "/api/hosts/host_a/sessions/sess_1/run/stop",
+    ]);
+  });
+
+  test("the terminal's own three calls are host-scoped too, which is why they exist", () => {
+    // THE WHOLE REASON THE EMULATOR IS FED OVER HTTP. `terminalBridge()` is
+    // undefined for a session whose Mac is not this one — deliberately, because
+    // a terminal that lies about which computer it is on is worse than no
+    // terminal — so a bridge-fed Run tab would show a PAIRED session an empty
+    // screen for a run happening on the machine it is about. These go the same
+    // way every other run call does.
+    expect(runPath("sess_1", "/bytes", { after: 7 })).toBe("/api/sessions/sess_1/run/bytes?after=7");
+    expect(runPath("sess_1", "/write")).toBe("/api/sessions/sess_1/run/write");
+    expect(runPath("sess_1", "/resize")).toBe("/api/sessions/sess_1/run/resize");
+  });
+
+  test("a pinned api keeps the terminal on its own Mac across a navigation", async () => {
+    const { sent, fetcher } = socket();
+    at("/hosts/host_a/projects/p/sessions/sess_1");
+    const api = createRunApi(hostFetcher("host_a", fetcher));
+
+    await api.bytes("sess_1", { after: 2 });
+    // Typing while the window has moved: the keystroke must not be delivered to
+    // the other Mac's deployment, which has its own session ids and could well
+    // have one spelled `sess_1`.
+    at("/hosts/host_b/projects/p/sessions/sess_1");
+    await api.write("sess_1", { runId: "run_1", data: "y\r" });
+    await api.resize("sess_1", { runId: "run_1", cols: 120, rows: 30 });
+
+    expect(sent).toEqual([
+      "/api/hosts/host_a/sessions/sess_1/run/bytes?after=2",
+      "/api/hosts/host_a/sessions/sess_1/run/write",
+      "/api/hosts/host_a/sessions/sess_1/run/resize",
     ]);
   });
 
