@@ -133,6 +133,23 @@ export function PanelEmpty({ icon, title, children }: { icon?: ReactNode; title:
   );
 }
 
+/**
+ * A heading for a REGION INSIDE a panel — the same mono-uppercase voice as
+ * `PanelHeader`, one level down and without the border.
+ *
+ * `count` is optional here, unlike the header's: a section that names a region
+ * with nothing countable in it — a setting, a single control — would otherwise
+ * have to invent a number to say nothing with.
+ */
+export function PanelSectionLabel({ label, count }: { label: string; count?: number }) {
+  return (
+    <div className="flex items-center gap-1.5 px-3 pt-3 pb-1 font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase">
+      <span className="min-w-0 truncate">{label}</span>
+      {count !== undefined && <span className="shrink-0 text-muted-foreground/60 tabular-nums">{count}</span>}
+    </div>
+  );
+}
+
 /** A hairline divider carrying a mono label — the frozen app's `DONE · 1`. */
 export function PanelDivider({ label }: { label: string }) {
   return (

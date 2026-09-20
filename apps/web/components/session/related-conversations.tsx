@@ -40,7 +40,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowUpRightIcon, BellIcon, BellOffIcon, UsersIcon } from "lucide-react";
 import type { SessionAssignment, Subscription } from "@telar/engine-client";
-import { PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
+import { PanelEmpty, PanelRow, PanelSectionLabel, type PanelTone } from "@/components/ui/panel";
 import { createEngineApi } from "@/lib/engine/client";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import { hostFetcher } from "@/lib/hosts/client";
@@ -285,17 +285,6 @@ function Row({
   );
 }
 
-/** A section heading in the panel's own register — the machine naming a region
- *  of the record, never a sentence addressed to the reader. */
-function SectionLabel({ label, count }: { label: string; count: number }) {
-  return (
-    <div className="flex items-center gap-1.5 px-3 pt-3 pb-1 font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase">
-      <span className="min-w-0 truncate">{label}</span>
-      <span className="shrink-0 text-muted-foreground/60 tabular-nums">{count}</span>
-    </div>
-  );
-}
-
 /** What the panel holds while it reads, and what it says when it could not. */
 type Read = {
   rows: SidebarSession[];
@@ -516,7 +505,7 @@ export function RelatedConversationsView({
     <div className="flex flex-col">
       {delegates.length > 0 && (
         <>
-          <SectionLabel label="Working for this conversation" count={delegates.length} />
+          <PanelSectionLabel label="Working for this conversation" count={delegates.length} />
           {delegates.map((entry) => {
             const key = sessionKey(entry.session);
             const lock = lockFor?.(key) ?? key;
@@ -571,7 +560,7 @@ export function RelatedConversationsView({
           {/* THE INVERSE, AND IT IS NOT A MIRROR. A delegate has one thing to
               say — who asked, for what, and whether it is still owed — and the
               row that names it is the coordinator, not this conversation. */}
-          <SectionLabel label="Working for" count={employers.length} />
+          <PanelSectionLabel label="Working for" count={employers.length} />
           {employers.map((entry, index) => {
             const title = entry.session?.title || `Conversation ${entry.sessionId.slice(0, 8)}`;
             const detail = [entry.scope, entry.unresolved ? "state unknown" : undefined, fmtAgo(entry.at, stamp)]
