@@ -32,6 +32,17 @@
  * Usage, model, attachments, claims, requests. Every one of them is on the turn
  * already and none of them is something an orchestrator asks a conversation
  * ABOUT; carrying them would grow the one row this exists to keep small.
+ *
+ * ══ AND THE ONE THAT IS ON THE TABLE ANYWAY — issue #697 ══
+ *
+ * `turn_summaries` grew nullable `usage_*` columns that no `TurnSummary` here
+ * carries, and the two facts are not in tension: the sentence above is about
+ * the ROW an orchestrator reads, and those columns are never on it. They exist
+ * because the journal's `usage.updated` rows are folded into one aggregate and
+ * the sum has to be written down before the rows are deleted — the same split
+ * the `sessions` table already makes between what it decides on and what goes
+ * on the wire. `ExecutionStore.turnUsage` is the reader; `foldUsage` is the
+ * writer; nothing in this file knows about either.
  */
 import type { Item, Turn } from "@telar/engine-client";
 

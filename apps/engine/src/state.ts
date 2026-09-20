@@ -2183,7 +2183,7 @@ export class EngineStore {
    * Absent on a store still running on JSON: there is no database to vacuum,
    * and saying so is better than reporting a reclamation that did not happen.
    */
-  reclaimExecutionStore(): { before: number; after: number; deltas: number; starts: number; sessions: number } | undefined {
+  reclaimExecutionStore(): { before: number; after: number; deltas: number; starts: number; sessions: number; usage: number } | undefined {
     return this.executionStore?.reclaim();
   }
 
