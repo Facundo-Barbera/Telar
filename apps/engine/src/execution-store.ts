@@ -1622,6 +1622,47 @@ export class ExecutionStore {
   }
 
   /**
+   * A CONSISTENT COPY OF THE DATABASE, WITHOUT CLOSING IT — issue #665.
+   *
+   * ══ WHY THIS HAD TO EXIST BEFORE THE SHAPE COULD BE CALLED FINISHED ══
+   *
+   * There was no sanctioned way to look at a store without opening the live
+   * one. The only read paths were a size walk and a hand-run `sqlite3
+   * -readonly` snippet pasted into an issue, so every question of the form
+   * "what is actually in there" became either a manual query against the one
+   * irreplaceable artifact or an estimate — which is what happened in #646 and
+   * #658, and why #646's own figures had to be corrected twice.
+   *
+   * ══ `VACUUM INTO` AND NOT A FILE COPY ══
+   *
+   * Copying `execution.sqlite` with `cp` while the daemon is running produces a
+   * file whose pages come from different moments and whose `-wal` is not
+   * beside it — a database that opens and is wrong, which is worse than one
+   * that refuses. `VACUUM INTO` takes a read transaction and writes a
+   * defragmented, self-contained database at a single consistent point, with no
+   * WAL to carry. It is also the cheap direction: #646 measured it at 7 s on a
+   * gigabyte where the in-place `VACUUM` took 20–35 s.
+   *
+   * IT DOES NOT TOUCH THIS DATABASE. No compaction, no fold, no watermark —
+   * the copy is for reading, and a "get me a safe copy" that quietly rewrote
+   * the original would be the opposite of the point.
+   *
+   * THE DESTINATION MUST NOT EXIST, sqlite's own rule and `exportLegacy`'s.
+   */
+  vacuumInto(file: string): void {
+    if (fs.existsSync(file)) throw new Error("Copy destination must not already exist");
+    // Everything held must be in the database before it is read out: a delta in
+    // the buffer is a delta the copy would not contain.
+    this.flush();
+    this.statement("VACUUM INTO ?").run(file);
+    // 0600 to match the original. `VACUUM INTO` creates the file with the
+    // process umask, which on a default macOS account is 0644 — a copy of every
+    // conversation on the machine, world-readable, made by a button whose whole
+    // purpose is to be the SAFE way to do this.
+    fs.chmodSync(file, 0o600);
+  }
+
+  /**
    * DROP THE JSON THE IMPORT REPLACED, ONCE SQLITE HAS OWNED THE STORE A WEEK.
    *
    * `importLegacy` keeps a copy of everything it read, as an undo for a

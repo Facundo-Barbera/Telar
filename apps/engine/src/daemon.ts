@@ -2543,6 +2543,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * A SAFE COPY OF THIS STORE — issue #665.
+       *
+       * THE ROUTE WHOSE ABSENCE WAS THE FINDING. There was no sanctioned way to
+       * look at a store without opening the live one, so every "what is
+       * actually in there" became a hand-run query against the one
+       * irreplaceable artifact — which is how #646's figures came to be
+       * corrected twice.
+       *
+       * SLOW, AND A POST BECAUSE IT WRITES — to a destination that must not
+       * already exist, which is the one refusal that matters here. It does not
+       * touch this store: `VACUUM INTO` takes a read transaction and writes
+       * elsewhere, with no compaction and no watermark.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/storage/copy") {
+        const input = (await body(request)) as { destination?: unknown };
+        if (typeof input.destination !== "string" || !input.destination.trim())
+          throw new HttpError(400, "invalid_request", "name a folder for Telar to create the copy in");
+        writeJson(response, 200, { copy: store.copyStoreTo(input.destination.trim()) });
+        return;
+      }
+      /**
        * WHAT A RETENTION WINDOW WOULD TAKE, AND THE WINDOW ITSELF — #542, #646.
        *
        * READ-ONLY, AND THE NUMBERS ARE THE READER'S OWN. That is the whole

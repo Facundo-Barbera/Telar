@@ -27,7 +27,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { HardDriveIcon, TrashIcon } from "lucide-react";
+import { CopyIcon, HardDriveIcon, TrashIcon } from "lucide-react";
 import { chooseDirectory } from "@/lib/choose-directory";
 import { formatBytes } from "@/lib/format";
 import {
@@ -37,8 +37,11 @@ import {
   useStoreStatus,
   type StoreProgress,
 } from "@/lib/desktop-store";
+import { createEngineApi } from "@/lib/engine/client";
 import { Row, SettingsGroup } from "./settings-shell";
 import { Button } from "@/components/ui/button";
+
+const api = createEngineApi();
 
 export function StoreSection() {
   const { status, supported, refresh } = useStoreStatus();
@@ -46,6 +49,34 @@ export function StoreSection() {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [moved, setMoved] = useState(false);
+  const [copying, setCopying] = useState(false);
+  const [copied, setCopied] = useState<string | undefined>(undefined);
+
+  /** The safe copy (#665). It re-measures nothing and says what it wrote,
+   *  because "did that do anything" is the question a silent success leaves. */
+  const copyStore = async () => {
+    const chosen = await chooseDirectory({ title: "Choose where Telar should write the copy" });
+    if (!("path" in chosen)) {
+      if ("unavailable" in chosen) setFailure(chosen.unavailable);
+      return;
+    }
+    setCopying(true);
+    setFailure(undefined);
+    setCopied(undefined);
+    try {
+      // A NEW FOLDER INSIDE THE ONE THEY PICKED, because the engine refuses a
+      // destination that already exists — and a folder picker can only ever
+      // return one that does. Naming it after the moment keeps two copies from
+      // colliding, which is the other thing that refusal would catch.
+      const destination = `${chosen.path.replace(/\/$/, "")}/telar-store-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      const { copy } = await api.copyStore(destination);
+      setCopied(`Copied ${copy.files.toLocaleString()} files (${formatBytes(copy.bytes)}) to ${copy.root}.`);
+    } catch (cause) {
+      setFailure(cause instanceof Error ? cause.message : "Telar could not write the copy.");
+    } finally {
+      setCopying(false);
+    }
+  };
 
   useEffect(() => desktopStore()?.onProgress(setProgress) ?? undefined, []);
 
@@ -135,6 +166,38 @@ export function StoreSection() {
               </Button>
             </span>
           )
+        }
+      />
+      {/*
+        A COPY SOMEBODY CAN OPEN WITHOUT RISK — issue #665, and the button whose
+        ABSENCE was the finding. There was no sanctioned way to look at a store
+        without opening the live one, so every question of the form "what is
+        actually in there" became a hand-run query against the one
+        irreplaceable artifact — which is how #646's figures came to be
+        corrected twice.
+
+        IT READS THE STORE AND WRITES ELSEWHERE. The database goes through
+        `VACUUM INTO`, so the copy is consistent rather than pages from
+        different moments, and the original is not rewritten. The destination
+        must not already exist.
+
+        IT IS SMALLER THAN THE STORAGE PANE'S TOTAL, deliberately: checkouts,
+        Python environments and toolchains are re-makeable and are most of the
+        bytes, so they are not carried. The hint says so, because a copy that
+        silently weighed a tenth of the figure above would read as a failure.
+      */}
+      <Row
+        icon={CopyIcon}
+        label="Safe copy"
+        hint={
+          copied
+            ? copied
+            : "Writes a consistent copy of your history, settings and notes into a new folder — without touching this one. Session checkouts, Python environments and toolchains are not carried: Telar can re-make those."
+        }
+        control={
+          <Button size="sm" variant="outline" disabled={busy || copying} onClick={() => void copyStore()}>
+            {copying ? "Copying…" : "Copy…"}
+          </Button>
         }
       />
       {status?.retired ? (
