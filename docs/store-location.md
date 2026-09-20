@@ -316,23 +316,16 @@ ignored by `prune` however long its directory has been missing, whatever
    project being available. The lock protects worktrees that already exist; the
    guard stops us asking git the question at all.
 
-### The hardlink question, measured rather than assumed
+### A relocated store cannot share `node_modules` with the bun cache
 
-A related finding held that moving worktrees off the volume holding the package
-manager's cache breaks its hardlink deduplication. Measured on this layout:
-
-```
-bun cache dev   = 16777229
-worktree dev    = 16777229      (already the same volume)
-node_modules/.bun/**/*.js  ->  links 1
-```
-
-Same volume already, and the dedup is **not happening** — link count 1, not 2.
-So moving the store does not break a working dedup; it is already broken for
-other reasons. What moving *would* do is make it unfixable in place: repairing
-the deduplication later would not bring the hardlinks back unless the cache sits
-on the same volume as the worktrees. Recorded as a constraint on any future
-cache-location work, not a blocker here.
+A store on another volume cannot deduplicate `node_modules` against a bun cache
+left in `~/.bun` on the internal disk. Neither hard links nor APFS clones cross
+a filesystem boundary, so each worktree there holds a full copy. This is a
+property of the layout, not a fault to go looking for: the only fix is to move
+the cache onto the same volume as the worktrees, which buys a second cache and
+installs that require the volume mounted. The cost has been measured and the
+work deferred — see #633, which carries the numbers and the measurement trap
+that an earlier reading of this fell into.
 
 Telar uses no git alternates and no `--local` clones, so git objects are not
 implicated at all — they live once, in the project repository, which does not
