@@ -82,6 +82,23 @@ async function cutWorktree(input: {
  */
 const settled = worktreeReady;
 
+/**
+ * Poll `done` until it holds or `boundMs` elapses; report which.
+ *
+ * A FIXTURE'S STARTUP MUST NOT SHARE THE DEADLINE BEING MEASURED — #748's
+ * lesson, applied to the process-tree tests below. A child that writes its pid
+ * before a runner's 500 ms timeout fires leaves the test measuring the runner;
+ * a child that does not leaves it measuring `bun`'s cold start, and the failure
+ * arrives as `ENOENT` on a pid file rather than as anything about the bound.
+ * Observed exactly once, on the first run after a source change — which is the
+ * run a cold transpile makes slowest.
+ */
+const until = async (done: () => boolean, boundMs: number): Promise<boolean> => {
+  const deadline = Date.now() + boundMs;
+  while (Date.now() < deadline && !done()) await new Promise(resolve => setTimeout(resolve, 25));
+  return done();
+};
+
 /** A throwaway repository with one commit, so `HEAD` resolves. */
 function repo(): string {
   const root = tmp("telar-wt-repo-");
@@ -802,18 +819,36 @@ test("async git pool expires queued reads without spawning them and recovers cap
  * inherited stdio to a helper and then blocks. The helper outlives the SIGKILL
  * by thirty seconds, so before #743 the read below spent its whole ten-second
  * budget queued and returned a timeout instead of `ready`.
+ *
+ * THE HELPER CALLS `setsid` ON ITSELF, AND THAT IS THE POINT — #771.
+ *
+ * #771 makes the timeout path kill git's process GROUP, which reaps an ordinary
+ * helper. An ordinary helper here would therefore stop holding the pipe, the
+ * pipe would close at the deadline, and this test would pass whether `release()`
+ * ran on the timeout path or only in the completion callback: still green, and
+ * no longer testing anything.
+ *
+ * A `detached` helper is the case a group kill cannot reach — its own session,
+ * out of the group, holding the inherited pipe regardless. Not a contrivance to
+ * keep a test alive: it is the residual leak #771 writes down and cannot close
+ * (`git fsmonitor--daemon` is the real instance), which makes it the one shape
+ * where #770's release-at-the-deadline is still the only thing standing between
+ * a stuck helper and a stuck pool.
  */
 test("a timed-out read frees its slot while its child's helper still holds the pipe", async () => {
   const root = tmp("telar-git-release-");
   const pidFile = path.join(root, "helper.pid");
   const script = `
     const { spawn } = require("node:child_process");
-    const helper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" });
+    const helper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit", detached: true });
     require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(helper.pid));
     setTimeout(() => {}, 30000);
   `;
   const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
-  const stalled = run(root, ["-e", script], { timeoutMs: 500 });
+  const stalled = run(root, ["-e", script], { timeoutMs: 2_000 });
+  // The helper has to be up BEFORE the deadline is allowed to mean anything —
+  // see `until`. Its own bound, and a loud failure rather than an `ENOENT`.
+  expect(await until(() => fs.existsSync(pidFile), 1_500)).toBe(true);
   expect((await stalled).timedOut).toBe(true);
 
   const helper = Number(fs.readFileSync(pidFile, "utf8"));
@@ -829,6 +864,88 @@ test("a timed-out read frees its slot while its child's helper still holds the p
     try { process.kill(helper, "SIGKILL"); } catch { /* already gone */ }
   }
 }, 20_000);
+
+/**
+ * THE HELPER IS REAPED, NOT JUST GIT — issue #771, and the point of the test.
+ *
+ * A test that only asserted the CHILD died would pass against the unfixed
+ * timeout path: `child.kill("SIGKILL")` always killed git. The grandchild is the
+ * entire content of the issue, so this captures the helper's own pid and asserts
+ * that pid is gone. Falsified both ways before being believed — with the group
+ * kill removed, and with `detached` removed so the group kill raises `ESRCH` —
+ * and it fails on this assertion in both.
+ *
+ * REAL GIT AND A REAL CLEAN FILTER, because the mechanism is git's: the filter
+ * inherits git's stderr, and `close` (like `execFile`'s callback before it)
+ * fires on stdio EOF rather than on process exit. A synthetic child reproduces
+ * the process shape and not the reason anyone cares about it.
+ *
+ * THE FILTER BLOCKS INSTEAD OF PASSING CONTENT THROUGH, so the read reaches its
+ * deadline with the helper already up rather than racing it. A deadline that
+ * fired first would find no helper to kill and the test would pass for the wrong
+ * reason — hence `toBeGreaterThan(0)` below, which is the assertion that this
+ * test is testing anything at all.
+ */
+test("a timed-out read reaps the helper git spawned, not only git", async () => {
+  const root = tmp("telar-git-group-");
+  const pidFile = path.join(root, "helpers.pid");
+  const filterPidFile = path.join(root, "filters.pid");
+  const filter = path.join(root, "slow-clean.sh");
+  /**
+   * `>>`, not `>`: git may invoke a clean filter more than once, and a lost pid
+   * is a process this test would leak while claiming it reaps them.
+   *
+   * `wait`, not a second `sleep`: it gives the script exactly one child, so the
+   * two pids it records are the whole of what it started. The first draft
+   * blocked on its own `sleep`, which nothing recorded — and the falsification
+   * run, where nothing is reaped, duly leaked it.
+   */
+  fs.writeFileSync(filter, `#!/bin/sh
+sleep 30 </dev/null >/dev/null &
+echo $! >> ${JSON.stringify(pidFile)}
+echo $$ >> ${JSON.stringify(filterPidFile)}
+wait
+`);
+  fs.chmodSync(filter, 0o755);
+
+  const projectRoot = repo();
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // Local `false` beats whatever the machine running this has globally: an
+  // fsmonitor daemon is a long-running process and this test starts none.
+  git("config", "core.fsmonitor", "false");
+  git("config", "filter.slow.clean", filter);
+  fs.writeFileSync(path.join(projectRoot, ".gitattributes"), "README.md filter=slow\n");
+  fs.writeFileSync(path.join(projectRoot, "README.md"), "hello\nchanged\n");
+
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const readPids = (file: string) =>
+    (fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(Number) : []);
+
+  const run = createAsyncGitRunner({ concurrency: 1 });
+  const timedOut = run(projectRoot, ["diff", "-z", "--numstat"], { timeoutMs: 5_000 });
+  try {
+    // Non-vacuity: a count the "the deadline beat the filter" state cannot
+    // produce. The helper's own bound, never the read's — see `until`.
+    expect(await until(() => readPids(pidFile).length > 0, 4_500)).toBe(true);
+
+    const result = await timedOut;
+    expect(result.timedOut).toBe(true);
+    expect(result.killedPid).toBeGreaterThan(0);
+
+    // A SIGKILLed process answers `kill(pid, 0)` until init reaps the zombie, so
+    // this is a bound rather than an instant.
+    const helpers = readPids(pidFile);
+    await until(() => helpers.every(pid => !alive(pid)), 5_000);
+    expect(helpers.filter(alive)).toEqual([]);
+  } finally {
+    await timedOut;
+    // Both files, so a run where nothing was reaped still leaves nothing behind.
+    for (const pid of [...readPids(pidFile), ...readPids(filterPidFile)]) {
+      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  }
+}, 30_000);
 
 /**
  * A POOL OF ITS OWN, NOT THE SINGLETON. What this test asserts is that the

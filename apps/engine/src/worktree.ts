@@ -63,7 +63,7 @@
  * path would trade a data-loss bug for a leak-forever one.
  */
 import crypto from "node:crypto";
-import { execFile, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { ProjectAvailability } from "./volumes";
@@ -76,12 +76,17 @@ export type GitResult = {
   /** Set when the child was killed for outrunning its bound rather than exiting on its own. */
   timedOut?: true;
   /**
-   * The pid of the child this runner killed, on the timeout path of the
-   * synchronous runner — absent everywhere else, including when the spawn itself
-   * failed and there was no child. It exists so "the child was killed rather than
-   * orphaned" can be checked without the child having to write its own pid
-   * somewhere first, which is what #748 was: a race between the fixture's startup
-   * and the bound under test.
+   * The pid of the child this runner killed, on either runner's timeout path —
+   * absent everywhere else, including when the spawn itself failed and there was
+   * no child, and when an async read expired while still queued and so never
+   * spawned one. It exists so "the child was killed rather than orphaned" can be
+   * checked without the child having to write its own pid somewhere first, which
+   * is what #748 was: a race between the fixture's startup and the bound under
+   * test.
+   *
+   * On the async runner it is also the process GROUP that was killed, since #771
+   * spawns git as its own group leader — so the pid names the whole tree that
+   * went with it, not just git.
    */
   killedPid?: number;
 };
@@ -201,6 +206,37 @@ export const defaultGitRunner: GitRunner = createGitRunner();
 export type AsyncGitRunner = (cwd: string, args: string[], options?: GitRunOptions) => Promise<GitResult>;
 
 /**
+ * What `execFile`'s `maxBuffer` was, kept as an explicit bound now that the
+ * collecting is ours. Characters rather than bytes, because the streams are
+ * decoded as UTF-8 before they get here; the point is a ceiling a runaway `git
+ * log` cannot walk through, not an exact byte count.
+ */
+const MAX_GIT_OUTPUT_CHARS = 1024 * 1024;
+
+/**
+ * SIGKILL git AND EVERYTHING GIT SPAWNED — issue #771.
+ *
+ * `-pid` addresses the process group, which git leads because it was spawned
+ * `detached`. The fallback is not decoration: the group kill raises `ESRCH` once
+ * the group is already gone, and would raise it for every child if a future
+ * runtime went back to ignoring `detached` — in which case killing the child
+ * alone is exactly the old behaviour rather than no behaviour.
+ *
+ * Returns the pid it killed, for `killedPid`, or `undefined` when there was no
+ * child to kill (a read that expired while still queued).
+ */
+function killGroup(child: { pid?: number; kill: (signal: NodeJS.Signals) => boolean } | undefined): number | undefined {
+  const pid = child?.pid;
+  if (child === undefined || typeof pid !== "number" || pid <= 0) return undefined;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+  return pid;
+}
+
+/**
  * Read paths share a small process pool so polling cannot flood the machine.
  * The deadline includes queue time, and NEITHER THE CALLER NOR THE POOL waits on
  * a stuck child: a read that expires frees its slot at its own deadline.
@@ -216,14 +252,42 @@ export type AsyncGitRunner = (cwd: string, args: string[], options?: GitRunOptio
  * further 5.6 s. A helper that never exits holds the slot forever, which makes
  * this a leak rather than the delay it looks like.
  *
- * THE TRADE, because it changes what `concurrency` means. Until #743 a slot was
- * held until the process tree was gone, so `limit` bounded live git processes as
- * well as in-flight reads. Now it bounds only the reads: a slot can be handed out
- * while an expired read's orphaned helper is still alive, so more than `limit`
- * git-spawned processes can briefly exist. That is the deliberate half of the
- * exchange — capacity is the thing polling needs back, and an orphan that
- * survived `SIGKILL` was never going to be freed by making the next reader wait
- * for it.
+ * THE TRADE #770 MADE, AND WHY IT IS NO LONGER ONE — issue #771.
+ *
+ * #770 bought capacity back by freeing the slot at the deadline and letting the
+ * helper live. That left the other half of the leak: nothing reaped the helper,
+ * and after #770 the pool no longer incidentally bounded how many could pile up
+ * (~12 orphaned trees a minute at the project poll's rate, uncapped).
+ *
+ * Killing the process GROUP gives both properties at once, and the reason it was
+ * recorded as impossible is a Bun defect rather than a POSIX one:
+ *
+ *   `execFile` SILENTLY DROPS `detached`. `spawn` HONOURS IT.
+ *
+ * Measured on bun 1.3.11: a child from `execFile(..., { detached: true })` stays
+ * in the PARENT's process group, so `process.kill(-child.pid, "SIGKILL")` names a
+ * group that does not exist and returns `ESRCH` — #771's headline finding, and
+ * the reason a group reap looked like it needed a descendant walk. The same call
+ * through `spawn(..., { detached: true })` puts git in a group it leads, and the
+ * group kill then takes git and everything git spawned in one syscall.
+ *
+ * A DESCENDANT WALK WOULD NOT HAVE WORKED, which is why this costs a `spawn`
+ * rather than a `pgrep`. By the time a timeout fires the helpers have already
+ * re-parented: measured `ppid 1` on both survivors of a real `git diff` whose
+ * clean filter forked, while the `pgid` still pointed at the group. Walking `ppid`
+ * from git's pid finds nothing; group membership survives re-parenting.
+ *
+ * WHAT IT STILL DOES NOT REAP, stated because it is the residual case and it is
+ * real: a helper that calls `setsid` for itself — a true daemon, `git fsmonitor
+ * --daemon` being the candidate — leaves the group and is out of reach. For that
+ * one, #770's release-at-the-deadline is still the property that matters, and it
+ * still holds: `release()` on the timeout path does not wait for the pipe.
+ *
+ * DETACHING HAS ONE COST, recorded rather than hidden: git no longer receives a
+ * signal sent to the engine's own process group, so a hard engine crash leaves an
+ * in-flight read running until it finishes on its own. It is bounded by the read
+ * itself (`DEFAULT_GIT_TIMEOUT_MS` at worst) where the leak this replaces was not
+ * bounded by anything.
  */
 export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: number } = {}): AsyncGitRunner {
   const requestedLimit = deps.concurrency ?? 4;
@@ -234,7 +298,7 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
     const requested = options?.timeoutMs ?? deps.defaultTimeoutMs ?? gitTimeoutFromEnv();
     const timeout = Number.isFinite(requested) ? Math.max(1, requested) : DEFAULT_GIT_TIMEOUT_MS;
     let settled = false;
-    let child: ReturnType<typeof execFile> | undefined;
+    let child: ReturnType<typeof spawn> | undefined;
     const finish = (result: GitResult) => {
       if (settled) return;
       settled = true;
@@ -259,20 +323,66 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
     const timer = setTimeout(() => {
       const index = queue.indexOf(start);
       if (index !== -1) queue.splice(index, 1);
-      child?.kill("SIGKILL");
+      const killed = killGroup(child);
       release();
-      finish({ status: GIT_TIMEOUT_STATUS, stdout: "", stderr: `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed`, timedOut: true });
+      finish({
+        status: GIT_TIMEOUT_STATUS,
+        stdout: "",
+        stderr:
+          `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed` +
+          (killed === undefined ? "" : ` (pid ${killed})`),
+        timedOut: true,
+        killedPid: killed,
+      });
     }, timeout);
     const start = () => {
       if (settled) return;
       active++;
       acquired = true;
       try {
-        child = execFile(deps.gitBin ?? "git", args, {
-          cwd, encoding: "utf8", maxBuffer: 1024 * 1024, killSignal: "SIGKILL",
-        }, (error, stdout, stderr) => {
+        child = spawn(deps.gitBin ?? "git", args, {
+          cwd,
+          // THE ONE LINE THIS ISSUE IS ABOUT: git leads its own process group, so
+          // the timeout path can reap what git spawned. `execFile` accepts this
+          // option and ignores it (see the header) — the spawn is the fix.
+          detached: true,
+          // `ignore` matches the synchronous runner: nothing here feeds git on
+          // stdin, and /dev/null turns a would-be prompt into an immediate EOF.
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        let overflowed = false;
+        const collect = (into: "stdout" | "stderr") => (chunk: string) => {
+          if (overflowed) return;
+          if ((into === "stdout" ? stdout : stderr).length + chunk.length > MAX_GIT_OUTPUT_CHARS) {
+            overflowed = true;
+            killGroup(child);
+            return;
+          }
+          if (into === "stdout") stdout += chunk;
+          else stderr += chunk;
+        };
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+        child.stdout?.on("data", collect("stdout"));
+        child.stderr?.on("data", collect("stderr"));
+        // Anything that goes wrong before the child exists — a missing binary,
+        // an unreadable cwd — arrives here rather than as a throw.
+        child.on("error", (error) => {
           release();
-          finish({ status: error ? (typeof error.code === "number" ? error.code : 1) : 0, stdout, stderr: stderr || (error ? String(error) : "") });
+          finish({ status: 1, stdout, stderr: stderr || String(error) });
+        });
+        // `close` rather than `exit`: it waits for the stdio pipes as `execFile`'s
+        // callback did, which is the semantics every caller was written against.
+        // The difference is that a timed-out read no longer waits here at all.
+        child.on("close", (code) => {
+          release();
+          if (overflowed) {
+            finish({ status: 1, stdout, stderr: `git ${args.join(" ")} in ${cwd} wrote more than ${MAX_GIT_OUTPUT_CHARS} characters` });
+            return;
+          }
+          finish({ status: code ?? 1, stdout, stderr });
         });
       } catch (error) {
         release();
