@@ -8,6 +8,8 @@
  * is visible at the URL.
  */
 import { parsePublishedAppearance, type PublishedAppearance } from "./look";
+import { diffBaseQuery, filePatchQuery } from "./protocol/diff-query";
+import type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
@@ -808,23 +810,13 @@ function runBase(sessionId: string): string {
  * so the toolbar's toggle has to reach the command; hiding those rows in the
  * browser would leave the file's own header counting them.
  */
-export type FilePatchOptions = {
-  /** Untracked files are in no diff at all, so they are diffed against
-   *  `/dev/null` — see the engine's `sessionFilePatch`. */
-  untracked?: boolean;
-  /** Re-indentation and inserted blank lines are not changes worth reading. */
-  ignoreWhitespace?: boolean;
-};
-
-/** Built once for both the session and project reads: they serve the same
- *  surface, so an option one sent and the other dropped would be a control
- *  that worked in a conversation and did nothing on a canvas. */
-function filePatchQuery(path: string, options: FilePatchOptions): string {
-  const query = new URLSearchParams({ path });
-  if (options.untracked) query.set("untracked", "1");
-  if (options.ignoreWhitespace) query.set("ignoreWhitespace", "1");
-  return query.toString();
-}
+/**
+ * The diff read's wire encoding lives in the contract beside `forgeQuery`, and
+ * for the reason that one documents — see `protocol/diff-query.ts`, which is
+ * where this repeated the same mistake and where the fix is argued.
+ */
+export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery } from "./protocol/diff-query";
+export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
 export class EngineClient {
   constructor(
@@ -2596,8 +2588,9 @@ export class EngineClient {
    * and uncommitted together, measured from the base recorded when it was
    * created. See `SessionDiff` for why that framing rather than `git status`.
    */
-  sessionDiff(sessionId: string): Promise<{ diff: SessionDiff }> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff`);
+  sessionDiff(sessionId: string, options: DiffBaseOption = {}): Promise<{ diff: SessionDiff }> {
+    const query = diffBaseQuery(options);
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff${query ? `?${query}` : ""}`);
   }
 
   /** One file's patch. Separate from the review for the same reason a screenshot

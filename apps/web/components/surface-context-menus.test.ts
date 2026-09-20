@@ -265,12 +265,19 @@ describe("the diff surface's file row", () => {
   test("the header's filter field writes to the TAB's params, not to state of its own", () => {
     // A filter held locally would be invisible to the strip's label and lost on
     // every remount — see this surface's header and #335.
+    //
+    // IT WRITES THE WHOLE TAB NOW (#694), and that is the stronger form of the
+    // same rule rather than a relaxation of it. `setPanelTabParams` is a
+    // REPLACE, so once the tab also carries a scope and a base, a handler that
+    // wrote `{ filter }` alone would erase both — silently, and only for
+    // somebody who typed in this field after choosing a scope.
     const source = dif();
-    expect(source).toContain("onChange={(event) => onFilterChange(event.target.value)}");
+    expect(source).toContain("onChange={(event) => onTabChange({ ...tab, filter: event.target.value })}");
     expect(source).not.toMatch(/useState[^\n]*filter/i);
-    // Clearing the field clears the param rather than storing a blank.
-    expect(source).toContain('onClick={() => onFilterChange("")}');
-    expect(code("right-panel.tsx")).toContain("onFilterChange: (filter: string) => onTabParams(filter.trim() ? { filter } : {})");
+    // Clearing the field clears the param rather than storing a blank —
+    // `diffTabParams` writes no key for an empty filter.
+    expect(source).toContain('onClick={() => onTabChange({ ...tab, filter: "" })}');
+    expect(code("right-panel.tsx")).toContain("onTabChange: (next: DiffTab) => onTabParams(diffTabParams(next))");
   });
 
   test("the composer thread is the cockpit's, and it inserts TEXT rather than resolving anything", () => {

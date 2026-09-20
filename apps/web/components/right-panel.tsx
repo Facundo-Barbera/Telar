@@ -34,8 +34,11 @@ import type {
   Item,
   Task,
   TaskState,
+  Turn,
   TurnState,
 } from "@telar/engine-client";
+import { diffTurns, type DiffTurn } from "@/lib/diff-turns";
+import { diffTabParams, readDiffTab, type DiffTab } from "@/lib/diff-scope";
 import { createEngineApi } from "@/lib/engine/client";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import type { JournalTask } from "@/lib/engine/journal";
@@ -1387,6 +1390,7 @@ function ProcessesSurface({ tasks, focused }: { tasks: readonly JournalTask[]; f
 export function PanelSurface({
   tab,
   writes,
+  diffTurnList,
   tasks,
   focusedTask,
   browser,
@@ -1416,6 +1420,11 @@ export function PanelSurface({
   /** What the journal says was written, path → count. The Diff surface's half of
    *  the reconciliation — see `journalWrites`. */
   writes: ReadonlyMap<string, number>;
+  /** The turns that reported writing something, newest first — the Diff's
+   *  `turn` scope (#694). A fold over the same journal `writes` comes from,
+   *  kept separate because it carries the PATCHES and that is a different
+   *  amount of memory to hand every surface. */
+  diffTurnList?: readonly DiffTurn[];
   tasks: readonly JournalTask[];
   /** The sub-agent a transcript chip just asked for. */
   focusedTask?: TaskFocus;
@@ -1609,13 +1618,19 @@ export function PanelSurface({
         reported={writes}
         suggestion={sessionTitle?.trim() || "Session work"}
         {...(active ? { active } : {})}
-        // THIS instance's filter, read from and written back to the tab's own
-        // params — the same round trip the Editor's open file makes, which is
-        // what lets `panelTabSuffix` name the tab "Diff · apps/web/". An empty
-        // field clears the params rather than storing a blank, so a cleared
-        // filter leaves a tab that reads "Diff".
-        {...(tab.params.filter ? { filter: tab.params.filter } : {})}
-        {...(onTabParams ? { onFilterChange: (filter: string) => onTabParams(filter.trim() ? { filter } : {}) } : {})}
+        // THIS instance, whole — the scope it is looking at, the base and turn
+        // it remembers, and its filter — read from and written back to the
+        // tab's own params, the same round trip the Editor's open file makes.
+        // That is what lets `panelTabSuffix` name the tab "Diff · apps/web/"
+        // and what makes two windows on one session keep their own scope.
+        //
+        // ONE OBJECT IN AND ONE OBJECT OUT, because `setPanelTabParams` is a
+        // REPLACE: a handler writing `{ filter }` would erase the scope and one
+        // writing `{ scope }` would erase the filter. `diffTabParams` writes no
+        // key for a default, so an untouched tab persists exactly as it did.
+        tab={readDiffTab(tab.params)}
+        {...(onTabParams ? { onTabChange: (next: DiffTab) => onTabParams(diffTabParams(next)) } : {})}
+        {...(diffTurnList ? { turns: diffTurnList } : {})}
         // Derived from `onOpenTab`, exactly as LatexSurface's is above — a
         // changed file opens through the ONE route into the Editor rather than
         // a second one cut for this menu.
@@ -1972,6 +1987,7 @@ export function RightPanel({
   projectId,
   branch,
   items = [],
+  turns = [],
   tasks = [],
   focusedTask,
   onOpenBrowser,
@@ -2012,6 +2028,9 @@ export function RightPanel({
   projectId?: string;
   branch?: string;
   items?: readonly Item[];
+  /** The session's turns, for the Diff's `turn` scope: the journal says WHICH
+   *  run wrote a file, and these say what that run was asked to do (#694). */
+  turns?: readonly Turn[];
   tasks?: readonly JournalTask[];
   /** The sub-agent a transcript chip just asked for. Owned by the cockpit
    *  because the chip that names one lives over there. */
@@ -2123,6 +2142,10 @@ export function RightPanel({
   // what to open at when there is none — see `defaultRightPanelWidth`.
   const width = prefs.width ?? defaultRightPanelWidth(tabs);
   const writes = useMemo(() => journalWrites(items), [items]);
+  /** The same journal, folded the other way — by RUN rather than by path, and
+   *  carrying each turn's own reported patches (#694). Memoised beside
+   *  `writes` because both are folds of one list that changes on every item. */
+  const diffTurnList = useMemo(() => diffTurns(items, turns), [items, turns]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
   /** One native scope per open Browser tab, so the strip can name each of them
    *  from what that browser is actually showing. */
@@ -2575,6 +2598,7 @@ export function RightPanel({
             <PanelSurface
               tab={activeTab}
               writes={writes}
+              diffTurnList={diffTurnList}
               tasks={tasks}
               {...(focusedTask ? { focusedTask } : {})}
               onOpenTab={onOpenTab}
