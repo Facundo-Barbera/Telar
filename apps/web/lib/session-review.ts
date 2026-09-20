@@ -213,6 +213,81 @@ export function describeReview(review: SessionReview): string {
   return parts.join(" ");
 }
 
+export type ReviewFraming = {
+  /** The strong line: the figures, said to be whose they are. */
+  headline: string;
+  /** The sentence under it — which question these figures answer. */
+  note: string;
+  /**
+   * The journal may be read as DISAGREEING with the diff: an unreported row is
+   * a surprise, and the list is worth splitting into claimed and unclaimed.
+   * False on a shared checkout and on a canvas, where the diff carries work no
+   * transcript could have mentioned.
+   */
+  journal: boolean;
+};
+
+/**
+ * WHAT THIS REVIEW IS OF, AND HOW MUCH OF IT THE TRANSCRIPT CAN SPEAK FOR —
+ * issue #690.
+ *
+ * The surface used to say "everything this session changed, committed and
+ * uncommitted" over every session's figures. That is true of a `worktree`
+ * session, which owns its checkout, and FALSE of a `local` one, which shares
+ * the project checkout with the editor and with every other local session: a
+ * conversation that wrote no code was shown ninety-two files it had never
+ * touched and a banner accusing it of running a formatter.
+ *
+ * THE FIGURES ARE NOT THE LIE — they describe the checkout correctly. The
+ * headline's claim about WHOSE they are, and the journal fold's reading of a
+ * row nobody narrated as a surprise, are. On a shared checkout the first is
+ * restated and the second is withdrawn: "the transcript never mentioned this"
+ * is evidence of nothing when the editor and three other sessions write to the
+ * same tree.
+ *
+ * A PURE FOLD over the diff's own `shared` flag, so both modes are testable
+ * without a repository — the surface never re-derives this from a path.
+ */
+export function reviewFraming(diff: SessionDiff, review: SessionReview, session: boolean): ReviewFraming {
+  const shared = session && diff.shared === true;
+  const figures = describeReview(review);
+  return {
+    headline: shared ? `The project checkout — ${figures}` : figures,
+    note: reviewNote(diff, session, shared),
+    journal: session && !shared,
+  };
+}
+
+/**
+ * TWO INDEPENDENT DOUBTS IN ONE SENTENCE, which is why this is a ladder rather
+ * than a nest: WHOSE changes these are (#690) and HOW MUCH of them git managed
+ * to report (#654). They compose — a shared checkout read short is both — and
+ * the surface must not have to know that.
+ *
+ * "EVERYTHING" IS A PROMISE A CUT-SHORT READ CANNOT KEEP, so the branches that
+ * make it give it up rather than hedging with an adverb. The branches that do
+ * not claim everything are left exactly as they were: the band above the
+ * figures owns the explanation, and repeating it here would be two warnings for
+ * one fact.
+ */
+function reviewNote(diff: SessionDiff, session: boolean, shared: boolean): string {
+  if (!session) return "Everything uncommitted in this project right now.";
+  const checkout = "This session shares the project checkout with your editor and every other local session";
+  if (!diff.base) {
+    return shared
+      ? `${checkout}, and no starting commit was recorded — so this counts only what is uncommitted there, not what it wrote.`
+      : "No starting commit was recorded, so this counts only what is uncommitted.";
+  }
+  if (shared) {
+    return diff.filesIncomplete
+      ? `${checkout}. This is what differs there since it started — as much of it as git reported — which is not the same as what it wrote.`
+      : `${checkout}. This is what differs there since it started, which is not the same as what it wrote.`;
+  }
+  return diff.filesIncomplete
+    ? "What this session changed, committed and uncommitted — as much of it as git reported."
+    : "Everything this session changed, committed and uncommitted.";
+}
+
 /** The status letter git itself uses, so anyone who has run `git status` reads
  *  this without a legend. `?` for untracked, matching porcelain's `??`. */
 export const REVIEW_STATUS_LETTER: Record<GitFileChange["status"], string> = {

@@ -2189,6 +2189,26 @@ export const SessionDiff = z.object({
    *  complete one. */
   truncated: z.boolean(),
   /**
+   * THE CHECKOUT IS SHARED, SO THIS IS NOT NECESSARILY THIS SESSION'S WORK —
+   * issue #690.
+   *
+   * `base…worktree` equals "what this session did" only if the session started
+   * from a tree nobody else writes to. That holds in a `worktree` session, which
+   * owns its checkout, and is false in a `local` one, which shares the project
+   * checkout with the editor and with every other local session. A design
+   * conversation that wrote no code was shown 92 files and a banner accusing it
+   * of running a formatter; every one of them was already dirty when it started.
+   *
+   * THE FIGURES DO NOT CHANGE — they are a true description of the checkout.
+   * What this licenses is the WORDING around them, and it withdraws the one
+   * inference the shared case cannot support: that a row the transcript never
+   * mentioned is a surprise this session produced.
+   *
+   * ABSENT ON A PROJECT DIFF, which has no session to misattribute anything to
+   * and already says "this project" in as many words.
+   */
+  shared: z.boolean().optional(),
+  /**
    * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534.
    *
    * WHY IT RIDES THIS ANSWER rather than being fetched beside it. `repository:

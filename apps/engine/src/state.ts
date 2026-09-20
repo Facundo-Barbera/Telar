@@ -5707,6 +5707,23 @@ export class EngineStore {
     return project === undefined ? value : { ...value, availability: this.projectAvailability(project) };
   }
 
+  /**
+   * WHOSE CHECKOUT THIS DIFF DESCRIBES — issue #690.
+   *
+   * A `local` session shares the project checkout with the editor and with every
+   * other local session, so `base…worktree` there is the checkout's difference
+   * and not the session's work. Only the session record knows which kind it is;
+   * `git.ts` is handed a directory and cannot tell a worktree from a project
+   * root. See `SessionDiff.shared` for what the flag licenses.
+   *
+   * STAMPED, NOT COMPUTED FROM THE PATH: a `local` session's checkout IS the
+   * project root, and guessing from the directory would make this a heuristic
+   * about a fact the store already holds.
+   */
+  private static sharedCheckout<T extends object>(value: T, session: Pick<Session, "workspace">): T {
+    return session.workspace.mode === "local" ? { ...value, shared: true } : value;
+  }
+
   /** The project a session's work belongs to, when it has one. */
   private projectOfSession(session: Session): Project | undefined {
     if (session.projectId === undefined) return undefined;
@@ -5729,6 +5746,8 @@ export class EngineStore {
     return this.withAvailability(this.cachedGitRead(`diff:${project.root}`, () => sessionDiffAsync(this.asyncGit, { cwd: project.root })), project);
   }
 
+  /** NOT `async`, so a session with no directory is refused BEFORE the first
+   *  await — see the projectless-session test, which asserts exactly that. */
   sessionDiffAsync(sessionId: string): Promise<SessionDiff> {
     const session = this.getSession(sessionId);
     /**
@@ -5743,7 +5762,10 @@ export class EngineStore {
         ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
       })),
       this.projectOfSession(session),
-    );
+      // Outside the cached read, like the availability above it: two local
+      // sessions on one checkout share that entry, and this is a fact about the
+      // session rather than about the read.
+    ).then((value) => EngineStore.sharedCheckout(value, session));
   }
 
   projectFilePatchAsync(projectId: string, target: string, options: { untracked?: boolean } = {}): Promise<GitFilePatch> {
@@ -6163,10 +6185,13 @@ export class EngineStore {
    */
   sessionDiff(sessionId: string): SessionDiff {
     const session = this.getSession(sessionId);
-    return sessionDiff(this.git, {
-      cwd: workspaceRootOf(session),
-      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
-    });
+    return EngineStore.sharedCheckout(
+      sessionDiff(this.git, {
+        cwd: workspaceRootOf(session),
+        ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
+      }),
+      session,
+    );
   }
 
   /** One file's patch, on demand — see `sessionFilePatch` for why it is not
