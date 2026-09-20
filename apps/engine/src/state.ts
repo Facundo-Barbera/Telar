@@ -2297,8 +2297,15 @@ export class EngineStore {
    * cache hit also moves. The counts themselves live in
    * `test/queue-write-path.test.ts`, where they are a ratchet: fifteen per turn
    * survive this issue, and #547 is the argument that fifteen is too many.
+   *
+   * `itemParses` IS THE SAME NUMBER FOR `items.json` — issue #658, and the same
+   * argument one document over. The write path read the whole projection once
+   * per batch and that read was counted nowhere, so the instrument reported the
+   * same total for an engine that rebuilt the projection per item event as for
+   * one that read it once. Bytes alone cannot say it either: they move when a
+   * WINDOW reads a span, and the thing under test is whole-document parses.
    */
-  readonly readAccounting = { documentBytes: 0, documentReads: 0, queueParses: 0 };
+  readonly readAccounting = { documentBytes: 0, documentReads: 0, queueParses: 0, itemParses: 0 };
 
   /**
    * Write a document and the offset index that lets its tail be read alone.
@@ -8464,8 +8471,8 @@ export class EngineStore {
     const file = itemsFile(this.paths, sessionId);
     const index = this.documentIndex(file, itemsIndexFile(this.paths, sessionId));
     if (!index) {
+      // `itemsById` counts this read itself now — see the note there.
       const all = [...this.readItems(sessionId).values()];
-      this.accountWholeRead(file);
       return all.filter((item) => chosen.has(item.runId));
     }
     const span = this.readIndexedRows(file, index.rows.filter((row) => chosen.has(row.key)));
@@ -13730,8 +13737,33 @@ export class EngineStore {
   private itemsById(sessionId: string): Map<string, Item> {
     const cached = this.itemsCache.get(sessionId);
     if (cached) return cached;
-    const stored = this.readDocument(itemsFile(this.paths, sessionId));
+    const file = itemsFile(this.paths, sessionId);
+    const stored = this.readDocument(file);
+    // An absent document is an empty projection, not a read — `readQueue`'s
+    // rule, for the same reason: counting it would put a floor under every
+    // measurement taken on a session that has never written an item.
     if (stored === undefined) return new Map();
+    /**
+     * COUNTED HERE, WHERE THE WHOLE DOCUMENT IS ACTUALLY PARSED — issue #658,
+     * and #547's argument one document over.
+     *
+     * `readAccounting` says it measures "the span of `queue.json` /
+     * `items.json` that reached `JSON.parse`", and this is the largest such
+     * span there is: the ingest path reads items once per batch and parses
+     * every row through `ItemSchema`. It was counted only from `windowedItems`,
+     * so the read this cache exists to spare was invisible to the one
+     * instrument built to price reads — which is how the projection can be
+     * thrown away once per item event without any measurement noticing.
+     *
+     * Here rather than at the call sites, for the reason `readQueue` gives:
+     * this is the one door every whole-projection read goes through, and an
+     * instrument a new caller can forget to reach for is the instrument that
+     * reads 0 = 0. `windowedItems`' own `accountWholeRead` went when this
+     * arrived: its fallback reaches this read through `readItems`, and counting
+     * it in both places would charge one parse twice.
+     */
+    this.accountWholeRead(file);
+    this.readAccounting.itemParses += 1;
     const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
     if (this.itemsCache.size >= EngineStore.ITEMS_CACHE_LIMIT) {
