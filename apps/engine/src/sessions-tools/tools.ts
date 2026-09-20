@@ -81,7 +81,7 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
-import { MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES } from "@telar/engine-client";
+import { MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, STALLED_AFTER_MS } from "@telar/engine-client";
 
 /**
  * What the toolkit may do.
@@ -700,6 +700,19 @@ function summarise(session: LiveSessionRow, projects: Map<string, string>, optio
     // when they come to review the work, so a report that omits it is harder
     // to act on than one that names it.
     ...(session.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {}),
+    /**
+     * WHETHER THIS SESSION HAS A CHECKOUT AT ALL — issue #813.
+     *
+     * Absent is ready, exactly as it is on the record. Present means the
+     * session cannot be claimed: `preparing` while the cut runs, `failed` when
+     * it did not work, carrying git's own sentence.
+     *
+     * THE COCKPIT RAIL HAS DRAWN THIS SINCE #496 and the agent surface did not,
+     * which is the whole of #813's invisibility: a human glancing at the list
+     * saw "Worktree setup failed" on the same row an agent was told was fine.
+     * One extra key on a row, on the small fraction of rows that have it.
+     */
+    ...(session.preparation ? { preparation: session.preparation } : {}),
     updatedAt: session.updatedAt,
   };
 }
@@ -781,6 +794,16 @@ function turnLine(turn: Turn) {
     state: turn.state,
     ...(turn.completedAt === undefined ? {} : { endedAt: turn.completedAt }),
     ...(turn.failure ? { failure: turn.failure } : {}),
+    /**
+     * NO EVIDENCE FOR A LONG WHILE — #813. On the turn rather than the session,
+     * because that is what it is about, and only when it is true: an ordinary
+     * running turn carries neither key.
+     *
+     * `lastProgressAt` RIDES WITH IT rather than being reported always. The
+     * number is only worth its bytes when there is a silence to measure, and a
+     * caller handed `stalled` with no "since when" would have to ask again.
+     */
+    ...(turn.stalled ? { stalled: turn.stalled, lastProgressAt: turn.lastProgressAt ?? turn.stalled.since } : {}),
   };
 }
 
@@ -1400,11 +1423,27 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         for (const turn of live) if (!withLive.some((candidate) => candidate.runId === turn.runId)) withLive.push(turn);
         withLive.sort((left, right) => left.sequence - right.sequence);
         const dropped = turns.length - withLive.length;
+        /**
+         * A SESSION WITH NO CHECKOUT IS NOT RUNNING, WHATEVER ITS QUEUE SAYS —
+         * issue #813.
+         *
+         * `LIVE_TURN_STATES` counts `queued`, which is right for every ordinary
+         * session: a message waiting on the one ahead of it will run. It is
+         * wrong for a session nothing can claim. #813's coordinator was told
+         * `running: true` about a session whose `git worktree add` had been
+         * killed 45 minutes earlier, and went on waiting for an answer that was
+         * never coming from a conversation with nowhere to run.
+         *
+         * BOTH PREPARATION STATES, because the boolean is about NOW: a cut in
+         * flight is not a turn in flight either, and the note below says which
+         * of the two it is rather than making a reader guess from one bit.
+         */
+        const unclaimable = session.preparation !== undefined;
         return json({
           ...summariseOne(session, new Map()),
           // THE DIRECT ANSWER TO THE QUESTION THIS TOOL IS FOR, said as a
           // boolean rather than left to be inferred from a list of states.
-          running: live.length > 0,
+          running: live.length > 0 && !unclaimable,
           // THE TOTAL IS STATED WHETHER OR NOT THE LIST IS COMPLETE. A caller
           // handed five rows of a 685-turn session and no count will report
           // five as the session's whole life.
@@ -1430,9 +1469,29 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
            * and it must not be reintroduced by the cure.
            */
           ...(session.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: session.reportWindowMinutes }),
-          note:
-            session.activity === "blocked"
+          /**
+           * AND THE NOTE NAMES THE REASON — #813. `running: false` alone reads
+           * as "it finished", which is the opposite of what a failed cut means:
+           * nothing started, and nothing will until a person fixes the
+           * checkout. Ordered FIRST, ahead of the blocked case, because a
+           * session with no checkout cannot have opened a request either.
+           */
+          note: session.preparation?.state === "failed"
+            ? `It has NO CHECKOUT — creating one failed, so nothing in its queue can run and nothing you send will start. Git said: ${
+                session.preparation.error ?? "no reason was recorded"
+              }`
+            : session.preparation?.state === "preparing"
+              ? "Its checkout is still being made. Nothing has started yet; anything queued runs once the checkout lands."
+              : session.activity === "blocked"
               ? "It is WAITING ON A PERSON — a request is open and only a human can answer it. Nothing you send will unblock it."
+              : live.some((turn) => turn.stalled)
+                ? // #813. Said as what is KNOWN — no evidence since a time —
+                  // rather than as a diagnosis. The engine has not stopped it
+                  // and should not be read as recommending that anyone else
+                  // does: a long install or test run looks exactly like this,
+                  // and stopping a healthy turn on this signal is the mistake
+                  // this issue was opened about.
+                  `A turn is in flight but has journalled NOTHING for over ${Math.round(STALLED_AFTER_MS / 60_000)} minutes. That may be a long command and may be a wedge — read it with sessions_read before deciding. Nothing has been stopped.`
               : live.length > 0
                 ? `A turn is in flight. Read it with sessions_read, or stop it with sessions_stop.${pending.length > 0 ? ` ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting for it to finish.` : ""}`
                 : pending.length > 0

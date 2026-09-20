@@ -91,8 +91,19 @@ export type GitResult = {
   killedPid?: number;
 };
 export type GitRunOptions = {
-  /** Wall-clock bound for this one invocation; the runner's default otherwise. */
+  /**
+   * Wall-clock bound for this one invocation; the runner's default otherwise.
+   *
+   * ON THE ASYNC RUNNER THIS IS MEASURED FROM THE SPAWN, not from the call
+   * (#813). The synchronous runner has no queue, so there was never a
+   * difference there.
+   */
   timeoutMs?: number;
+  /**
+   * How long this call may wait for a pool slot before failing unspawned.
+   * ASYNC RUNNER ONLY — see `DEFAULT_GIT_ADMISSION_MS`.
+   */
+  admissionMs?: number;
 };
 /** Injectable so tests never need a real repository. */
 export type GitRunner = (cwd: string, args: string[], options?: GitRunOptions) => GitResult;
@@ -120,19 +131,67 @@ export type GitRunner = (cwd: string, args: string[], options?: GitRunOptions) =
  * requirement to trade for (`clone.ts`, `files.ts`, `gitOverview`, the branch
  * rename) — smaller children, and a separate question from this one.
  *
- * Generous enough for a `worktree add` on a large checkout, small enough that a
- * stall is a stale branch label for a moment rather than a frozen app.
+ * Generous enough for a READ on a large checkout, small enough that a stall is a
+ * stale branch label for a moment rather than a frozen app.
  * `TELAR_GIT_TIMEOUT_MS` overrides it for a machine where the default is wrong.
+ *
+ * IT IS NO LONGER `worktree add`'s NUMBER — see `WORKTREE_ADD_TIMEOUT_MS`.
  */
 export const DEFAULT_GIT_TIMEOUT_MS = 30_000;
 
+/**
+ * `worktree add` GETS ITS OWN DEADLINE, FOUR TIMES THE READ'S — issue #813.
+ *
+ * It shared `DEFAULT_GIT_TIMEOUT_MS` with `git rev-parse`, and the two are not
+ * the same shape of work: a `rev-parse` answers from the index in milliseconds,
+ * a cut writes a whole checkout to disk. #813's session had its cut killed at
+ * 30 s and the session sat `queued` with no checkout for 45 minutes.
+ *
+ * WHY A CONSTANT RATHER THAN A MEASURED BUDGET. The investigation proposed
+ * timing the first cut per project and scaling from it. That is a second thing
+ * to store, invalidate and get wrong on a project whose disk changed under it
+ * (#633's external volume is the case), and it buys nothing this does not: a
+ * cut that takes longer than two minutes on ANY disk is a fault to look at, not
+ * a budget to widen. The number is deliberately loose in one direction only —
+ * nothing waits on it synchronously any more (#496), so a slow cut costs a row
+ * that says `preparing` for longer, and never a frozen app.
+ *
+ * `TELAR_GIT_TIMEOUT_MS` does NOT override this, and that is the point of it
+ * being separate: the env var was tuned for reads on machines where reads are
+ * slow, and letting it shrink a cut's budget is the bug in miniature.
+ */
+export const WORKTREE_ADD_TIMEOUT_MS = 120_000;
+
 /** The status a timed-out child reports — coreutils' `timeout` convention. */
 export const GIT_TIMEOUT_STATUS = 124;
+
+/**
+ * HOW LONG A CALL MAY WAIT FOR A POOL SLOT before it gives up without ever
+ * having spawned anything — issue #813, and the other half of moving the run
+ * deadline into `start()`.
+ *
+ * The run deadline used to be armed at ENQUEUE, so a cut's 30 s was queue time
+ * plus git time and the git budget shrank exactly when the machine was busiest.
+ * Arming it at spawn fixes that and opens a new hole: a call that never gets a
+ * slot would now wait for ever. This is the bound that closes it.
+ *
+ * TWO NUMBERS, BECAUSE THE TWO POOLS STARVE DIFFERENTLY. A read has four slots
+ * and each holder is milliseconds; a minute of waiting means something is badly
+ * wrong and failing is the honest answer. A cut has two slots shared with every
+ * other project, each holder may legitimately take `WORKTREE_ADD_TIMEOUT_MS`,
+ * and `createWorktreeQueue` serialises same-project cuts on top of that — so
+ * two full-budget cuts ahead of you is an ordinary Tuesday, not a fault.
+ */
+export const DEFAULT_GIT_ADMISSION_MS = 60_000;
+export const WORKTREE_ADMISSION_MS = 300_000;
 
 export type GitRunnerDeps = {
   /** Which binary to run; `git` from PATH by default. Tests point it at a stalled fake. */
   gitBin?: string;
   defaultTimeoutMs?: number;
+  /** ASYNC RUNNER ONLY — how long a call of this pool's may wait for a slot.
+   *  See `DEFAULT_GIT_ADMISSION_MS`. */
+  defaultAdmissionMs?: number;
 };
 
 /**
@@ -297,12 +356,30 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
   return (cwd, args, options) => new Promise((resolve) => {
     const requested = options?.timeoutMs ?? deps.defaultTimeoutMs ?? gitTimeoutFromEnv();
     const timeout = Number.isFinite(requested) ? Math.max(1, requested) : DEFAULT_GIT_TIMEOUT_MS;
+    const requestedAdmission = options?.admissionMs ?? deps.defaultAdmissionMs ?? DEFAULT_GIT_ADMISSION_MS;
+    const admission = Number.isFinite(requestedAdmission) ? Math.max(1, requestedAdmission) : DEFAULT_GIT_ADMISSION_MS;
     let settled = false;
     let child: ReturnType<typeof spawn> | undefined;
+    /**
+     * THE RUN DEADLINE, ARMED IN `start()` AND NOWHERE ELSE — issue #813.
+     *
+     * It used to be armed here, before the `active < limit` test below, so a
+     * call's whole budget was queue time plus git time. The pool is two slots
+     * for every project on the machine and `createWorktreeQueue` serialises
+     * same-project cuts on top, so under load the share left for git shrank
+     * towards nothing — and #813's `worktree add` was killed with almost none
+     * of its 30 s spent in git. Starting the clock at the spawn is the fix;
+     * `admissionTimer` is what keeps the wait itself bounded.
+     */
+    let runTimer: ReturnType<typeof setTimeout> | undefined;
+    /** Armed ONLY when this call is actually queued — see the bottom of this
+     *  function. A call that gets a slot immediately never waited for one. */
+    let admissionTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (result: GitResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimeout(admissionTimer);
+      clearTimeout(runTimer);
       resolve(result);
     };
     /**
@@ -320,23 +397,45 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
       active--;
       queue.shift()?.();
     };
-    const timer = setTimeout(() => {
+    /**
+     * THE TWO EXPIRIES SAY DIFFERENT THINGS, AND THE DIFFERENCE IS THE
+     * DIAGNOSTIC — issue #813.
+     *
+     * Both used to produce "did not finish within Nms and was killed", and the
+     * only way to tell "git ran and was killed" from "this never started" was
+     * that the second carried no `(pid N)` suffix. The investigation had to
+     * lean on that absence to decide which of the two #813's stale session
+     * hit. It is now said outright: an admission failure names the WAIT, a run
+     * failure names the KILL. `killedPid` stays absent on the admission path
+     * for the same reason it always was — there was no child.
+     */
+    const expireAdmission = () => {
       const index = queue.indexOf(start);
       if (index !== -1) queue.splice(index, 1);
-      const killed = killGroup(child);
-      release();
+      // Nothing to kill and nothing to release: this call never held a slot.
       finish({
         status: GIT_TIMEOUT_STATUS,
         stdout: "",
-        stderr:
-          `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed` +
-          (killed === undefined ? "" : ` (pid ${killed})`),
+        stderr: `git ${args.join(" ")} in ${cwd} waited ${admission}ms for a slot and never started`,
         timedOut: true,
-        killedPid: killed,
       });
-    }, timeout);
+    };
     const start = () => {
       if (settled) return;
+      clearTimeout(admissionTimer);
+      runTimer = setTimeout(() => {
+        const killed = killGroup(child);
+        release();
+        finish({
+          status: GIT_TIMEOUT_STATUS,
+          stdout: "",
+          stderr:
+            `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed` +
+            (killed === undefined ? "" : ` (pid ${killed})`),
+          timedOut: true,
+          killedPid: killed,
+        });
+      }, timeout);
       active++;
       acquired = true;
       try {
@@ -390,7 +489,10 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
       }
     };
     if (active < limit) start();
-    else queue.push(start);
+    else {
+      queue.push(start);
+      admissionTimer = setTimeout(expireAdmission, admission);
+    }
   });
 }
 
@@ -410,7 +512,12 @@ export const defaultAsyncGitRunner: AsyncGitRunner = createAsyncGitRunner();
  * TWO SLOTS, because a checkout is disk-bound: cutting four at once is not four
  * times faster, and `createWorktreeQueue` already holds each project to one.
  */
-export const defaultWorktreeGitRunner: AsyncGitRunner = createAsyncGitRunner({ concurrency: 2 });
+export const defaultWorktreeGitRunner: AsyncGitRunner = createAsyncGitRunner({
+  concurrency: 2,
+  // Cuts wait behind cuts, and a cut may legitimately run for two minutes.
+  // See `WORKTREE_ADMISSION_MS`.
+  defaultAdmissionMs: WORKTREE_ADMISSION_MS,
+});
 
 /** Serialise work under a key; see `createWorktreeQueue`. */
 export type WorktreeQueue = <T>(key: string, work: () => Promise<T>) => Promise<T>;
@@ -952,7 +1059,14 @@ export async function createSessionWorktreeAsync(
   // that still exists, and resetting inside `telar/`/`loom/` cannot clobber a
   // human's branch. A HUMAN-named branch takes `-b`: colliding with a branch
   // a person values must refuse, never reset.
-  const added = await git(input.projectRoot, ["worktree", "add", plan.named ? "-b" : "-B", plan.branch, plan.path, baseSha]);
+  // ITS OWN DEADLINE, NOT A READ'S — #813. See `WORKTREE_ADD_TIMEOUT_MS`; the
+  // call that carried no `timeoutMs` at all is what made a checkout share a
+  // budget with `git rev-parse`.
+  const added = await git(
+    input.projectRoot,
+    ["worktree", "add", plan.named ? "-b" : "-B", plan.branch, plan.path, baseSha],
+    { timeoutMs: WORKTREE_ADD_TIMEOUT_MS },
+  );
   if (added.status !== 0) {
     throw new WorktreeError(`git worktree add failed: ${added.stderr.trim() || added.stdout.trim()}`);
   }

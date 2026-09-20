@@ -28,10 +28,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assertTelarToolNames, parseToolName, qualifyTelarTool, TELAR_CAPABILITIES } from "@telar/engine-client";
+import { assertTelarToolNames, parseToolName, qualifyTelarTool, STALLED_AFTER_MS, TELAR_CAPABILITIES } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
 import { sessionDiff } from "../src/git";
-import { GIT_TIMEOUT_STATUS, type GitRunner } from "../src/worktree";
+import { GIT_TIMEOUT_STATUS, type AsyncGitRunner, type GitRunner } from "../src/worktree";
 import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessions-tools/tools";
 import { TELAR_SKILL } from "../src/orientation";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
@@ -178,10 +178,15 @@ function wall(store: EngineStore, self?: { sessionId: string }, diff?: SessionsC
   return registered;
 }
 
-/** A store on a fresh engine root with one registered project. */
-function engine(): { store: EngineStore; projectId: string; projectRoot: string } {
+/** A store on a fresh engine root with one registered project.
+ *
+ *  `options` is the store's own third argument, passed through for the one
+ *  case that needs it: #813's tests inject an async git runner whose `worktree
+ *  add` fails, because a session with no checkout is the state under test and
+ *  there is no other way to produce one. */
+function engine(options?: ConstructorParameters<typeof EngineStore>[2]): { store: EngineStore; projectId: string; projectRoot: string } {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-sessions-state-"));
+  const store = new EngineStore(tmp("telar-sessions-state-"), Date.now, options);
   const project = store.registerProject({ name: "aurora", root: projectRoot });
   return { store, projectId: project.id, projectRoot };
 }
@@ -627,6 +632,149 @@ describe("driving a session", () => {
     expect((listed.json!.projects as Array<{ id: string; name: string }>)[0]!.name).toBe("aurora");
     // The project is named as a person would read it, not only as an id.
     expect((listed.json!.sessions as Array<{ project: string }>)[0]!.project).toBe("aurora");
+  });
+});
+
+// ── a session with no checkout, as an agent is told about it ────────────────
+
+/**
+ * THE INVISIBILITY THIS ISSUE IS ABOUT — #813.
+ *
+ * The failure state already existed, the store already wrote git's words into
+ * it, and the cockpit rail already drew it ("Worktree setup failed", the
+ * message in the tooltip). The AGENT surface did not: `summarise` omitted
+ * `preparation` entirely and `sessions_status`'s headline boolean counted
+ * `queued` as live. So a coordinator was told `running: true` about a session
+ * a human glancing at the same list would have seen marked as broken, and went
+ * on waiting 45 minutes for an answer that could not come.
+ *
+ * `worktree add` IS THE ONLY COMMAND THE FIXTURE REFUSES, deliberately: the
+ * request-side probes still run against the real repository, so what this
+ * produces is a session that EXISTS and has no checkout — not a refusal.
+ */
+describe("a session whose checkout failed", () => {
+  const CUT_FAILURE = "fatal: could not create work tree dir: No space left on device";
+  const refusingCut: AsyncGitRunner = async (_cwd, args) =>
+    args[0] === "worktree" && args[1] === "add"
+      ? { status: GIT_TIMEOUT_STATUS, stdout: "", stderr: CUT_FAILURE, timedOut: true }
+      : { status: 0, stdout: "", stderr: "" };
+
+  /** A worktree session whose cut has already failed, and one queued message. */
+  async function broken() {
+    const { store, projectId } = engine({ asyncGit: refusingCut });
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "worktree", title: "port the parser" })).json!.id as string;
+    await worktreeReady(store, id);
+    expect(store.getSession(id).preparation?.state).toBe("failed");
+    store.submitTurn(id, { runId: "run_one", input: "start" });
+    return { store, tools, id };
+  }
+
+  test("sessions_status says it is NOT running, and names git's reason", async () => {
+    const { tools, id } = await broken();
+    const status = await call(tools, "sessions_status", { sessionId: id });
+
+    // TODAY'S ANSWER WAS `true`: `LIVE_TURN_STATES` counts `queued`, and the
+    // turn is queued because nothing can ever claim it.
+    expect(status.json!.running).toBe(false);
+    // The state is on the row, in the same shape the record carries it, and the
+    // error is git's own sentence — the store wraps it, it does not replace it.
+    expect(status.json!.preparation).toMatchObject({ state: "failed" });
+    expect(String((status.json!.preparation as { error: string }).error)).toContain(CUT_FAILURE);
+    // And the note does not read as "it finished" — it says what is wrong and
+    // that sending again will not help.
+    const note = String(status.json!.note);
+    expect(note).toContain(CUT_FAILURE);
+    expect(note).not.toContain("Nothing is running.");
+  });
+
+  test("sessions_list carries the same state, so a scan of peers cannot miss it", async () => {
+    const { tools, id } = await broken();
+    const listed = await call(tools, "sessions_list");
+    const row = (listed.json!.sessions as Array<{ id: string; preparation?: { state: string } }>).find((session) => session.id === id);
+    expect(row?.preparation?.state).toBe("failed");
+  });
+
+  test("and an ordinary session carries neither key, so the row does not grow for everybody", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    const status = await call(tools, "sessions_status", { sessionId: id });
+    expect(status.json!.preparation).toBeUndefined();
+    expect(status.json!.running).toBe(false);
+    expect(String(status.json!.note)).toContain("Nothing is running.");
+    const listed = await call(tools, "sessions_list");
+    const rows = listed.json!.sessions as Array<Record<string, unknown>>;
+    expect(rows.filter((row) => "preparation" in row)).toHaveLength(0);
+  });
+
+  test("a cut still in flight is reported as not running either, and says which of the two it is", async () => {
+    // A cut that never answers, so the row stays `preparing` for the whole test.
+    const hanging: AsyncGitRunner = (_cwd, args) =>
+      args[0] === "worktree" && args[1] === "add" ? new Promise(() => {}) : Promise.resolve({ status: 0, stdout: "", stderr: "" });
+    const { store, projectId } = engine({ asyncGit: hanging });
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "worktree" })).json!.id as string;
+    store.submitTurn(id, { runId: "run_one", input: "start" });
+
+    const status = await call(tools, "sessions_status", { sessionId: id });
+    expect(status.json!.running).toBe(false);
+    expect(status.json!.preparation).toMatchObject({ state: "preparing" });
+    // The two states must not read the same: this one ENDS, and the note says so.
+    const note = String(status.json!.note);
+    expect(note).toContain("still being made");
+    expect(note).not.toContain(CUT_FAILURE);
+  });
+});
+
+// ── a running turn that has gone quiet ──────────────────────────────────────
+
+/**
+ * THE ADVISORY ON THE AGENT SURFACE — #813 step 5's other half.
+ *
+ * The store decides it (`test/turn-liveness.test.ts` owns that, including the
+ * heartbeat case a heartbeat-based implementation fails). What this asserts is
+ * that the decision REACHES a caller, and that the words it arrives in do not
+ * recommend the action that was the mistake: #813's healthy 80-minute turn was
+ * stopped by somebody who had guessed, and a note that said "stop it" would be
+ * that guess with the engine's name on it.
+ */
+describe("sessions_status reports a stalled turn", () => {
+  test("it names the silence, keeps the turn running, and tells nobody to stop it", async () => {
+    let now = 1_000_000;
+    // The injected clock is the whole time machinery — nothing sleeps here.
+    const timed = new EngineStore(tmp("telar-stall-wall-"), () => now);
+    openStores.push(timed);
+    const project = timed.registerProject({ name: "aurora", root: repo() });
+    const session = timed.createSession({ projectId: project.id, envMode: "local" });
+    timed.submitTurn(session.id, { runId: "run_one", input: "run the suite" });
+    const claim = timed.claimNextTurn("worker_one")!;
+    timed.markRunning(session.id, "run_one", claim.turn.claim!.token);
+
+    const tools = wall(timed);
+    const healthy = await call(tools, "sessions_status", { sessionId: session.id });
+    expect(healthy.json!.running).toBe(true);
+    expect((healthy.json!.turns as Array<Record<string, unknown>>)[0]!.stalled).toBeUndefined();
+
+    now += STALLED_AFTER_MS + 60_000;
+    timed.claimNextTurn("worker_one");
+
+    const stalled = await call(tools, "sessions_status", { sessionId: session.id });
+    const turns = stalled.json!.turns as Array<{ state: string; stalled?: { since: number }; lastProgressAt?: number }>;
+    expect(turns).toHaveLength(1);
+    // STILL RUNNING. The advisory does not change the turn's state, and
+    // `running` still answers the question the tool is for.
+    expect(turns[0]!.state).toBe("running");
+    expect(stalled.json!.running).toBe(true);
+    expect(turns[0]!.stalled?.since).toBe(claim.turn.acceptedAt);
+    expect(turns[0]!.lastProgressAt).toBe(turns[0]!.stalled!.since);
+    const note = String(stalled.json!.note);
+    expect(note).toContain(String(Math.round(STALLED_AFTER_MS / 60_000)));
+    expect(note).toContain("Nothing has been stopped.");
+    // THE SENTENCE THAT MUST NOT BE THERE. `sessions_stop` is what the ordinary
+    // running note offers; offering it here is how a healthy long command gets
+    // killed on a signal that only ever meant "no evidence yet".
+    expect(note).not.toContain("sessions_stop");
   });
 });
 
