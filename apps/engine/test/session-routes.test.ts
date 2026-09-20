@@ -113,6 +113,32 @@ test("the run door answers, and the arm beside it still does", async () => {
   await submitTurnStillWorks(client, "run_after_run");
 });
 
+/**
+ * `/v2/sessions/activity` IS A LITERAL PATH UNDER A WILDCARD — issue #490, and
+ * exactly this file's failure mode.
+ *
+ * `sessionPath` below the block matches `activity` as happily as it matches a
+ * session id, so an arm registered on the wrong side of it answers "no session
+ * called activity" instead of the aggregate — a 404 the front door would read as
+ * "the engine did not say", rank on nothing, and silently open the wrong
+ * project. The canary runs after it for the reason every case here does.
+ */
+test("the project-activity aggregate answers, and the arm beside it still does", async () => {
+  const { client } = await ready();
+
+  const activity = await client.projectActivity();
+  // The session `ready()` made is in `project_one` — so this is the aggregate
+  // answering, not an empty object that a shadowed route would also produce.
+  expect(activity.projects).toEqual([{ projectId: "project_one", updatedAt: expect.any(Number) }]);
+
+  // AND IT CARRIES NOTHING ELSE. The whole point is that no session crosses the
+  // wire: a row with a title or an activity here would mean the route had been
+  // widened back into the thing it replaced.
+  expect(Object.keys(activity.projects[0]!).sort()).toEqual(["projectId", "updatedAt"]);
+
+  await submitTurnStillWorks(client, "run_after_activity");
+});
+
 test("every migrated door is reachable in ONE session, in sequence", async () => {
   // The combined case: if any arm shadows or consumes another, the sequence
   // breaks even though each suite passes alone.

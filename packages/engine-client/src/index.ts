@@ -2439,6 +2439,26 @@ export class EngineClient {
     return { ...(payload as LiveSessionsAnswer), ...(etag === undefined ? {} : { etag }) };
   }
 
+  /**
+   * WHEN EACH PROJECT WAS LAST WORKED IN — the front door's read (#490).
+   *
+   * One row per project, and the ONLY two fields a ranking needs. It replaces
+   * `liveSessions({ all: true })` on the launch path, where 101.6 KB of session
+   * rows were serialised so the browser could fold them into one integer per
+   * project and render none of them.
+   *
+   * ACTIVE SESSIONS ONLY, which is the population `liveSessions` carried and
+   * which the ranking's cold case depends on: a project whose conversations are
+   * all archived is absent here, scores nothing, and falls through to
+   * most-recently-registered.
+   *
+   * A PROJECT WITH NO ACTIVE SESSION IS SIMPLY ABSENT rather than present at 0 —
+   * the same thing to a caller that folds with `max`, and fewer rows.
+   */
+  projectActivity(): Promise<{ projects: Array<{ projectId: string; updatedAt: number }> }> {
+    return this.request("GET", "/v2/sessions/activity");
+  }
+
   createSession(input: {
     draft?: boolean;
     id?: string;

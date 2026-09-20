@@ -1021,6 +1021,45 @@ export class ExecutionStore {
   }
 
   /**
+   * NEWEST ACTIVE SESSION PER PROJECT — one number each, and no session at all
+   * (#490).
+   *
+   * The front door ranks projects by this and renders nothing from the rows it
+   * used to rank from: `composerProject` folds every session into
+   * `Map<projectId, max(updatedAt)>` and reads the top of it. On the owner's
+   * store that fold cost 101.6 KB of serialised rows — titles, branches,
+   * activity, every settling field — to produce roughly twenty integers. This
+   * is the fold, done where the index is.
+   *
+   * WHICH INDEX SERVES IT, MEASURED RATHER THAN ASSUMED. `sessions_project` is
+   * `(project_id, updated_at)` — exactly this aggregate's shape — but this
+   * engine never runs `ANALYZE`, and with no statistics SQLite prefers the
+   * `archived = 0` seek: `SEARCH sessions USING INDEX sessions_shelf
+   * (archived=?)` then `USE TEMP B-TREE FOR GROUP BY`. Given statistics it
+   * collapses to a single ordered walk of `sessions_project` and no sort at all.
+   * Neither is worth an `INDEXED BY` here: both read scalars, the sort is over a
+   * few hundred two-column rows, and the cost this replaces was never the query
+   * — it was 291 documents folded and 101.6 KB serialised to a browser that
+   * wanted one integer per project.
+   *
+   * `archived = 0` BECAUSE THE RANKING'S COLD CASE DEPENDS ON IT. The list this
+   * replaces was `liveSessions`, which carries ACTIVE sessions only, and
+   * `composerProject` leans on that: a project whose conversations are all
+   * archived must score 0 and fall through to most-recently-registered rather
+   * than win on work somebody finished with.
+   *
+   * A PROJECTLESS SESSION IS NOT A VOTE, so it is dropped here rather than
+   * grouped under a null key. `composerProject` skips it too (`if
+   * (!session.projectId) continue`); filtering in SQL keeps the answer from
+   * carrying a row whose only possible effect is to be ignored.
+   */
+  projectActivity(): { projectId: string; updatedAt: number }[] {
+    return this.statement(
+      "SELECT project_id, MAX(updated_at) AS updated_at FROM sessions WHERE archived = 0 AND project_id IS NOT NULL GROUP BY project_id",
+    ).all().map((row) => ({ projectId: String(row.project_id), updatedAt: Number(row.updated_at) }));
+  }
+
+  /**
    * Store one row. Called from inside the transaction that wrote the document
    * the row describes — never as a pass of its own, because a row committed
    * without its document (or the other way round) is a sidebar disagreeing with

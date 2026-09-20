@@ -7519,6 +7519,41 @@ export class EngineStore {
   }
 
   /**
+   * WHEN EACH PROJECT WAS LAST WORKED IN — one integer per project, and not one
+   * session (#490).
+   *
+   * THE FRONT DOOR'S WHOLE QUESTION. It was reading `liveSessions({ all: true })`
+   * on every launch — 101.6 KB and 21.8 ms on the owner's store, 291 sessions —
+   * to hand `composerProject` a list it immediately folded into
+   * `Map<projectId, max(updatedAt)>` and read the top of. It renders NOTHING
+   * from those rows: it is a blank frame and a redirect. This is that fold,
+   * answered off the index rather than off the documents — see
+   * `ExecutionStore.projectActivity` for which index the planner actually picks,
+   * which is not the one you would guess.
+   *
+   * SAME POPULATION AS THE LIST IT REPLACES, which is the part that must not
+   * drift: ACTIVE sessions only, so a project whose conversations are all
+   * archived still scores nothing and falls through to most-recently-registered
+   * (see `composerProject`); and no projectless session, which that fold skips
+   * anyway.
+   *
+   * THE DOCUMENT FALLBACK IS THE REFERENCE, not dead code — a store on the JSON
+   * backend has no `sessions` table, and every test that builds one without
+   * `executionStorage: "sqlite"` runs it. It is the same fold, spelled over
+   * records, and `session-index.test.ts` holds the two against each other.
+   */
+  projectActivity(): { projectId: string; updatedAt: number }[] {
+    const indexed = this.executionStore?.projectActivity();
+    if (indexed) return indexed;
+    const newest = new Map<string, number>();
+    for (const session of this.readSessions()) {
+      if (session.state !== "active" || !session.projectId) continue;
+      if (session.updatedAt > (newest.get(session.projectId) ?? 0)) newest.set(session.projectId, session.updatedAt);
+    }
+    return [...newest].map(([projectId, updatedAt]) => ({ projectId, updatedAt }));
+  }
+
+  /**
    * EVERY LIVE SESSION ON THIS ENGINE, across every project, with the project
    * registry beside it.
    *

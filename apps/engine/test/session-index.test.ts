@@ -190,6 +190,144 @@ test("crossing between the list and the shelf moves every reader's cursor", () =
   expect(store.liveSessionRows().settledCount).toBe(2);
 });
 
+/**
+ * ══ THE FRONT DOOR'S AGGREGATE — issue #490 ══
+ *
+ * `projectActivity` replaces `liveSessions({ all: true })` on the launch path.
+ * The rule it has to keep is not "it is faster": it is that the ranking built on
+ * it opens THE SAME PROJECT for every input the list would have. Both tests
+ * below are that, and neither can pass on two empty lists agreeing.
+ */
+/**
+ * A MOVING CLOCK, AND THIS FILE'S OTHER FIXTURES DELIBERATELY DO NOT HAVE ONE.
+ * The shared `indexed()` helper freezes time, which is right for the shelving
+ * tests — they compare a stamp against a settling window and a wall clock would
+ * shelve everything. It is WRONG for a recency ranking: with every `updatedAt`
+ * identical, "the newest project wins" passes on the sort's tie-break and would
+ * go on passing against an aggregate that read the wrong column entirely. Each
+ * call is a millisecond later, so the order below is a fact rather than an
+ * accident.
+ */
+const ticking = () => {
+  let at = 1_700_000_000_000;
+  return () => (at += 1);
+};
+
+test("the aggregate and the list it replaces name the same newest project", () => {
+  const withIndex = indexed(root(), ticking());
+  const withoutIndex = new EngineStore(root(), ticking());
+  stores.push(withoutIndex);
+  for (const store of [withIndex, withoutIndex]) {
+    store.registerProject({ id: "project_quiet", name: "Quiet", root: root() });
+    store.registerProject({ id: "project_busy", name: "Busy", root: root() });
+    store.createSession({ id: "session_aaaa", projectId: "project_quiet", title: "older" });
+    store.createSession({ id: "session_bbbb", projectId: "project_busy", title: "newer" });
+    /**
+     * AND ONE ARCHIVED SESSION, TOUCHED LAST, IN THE LOSING PROJECT. Without it
+     * this test passes against an aggregate with no `archived` filter at all —
+     * every row in the fixture would be active and the two spellings could not
+     * disagree. With it, a leak makes `project_quiet` the newest and flips the
+     * ranking, which is the user-visible failure: Telar opens the project you
+     * finished with.
+     */
+    store.createSession({ id: "session_cccc", projectId: "project_quiet", title: "finished last" });
+    store.archiveSession("session_cccc");
+  }
+
+  /** The fold `composerProject` makes, spelled here so the two answers are
+   *  compared as the ranking would use them and not as raw rows. */
+  const rank = (activity: { projectId: string; updatedAt: number }[]): string =>
+    [...activity].sort((left, right) => right.updatedAt - left.updatedAt)[0]!.projectId;
+
+  const indexedActivity = withIndex.projectActivity();
+  const documentActivity = withoutIndex.projectActivity();
+
+  /**
+   * THE INDEXED PATH AND THE DOCUMENT PATH AGREE — the second is the reference.
+   *
+   * COMPARED AS THE RANKING USES THEM, not as raw stamps: the two backends do
+   * not make the same number of `now()` calls to write the same fixture, so
+   * their absolute timestamps are allowed to differ. What may never differ is
+   * WHICH PROJECTS ARE IN THE ANSWER and WHICH ONE COMES OUT ON TOP — the only
+   * two things `composerProject` reads.
+   */
+  expect(indexedActivity.map((entry) => entry.projectId).sort())
+    .toEqual(documentActivity.map((entry) => entry.projectId).sort());
+  expect(rank(indexedActivity)).toBe(rank(documentActivity));
+  // And it is the answer we meant, not two empty lists agreeing.
+  expect(rank(indexedActivity)).toBe("project_busy");
+  expect(indexedActivity).toHaveLength(2);
+
+  // AND IT MATCHES THE WIDE LIST IT REPLACES, folded the way the front door
+  // folded it. This is the assertion that would catch a population drift.
+  const fromRows = new Map<string, number>();
+  for (const row of withIndex.liveSessionRows({ all: true }).sessions) {
+    if (!row.projectId) continue;
+    if (row.updatedAt > (fromRows.get(row.projectId) ?? 0)) fromRows.set(row.projectId, row.updatedAt);
+  }
+  expect(Object.fromEntries(indexedActivity.map((entry) => [entry.projectId, entry.updatedAt])))
+    .toEqual(Object.fromEntries(fromRows));
+});
+
+/**
+ * THE COLD CASE `composerProject` LEANS ON. An archived-only project must score
+ * NOTHING, so the front door falls through to most-recently-registered rather
+ * than opening a conversation somebody finished with. The list this replaced
+ * carried active sessions only; if the aggregate counted archived rows, that
+ * fallback would silently stop happening — and the bug would be "Telar opens
+ * the wrong project", with nothing on screen to explain it.
+ */
+test("a project whose sessions are all archived is absent from the aggregate", () => {
+  const store = indexed();
+  store.registerProject({ id: "project_done", name: "Done", root: root() });
+  store.registerProject({ id: "project_live", name: "Live", root: root() });
+  store.createSession({ id: "session_aaaa", projectId: "project_done", title: "finished" });
+  store.createSession({ id: "session_bbbb", projectId: "project_live", title: "going" });
+
+  expect(store.projectActivity().map((entry) => entry.projectId).sort()).toEqual(["project_done", "project_live"]);
+  store.archiveSession("session_aaaa");
+  expect(store.projectActivity().map((entry) => entry.projectId)).toEqual(["project_live"]);
+
+  // A SETTLED session still votes, which is the other half of the rule: the
+  // shelf is a reading state, not an ending. This is the distinction that made
+  // `?all=1` the right ask before and makes `archived = 0` the right filter now.
+  store.updateSession("session_bbbb", { settledOverride: "settled" });
+  expect(store.liveSessionRows().sessions).toHaveLength(0);
+  expect(store.projectActivity().map((entry) => entry.projectId)).toEqual(["project_live"]);
+});
+
+/**
+ * THE SAVING, AS A RATIO RATHER THAN A CLOCK. What this replaced serialised a
+ * full row per session; this serialises two scalars per PROJECT. Asserted as a
+ * ratio because a byte floor would pass against a frozen or constant payload —
+ * and measured on the same store in the same breath, so nothing here depends on
+ * which machine it runs on.
+ */
+test("the aggregate is a fraction of the wide list's payload", () => {
+  const store = indexed();
+  store.registerProject({ id: "project_one", name: "One", root: root() });
+  store.registerProject({ id: "project_two", name: "Two", root: root() });
+  for (let n = 0; n < 40; n += 1) {
+    store.createSession({
+      id: `session_${String(n).padStart(4, "0")}`,
+      projectId: n % 2 === 0 ? "project_one" : "project_two",
+      title: `Conversation number ${n}`,
+    });
+  }
+
+  const wide = Buffer.byteLength(JSON.stringify(store.liveSessionRows({ all: true }).sessions));
+  const narrow = Buffer.byteLength(JSON.stringify(store.projectActivity()));
+
+  // 40 sessions, 2 projects. The wide answer grows with the first number and
+  // this one with the second, which is the whole point — so the ratio is the
+  // assertion, not either figure.
+  expect(narrow).toBeLessThan(wide / 20);
+  // And both describe the same two projects, so this is not a comparison
+  // against an empty answer.
+  expect(store.projectActivity()).toHaveLength(2);
+  expect(store.liveSessionRows({ all: true }).sessions).toHaveLength(40);
+});
+
 test("a document the live answer never reads moves no cursor at all", () => {
   const store = indexed();
   seed(store);
