@@ -57,6 +57,13 @@ type Verdict = {
   exitCode: number | null;
   groupLiveness: "alive" | "gone" | "unanswerable";
   reapedSurvivors: boolean;
+  groupInspection: {
+    phase: "budget" | "survivors";
+    supported: boolean;
+    reason?: string;
+    truncated?: boolean;
+    rows: { pid: number; ppid: number; pgid: number; etime: string; command: string }[];
+  } | null;
   childPid: number | null;
   logPath: string;
   lastLine: string;
@@ -195,7 +202,7 @@ test("leaves a child running behind it, the way a leaked shell does", () => {
   expect(typeof leaked.pid).toBe("number");
 });
 `);
-  const { verdict, status } = wrapped(root);
+  const { verdict, status, output } = wrapped(root);
 
   // The run really did pass — this is not a failure being caught by the back door.
   expect(verdict.outcome).toBe("passed");
@@ -211,6 +218,32 @@ test("leaves a child running behind it, the way a leaked shell does", () => {
   expect(gone(leaked)).toBe(true);
   expect(verdict.groupLiveness).toBe("gone");
   expect(verdict.reapedSurvivors).toBe(true);
+
+  /**
+   * AND IT SAYS WHICH PROCESS — #849, the fixture that issue asks for by name:
+   * "a suite that leaks a known pid, asserting that pid appears in the
+   * verdict's rows".
+   *
+   * Before this, the wrapper reported the leak on two clean green runs of the
+   * real suite and could not say what was in the group, so #807's *Parentage*
+   * question — were any two of them a parent/child pair — stayed unanswerable.
+   * The assertion is on the PID THE FIXTURE WROTE DOWN, not on the row count
+   * and not on the presence of the word "sleep": a row count passes against a
+   * `ps` that answered about the wrong group, which is exactly the failure
+   * `-g <pgid>` would produce on procps-ng.
+   */
+  expect(verdict.groupInspection?.phase).toBe("survivors");
+  expect(verdict.groupInspection?.supported).toBe(true);
+  const rows = verdict.groupInspection?.rows ?? [];
+  const found = rows.find((row) => row.pid === leaked);
+  expect(found).toBeDefined();
+  // The parentage #807 could not capture: the leaked process is in the run's
+  // group and is descended from something, and both numbers are recorded.
+  expect(found?.pgid).toBe(verdict.childPid);
+  expect(found?.ppid).toBeGreaterThan(0);
+  expect(found?.command).toContain("sleep");
+  // The rows reach the log a human reads, not only the JSON a script reads.
+  expect(output).toContain(`pid=${leaked} ppid=${found?.ppid}`);
 }, 60_000);
 
 test("a command that exits without counting anything is UNKNOWN, never passed", () => {
