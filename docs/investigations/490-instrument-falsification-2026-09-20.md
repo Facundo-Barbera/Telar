@@ -123,10 +123,12 @@ opened .../falsify_idle_second — commit 6.1ms · transcript —       · idle 
 ```
 
 The second conversation took just as long — its `transcript` proves it — and
-the instrument reports it as having settled in **6 ms**, before its own
-transcript arrived. `idle` lands *earlier than* `transcript`: an ordering that
-is not merely inaccurate but impossible, since "everything else the screen
-wanted before it settled" cannot finish before the rows it was waiting for.
+the instrument reports it as having settled in **6 ms**.
+
+Reporting settled at 6 ms **before its own transcript arrived** is not an
+inaccuracy, it is an **impossibility** — and it always errs in the flattering
+direction. "Everything else the screen wanted before it settled" cannot finish
+before the rows it was waiting for.
 
 The `from: "route"` variant is worse. Mounted under `<AppShell>`, where the
 shell rather than a press starts the clock, the same latch makes
@@ -141,11 +143,13 @@ B1 first open   commit 0 · transcript 313.3 · idle 313.3
 B2 switch       commit 0 · transcript   7.2 · idle absent
 ```
 
-**Consequence for #490:** "transcript → idle", one of the three spans this
-instrument's header promises, does not exist for conversation switching. The
-owner's complaint is *"switching between them is instant, not 2 minutes"* — and
-the instrument reports switching as the fastest thing the app does. Any future
-PR that cites an `idle` improvement on a switch is citing noise.
+**Consequence for #490.** "transcript → idle", one of the three spans this
+instrument's header promises, does not exist for conversation switching. It
+lands on exactly the population behind *"switching between them should be
+instant, not 2 minutes"* — so **every prior claim about that path was
+unmeasurable.** Not "should be treated with caution": unmeasurable. Any past or
+future PR citing an `idle` improvement on a switch is citing noise, and the
+noise is biased towards good news.
 
 ### 3.4 A third defect, found by the harness rather than looked for
 
@@ -169,14 +173,35 @@ which fills the `"local"` entry from this file's stubbed `/api/inbox` answer.
 `lib/inbox-policy.test.ts` then asserts that nine simultaneous callers make
 **one** request — and is served **zero**, because the entry is already warm.
 
-**It is a flake, and that is the whole lesson.** It needs the two files to land
-within thirty seconds of each other in one process, so file order and machine
-speed decide it: green on this machine, red on the shared runner, and green
-again on a re-run. The full local suite passed at 3602/285 *with the bug still
-in it*.
+**It is not a flake — it is file order, and it is deterministic per platform.**
+That distinction is the lesson, and an earlier draft of this document got it
+wrong in the direction that does damage: calling it a flake invites a re-run,
+and a re-run would have been red every time.
 
-So: **a green suite is not evidence about this class of bug, and neither is a
-green re-run.** What is evidence is a test that pins the mechanism. The fix is
+The evidence is timestamps, not reading. On the failing CI run (35500094280,
+`Test web`):
+
+```
+08:38:27.1782924  ##[group]lib/perf-marks.falsify.test.tsx:
+08:38:29.7215524  ##[group]lib/inbox-policy.test.ts:      ← Expected: 1, Received: 0
+```
+
+Two and a half seconds apart, this file immediately before it, trivially inside
+the 30 s TTL. On macOS bun enumerates the two in the other order, so
+`inbox-policy` runs first and never sees a warm entry — which is why the full
+local suite passed at 3602/285 **with the bug still in it**, and why forcing the
+order on the command line does not reproduce it either (bun uses its own).
+
+A rival hypothesis with precedent in this repo was checked and rejected: #732
+was `react-dom` reading `canUseDOM` at module scope, so a static import hoisted
+above `GlobalRegistrator.register()` changed React's code path for the whole
+process — and this file registers a DOM, so it is in that class. It is not the
+cause here: the failing assertion counts calls to an **injected inbox fetcher**,
+which no React feature table can reach, and the ordering evidence above is
+direct.
+
+So: **a green local suite is not evidence about this class of bug.** What is
+evidence is a test that pins the mechanism. The fix is
 a `releaseProcessWideState()` in `afterEach`, and the test that defends it
 checks **both** halves — that immediately after an opening the cache is warm
 and a fresh read asks nobody (`calls === 0`, which is the leak, demonstrated),
