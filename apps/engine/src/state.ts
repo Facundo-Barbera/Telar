@@ -11,6 +11,7 @@ import {
   autoResolution,
   deadlineResolution,
   defaultAllowed,
+  narrowerRuntimeMode,
   PROVIDER_CAPABILITIES,
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
@@ -6680,6 +6681,30 @@ export class EngineStore {
      * Permanent, and no lifetime or permission travels with it.
      */
     startedFrom?: { sessionId: string; runId?: string };
+    /**
+     * THE PRIVILEGE CEILING — a session id whose runtime mode this one may not
+     * exceed (#541 G1). The owner's decision, in his words: a session created by
+     * an agent must never have more permissions than its creator; if the creator
+     * has to ask, the child asks too.
+     *
+     * A SESSION ID AND NOT A MODE, so nothing on the wire can WIDEN anything.
+     * The engine reads the mode off the named session itself, and the ceiling is
+     * a minimum against the posture below — so the worst a caller naming the
+     * wrong session can do is give its new session LESS access than it meant to.
+     * A mode on the wire would have been a number a caller could raise.
+     *
+     * READ ONCE, STORED NOWHERE. This is not `startedFrom`, whose note says no
+     * permission travels with it, and that note stays true: there is no live
+     * link here to widen later, and the creator changing its own mode afterwards
+     * does nothing to a session already made.
+     *
+     * REFUSED RATHER THAN IGNORED when it names nothing readable. It is supplied
+     * by engine code from a verified claim, never by a model, so an id that does
+     * not resolve means something is wrong — and the failure mode of ignoring it
+     * is the widest possible session, which is the one outcome this exists to
+     * prevent.
+     */
+    ceilingFrom?: string;
     title?: string;
     detached?: boolean;
     envMode?: EnvMode;
@@ -6748,6 +6773,20 @@ export class EngineStore {
     // what happens when a request opens with nobody home, and the two defaults
     // come from the contract rather than being re-picked here.
     const detached = input.detached ?? true;
+    /**
+     * THE CEILING, RESOLVED BEFORE ANYTHING IS WRITTEN — issue #541 G1.
+     *
+     * THIS HONOURS THE COMMENT ABOVE RATHER THAN REPLACING IT. `detached` still
+     * picks the POSTURE and is still not a mode a caller opts into; the ceiling
+     * is a separate fact that can only narrow what that posture chose. Deriving
+     * permissions from `detached` alone was what tied two unrelated concerns
+     * together — "is anybody watching" and "what may this do" — and the fix is
+     * to add the second rather than to overload the first.
+     *
+     * REFUSED, NOT IGNORED. See `ceilingFrom`: the failure mode of a silently
+     * dropped ceiling is the widest session the engine can make.
+     */
+    const ceiling = input.ceilingFrom === undefined ? undefined : this.getSession(input.ceilingFrom).runtimeMode;
     /**
      * AN OMITTED `envMode` ASKS THE STANDING PREFERENCE, not a constant. That
      * is what makes the setting a real default rather than a pre-ticked box:
@@ -6929,7 +6968,23 @@ export class EngineStore {
         ...(input.branchName ? { branchName: input.branchName } : {}),
         ...(input.branchSlug ? { branchSlug: input.branchSlug } : {}),
       } } : {}),
-      runtimeMode: detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE,
+      /**
+       * THE POSTURE'S DEFAULT, CAPPED BY THE CREATOR'S OWN MODE — #541 G1.
+       *
+       * `sessions_create` parks for a person, so the gate was never bypassed.
+       * What the approval SAID was the problem: a person approved "create a
+       * session" and got "a session that will not ask again", because every
+       * session an agent made landed in `auto` — file changes and commands
+       * auto-accepted — regardless of what its creator was allowed to do.
+       *
+       * WITH NO CEILING THIS IS EXACTLY THE LINE IT WAS. A human's own click
+       * has no creator to inherit from, and neither does the built-in Agent,
+       * which is a thread rather than a session and has no runtime mode to read.
+       */
+      runtimeMode: (() => {
+        const posture = detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE;
+        return ceiling === undefined ? posture : narrowerRuntimeMode(posture, ceiling);
+      })(),
       interactionMode: "default",
       detached,
       // Derived on every read (`withActivity`) and stripped before every write

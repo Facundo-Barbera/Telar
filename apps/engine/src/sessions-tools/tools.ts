@@ -125,6 +125,13 @@ export type SessionsCapability = {
    * `origin: "session"` is stamped by the implementation of this member, never
    * by a model argument — no shape below carries it, exactly as the notebook's
    * `source: "session"` is. Provenance a list can show; nothing counts it.
+   *
+   * AND NEITHER IS THE PRIVILEGE CEILING (#541 G1). Each implementation names
+   * its own session as `ceilingFrom` on the store call, so the new session's
+   * runtime mode is capped at the CALLER's: if you have to ask about something,
+   * so does anything you create. It is deliberately not a link — nothing here
+   * gives the caller any authority over the session afterwards, and the two
+   * remain peers exactly as the sentence above says.
    */
   create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind }): Promise<Session>;
   /** Queue ONE turn. The `runId` is minted by the wall so a retry of the same
@@ -932,6 +939,17 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               ? `Created with a checkout of its own on branch ${session.workspace.branch}. Nothing is queued and nothing has started — send it a message with intent: task to give it work.`
               : `Created against the project's own checkout, which it shares with anything else working there. Nothing is queued and nothing has started — send it a message with intent: task to give it work.`,
           note2: "This session is a peer, not yours: it does not report back, and nothing records that you created it.",
+          /**
+           * WHAT IT MAY DO WITHOUT ASKING — issue #541 G1.
+           *
+           * SAID IN THE ANSWER because the mode is the one fact about a new
+           * session nobody could see: the caller picked a project, a title and
+           * an env mode, and got a permission posture it was never shown. It is
+           * capped at the CALLER's own mode, so a session that has to ask about
+           * commands cannot produce one that does not — this line is what makes
+           * that legible rather than merely true.
+           */
+          access: `${session.runtimeMode} — never wider than your own, so if you have to ask about something, so does it.`,
         });
       },
     ),

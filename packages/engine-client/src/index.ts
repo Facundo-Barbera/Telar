@@ -2506,6 +2506,16 @@ export class EngineClient {
      * argument.
      */
     origin?: SessionOrigin;
+    /**
+     * THE PRIVILEGE CEILING — the session whose runtime mode the new one may
+     * not exceed (#541 G1). A session ID and not a mode, so nothing on this
+     * call can WIDEN anything: the engine reads the mode off that session and
+     * takes the narrower of it and the new session's own posture.
+     *
+     * Declared by the calling CODE from a verified claim, never by a model
+     * argument, exactly as `origin` is.
+     */
+    ceilingFrom?: string;
   }): Promise<{ session: Session }> {
     return this.request("POST", "/v2/sessions", input);
   }

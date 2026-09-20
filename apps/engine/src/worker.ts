@@ -1360,7 +1360,16 @@ export class EngineWorker {
          * what it left out.
          */
         list: (options) => this.options.client.liveSessions({ all: options?.settled === true }),
-        create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
+        /**
+         * `ceilingFrom` IS THIS SESSION, ALWAYS — the privilege ceiling, #541
+         * G1. Declared by this code beside `origin`, and never by a tool shape.
+         *
+         * A SESSION ID RATHER THAN A MODE, so this worker cannot widen anything
+         * even by accident: the engine reads the mode off the session itself
+         * and takes the narrower of it and the new session's posture. The
+         * worker does not have to know, or ask for, what mode it is running in.
+         */
+        create: async (input) => (await this.options.client.createSession({ ...input, origin: "session", ceilingFrom: sessionId })).session,
         /**
          * SENT AS WHATEVER TURN IS LIVE WHEN THE CALL ARRIVES, PROVABLY. The
          * proof is the claim the worker is running under — the one thing a

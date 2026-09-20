@@ -1430,7 +1430,25 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * copies of one rule. `settled: true` is `?all=1`, the old answer.
        */
       list: async (options) => store.liveSessionRows({ all: options?.settled === true }),
-      create: async (input) => store.createSession({ ...input, origin: "session" }),
+      /**
+       * THE PRIVILEGE CEILING IS DECLARED HERE, BY THIS CODE — #541 G1, and for
+       * `origin`'s own reason: no tool shape on the wall carries it.
+       *
+       * ONLY WHEN THE CALLER IS A REAL SESSION. The Agent's build passes
+       * `AGENT_SELF_ID`, which is a LangGraph thread and not a session — it has
+       * no `runtimeMode` for a child to inherit, so there is nothing here to
+       * read and its creates keep the posture's default. That gap is named in
+       * the PR rather than papered over with a mode the Agent does not have.
+       *
+       * The SOCKET's build has no `self` at all: a chat client is the person's
+       * own, and a person's click has no creator to inherit from.
+       */
+      create: async (input) =>
+        store.createSession({
+          ...input,
+          origin: "session",
+          ...(self && !isAgentSelf(self.sessionId) ? { ceilingFrom: self.sessionId } : {}),
+        }),
       /**
        * An agent's words, with no session to attribute them to: the caller is
        * the user's own chat client, outside any turn. Never the person's.
@@ -4210,6 +4228,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
              * of the same state is how the two drift.
              */
             ...(input.origin === "session" ? { origin: "session" as const } : {}),
+            /**
+             * THE PRIVILEGE CEILING (#541 G1), forwarded for `origin`'s reason:
+             * the OUT-OF-PROCESS worker reaches this route to build the
+             * toolkit's `create`, so both deployments must apply the same rule.
+             *
+             * NOT VALIDATED HERE. The store reads the mode off the named
+             * session and refuses an id that resolves to nothing — and because
+             * a ceiling can only NARROW, a caller that names the wrong session
+             * gives its own new session less access, never more.
+             */
+            ...(typeof input.ceilingFrom === "string" ? { ceilingFrom: input.ceilingFrom } : {}),
           }),
         });
         return;
