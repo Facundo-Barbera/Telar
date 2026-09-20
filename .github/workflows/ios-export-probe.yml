@@ -106,21 +106,45 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
           rm -f "$RUNNER_TEMP/dist.p12"
 
-      # NO SCAFFOLDING ON THIS BRANCH. Raising the Swift solver budget to buy
-      # past #758 was tried and does not work: run 35491585777 raised two of
-      # the four limits and run 35491754583 raised all four to 20M, and
-      # SessionView.swift:515 failed both times — the second after grinding
-      # thirteen minutes on that one expression. The budget is not the lever.
-      #
-      # So this branch carries #758's actual fix merged in, and the archive
-      # below is the real one. That makes the export result below evidence
+      # NO SCAFFOLDING ON THIS BRANCH — it carries #758's actual fix merged in,
+      # so the archive below is the real one and the export result is evidence
       # about the export and nothing else.
+      #
+      # Raising the solver's budget to buy past #758 was tried and does NOT
+      # work, recorded so nobody spends the runs again: run 35491585777 raised
+      # the scope and time thresholds, run 35491754583 raised all four to 20M,
+      # and SessionView.swift:515 failed both times — the second after grinding
+      # thirteen minutes on that one expression. The flags reach the module;
+      # they are in its swiftc command line. The budget is simply not the lever.
       - name: Archive and export, stopping before the upload
         env:
           TELAR_ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           TELAR_ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER }}
           TELAR_ASC_KEY_PATH: ${{ runner.temp }}/apple_api_key.p8
         run: apps/ios/nightly.sh --export-only
+
+      # AN IPA EXISTING IS NOT AN IPA SIGNED RIGHT, and this repository has
+      # already paid for that distinction once: on 2026-09-01 the export
+      # produced a perfectly good file carrying the archive's DEVELOPMENT
+      # signature, and Apple refused it with 90035 at upload — the step after
+      # this one. `export` + `signingCertificate: Apple Distribution` exists to
+      # re-sign, so assert the re-sign happened rather than trusting exit 0.
+      #
+      # Asserts rather than prints: the authority line carries the account
+      # holder's name, and this repository is public.
+      - name: Assert the exported IPA is signed for distribution
+        run: |
+          set -euo pipefail
+          IPA=$(ls apps/ios/DerivedData-nightly/export-*/TelarMobile.ipa)
+          WORK=$(mktemp -d)
+          unzip -q "$IPA" -d "$WORK"
+          APP=$(ls -d "$WORK"/Payload/*.app)
+          if codesign -dvv "$APP" 2>&1 | grep -q '^Authority=Apple Distribution'; then
+            echo "signed by Apple Distribution — the re-sign happened"
+          else
+            echo "::error::exported IPA is NOT Apple Distribution signed; altool would refuse it (90035)"
+            exit 1
+          fi
 
       # The export writes its real reasons into an xcdistributionlogs bundle and
       # tells xcodebuild only "Copy failed" — which is why #757 took four nights
