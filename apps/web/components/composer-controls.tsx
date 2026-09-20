@@ -357,6 +357,31 @@ const PROVIDERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
 /** What the rail selects: one provider's models, or the ones you starred. */
 type ModelView = ProviderDriverKind | "favorites";
 
+/**
+ * WHICH CATALOGUES A LIVE QUERY READS (#657).
+ *
+ * A search hides the rail, so whatever scope survives the keystroke is one
+ * nothing on screen can show you or change. That leaves two honest options and
+ * this picks between them by asking whether the provider is still yours to
+ * choose: before a session exists it is, so a query reads every harness and a
+ * match on any of them is reachable (`pickFamily` switches driver and sends the
+ * model alone). Once the session exists the provider is FIXED — the engine
+ * routes turns by `providerInstanceId`, which owns the resume cursor — so
+ * another harness's rows would be models this session cannot run, and each one
+ * costs a subprocess to list (`useModelCatalogues`). Then the query stays home
+ * and the empty state says so in words.
+ *
+ * THE SESSION'S OWN PROVIDER LEADS. The harness you are already on is the one
+ * whose rows you most likely meant.
+ *
+ * Exported for its own test: this app's DOM test environment cannot type into
+ * a controlled input, so the rule is checked here rather than through the
+ * field that drives it.
+ */
+export function searchScope(driver: ProviderDriverKind, canSwitchProvider: boolean): ProviderDriverKind[] {
+  return canSwitchProvider ? [driver, ...PROVIDERS.filter((option) => option !== driver)] : [driver];
+}
+
 /** The scrollable list, addressed by the search field's arrow-down handoff. */
 const MODEL_LIST_ID = "telar-model-picker-list";
 
@@ -373,7 +398,8 @@ const MODEL_LIST_ID = "telar-model-picker-list";
  * popover, and the connection lived in a `max-w-24` bordered pill that truncated
  * "Amazon Bedrock" to make room for the name. Both facts now have a full line's
  * width instead of competing for one, at the cost of about twelve pixels of
- * row height. It is also what the reference does: name, then logo and provider
+ * row height. It is also what the reference does
+ * (docs/design/t3code-survey/23-model-picker.png): name, then logo and provider
  * beneath it.
  *
  * WHAT THE SECOND LINE SAYS: the HARNESS, then the CONNECTION where there is
@@ -390,7 +416,9 @@ const MODEL_LIST_ID = "telar-model-picker-list";
  * thing saying where a starred model ran. The second line now says it in words
  * on every row, so the swap has nothing left to tell anyone and the mark is
  * always the row's own (`ModelRowIcon` — the connection's where there is one,
- * the harness's otherwise, which is what #664 made distinct).
+ * the harness's otherwise, which is what #664 made distinct). That matters more
+ * now than it did: a SEARCH spans providers, so a mixed list is no longer just
+ * the favourites view.
  */
 function FamilyRow({
   family,
@@ -503,22 +531,35 @@ export function AgentControl({
    * this machine — a list nobody scrolls. Matching covers the display name,
    * the raw routing id, and the CONNECTION's name (lib/model-connections.ts),
    * so "go" narrows to OpenCode Go and "openai" to the direct connection.
-   * While a query is live it searches past the Legacy fold too: a model you
-   * can name is a model you were looking for.
+   *
+   * A LIVE QUERY REPLACES EVERY SCOPE THE RAIL SELECTS (#657) — the Legacy
+   * fold, the favourites view, and the provider. It already crossed the fold,
+   * on the grounds that a model you can name is a model you were looking for;
+   * that is the same argument for the other two, and Facundo asked for the
+   * behaviour by name. While searching there is no view, only matches.
    */
   const [query, setQuery] = useState("");
+  const searching = query.trim().length > 0;
   /** Which rail entry is showing. Reset when the popover closes: reopening
-   *  should land on the models you can run, not wherever you last wandered. */
+   *  should land on the models you can run, not wherever you last wandered.
+   *  Ignored while `searching` — see above. */
   const [view, setView] = useState<ModelView>(driver);
   const readOnly = !onChange;
   const { effort } = choice;
   /**
-   * FAVOURITES SPAN PROVIDERS — a star is a fact about a model, not about this
-   * session — but only where a foreign model is something you could actually
-   * run. Once the session exists its provider is fixed, so the other catalogue
-   * would be a subprocess spawned to list models this session cannot use.
+   * WHEN THE LIST SPANS PROVIDERS — the favourites view, because a star is a
+   * fact about a model rather than about this session, and a live SEARCH, for
+   * the same reason a name is.
+   *
+   * BOUNDED BY WHAT COULD ACTUALLY RUN, in both cases by the same test. Once
+   * the session exists its provider is fixed (`onDriverChange` is gone), so
+   * another provider's catalogue would be a subprocess spawned to list models
+   * this session cannot use — see `useModelCatalogues`, where the read is one
+   * spawn per login. A fixed-provider search therefore stays inside its own
+   * catalogue and SAYS SO in the empty state, which is what replaces the rail
+   * it can no longer point at.
    */
-  const crossProvider = view === "favorites" && Boolean(onDriverChange);
+  const crossProvider = (view === "favorites" || searching) && Boolean(onDriverChange);
   // The session's own login for its own driver; the built-in slot for the other
   // one, which is the only login a not-yet-created session could mean.
   const catalogues = useModelCatalogues(
@@ -595,24 +636,40 @@ export function AgentControl({
   const listedFamilies = groupFamilies(visibleModels(models, choice.model));
   const { current, legacy } = keepStarredVisible(splitGenerations(listedFamilies), favorites);
   /**
-   * THE LIST, EITHER WAY ROUND. A provider's own models are its current
-   * generation, favourites first; the favourites view is every starred model on
-   * every provider you could switch to, in catalogue order per provider.
+   * THE LIST, THREE WAYS ROUND.
+   *
+   * SEARCHING wins over the other two and reads every provider it is allowed
+   * to (`crossProvider`), fold and favourites alike — the rail is hidden while
+   * this is the list, so nothing on screen would say a scope was still applied.
+   * The session's OWN provider leads, then the rest in `PROVIDERS` order: the
+   * harness you are already on is the one whose rows you most likely meant.
+   *
+   * The FAVOURITES view is every starred model on every provider you could
+   * switch to, in catalogue order per provider. A provider's OWN view is its
+   * current generation, favourites first.
    */
-  const searching = query.trim().length > 0;
   const matches = (family: ModelFamily) => familySearchText(family).includes(query.trim().toLowerCase());
-  const listed: { from: ProviderDriverKind; family: ModelFamily }[] = (
-    view === "favorites"
-      ? (crossProvider ? PROVIDERS : [driver]).flatMap((option) =>
+  const scope = searchScope(driver, crossProvider);
+  /** One provider's families as the search sees them: everything listed,
+   *  including past the Legacy fold. The driver's own are already folded above,
+   *  so they are reused rather than regrouped. */
+  const searchable = (option: ProviderDriverKind) =>
+    option === driver ? [...current, ...legacy] : groupFamilies(visibleModels(catalogues.get(option)?.models ?? [], choice.model));
+  const listed: { from: ProviderDriverKind; family: ModelFamily }[] = searching
+    ? scope.flatMap((option) => searchable(option).filter(matches).map((family) => ({ from: option, family })))
+    : view === "favorites"
+      ? scope.flatMap((option) =>
           groupFamilies(visibleModels(catalogues.get(option)?.models ?? [], choice.model))
             .filter((family) => favorites.has(family.id))
             .map((family) => ({ from: option, family })),
         )
-      : orderByFavorite(searching || showLegacy ? [...current, ...legacy] : current, favorites).map((family) => ({ from: driver, family }))
-  ).filter((entry) => !searching || matches(entry.family));
-  /** A provider the favourites view is still waiting on. Named, because a
-   *  silently short list looks like a lost star. */
-  const asking = (crossProvider ? PROVIDERS : [driver]).find((option) => !catalogues.get(option));
+      : orderByFavorite(showLegacy ? [...current, ...legacy] : current, favorites).map((family) => ({ from: driver, family }));
+  /** A provider this list is still waiting on. Named, because a silently short
+   *  list looks like a lost star — or, while searching, like a model that is
+   *  not there. The first keystroke of a cross-provider search is the moment
+   *  the other catalogues are first asked for, so this is on screen more often
+   *  than it used to be. */
+  const asking = scope.find((option) => !catalogues.get(option));
 
   /**
    * CLOSING RESETS THE VIEW, and every path that closes has to do it.
@@ -690,10 +747,19 @@ export function AgentControl({
         // not max-h. The menu used to be as tall as its list: Claude's four
         // rows made a short box, OpenCode's two hundred a full-height one, and
         // switching the rail visibly re-shaped the popover under the pointer.
-        // One size means the rail, the search field and the footer never move;
-        // only the scrollable middle changes. w-88 gives the wider rows (mark,
-        // name, connection badge, Default, tick, star) their room; 70vh still
-        // caps it on a short window.
+        // One size means the box never resizes under you and the footer never
+        // moves; only the scrollable middle changes. 70vh still caps it on a
+        // short window.
+        //
+        // THE RAIL IS THE ONE EXCEPTION, AND IT IS A DELIBERATE REVERSAL
+        // (#657). This comment used to include the rail and the search field in
+        // "never move". They move now: a live query hides the rail and the
+        // search field widens into it. The rule above is unchanged in what it
+        // was actually defending — the box does not resize, because the reason
+        // it was written was a list-length-driven reshape happening under the
+        // pointer with nobody asking for it. A rail that hides when you start
+        // typing is the opposite case: you asked, by typing, and the thing that
+        // moves is inside a box whose outline is still exactly where it was.
         className="h-[min(26rem,70vh)] w-[22rem] flex-col gap-0 overflow-hidden rounded-xl p-0"
       >
         {/**
@@ -705,8 +771,22 @@ export function AgentControl({
          * same kind of entry and sits above them, because a favourite is a model
          * you chose over the provider's ordering — it answers "which models do I
          * actually use" without first answering "on which harness".
+         *
+         * AND IT COLLAPSES WHILE YOU SEARCH (#657), which is Facundo's own ask:
+         * "se colapse la barra lateral cuando estás en modo de búsqueda … y
+         * solo se muestran los modelos". The rail answers "which models exist";
+         * a query answers it better, so leaving the rail up would be two
+         * controls arguing about one question while only one of them is the one
+         * you are using.
+         *
+         * IT COLLAPSES EVEN WHERE THE PROVIDER IS FIXED — a column with one
+         * live entry and two greyed ones is not a control, and the scope it
+         * would be showing is stated in words by the empty state instead. What
+         * the collapse must NOT do is hide a filter that is still applied,
+         * which is why a search reads every provider it is allowed to.
          */}
         <div className="flex min-h-0 flex-1">
+          {!searching && (
           <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-border bg-muted/20 p-1.5">
             <button
               type="button"
@@ -755,6 +835,7 @@ export function AgentControl({
               </button>
             ))}
           </div>
+          )}
           <div className="flex min-w-0 flex-1 flex-col">
             {/* THE SEARCH FIELD — fixed above the scroll, part of the menu's
                 constant chrome. Arrow-down hands focus to the list; typing
@@ -770,7 +851,11 @@ export function AgentControl({
                     document.getElementById(MODEL_LIST_ID)?.querySelector("button")?.focus();
                   }
                 }}
-                placeholder={view === "favorites" ? "Search favourites…" : `Search ${PROVIDER_LABEL[view]} models…`}
+                // NAMES THE SCOPE A QUERY WILL ACTUALLY HAVE, not the one the
+                // rail is showing: typing leaves the view behind, so a field
+                // reading "Search favourites…" would be describing the list it
+                // is about to replace.
+                placeholder={onDriverChange ? "Search every provider…" : `Search ${PROVIDER_LABEL[driver]} models…`}
                 aria-label="Search models by name or connection"
                 className="h-6 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/70"
               />
@@ -801,7 +886,7 @@ export function AgentControl({
                 else rows[next]?.focus();
               }}
             >
-            {view === "favorites" && <MenuHeading>Favourites</MenuHeading>}
+            {!searching && view === "favorites" && <MenuHeading>Favourites</MenuHeading>}
             {listed.map(({ from, family }) => (
               <FamilyRow
                 key={`${from}:${family.id}`}
@@ -842,8 +927,17 @@ export function AgentControl({
             )}
             {asking && <p className="px-2 py-1.5 text-2xs text-muted-foreground">Asking {PROVIDER_LABEL[asking]}…</p>}
             {/* Nothing to show, and the reasons are different questions. */}
+            {/* THE SCOPE IS SAID HERE BECAUSE THE RAIL CANNOT SAY IT. A search
+                hides the rail, so on the one screen where a scope is invisible
+                and a list is empty, the scope has to be in the words — on a
+                session whose provider is fixed, "nothing matches" and "nothing
+                matches HERE" are different answers and only one of them is
+                true. */}
             {searching && listed.length === 0 && (
-              <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">Nothing matches “{query.trim()}” — names, ids and connections are searched.</p>
+              <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">
+                Nothing matches “{query.trim()}”
+                {crossProvider ? " on any provider" : ` in ${PROVIDER_LABEL[driver]}, the provider this session is fixed to`} — names, ids and connections are searched.
+              </p>
             )}
             {view === "favorites" && !asking && !searching && listed.length === 0 && (
               <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">Star a model to keep it here.</p>
