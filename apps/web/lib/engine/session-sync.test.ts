@@ -4,11 +4,14 @@ import type { EngineEvent, Item, Session, SnapshotWindow, Task, Turn } from "@te
 import {
   INITIAL_TURNS,
   OLDER_PAGE_TURNS,
+  TAIL_LIVE_MS,
+  TAIL_SETTLED_MS,
   hydrateSession,
   loadOlderTurns,
   mergeOlderPage,
   mergeRows,
   needsSessionSnapshot,
+  tailIntervalMs,
   tailSession,
 } from "./session-sync";
 import { itemText, projectJournal } from "./journal";
@@ -625,5 +628,70 @@ describe("mergeRows", () => {
     const merged = mergeRows(held, [b], id);
     expect(merged).not.toBe(held);
     expect(merged).toEqual([a, b]);
+  });
+});
+
+/**
+ * THE CADENCE PREDICATE — #490.
+ *
+ * `session-cockpit.tail-cadence.test.tsx` proves the mounted cockpit actually
+ * spends fewer requests, which is the claim that matters; this covers the
+ * decision itself across every turn state, which a timing test cannot do
+ * without one window per state.
+ *
+ * THE STATE LIST IS EXHAUSTIVE ON PURPOSE. A state added to the protocol and
+ * not considered here would silently take the settled branch — a turn that
+ * streams while the cockpit watches it every three seconds. Whoever adds one
+ * should have to come here.
+ */
+describe("how fast the cockpit should tail a conversation in this state", () => {
+  const at = (state: Turn["state"]): Turn => ({
+    runId: `run_${state}`,
+    sessionId: "session_1",
+    sequence: 1,
+    input: "ask",
+    state,
+    acceptedAt: 1,
+    updatedAt: 1,
+  });
+
+  test("a conversation with nothing in it tails slowly", () => {
+    expect(tailIntervalMs([])).toBe(TAIL_SETTLED_MS);
+  });
+
+  /** `isActiveTurn`'s three, including `queued`: a backlog is in motion even
+   *  before the engine claims it, and its position changes as the one ahead
+   *  finishes. */
+  test.each([["queued"], ["claimed"], ["running"]] as const)("a %s turn is live, so 1s", (state) => {
+    expect(tailIntervalMs([at(state)])).toBe(TAIL_LIVE_MS);
+  });
+
+  /**
+   * `steering` AND `steered` READ AS SETTLED HERE, and that is correct rather
+   * than an oversight: a steering turn is a message being promoted INTO the
+   * running turn, so the running turn is in `turns` beside it and carries the
+   * cadence. On its own — which the engine's sweep makes transient — there is
+   * nothing streaming to watch.
+   */
+  test.each([["completed"], ["failed"], ["stopped"], ["ambiguous"], ["discarded"], ["steering"], ["steered"]] as const)(
+    "a %s turn is not, so 3s",
+    (state) => {
+      expect(tailIntervalMs([at(state)])).toBe(TAIL_SETTLED_MS);
+    },
+  );
+
+  test("and a steering turn beside the running one it is joining is live", () => {
+    expect(tailIntervalMs([at("running"), at("steering")])).toBe(TAIL_LIVE_MS);
+  });
+
+  test("one live turn among many settled ones is enough", () => {
+    expect(tailIntervalMs([at("completed"), at("failed"), at("running")])).toBe(TAIL_LIVE_MS);
+  });
+
+  /** The numbers themselves, pinned. The mounted test derives its windows from
+   *  these constants, so without this nothing would notice them both moving. */
+  test("and the two periods are the ones iOS uses", () => {
+    expect(TAIL_LIVE_MS).toBe(1_000);
+    expect(TAIL_SETTLED_MS).toBe(3_000);
   });
 });
