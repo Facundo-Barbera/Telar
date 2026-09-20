@@ -1424,21 +1424,34 @@ export const ComputerUseBackend = z.enum(["cua", "sky"]);
 export type ComputerUseBackend = z.infer<typeof ComputerUseBackend>;
 
 /**
- * WHOSE SESSIONS TELAR'S OWN COMPUTER USE IS FOR — Claude and OpenCode.
+ * WHOSE SESSIONS TELAR'S OWN COMPUTER USE IS FOR — every provider Telar drives.
  *
- * NOT CODEX, and that is the whole of the rule. Codex ships its own
- * computer-use provider, so a Codex thread already has a desktop; injecting
- * Telar's would hand that model a second one under a second name, which is the
- * failure the driver used to work around by switching Codex's native feature
- * OFF. Withholding is the simpler and more honest answer: each provider drives
- * the desktop it came with.
+ * CODEX IS HERE TOO, AND #368 SAID IT SHOULD NOT BE. That rule read: Codex
+ * ships its own computer-use provider, so a Codex thread already has a desktop,
+ * and injecting Telar's would hand the model a second one under a second name.
+ * What #521 reported is that the substitute never arrived: a Codex session
+ * asked for the `mac` tools answered that it had not been given them. Whatever
+ * Codex's native feature does on its own, it is not the surface Telar's
+ * sessions are built on — the approval pipeline, the runtime modes, the
+ * settings pane's grant and every tool name in a Telar prompt are this injected
+ * server's. Withholding did not hand Codex an equivalent desktop under another
+ * name; it handed it nothing Telar can see, gate or speak about, while the
+ * Agent tools pane told the reader Codex was covered.
+ *
+ * TWO DESKTOPS STILL CANNOT HAPPEN, and that guard is the reason this is safe
+ * rather than a revert: the Codex driver reads a `mac` server in the claim as
+ * the signal to send `features.computer_use = false` on `thread/start`
+ * (`claimHasComputerUse`). That switch was written for exactly this shape and
+ * outlived the withholding it was paired with. Injected and native are mutually
+ * exclusive per thread, whichever put the server there.
  *
  * ONE FACT, ONE PLACE. The engine folds this into a claim (`withComputerUse`)
  * and the Agent tools pane badges its Computer use row from it, so the pane
  * cannot promise a provider the claim withholds it from — the drift #368 was
- * filed about. A fourth provider is one entry here.
+ * filed about, and #521 is the same drift pointing the other way. A fourth
+ * provider is one entry here.
  */
-export const COMPUTER_USE_DRIVERS: readonly ProviderDriverKind[] = ["claude", "opencode"];
+export const COMPUTER_USE_DRIVERS: readonly ProviderDriverKind[] = ["claude", "codex", "opencode"];
 
 /** Whether Telar supplies this provider's desktop. See `COMPUTER_USE_DRIVERS`. */
 export function driverTakesComputerUse(driver: ProviderDriverKind): boolean {

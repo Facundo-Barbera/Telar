@@ -11,16 +11,16 @@
  *      driver. A stdio MCP server that auto-launches its own permission-holding
  *      daemon (CuaDriver.app, `com.trycua.driver`), so the macOS grants belong
  *      to an app Telar can bundle rather than to a proprietary one. This is what
- *      lets Telar OWN computer use and hand it to CLAUDE and OPENCODE — the two
- *      providers that arrive without a desktop of their own.
+ *      lets Telar OWN computer use rather than borrow a provider's.
  *
  *   2. Codex's Sky client — the fallback for a machine that has Codex's bundled
  *      computer-use plugin but not cua-driver. Sky is proprietary and its grant
- *      belongs to OpenAI's app; it reaches the same two providers, for the same
+ *      belongs to OpenAI's app; it reaches the same providers, for the same
  *      reason, through the same injection.
  *
- * CODEX GETS NEITHER, and that is deliberate rather than an omission — see
- * `COMPUTER_USE_DRIVERS` in the protocol package for why (#368).
+ * EVERY PROVIDER TELAR DRIVES GETS IT, Codex included since #521 — see
+ * `COMPUTER_USE_DRIVERS` in the protocol package for why it did not, and why
+ * withholding turned out to leave a Codex session with no desktop at all.
  *
  * ══ INDEPENDENCE IS THE PRIME RULE (the Lintel precedent) ══
  *
@@ -43,10 +43,10 @@ import { driverTakesComputerUse, type ComputerUsePermission, type ComputerUseSta
  * --debug-to-stderr, and the refusal is otherwise silent: the server simply
  * never connects). A USER-registered server with this id wins — see
  * `withComputerUse`. The presence of a server with THIS id in a Codex claim is
- * also the signal that turns off Codex's native computer use: Telar no longer
- * injects one there, so that signal now means the USER pointed a `mac` server
- * at a Codex session by hand, and two desktops under two names is still the
- * thing worth avoiding.
+ * also the signal that turns off Codex's native computer use, and it does not
+ * care who put it there: Telar's own injection and a `mac` server the user
+ * registered by hand both reach it, because two desktops under two names is the
+ * thing worth avoiding either way.
  */
 export const COMPUTER_USE_SERVER_ID = "mac";
 
@@ -341,11 +341,14 @@ export async function computerUseStatus(probe: ComputerUseProbe = {}, timeoutMs 
 /**
  * Which servers a turn actually gets.
  *
- * WHO, NOT WHICH BACKEND. Both backends go to the same two providers — Claude
- * and OpenCode — because the question a claim has to answer is whether this
- * provider arrives with a desktop of its own, and neither of those does. Codex
- * does, so it is withheld from Codex whatever is installed on the machine; the
- * list lives in `COMPUTER_USE_DRIVERS` so the settings pane reads the same fact.
+ * WHO, NOT WHICH BACKEND. Both backends go to every provider Telar drives,
+ * because the question a claim has to answer is which desktop a TELAR session
+ * reaches, and the answer is this one for all of them. Sky reaching a Codex
+ * session is the one pairing that reads oddly — Telar handing Codex's own
+ * plugin back to Codex — and it is still right: it arrives through the same
+ * approval gate under the same name as everywhere else, and the driver switches
+ * the native feature off so the model is never offered both. The list lives in
+ * `COMPUTER_USE_DRIVERS` so the settings pane reads the same fact.
  *
  * THE USER'S ENTRY WINS. A registered server with this id — pointed elsewhere,
  * or disabled — is a decision injection must not overrule. `state.ts` filters

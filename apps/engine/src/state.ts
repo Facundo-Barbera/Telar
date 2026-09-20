@@ -9379,8 +9379,10 @@ export class EngineStore {
        * TELAR'S OWN COMPUTER USE (cua-driver, or Sky as a fallback). Injected
        * at claim time like everything else here, and re-resolved per claim so
        * installing or removing the driver applies to the next turn rather than
-       * the next daemon. Goes to the providers that arrive without a desktop of
-       * their own — Claude and OpenCode, never Codex — see `withComputerUse`.
+       * the next daemon. Goes to every provider Telar drives — Codex included
+       * since #521, where withholding it turned out to leave those sessions
+       * with no desktop at all rather than with their own — see
+       * `withComputerUse`.
        * Absent installs inject nothing, silently, and the unfiltered
        * `registered` list means a user's own entry (even a DISABLED one) is a
        * decision this must not overrule.
