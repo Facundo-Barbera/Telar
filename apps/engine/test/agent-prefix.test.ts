@@ -42,6 +42,10 @@ import { AGENT_BRIEFING } from "../src/agent/briefing";
 import { rememberSection } from "../src/agent/memory";
 import { agentChatModel } from "../src/agent/model";
 import { AgentRuntime } from "../src/agent/runtime";
+// EVERY STUB IN THIS SUITE BINDS THROUGH HERE — issue #610. The wildcard bind
+// `Bun.serve` defaults to can land on a port another loopback listener owns,
+// and then the neighbour answers instead of the stub. See `loopback-server.ts`.
+import { loopbackBase, serveLoopback } from "./loopback-server";
 
 /* ------------------------------------------------------------------ *
  * The wall, at the size the Agent really binds it.
@@ -153,29 +157,26 @@ async function conversation(options: {
 }): Promise<Lap[]> {
   const laps: Lap[] = [];
   let turn = 1;
-  const server = Bun.serve({
-    port: 0,
-    async fetch(request) {
-      laps.push({ turn, body: await request.text() });
-      const soFar = laps.filter((lap) => lap.turn === turn).length;
-      const callTool = soFar < options.lapsPerTurn;
-      if (!callTool) turn += 1;
-      return Response.json({
-        id: `chatcmpl_${laps.length}`,
-        choices: [
-          {
-            index: 0,
-            message: callTool
-              ? { role: "assistant", content: "Looking.", tool_calls: [{ id: `call_${laps.length}`, type: "function", function: { name: "sessions_list", arguments: "{}" } }] }
-              : { role: "assistant", content: "Here is what is running." },
-            finish_reason: callTool ? "tool_calls" : "stop",
-          },
-        ],
-        usage: { prompt_tokens: 1_000, completion_tokens: 5, total_tokens: 1_005 },
-      });
-    },
+  const server = serveLoopback(async (request) => {
+    laps.push({ turn, body: await request.text() });
+    const soFar = laps.filter((lap) => lap.turn === turn).length;
+    const callTool = soFar < options.lapsPerTurn;
+    if (!callTool) turn += 1;
+    return Response.json({
+      id: `chatcmpl_${laps.length}`,
+      choices: [
+        {
+          index: 0,
+          message: callTool
+            ? { role: "assistant", content: "Looking.", tool_calls: [{ id: `call_${laps.length}`, type: "function", function: { name: "sessions_list", arguments: "{}" } }] }
+            : { role: "assistant", content: "Here is what is running." },
+          finish_reason: callTool ? "tool_calls" : "stop",
+        },
+      ],
+      usage: { prompt_tokens: 1_000, completion_tokens: 5, total_tokens: 1_005 },
+    });
   });
-  const base = `http://127.0.0.1:${server.port}/v1`;
+  const base = loopbackBase(server);
   const agentDir = agentDirWith("sk-prefix-test");
   const engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-prefix-"));
   const answer = options.toolResult;
@@ -201,7 +202,7 @@ async function conversation(options: {
     }
   } finally {
     agent.close();
-    server.stop(true);
+    await server.stop(true);
   }
   return laps;
 }
@@ -370,21 +371,18 @@ test("a previous turn's compacted results expand again, rewriting the prompt bac
 
 test("the turn's usage row carries what the provider said about its cache", async () => {
   const laps: string[] = [];
-  const server = Bun.serve({
-    port: 0,
-    async fetch(request) {
-      laps.push(await request.text());
-      return Response.json({
-        id: "chatcmpl_1",
-        choices: [{ index: 0, message: { role: "assistant", content: "Nothing is running." }, finish_reason: "stop" }],
-        // THE SHAPE THE CHAT ROUTE REPORTS IT IN. `prompt_tokens` INCLUDES the
-        // cached ones, which is why the row's `cacheRead` is a fraction of its
-        // `input` rather than a number beside it.
-        usage: { prompt_tokens: 1_000, completion_tokens: 10, total_tokens: 1_010, prompt_tokens_details: { cached_tokens: 880 } },
-      });
-    },
+  const server = serveLoopback(async (request) => {
+    laps.push(await request.text());
+    return Response.json({
+      id: "chatcmpl_1",
+      choices: [{ index: 0, message: { role: "assistant", content: "Nothing is running." }, finish_reason: "stop" }],
+      // THE SHAPE THE CHAT ROUTE REPORTS IT IN. `prompt_tokens` INCLUDES the
+      // cached ones, which is why the row's `cacheRead` is a fraction of its
+      // `input` rather than a number beside it.
+      usage: { prompt_tokens: 1_000, completion_tokens: 10, total_tokens: 1_010, prompt_tokens_details: { cached_tokens: 880 } },
+    });
   });
-  const base = `http://127.0.0.1:${server.port}/v1`;
+  const base = loopbackBase(server);
   const agentDir = agentDirWith("sk-prefix-test");
   const engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-usage-"));
   const agent = new AgentRuntime({
@@ -401,7 +399,7 @@ test("the turn's usage row carries what the provider said about its cache", asyn
   // AND ON THE STATE A CLIENT POLLS, from the same call that wrote the row.
   expect(agent.state().lastUsage?.usage).toMatchObject({ cacheRead: 880 });
   agent.close();
-  server.stop(true);
+  await server.stop(true);
 });
 
 /**
@@ -416,20 +414,17 @@ test("the turn's usage row carries what the provider said about its cache", asyn
  * `runtime.ts` where the numbers, rather than their container, are tested.
  */
 test("a provider that says nothing about caching is written down as silent, not as cold", async () => {
-  const server = Bun.serve({
-    port: 0,
-    async fetch(request) {
-      await request.text();
-      return Response.json({
-        id: "chatcmpl_1",
-        choices: [{ index: 0, message: { role: "assistant", content: "Nothing is running." }, finish_reason: "stop" }],
-        // TOKENS COUNTED, CACHE UNMENTIONED — the case an OpenAI-compatible
-        // server is entitled to, and the one a zero would misreport.
-        usage: { prompt_tokens: 1_000, completion_tokens: 10, total_tokens: 1_010 },
-      });
-    },
+  const server = serveLoopback(async (request) => {
+    await request.text();
+    return Response.json({
+      id: "chatcmpl_1",
+      choices: [{ index: 0, message: { role: "assistant", content: "Nothing is running." }, finish_reason: "stop" }],
+      // TOKENS COUNTED, CACHE UNMENTIONED — the case an OpenAI-compatible
+      // server is entitled to, and the one a zero would misreport.
+      usage: { prompt_tokens: 1_000, completion_tokens: 10, total_tokens: 1_010 },
+    });
   });
-  const base = `http://127.0.0.1:${server.port}/v1`;
+  const base = loopbackBase(server);
   const agentDir = agentDirWith("sk-prefix-test");
   const engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-usage-silent-"));
   const agent = new AgentRuntime({
@@ -444,5 +439,5 @@ test("a provider that says nothing about caching is written down as silent, not 
   const done = agent.thread({ limit: 50 }).rows.findLast((row) => row.kind === "turn_done")!;
   expect(done.detail.usage).toEqual({ input: 1_000, output: 10, total: 1_010 });
   agent.close();
-  server.stop(true);
+  await server.stop(true);
 });

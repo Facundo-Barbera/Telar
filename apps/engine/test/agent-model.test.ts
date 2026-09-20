@@ -29,6 +29,7 @@ import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/
 import { AgentCredentialError, agentChatModel } from "../src/agent/model";
 import { DEFAULT_GO_MODEL } from "../src/agent/go";
 import { TELAR_ENGINE_VERSION } from "../src/version";
+import { loopbackBase, serveLoopback } from "./loopback-server";
 
 /**
  * A REAL `agent/` DIRECTORY WITH A REAL KEY IN IT — rung 1, on disk.
@@ -83,48 +84,50 @@ function chatStream(): Response {
  */
 async function withServer<T>(run: (base: string, seen: () => Call[]) => Promise<T>): Promise<T> {
   const calls: Call[] = [];
-  const server = Bun.serve({
-    port: 0,
-    async fetch(request) {
-      const path = new URL(request.url).pathname;
-      const body = (await request.json()) as Record<string, unknown>;
-      calls.push({ path, headers: request.headers, body });
-      if (path.endsWith("/messages")) {
-        return Response.json({
-          id: "msg_1",
-          type: "message",
-          role: "assistant",
-          model: "union-alpha",
-          stop_reason: "end_turn",
-          content: [{ type: "text", text: "ok" }],
-          usage: { input_tokens: 3, output_tokens: 1 },
-        });
-      }
-      if (path.endsWith("/responses")) {
-        return Response.json({
-          id: "resp_1",
-          object: "response",
-          created_at: 0,
-          status: "completed",
-          model: "grok-4.6",
-          output: [{ id: "msg_1", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "ok", annotations: [] }] }],
-          usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
-        });
-      }
-      /**
-       * THE CHAT ANSWER CARRIES `reasoning_content`, BECAUSE THE REAL ONE DOES
-       * (#613). `deepseek-v4.1-flash` — the id the Agent runs — is a thinking
-       * model on this route, and measured against Go on 2026-09-18 it returns
-       * this field on every answer, whether or not `reasoning_effort` was sent.
-       * A stub without it would have made the round trip below untestable.
-       */
-      if (body.stream) return chatStream();
+  // BOUND THROUGH `serveLoopback`, WHICH PINS THE HOSTNAME — issue #610. On the
+  // wildcard this stub could be handed a port another loopback listener already
+  // owned, bind cleanly, and then watch that neighbour answer every request;
+  // four tests in this file failed that way in CI, each with whatever sentence
+  // the neighbour happened to use. See `loopback-server.ts`.
+  const server = serveLoopback(async (request) => {
+    const path = new URL(request.url).pathname;
+    const body = (await request.json()) as Record<string, unknown>;
+    calls.push({ path, headers: request.headers, body });
+    if (path.endsWith("/messages")) {
       return Response.json({
-        id: "chatcmpl_1",
-        choices: [{ index: 0, message: { role: "assistant", content: "ok", reasoning_content: THOUGHT }, finish_reason: "stop" }],
-        usage: { prompt_tokens: 3, completion_tokens: 1 },
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        model: "union-alpha",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "ok" }],
+        usage: { input_tokens: 3, output_tokens: 1 },
       });
-    },
+    }
+    if (path.endsWith("/responses")) {
+      return Response.json({
+        id: "resp_1",
+        object: "response",
+        created_at: 0,
+        status: "completed",
+        model: "grok-4.6",
+        output: [{ id: "msg_1", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "ok", annotations: [] }] }],
+        usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+      });
+    }
+    /**
+     * THE CHAT ANSWER CARRIES `reasoning_content`, BECAUSE THE REAL ONE DOES
+     * (#613). `deepseek-v4.1-flash` — the id the Agent runs — is a thinking
+     * model on this route, and measured against Go on 2026-09-18 it returns
+     * this field on every answer, whether or not `reasoning_effort` was sent.
+     * A stub without it would have made the round trip below untestable.
+     */
+    if (body.stream) return chatStream();
+    return Response.json({
+      id: "chatcmpl_1",
+      choices: [{ index: 0, message: { role: "assistant", content: "ok", reasoning_content: THOUGHT }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 3, completion_tokens: 1 },
+    });
   });
   try {
     /**
@@ -137,9 +140,12 @@ async function withServer<T>(run: (base: string, seen: () => Call[]) => Promise<
      * looked fine — and the doubled `…/v1/v1/messages` would have been found by
      * a person whose turn 404'd. See `anthropicBaseOf`.
      */
-    return await run(`http://127.0.0.1:${server.port}/v1`, () => calls);
+    return await run(loopbackBase(server), () => calls);
   } finally {
-    server.stop(true);
+    // AWAITED. An unawaited stop leaves the socket closing while the next test
+    // binds, which is one more way for a request to reach a server that is no
+    // longer the one recording calls.
+    await server.stop(true);
   }
 }
 
