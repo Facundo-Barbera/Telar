@@ -25,6 +25,12 @@
 //
 // The lines are read from the scripts rather than transcribed, so a guard that
 // is deleted or rewritten is tested as it now reads, not as it once did.
+//
+// IT READS `.github/workflows/*.yml` TOO, for the same reason and on the same
+// bash (#829). A `run:` block with no `shell:` gets `bash -e {0}` resolved from
+// PATH, and the macos-14/macos-15 runner images report that bash as 3.2.57 —
+// so the two signing steps that set `-euo pipefail` and then expanded a bare
+// `"${EXISTING[@]}"` had #808 in them, on the one bash that still has it.
 
 const { describe, expect, test } = require("bun:test");
 const { spawnSync } = require("node:child_process");
@@ -32,6 +38,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const SCRIPTS = path.join(__dirname, "..", "..", "scripts");
+const WORKFLOWS = path.join(__dirname, "..", "..", ".github", "workflows");
 
 // /bin/bash, and the path is the point — see (1) above.
 const systemBash = (body) => spawnSync("/bin/bash", ["-c", body], { encoding: "utf8", timeout: 15_000 });
@@ -55,9 +62,13 @@ const emptyArrayIsUnbound = (() => {
  * Throws when it is not exactly one. An anchor that has stopped identifying a
  * single line means this test is reading some other text and asserting things
  * about it — which would look like a pass.
+ *
+ * `root` is `scripts/` or `.github/workflows/`. A workflow line arrives with
+ * its YAML indentation still on it, which bash does not mind, and `#` starts a
+ * comment in both languages — so the same rule reads both.
  */
-const lineContaining = (file, anchor) => {
-  const lines = fs.readFileSync(path.join(SCRIPTS, file), "utf8").split("\n");
+const lineContaining = (file, anchor, root = SCRIPTS) => {
+  const lines = fs.readFileSync(path.join(root, file), "utf8").split("\n");
   const hits = lines.filter((line) => line.includes(anchor) && !line.trimStart().startsWith("#"));
   if (hits.length !== 1) {
     throw new Error(
@@ -92,6 +103,45 @@ const argumentsPassedTo = ({ line, stub, setup }) => {
   const count = result.stdout.match(/^COUNT:(\d+)$/m);
   return { result, args, count: count ? Number(count[1]) : null };
 };
+
+// The keychain the signing steps create, and the search list they find. One of
+// the existing entries carries a SPACE, which is not decoration: the `sed` these
+// steps used to trim `security`'s output with was `s/[" ]//g`, and it could not
+// tell the wrapping quotes from a space inside a path — so this entry used to
+// come back as `/Users/AdaLovelace/…`, a path that does not exist, and was
+// dropped from the search list without a word. Asserting it arrives intact is
+// what holds the replacement trim honest.
+const SIGNING_KEYCHAIN = "/tmp/rt/signing.keychain-db";
+const EXISTING_KEYCHAINS = [
+  "/Users/runner/Library/Keychains/login.keychain-db",
+  "/Users/Ada Lovelace/Library/Keychains/login.keychain-db",
+];
+
+/** What the step's saved copy of `security list-keychains -d user` holds. */
+const savedSearchList = (paths) =>
+  paths.length === 0
+    ? ': > "$RUNNER_TEMP/keychain-search-list.txt"'
+    : `printf '    "%s"\\n' ${paths.map((p) => `'${p}'`).join(" ")} > "$RUNNER_TEMP/keychain-search-list.txt"`;
+
+/** The two signing workflows do the same thing on the same two lines. */
+const keychainCase = (file) => ({
+  what: `${file}: the signing keychain is set alone when the user search list comes back empty`,
+  root: WORKFLOWS,
+  file,
+  anchor: "list-keychains -d user -s",
+  // The real `read` that fills EXISTING, and the real count that decides
+  // whether to warn — both read out of the workflow, so the trim and the
+  // `${#EXISTING[@]}` are exercised rather than described. A count is never
+  // unbound on 3.2, and running it on the empty array is how that is proven:
+  // a warning line that aborted the step would be worse than no warning.
+  also: ["read -rd '' -a EXISTING", "${#EXISTING[@]}"],
+  stub: "security",
+  scope: ['RUNNER_TEMP="$(mktemp -d)"', `KEYCHAIN=${SIGNING_KEYCHAIN}`],
+  emptyState: savedSearchList([]),
+  filledState: savedSearchList(EXISTING_KEYCHAINS),
+  whenEmpty: ["list-keychains", "-d", "user", "-s", SIGNING_KEYCHAIN],
+  whenFilled: ["list-keychains", "-d", "user", "-s", SIGNING_KEYCHAIN, ...EXISTING_KEYCHAINS],
+});
 
 // Each case names a line by an anchor, says what the script has in scope when
 // it reaches that line, and states what the command must receive with the
@@ -158,17 +208,27 @@ const CASES = [
     whenEmpty: ["electron-builder --mac "],
     whenFilled: ["electron-builder --mac zip dmg"],
   },
+  keychainCase("nightly-ios.yml"),
+  keychainCase("ios-export-probe.yml"),
 ];
 
 describe("the shell scripts expand their arrays safely under the bash macOS ships", () => {
   for (const testCase of CASES) {
-    const line = () => lineContaining(testCase.file, testCase.anchor);
+    const line = () => lineContaining(testCase.file, testCase.anchor, testCase.root);
+    // Whatever the real file runs between the state and the line under test,
+    // read from the real file as well — an `also` that was transcribed would
+    // let the line pass against a step nobody ships.
+    const setupFor = (state) => [
+      ...testCase.scope,
+      state,
+      ...(testCase.also ?? []).map((anchor) => lineContaining(testCase.file, anchor, testCase.root)),
+    ];
 
     test(`${testCase.what} — and is unchanged when it is not`, () => {
       const empty = argumentsPassedTo({
         line: line(),
         stub: testCase.stub,
-        setup: [...testCase.scope, testCase.emptyState],
+        setup: setupFor(testCase.emptyState),
       });
       expect(empty.result.stderr).not.toContain("unbound variable");
       expect(empty.result.status).toBe(0);
@@ -182,7 +242,7 @@ describe("the shell scripts expand their arrays safely under the bash macOS ship
       const filled = argumentsPassedTo({
         line: line(),
         stub: testCase.stub,
-        setup: [...testCase.scope, testCase.filledState],
+        setup: setupFor(testCase.filledState),
       });
       expect(filled.result.status).toBe(0);
       expect(filled.args).toEqual(testCase.whenFilled);
@@ -206,7 +266,7 @@ const describeControl = emptyArrayIsUnbound ? describe : describe.skip;
 describeControl("the guards are load-bearing: removing one reproduces #808", () => {
   for (const testCase of CASES) {
     test(`${testCase.file}: ${testCase.anchor} fails unguarded`, () => {
-      const guarded = lineContaining(testCase.file, testCase.anchor);
+      const guarded = lineContaining(testCase.file, testCase.anchor, testCase.root);
       const stripped = unguard(guarded);
 
       // If the rewrite changed nothing, the "control" would be re-running the
@@ -217,7 +277,11 @@ describeControl("the guards are load-bearing: removing one reproduces #808", () 
       const broken = argumentsPassedTo({
         line: stripped,
         stub: testCase.stub,
-        setup: [...testCase.scope, testCase.emptyState],
+        setup: [
+          ...testCase.scope,
+          testCase.emptyState,
+          ...(testCase.also ?? []).map((anchor) => lineContaining(testCase.file, anchor, testCase.root)),
+        ],
       });
       expect(broken.result.status).not.toBe(0);
       expect(broken.result.stderr).toContain("unbound variable");

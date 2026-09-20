@@ -155,7 +155,11 @@ jobs:
             echo "!! no release artifacts found" >&2
             exit 1
           fi
-          gh release create "v$VERSION" "${ARTIFACTS[@]}" \
+          # The count above already refuses the empty case, so the guard changes
+          # nothing here — it is written anyway because `shell-empty-array` reads
+          # one line at a time, and a scanner that tried to prove "an earlier
+          # line makes this one safe" would be a scanner that can be wrong.
+          gh release create "v$VERSION" ${ARTIFACTS[@]+"${ARTIFACTS[@]}"} \
             --repo "${{ github.repository }}" \
             --title "v$VERSION" \
             --prerelease \
