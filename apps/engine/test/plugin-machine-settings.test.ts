@@ -286,6 +286,24 @@ test("THE STORE PASSES THIS MAC'S DEFAULTS INTO ENVIRONMENT CREATION", async () 
    * The blob is written to disk rather than over HTTP because the write arm now
    * refuses this, and a value that PREDATES that check is exactly the case the
    * second check exists for.
+   *
+   * WHAT THIS TEST IS NOT, SINCE #792 READ IT AS THAT. It does not guard the
+   * ORDER of the two checks, and cannot: a runner with uv satisfies the uv
+   * check either way, so the order leaves no trace here. `ds-packages.test.ts`
+   * owns that, with a uv-less toolchain injected — the only arrangement in
+   * which the two refusals are distinguishable on any machine.
+   *
+   * ITS ONE ENVIRONMENTAL DEPENDENCY IS NOT uv EITHER. It is that
+   * `dataScienceToolchain` finishes inside the per-test ceiling: this call
+   * probes for uv, conda and Homebrew, and a cold GitHub runner can spend
+   * seconds in that before the store ever reaches the package check. When #792's
+   * CI failure hit it at bun's 5 s default — #740 having left every file but
+   * the first on that default — the fixture's temp root was already removed by
+   * `afterEach` by the time the probe returned, so the store read no machine
+   * defaults at all, found nothing to refuse, and fell through to "uv is not
+   * installed". The message was an artefact of the teardown, not evidence about
+   * the order, and it is why a duration and a message from a timed-out test are
+   * both worth distrusting.
    */
   const { daemon, client } = await ready();
   await client.updateProject("project_one", { dataScience: { enabled: true } });

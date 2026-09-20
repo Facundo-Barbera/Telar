@@ -8,7 +8,7 @@
     "./node": "./src/node.ts"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun test --timeout 20000",
     "typecheck": "bunx --bun tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

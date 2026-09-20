@@ -22,6 +22,20 @@
  * invoked in. So the ceiling travels with the run rather than with the command
  * line, and the invocation that used to be stricter than CI is now the same.
  *
+ * AND IT WORKS FOR ONE FILE ONLY, WHICH #740 DID NOT MEASURE — #792. On bun
+ * 1.3.11 a preload's `setDefaultTimeout` reaches the FIRST test file a run
+ * loads and no other: give bun two files and the second is back on 5 s, while
+ * `globalThis.__telarTestCeilingMs` still reads 20 000 in both. #740 removed
+ * `--timeout 20000` from the workspace `test` scripts on the strength of this
+ * file, which left the 182-file engine suite running at bun's default for 181
+ * of them — the #414 defect again, wearing this file as its evidence. The flag
+ * is back on those scripts because `--timeout` DOES span every file, and this
+ * preload's remaining job is the single-file `bun test one.test.ts` a person
+ * types, which the flag on a script cannot reach. When it is asked to cover a
+ * run it cannot cover, it says so below rather than reporting a ceiling that is
+ * about to lapse. apps/engine/test/test-ceiling.test.ts holds both halves
+ * against a child's own verdict.
+ *
  * AN EXPLICIT `--timeout` IS HONOURED, AND THAT IS NOT DECORATION. Measured on
  * bun 1.3.11: `setDefaultTimeout` called from a preload overrides the flag in
  * BOTH directions, because the preload runs after bun has parsed argv and is
@@ -50,7 +64,7 @@
  * file registered everywhere tests are run from.
  */
 import { setDefaultTimeout } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 /** The ceiling CI runs with — and now the one every other invocation gets too. */
@@ -95,6 +109,39 @@ export function ownCommandLine() {
   return null;
 }
 
+/**
+ * THE ARGUMENTS THAT COULD BE TEST PATHS, from a command line — everything
+ * after the `test` subcommand that is not a flag. Deliberately not a table of
+ * which bun flags take a value: `-t "THE STORE PASSES"` leaves its value here,
+ * and a flag table that fell behind bun's would mis-read a run silently. The
+ * caller settles it against the filesystem instead, where a pattern is not a
+ * file and a directory is not one either. Exported so its samples live in a
+ * test rather than in this paragraph.
+ */
+export function pathArgumentsIn(commandLine) {
+  const tokens = commandLine.split(/\s+/).filter(Boolean);
+  const subcommand = tokens.indexOf("test");
+  if (subcommand === -1) return [];
+  return tokens.slice(subcommand + 1).filter((token) => !token.startsWith("-"));
+}
+
+/**
+ * Does a `setDefaultTimeout` from here cover this whole run? Only when bun was
+ * handed exactly one file to load — see the header. A bare `bun test`, a
+ * directory, or two paths all load more than one file, and the ceiling lapses
+ * after the first.
+ */
+function coversEveryFile(commandLine) {
+  const files = pathArgumentsIn(commandLine).filter((entry) => {
+    try {
+      return statSync(entry).isFile();
+    } catch {
+      return false;
+    }
+  });
+  return files.length === 1;
+}
+
 const commandLine = ownCommandLine();
 const explicit = commandLine === null ? null : timeoutFlagIn(commandLine);
 const requested = Number(process.env.TELAR_TEST_TIMEOUT_MS);
@@ -126,6 +173,22 @@ if (ceilingSource === "default-unchecked") {
   console.error(
     `[test-ceiling] could not read this process's own command line, so an explicit --timeout could not be honoured; ` +
       `applied ${TEST_CEILING_MS}ms. Use TELAR_TEST_TIMEOUT_MS to set the ceiling on this machine.`,
+  );
+}
+
+/**
+ * THE OTHER CASE THAT CANNOT BE SILENT — #792, and the reason that issue
+ * existed. When this file sets the ceiling for a run of more than one file, it
+ * covers the first and lapses; the rest are on bun's 5 s default with
+ * `__telarTestCeilingMs` still reading 20 000. A ceiling that reports itself as
+ * applied while lapsing is worse than none, so the run that is about to lose it
+ * is told, with the two ways to keep it.
+ */
+if (ceilingSource !== "flag" && commandLine !== null && !coversEveryFile(commandLine)) {
+  console.error(
+    `[test-ceiling] bun applies a preload's setDefaultTimeout to the FIRST test file only, so ${ceilingMs}ms covers ` +
+      `the first file of this run and every file after it is on bun's 5000ms default (#792). Run it as ` +
+      `\`bun run test\` from the workspace, or add \`--timeout ${ceilingMs}\`, to get the ceiling on all of them.`,
   );
 }
 
