@@ -38,9 +38,9 @@
  * `400 Connection header did not include 'upgrade'` — so the naive version of
  * this file would have measured nothing. Carrying the upgrade headers on an
  * ordinary `fetch` gets the real answer: `400 … Keyterm limit exceeded` for an
- * over-budget list, `101` for one that fits. That keeps this in the same shape
- * `grantDictationToken` already has — an injectable `fetch`, faked in tests,
- * with no raw TLS anywhere in the engine.
+ * over-budget list, `101` for one that fits. That request lives in `listen.ts`
+ * now, because `diagnose.ts` asks the same one for a different reason (#711)
+ * and the handshake is the part that was measured rather than reasoned.
  *
  * ── THE RULE IS THE MESSAGE, NEVER THE STATUS ───────────────────────────────
  * There is a second `400` on this endpoint and retrying it would be a loop that
@@ -78,27 +78,13 @@
  * caller runs what remains IN PARALLEL with the grant (see `provider.ts`), so
  * even a miss costs no wall clock.
  */
+import { DEEPGRAM_LISTEN_URL, askListen } from "./listen";
 import { DEEPGRAM_KEYTERM_PROVABLE_BYTES } from "./keyterms";
 
-/** The socket every client opens, as an `https:` URL because this asks with
- *  `fetch` rather than opening it. The clients spell it `wss:` — same endpoint,
- *  and the scheme is the only difference an upgrade request has. */
-export const DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen";
-
-/**
- * THE MODEL THE CLIENTS ASK FOR, and the one field here that could make this
- * check answer about a different request than the one that will be made.
- *
- * A tokenizer belongs to a model, so a glossary confirmed against `nova-3` is
- * confirmed for a socket opened with `nova-3` and nothing else. Its twin lives
- * in `apps/web/lib/dictation/deepgram.ts` (and iOS's `Dictation.swift`), which
- * this engine cannot import — so a client that moves off `nova-3` without
- * moving this is the one drift that would make the answer stale. Nothing else
- * on the query can change it: `interim_results`, `smart_format` and
- * `endpointing` are not counted against the keyterm budget, and are left off so
- * this file is not a second, silently diverging copy of the client's URL.
- */
-const LISTEN_MODEL = "nova-3";
+// RE-EXPORTED rather than moved out from under its callers: the address is a
+// property of this endpoint and `listen.ts` owns it now, but a file that only
+// fits a glossary should not have to know that to name the URL.
+export { DEEPGRAM_LISTEN_URL };
 
 /** Deepgram's own sentence for this refusal, and the ONLY thing that earns a
  *  retry — see the header for the `400` that must not. */
@@ -200,66 +186,17 @@ async function ask(input: {
   url: string;
   signal: AbortSignal;
 }): Promise<Answer> {
-  const url = new URL(input.url);
-  url.searchParams.set("model", LISTEN_MODEL);
-  url.searchParams.set("language", input.language);
-  // APPENDED, ONE PER TERM: `keyterm` is a repeated parameter, and a
-  // comma-joined string would be one long term nobody says.
-  for (const term of input.keyterms) url.searchParams.append("keyterm", term);
-
-  let response: Response;
-  try {
-    response = await input.fetchImpl(url, {
-      headers: {
-        Authorization: `Token ${input.key}`,
-        // THE UPGRADE HEADERS ARE NOT DECORATION. Without them Deepgram
-        // answers `400 Connection header did not include 'upgrade'` before it
-        // looks at a single keyterm, and this check would confirm every list
-        // ever handed to it — measured, which is why they are here.
-        Upgrade: "websocket",
-        Connection: "Upgrade",
-        "Sec-WebSocket-Key": btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16)))),
-        "Sec-WebSocket-Version": "13",
-      },
-      signal: input.signal,
-    });
-  } catch {
-    // OFFLINE, ABORTED, DNS. Deepgram has said nothing, so there is nothing to
-    // act on and the floor is the answer. NO CAUSE IS KEPT: this module holds a
-    // key, and a thrown message is the wrong place to start trusting.
-    return "unknown";
-  }
-
-  // AN ACCEPTED LIST OPENS A REAL SOCKET, and the body is that socket. It is
-  // released immediately: this asked a question, it is not going to speak, and
-  // a stream left unread is a connection left open on both ends.
-  const body = await release(response);
+  // OFFLINE, ABORTED, DNS all arrive as an unreachable answer. Deepgram has
+  // said nothing, so there is nothing to act on and the floor is the answer.
+  const answer = await askListen(input);
 
   // 101 IS THE YES. Anything 2xx would be too, though this endpoint only ever
   // upgrades — the test is deliberately "not a refusal" rather than "== 101".
-  if (response.status === 101 || response.ok) return "accepted";
+  if (answer.accepted) return "accepted";
   // THE MESSAGE, NOT THE STATUS — the edge's oversized-request-line `400` is
   // the case this must never retry, and it says nothing about keyterms.
-  if (response.status === 400 && KEYTERM_LIMIT.test(body)) return "over-budget";
+  if (answer.status === 400 && KEYTERM_LIMIT.test(answer.body)) return "over-budget";
   return "unknown";
-}
-
-/** The body, read if it is short enough to be a refusal and dropped otherwise.
- *  A 101's body is a live socket and would never end. */
-async function release(response: Response): Promise<string> {
-  if (response.status === 101 || response.ok) {
-    try {
-      await response.body?.cancel();
-    } catch {
-      // Already gone.
-    }
-    return "";
-  }
-  try {
-    return await response.text();
-  } catch {
-    return "";
-  }
 }
 
 /**

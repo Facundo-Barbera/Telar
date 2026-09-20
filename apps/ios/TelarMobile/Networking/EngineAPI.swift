@@ -106,6 +106,13 @@ protocol EngineAPI: Sendable {
     /// models the transcript has no business minting credentials, and should
     /// not have to implement one to compile.
     func dictationToken() async throws -> DictationTokenAnswer
+    /// WHY THE LAST DICTATION FAILED (#711). Asked AFTER a socket has dropped,
+    /// never before one opens: this phone cannot read why its own socket was
+    /// refused, and the Mac holds the key that can ask.
+    ///
+    /// DEFAULTED BELOW TO A THROW, like `dictationToken`: a double has nothing
+    /// to diagnose, and every caller already has to survive this failing.
+    func dictationDiagnosis() async throws -> DictationDiagnosisAnswer
     /// WHETHER THAT MAC DICTATES AT ALL, read before the mic button is drawn.
     /// `provider` is `off` by default and there is no button until it is
     /// something else — the phone's own keyboard dictation already works on the
@@ -308,6 +315,13 @@ extension EngineAPI {
     /// no key would use, which is also what the button already knows how to
     /// show.
     func dictationToken() async throws -> DictationTokenAnswer {
+        throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
+    }
+
+    /// AND A DOUBLE HAS NOTHING TO DIAGNOSE. It throws for `dictationToken`'s
+    /// reason, and every caller of this already has to survive it failing — a
+    /// Mac too old for the route answers 404 and the honest sentence stands.
+    func dictationDiagnosis() async throws -> DictationDiagnosisAnswer {
         throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
     }
 
@@ -861,6 +875,14 @@ struct HTTPEngineAPI: EngineAPI {
     /// so the button has a sentence rather than a status.
     func dictationToken() async throws -> DictationTokenAnswer {
         try await post("api/dictation/token", body: [:])
+    }
+
+    /// POST for the mint's reason: it spends a handshake against the service
+    /// every time it is called. ASKED AFTER A SOCKET DROPS, never before one
+    /// opens — the Mac is not on this phone's network and a pre-flight would
+    /// answer about a different request (#711).
+    func dictationDiagnosis() async throws -> DictationDiagnosisAnswer {
+        try await post("api/dictation/diagnose", body: [:])
     }
 
     /// GET because it MINTS NOTHING: it reads a setting and whether a key is

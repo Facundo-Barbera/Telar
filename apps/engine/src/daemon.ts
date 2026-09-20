@@ -2229,6 +2229,60 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * WHY THE LAST DICTATION FAILED — asked once, for every surface (#711).
+       *
+       * NO CLIENT CAN ANSWER THIS AND NONE EVER WILL. A browser's `WebSocket`
+       * error event carries no reason BY DESIGN — surfacing the status of a
+       * failed cross-origin handshake would be an oracle — so a tab sees a bare
+       * `onerror`, the phone sees a bare read failure, and the headset sees a
+       * third version of the same nothing. Deepgram DOES send a reason; it is
+       * thrown away on the way to all three. That is how a `400 Bad Request —
+       * Keyterm limit exceeded` reached the owner as "the connection failed"
+       * and sent him to replace a key that was fine.
+       *
+       * SO THE ENGINE ASKS. It holds the long-lived key and already opens this
+       * endpoint to fit the glossary, which makes it the one place that can —
+       * and one place rather than three clients each rediscovering that they
+       * cannot.
+       *
+       * POST, AND AFTER THE FAILURE RATHER THAN BEFORE EVERY PRESS. It spends a
+       * handshake against Deepgram, so it is not a GET something would cache;
+       * and it is paid by somebody whose dictation has already stopped rather
+       * than by somebody about to speak. See `dictation/diagnose.ts` for the
+       * shapes weighed and why this one.
+       *
+       * THE REFUSALS ARE THE TOKEN ROUTE'S, DELIBERATELY. Off is a `conflict`,
+       * no key is a `conflict` naming the pane to paste one on, and the
+       * provider's own trouble is `provider_unavailable` — the same three facts
+       * a client already knows how to show, rather than a second vocabulary for
+       * the same route's worth of problems.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/dictation/diagnose") {
+        try {
+          const state = store.dictationState();
+          const chosen = dictationProvider(state.provider);
+          if (!chosen.diagnose) throw new DictationError("off", DICTATION_OFF);
+          writeJson(
+            response,
+            200,
+            await chosen.diagnose({
+              key: store.dictationKey(),
+              language: state.language,
+              vocabulary: state.vocabulary,
+              context: store.dictationContext(),
+              ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}),
+            }),
+          );
+        } catch (error) {
+          if (error instanceof DictationError) {
+            const conflict = error.kind === "off" || error.kind === "unconfigured";
+            throw new HttpError(conflict ? 409 : 502, conflict ? "conflict" : "provider_unavailable", error.message);
+          }
+          throw error;
+        }
+        return;
+      }
+      /**
        * Where each project group sits in the rail. A document of the
        * environment, like the two above: one arrangement for every client that
        * reads this engine, so a drag on the desktop is where the phone finds

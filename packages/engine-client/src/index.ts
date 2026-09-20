@@ -578,6 +578,32 @@ export type DictationTokenAnswer = {
 };
 
 /**
+ * WHY A DICTATION FAILED, IN THE PROVIDER'S OWN WORDS (#711).
+ *
+ * `reason` IS FOR THE PERSON and is the only field a surface needs: one
+ * sentence naming the fault, already written for a reader. Show it instead of
+ * the one the client could honestly say — "the connection failed" is true and
+ * useless, and it is what sent the owner to replace a working key.
+ *
+ * `fault` IS FOR A CLIENT THAT WANTS TO BEHAVE DIFFERENTLY — a pane offering
+ * "paste a key" for `refused` and nothing for `elsewhere`. Nothing has to read
+ * it, and a client that only shows the sentence is a complete one.
+ *
+ *   refused      the provider turned the connection down; `reason` is its own
+ *                words, so this is the account or this Mac's settings.
+ *   unreachable  the Mac could not reach the provider at all.
+ *   elsewhere    the provider ACCEPTED a connection from the Mac just now, so
+ *                the fault is between the device that was dictating and the
+ *                provider — a network, or something that will not pass a
+ *                WebSocket. The one answer nothing else can produce.
+ *   unconfigured there is no key on that Mac to ask with.
+ */
+export type DictationDiagnosisAnswer = {
+  fault: "refused" | "unreachable" | "elsewhere" | "unconfigured";
+  reason: string;
+};
+
+/**
  * One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
  * vocabulary so a client that already draws a session recognises the shapes.
  *
@@ -1402,6 +1428,26 @@ export class EngineClient {
    */
   dictationToken(): Promise<DictationTokenAnswer> {
     return this.request("POST", "/v2/dictation/token");
+  }
+
+  /**
+   * Why the last dictation failed (#711).
+   *
+   * CALL IT AFTER A SOCKET FAILS, NOT BEFORE ONE OPENS. No client can read the
+   * reason itself — a browser's `WebSocket` error event carries none by design,
+   * and the phone and the headset land on their own version of the same
+   * nothing — so this asks the engine, which holds the key, to ask Deepgram and
+   * answer in Deepgram's own words.
+   *
+   * POST BECAUSE IT SPENDS A HANDSHAKE against the provider, like the mint
+   * beside it.
+   *
+   * IT IS ALLOWED TO FAIL AND THE CALLER MUST SURVIVE IT. The sentence a client
+   * already has is honest; this one is better. An engine too old to have this
+   * route answers 404, and the right move is to keep showing the first.
+   */
+  dictationDiagnosis(): Promise<DictationDiagnosisAnswer> {
+    return this.request("POST", "/v2/dictation/diagnose");
   }
 
   /** Where each project group sits in the rail — see `SidebarLayout`.

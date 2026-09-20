@@ -50,6 +50,29 @@ struct DictationTokenAnswer: Decodable, Sendable {
     var listenKeyterms: [String] { keyterms ?? [] }
 }
 
+/// WHY A DICTATION FAILED, ASKED OF THE MAC (#711).
+///
+/// THIS PHONE CANNOT LEARN IT ON ITS OWN. A `URLSessionWebSocketTask` that is
+/// refused reports a read failure and nothing about the refusal, the same way a
+/// browser's `WebSocket` error event carries no reason — so a
+/// `400 Bad Request — Keyterm limit exceeded` arrives here as "the connection
+/// ended", which is exactly what sent the owner to replace a working key.
+///
+/// THE MAC HOLDS THE KEY AND CAN ASK. `POST /api/dictation/diagnose` is the one
+/// route every surface shares for this question; the phone reaches it through
+/// the host proxy like the mint beside it.
+///
+/// `fault` IS DECODED AS A PLAIN STRING for `provider`'s reason: a Mac that has
+/// learned a fifth kind of fault must not fail to decode on a phone that has
+/// not been updated. Nothing here switches on it — `reason` is the whole of
+/// what this screen shows.
+struct DictationDiagnosisAnswer: Decodable, Sendable {
+    var fault: String?
+    /// One sentence for a person, already written for a reader. Shown instead
+    /// of the honest-and-useless one the phone could say by itself.
+    var reason: String
+}
+
 /// WHO TRANSCRIBES ON THAT MAC, AND WHETHER IT COULD.
 ///
 /// READ BEFORE THE MIC BUTTON IS DRAWN. `provider` defaults to `off` and there
