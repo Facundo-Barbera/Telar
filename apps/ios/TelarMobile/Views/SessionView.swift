@@ -229,299 +229,342 @@ struct SessionView: View {
         )
     }
 
+    // THE CHAIN IS CUT ON PURPOSE — issue #758. As a single expression this
+    // was a VStack plus some forty modifiers, and the Swift type checker
+    // budgets each expression separately: that one fit inside the budget on an
+    // M-series Mac and did NOT on a GitHub-hosted runner, so the iOS nightly
+    // failed to archive on hosted while compiling fine on the desk. A
+    // threshold rather than a clean break, which is the worst kind — every
+    // line added to the view moved it closer to the edge on more machines.
+    //
+    // Each layer below is its own expression with its own explicit `some
+    // View`, so the checker solves four small problems instead of one large
+    // one. Read them OUTSIDE-IN: `body` is the navigation chrome, over the
+    // panel's presentations, over the lifecycle wiring, over the stack. Adding
+    // a modifier is fine; folding the layers back into one is what regressed.
     var body: some View {
-        VStack(spacing: 0) {
-            if let session = store.sync.session {
-                HStack(spacing: 6) {
-                    ActivityBadge(activity: session.activity)
-                    Text(session.activity == .blocked ? "Needs you" : session.activity.rawValue.capitalized)
-                    Spacer()
-                    // WHICH MAC THIS CONVERSATION IS ON — issue #244, and the
-                    // one fact the transcript could never supply. The title
-                    // above it is a name somebody chose, the branch beside it
-                    // is a name somebody chose, and two paired Macs can carry
-                    // the same of either; the machine is what tells them apart.
-                    //
-                    // TRAILING, BESIDE THE BRANCH, because the strip is already
-                    // read as two halves: what this conversation is DOING on the
-                    // leading edge, and WHERE its work lands on the trailing
-                    // one. The Mac is the outermost "where", so it sits just
-                    // outside the branch rather than interrupting the status.
-                    //
-                    // IT CARRIES A GLYPH, unlike the rail's badge. There the
-                    // shape is learned from company — a header's list of them,
-                    // rows above and below wearing the same mark. Here there is
-                    // exactly one, next to a branch name, and a bare rounded
-                    // rectangle would be a second piece of text to decode.
-                    if let hostLabel {
-                        HStack(spacing: 3) {
-                            Image(systemName: "desktopcomputer").font(.system(Theme.captionTiny))
-                            Text(hostLabel).lineLimit(1).truncationMode(.tail)
-                        }
-                        .padding(.horizontal, 4)
-                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel("On \(hostLabel)")
-                    }
-                    Text(session.workspace.branch ?? session.driver).lineLimit(1)
-                }
-                .font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)
-                .readingColumn(gutter: Theme.readingGutter)
+        presentations
+            .navigationTitle(store.sync.session?.title ?? "Session")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbarContent }
+            .alert("Rename session", isPresented: $renaming) {
+                TextField("Title", text: $renameDraft)
+                Button("Rename") { Task { await store.rename(renameDraft) } }
+                Button("Cancel", role: .cancel) {}
             }
-            ScrollView {
-                VStack(spacing: 0) {
-                    // AN EXPLICIT TAP, NOT A SCROLL TRIGGER — the reader
-                    // asking for history is the only thing that fetches it.
-                    // Prepending does not re-pin the tail: `contentFingerprint`
-                    // reads only the LAST turn (plus the count, which changes,
-                    // but `followTail` defers to `isPositionedByUser`, and a
-                    // reader at this button has scrolled).
-                    if store.sync.hasOlderTurns {
-                        loadEarlierButton
-                    }
-                    // Queued messages live below the composer (t3's queue
-                    // line), not in the transcript.
-                    // THE READING MEASURE. The web caps the message lane at
-                    // 50rem; at the phone's larger body size the same feel is
-                    // narrower, and on an iPad the column would otherwise
-                    // run the full width of the detail pane.
-                    TranscriptView(
-                        turns: visibleTurns,
-                        receiptMarker: receiptWorld.candidate?.runId,
-                        onReceiptMarkerVisible: { runId, visible in
-                            // Only ever claims or releases ITS OWN run, so a
-                            // marker unmounting cannot blank the answer that
-                            // replaced it.
-                            if visible { visibleReceiptRunId = runId }
-                            else if visibleReceiptRunId == runId { visibleReceiptRunId = nil }
+    }
+
+    /// Every surface the panel can appear on — the column beside the
+    /// transcript, the cover that fills the window, the push at a compact
+    /// width — and the watchers that keep exactly one of them raised.
+    private var presentations: some View {
+        lifecycle
+            .environment(\.panel, panel)
+            .environment(\.kernelSignals, store.sync.kernelSignals)
+            .inspector(isPresented: $inspectorShown) {
+                NavigationStack {
+                    PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .column, canFillWindow: true, onClose: { panel.close() })
+                        .toolbar(.hidden, for: .navigationBar)
+                }
+                // The card draws its own surface, so the column behind it is the
+                // canvas the conversation sits on rather than a second sheet.
+                .background(Theme.canvas)
+                .inspectorColumnWidth(min: 360, ideal: 440, max: 640)
+            }
+            // FULL SCREEN IS THE SAME VIEW WITH THE SCREEN TO ITSELF. `PanelModel`
+            // owns the state, so the tab, the open files and their unsaved drafts
+            // cross unchanged — nothing is handed to a second instance.
+            //
+            // Its flag is `@State` for the reason every presentation flag here is:
+            // a `Binding` built in `body` is a new location on every pass, and
+            // `.fullScreenCover` compares the one it was given.
+            .fullScreenCover(isPresented: $fullScreenShown) {
+                NavigationStack {
+                    PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .page, canFillWindow: true, onClose: { panel.close() })
+                        .toolbar(.hidden, for: .navigationBar)
+                        .background {
+                            // A hardware Escape leaves full screen, the way it
+                            // leaves one on every other platform. Zero-sized so it
+                            // is a shortcut and not a control.
+                            Button("") { panel.setFullScreen(false) }
+                                .keyboardShortcut(.escape, modifiers: [])
+                                .opacity(0)
+                                .accessibilityHidden(true)
+                        }
+                }
+            }
+            .onChange(of: panel.isFullScreen, initial: true) { _, full in
+                let wanted = full && wantsColumn
+                if fullScreenShown != wanted { fullScreenShown = wanted }
+                raisePanel(panel.isOpen)
+            }
+            .onChange(of: fullScreenShown) { _, shown in
+                // The cover was pulled down by a gesture rather than the button.
+                if !shown, panel.isFullScreen { panel.setFullScreen(false) }
+            }
+            .navigationDestination(isPresented: $pushShown) {
+                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, onClose: { panel.close() })
+                    .navigationTitle("Panel")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .onChange(of: panel.isOpen, initial: true) { _, _ in
+                // THE MODEL AS IT IS NOW, never the value the change carried.
+                // `isOpen` can flip twice inside one update pass, and SwiftUI then
+                // delivers the superseded one too; raising the push off THAT put
+                // `pushShown` back up for a frame against a panel already closed.
+                raisePanel(panel.isOpen)
+                syncSidebar(open: panel.isOpen)
+            }
+            .onChange(of: inspectorShown) { _, open in
+                // THE COLUMN CLOSING BECAUSE WE WENT FULL SCREEN IS NOT THE READER
+                // CLOSING THE PANEL. Without this guard, expanding read as a
+                // dismissal: `panel.close()` ran, which also drops full screen, and
+                // the whole thing collapsed instead of filling the window.
+                guard wantsColumn, !panel.isFullScreen, PanelRaise.isDismissal(open) else { return }
+                panelDismissed()
+            }
+            .onChange(of: pushShown) { _, open in
+                if !wantsColumn, PanelRaise.isDismissal(open) { panelDismissed() }
+            }
+            // A rotation or a multitasking resize moves the panel between the
+            // column and the push; the model says whether it is showing at all.
+            .onChange(of: wantsColumn) { raisePanel(panel.isOpen) }
+            .task(id: "\(sessionId):plugins") { await readPlugins() }
+            .onChange(of: panel.generation) {
+                // A file opened from a chip or a `display.opened` event: make
+                // sure the panel is showing and the sidebar has made room.
+                //
+                // THE RAISE BELONGS HERE TOO, not only on `isOpen`. A panel the
+                // model already calls open flips nothing for that watcher to fire
+                // on, so at a compact width — where the panel is a push and not a
+                // column — the agent's file landed in a panel that never came up.
+                // `generation` goes up on every open, which is the one signal that
+                // survives the panel already being open.
+                guard panel.isOpen else { return }
+                raisePanel(true)
+                syncSidebar(open: true)
+            }
+            .onChange(of: store.sync.displayOpens.count) { watchDisplayOpens() }
+    }
+
+    /// What this view owns for the length of a mount: the poll loop, the read
+    /// receipt's courier, the draft on disk, the notifier's idea of which
+    /// session is on screen, and the handoff activity.
+    private var lifecycle: some View {
+        stack
+            .task {
+                store.sync.start()
+                // One courier for the life of the mount. It owns an in-flight
+                // request and a dwell timer, so it is a subscription rather than a
+                // derived value — rebuilding it per render would lose both.
+                if receipt == nil {
+                    let api = self.api
+                    let sync = store.sync
+                    let report = self.onRead
+                    receipt = ReadReceiptCourier(
+                        send: { identity, runId in try await api.markSessionRead(identity.sessionId, runId: runId) },
+                        // BOTH SURFACES, from the one answer. The transcript's own
+                        // copy stops the gate re-firing; the report is what puts the
+                        // sidebar's row right without waiting for its poll.
+                        onRead: { _, session in
+                            sync.applyRead(session)
+                            report?(session)
                         }
                     )
-                    .readingColumn()
-                    .padding(.vertical, 12)
+                    sendReceiptIfEarned()
                 }
             }
-            .scrollPosition($position)
-            // THE CONVERSATION IS THE WAY OUT OF THE KEYBOARD. A tap on it, or
-            // scrolling it, puts the keyboard away — what every messaging app
-            // does, and the phone offered neither: the only exits were Send
-            // and the return key. `.immediately` rather than `.interactively`
-            // because scrolling UP to re-read is the common case, and the
-            // interactive mode only dismisses on a drag toward the keyboard.
-            // Buttons, links and long-presses inside the transcript still win;
-            // this catches only the tap nothing else wanted.
-            .scrollDismissesKeyboard(.immediately)
-            // AND THE SCROLL HALF, SAID OURSELVES. `.scrollDismissesKeyboard`
-            // works through SwiftUI's own focus, and the composer's field is a
-            // `UITextView` — outside that system, so the modifier alone scrolled
-            // the transcript with the keyboard still standing. `.interacting` is
-            // the finger on the glass, which is what `.immediately` means.
-            .onScrollPhaseChange { _, phase in
-                if phase == .interacting, composerFocused { composerFocused = false }
+            .onChange(of: receiptWorld) { sendReceiptIfEarned() }
+            .onAppear {
+                if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
             }
-            .onTapGesture { composerFocused = false }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height
-                    >= geometry.contentSize.height - 40
-            } action: { _, atBottom in
-                isAtBottom = atBottom
+            .onChange(of: draft) { _, text in
+                if let hostId { UserDefaults.standard.set(text, forKey: "telar.draft.\(hostId).\(sessionId)") }
             }
-            // THE CASE THAT WAS BROKEN: the transcript arrives a poll after the
-            // view does, so the first non-empty fill is the real "open", and
-            // that is when the tail has to be re-pinned.
-            .onChange(of: visibleTurns.isEmpty) { _, isEmpty in
-                guard !isEmpty else { return }
-                followTail()
+            // "INSERT AS A REFERENCE", from wherever it was picked. The tree, the
+            // file body, a transcript row and a diff row all reach the composer
+            // through the panel model they already share; this is the other end.
+            .onChange(of: panel.pendingReference) { _, pending in
+                guard let pending else { return }
+                panel.clearReference()
+                draft = ComposerReference.insert(pending, into: draft)
+                // THE BOX IT LANDED IN HAS TO BE ON SCREEN. Beside the transcript
+                // the composer already is; as a push or filling the window the
+                // panel is covering it, and an insert with nothing to show for it
+                // reads as a menu item that did nothing.
+                if !wantsColumn || panel.isFullScreen { panel.close() }
+                composerFocused = true
             }
-            .onChange(of: contentFingerprint) { followTail() }
-            // AND AS THE REVEAL PAINTS IT, not only as it arrives.
-            // `contentFingerprint` counts the RAW `streamedText`, so it moves
-            // when a poll lands — before the pacer has drawn a character of it.
-            // The height then grows for about a second with nothing re-pinning,
-            // and the last chunk of a reply has no arrival after it to correct
-            // the drift. Height is the signal that matches what the reader
-            // sees; re-pinning moves the offset, never the height, so this
-            // cannot feed itself.
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentSize.height
-            } action: { _, _ in
-                followTail()
+            .onChange(of: store.sync.session) { _, session in
+                if let session, let hostId { Task { await MobileNotifications.shared.update(session, hostId: hostId) } }
             }
-            .overlay(alignment: .bottomTrailing) {
-                jumpToBottomButton()
-                    .opacity(showsJumpButton ? 1 : 0)
-                    .allowsHitTesting(showsJumpButton)
-                    .animation(.easeInOut(duration: 0.15), value: showsJumpButton)
+            .alert("Live Activity", isPresented: Binding(get: { MobileNotifications.shared.activityError != nil }, set: { if !$0 { MobileNotifications.shared.activityError = nil } })) {
+                Button("OK") { MobileNotifications.shared.activityError = nil }
+            } message: { Text(MobileNotifications.shared.activityError ?? "") }
+            .onDisappear {
+                store.sync.stop()
+                receipt?.dispose()
+                receipt = nil
+                if MobileNotifications.shared.visibleSession?.sessionId == sessionId && MobileNotifications.shared.visibleSession?.hostId == hostId {
+                    MobileNotifications.shared.visibleSession = nil
+                }
             }
+            .userActivity("com.telar.session", isActive: cockpitBaseURL != nil && store.sync.session != nil) { activity in
+                guard let base = cockpitBaseURL, let session = store.sync.session else { return }
+                activity.title = session.title
+                activity.webpageURL = session.cockpitURL(base: base)
+                activity.isEligibleForHandoff = true
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // Poll only while someone is looking.
+                if phase == .active {
+                    store.sync.start()
+                    if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
+                } else { store.sync.stop(); MobileNotifications.shared.visibleSession = nil }
+            }
+            .onChange(of: store.sync.connection) { _, connection in
+                if connection == .gone { dismiss() }
+            }
+    }
+
+    /// The three bands of the conversation, top to bottom.
+    private var stack: some View {
+        VStack(spacing: 0) {
+            statusStrip
+            transcript
             footer
         }
         .background(Theme.canvas)
-        .task {
-            store.sync.start()
-            // One courier for the life of the mount. It owns an in-flight
-            // request and a dwell timer, so it is a subscription rather than a
-            // derived value — rebuilding it per render would lose both.
-            if receipt == nil {
-                let api = self.api
-                let sync = store.sync
-                let report = self.onRead
-                receipt = ReadReceiptCourier(
-                    send: { identity, runId in try await api.markSessionRead(identity.sessionId, runId: runId) },
-                    // BOTH SURFACES, from the one answer. The transcript's own
-                    // copy stops the gate re-firing; the report is what puts the
-                    // sidebar's row right without waiting for its poll.
-                    onRead: { _, session in
-                        sync.applyRead(session)
-                        report?(session)
+    }
+
+    /// The strip above the transcript, read as two halves: what this
+    /// conversation is DOING on the leading edge, and WHERE its work lands on
+    /// the trailing one.
+    @ViewBuilder private var statusStrip: some View {
+        if let session = store.sync.session {
+            HStack(spacing: 6) {
+                ActivityBadge(activity: session.activity)
+                Text(session.activity == .blocked ? "Needs you" : session.activity.rawValue.capitalized)
+                Spacer()
+                // WHICH MAC THIS CONVERSATION IS ON — issue #244, and the
+                // one fact the transcript could never supply. The title
+                // above it is a name somebody chose, the branch beside it
+                // is a name somebody chose, and two paired Macs can carry
+                // the same of either; the machine is what tells them apart.
+                //
+                // TRAILING, BESIDE THE BRANCH, because the strip is already
+                // read as two halves: what this conversation is DOING on the
+                // leading edge, and WHERE its work lands on the trailing
+                // one. The Mac is the outermost "where", so it sits just
+                // outside the branch rather than interrupting the status.
+                //
+                // IT CARRIES A GLYPH, unlike the rail's badge. There the
+                // shape is learned from company — a header's list of them,
+                // rows above and below wearing the same mark. Here there is
+                // exactly one, next to a branch name, and a bare rounded
+                // rectangle would be a second piece of text to decode.
+                if let hostLabel {
+                    HStack(spacing: 3) {
+                        Image(systemName: "desktopcomputer").font(.system(Theme.captionTiny))
+                        Text(hostLabel).lineLimit(1).truncationMode(.tail)
+                    }
+                    .padding(.horizontal, 4)
+                    .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("On \(hostLabel)")
+                }
+                Text(session.workspace.branch ?? session.driver).lineLimit(1)
+            }
+            .font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)
+            .readingColumn(gutter: Theme.readingGutter)
+        }
+    }
+
+    /// The conversation itself, and everything about staying at its tail.
+    private var transcript: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                // AN EXPLICIT TAP, NOT A SCROLL TRIGGER — the reader
+                // asking for history is the only thing that fetches it.
+                // Prepending does not re-pin the tail: `contentFingerprint`
+                // reads only the LAST turn (plus the count, which changes,
+                // but `followTail` defers to `isPositionedByUser`, and a
+                // reader at this button has scrolled).
+                if store.sync.hasOlderTurns {
+                    loadEarlierButton
+                }
+                // Queued messages live below the composer (t3's queue
+                // line), not in the transcript.
+                // THE READING MEASURE. The web caps the message lane at
+                // 50rem; at the phone's larger body size the same feel is
+                // narrower, and on an iPad the column would otherwise
+                // run the full width of the detail pane.
+                TranscriptView(
+                    turns: visibleTurns,
+                    receiptMarker: receiptWorld.candidate?.runId,
+                    onReceiptMarkerVisible: { runId, visible in
+                        // Only ever claims or releases ITS OWN run, so a
+                        // marker unmounting cannot blank the answer that
+                        // replaced it.
+                        if visible { visibleReceiptRunId = runId }
+                        else if visibleReceiptRunId == runId { visibleReceiptRunId = nil }
                     }
                 )
-                sendReceiptIfEarned()
+                .readingColumn()
+                .padding(.vertical, 12)
             }
         }
-        .onChange(of: receiptWorld) { sendReceiptIfEarned() }
-        .onAppear {
-            if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
+        .scrollPosition($position)
+        // THE CONVERSATION IS THE WAY OUT OF THE KEYBOARD. A tap on it, or
+        // scrolling it, puts the keyboard away — what every messaging app
+        // does, and the phone offered neither: the only exits were Send
+        // and the return key. `.immediately` rather than `.interactively`
+        // because scrolling UP to re-read is the common case, and the
+        // interactive mode only dismisses on a drag toward the keyboard.
+        // Buttons, links and long-presses inside the transcript still win;
+        // this catches only the tap nothing else wanted.
+        .scrollDismissesKeyboard(.immediately)
+        // AND THE SCROLL HALF, SAID OURSELVES. `.scrollDismissesKeyboard`
+        // works through SwiftUI's own focus, and the composer's field is a
+        // `UITextView` — outside that system, so the modifier alone scrolled
+        // the transcript with the keyboard still standing. `.interacting` is
+        // the finger on the glass, which is what `.immediately` means.
+        .onScrollPhaseChange { _, phase in
+            if phase == .interacting, composerFocused { composerFocused = false }
         }
-        .onChange(of: draft) { _, text in
-            if let hostId { UserDefaults.standard.set(text, forKey: "telar.draft.\(hostId).\(sessionId)") }
+        .onTapGesture { composerFocused = false }
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentOffset.y + geometry.containerSize.height
+                >= geometry.contentSize.height - 40
+        } action: { _, atBottom in
+            isAtBottom = atBottom
         }
-        // "INSERT AS A REFERENCE", from wherever it was picked. The tree, the
-        // file body, a transcript row and a diff row all reach the composer
-        // through the panel model they already share; this is the other end.
-        .onChange(of: panel.pendingReference) { _, pending in
-            guard let pending else { return }
-            panel.clearReference()
-            draft = ComposerReference.insert(pending, into: draft)
-            // THE BOX IT LANDED IN HAS TO BE ON SCREEN. Beside the transcript
-            // the composer already is; as a push or filling the window the
-            // panel is covering it, and an insert with nothing to show for it
-            // reads as a menu item that did nothing.
-            if !wantsColumn || panel.isFullScreen { panel.close() }
-            composerFocused = true
+        // THE CASE THAT WAS BROKEN: the transcript arrives a poll after the
+        // view does, so the first non-empty fill is the real "open", and
+        // that is when the tail has to be re-pinned.
+        .onChange(of: visibleTurns.isEmpty) { _, isEmpty in
+            guard !isEmpty else { return }
+            followTail()
         }
-        .onChange(of: store.sync.session) { _, session in
-            if let session, let hostId { Task { await MobileNotifications.shared.update(session, hostId: hostId) } }
+        .onChange(of: contentFingerprint) { followTail() }
+        // AND AS THE REVEAL PAINTS IT, not only as it arrives.
+        // `contentFingerprint` counts the RAW `streamedText`, so it moves
+        // when a poll lands — before the pacer has drawn a character of it.
+        // The height then grows for about a second with nothing re-pinning,
+        // and the last chunk of a reply has no arrival after it to correct
+        // the drift. Height is the signal that matches what the reader
+        // sees; re-pinning moves the offset, never the height, so this
+        // cannot feed itself.
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentSize.height
+        } action: { _, _ in
+            followTail()
         }
-        .alert("Live Activity", isPresented: Binding(get: { MobileNotifications.shared.activityError != nil }, set: { if !$0 { MobileNotifications.shared.activityError = nil } })) {
-            Button("OK") { MobileNotifications.shared.activityError = nil }
-        } message: { Text(MobileNotifications.shared.activityError ?? "") }
-
-        .onDisappear {
-            store.sync.stop()
-            receipt?.dispose()
-            receipt = nil
-            if MobileNotifications.shared.visibleSession?.sessionId == sessionId && MobileNotifications.shared.visibleSession?.hostId == hostId {
-                MobileNotifications.shared.visibleSession = nil
-            }
-        }
-        .userActivity("com.telar.session", isActive: cockpitBaseURL != nil && store.sync.session != nil) { activity in
-            guard let base = cockpitBaseURL, let session = store.sync.session else { return }
-            activity.title = session.title
-            activity.webpageURL = session.cockpitURL(base: base)
-            activity.isEligibleForHandoff = true
-        }
-        .onChange(of: scenePhase) { _, phase in
-            // Poll only while someone is looking.
-            if phase == .active {
-                store.sync.start()
-                if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
-            } else { store.sync.stop(); MobileNotifications.shared.visibleSession = nil }
-        }
-        .onChange(of: store.sync.connection) { _, connection in
-            if connection == .gone { dismiss() }
-        }
-        .environment(\.panel, panel)
-        .environment(\.kernelSignals, store.sync.kernelSignals)
-        .inspector(isPresented: $inspectorShown) {
-            NavigationStack {
-                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .column, canFillWindow: true, onClose: { panel.close() })
-                    .toolbar(.hidden, for: .navigationBar)
-            }
-            // The card draws its own surface, so the column behind it is the
-            // canvas the conversation sits on rather than a second sheet.
-            .background(Theme.canvas)
-            .inspectorColumnWidth(min: 360, ideal: 440, max: 640)
-        }
-        // FULL SCREEN IS THE SAME VIEW WITH THE SCREEN TO ITSELF. `PanelModel`
-        // owns the state, so the tab, the open files and their unsaved drafts
-        // cross unchanged — nothing is handed to a second instance.
-        //
-        // Its flag is `@State` for the reason every presentation flag here is:
-        // a `Binding` built in `body` is a new location on every pass, and
-        // `.fullScreenCover` compares the one it was given.
-        .fullScreenCover(isPresented: $fullScreenShown) {
-            NavigationStack {
-                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .page, canFillWindow: true, onClose: { panel.close() })
-                    .toolbar(.hidden, for: .navigationBar)
-                    .background {
-                        // A hardware Escape leaves full screen, the way it
-                        // leaves one on every other platform. Zero-sized so it
-                        // is a shortcut and not a control.
-                        Button("") { panel.setFullScreen(false) }
-                            .keyboardShortcut(.escape, modifiers: [])
-                            .opacity(0)
-                            .accessibilityHidden(true)
-                    }
-            }
-        }
-        .onChange(of: panel.isFullScreen, initial: true) { _, full in
-            let wanted = full && wantsColumn
-            if fullScreenShown != wanted { fullScreenShown = wanted }
-            raisePanel(panel.isOpen)
-        }
-        .onChange(of: fullScreenShown) { _, shown in
-            // The cover was pulled down by a gesture rather than the button.
-            if !shown, panel.isFullScreen { panel.setFullScreen(false) }
-        }
-        .navigationDestination(isPresented: $pushShown) {
-            PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, onClose: { panel.close() })
-                .navigationTitle("Panel")
-                .navigationBarTitleDisplayMode(.inline)
-        }
-        .onChange(of: panel.isOpen, initial: true) { _, _ in
-            // THE MODEL AS IT IS NOW, never the value the change carried.
-            // `isOpen` can flip twice inside one update pass, and SwiftUI then
-            // delivers the superseded one too; raising the push off THAT put
-            // `pushShown` back up for a frame against a panel already closed.
-            raisePanel(panel.isOpen)
-            syncSidebar(open: panel.isOpen)
-        }
-        .onChange(of: inspectorShown) { _, open in
-            // THE COLUMN CLOSING BECAUSE WE WENT FULL SCREEN IS NOT THE READER
-            // CLOSING THE PANEL. Without this guard, expanding read as a
-            // dismissal: `panel.close()` ran, which also drops full screen, and
-            // the whole thing collapsed instead of filling the window.
-            guard wantsColumn, !panel.isFullScreen, PanelRaise.isDismissal(open) else { return }
-            panelDismissed()
-        }
-        .onChange(of: pushShown) { _, open in
-            if !wantsColumn, PanelRaise.isDismissal(open) { panelDismissed() }
-        }
-        // A rotation or a multitasking resize moves the panel between the
-        // column and the push; the model says whether it is showing at all.
-        .onChange(of: wantsColumn) { raisePanel(panel.isOpen) }
-        .task(id: "\(sessionId):plugins") { await readPlugins() }
-        .onChange(of: panel.generation) {
-            // A file opened from a chip or a `display.opened` event: make
-            // sure the panel is showing and the sidebar has made room.
-            //
-            // THE RAISE BELONGS HERE TOO, not only on `isOpen`. A panel the
-            // model already calls open flips nothing for that watcher to fire
-            // on, so at a compact width — where the panel is a push and not a
-            // column — the agent's file landed in a panel that never came up.
-            // `generation` goes up on every open, which is the one signal that
-            // survives the panel already being open.
-            guard panel.isOpen else { return }
-            raisePanel(true)
-            syncSidebar(open: true)
-        }
-        .onChange(of: store.sync.displayOpens.count) { watchDisplayOpens() }
-        .navigationTitle(store.sync.session?.title ?? "Session")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
-        .alert("Rename session", isPresented: $renaming) {
-            TextField("Title", text: $renameDraft)
-            Button("Rename") { Task { await store.rename(renameDraft) } }
-            Button("Cancel", role: .cancel) {}
+        .overlay(alignment: .bottomTrailing) {
+            jumpToBottomButton()
+                .opacity(showsJumpButton ? 1 : 0)
+                .allowsHitTesting(showsJumpButton)
+                .animation(.easeInOut(duration: 0.15), value: showsJumpButton)
         }
     }
 
