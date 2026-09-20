@@ -101,6 +101,17 @@ permissions:
 # Reverting this to shorten the queue restores the exact defect #687 records.
 # A scheduled verify of main's tip was considered and rejected: it proves the
 # tip and leaves every intermediate commit unproven.
+#
+# IT DID BECOME THE BINDING CONSTRAINT, the same night it shipped. A main run
+# that cannot be superseded has exactly one way out of the queue: it runs. That
+# is fine until main advances faster than one slot can retire them — and then
+# they arrive faster than they leave. They are not stuck, they are backed up:
+# `108043c1` sat queued 53 minutes and then went green on its own.
+# The queue reached 15 and seven queued main runs had to be cancelled BY HAND
+# to let PR checks through. The fix is the third option that paragraph did not
+# list — keep every commit's run, and let the newest sweep the ones it has
+# superseded. It lives in the job below, not here; a concurrency group cannot
+# express "cancel the older ones but not me and not the newest".
 concurrency:
   group: ${{ github.event_name == 'push' && format('verify-{0}', github.sha) || format('verify-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
@@ -110,10 +121,122 @@ jobs:
     name: Typecheck, lint, and test everything that does not need a Mac
     runs-on: [self-hosted, macOS, ARM64, telar-nightly]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # `actions: write` is for the sweep step below and nothing else. A job-level
+    # block REPLACES the workflow-level one rather than adding to it, so
+    # `contents: read` is restated here; dropping it would break checkout.
+    permissions:
+      contents: read
+      actions: write
     # Without this a hang would hold the one runner for GitHub's 6-hour
     # default, and every release behind it.
     timeout-minutes: 15
     steps:
+      # BOUND THE BACKLOG THIS WORKFLOW CREATES (#687). Per-sha grouping above
+      # is why a main run is never superseded, and on a one-slot runner that
+      # leaves running as its only way out of the queue. They do get there —
+      # the backlog is arrival rate against one slot, not a stall — but under
+      # load they arrive faster than they leave and the queue grows without
+      # bound. So the newest run sweeps its own predecessors, and the backlog
+      # is bounded without any commit losing the run that proves it.
+      #
+      # WHY A STEP AND NOT A SCHEDULED WORKFLOW. A cron sweeper has to run
+      # somewhere. On this Mac it queues behind the jam it exists to clear —
+      # useless by construction. `ubuntu-latest` would in fact work, and the
+      # header comment above is out of date on this point: hosted runners were
+      # refused at dispatch on 2026-09-11 ("recent account payments have
+      # failed"), which is why every workflow here moved to the Mac, but that
+      # was re-tested on 2026-09-20 and a hosted job started and passed in two
+      # seconds. It is still the wrong shape. Cron cannot keep up — a 5-minute
+      # floor that GitHub delays further under load, against merges that landed
+      # 8 SECONDS apart the same night (`05f498bf`, `f918ef8d`). Scheduled
+      # workflows are also disabled after 60 days of repo inactivity, a silent
+      # failure mode in a mechanism whose entire job is to prevent one. And a
+      # second workflow that also cancels runs doubles the blast radius for a
+      # bounded problem. A step inside the run that already owns the slot needs
+      # no second runner and no timer.
+      #
+      # ITS ONE WEAKNESS, stated so nobody is surprised by it: it acts only when
+      # a run STARTS, so it cannot clear a jam in which nothing starts. It
+      # bounds the steady state — it is not a rescue for a wedged runner.
+      #
+      # THE BLAST RADIUS IS THE WHOLE DESIGN. This cancels work, so every limit
+      # is enforced twice, once in the query and again on each candidate:
+      #   * push-to-main runs only — a pull request's check is somebody's gate,
+      #     and this must never touch one.
+      #   * this workflow only, never "whatever happens to be queued".
+      #   * `queued`/`pending` only, never `in_progress`. A started run already
+      #     owns the slot, and killing in-flight work is a judgement call a
+      #     robot does not get to make.
+      #   * strictly lower `run_number` than this run, so the newest always
+      #     survives and this run can never cancel itself.
+      # A 409 from the cancel is NOT an error: the run left the queue between
+      # the list and the cancel, which is the outcome we wanted anyway. Anything
+      # else fails the step loudly, because a sweeper that fails quietly leaves
+      # the queue unbounded and nobody finds out until 3am. `retries` is there
+      # so a transient 5xx does not redden main on its own.
+      - name: Cancel superseded main verify runs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          retries: 3
+          # 409 is the expected race below, not a fault — without it here the
+          # retry plugin would spend three attempts re-confirming it.
+          retry-exempt-status-codes: 400,401,403,404,409,422
+          script: |
+            const { owner, repo } = context.repo;
+            const selfId = context.runId;
+            const selfNumber = context.runNumber;
+
+            // Newest first. One page is ample — the backlog that motivated this
+            // peaked at 15, and a main run 100 merges back is long finished.
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: 'verify.yml',
+              branch: 'main',
+              event: 'push',
+              per_page: 100,
+            });
+
+            // Re-assert every limit the query already applied. If a parameter
+            // is ever dropped or its meaning changes, this is what still stops
+            // the sweep from reaching a pull request or an in-flight run.
+            const superseded = data.workflow_runs.filter((r) =>
+              r.id !== selfId &&
+              r.run_number < selfNumber &&
+              (r.status === 'queued' || r.status === 'pending') &&
+              r.event === 'push' &&
+              r.head_branch === 'main'
+            );
+
+            core.info(
+              `This run is #${selfNumber} (${selfId}). ` +
+              `Superseded main runs still queued: ${superseded.length}.`
+            );
+
+            const failures = [];
+            for (const r of superseded) {
+              const label = `#${r.run_number} ${r.head_sha.slice(0, 8)} (${r.id}), queued ${r.created_at}`;
+              try {
+                await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: r.id });
+                core.info(`cancelled ${label}`);
+              } catch (err) {
+                if (err.status === 409) {
+                  core.info(`left the queue on its own, nothing to cancel: ${label}`);
+                  continue;
+                }
+                failures.push(`${label}: ${err.status ?? 'no status'} ${err.message}`);
+              }
+            }
+
+            if (failures.length > 0) {
+              core.setFailed(
+                `Could not cancel ${failures.length} superseded main run(s). The ` +
+                `queue is NOT bounded right now and may need a hand sweep:\n` +
+                failures.join('\n')
+              );
+            }
+
       - uses: actions/checkout@v4
 
       # No `bun-version:` is a PIN, not an omission — do not "fix" it.
