@@ -38,6 +38,9 @@ import {
   type SidebarLayout,
   type StorageReport,
   type JournalReclaim,
+  type JournalRetirement,
+  type RetentionBucket,
+  type RetentionPolicy,
   type TextGenPolicy,
   type WorktreeMoveResult,
   type WorktreeInventory,
@@ -1749,6 +1752,36 @@ export class EngineClient {
    */
   reclaimJournal(): Promise<{ reclaimed: JournalReclaim }> {
     return this.request("POST", "/v2/storage/journal/reclaim");
+  }
+
+  /**
+   * The retention window in force, and what each candidate window would take —
+   * issues #542 and #646. Nothing is deleted to answer this.
+   *
+   * `bytes` COSTS A SCAN of every qualifying row's text, where the session and
+   * event counts are index ranges. Ask for it when a person is looking at the
+   * figure and never on a path that repeats.
+   */
+  retention(options: { bytes?: boolean } = {}): Promise<{ retention: RetentionPolicy; buckets: RetentionBucket[] }> {
+    return this.request("GET", `/v2/storage/retention${options.bytes ? "?bytes=1" : ""}`);
+  }
+
+  /** Set the window, or turn it off with `idleAfterDays: null`. A window with
+   *  no export destination is refused: the copy comes before the delete. */
+  setRetention(patch: { idleAfterDays?: number | null; exportTo?: string | null }): Promise<{ retention: RetentionPolicy }> {
+    return this.request("PUT", "/v2/storage/retention", patch);
+  }
+
+  /**
+   * Sweep now — the distinct visible act the design asks for, rather than
+   * something the next startup does quietly.
+   *
+   * SLOW ON A BACKLOG: the first run after enabling exports and drops every
+   * qualifying session, one transaction each. It returns counts and no bytes;
+   * the file shrinks when somebody presses Reclaim.
+   */
+  sweepRetention(): Promise<{ swept: JournalRetirement }> {
+    return this.request("POST", "/v2/storage/retention/sweep");
   }
 
   /** Where session checkouts go on this install — see `WorktreesRoot`. */
