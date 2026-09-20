@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
+import { worktreeReady } from "./worktree-ready";
 import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WorktreeError, worktreeLockReason, defaultWorktreesRoot, type AsyncGitRunner, type GitRunner } from "../src/worktree";
 import { gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync } from "../src/git";
 
@@ -74,17 +75,12 @@ async function cutWorktree(input: {
 /**
  * Wait for a session's background cut to land — the seam #496 introduced.
  *
- * POLLS THE ROW rather than the disk, because the row is what a client reads:
- * `preparation` absent means ready, and a `failed` one is a settled answer too,
- * so this returns on either rather than spinning until the timeout.
+ * THE SHARED ONE, not a local copy (#706). This file used to carry its own
+ * identical loop with its own two-second ceiling, which is precisely the drift
+ * `worktree-ready.ts` exists to prevent — and it was that copy, not the shared
+ * helper, that failed under full-suite load. The alias keeps the local name.
  */
-async function settled(store: EngineStore, sessionId: string): Promise<void> {
-  for (let i = 0; i < 400; i++) {
-    if (store.getSession(sessionId).preparation?.state !== "preparing") return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error(`worktree for ${sessionId} never finished preparing`);
-}
+const settled = worktreeReady;
 
 /** A throwaway repository with one commit, so `HEAD` resolves. */
 function repo(): string {
@@ -729,7 +725,26 @@ test("async git pool expires queued reads without spawning them and recovers cap
   expect((await queued).timedOut).toBe(true);
   expect(fs.existsSync(marker)).toBe(false);
   expect((await stalled).timedOut).toBe(true);
-  const recovered = await run(root, ["-e", "process.stdout.write('ready')"], { timeoutMs: 2000 });
+  /**
+   * THE BUDGET COVERS MORE THAN IT LOOKS LIKE IT DOES (#706).
+   *
+   * It reads as "a spawn takes under two seconds". It is not: at
+   * `concurrency: 1` this call is enqueued behind `stalled`, and the timeout
+   * path in `createAsyncGitRunner` does NOT free the slot. `release` is
+   * defined inside `start` and reached only from `execFile`'s callback, while
+   * the timer only splices the queue, SIGKILLs the child and resolves — so
+   * `active` stays at one until the killed child is actually REAPED. This
+   * call's deadline therefore spans reap + queue drain + spawn.
+   *
+   * That makes it a bound on a hang rather than an assertion: nothing is
+   * compared against it, and the claim under test is the line below — that the
+   * pool recovers capacity and a later read runs and returns its output. So it
+   * is raised freely. Two seconds was never measuring this code.
+   *
+   * The release gap itself is a product observation and is filed separately;
+   * it is a delay rather than a leak, since the reap does eventually release.
+   */
+  const recovered = await run(root, ["-e", "process.stdout.write('ready')"], { timeoutMs: 10_000 });
   expect(recovered).toEqual({ status: 0, stdout: "ready", stderr: "" });
   expect(fs.existsSync(marker)).toBe(false);
 });

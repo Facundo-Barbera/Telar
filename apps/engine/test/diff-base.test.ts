@@ -23,6 +23,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
+import { worktreeReady } from "./worktree-ready";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
@@ -54,14 +55,15 @@ function repo(): string {
   return root;
 }
 
-/** Wait for the background cut — the row is what a client reads. */
-async function settled(store: EngineStore, sessionId: string): Promise<void> {
-  for (let i = 0; i < 400; i++) {
-    if (store.getSession(sessionId).preparation?.state !== "preparing") return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error(`worktree for ${sessionId} never finished preparing`);
-}
+/**
+ * Wait for the background cut — the row is what a client reads.
+ *
+ * THE SHARED ONE (#706). This was a fourth private copy of the same loop with
+ * the same two-second ceiling, against a git pool the whole suite shares. It
+ * landed while the invariant that forbids it was in review, which is the best
+ * argument for the invariant: the drift is not hypothetical and not historical.
+ */
+const settled = worktreeReady;
 
 test("a diff can be asked for a base other than the session's own, or for none at all (#694)", async () => {
   const projectRoot = repo();

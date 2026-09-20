@@ -678,14 +678,29 @@ test("opening the store does not sweep; the sweep follows and says what it took"
   const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-told-")); homes.push(fresh);
   fs.mkdirSync(path.join(fresh, "sessions"), { recursive: true });
   const seen: { deltas: number; starts: number; sessions: number }[] = [];
-  const announced = new ExecutionStore(fresh, { onJournalCompacted: (swept) => seen.push(swept) });
+  /**
+   * THE DELAY IS INJECTED RATHER THAN SLEPT THROUGH (#706).
+   *
+   * This used to sleep 5,400 ms and then assert the callback had fired — a
+   * four-hundred-millisecond margin against the real five-second timer, on a
+   * machine shared with the rest of the suite. That is not an assertion about
+   * this store; it is an assertion that nothing else was busy. It also could
+   * not pass at all under a bare root-level `bun test`, which gets bun's 5 s
+   * default rather than the suite's `--timeout 20000`.
+   *
+   * Now the sweep is told to run immediately and the test waits for the
+   * CALLBACK. What is asserted is what the sweep removed — the same answer
+   * idle or loaded — and the whole test costs milliseconds.
+   */
+  const announced = new ExecutionStore(fresh, { onJournalCompacted: (swept) => seen.push(swept), compactAfterOpenMs: 1 });
   try {
     const write = journal(fresh, "session_one", announced);
     write.start("item_one");
     write.delta("item_one", "hello");
     write.complete("item_one", "hello");
     write.endTurn();
-    await new Promise((resolve) => setTimeout(resolve, 5_400));
+    const deadline = Date.now() + 4_000;
+    while (seen.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
     expect(seen).toEqual([{ deltas: 1, starts: 1, sessions: 1 }]);
   } finally { announced.close(); }
 });

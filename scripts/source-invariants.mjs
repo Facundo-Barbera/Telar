@@ -490,6 +490,48 @@ const CHECKS = [
       return failures;
     },
   },
+
+  /**
+   * ONE WAIT FOR THE CHECKOUT, NOT SIX — #706's regression guard.
+   *
+   * `worktree-ready.ts` was written to be the single answer to "how do you know
+   * the cut landed", and its own comment says why: six copies would drift. They
+   * did. Two suites grew a private `settled()` with the same loop and the same
+   * two-second ceiling, and it was a drifted copy — not the shared helper —
+   * that failed under full-suite load, twice in one afternoon.
+   *
+   * WHY A COPY IS WORSE THAN A WRONG NUMBER. The shared helper's budget is
+   * derived from `DEFAULT_GIT_TIMEOUT_MS`, so it moves when the bound it is
+   * waiting on moves. A copy freezes whatever the author measured on an idle
+   * machine, and the git pool it is waiting on is shared by the whole suite —
+   * so the copy's budget is wrong as soon as anyone adds a test. Re-tuning the
+   * number only moves the next failure; there has to be one number, and it has
+   * to be derived.
+   *
+   * WHAT IS COUNTED is the shape, not the helper's name: a `for` loop whose
+   * body polls `preparation?.state`. A suite that needs to wait imports
+   * `worktreeReady`; one that genuinely needs its own bound imports
+   * `WORKTREE_READY_TIMEOUT_MS` and says why.
+   */
+  {
+    name: "worktree-wait-is-shared",
+    protects: "the wait for a session's checkout (#706): one derived budget, not a copy per suite",
+    async run() {
+      const failures = [];
+      const files = (await readdir(join(ROOT, "apps/engine/test"))).filter((name) => name.endsWith(".ts"));
+      for (const name of files) {
+        if (name === "worktree-ready.ts") continue;
+        const source = await read(join("apps/engine/test", name));
+        if (!/preparation\?\.state/.test(source)) continue;
+        if (!/for \([^)]*\)\s*\{[\s\S]{0,200}?preparation\?\.state/.test(source)) continue;
+        failures.push(
+          `apps/engine/test/${name}: this file polls \`preparation?.state\` in its own loop instead of using \`worktreeReady\` from ./worktree-ready. That copy carries its own ceiling, and a fixed ceiling against the suite-wide git pool is what #706 is. Import the shared helper; if you truly need a different bound, import WORKTREE_READY_TIMEOUT_MS and say why.`,
+        );
+      }
+      return failures;
+    },
+  },
+
   /**
    * A TEST THAT TAKES THE GLOBAL DOM MUST GIVE IT BACK — #719's landmine.
    *
@@ -610,6 +652,52 @@ const CHECKS = [
       return failures;
     },
   },
+
+  /**
+   * A WAIT MUST FIT UNDER THE CEILING IT RUNS UNDER — #706's other half.
+   *
+   * `apps/engine/package.json` sets `--timeout 20000` and its comment explains
+   * the pairing: the per-test `until` / `eventually` helpers hold a smaller
+   * wall-clock bound "so a wait can outlast a loaded runner without outlasting
+   * the ceiling". The pairing is right. Nothing was checking it.
+   *
+   * `run-manager.test.ts` had a 15 s helper and capped three of its own tests
+   * at 10 s. When the predicate did not come true, bun killed the test at its
+   * ceiling while the wait was still running — so the assertion resolved into
+   * a dead test and surfaced as "Unhandled error between tests", with the run
+   * reporting a timeout and discarding the actual reason. An inverted pair
+   * cannot fail honestly, which is worse than failing.
+   *
+   * WHAT IS COMPARED is the largest default budget a file's own helpers carry
+   * against the smallest per-test ceiling that file sets. Equal is a failure
+   * too: a wait that ends exactly when the test dies is a coin toss on a
+   * loaded machine, which is the condition #706 was filed about.
+   *
+   * A file with no per-test ceiling is fine — it inherits the suite's 20 s,
+   * which every helper here is already well under.
+   */
+  {
+    name: "test-wait-fits-its-ceiling",
+    protects: "engine test timeouts (#706): a wait's budget is strictly under the ceiling of the test running it",
+    async run() {
+      const failures = [];
+      const files = (await readdir(join(ROOT, "apps/engine/test"))).filter((name) => name.endsWith(".test.ts"));
+      for (const name of files) {
+        const source = await read(join("apps/engine/test", name));
+        const budgets = [...source.matchAll(/(?:ms|timeoutMs|deadlineMs) = ([0-9_]+)/g)].map((m) => Number(m[1].replace(/_/g, "")));
+        const ceilings = [...source.matchAll(/^\}, *([0-9_]+)\);/gm)].map((m) => Number(m[1].replace(/_/g, "")));
+        if (budgets.length === 0 || ceilings.length === 0) continue;
+        const budget = Math.max(...budgets);
+        const ceiling = Math.min(...ceilings);
+        if (budget < ceiling) continue;
+        failures.push(
+          `apps/engine/test/${name}: a wait budget of ${budget}ms runs under a per-test ceiling of ${ceiling}ms. The test dies before the wait can report, so the real reason is discarded and the run only says it timed out. Lower the helper's default below every ceiling in this file, or raise the ceiling above the budget.`,
+        );
+      }
+      return failures;
+    },
+  },
+
   /**
    * The same standard #721 holds the font patterns to: a scan that has never
    * been shown to fail has demonstrated nothing. The nested-call sample is the

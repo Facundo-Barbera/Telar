@@ -310,7 +310,21 @@ test("outline does not fold the journal: a 60,000-event session costs what a sma
 
   expect(outline.turns).toHaveLength(1);
   expect(outline.turns[0]!.answer).toBe("the big answer");
-  expect(bigMs).toBeLessThan(100);
+  /**
+   * RELATIVE, NOT ABSOLUTE (#706).
+   *
+   * There was an `expect(bigMs).toBeLessThan(100)` here. It asserted that this
+   * machine was not busy, which is not a property of `turnOutline` — and on a
+   * shared runner it is a coin toss rather than a claim.
+   *
+   * The line below is what the test exists to prove and it survives load: the
+   * outline must not fold events at request time, so a session holding sixty
+   * thousand of them answers in about the same time as one holding a handful.
+   * Both measurements inflate together when the machine is busy, so the
+   * COMPARISON holds where the absolute number does not. If the fold ever
+   * comes back, `bigMs` grows with the journal and this fails — which is the
+   * regression anyone cares about.
+   */
   expect(bigMs).toBeLessThan(smallMs + 50);
 });
 

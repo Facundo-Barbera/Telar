@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
+import { worktreeReady } from "./worktree-ready";
 import type { GitRunner } from "../src/worktree";
 
 const roots: string[] = [];
@@ -25,14 +26,14 @@ function fixture() {
   return { store, root, git, calls, reject: () => { rejectWorktree = true; } };
 }
 
-/** The cut runs in the background now (#496); the row is how you know it landed. */
-async function settled(store: EngineStore, sessionId: string): Promise<void> {
-  for (let i = 0; i < 400; i++) {
-    if (store.getSession(sessionId).preparation?.state !== "preparing") return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error(`worktree for ${sessionId} never finished preparing`);
-}
+/**
+ * The cut runs in the background now (#496); the row is how you know it landed.
+ *
+ * THE SHARED ONE (#706). This was a third copy of the same loop with the same
+ * two-second ceiling — a budget picked as though the cut ran alone, against a
+ * git pool the whole suite shares.
+ */
+const settled = worktreeReady;
 
 test("a browser draft survives reload without a turn or worktree and materializes once on first send", async () => {
   const { store, root, git, calls } = fixture();
