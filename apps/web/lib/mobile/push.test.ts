@@ -1,9 +1,9 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { activityDelivery, notification, parseRegistration, readPushRecords, saveRegistration, signalKey, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
+import { activityDelivery, legacyPushFile, notification, parseRegistration, pushFile, readPushRecords, saveRegistration, signalKey, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
 import { deliverRecord } from "./worker";
 
 const registration: MobileRegistration = {
@@ -83,5 +83,48 @@ describe("mobile push delivery", () => {
       expect(rows.find(r => r.deviceId === "one")?.revision).not.toBe(revision);
       expect(statSync(file).mode & 0o777).toBe(0o600);
     } finally { rmSync(folder, { recursive: true, force: true }); }
+  });
+  /**
+   * THE DOUBLED PATH, AND WHY THE READ STILL LOOKS THERE — issue #665.
+   *
+   * `remoteHome()` is already `<TELAR_HOME>/remote`, and `pushFile()` joined
+   * `"remote"` onto it again, so every install with a phone registered grew a
+   * `remote/remote/` directory nobody intended. Moving the file without reading
+   * the old one would un-register somebody's phone on upgrade: notifications
+   * would simply stop, with nothing on screen to say why.
+   *
+   * ASSERTED ON THE RECORDS, NOT ON A PATH. A test that compared two strings
+   * would pass on a build that read the legacy file and never wrote the new
+   * one — which is the half that actually migrates.
+   */
+  test("an upgrade finds the phones registered under the old doubled path, and writes the new one", () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "telar-remote-"));
+    // `remoteHome()` refuses outside the cockpit — ordinary web mode has no
+    // pairing store at all — so the scratch home needs both variables.
+    const previous = { home: process.env.TELAR_HOME, cockpit: process.env.TELAR_COCKPIT };
+    process.env.TELAR_HOME = home;
+    process.env.TELAR_COCKPIT = "1";
+    try {
+      const legacy = legacyPushFile();
+      mkdirSync(path.dirname(legacy), { recursive: true, mode: 0o700 });
+      writeFileSync(legacy, JSON.stringify([{ ...record(), deviceId: "from-the-old-path" }]), { mode: 0o600 });
+      expect(pushFile()).not.toBe(legacy);
+      // Read through the default path: the new file does not exist yet.
+      expect(readPushRecords().map((row) => row.deviceId)).toEqual(["from-the-old-path"]);
+      // The next write lands on the new path, and the old file is left alone —
+      // a delete performed on a read path is how a downgrade becomes data loss.
+      saveRegistration("newly-paired", registration);
+      expect(existsSync(pushFile())).toBe(true);
+      expect(existsSync(legacy)).toBe(true);
+      // And from then on the new file is authoritative: both records are there,
+      // read from it rather than from the legacy one.
+      expect(readPushRecords().map((row) => row.deviceId).sort()).toEqual(["from-the-old-path", "newly-paired"]);
+    } finally {
+      if (previous.home === undefined) delete process.env.TELAR_HOME;
+      else process.env.TELAR_HOME = previous.home;
+      if (previous.cockpit === undefined) delete process.env.TELAR_COCKPIT;
+      else process.env.TELAR_COCKPIT = previous.cockpit;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

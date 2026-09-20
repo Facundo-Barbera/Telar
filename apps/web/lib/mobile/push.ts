@@ -153,10 +153,47 @@ export function parseRegistration(input: unknown): MobileRegistration {
     mutedSessions: [...x.mutedSessions], activities: x.activities.map(a => ({sessionId: a.sessionId, token: a.token, startedAt: a.startedAt})) };
 }
 
-export function pushFile(): string { return path.join(remoteHome(), "remote", "mobile-push.json"); }
-export function readPushRecords(file = pushFile()): PushRecord[] {
-  try { return JSON.parse(fs.readFileSync(file, "utf8")) as PushRecord[]; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+/**
+ * WHERE THE REGISTERED PHONES ARE KEPT — `<TELAR_HOME>/remote/mobile-push.json`.
+ *
+ * IT USED TO BE `remote/remote/`, AND THAT IS NOT A TYPO ANYONE MADE TWICE ON
+ * PURPOSE (#665). `remoteHome()` already returns `<TELAR_HOME>/remote`, and this
+ * joined `"remote"` onto it again — so every install with a phone registered
+ * grew a `remote/remote/` directory nobody intended. Nothing was lost (it is
+ * inside a store subtree, so a migration carries it), and nothing was broken:
+ * the path was wrong consistently, which is why it survived. Its sibling
+ * `storePath()` has always been `remoteHome()/remote.json`, one segment, right.
+ *
+ * READ BOTH, WRITE THE NEW ONE. See `legacyPushFile`.
+ */
+export function pushFile(): string { return path.join(remoteHome(), "mobile-push.json"); }
+/**
+ * The doubled path, still read so an upgrade does not un-register somebody's
+ * phone — a person who had notifications would simply stop getting them, with
+ * nothing on screen to say why.
+ *
+ * NOT DELETED WHEN IT IS READ. The first write after this lands goes to the new
+ * path and the old file becomes inert; removing it would be a delete performed
+ * on a read path, which is the shape that turns a downgrade into data loss. It
+ * is a few hundred bytes, and `docs/storage-shape.md` names it as litter a
+ * later pass may sweep once no shipped build reads it.
+ */
+export function legacyPushFile(): string { return path.join(remoteHome(), "remote", "mobile-push.json"); }
+/**
+ * `file` IS OPTIONAL RATHER THAN DEFAULTED, and that is the migration's whole
+ * shape: absent means "wherever this install keeps them", which is the new path
+ * and then the doubled one; present means that exact file and nothing else. A
+ * caller that names a file means it, and silently reading a different one
+ * because the named one was absent would make a fixture depend on the state of
+ * the machine it ran on.
+ */
+export function readPushRecords(file?: string): PushRecord[] {
+  const read = (at: string): PushRecord[] | undefined => {
+    try { return JSON.parse(fs.readFileSync(at, "utf8")) as PushRecord[]; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  };
+  if (file !== undefined) return read(file) ?? [];
+  return read(pushFile()) ?? read(legacyPushFile()) ?? [];
 }
 export function writePushRecords(records: PushRecord[], file = pushFile()): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -164,7 +201,10 @@ export function writePushRecords(records: PushRecord[], file = pushFile()): void
   fs.writeFileSync(tmp, JSON.stringify(records), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
-export function saveRegistration(deviceId: string, registration: MobileRegistration, file = pushFile(), ownHostId = relayHostId()): void {
+export function saveRegistration(deviceId: string, registration: MobileRegistration, file?: string, ownHostId = relayHostId()): void {
+  // `file` UNRESOLVED ON THE READ and resolved on the write: absent means read
+  // the legacy path too and write only the new one, which is the whole of the
+  // migration. See `readPushRecords`.
   const records = readPushRecords(file);
   const old = records.find(r => r.deviceId === deviceId && r.topic === registration.topic);
   // A start receipt belongs to the token it was sent to. A reinstall mints a fresh
