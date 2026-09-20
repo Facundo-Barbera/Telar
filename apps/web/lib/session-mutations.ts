@@ -128,25 +128,39 @@ export function withSettling(row: SidebarSession, override: "settled" | "active"
   };
 }
 
-/** Snoozing, and waking — `null` is the wake. */
-export function withSnooze(row: SidebarSession, until: number | null, at: number = Date.now()): SidebarSession {
-  return {
-    ...without(row, ["snoozedUntil", "snoozedAt"]),
-    updatedAt: at,
-    ...(until === null ? {} : { snoozedUntil: until, snoozedAt: at }),
-  };
+/** The three fields a snooze writes. Nothing else about the record matters to
+ *  it, which is what lets one builder serve two very different shapes. */
+export type SnoozableRow = { updatedAt: number; snoozedUntil?: number; snoozedAt?: number };
+
+/**
+ * Snoozing, and waking — `null` is the wake.
+ *
+ * GENERIC OVER THE RECORD, because two surfaces snooze the same conversation:
+ * the rail holds a `SidebarSession`, and the cockpit you are reading holds the
+ * engine's own `Session`. Naming the three fields rather than one caller's type
+ * is the same move `SettleableSession` makes in the protocol — it is what stops
+ * the cockpit from growing a second, subtly different idea of what "snoozed"
+ * looks like before the engine answers.
+ */
+export function withSnooze<T extends SnoozableRow>(row: T, until: number | null, at: number = Date.now()): T {
+  // ABSENT, NOT `undefined` — see `without` below; the argument is the record's,
+  // not the rail's, so it holds for the cockpit's shape too.
+  const next: T & SnoozableRow = { ...row, updatedAt: at };
+  delete next.snoozedUntil;
+  delete next.snoozedAt;
+  return until === null ? next : { ...next, snoozedUntil: until, snoozedAt: at };
 }
 
 /**
  * A ROW WITH THE NAMED FIELDS GONE, not set to `undefined`.
  *
- * `{ ...row, snoozedUntil: undefined }` keeps the key, and this projection is
+ * `{ ...row, settledAt: undefined }` keeps the key, and this projection is
  * built everywhere else by spreading conditionals precisely so an absent field
  * IS absent — `toSidebarSession` writes `...(x === undefined ? {} : { x })` for
  * every one of them. A guess that disagreed about that would be the one row in
  * the rail whose shape is not the shape the poll produces.
  */
-type ClearableField = "settledOverride" | "settledAt" | "settledBy" | "settledForTitle" | "snoozedUntil" | "snoozedAt";
+type ClearableField = "settledOverride" | "settledAt" | "settledBy" | "settledForTitle";
 
 function without(row: SidebarSession, fields: readonly ClearableField[]): SidebarSession {
   const next = { ...row };
