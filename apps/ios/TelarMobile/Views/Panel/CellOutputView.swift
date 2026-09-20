@@ -122,6 +122,11 @@ private struct OutputImage: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .onTapGesture { if let attachmentId { onOpen?(attachmentId) } }
             } else if attachmentId != nil || dataB64 != nil {
+                // NOT A #717 SITE, and checked rather than missed. This height
+                // reserves room for an IMAGE that is about to land, not for
+                // text — type has no opinion about how tall a figure is, so
+                // scaling it with the reader's setting would move the spinner
+                // for no reason and then snap back when the picture arrives.
                 ProgressView().frame(height: 60)
             } else {
                 Text("[image]").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)

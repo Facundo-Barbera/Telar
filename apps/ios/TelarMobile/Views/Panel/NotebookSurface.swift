@@ -205,7 +205,7 @@ struct NotebookSurface: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(height: 32)
+        .scaledHeight(32, relativeTo: .caption)
         .background(Theme.sheet)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
     }
@@ -248,7 +248,7 @@ struct NotebookSurface: View {
         .font(.system(Theme.caption, weight: .medium))
         .foregroundStyle(Theme.accent)
         .buttonStyle(.plain)
-        .frame(height: 32)
+        .scaledHeight(32, relativeTo: .caption)
         .padding(.horizontal, 10)
     }
 

@@ -172,7 +172,7 @@ struct PrimaryActionButton: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 50)
+            .scaledHeight(50, relativeTo: .callout)
             .background(enabled ? AnyShapeStyle(Theme.primaryFill) : AnyShapeStyle(Theme.subtleStrong))
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }

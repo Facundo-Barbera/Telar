@@ -494,7 +494,7 @@ struct NewSessionDraftView: View {
                                 }
                                 .foregroundStyle(Theme.textMuted)
                                 .padding(.horizontal, 14)
-                                .frame(height: 44)
+                                .scaledHeight(44, relativeTo: .subheadline)
                                 .background(Theme.subtle)
                                 .clipShape(Capsule())
                                 .overlay(Capsule().strokeBorder(Theme.borderSubtle, lineWidth: 1))
@@ -700,7 +700,7 @@ struct NewSessionDraftView: View {
             }
             .foregroundStyle(Theme.text)
             .padding(.horizontal, 14)
-            .frame(height: 44)
+            .scaledHeight(44, relativeTo: .subheadline)
             .background(Theme.subtle)
             .clipShape(Capsule())
             .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
