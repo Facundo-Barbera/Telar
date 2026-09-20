@@ -1963,12 +1963,17 @@ export class EngineWorker {
      * failure was undiagnosable from the daemon log alone.
      */
     let lateRefusalLogged = false;
-    const askEngine = async ({ kind, detail, toolUseId }: DriverRequest): Promise<DriverRequestOutcome> => {
+    const askEngine = async ({ kind, detail, toolUseId, deadlineMs, default: fallback }: DriverRequest): Promise<DriverRequestOutcome> => {
       const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
       const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {
         requestId,
         kind,
         detail,
+        // The asker's own terms for being left alone (#541 D), carried whole.
+        // Validated by the ENGINE, like everything else on this call — a check
+        // here would protect the out-of-process worker and nothing else.
+        ...(deadlineMs !== undefined ? { deadlineMs } : {}),
+        ...(fallback !== undefined ? { default: fallback } : {}),
       }).catch((error: unknown) => {
         if (!lateRefusalLogged && error instanceof EngineClientError && error.code === "conflict") {
           lateRefusalLogged = true;

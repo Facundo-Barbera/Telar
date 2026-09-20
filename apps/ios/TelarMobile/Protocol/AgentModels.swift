@@ -217,6 +217,12 @@ enum AgentInboxKind: String, Decodable {
     case turnFailed = "turn_failed"
     case turnStopped = "turn_stopped"
     case requestOpened = "request_opened"
+    /// A request that ran out its deadline and took the default its asker
+    /// stated, because nobody came — issue #541, section D. NOT `requestOpened`:
+    /// that one ranks first and reads "waiting on you", and this one is already
+    /// answered. Carried here so the row is DRAWN rather than skipped by the
+    /// tolerance above.
+    case requestTimeout = "request_timeout"
     case peerMessage = "peer_message"
 }
 
@@ -269,6 +275,7 @@ struct AgentInboxRow: Decodable, Equatable, Identifiable {
     var verb: String {
         switch kind {
         case .requestOpened: return "Waiting on you"
+        case .requestTimeout: return "Answered for you"
         case .turnFailed: return "Failed"
         case .turnCompleted: return "Finished"
         case .turnStopped: return "Stopped"
@@ -283,6 +290,11 @@ struct AgentInboxRow: Decodable, Equatable, Identifiable {
     }
 
     /// Whether this is one a person has to move on — the rail's `warning` tone.
+    ///
+    /// `requestTimeout` IS DELIBERATELY NOT ONE. A request that took its own
+    /// default is already answered and cannot be un-answered; badging it as
+    /// something to act on would send a person to a resolved row and teach them
+    /// the badge is noise.
     var needsYou: Bool {
         kind == .requestOpened || kind == .turnFailed || (kind == .peerMessage && intent == "blocker")
     }
@@ -331,10 +343,15 @@ func rankAgentInbox(_ rows: [AgentInboxRow]) -> [AgentInboxRow] {
     func rank(_ kind: AgentInboxKind) -> Int {
         switch kind {
         case .requestOpened: return 0
-        case .turnFailed: return 1
-        case .peerMessage: return 2
-        case .turnCompleted: return 3
-        case .turnStopped: return 4
+        // Second, as on the Mac (`agent/digest.ts`): a decision taken in the
+        // person's absence is the next most interesting thing after one still
+        // waiting for them, and not the first, because nothing here can be
+        // acted on.
+        case .requestTimeout: return 1
+        case .turnFailed: return 2
+        case .peerMessage: return 3
+        case .turnCompleted: return 4
+        case .turnStopped: return 5
         }
     }
     return rows.sorted { left, right in

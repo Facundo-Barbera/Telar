@@ -64,9 +64,56 @@ export type RequestDecision = z.infer<typeof RequestDecision>;
 /** Who answered. `policy` means no human was involved — the runtime mode
  *  resolved it — and that distinction is what makes an audit trail honest.
  *  `session` means ANOTHER SESSION answered, through `sessions_resolve_request`:
- *  an agent, not a person, and the trail must say so for the same reason. */
+ *  an agent, not a person, and the trail must say so for the same reason.
+ *  `timeout` means A DEADLINE PASSED and the asker's own stated default was
+ *  taken — see `deadlineResolution` below, which is the only thing that writes
+ *  it. It is distinct from `policy` because `policy` is the session's runtime
+ *  mode answering immediately and this is nobody answering at all. */
 export const RequestResolver = z.enum(["human", "policy", "timeout", "cancelled", "session"]);
 export type RequestResolver = z.infer<typeof RequestResolver>;
+
+/**
+ * THE ANSWER A REQUEST CARRIES FOR THE CASE WHERE NOBODY COMES — issue #541 D.
+ *
+ * SUPPLIED BY THE ASKER, NEVER INVENTED BY THE ENGINE, and that is the whole of
+ * why this is defensible where `autoResolution` refuses to be. A runtime mode
+ * answering a question would be the engine guessing at a human's intent; this is
+ * the party that ASKED saying, at the moment it asked, what it will do if it is
+ * left alone. `user_input` therefore MAY carry one — a question with a stated
+ * fallback is exactly the owner's case, "I went with X because you were away" —
+ * even though no mode auto-answers it.
+ *
+ * ONLY `accept` AND `decline`. `acceptForSession` widens the session's posture
+ * for every later call of that kind, permanently; a deadline nobody watched must
+ * not be able to do that. `cancel` withdraws the whole turn, which is a person
+ * abandoning work rather than an answer to a question.
+ */
+export const RequestDefault = z.object({
+  decision: z.enum(["accept", "decline"]),
+  /** For a `user_input` default: the same per-field shape a human's answer has,
+   *  as `UserInputField` states it. */
+  answers: z.record(z.string(), z.unknown()).optional(),
+});
+export type RequestDefault = z.infer<typeof RequestDefault>;
+
+/**
+ * WHICH KINDS MAY CARRY A DEFAULT AT ALL.
+ *
+ * `secret_access` MAY NOT, for `autoResolution`'s own reason one line further
+ * on: a mode may widen what the AGENT can do, never what the VAULT gives up, and
+ * a deadline is a weaker warrant than a mode. The human's answer also PICKS the
+ * item, so there is no answer for an asker to state in advance either.
+ *
+ * "DESTRUCTIVE ACTIONS NEVER GET A DEFAULT" IS NOT ENFORCED HERE, and saying so
+ * is more useful than pretending otherwise: the engine has no reading of
+ * `command_execution` that tells `rm -rf` from `bun test`, and a guard built on
+ * one would be a check that passes for the wrong reason. The rule is the ASKER's
+ * — it is in the session briefing — and this function is only the part the
+ * contract can actually hold.
+ */
+export function defaultAllowed(kind: RequestKind): boolean {
+  return kind !== "secret_access";
+}
 
 /**
  * One field the agent wants filled in. Only present on `user_input`.
@@ -213,6 +260,23 @@ export const EngineRequest = z.object({
    *  request never parked (it resolved immediately by policy). */
   notified: z.boolean().optional(),
 
+  /**
+   * HOW LONG THIS MAY SIT BEFORE ITS DEFAULT IS TAKEN — milliseconds from
+   * `openedAt`, issue #541 D.
+   *
+   * ONLY EVER SET ON A REQUEST THAT PARKED. One that resolved by policy was
+   * never waiting on anybody, so a clock on it would measure nothing.
+   *
+   * A DEADLINE ALONE RESOLVES NOTHING. Without a `default` beside it this field
+   * is inert by construction — see `deadlineResolution`, which is the single
+   * definition of that rule.
+   */
+  deadlineMs: z.number().int().positive().optional(),
+
+  /** What `deadlineMs` takes when it passes. Absent means this request WAITS,
+   *  however long the deadline was. */
+  default: RequestDefault.optional(),
+
   decision: RequestDecision.optional(),
   resolvedBy: RequestResolver.optional(),
   resolvedAt: Timestamp.optional(),
@@ -282,4 +346,36 @@ export function autoResolution(mode: RuntimeMode, kind: RequestKind): RequestDec
  *  The inverse of `autoResolution`, named so call sites read as intent. */
 export function requiresHuman(mode: RuntimeMode, kind: RequestKind): boolean {
   return autoResolution(mode, kind) === null;
+}
+
+/**
+ * THE DEADLINE POLICY, DEFINED ONCE — issue #541 D.
+ *
+ * Returns the answer a passed deadline takes, or `null` when this request keeps
+ * waiting. Beside `autoResolution` and for the identical reason: the engine
+ * enforces it, and a client has to be able to tell a person what an open request
+ * will do before they walk away from it. A cockpit computing "this one answers
+ * itself in four minutes" from its own copy of the rule is a cockpit that lies
+ * after the first change to it.
+ *
+ * ── THE THREE WAYS IT ANSWERS `null`, AND THE SECOND IS THE POINT ───────────
+ *   1. The request is already resolved. Nothing to do.
+ *   2. THERE IS NO DEFAULT. A deadline on its own resolves NOTHING — the issue's
+ *      clause "requests with no default wait", and the one place it lives. A
+ *      reader looking for where that promise is kept should find exactly this
+ *      line and no second copy of it.
+ *   3. The deadline has not passed yet.
+ *
+ * `>=` RATHER THAN `>`: a deadline of zero milliseconds would otherwise never
+ * arrive, and the schema already refuses zero — this is so the boundary is the
+ * one a caller would read off the field name.
+ */
+export function deadlineResolution(
+  request: Pick<EngineRequest, "state" | "openedAt" | "deadlineMs" | "default">,
+  now: number,
+): RequestDefault | null {
+  if (request.state !== "open") return null;
+  if (request.deadlineMs === undefined) return null;
+  if (request.default === undefined) return null;
+  return now - request.openedAt >= request.deadlineMs ? request.default : null;
 }

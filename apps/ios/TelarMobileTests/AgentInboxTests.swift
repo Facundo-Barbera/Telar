@@ -119,6 +119,27 @@ import Testing
         #expect(rankAgentInbox(rows).map(\.kind) == [.requestOpened, .turnFailed, .turnCompleted, .turnStopped])
     }
 
+    /// A REQUEST THAT ANSWERED ITSELF — issue #541, section D.
+    ///
+    /// It is drawn rather than skipped (the decoder knows the kind), it ranks
+    /// second, and it does NOT take the warning tone: it is already resolved,
+    /// and badging it would send a person to a row they cannot act on.
+    @Test func aRequestThatTookItsOwnDefaultIsNewsRatherThanAnAsk() throws {
+        let json = #"{"id":7,"at":1,"sessionId":"session_a","runId":"run_a","kind":"request_timeout","summary":"[request: answered for you] took ACCEPT","read":false}"#
+        let decoded = try JSONDecoder().decode(AgentInboxRow.self, from: Data(json.utf8))
+        #expect(decoded.kind == .requestTimeout)
+        #expect(decoded.verb == "Answered for you")
+        #expect(!decoded.needsYou)
+        #expect(decoded.line == "took ACCEPT")
+
+        let rows = [
+            AgentInboxRow(id: 1, kind: .turnFailed),
+            AgentInboxRow(id: 2, kind: .requestTimeout),
+            AgentInboxRow(id: 3, kind: .requestOpened),
+        ]
+        #expect(rankAgentInbox(rows).map(\.kind) == [.requestOpened, .requestTimeout, .turnFailed])
+    }
+
     @Test func withinABandTheNewestLeads() {
         let rows = [AgentInboxRow(id: 1, kind: .turnCompleted), AgentInboxRow(id: 9, kind: .turnCompleted)]
         #expect(rankAgentInbox(rows).map(\.id) == [9, 1])

@@ -90,7 +90,7 @@ import { assistantText } from "./content";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
 import { AgentEraLog, type EraStore } from "./eras";
-import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
+import { AgentInbox, inboxRowFromNotification, type AgentInboxKind, type AgentInboxRow } from "./inbox";
 import { clearStanding, preferencesOf, readStanding, rememberSection, renderStanding } from "./memory";
 import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRecallHit, type AgentRow } from "./thread-log";
 import { agentPaths, patchAgentSettings, readAgentSettings, type AgentPaths } from "./store";
@@ -1108,11 +1108,11 @@ export class AgentRuntime {
    * subscription rows — and a wake it produces has nowhere to go. Throwing would
    * fail the turn whose ending caused it.
    */
-  wake(input: { notification: NotificationDetail }): AgentInboxRow | undefined {
+  wake(input: { notification: NotificationDetail; inboxKind?: AgentInboxKind }): AgentInboxRow | undefined {
     try {
       const threadId = readAgentSettings(this.paths).threadId;
       if (!threadId) return undefined;
-      const fields = inboxRowFromNotification(input.notification);
+      const fields = inboxRowFromNotification(input.notification, input.inboxKind);
       if (!fields) return undefined;
       const row = this.open().inbox.append({ threadId, at: this.now(), ...fields });
       this.push({ type: "inbox", row });

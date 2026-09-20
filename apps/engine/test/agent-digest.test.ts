@@ -62,6 +62,51 @@ test("the ranking puts what is waiting on you first, then failures, then complet
   expect(digest.overflow).toBe(0);
 });
 
+/**
+ * A REQUEST THAT ANSWERED ITSELF IS NOT ONE THAT IS WAITING — issue #541 D.
+ *
+ * THE BAND BOUNDARY IS THE ASSERTION, and it is the reason `request_timeout`
+ * exists as a kind rather than reusing `request_opened`: the first band tells a
+ * person to move, and this row is already closed. Under the reused kind the
+ * `WAITING ON YOU` line below would name the timed-out session too, which is a
+ * digest sending somebody to a resolved request every turn until they read it.
+ */
+test("a timed-out request ranks below what is waiting and above what failed", () => {
+  const digest = renderDigest([
+    row("turn_completed", "session_aaaaaaaa", "[wake: completed] Session finished"),
+    row("turn_failed", "session_bbbbbbbb", "[wake: failed] Session — turn FAILED (provider_error)"),
+    row("request_timeout", "session_dddddddd", "[request: answered for you] Session took its default: ACCEPT."),
+    row("request_opened", "session_cccccccc", "[wake: waiting] Session — is WAITING on a request"),
+  ])!;
+  const lines = digest.text.split("\n").filter((line) => line.startsWith("- "));
+  expect(lines[0]).toContain("WAITING ON YOU");
+  expect(lines[1]).toContain("ANSWERED FOR YOU");
+  expect(lines[2]).toContain("FAILED");
+  expect(lines[3]).toContain("finished");
+  // The two request bands name DIFFERENT sessions. If the kinds had been
+  // merged, one of these would name both.
+  expect(lines[0]).toContain("…cccccc");
+  expect(lines[0]).not.toContain("…dddddd");
+  expect(lines[1]).toContain("…dddddd");
+  expect(digest.overflow).toBe(0);
+});
+
+/**
+ * EACH ONE KEEPS ITS OWN LINE, unlike completions. The actionable half of "I
+ * went with X because you were away" is the X, and merging three into a count
+ * would hide every decision behind a fetch.
+ */
+test("timed-out requests are listed one per line, not merged into a count", () => {
+  const digest = renderDigest([
+    row("request_timeout", "session_aaaaaaaa", "[request: answered for you] took ACCEPT"),
+    row("request_timeout", "session_bbbbbbbb", "[request: answered for you] took DECLINE"),
+  ])!;
+  const answered = digest.text.split("\n").filter((line) => line.startsWith("- ANSWERED FOR YOU"));
+  expect(answered).toHaveLength(2);
+  expect(answered[0]).toContain("took ACCEPT");
+  expect(answered[1]).toContain("took DECLINE");
+});
+
 test("the kind's own bracket is stripped, so a line reads as one sentence", () => {
   const digest = renderDigest([row("turn_failed", "session_aaaaaaaa", "[wake: failed] Session session_a — turn run_2 FAILED (provider_error)")])!;
   expect(digest.text).toContain("FAILED · session …aaaaaa — Session session_a — turn run_2 FAILED (provider_error)");

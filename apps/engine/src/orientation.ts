@@ -38,7 +38,7 @@ import path from "node:path";
 
 /** Bumped whenever the words below change. The skill's front matter carries it,
  *  so a file on disk says which release wrote it. */
-export const ORIENTATION_VERSION = 2;
+export const ORIENTATION_VERSION = 3;
 
 /** The skill's name, which is also its directory and the `$telar` a person or a
  *  model types. One constant so the writer, the remover and the preamble that
@@ -199,6 +199,25 @@ back to being told as each arrives.
   and delivers nothing.
 - Set it when you are about to dispatch several peers, not after they start
   talking.
+
+### A question you leave open can freeze a fan-out until morning
+
+A request — an approval, or a question you asked — stops its session dead until
+something answers it. Nobody is necessarily there: the person may be asleep, and
+the engine notifies once when it parks, not repeatedly.
+
+So a request may carry a DEADLINE and a DEFAULT — how long it may sit, and the
+answer to take when it has. Both or neither: a deadline with no default resolves
+nothing at all, and the request simply waits, which is the right outcome when
+there is no answer you would stand behind. When a default is taken the resolution
+is recorded as \`timeout\` rather than as anybody's decision, and the person is
+told what was chosen for them.
+
+What never gets a default: anything destructive, anything you could not undo, and
+anything you would not do in front of the person. The engine refuses one on a
+secret-access request; the rest is your judgement and it is the whole point of
+the rule. A default is you saying "this is safe to do without me", so if you are
+not sure, leave it out and let it wait.
 
 ### What a coordinating session can and cannot do
 

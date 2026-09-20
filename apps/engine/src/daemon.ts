@@ -204,6 +204,19 @@ export type EngineDaemonOptions = {
    */
   snoozeWakeSweepIntervalMs?: number;
   /**
+   * Testable cadence for the request-deadline sweep — issue #541 D.
+   *
+   * THE FINEST OF THE FOUR, at 15 s, and the reason is that this one's deadline
+   * is not a preset. A snooze is at least an hour and a report window at least a
+   * minute; a request deadline is whatever the asker wrote, and "wait thirty
+   * seconds then go ahead" is an ordinary thing for a worker to mean. A pass
+   * coarser than the shortest sensible deadline silently becomes the deadline.
+   *
+   * IT IS STILL CHEAP: it walks the live-queue index, not the store, and a
+   * daemon with nothing running costs one empty set per tick.
+   */
+  requestDeadlineSweepIntervalMs?: number;
+  /**
    * Told when a worker registration retires. AN OBSERVER, NOT THE CLEANUP:
    * ending that worker's claims happens on the default path inside
    * `retireWorker` whether or not this is passed, because a deployment that
@@ -1320,6 +1333,32 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
   }, options.snoozeWakeSweepIntervalMs ?? 60_000);
   snoozeWakeSweeper.unref();
+  /**
+   * AND A REQUEST DEADLINE NEEDS ONE — issue #541 D.
+   *
+   * The fourth instance of the gap the three above describe, and the one with a
+   * person's evening in it: `requests.ts` has said since it was written that a
+   * detached session which parks an approval at minute three and sits there
+   * until morning "is not autonomous; it is stuck, and worse, it is stuck
+   * silently". Nothing writes when a deadline passes, so this is the write.
+   *
+   * 15 s, AND THE FLOOR IS FINER THAN THE THREE ABOVE ON PURPOSE. Their clocks
+   * are presets — an hour's snooze, a minute's window — and this one's is
+   * whatever the asker wrote down. A tick coarser than the shortest deadline
+   * anyone sets would quietly BECOME the deadline, which is the class of bug
+   * where a feature works and its number is a fiction.
+   *
+   * A THROW HERE MUST NOT TAKE THE DAEMON DOWN, as above. The sweep already
+   * skips a session it cannot read; this is the backstop for anything else.
+   */
+  const requestDeadlineSweeper = setInterval(() => {
+    try {
+      store.sweepRequestDeadlines();
+    } catch {
+      /* the next tick tries again */
+    }
+  }, options.requestDeadlineSweepIntervalMs ?? 15_000);
+  requestDeadlineSweeper.unref();
 
   // Read once: it names the Mac to another cockpit (`.local` dropped — it is
   // mDNS's suffix, not the name), and a name that flickered per request
@@ -1653,7 +1692,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * session's notification item say the same sentence about the same fact.
    */
   store.setAgentWakeSink((wake) => {
-    agentRuntime.wake({ notification: wake.notification });
+    agentRuntime.wake({ notification: wake.notification, ...(wake.inboxKind ? { inboxKind: wake.inboxKind } : {}) });
   });
   /**
    * AN APPROVAL THIS MACHINE PARKED BEFORE IT LAST STOPPED, FOUND AGAIN.
@@ -4242,6 +4281,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               detail: parsed.data.detail,
               ...(parsed.data.itemId ? { itemId: parsed.data.itemId } : {}),
               ...(parsed.data.providerRefs ? { providerRefs: parsed.data.providerRefs } : {}),
+              // Forwarded rather than validated here, on this route's standing
+              // rule: the store owns what a kind may carry (`defaultAllowed`),
+              // so the HTTP door and an in-process caller refuse the same set.
+              ...(parsed.data.deadlineMs !== undefined ? { deadlineMs: parsed.data.deadlineMs } : {}),
+              ...(parsed.data.default !== undefined ? { default: parsed.data.default } : {}),
             }),
           );
         } else if (turn.action === "observe") {
@@ -5294,6 +5338,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         await agentRuntime.shutdown();
         clearInterval(workerPruner);
         clearInterval(delegationSweeper);
+        // CLEARED RATHER THAN ONLY UNREF'D, unlike the two sweeps beside it,
+        // because this one RESOLVES REQUESTS: a tick that landed between
+        // `closeExecutionStore` and the process ending would be a write against
+        // a store that has gone. The others only read or queue.
+        clearInterval(requestDeadlineSweeper);
         removeOwnDiscovery(store, daemonId);
         store.closeExecutionStore();
         lock.release();
@@ -5302,6 +5351,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   } catch (error) {
     clearInterval(workerPruner);
     clearInterval(delegationSweeper);
+    clearInterval(requestDeadlineSweeper);
     server.close();
     store.closeExecutionStore();
     lock.release();
