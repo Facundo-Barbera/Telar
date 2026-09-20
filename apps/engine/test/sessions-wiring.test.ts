@@ -23,7 +23,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineClient, type Session } from "@telar/engine-client";
+import { EngineClient, type RuntimeMode, type Session } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver, type SessionsCapability, type TurnDriver } from "../src/driver";
 import { SessionsToolSocket } from "../src/sessions-tools/run-socket";
@@ -195,7 +195,12 @@ async function turnWith(
   /** The backend the daemon opens with. Absent is the JSON store these tests
    *  have always used; `"sqlite"` is what the query routes need, because two of
    *  them refuse outright without an index to read (#516). */
-  options: { executionStorage?: "sqlite" } = {},
+  options: {
+    executionStorage?: "sqlite";
+    /** What the session DOING the asking is allowed to do. The privilege
+     *  ceiling (#541 G1) caps anything it creates at this. */
+    hostRuntimeMode?: RuntimeMode;
+  } = {},
 ): Promise<{ client: EngineClient; hostId: string; projectId: string; sawCapability: boolean }> {
   const daemon = await startEngine({
     models: stubModels,
@@ -207,6 +212,7 @@ async function turnWith(
   const client = new EngineClient(daemon.discovery);
   const { project } = await client.registerProject({ name: "aurora", root: repo() });
   const { session } = await client.createSession({ projectId: project.id, title: "the one doing the asking" });
+  if (options.hostRuntimeMode) await client.updateSession(session.id, { runtimeMode: options.hostRuntimeMode });
 
   let sawCapability = false;
   let failed: unknown;
@@ -274,6 +280,57 @@ test("a running turn is handed the toolkit, and what it creates is stamped as an
   // on it exactly as the one it made is, with nothing linking them.
   expect(listed!.sessions.map((each) => each.id).sort()).toEqual([hostId, made!.id].sort());
   expect(JSON.stringify(session)).not.toContain(hostId);
+});
+
+/**
+ * THE PRIVILEGE CEILING, OVER A REAL ROUND TRIP — issue #541 G1.
+ *
+ * The owner's decision: a session created by an agent must never have more
+ * permissions than its creator. The STORE's own rule is held in
+ * `runtime-ceiling.test.ts`; this is the WIRING, which is the half that was
+ * actually broken — `sessions_create` could not pass a mode, so every session
+ * an agent made landed in `auto` however narrow its creator was.
+ *
+ * THE WORKER SEAM IS THE ONE THAT MATTERS. This is the deployment a real
+ * session runs in: the capability is built out of `EngineClient` calls, so the
+ * ceiling has to survive a round trip over loopback rather than being applied
+ * in the same process. `ceilingFrom` is declared by the worker's own code, like
+ * `origin` — no tool shape on the wall carries it.
+ */
+test("a session that has to ask cannot create one that does not — over the wire", async () => {
+  let made: Session | undefined;
+  const { client, hostId } = await turnWith(
+    async (sessions) => {
+      const { projects } = await sessions.list();
+      made = await sessions.create({ projectId: projects[0]!.id, title: "capped", envMode: "local" });
+    },
+    { hostRuntimeMode: "approval-required" },
+  );
+
+  // Before this, `auto` — unconditionally, because the mode came from
+  // `detached` alone and a created session is detached by default.
+  expect(made!.runtimeMode).toBe("approval-required");
+  // The engine agrees, read back through the ordinary API rather than from the
+  // tool's own answer.
+  expect((await client.session(made!.id)).session.runtimeMode).toBe("approval-required");
+  // AND NOTHING WAS LINKED BY IT. The ceiling is read once at creation and
+  // stored nowhere — it is not `startedFrom`, and it confers no standing
+  // authority. The host's id must not appear in the child's record.
+  expect(JSON.stringify((await client.session(made!.id)).session)).not.toContain(hostId);
+});
+
+test("a session with full access still creates a detached peer at the posture's own default", async () => {
+  let made: Session | undefined;
+  await turnWith(
+    async (sessions) => {
+      const { projects } = await sessions.list();
+      made = await sessions.create({ projectId: projects[0]!.id, title: "not widened", envMode: "local" });
+    },
+    { hostRuntimeMode: "full-access" },
+  );
+  // A CEILING IS A MAXIMUM, NOT AN ASSIGNMENT. A creator that can do anything
+  // does not hand that down; the new session gets what its own posture says.
+  expect(made!.runtimeMode).toBe("auto");
 });
 
 test("the worker cannot archive, delete or accept anything — the client it holds has no such reach", async () => {
