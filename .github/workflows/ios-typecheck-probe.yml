@@ -12,13 +12,19 @@ name: iOS type-check probe
 #
 # The instrument is two frontend flags fed through OTHER_SWIFT_FLAGS:
 #
-#     -Xfrontend -warn-long-expression-type-checking=500
-#     -Xfrontend -warn-long-function-bodies=500
+#     -Xfrontend -warn-long-expression-type-checking=N
+#     -Xfrontend -warn-long-function-bodies=N
 #
-# Every expression and every function body that takes longer than 500 ms then
-# warns with its own duration, and this job sorts those durations and prints
-# the worst. Before the fix that is the size of the problem; after it, the
-# headroom.
+# Every expression and every function body slower than N ms then warns with
+# its own duration, and this job sorts those durations and prints the worst.
+# Before the fix that is the size of the problem; after it, the headroom.
+#
+# N IS THE PRINTING FLOOR, NOT THE BUDGET. It gates which measurements are
+# reported, never how long anything took — the same expression reports the
+# same duration at any N that prints it at all. It started at 500 (the bar
+# #758 argues about) and came down to 10 because after the fix NOTHING in
+# SessionView.swift reached 500, and "under 500 ms" is a bound rather than
+# the figure the fix has to be judged on.
 #
 # WHAT IT DELIBERATELY DOES NOT DO, so nobody later "completes" it:
 #   - it does not sign (CODE_SIGNING_ALLOWED=NO, as in the probe that found
@@ -57,6 +63,9 @@ jobs:
     timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      # The printing floor, single-sourced: the compiler flags and the report
+      # below must agree about it or the report describes a different run.
+      FLOOR: "10"
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +97,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/TelarMobile.xcarchive" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            OTHER_SWIFT_FLAGS='$(inherited) -Xfrontend -warn-long-expression-type-checking=500 -Xfrontend -warn-long-function-bodies=500' \
+            OTHER_SWIFT_FLAGS="\$(inherited) -Xfrontend -warn-long-expression-type-checking=$FLOOR -Xfrontend -warn-long-function-bodies=$FLOOR" \
             archive 2>&1 | tee "$RUNNER_TEMP/build.log"
           STATUS=${PIPESTATUS[0]}
           set -e
@@ -101,8 +110,16 @@ jobs:
       # comparison is about the file the issue names.
       - name: Report the slowest expressions and function bodies
         if: always()
+        # NO `set -e` AND NO `pipefail` HERE, deliberately. Every question this
+        # step asks is a grep that is ALLOWED to find nothing — "SessionView
+        # has no slow expressions" is the success case, and under errexit plus
+        # pipefail a non-matching grep inside `WORST=$(...)` killed the step at
+        # exactly the moment it had good news (run 35491747396). A reporting
+        # step must not be able to fail on the result it is reporting.
         run: |
-          set -uo pipefail
+          # GitHub runs this with `bash -e`; turn that off explicitly.
+          set +e
+          set -u
           LOG="$RUNNER_TEMP/build.log"
 
           echo "── every 'too complex to type-check' error ────────────────────"
@@ -123,17 +140,34 @@ jobs:
           echo
           echo "── slowest, whole project (top 25) ───────────────────────────"
           if [ -s "$RUNNER_TEMP/slow.tsv" ]; then head -25 "$RUNNER_TEMP/slow.tsv"; else
-            echo "(nothing in the whole app took longer than 500 ms)"; fi
+            echo "(nothing in the whole app reached the $FLOOR ms printing floor)"; fi
 
           echo
           echo "── SessionView.swift only ────────────────────────────────────"
           /usr/bin/grep -a 'SessionView\.swift' "$RUNNER_TEMP/slow.tsv" \
-            || echo "(no warnings from SessionView.swift — everything in it is under 500 ms)"
+            || echo "(no warnings from SessionView.swift — everything in it is under $FLOOR ms)"
+
+          echo
+          echo "── the layers body was cut into (#758) ───────────────────────"
+          # Named one by one, because the headroom that matters is per layer:
+          # one of them creeping back up is how this regresses, and a single
+          # worst-figure line would hide which.
+          /usr/bin/grep -a 'SessionView\.swift' "$RUNNER_TEMP/slow.tsv" > "$RUNNER_TEMP/sv.tsv"
+          for layer in body presentations lifecycle stack statusStrip transcript; do
+            # SessionView's own rows only — every SwiftUI view in the app has a
+            # property called 'body', and SessionSidebar's is over the bar too.
+            ms=$(/usr/bin/grep -a "property '$layer'" "$RUNNER_TEMP/sv.tsv" | head -1 | cut -f1)
+            printf '  %-14s %s\n' "$layer" "${ms:-under the ${FLOOR:-10} ms printing floor}"
+          done
 
           echo
           echo "── SessionView.swift, worst single figure ────────────────────"
           WORST=$(/usr/bin/grep -a 'SessionView\.swift' "$RUNNER_TEMP/slow.tsv" | head -1 | cut -f1)
-          echo "${WORST:-0} ms (bar: 500 ms; 0 means nothing in the file reached it)"
+          if [ -n "${WORST:-}" ]; then
+            echo "$WORST ms — the bar #758 argues about is 500 ms"
+          else
+            echo "nothing in SessionView.swift reached the ${FLOOR:-10} ms printing floor"
+          fi
 
       # A probe that goes green on a failed archive teaches people to ignore
       # it. The log has been printed by now, so failing here loses nothing.
