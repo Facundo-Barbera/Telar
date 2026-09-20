@@ -27,6 +27,34 @@ struct SessionSidebar: View {
     @State private var deleting: HostedSession?
     @AppStorage("telar.sidebar.collapsed") private var savedCollapsed = ""
 
+    /// THE MARKS SCALE WITH THE LINE THEY LABEL (#718). `ProjectAvatar` and
+    /// `ProviderIconView` are both proportional to the `size` they are handed
+    /// — correct by construction, and #674 left them alone for that reason.
+    /// What it did not look at was the CALL SITES, which hand them a literal.
+    /// The row's text scales and the mark beside it does not, so the two drift
+    /// apart at large text sizes; the mark ends up labelling a line it is no
+    /// longer the size of.
+    ///
+    /// EACH ONE TAKES THE STYLE OF THE TEXT IT SITS NEXT TO, not one shared
+    /// reference, which is the opposite of the choice `ScaledFrame` makes for
+    /// tap targets — and deliberately. A tap target answers to the finger and
+    /// wants one ratio across the app; a mark answers to the words beside it
+    /// and has to track those or it stops matching its own line. That is why
+    /// the two 11s below become different metrics: one sits against the title
+    /// (`.subheadline`), the other against the branch (`.caption`), and they
+    /// were only ever the same number by coincidence.
+    @ScaledMetric(relativeTo: .footnote) private var groupMark: CGFloat = 16
+    @ScaledMetric(relativeTo: .caption2) private var rowProjectMark: CGFloat = 12
+    @ScaledMetric(relativeTo: .subheadline) private var titleProviderMark: CGFloat = 11
+    @ScaledMetric(relativeTo: .caption) private var branchProviderMark: CGFloat = 11
+    /// The slim row's one mark slot, which is a project avatar when there is a
+    /// project and a provider mark when there is not. Both off the slim
+    /// title's own style so the slot is the same size whichever fills it —
+    /// they keep their different seeds because an avatar and a glyph do not
+    /// read as the same weight at the same number.
+    @ScaledMetric(relativeTo: .footnote) private var slimProjectMark: CGFloat = 13
+    @ScaledMetric(relativeTo: .footnote) private var slimProviderMark: CGFloat = 12
+
     private var model: SidebarModel {
         SidebarModel(
             sessions: inbox.sections.active,
@@ -240,7 +268,7 @@ struct SessionSidebar: View {
                             HStack(spacing: 6) {
                                 Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
                                     .font(.caption).foregroundStyle(Theme.textMuted)
-                                ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, mark: group.mark, api: settings.api(for: group.hostId), size: 16)
+                                ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, mark: group.mark, api: settings.api(for: group.hostId), size: groupMark)
                                 // A HEADER IS A HEADER BY ITS WEIGHT. In
                                 // `textMuted` at body size this named the
                                 // project more quietly than the rows it was
@@ -806,7 +834,7 @@ struct SessionSidebar: View {
                 // mix projects, so the row names its own. A row under its
                 // project's own header says nothing the header has not.
                 if showsProject, let project = inbox.project(row) {
-                    ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: 12)
+                    ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: rowProjectMark)
                     Text(project.name).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.75)).lineLimit(1)
                 }
                 Spacer(minLength: 4)
@@ -828,7 +856,7 @@ struct SessionSidebar: View {
                 // at the end at reduced opacity. It sits on the title line
                 // so it survives the third line's absence.
                 if row.session.workspace.branch == nil {
-                    ProviderIconView(driver: row.session.driver, size: 11).opacity(0.5)
+                    ProviderIconView(driver: row.session.driver, size: titleProviderMark).opacity(0.5)
                 }
             }
             // NO THIRD LINE UNLESS IT SAYS SOMETHING THIS ROW ALONE WOULD
@@ -838,7 +866,7 @@ struct SessionSidebar: View {
                     Image(systemName: "arrow.triangle.branch").font(.system(Theme.captionTiny))
                     Text(branch).font(.system(Theme.caption)).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 4)
-                    ProviderIconView(driver: row.session.driver, size: 11).opacity(0.6)
+                    ProviderIconView(driver: row.session.driver, size: branchProviderMark).opacity(0.6)
                 }
                 .foregroundStyle(Theme.textMuted.opacity(0.7))
             }
@@ -866,10 +894,10 @@ struct SessionSidebar: View {
                 Image(systemName: "pin.fill").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted.opacity(0.7))
             }
             if let project = inbox.project(row) {
-                ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: 13)
+                ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: slimProjectMark)
                     .opacity(0.8)
             } else {
-                ProviderIconView(driver: row.session.driver, size: 12).opacity(0.6)
+                ProviderIconView(driver: row.session.driver, size: slimProviderMark).opacity(0.6)
             }
             unreadDot(row.session)
             Text(row.session.title.isEmpty ? "Untitled session" : row.session.title)

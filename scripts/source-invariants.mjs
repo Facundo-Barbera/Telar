@@ -306,6 +306,49 @@ const GUARD_SAMPLES = [
   { fires: false, why: "prose about the sweep", code: `/// was .system(size:) before the sweep` },
 ];
 
+/** Views whose every glyph is a fraction of the `size:` their caller passes. */
+const PROPORTIONAL_MARKS = ["ProjectAvatar", "ProviderIconView"];
+
+/**
+ * Every `size:` argument handed to one of those views as a LITERAL. Walks the
+ * call with a paren counter rather than a character class, so a nested call in
+ * an earlier argument cannot end the scan early.
+ */
+function markSizeArguments(source) {
+  const found = [];
+  for (const name of PROPORTIONAL_MARKS) {
+    let from = 0;
+    for (;;) {
+      const at = source.indexOf(`${name}(`, from);
+      if (at === -1) break;
+      const open = at + name.length;
+      from = open;
+      let depth = 0;
+      let close = -1;
+      for (let i = open; i < source.length; i += 1) {
+        if (source[i] === "(") depth += 1;
+        else if (source[i] === ")") {
+          depth -= 1;
+          if (depth === 0) {
+            close = i;
+            break;
+          }
+        }
+      }
+      if (close === -1) continue;
+      const args = source.slice(open + 1, close);
+      const size = args.match(/\bsize:\s*([^,]+?)\s*(?:,|$)/);
+      if (!size || !/^\d/.test(size[1])) continue;
+      found.push({
+        name,
+        value: size[1],
+        line: source.slice(0, at).split("\n").length,
+      });
+    }
+  }
+  return found;
+}
+
 const CHECKS = [
   {
     name: "ios-type-scale-self-test",
@@ -511,6 +554,98 @@ const CHECKS = [
         (path) =>
           `${path}: registers happy-dom and never unregisters it. Add \`afterAll(async () => { await GlobalRegistrator.unregister(); });\` — the registration is process-wide, so the file this breaks is the NEXT one to register, not this one, and the error it throws names that file instead. ${registers.length - unbalanced.length} other file${registers.length - unbalanced.length === 1 ? "" : "s"} in apps/web already pair the two.`,
       );
+    },
+  },
+  /**
+   * A MARK IS THE SIZE OF THE LINE IT LABELS — the call-site literal (#718).
+   *
+   * `ProjectAvatar` and `ProviderIconView` are both proportional to the `size`
+   * they are handed: every glyph inside them is a fraction of that number, so
+   * they are correct at any size and #674 rightly left them alone. The literal
+   * is not inside them. It is in the CALLER, as an argument:
+   *
+   *     ProviderIconView(driver: row.session.driver, size: 11)
+   *
+   * The row's text scales; that 11 does not; the mark stops being the size of
+   * the line it labels. #718 filed this and said in as many words that
+   * `source-invariants.mjs` could never catch it, "because the literal is a
+   * call-site argument rather than a font size, so no regex over font calls
+   * will ever see it". That was true of a regex over FONT calls and false as a
+   * general claim — a regex over THESE calls sees it perfectly well. The gap
+   * was in where the guard was looking, not in what is knowable from source.
+   *
+   * SO IT IS NARROW ON PURPOSE. It knows two view names, and it will not
+   * generalise to "any view taking a size:" — that would flag every deliberate
+   * fixed-size caller in the app and be deleted within a week. Two names, both
+   * proportional by construction, both drawn beside text. Add a third only
+   * when a third genuinely has this shape.
+   *
+   * PAREN-BALANCED rather than regex-matched, because the first version of
+   * this scan used `[^)]*` and silently missed four of the seven sites: these
+   * calls contain nested calls (`api: settings.api(for: row.hostId)`), and the
+   * character class stopped at the inner `)`. The miss looked exactly like a
+   * clean result.
+   */
+  {
+    name: "ios-mark-sizes",
+    protects: "#718: a project or provider mark is never pinned to a literal at its call site",
+    async run() {
+      const failures = [];
+      for (const [path] of SWEPT_FILES) {
+        let source;
+        try {
+          source = await read(path);
+        } catch {
+          continue; // the type-scale check above already reports a missing file
+        }
+        for (const { line, name, value } of markSizeArguments(source)) {
+          failures.push(
+            `${path}:${line}: ${name}(… size: ${value}) is pinned to a literal. Both views are proportional to the ` +
+              "size they are given, so the caller decides whether the mark scales — and a hard number means it does " +
+              "not, while the text beside it does. Give it a @ScaledMetric relative to the style of the text it sits " +
+              "next to (not one shared reference: a mark tracks its own line). See SessionSidebar.swift.",
+          );
+        }
+      }
+      return failures;
+    },
+  },
+  /**
+   * The same standard #721 holds the font patterns to: a scan that has never
+   * been shown to fail has demonstrated nothing. The nested-call sample is the
+   * one that matters — it is the exact shape that defeated the first attempt.
+   */
+  {
+    name: "ios-mark-sizes-self-test",
+    protects: "#718: the mark-size scan still sees a literal through a nested call, and ignores a scaled one",
+    async run() {
+      const samples = [
+        { fires: true, why: "the plain literal", code: `ProviderIconView(driver: d, size: 11)` },
+        {
+          fires: true,
+          why: "a literal behind a nested call — the shape that defeated the first scan",
+          code: `ProjectAvatar(name: p.name, api: settings.api(for: row.hostId), size: 13)`,
+        },
+        { fires: true, why: "spaced out", code: `ProviderIconView( driver: d , size:  12 )` },
+        { fires: false, why: "a @ScaledMetric", code: `ProviderIconView(driver: d, size: badge)` },
+        { fires: false, why: "a scaled metric behind a nested call", code: `ProjectAvatar(api: settings.api(for: h), size: slimProjectMark)` },
+        { fires: false, why: "a computed size", code: `ProviderIconView(driver: d, size: box * 0.5)` },
+        { fires: false, why: "some other view's literal size", code: `SomeOtherThing(size: 11)` },
+      ];
+      const failures = [];
+      for (const { fires, why, code } of samples) {
+        const hits = markSizeArguments(code);
+        if (fires && hits.length === 0) {
+          failures.push(`the scan MISSED a sample it must catch (${why}): ${JSON.stringify(code)}.`);
+        }
+        if (!fires && hits.length > 0) {
+          failures.push(
+            `the scan FIRED on a sample it must ignore (${why}): ${JSON.stringify(code)}. ` +
+              "Flagging a scaled size makes the check wrong about correct code.",
+          );
+        }
+      }
+      return failures;
     },
   },
 ];
