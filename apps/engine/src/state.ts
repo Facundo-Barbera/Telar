@@ -86,6 +86,7 @@ import {
   Turn as TurnSchema,
   TurnAttachment as TurnAttachmentSchema,
   TurnObservation as TurnObservationSchema,
+  TurnState as TurnStateSchema,
   WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
   type BrowserProvider,
   type BrowserSnapshot,
@@ -1476,21 +1477,73 @@ function lastResultTurn(turns: readonly Turn[]): Turn | undefined {
   return latest;
 }
 
-function parseQueue(value: unknown, sessionId: string): SessionQueue {
+/**
+ * THE FOUR FIELDS EVERY READER OF A TURN KEYS ON — the queue's `isRequestRow`.
+ *
+ * A property test per row rather than a schema walk, and it is what stands
+ * between a document written outside this process and an `undefined` surfacing
+ * somewhere downstream as a blank rail pill or a turn nothing can claim. It
+ * checks identity (`runId`, `sessionId`), order (`sequence`) and the state
+ * machine's own alphabet — the four the fold, the window, the claim and the
+ * index all read without asking whether they are there.
+ *
+ * `TurnState` RATHER THAN A LIST WRITTEN OUT HERE, so a tenth state added to
+ * the protocol is accepted by this guard the moment it exists. `safeParse` on a
+ * z.enum is a set lookup, not a walk of the turn.
+ */
+function isTurnRow(row: unknown): row is Turn {
+  if (typeof row !== "object" || row === null) return false;
+  const candidate = row as Partial<Turn>;
+  return typeof candidate.runId === "string" && typeof candidate.sessionId === "string"
+    && Number.isSafeInteger(candidate.sequence) && TurnStateSchema.safeParse(candidate.state).success;
+}
+
+/**
+ * The document, and how much of it is re-checked — issue #547.
+ *
+ * `trusted` says this came out of the execution store, which is the daemon's
+ * own database under the daemon's own lock and is written by `writeQueue`
+ * alone — and `writeQueue` now runs `TurnSchema.array()` over every turn before
+ * it stores one. Re-running that walk per read re-checks a shape that cannot
+ * have changed since, and it was 24.9% of a turn's write path on #547's
+ * 400-turn fixture, because the queue is read nineteen times per turn and
+ * written four.
+ *
+ * THE JSON BACKEND IS NOT TRUSTED, and the split is deliberate rather than
+ * timid. `queue.json` is an ordinary file: a test rewrites it, an older engine
+ * wrote it, a person can open it. It is also the reference implementation the
+ * suite runs both ways against, so keeping the full walk there means every
+ * behaviour the schema enforces still has a backend that enforces it.
+ *
+ * THE STRUCTURAL GUARD RUNS ON BOTH, because "trusted" is an argument about
+ * which process wrote the bytes, not a promise that the bytes are there. A
+ * sqlite document that predates a migration, or one a downgrade wrote, still
+ * has to fail as "invalid session queue" rather than downstream.
+ */
+function parseQueue(value: unknown, sessionId: string, trusted = false): SessionQueue {
   assertStateVersion(value, "session queue");
   const stored = value as { sessionId?: unknown; nextSequence?: unknown; turns?: unknown };
   if (stored.sessionId !== sessionId || !Number.isSafeInteger(stored.nextSequence)) {
     throw new EngineStateError("invalid_request", "invalid session queue");
   }
-  const turns = TurnSchema.array().safeParse(stored.turns);
-  if (!turns.success) throw new EngineStateError("invalid_request", "invalid session queue");
+  let rows: Turn[];
+  if (trusted) {
+    if (!Array.isArray(stored.turns) || stored.turns.some((row) => !isTurnRow(row))) {
+      throw new EngineStateError("invalid_request", "invalid session queue");
+    }
+    rows = stored.turns as Turn[];
+  } else {
+    const turns = TurnSchema.array().safeParse(stored.turns);
+    if (!turns.success) throw new EngineStateError("invalid_request", "invalid session queue");
+    rows = turns.data;
+  }
   const ids = new Set<string>();
-  for (const turn of turns.data) {
+  for (const turn of rows) {
     assertId(turn.runId, "run id");
     if (ids.has(turn.runId)) throw new EngineStateError("invalid_request", "duplicate Telar turn id");
     ids.add(turn.runId);
   }
-  return { version: STATE_VERSION, sessionId, nextSequence: stored.nextSequence as number, turns: turns.data };
+  return { version: STATE_VERSION, sessionId, nextSequence: stored.nextSequence as number, turns: rows };
 }
 
 /**
@@ -2227,7 +2280,11 @@ export class EngineStore {
    * call sites are covered by construction rather than by remembering.
    *
    * `queueParses` COUNTS WHOLE-DOCUMENT QUEUE PARSES, which is the number #547
-   * is about rather than the bytes — a byte total moves for a cache hit too.
+   * is about rather than the bytes — the parse this issue removed is one of
+   * several a transition makes, and it is invisible in a byte total that a
+   * cache hit also moves. The counts themselves live in
+   * `test/queue-write-path.test.ts`, where they are a ratchet: fifteen per turn
+   * survive this issue, and #547 is the argument that fifteen is too many.
    */
   readonly readAccounting = { documentBytes: 0, documentReads: 0, queueParses: 0 };
 
@@ -13086,13 +13143,34 @@ export class EngineStore {
     if (stored === undefined) return emptyQueue(sessionId);
     this.accountWholeRead(file);
     this.readAccounting.queueParses += 1;
-    return parseQueue(stored, sessionId);
+    return parseQueue(stored, sessionId, this.executionStore?.owns(file) === true);
   }
 
   /** THE ONLY WRITER, which is what lets `liveQueueIndex` and `queueCache` be
    *  maintained in one place rather than at each of the thirteen transitions
    *  that call this. */
   private writeQueue(sessionId: string, queue: SessionQueue): void {
+    /**
+     * VALIDATE ON WRITE, SO THE READ CAN TRUST — issue #547, and #545's clause
+     * for the queue at last.
+     *
+     * The schema walk runs HERE, once per write, instead of in `parseQueue`
+     * once per read. A turn is written four times a turn and read nineteen on
+     * the fixture #547's bench measures, so this moves zod off the hot side of
+     * a 5:1 ratio — and it moves the failure to the moment a bad turn is built,
+     * where the stack still names the transition that built it, rather than to
+     * whichever unlucky read finds it later.
+     *
+     * THE WHOLE ARRAY, not the turns that moved. Knowing which turn a
+     * transition touched means asking every transition to say so — thirteen
+     * places to keep right, and the one that forgets is a corrupt row that
+     * nothing catches. `parseQueue` keeps the structural guard for both
+     * backends regardless; see there for what a document written outside this
+     * process still has to satisfy.
+     */
+    if (!TurnSchema.array().safeParse(queue.turns).success) {
+      throw new EngineStateError("invalid_request", "invalid session queue");
+    }
     this.writeIndexedDocument(
       sessionQueueFile(this.paths, sessionId),
       sessionQueueIndexFile(this.paths, sessionId),

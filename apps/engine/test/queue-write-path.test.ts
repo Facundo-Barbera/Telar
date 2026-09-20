@@ -1,5 +1,5 @@
 /**
- * THE QUEUE DOCUMENT ON THE WRITE PATH — issue #547, step 2.
+ * THE QUEUE DOCUMENT ON THE WRITE PATH — issue #547, steps 2 and 3.
  *
  * THE INSTRUMENT FIRST, AND FALSIFIED ON ITS OWN. Everything #547 claims about
  * the write path is counted rather than argued, so the counter has to be worth
@@ -18,12 +18,19 @@
  * is about the write path reading the queue more often than it needs to, so a
  * change that moves these numbers is a change somebody should look at, in
  * either direction.
+ *
+ * AND THEN THE TRADE: VALIDATE ON WRITE, TRUST ON READ, with the refusal
+ * surviving it. A turn that violates `Turn` must still be refused — at the
+ * write now rather than at the read, and on the JSON backend at both. Every
+ * test below that asserts a refusal has a sibling asserting the same shape is
+ * ACCEPTED where it should be, so "refuses everything" cannot pass here.
  */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
+import { ExecutionStore } from "../src/execution-store";
 
 const roots: string[] = [];
 const stores: EngineStore[] = [];
@@ -226,4 +233,128 @@ test("the carried queue is the one the command wrote, at every transition", () =
   // A metadata-only write afterwards must not disturb what the queue write
   // folded — this is the carry-over half of `indexedSessionOf`, still working.
   step((store) => store.updateSession("session_one", { title: "Renamed" }), { activity: "idle", lastTurnSequence: 4 });
+});
+
+// ── step 3: validate on write, trust on read, refuse either way ──────────────
+
+/** A turn that satisfies the structural guard and violates `Turn`. */
+const malformedTurn = (sessionId: string, sequence: number): Record<string, unknown> => ({
+  runId: "run_bad",
+  sessionId,
+  sequence,
+  state: "completed",
+  // `input` is `z.string()`. A number passes the four structural fields and
+  // fails the schema, which is exactly the gap trust-on-read opens.
+  input: 42,
+  acceptedAt: 1,
+  updatedAt: 1,
+});
+
+/** Put an exact queue document into the store's database, behind its back. */
+function injectQueue(directory: string, sessionId: string, document: unknown): void {
+  const raw = new ExecutionStore(directory);
+  try {
+    raw.transaction("test-inject", () => {
+      raw.writeText(path.join(directory, "sessions", sessionId, "queue.json"), JSON.stringify(document));
+      // The offset index describes bytes that have just moved, so it is
+      // invalidated rather than left to be trusted — the same marker
+      // `writeIndexedDocument` writes when it cannot index a document.
+      raw.write(path.join(directory, "sessions", sessionId, "queue.index.json"), { version: 2, length: -1, rows: [] });
+    });
+  } finally {
+    raw.close();
+  }
+}
+
+test("a malformed turn in the store is refused at the write, not let through", () => {
+  /**
+   * THE TRADE THIS STEP MAKES, IN BOTH DIRECTIONS.
+   *
+   * On sqlite the schema walk no longer runs per read, so a turn that violates
+   * `Turn` is READ without complaint — that is the saving, and pretending
+   * otherwise would be testing the wrong thing. What must not change is that
+   * the store refuses to carry it: the next write validates every turn and
+   * throws, so the bad row cannot be written back and cannot spread.
+   */
+  const directory = root();
+  const first = seeded(open(directory, "sqlite"), 2);
+  const seededTurns = first.turns("session_one");
+  const queue = { version: 2, sessionId: "session_one", nextSequence: 9, turns: [...seededTurns, malformedTurn("session_one", 8)] };
+  first.closeExecutionStore();
+  stores.splice(stores.indexOf(first), 1);
+
+  injectQueue(directory, "session_one", queue);
+
+  const store = open(directory, "sqlite");
+  // READ: trusted, so the row reaches the caller rather than throwing.
+  expect(store.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_bad"]);
+
+  // WRITE: refused, with the turn still on file rather than half-replaced.
+  expect(() => store.submitTurn("session_one", { runId: "run_next", input: "hello" })).toThrow(/invalid session queue/);
+  expect(store.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_bad"]);
+
+  // …and a well-formed turn in the same position is accepted, so this is a
+  // guard rather than a store that has stopped writing.
+  const clean = { ...queue, turns: seededTurns };
+  store.closeExecutionStore();
+  stores.splice(stores.indexOf(store), 1);
+  injectQueue(directory, "session_one", clean);
+  const healthy = open(directory, "sqlite");
+  healthy.submitTurn("session_one", { runId: "run_next", input: "hello" });
+  expect(healthy.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_next"]);
+});
+
+test("a structurally broken turn is refused on read, on the backend that trusts", () => {
+  /**
+   * TRUST IS ABOUT WHICH PROCESS WROTE THE BYTES, NOT THAT THEY ARE THERE.
+   *
+   * The four fields every reader keys on are checked on both backends, so a
+   * document a downgrade or a migration left behind fails as "invalid session
+   * queue" rather than as an `undefined` on the rail.
+   */
+  const directory = root();
+  const first = seeded(open(directory, "sqlite"), 2);
+  const turns = first.turns("session_one");
+  first.closeExecutionStore();
+  stores.splice(stores.indexOf(first), 1);
+
+  for (const broken of [
+    { ...turns[0]!, runId: undefined },
+    { ...turns[0]!, sessionId: 7 },
+    { ...turns[0]!, sequence: "second" },
+    { ...turns[0]!, state: "mid-flight" },
+  ]) {
+    injectQueue(directory, "session_one", { version: 2, sessionId: "session_one", nextSequence: 3, turns: [broken] });
+    const store = open(directory, "sqlite");
+    expect(() => store.turns("session_one")).toThrow(/invalid session queue/);
+    store.closeExecutionStore();
+    stores.splice(stores.indexOf(store), 1);
+  }
+
+  // AND THE SAME ROW, INTACT, READS FINE — four refusals mean nothing without
+  // this line.
+  injectQueue(directory, "session_one", { version: 2, sessionId: "session_one", nextSequence: 3, turns: [turns[0]!] });
+  expect(open(directory, "sqlite").turns("session_one")).toEqual([turns[0]!]);
+});
+
+test("the JSON backend still validates every turn on read", () => {
+  /**
+   * THE REFERENCE BACKEND KEEPS THE FULL WALK, and this is what says so. A
+   * `queue.json` is an ordinary file — a test rewrites it, an older engine
+   * wrote it, a person can open it — so nothing about which process wrote it
+   * can be assumed, and the schema is the only thing that knows the difference
+   * between `input: "hello"` and `input: 42`.
+   */
+  const directory = root();
+  const store = seeded(open(directory, "json"), 2);
+  const file = path.join(directory, "sessions", "session_one", "queue.json");
+  const document = JSON.parse(fs.readFileSync(file, "utf8")) as { turns: unknown[]; nextSequence: number };
+
+  fs.writeFileSync(file, JSON.stringify({ ...document, turns: [...document.turns, malformedTurn("session_one", 8)] }));
+  expect(() => store.turns("session_one")).toThrow(/invalid session queue/);
+
+  // The same document without the bad turn reads, so the refusal above is the
+  // turn and not the rewrite.
+  fs.writeFileSync(file, JSON.stringify(document));
+  expect(store.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1"]);
 });
