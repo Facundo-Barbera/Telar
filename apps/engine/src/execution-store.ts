@@ -136,6 +136,11 @@ export type SessionIndexRow = {
   settledAt?: number;
   snoozedUntil?: number;
   snoozedAt?: number;
+  /** When the engine decided this conversation woke — see `Session.wokeAt`. On
+   *  the row because `dueSnoozeWakes` SEEKS on it: "has a wake already been
+   *  recorded" is half the sweep's predicate, and a column is what keeps that
+   *  question out of 300 documents. */
+  wokeAt?: number;
   lastTurnSequence?: number;
   lastReadTurnSequence?: number;
   lastTurnEndedAt?: number;
@@ -177,6 +182,7 @@ function rowFromColumns(columns: StoredSessionRow): SessionIndexRow {
     ...(columns.settled_at === null || columns.settled_at === undefined ? {} : { settledAt: Number(columns.settled_at) }),
     ...(columns.snoozed_until === null || columns.snoozed_until === undefined ? {} : { snoozedUntil: Number(columns.snoozed_until) }),
     ...(columns.snoozed_at === null || columns.snoozed_at === undefined ? {} : { snoozedAt: Number(columns.snoozed_at) }),
+    ...(columns.woke_at === null || columns.woke_at === undefined ? {} : { wokeAt: Number(columns.woke_at) }),
     ...(columns.last_turn_sequence === null || columns.last_turn_sequence === undefined ? {} : { lastTurnSequence: Number(columns.last_turn_sequence) }),
     ...(columns.last_read_turn_sequence === null || columns.last_read_turn_sequence === undefined ? {} : { lastReadTurnSequence: Number(columns.last_read_turn_sequence) }),
     ...(columns.last_turn_ended_at === null || columns.last_turn_ended_at === undefined ? {} : { lastTurnEndedAt: Number(columns.last_turn_ended_at) }),
@@ -500,7 +506,15 @@ export class ExecutionStore {
      * not from these, so nothing here grows the rail's answer — which is the one
      * thing #493 bought and this must not spend.
      */
-    for (const column of ["title TEXT", "branch TEXT"]) {
+    /**
+     * AND WHEN A SNOOZE ENDED — issues #490, #586. Additive for the reason above
+     * and on the same terms: an older binary neither knows nor needs to know it
+     * exists, and a row written by one simply has no wake recorded — which is
+     * indistinguishable from a session that never slept, and is the safe
+     * direction. The one it must not take is announcing a wake that did not
+     * happen, and an absent column cannot.
+     */
+    for (const column of ["title TEXT", "branch TEXT", "woke_at INTEGER"]) {
       const name = column.split(" ")[0]!;
       if (!this.db.prepare("PRAGMA table_info(sessions)").all().some((existing) => String(existing.name) === name))
         this.db.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
@@ -1007,6 +1021,35 @@ export class ExecutionStore {
     return this.statement("SELECT * FROM sessions WHERE archived = 0").all().map(rowFromColumns);
   }
 
+  /**
+   * EVERY ROW A WAKE COULD STILL BE OWED ON — issues #490, #586.
+   *
+   * THE NARROWING, NOT THE DECISION. `wokeAt()` in the protocol package is the
+   * one implementation of "when did this conversation wake", and it reads fields
+   * (`raisedHandWhileSnoozed`) whose rule has no business being restated in SQL
+   * — a second copy in a dialect nobody tests against is how the two answers
+   * drift. So this returns the rows the question can even be ASKED about and
+   * lets the shared function answer it.
+   *
+   * THE PREDICATE IS THE WHOLE COST. A session with no snooze is not a row here,
+   * and one whose wake is already recorded is not either — which on any real
+   * store is all but a handful. That is why this sweep does NOT copy
+   * `sweepDelegatedSettling`'s whole-store loop: that one walks `sessionIds()`
+   * because its predicate lives in DOCUMENTS and SQL cannot see it. Ours is two
+   * columns on the index, so walking every session to re-ask them would be a
+   * pass this table exists to prevent. The next reader will assume the loop was
+   * the pattern to follow; it was the constraint, not the pattern.
+   *
+   * ARCHIVED ROWS ARE NOT WOKEN. They are off every list by a decision that
+   * outranks a snooze, so a wake announced on one is a notification about a
+   * conversation the reader cannot see.
+   */
+  dueSnoozeWakes(): SessionIndexRow[] {
+    return this.statement("SELECT * FROM sessions WHERE snoozed_until IS NOT NULL AND woke_at IS NULL AND archived = 0")
+      .all()
+      .map(rowFromColumns);
+  }
+
   /** One row, by primary key — what a writer reads to learn whether the row it
    *  is about to store changes which list this session is on. */
   sessionRow(sessionId: string): SessionIndexRow | undefined {
@@ -1069,8 +1112,8 @@ export class ExecutionStore {
     this.statement(`INSERT INTO sessions(
         id, project_id, state, archived, draft, created_at, updated_at, read_at, settled_override, settled_at,
         snoozed_until, snoozed_at, last_turn_sequence, last_read_turn_sequence, last_turn_ended_at, last_turn_failed,
-        activity, activity_at, title, branch)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        activity, activity_at, title, branch, woke_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
         project_id=excluded.project_id, state=excluded.state, archived=excluded.archived, draft=excluded.draft,
         created_at=excluded.created_at, updated_at=excluded.updated_at, read_at=excluded.read_at,
@@ -1079,12 +1122,12 @@ export class ExecutionStore {
         last_turn_sequence=excluded.last_turn_sequence, last_read_turn_sequence=excluded.last_read_turn_sequence,
         last_turn_ended_at=excluded.last_turn_ended_at, last_turn_failed=excluded.last_turn_failed,
         activity=excluded.activity, activity_at=excluded.activity_at,
-        title=excluded.title, branch=excluded.branch`).run(
+        title=excluded.title, branch=excluded.branch, woke_at=excluded.woke_at`).run(
       row.id, row.projectId ?? null, row.state, row.archived ? 1 : 0, row.draft ? 1 : 0,
       row.createdAt, row.updatedAt, row.readAt ?? null, row.settledOverride ?? null, row.settledAt ?? null,
       row.snoozedUntil ?? null, row.snoozedAt ?? null, row.lastTurnSequence ?? null, row.lastReadTurnSequence ?? null,
       row.lastTurnEndedAt ?? null, row.lastTurnFailed ? 1 : 0, row.activity, row.activityAt ?? null,
-      row.title ?? null, row.branch ?? null);
+      row.title ?? null, row.branch ?? null, row.wokeAt ?? null);
     this.writeSessionSearchRow(row.id, row.title ?? "", row.branch ?? "");
   }
 

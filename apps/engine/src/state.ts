@@ -66,6 +66,10 @@ import {
   // shows. See `protocol/settling.ts`.
   isShelved,
   settlingActivityOf,
+  // AND THE WAKE MOMENT, from the same file and for the same reason. It already
+  // decides the scheduled expiry and the early wake together; `sweepSnoozeWakes`
+  // records what it answers rather than deciding again (#490, #586).
+  wokeAt,
   type AssignmentTurn,
   type SessionAssignment,
   type LiveSessionRow,
@@ -1176,6 +1180,11 @@ const liveRow = (session: Session): LiveSessionRow => ({
   ...(session.settledBy === undefined ? {} : { settledBy: session.settledBy }),
   ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
   ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+  // ON THE WIRE DELIBERATELY, unlike `title`/`branch` on the index row: this is
+  // the one field a rail needs in order to draw the thing #490 asked for. A dot
+  // that says "this woke while you were away" cannot be derived from the other
+  // three — deriving it is what made every cockpit decide it separately.
+  ...(session.wokeAt === undefined ? {} : { wokeAt: session.wokeAt }),
   ...(session.startedFrom === undefined ? {} : { startedFrom: session.startedFrom }),
 });
 
@@ -1205,6 +1214,8 @@ const indexRow = (session: Session): SessionIndexRow => ({
   ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
   ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
   ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+  // Half of `dueSnoozeWakes`'s predicate — see `SessionIndexRow.wokeAt`.
+  ...(session.wokeAt === undefined ? {} : { wokeAt: session.wokeAt }),
   ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
   ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
   ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
@@ -7093,7 +7104,17 @@ export class EngineStore {
       else if (typeof patch.resumeAfterRateLimit === "boolean") next.resumeAfterRateLimit = patch.resumeAfterRateLimit;
       else throw new EngineStateError("invalid_request", "resumeAfterRateLimit must be a boolean or null");
     }
+    /**
+     * EITHER WAY, THE RECORDED WAKE GOES — issues #490, #586.
+     *
+     * `wokeAt` belongs to the snooze that produced it. Cancelling clears the
+     * snooze, so there is nothing left for a wake to be about; setting a new one
+     * starts a new sleep, and a stale wake sitting on the record would mean
+     * `dueSnoozeWakes` never asks about this session again — the NEXT wake would
+     * be the one that goes unannounced, which is precisely the defect.
+     */
     if (patch.snoozedUntil !== undefined) {
+      delete next.wokeAt;
       if (patch.snoozedUntil === null) {
         delete next.snoozedUntil;
         delete next.snoozedAt;
@@ -7138,6 +7159,10 @@ export class EngineStore {
       next.detached === session.detached &&
       next.settledOverride === session.settledOverride &&
       next.snoozedUntil === session.snoozedUntil &&
+      // Or a cancel on an already-woken row would clear the recorded wake in
+      // `next` and then be dropped here as "nothing changed", leaving the stale
+      // stamp on disk with no event to say it went.
+      next.wokeAt === session.wokeAt &&
       next.resumeAfterRateLimit === session.resumeAfterRateLimit &&
       next.reportWindowMinutes === session.reportWindowMinutes &&
       // COMPARED WHOLE, not field by field. The hand-written version listed
@@ -11450,6 +11475,124 @@ export class EngineStore {
     return delivered;
   }
 
+  /**
+   * ══ EVERY SNOOZE THAT HAS ENDED — issues #490, #586 ══
+   *
+   * THE THIRD OF THESE, AND THE ONE WITH THE STRONGEST CASE. `snoozedUntil` is a
+   * stored timestamp and nothing else: "is this snoozed?" is COMPUTED against
+   * `now`, and every reference to it across the engine stores it, reads it, or
+   * deletes it. Nothing scheduled anything at expiry, so there was no moment at
+   * which a conversation woke and nothing could announce one — the row simply
+   * reappeared whenever something happened to render after the deadline. The
+   * owner reported it as "nos faltó añadir un punto de notificación para mostrar
+   * que una conversación se despertó"; this is the point of notification.
+   *
+   * A DEADLINE PASSING IS NOT AN EVENT, which is the same thing
+   * `sessionsRevision` says about the same class of bug: *"no counter can move
+   * on an event that does not happen."* So the wake needs something that ticks,
+   * exactly as the grace above it did (#378) and the report window before it
+   * (#723).
+   *
+   * ══ WHY THE ENGINE AND NOT EACH COCKPIT ══
+   *
+   * A per-row client timer would light the dot. It would also fire
+   * INDEPENDENTLY IN EVERY COCKPIT, so two devices would disagree about when a
+   * conversation woke — the same class of bug as two disagreeing about whether a
+   * turn ended. "When did this conversation wake" is a server-side fact with
+   * exactly one correct answer, and computing it per device IS the defect rather
+   * than an implementation detail of it. `lastReadTurnSequence` is the precedent
+   * and it is in the same file as the rule: both numbers are the engine's, so
+   * they answer the same on every device and survive a reload.
+   *
+   * SO THIS IS ONE TIMER REPLACING N, not a timer added. #490 is removing
+   * timers, and the arithmetic runs the right way: one process-level tick
+   * instead of one per row per connected cockpit.
+   *
+   * ══ WHAT IT COSTS, AND WHY IT IS NOT A WHOLE-STORE PASS ══
+   *
+   * `dueSnoozeWakes` SEEKS: a session with no snooze, or with its wake already
+   * recorded, is not a row it returns. The two sweeps above walk `sessionIds()`
+   * because their predicates live in documents SQL cannot see; this one's are
+   * two columns, so copying their loop would reinstate the fold #493 removed.
+   *
+   * ══ AND THE DECISION IS NOT MADE HERE ══
+   *
+   * `wokeAt()` is the one implementation, shared with every client, and it
+   * already handles both branches — the scheduled expiry and the early wake a
+   * raised hand causes. This records what it answers. Writing a second rule here
+   * is how the engine and the cockpit come to disagree about the very thing this
+   * exists to make them agree on.
+   *
+   * Returns the sessions it woke, so a caller — and a test — can see the tick's
+   * work without waiting on a timer.
+   */
+  sweepSnoozeWakes(): string[] {
+    const now = this.now();
+    const woken: string[] = [];
+    for (const row of this.snoozeWakeCandidates()) {
+      try {
+        const at = wokeAt({ ...row }, settlingActivityOf(row), { now });
+        if (at === undefined) continue;
+        if (this.recordSnoozeWake(row.id, at)) woken.push(row.id);
+      } catch {
+        // One unreadable session must not stop the sweep for the rest.
+      }
+    }
+    return woken;
+  }
+
+  /**
+   * The rows a wake could still be owed on.
+   *
+   * THE INDEXED STORE ANSWERS THIS IN ONE QUERY. The JSON backend has no
+   * `sessions` table to seek, so it pays the walk — the same trade
+   * `bumpRevisionFor` makes, and the same direction: the fallback is slower and
+   * never wrong.
+   */
+  private snoozeWakeCandidates(): SessionIndexRow[] {
+    if (this.executionStore) return this.executionStore.dueSnoozeWakes();
+    const rows: SessionIndexRow[] = [];
+    for (const sessionId of this.sessionIds()) {
+      try {
+        const row = indexRow(this.getSession(sessionId));
+        if (row.snoozedUntil !== undefined && row.wokeAt === undefined && !row.archived) rows.push(row);
+      } catch {
+        // Same as the sweep: one unreadable session is not the rest's problem.
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * Stamp one wake, once.
+   *
+   * RE-READ BEFORE WRITING, because the row that produced the candidate is a
+   * projection and the document is the truth — a snooze cancelled between the
+   * query and here must not be woken, and a wake already recorded must not be
+   * recorded twice. That second guard is what makes "exactly one signal" a
+   * property of the code rather than of the tick's timing.
+   *
+   * `updatedAt` IS DELIBERATELY NOT TOUCHED, for `applyDelegationSettle`'s
+   * reason and one of its own: `idleSince` (`settling.ts`) already counts a
+   * snooze's wake as the start of the inactivity window, so stamping here would
+   * both make an engine wake look like fresh work AND move the row to the top of
+   * a list the house rule says must not reorder itself while it is being read.
+   *
+   * TWO EVENTS, as the settle makes: `session.updated` is how a client's fold
+   * learns the new record, `session.woke` is the edge — the one thing anything
+   * acting on the wake can subscribe to without diffing two snapshots. It is
+   * #586's fifth frame, waiting for #586's feed.
+   */
+  private recordSnoozeWake(sessionId: string, at: number): boolean {
+    const session = this.getSession(sessionId);
+    if (session.wokeAt !== undefined || session.snoozedUntil === undefined) return false;
+    session.wokeAt = at;
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    this.appendEvent(sessionId, { type: "session.woke", wokeAt: at });
+    this.appendEvent(sessionId, { type: "session.updated", session });
+    return true;
+  }
+
   /** The whole rule for one session: gather, fold, and write if it says so. */
   private settleDelegateIfDue(sessionId: string): boolean {
     let session: Session;
@@ -12935,9 +13078,24 @@ export class EngineStore {
        */
       releaseDelegationSettle(session);
     }
+    /**
+     * AND THIS IS A WAKE, SO IT IS RECORDED AS ONE — issues #490, #586.
+     *
+     * The sweep cannot reach this case: it deletes the snooze outright, so a
+     * pass arriving afterwards sees a session that never slept and `wokeAt()`
+     * has nothing to answer from. Stamped BEFORE the deletes for that reason.
+     *
+     * THE MOMENT IS NOW, not `snoozedUntil`. Nothing expired here — work landed
+     * on a sleeping conversation and that is what woke it, earlier than asked.
+     * Reporting the scheduled time would date the wake to an hour that has not
+     * happened yet.
+     */
+    const woken = session.snoozedUntil !== undefined;
+    if (woken) session.wokeAt = this.now();
     delete session.snoozedUntil;
     delete session.snoozedAt;
     this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    if (woken) this.appendEvent(sessionId, { type: "session.woke", wokeAt: session.wokeAt! });
     this.appendEvent(sessionId, { type: "session.updated", session });
   }
 

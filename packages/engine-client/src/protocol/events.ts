@@ -63,6 +63,31 @@ const SessionArchived = event("session.archived", {});
  * and would fire again on every unrelated write.
  */
 const SessionSettled = event("session.settled", { settledBy: SessionSettledBy });
+/**
+ * A SNOOZE ENDED, AND THIS IS WHEN — issues #490, #586.
+ *
+ * The one transition in this union with no write of its own behind it. Every
+ * other row here is emitted because something was written: a turn ended, a
+ * request opened, a human pressed something. A snooze ends because a DEADLINE
+ * PASSED, and a deadline passing is not an event — `sessionsRevision` says the
+ * same thing about the same class of bug ("no counter can move on an event that
+ * does not happen"). `sweepSnoozeWakes` is what makes the moment happen; this
+ * is what carries it.
+ *
+ * `wokeAt` IS THE WAKE MOMENT AND THE ENVELOPE'S `at` IS THE SWEEP'S — they are
+ * two different numbers and the row carries both deliberately. The sweep
+ * notices on a tick, so it records up to one tick late; the wake is still when
+ * the snooze ENDED. Naming this field `at` would have shadowed the envelope and
+ * left a reader with only the moment the engine got round to looking, which is
+ * the per-device answer this whole mechanism exists to prevent.
+ *
+ * A `session.updated` rides beside it carrying the record, exactly as it does
+ * for `session.settled`: this row is not how a client learns the new state, it
+ * is how anything that wants to ACT on the wake hears about it exactly once.
+ * #586's feed is the intended reader — it is the fifth frame that issue
+ * sketches, and it could not have been built before this event existed.
+ */
+const SessionWoke = event("session.woke", { wokeAt: Timestamp });
 
 // ── runtime: the process, not the conversation ─────────────────────────────
 const RuntimeStarted = event("runtime.started", { runtime: Runtime });
@@ -280,6 +305,7 @@ export const EngineEvent = z.discriminatedUnion("type", [
   SessionUpdated,
   SessionArchived,
   SessionSettled,
+  SessionWoke,
   SessionPaused,
   SessionResumed,
   RuntimeStarted,
