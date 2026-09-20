@@ -581,11 +581,22 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          # NOT `set -e`. Several commands below are meant to come back empty
-          # or non-zero — `grep` exits 1 on no match — and #768 records what
-          # that costs when it is not thought about: an instrument whose
-          # failure signal was indistinguishable from its success condition,
-          # red on exactly the run where the thing it measured had been fixed.
+          # `set +e`, AND IT HAS TO BE `+e` RATHER THAN AN ABSENT `-e`.
+          # GitHub runs a `run:` block as `bash -e {0}`, so errexit is ALREADY
+          # ON before the first line of this script; omitting `set -e` does not
+          # turn it off and `set -uo pipefail` does not either. Several
+          # commands below are meant to come back non-zero — `grep` exits 1 on
+          # no match, and no match is the ORDINARY answer here — so leaving it
+          # on kills this step on exactly the pull requests it is meant to say
+          # "no" on.
+          #
+          # This is #768's trap in a second costume, and it was reproduced on
+          # the way to writing this: the first negative-case probe run
+          # (35505785312) died at `matched=$(… | ios_paths)` with no output at
+          # all, which reads far more like "the runner broke" than like "there
+          # were no matches". The positive case passes either way, which is why
+          # only the negative probe found it.
+          set +e
           set -uo pipefail
           source .github/workflows/ios-paths.sh
 
@@ -773,13 +784,20 @@ jobs:
       # from an instrument that was never switched on.
       #
       # TWO TRAPS FROM #768, BOTH REPRODUCED THERE AND BOTH AVOIDED HERE: this
-      # runs without `set -e`, because `grep` exiting 1 on no match is the
-      # SUCCESS case and killed that probe on the run where the fix worked;
-      # and nothing here filters by an unanchored filename, which silently
-      # credited `SessionView.swift` with `NewSessionView.swift`'s 171 ms.
+      # runs with errexit explicitly OFF, because `grep` exiting 1 on no match
+      # is the SUCCESS case and killed that probe on the run where the fix
+      # worked; and nothing here filters by an unanchored filename, which
+      # silently credited `SessionView.swift` with `NewSessionView.swift`'s
+      # 171 ms.
       - name: How much type-checker budget is left?
         if: needs.ios-changes.outputs.ios == 'true'
         run: |
+          # `+e` rather than a missing `-e`: GitHub hands this block to
+          # `bash -e`, so errexit is on unless something turns it off. Every
+          # `|| true` below would still be needed without this, and this would
+          # still be needed with them — belt and braces, on the step whose
+          # whole job is to report a zero as a zero.
+          set +e
           set -uo pipefail
           LOG="$RUNNER_TEMP/archive.log"
           FLOOR=500
@@ -801,9 +819,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "${count:-0}" -gt 0 ]; then
-            # Worst first. Each file is type-checked twice per archive, so the
-            # same declaration can appear twice with different numbers; both
-            # are shown rather than averaged.
+            # Worst first, and deduplicated by line rather than averaged:
+            # #768 saw the same declaration reported twice per archive with
+            # different numbers. A Release archive compiles each module in one
+            # whole-module swiftc invocation — `carriers` above is 2, one per
+            # module — and the first run of this step reported each
+            # declaration once. If duplicates do appear, both are shown; the
+            # worst is the figure that matters.
             echo "::warning::$count expression(s) or function body(ies) are over the ${FLOOR}ms floor"
             printf '%s\n' "$over" \
               | sed -E 's/.*took ([0-9]+)ms.*/\1 &/' | sort -rn | cut -d' ' -f2- | head -20 \
