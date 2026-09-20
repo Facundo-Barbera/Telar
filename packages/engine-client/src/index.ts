@@ -1020,6 +1020,12 @@ function runCursor(input: { runId?: string; after?: number }): string {
  * where this repeated the same mistake and where the fix is argued.
  */
 export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery } from "./protocol/diff-query";
+/** WHERE A REMOVABLE VOLUME APPEARS, and whether this platform can be asked —
+ *  the ONE list (#665). It was five, each carrying a comment saying it was a
+ *  copy; the win32 hole was in all five, and a fix that edits five files that
+ *  agree by convention holds until the sixth appears. Re-exported from the root
+ *  entry rather than `./node` because it touches no filesystem. */
+export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "./mounts";
 export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
 export class EngineClient {

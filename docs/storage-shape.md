@@ -354,3 +354,13 @@ store grows directories it did not sanction. So:
   actually answer, and both consumers surface it as a named state rather than
   as a confident wrong one. What is not known is whether Windows is a target at
   all; the desktop app is macOS arm64 only today.
+- **The two mount-list copies in `apps/desktop`.** The list itself now lives
+  once, in `@telar/engine-client`'s `mounts`, which the engine and the cockpit
+  both import. The shell cannot: it is plain CommonJS packaged by
+  electron-builder from an explicit allowlist inside its own directory, with no
+  workspace dependency on that package, and adding one to share four strings
+  would pull zod and the whole protocol into the app bundle.
+  `apps/desktop/mount-roots.test.js` holds those two copies to the original,
+  platform by platform, which is the part that was missing — before #665 there
+  were five copies agreeing by convention and the win32 hole was in all five.
+  Collapsing the last two needs a packaging decision, not a refactor.

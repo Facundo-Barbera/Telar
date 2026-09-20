@@ -204,7 +204,7 @@ export function readWorktreesRoot(engineRoot: string, deps: VolumeDeps = {}): Wo
    * to say which of "unplugged" and "deleted" happened, which is exactly what
    * is not known.
    */
-  if (volumeSupportOn(deps.platform) === "unsupported") {
+  if (volumeSupportOn(deps.platform ?? process.platform) === "unsupported") {
     if (fs.existsSync(record.root)) return { kind: "configured", root: path.resolve(record.root), volume, ...(label ? { label } : {}) };
     return { kind: "unverifiable", root: path.resolve(record.root), volume, ...(label ? { label } : {}) };
   }

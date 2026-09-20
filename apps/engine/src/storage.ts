@@ -52,7 +52,13 @@ import { detectCacheDedup } from "./package-caches";
  * it moved off this volume. Everything else here is a child of the root by
  * construction.
  */
-const DIRECTORY_CATEGORIES: Readonly<Record<string, StorageCategory>> = {
+/**
+ * EXPORTED SO THE INVARIANT TEST DERIVES ITS ALLOWLIST RATHER THAN RESTATING IT
+ * (#665). "Sanctioned" has to be a list the PRODUCT owns — `statePaths` plus
+ * these — or the test is asserting against names it invented, and a directory
+ * added without being declared passes by omission.
+ */
+export const DIRECTORY_CATEGORIES: Readonly<Record<string, StorageCategory>> = {
   sessions: "sessions",
   python: "python",
   "browser-profiles": "browser-profiles",

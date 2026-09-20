@@ -33,7 +33,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { Project, ProjectAvailability } from "@telar/engine-client";
+import { mountRootsFor, volumeSupportOn, type Project, type ProjectAvailability } from "@telar/engine-client";
 
 /**
  * WHERE THIS PROJECT'S DISK IS, and what it IS — recorded at registration.
@@ -67,58 +67,21 @@ export type VolumeDeps = {
 
 type Resolved = Required<VolumeDeps>;
 
-/** This platform's mount roots — where an external disk appears. The twin of
- *  `fs-dirs.ts`'s `platformMounts`; see this module's header for why it is
- *  copied rather than shared. */
-export function mountRootsFor(platform: NodeJS.Platform): string[] {
-  return platform === "darwin" ? ["/Volumes"] : platform === "linux" ? ["/media", "/mnt"] : [];
-}
-
 /**
- * CAN THIS PLATFORM BE ASKED WHICH REMOVABLE VOLUME A PATH IS ON — issue #665,
- * and the answer is three-valued because the honest answer is.
+ * THE MOUNT ROOTS AND THE PLATFORM'S OWN LIMIT — re-exported, not redefined.
  *
- * ══ THE SILENT `[]` IS THE BUG ══
+ * Both used to live here, and `fs-dirs.ts`, `worktree.ts`, `volume-watch.js`
+ * and `main.js` each kept a copy with a comment saying so. #665 is what ended
+ * that: on win32 every copy returns an empty list and every caller reads the
+ * absence as "on this machine's own disk", so the fix would have been five
+ * edits to files that agree by convention. `@telar/engine-client`'s `mounts`
+ * is the one both the engine and the cockpit can import; the two desktop
+ * copies are held to it by `apps/desktop/mount-roots.test.js`.
  *
- * `mountRootsFor("win32")` returns an empty list, so `mountPointForRoot` finds
- * no mount, so `volumeForRoot` returns `undefined` — which everything above
- * reads as **"this path is on the machine's own disk"**. On Windows that is not
- * a cautious answer, it is a wrong one, and its two consequences point in
- * opposite directions:
- *
- *   - A store on `D:\` records no volume, so unplugging the drive skips the
- *     whole designed-for `waiting` state — no window naming the drive, no
- *     `volume-watch` recovery, no "nothing has been touched" — and lands on a
- *     flat refuse. The feature's best idea does not run there at all.
- *   - A checkouts root on `D:\` reports as *configured and fine* even while the
- *     drive is out, so the blocker never fires, the cut proceeds, and `mkdirSync`
- *     fails mid-session with an I/O error instead of the sentence the design
- *     wrote for exactly this.
- *
- * So the absence is made EXPLICIT rather than left to look like a negative
- * answer. Callers that can act on it check this and say so; callers that only
- * ever ask about a path they know is local are unaffected.
- *
- * ══ WHY LINUX IS ITS OWN ANSWER ══
- *
- * `/media` and `/mnt` are recognised, so a volume ON a Linux box is found. But
- * `readVolumeUuid` is darwin-only, so there is no identity to match a remount
- * against: a drive that comes back under a different name cannot be resolved as
- * a rename and stays `absent` until the person re-chooses the location by hand.
- * That is half the feature, and folding it in with either neighbour would state
- * something false about one of them.
- *
- * NOT A FOURTH COPY OF THE MOUNT LIST. It reads `mountRootsFor` for the first
- * half of its answer, so a platform gaining mount roots gains support here in
- * the same edit. (There are already four independent copies of that list in
- * this repository — `volume-watch.js`, `fs-dirs.ts`, `worktree.ts` and this
- * file — each of which says so; this does not add a fifth.)
+ * Re-exported so this module stays the one import a caller here needs — the
+ * promise its header already makes.
  */
-export type VolumeSupport = "identified" | "located" | "unsupported";
-export function volumeSupportOn(platform: NodeJS.Platform = process.platform): VolumeSupport {
-  if (mountRootsFor(platform).length === 0) return "unsupported";
-  return platform === "darwin" ? "identified" : "located";
-}
+export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "@telar/engine-client";
 
 function resolveDeps(deps: VolumeDeps): Resolved {
   const platform = deps.platform ?? process.platform;

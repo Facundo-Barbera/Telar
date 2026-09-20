@@ -161,10 +161,17 @@ describe("the sentences", () => {
     expect(said).toContain("512,000 journal rows exported, then dropped");
     // SKIPPED IS NEVER HIDDEN, and it is not an error: it is the guard working.
     expect(said).toContain("2 were left alone");
-    // AND "FREED" MEANS TWO THINGS. A DELETE moves pages to sqlite's freelist;
-    // the file weighs the same until Reclaim rewrites it, and a person who
-    // deleted history and saw no change would think the press did nothing.
-    expect(said).toContain("press Reclaim above to give the space back to the disk");
+    /**
+     * AND BOTH STEPS ARE NAMED, IN ORDER. "Freed" means two different things
+     * and neither of them is "the disk got smaller when you pressed this":
+     * the rows leave the database (and the file weighs the same until Reclaim
+     * rewrites it), and the bytes are still on the disk until the person
+     * deletes the exports — because retention MOVES the journal into files
+     * they own rather than destroying it. A sentence with only the Reclaim
+     * half promises space that does not arrive.
+     */
+    expect(said).toContain("delete them");
+    expect(said).toContain("press Reclaim above");
   });
 
   test("a sweep that took nothing says that, rather than reporting a triumphant zero", () => {
