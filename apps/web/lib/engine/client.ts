@@ -917,6 +917,27 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     liveSessions: (options: { all?: boolean } = {}) =>
       request<LiveSessionsPage>(fetcher, "GET", options.all ? "/api/sessions/live?all=1" : "/api/sessions/live"),
     /**
+     * WHEN EACH PROJECT WAS LAST WORKED IN — the front door's read, and nothing
+     * else's (#490).
+     *
+     * THE RANKING WITHOUT THE ROWS. `composerProject` folds sessions into
+     * `Map<projectId, max(updatedAt)>` and reads the top of it; the front door
+     * was buying that fold with `liveSessions({ all: true })` — 101.6 KB, 291
+     * sessions, 21.8 ms at the engine boundary — and rendering not one field of
+     * it. This is the same fold, answered off the engine's session index — one
+     * row per project, and no conversation opened to produce it.
+     *
+     * NOT A RAIL'S READ AND NOT A SHELF'S. It carries no title, no activity and
+     * no settling state, so nothing here can be drawn; a surface that wants rows
+     * still calls `liveSessions`.
+     *
+     * A PROJECT WITH NO ACTIVE SESSION IS ABSENT rather than 0 — identical to
+     * `composerProject`'s fold, which seeds every registered project at 0 and
+     * only raises it.
+     */
+    projectActivity: () =>
+      request<{ projects: Array<{ projectId: string; updatedAt: number }> }>(fetcher, "GET", "/api/sessions/activity"),
+    /**
      * THE SAME PASS, CONDITIONALLY — the read a RAIL should make (#459).
      *
      * Hand back the `revision` from last time and an engine with nothing to say

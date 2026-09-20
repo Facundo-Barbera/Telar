@@ -4035,6 +4035,33 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * WHEN EACH PROJECT WAS LAST WORKED IN — issue #490.
+       *
+       * A LITERAL PATH UNDER `/v2/sessions/`, up here with `/live` and `/find`
+       * and for their reason: `sessionPath` below matches `activity` as happily
+       * as it matches a session id.
+       *
+       * IT IS THE FRONT DOOR'S READ, and it exists because that surface was
+       * making `/live?all=1` instead — 101.6 KB and 291 sessions, measured on
+       * the owner's store, to choose ONE project to redirect to. It renders
+       * nothing from the answer. This is the aggregate that choice is actually
+       * made on, answered off the `sessions` index: one row per project, a
+       * `projectId` and an `updatedAt`, and no document opened.
+       *
+       * A NEW ROUTE RATHER THAN A WIDER `/live`. The rail's list and a ranking
+       * are different questions, and #457 is the whole argument for not letting
+       * one answer serve both — a field added there is paid for by every rail on
+       * the machine, every tick.
+       *
+       * NOT CONDITIONAL, and it does not need to be: it is read ONCE per launch,
+       * on a cold start, by a screen that then leaves. There is no timer behind
+       * it to make cheap.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/sessions/activity") {
+        writeJson(response, 200, { projects: store.projectActivity() });
+        return;
+      }
+      /**
        * THE SESSIONS SOCKET'S CONNECT CARD — where it listens and its dedicated
        * secret. BEHIND THE NORMAL BEARER, exactly as the notebook's is: the card
        * mints and reveals the socket's credential, so only something already

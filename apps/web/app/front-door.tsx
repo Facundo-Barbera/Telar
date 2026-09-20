@@ -15,9 +15,15 @@
  * visit left a note saying which projects exist and which one it was in, so the
  * first frame can redirect and the reads that follow only correct the note.
  *
- * THE READS STILL HAPPEN, because a note is not evidence. They run in PARALLEL
- * — the server did them one after the other — and they are what answers a first
- * launch, a cleared store, or a note that named a project since removed.
+ * THE READS ANSWER THE LAUNCHES THE NOTE CANNOT: a first launch, a cleared
+ * store, or a note naming a project since removed. They run in PARALLEL — the
+ * server did them one after the other.
+ *
+ * AND ONLY THOSE (#490). A note that redirected leaves nothing for them to
+ * decide, so they are not made: the correction a stale note needs comes from the
+ * cockpit the redirect opened, not from a second read racing it. What they cost
+ * on that path was a 101.6 KB list nobody looked at, issued after the redirect
+ * and contending with the opening it had just triggered.
  *
  * THE TWO SCREENS THAT ARE NOT A REDIRECT are unchanged: no projects, or no
  * engine. Both are `FirstRun`, and both are polled while shown — adding a
@@ -71,17 +77,29 @@ export function FrontDoor() {
 
     const api = createEngineApi();
     const decide = async () => {
-      const [registry, live] = await Promise.all([
+      const [registry, activity] = await Promise.all([
         api.projects().then((value) => value, () => undefined),
-        // Only to rank; its own project list carries no `createdAt`, so it
-        // cannot answer the cold case on its own.
-        //
-        // ALL OF THEM (#457): the route's default is the unsettled rows, which
-        // is right for a rail and wrong for a ranking — a machine whose work has
-        // all been shelved would rank on nothing and open the wrong project.
-        // One read at the front door, not a poll, so the whole list is cheap
-        // here in a way it is not on the rail.
-        api.liveSessions({ all: true }).then((value) => value, () => undefined),
+        /**
+         * ONE INTEGER PER PROJECT, NOT ONE ROW PER SESSION (#490).
+         *
+         * This used to be `liveSessions({ all: true })`, and the argument for
+         * the whole list was sound as far as it went: the route's default is the
+         * unsettled rows, which is right for a rail and wrong for a ranking, so
+         * a machine whose work had all been shelved would have ranked on nothing
+         * and opened the wrong project. What it missed is that the ranking never
+         * wanted rows. `composerProject` folds them into a single `updatedAt`
+         * per project and this screen renders none of them — 101.6 KB and 21.8
+         * ms on the owner's store, 291 sessions, for roughly twenty numbers.
+         *
+         * `projectActivity` IS THAT FOLD, done in the engine off its session
+         * index. Same population as the list it replaces — active sessions, so an
+         * archived-only project still scores nothing and falls through to
+         * most-recently-registered — and the same answer for every input.
+         *
+         * Its own project list still carries no `createdAt`, which is why
+         * `api.projects()` is beside it rather than replaced by it.
+         */
+        api.projectActivity().then((value) => value, () => undefined),
       ]);
       if (cancelled) return;
       if (!registry) {
@@ -96,13 +114,33 @@ export function FrontDoor() {
         if (!left.current) setDoor({ state: "empty" });
         return;
       }
-      const chosen = projects.length === 1 ? projects[0]!.id : composerProject(projects, live?.sessions ?? []);
+      const chosen = projects.length === 1 ? projects[0]!.id : composerProject(projects, activity?.projects ?? []);
       writeFrontDoorNote(projects, chosen);
       go(canvasHrefFor(chosen));
     };
 
-    void decide();
-    // Nothing to poll once we are on our way out.
+    /**
+     * AND NOT AT ALL IF THE NOTE ALREADY ANSWERED (#490).
+     *
+     * `go(remembered)` above runs before any await and sets `left.current`, so
+     * on the common launch the redirect has ALREADY happened by the time this
+     * line is reached. Everything `decide()` could still do from there is
+     * nothing: the two screens it can set are both guarded on `!left.current`,
+     * and the note it would rewrite is rewritten by the cockpit this redirect
+     * just opened — `session-cockpit.tsx` writes it from the registry read it
+     * makes anyway, which is the mechanism a stale note has always been
+     * corrected by.
+     *
+     * What the read was still costing is real: it went out AFTER the redirect
+     * and then competed for the two-slot read gate (`lib/engine/client.ts`,
+     * `READ_BUDGET`) against the opening reads of the route it had just sent the
+     * reader to — the contention `client.ts` describes.
+     *
+     * THE SAME REASONING AS THE RETRY BELOW, deliberately: that timer has always
+     * held it ("nothing to poll once we are on our way out"), and this is the
+     * first tick of it, which simply never asked.
+     */
+    if (!left.current) void decide();
     const timer = window.setInterval(() => {
       if (left.current) return;
       void decide();
