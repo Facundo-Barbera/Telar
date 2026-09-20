@@ -198,6 +198,25 @@ async function walk(root: string, seen: Set<string>): Promise<Walk> {
   return { bytes, partial };
 }
 
+/**
+ * ONE DIRECTORY'S SIZE, BY THE SAME RULE THE PANE IS MEASURED WITH — issue
+ * #671's per-checkout figure.
+ *
+ * EXPORTED RATHER THAN REIMPLEMENTED, and that is the entire point. The
+ * checkout listing sits under the "Session checkouts" row and offers to reclaim
+ * what that row is counting; if the two used different walkers they would
+ * disagree — on allocated blocks versus apparent size, on a symlink, on a hard
+ * link — and a listing that disagrees with the number beside it by a gigabyte
+ * is worse than no listing at all.
+ *
+ * ITS OWN `seen` SET, because these are separate questions asked at separate
+ * times. Sharing one across calls would make a checkout's size depend on which
+ * checkout was measured first.
+ */
+export async function measureDirectory(target: string): Promise<{ bytes: number; partial: boolean }> {
+  return walk(target, new Set<string>());
+}
+
 /** Where a category's Reveal lands. Directory categories open themselves; a
  *  category made of loose files opens the folder they sit in, except the
  *  journal, which is one file worth selecting by name. */

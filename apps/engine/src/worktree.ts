@@ -492,6 +492,58 @@ export async function unlockWorktree(git: AsyncGitRunner, projectRoot: string, w
 }
 
 /**
+ * REMOVE A CHECKOUT GIT NO LONGER KNOWS ABOUT — issue #671.
+ *
+ * WHY THIS IS NOT `git worktree remove`: because there is nothing to remove.
+ * A directory whose registration was pruned — by a teardown whose `prune` ran
+ * after the directory survived, by any other tool's `git worktree prune`, by a
+ * repository that was re-cloned — is no longer a worktree in git's eyes. It is
+ * a folder holding gigabytes that nothing will ever mention again, and asking
+ * git to remove it produces "is not a working tree" and leaves the bytes.
+ *
+ * SO IT IS AN `rm`, AND AN `rm` NEEDS A FENCE. This is the one call in the
+ * feature that deletes a directory without git's agreement, so it refuses
+ * anything that is not a direct child of a root the engine itself manages. The
+ * roots come from the inventory that found the directory, so the fence is the
+ * same evidence the offer was made from — not a second opinion that could
+ * differ from it.
+ *
+ * A DIRECT CHILD, NOT A DESCENDANT. `planSessionWorktree` puts every cut at
+ * `<root>/<name>-<8hex>`, exactly one level down. Accepting a descendant would
+ * let a path like `<root>/x/../../../..` pass a prefix test after resolution
+ * tricks, and would make "remove this checkout" capable of removing something
+ * inside one.
+ *
+ * IT FOLLOWS NO SYMLINK, for `measureStorage`'s reason turned around: a link
+ * into somebody's project would make this a disk cleaner pointed at their work.
+ */
+export function removeUnregisteredCheckout(target: string, roots: readonly string[]): boolean {
+  const resolved = path.resolve(target);
+  const parent = path.dirname(resolved);
+  if (!roots.some((root) => path.resolve(root) === parent)) return false;
+  // `resolve` above collapses `..`; a basename that is still a traversal or the
+  // root itself is not a checkout this may touch.
+  const name = path.basename(resolved);
+  if (!name || name === "." || name === ".." || resolved === parent) return false;
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(resolved);
+  } catch {
+    return !fs.existsSync(resolved); // Already gone is the outcome asked for.
+  }
+  // A symlink is removed as the link it is, never followed — but a checkout is
+  // a directory, and anything else here is not the thing the row described.
+  if (!stat.isDirectory()) return false;
+  try {
+    fs.rmSync(resolved, { recursive: true, force: true });
+  } catch {
+    // Best-effort, and the caller reports the honest answer below rather than
+    // an exception: a checkout that is still there has not been given back.
+  }
+  return !fs.existsSync(resolved);
+}
+
+/**
  * RE-POINT GIT AT A WORKTREE THAT MOVED — the other half of #630's migration.
  *
  * The two pointers are not symmetric, which is what makes moving a worktree by

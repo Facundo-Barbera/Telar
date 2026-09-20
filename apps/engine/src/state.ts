@@ -145,6 +145,9 @@ import {
   type WorkspaceFile,
   type WorkspaceListing,
   type WorkspaceWriteResult,
+  type WorktreeInventory,
+  type WorktreeReclaimItem,
+  type WorktreeReclaimResult,
 } from "@telar/engine-client";
 import { atomicWrite, atomicWriteText } from "./atomic";
 import { arrayElementRanges, parseSpan, type DocumentIndex } from "./document-window";
@@ -198,7 +201,10 @@ import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeMod
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
-import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
+import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
+import { measureDirectory } from "./storage";
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./worktrees-move";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
@@ -10375,6 +10381,184 @@ export class EngineStore {
     // One queue is enough to serialise against cuts; with several projects the
     // queues nest, which is the same ordering guarantee one at a time.
     return roots.reduce<() => Promise<MoveOutcome>>((next, root) => () => this.worktreeQueue(root, next), run)();
+  }
+
+  /**
+   * WHAT IS BEING KEPT, AND WHICH OF IT CAN GO — issue #671.
+   *
+   * THE STORE'S PART IS THE FACTS, NOT THE PROOF. Everything that decides
+   * whether a checkout is safe to reclaim lives in `worktree-inventory.ts`,
+   * where it is a pure function over stated facts and can be tested without a
+   * fixture capable of losing data. What this method owns is the three things
+   * only the store knows: which sessions there are and what they are doing,
+   * which projects' disks are actually there, and where the checkouts live.
+   *
+   * SETTLED IS THE CLIENTS' OWN QUESTION, IMPORTED (`isShelved`), for the
+   * reason every other caller of it here states: a pane that folded the shelf
+   * rule a second time would disagree with the rail about which sessions are
+   * finished, and this pane offers to end the ones it thinks are.
+   *
+   * ARCHIVED SESSIONS ARE INCLUDED, and they are not noise. `releaseWorktree`
+   * is best-effort and skips a project whose disk is not there, so an archive
+   * performed while the drive was out leaves a directory with a record that
+   * has already been put down — bytes nothing will ever use again, and
+   * invisible to every surface until this one.
+   */
+  async worktreeInventory(): Promise<WorktreeInventory> {
+    const location = readWorktreesRoot(this.paths.root);
+    const configured = rootOf(location);
+    const fallback = defaultWorktreesRoot(this.paths.root);
+    const at = { now: this.now(), autoSettleAfterHours: this.getInboxPolicy().autoSettleAfterHours };
+
+    const projects: InventoryProject[] = this.listProjects().map((project) => ({
+      id: project.id,
+      name: project.name,
+      root: project.root,
+      available: this.projectAvailability(project) === "available",
+    }));
+
+    const sessions: InventorySession[] = [];
+    for (const session of this.readSessions()) {
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      const settleable = { ...session, archived: session.state === "archived", draft: session.draft !== undefined };
+      const lifecycle =
+        session.state === "archived" ? "archived" : isShelved(settleable, settlingActivityOf(session), at) ? "settled" : "live";
+      sessions.push({
+        id: session.id,
+        ...(session.title ? { title: session.title } : {}),
+        path: session.workspace.path,
+        ...(session.workspace.branch ? { branch: session.workspace.branch } : {}),
+        projectId: session.projectId,
+        lifecycle,
+        // `moveWorktrees`' predicate, and #671's rung 1. See
+        // `worktree-inventory.ts` for why this is a policy asserted up front
+        // rather than a git lock waiting to refuse.
+        busy: session.activity !== "idle",
+      });
+    }
+
+    return buildInventory(
+      {
+        git: this.worktreeGit,
+        // The storage pane's own walker, so a row and the "Session checkouts"
+        // figure that sent somebody here can never disagree by a gigabyte.
+        measure: (target) => measureDirectory(target),
+      },
+      {
+        // Both roots while a #642 move is half-done — `readStorage`'s reason,
+        // and the same pair it passes.
+        roots: configured && configured !== fallback ? [configured, fallback] : [fallback],
+        rootsReadable: location.kind !== "absent" && location.kind !== "unreadable",
+        ...(worktreesRootBlocker(location) ? { blocker: worktreesRootBlocker(location)! } : {}),
+        sessions,
+        projects,
+        // The tree this daemon is executing from, when it is executing from
+        // one. On the machine Telar is developed on that is a worktree of
+        // Telar, and it must never be offered for reclamation.
+        engineRoot: process.cwd(),
+        now: at.now,
+      },
+    );
+  }
+
+  /**
+   * GIVE CHECKOUTS BACK — the other half of #671, and the only thing in this
+   * feature that removes anything.
+   *
+   * TWO ACTS, NEVER MERGED INTO "CLEAN UP". A checkout held by a SETTLED
+   * session is given back by ARCHIVING THAT SESSION, because that is the only
+   * supported way: settling deliberately does not release a checkout, and
+   * nothing re-cuts a missing worktree — so deleting the directory under a live
+   * record would trade invisible orphans for invisible broken sessions, which
+   * is not progress. A checkout nothing claims (no session, or an archived one
+   * whose release never happened) has no session to end, so the directory goes.
+   * The caller renders which, and the confirm says "archive the session" rather
+   * than naming the gigabytes.
+   *
+   * EVERY REFUSAL IS RE-PROVED HERE, not trusted from the listing the press
+   * came from. That inventory may be seconds old and a session can start
+   * working in that window — the prediction on the row is the courtesy, this is
+   * the guarantee.
+   *
+   * PARTIAL IS SUCCESS. Each item is independent, and one refused for a typed
+   * confirmation that did not match changes nothing about the others.
+   */
+  async reclaimWorktrees(items: readonly WorktreeReclaimItem[]): Promise<WorktreeReclaimResult[]> {
+    const inventory = await this.worktreeInventory();
+    const byPath = new Map(inventory.rows.map((row) => [path.resolve(row.path), row]));
+    const results: WorktreeReclaimResult[] = [];
+
+    for (const item of items) {
+      const row = byPath.get(path.resolve(item.path));
+      if (!row) {
+        results.push({ path: item.path, ok: false, refusal: "not-found" });
+        continue;
+      }
+      if (row.verdict.kind === "locked") {
+        results.push({ path: row.path, ok: false, refusal: row.verdict.reason });
+        continue;
+      }
+      if (row.verdict.kind === "needs-force") {
+        // THE BASENAME, TYPED. Not ceremony: these are the rows where Telar
+        // could NOT prove the work is safe, so the person is being asked to say
+        // they looked — which a checkbox cannot express.
+        if (item.confirm === undefined) {
+          results.push({ path: row.path, ok: false, refusal: "needs-confirm" });
+          continue;
+        }
+        if (item.confirm.trim() !== row.basename) {
+          results.push({ path: row.path, ok: false, refusal: "confirm-mismatch" });
+          continue;
+        }
+      }
+
+      const bytes = row.bytes;
+      try {
+        if (row.owner.kind === "session" && row.owner.lifecycle === "settled") {
+          // The supported path, which releases the checkout on the project
+          // queue as part of putting the session down.
+          this.archiveSession(row.owner.sessionId);
+          results.push({
+            path: row.path,
+            ok: true,
+            action: "archived",
+            sessionId: row.owner.sessionId,
+            ...(bytes === undefined ? {} : { bytes }),
+          });
+          continue;
+        }
+        // Nothing claims it. `removeSessionWorktreeAsync` already unlocks
+        // first, already refuses to prune against a disk that is not there, and
+        // already runs on the per-project queue through `releaseWorktree`'s
+        // discipline — which is why this reuses it rather than inventing a
+        // second teardown.
+        const project = row.projectId ? this.getProject(row.projectId) : undefined;
+        // REGISTERED OR NOT IS THE FORK, NOT WHETHER A PROJECT IS KNOWN. A
+        // directory git has already pruned is not a worktree — `worktree
+        // remove` answers "is not a working tree" and leaves every byte — so it
+        // takes the fenced `rm` even when we know exactly which project it was
+        // cut from.
+        const removed =
+          row.registered && project
+            ? await this.worktreeQueue(project.root, () =>
+                removeSessionWorktreeAsync(this.worktreeGit, project.root, row.path, this.projectAvailability(project)),
+              )
+            : removeUnregisteredCheckout(row.path, inventory.roots);
+        if (!removed) {
+          results.push({ path: row.path, ok: false, refusal: "failed", detail: "the checkout is still there" });
+          continue;
+        }
+        results.push({ path: row.path, ok: true, action: "removed", ...(bytes === undefined ? {} : { bytes }) });
+      } catch (cause) {
+        results.push({
+          path: row.path,
+          ok: false,
+          refusal: "failed",
+          detail: cause instanceof Error ? cause.message : "the checkout could not be given back",
+        });
+      }
+    }
+    return results;
   }
 
   /** The commit point for one moved checkout: the recorded path, and the event

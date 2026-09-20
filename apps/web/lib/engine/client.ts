@@ -58,6 +58,9 @@ import type {
   StorageReport,
   TextGenPolicy,
   WorktreeMoveResult,
+  WorktreeInventory,
+  WorktreeReclaimItem,
+  WorktreeReclaimOutcome,
   WorktreesRoot,
   UsageReport,
   UsageResolution,
@@ -646,6 +649,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  SLOW (two git commands per checkout) and partial by design: one holding
      *  uncommitted changes is refused by git, reported, and left alone. */
     moveWorktrees: () => request<{ move: WorktreeMoveResult }>(fetcher, "POST", "/api/worktrees-root/move", {}),
+    /** Every checkout this install is keeping, CLASSIFIED — see
+     *  `WorktreeVerdict` (#671). Each row carries a verdict rather than four
+     *  columns to reason from: Telar proves merged, clean and unclaimed so a
+     *  reader does not check three things by hand before daring to delete.
+     *  SLOW — a walk per checkout — and never cached, because every rung of
+     *  the classification is live and a cached verdict was true earlier. */
+    worktrees: () => request<{ inventory: WorktreeInventory }>(fetcher, "GET", "/api/worktrees"),
+    /** Give checkouts back. THIS ARCHIVES SESSIONS: a settled session's
+     *  checkout is released by putting that session down, which is the only
+     *  supported way (settling deliberately does not release one, and nothing
+     *  re-cuts a missing worktree). `confirm` is the basename, typed, and is
+     *  required for every `needs-force` row. Refusals come back per item, not
+     *  as an error status. */
+    reclaimWorktrees: (items: readonly WorktreeReclaimItem[]) =>
+      request<{ reclaim: WorktreeReclaimOutcome }>(fetcher, "POST", "/api/worktrees/reclaim", { items }),
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>

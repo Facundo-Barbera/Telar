@@ -122,6 +122,7 @@ import type { AsyncGitRunner, GitRunner } from "./worktree";
 import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
 import { measureStorage } from "./storage";
 import { describeOutcome } from "./worktrees-move";
+import { describeReclaim } from "./worktree-inventory";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 
@@ -2335,6 +2336,51 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // The figures moved by exactly this much, so the next read measures.
         storageCache.report = undefined;
         writeJson(response, 200, { move: { ...outcome, summary: describeOutcome(outcome) } });
+        return;
+      }
+      /**
+       * WHAT IS BEING KEPT — issue #671, and the screen that did not exist.
+       *
+       * NOT CACHED, UNLIKE THE STORAGE REPORT BESIDE IT, and the difference is
+       * what each answer is for. Storage answers "how big is Telar", which does
+       * not change by the second and is expensive to re-walk whole. This
+       * answers "which of these may I delete", and every rung of that is live:
+       * a session starts working, a drive is unplugged, a PR merges. A cached
+       * verdict is a verdict that was true earlier, and this one is acted on.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/worktrees") {
+        writeJson(response, 200, { inventory: await store.worktreeInventory() });
+        return;
+      }
+      /**
+       * GIVE CHECKOUTS BACK — the other half of #671, and the second
+       * destructive thing this daemon offers.
+       *
+       * IT ARCHIVES SESSIONS. A checkout held by a settled session is released
+       * by putting that session down, which is the only supported way (see
+       * `reclaimWorktrees`), so this endpoint ends conversations as well as
+       * freeing disk. The client's confirm says so in those words.
+       *
+       * PARTIAL IS SUCCESS AND REFUSALS ARE THE PAYLOAD, not an error status:
+       * a press over six checkouts where one is being worked in is four
+       * removals, one archive and one honest refusal, and a 409 would throw
+       * away the five that worked.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/worktrees/reclaim") {
+        const input = (await body(request)) as { items?: unknown };
+        if (!Array.isArray(input.items)) throw new HttpError(400, "invalid_request", "items must be an array of checkouts to give back");
+        const items = input.items.map((entry) => {
+          const item = entry as { path?: unknown; confirm?: unknown };
+          if (typeof item.path !== "string" || !item.path.trim()) {
+            throw new HttpError(400, "invalid_request", "each item needs the checkout's path");
+          }
+          return { path: item.path, ...(typeof item.confirm === "string" ? { confirm: item.confirm } : {}) };
+        });
+        const results = await store.reclaimWorktrees(items);
+        // Gigabytes just moved, so the pane above this one must measure rather
+        // than serve the split it read before the press.
+        storageCache.report = undefined;
+        writeJson(response, 200, { reclaim: { results, summary: describeReclaim(results) } });
         return;
       }
       /**

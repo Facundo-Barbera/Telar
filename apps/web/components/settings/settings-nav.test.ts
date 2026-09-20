@@ -86,7 +86,7 @@ test("the OAuth callback's section id is still routable", () => {
 test("Storage is a pane under Runtime, and it reads numbers → checkouts → store (#642)", () => {
   expect(source).toContain('{ id: "storage", label: "Storage"');
   const pane = source.slice(source.indexOf('active === "storage"'), source.indexOf('active === "plugins"'));
-  for (const section of ["<StorageSection />", "<WorktreesRootSection />", "<StoreSection />"]) {
+  for (const section of ["<StorageSection />", "<WorktreesRootSection />", "<WorktreeListSection />", "<StoreSection />"]) {
     expect(pane).toContain(section);
   }
   /**
@@ -97,6 +97,15 @@ test("Storage is a pane under Runtime, and it reads numbers → checkouts → st
    */
   expect(pane.indexOf("<StorageSection />")).toBeLessThan(pane.indexOf("<WorktreesRootSection />"));
   expect(pane.indexOf("<WorktreesRootSection />")).toBeLessThan(pane.indexOf("<StoreSection />"));
+  /**
+   * AND THE LIST READS UNDER THE LOCATION (#671), because that is the order the
+   * question arrives in: somebody reads "Session checkouts — 7.3 GB" and where
+   * they go, and the next thing they want is WHICH of them are finished. It
+   * stays above the store move for the same reason the location does — the
+   * cheap, reversible option before the expensive one.
+   */
+  expect(pane.indexOf("<WorktreesRootSection />")).toBeLessThan(pane.indexOf("<WorktreeListSection />"));
+  expect(pane.indexOf("<WorktreeListSection />")).toBeLessThan(pane.indexOf("<StoreSection />"));
 });
 
 test("the store's location left General with the pane that reports what is in it", () => {
