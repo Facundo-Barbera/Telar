@@ -634,6 +634,38 @@ export function SessionRow({
     ) : null;
 
   /**
+   * IT CAME BACK — issues #490, #812, #816. The owner's words: "nos faltó añadir
+   * un como punto de notificación para mostrar que una conversación se despertó."
+   *
+   * READ, NEVER DERIVED. `session.wokeAt` is stamped once by the engine's sweep
+   * and carried on the row; this draws it and computes nothing. A per-row timer
+   * comparing `snoozedUntil` against this cockpit's clock would light the same
+   * dot and reintroduce the defect the stamp exists to remove — two cockpits
+   * disagreeing about when a row woke.
+   *
+   * IT IS NOT A COUNTDOWN AND TAKES NO SPACE FROM ONE. A sleeping row already
+   * says when it returns, in the trailing slot; this is the leading mark for a
+   * row that HAS returned, beside the pin and for the same structural reason —
+   * the list does not reorder itself when a row wakes (see `wokeAt()` in the
+   * protocol), so the row has to carry the signal where a reader scans.
+   *
+   * IT CLEARS WITH THE SNOOZE THAT PRODUCED IT. The engine drops `wokeAt` on the
+   * next `snoozedUntil` patch in either direction — the row's own Snooze presets
+   * and its "Cancel snooze" — so putting the conversation down again, or saying
+   * you are done with it, takes the dot with it. Nothing here expires it on a
+   * clock, which is the point.
+   */
+  const wakeMark =
+    session.wokeAt !== undefined && Number.isFinite(session.wokeAt) ? (
+      <span
+        role="img"
+        aria-label="Woke up"
+        title={`Woke ${fmtAgo(session.wokeAt, renderedAt)}`}
+        className="size-1.5 shrink-0 rounded-full bg-primary"
+      />
+    ) : null;
+
+  /**
    * WHICH MAC, when it is not this one. A remote row says so on its header
    * line, after the project, in the same weight — it is an address, not a
    * status. Local rows carry nothing: the local engine is the default, and
@@ -656,6 +688,7 @@ export function SessionRow({
   const cardBody = (
     <span className="min-w-0 flex-1 space-y-1">
       <span className="flex min-w-0 items-center gap-1.5">
+        {wakeMark}
         {pinMark}
         {showProject && session.projectName ? (
           <>
@@ -728,6 +761,7 @@ export function SessionRow({
    */
   const slimBody = (
     <>
+      {wakeMark}
       {pinMark}
       {/* A SETTLED ROW WEARS ITS PROJECT, not its provider. Whose work this was
           is what you scan the tail for; the provider is identity that already

@@ -174,6 +174,20 @@ export type SidebarSession = {
   snoozedUntil?: number;
   snoozedAt?: number;
   /**
+   * WHEN THE ENGINE DECIDED THIS CONVERSATION WOKE — issues #490, #812, #816.
+   *
+   * THE ROW DOES NOT WORK THIS OUT. `Session.wokeAt` is stamped once, by the
+   * sweep, and rides the live row unchanged; the rail reads it and draws a dot.
+   * Deriving it here from `snoozedUntil` and a clock is the defect the engine
+   * field exists to prevent — two cockpits would disagree about when a row woke,
+   * and the answer would move every time something happened to re-render.
+   *
+   * ABSENT IS THE ORDINARY CASE: a session that never slept, one still sleeping,
+   * and one whose snooze was replaced or cancelled (the engine clears the stamp
+   * with the snooze that produced it) all carry nothing.
+   */
+  wokeAt?: number;
+  /**
    * WHAT THIS SESSION IS DOING, straight from the engine.
    *
    * The field that turns this list into an inbox: without it a row can only
@@ -266,6 +280,7 @@ export function toSidebarSession(
     ...(session.settledBy && coordinatorTitle ? { settledForTitle: coordinatorTitle } : {}),
     ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
     ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+    ...(session.wokeAt === undefined ? {} : { wokeAt: session.wokeAt }),
     activity: session.activity,
     ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
     ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),

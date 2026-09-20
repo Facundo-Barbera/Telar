@@ -191,6 +191,36 @@ test("the wake moves the revision the rail's conditional read is keyed on", () =
   expect(after.sessions.find((session) => session.id === "session_one")?.wokeAt).toBe(until);
 });
 
+test("the event and the row the rail draws carry the SAME instant, from the one sweep", () => {
+  /**
+   * THE JOIN THE DOT IS BUILT ON — issue #816.
+   *
+   * The two halves are asserted separately above, each against the literal this
+   * test's `until` also is, and that is one assertion short of the thing the
+   * cockpit relies on: that the number a rail reads off the row is the number
+   * the edge announced. Two stamps taken from different sources would satisfy
+   * both existing tests and still let a row draw a wake the feed never reported.
+   *
+   * So: one sweep, both readings, compared to EACH OTHER. The `at` comparison is
+   * what keeps it from passing against an implementation that stamped `now` in
+   * both places — which is exactly the per-device answer `wokeAt` replaced, and
+   * the shadowing bug the field was renamed to avoid.
+   */
+  const { store, clock } = setup();
+  const until = START + HOUR;
+  store.updateSession("session_one", { snoozedUntil: until });
+
+  const noticedAt = until + 7 * MINUTE;
+  clock.now = noticedAt;
+  expect(store.sweepSnoozeWakes()).toEqual(["session_one"]);
+
+  const woke = wakes(store);
+  expect(woke).toHaveLength(1);
+  const row = store.liveSessionRows().sessions.find((session) => session.id === "session_one");
+  expect(row?.wokeAt).toBe(woke[0]!.wokeAt);
+  expect(row?.wokeAt).not.toBe(woke[0]!.at);
+});
+
 test("work landing on a sleeping conversation wakes it there and then, not at the deadline", () => {
   const { store, clock } = setup();
   store.updateSession("session_one", { snoozedUntil: START + 8 * HOUR });
