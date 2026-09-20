@@ -25,6 +25,7 @@ const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
 const remoteFile = require("./remote-file");
 const { claimedCommandIds, keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
+const { ChordScopes } = require("./chord-scope");
 const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
@@ -1071,6 +1072,9 @@ function createWindow(url) {
     // ONE EXTENSION HOST PER PARTITION, created when a partition first gets a
     // tab. chrome.tabs of one project's 1Password sees that project only.
     createExtensionHost: (partition) => startExtensionHost(win, manager, partition),
+    // ⌘1..⌘9 BELONG TO A FOCUSED PAGE (#660) — the menu stands down for exactly
+    // as long as one holds them, and the manager answers the key itself.
+    onChordScope: (chords) => setBrowserChordScope(manager, chords),
   });
   browserManagers.add(manager);
   browserManager = manager;
@@ -1101,8 +1105,8 @@ function createWindow(url) {
      * SAFE TO DO UNCONDITIONALLY: the reloaded cockpit re-claims on mount for
      * anything that is still up, and claims nothing when nothing is.
      */
-    if (chordScope.length > 0 || chordCapture) {
-      chordScope = [];
+    if (!chordScopes.empty || chordCapture) {
+      chordScopes.setRenderer([]);
       chordCapture = false;
       buildApplicationMenu();
     }
@@ -1115,6 +1119,10 @@ function createWindow(url) {
   win.on("closed", () => {
     manager.destroy();
     browserManagers.delete(manager);
+    // `destroy` already releases through `hibernateTab`; this is the belt to its
+    // braces, because a claim that outlives its window leaves the OTHER window's
+    // rail shortcuts dead and nothing left alive to release them (#660).
+    if (chordScopes.forget(manager)) buildApplicationMenu();
     // Another window's host, not null, while one is still open: closing the
     // second window must not leave the first without a fallback manager.
     if (browserManager === manager) browserManager = browserManagers.values().next().value ?? null;
@@ -1294,8 +1302,23 @@ let chordCapture = false;
  * NOT `enabled: false`, unlike `chordCapture` above. A modal being up is no
  * reason the menu should stop being clickable with the mouse — it is the KEY
  * that is spoken for, not the command. Only the accelerator goes.
+ *
+ * AND SINCE #660 THERE ARE TWO OWNERS, both of which can be live. The cockpit
+ * renderer's stack is one; a focused browser page is the other, and only this
+ * process can know about that one — the keydown never reaches the renderer, and
+ * the native focus is in another process entirely. They UNION rather than
+ * overwrite, because a page's claim erasing a palette's would leave the palette
+ * with the dead ⌘1..⌘9 this whole mechanism exists to prevent. The union and
+ * the reasoning live in chord-scope.js, which is unit-tested; this file is the
+ * Electron entry point and cannot be.
  */
-let chordScope = [];
+const chordScopes = new ChordScopes();
+
+/** A manager's pages took or released the keys. Rebuilds only on a real change,
+ *  since this fires on every focus move between tabs of the same browser. */
+function setBrowserChordScope(manager, chords) {
+  if (chordScopes.setOwner(manager, chords)) buildApplicationMenu();
+}
 
 function sendCommandKey(browserWindow, id) {
   const win = browserWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
@@ -1323,7 +1346,7 @@ function buildApplicationMenu(keymap = readKeymap()) {
   // dispatcher stand down for exactly the same set — and so moving the nine
   // jumps to ⌥1..⌥9 hands ⌘1 back to the palette instead of leaving it
   // suppressed against a chord nobody uses.
-  const claimed = new Set(claimedCommandIds(keymap, chordScope));
+  const claimed = new Set(claimedCommandIds(keymap, chordScopes.all()));
   const toMenuItem = (command) => ({
     label: command.label,
     // STRIPPED WHILE A SETTINGS ROW IS RECORDING. macOS matches a menu's key
@@ -2843,9 +2866,11 @@ ipcMain.handle("telar:keybindings:capture", (_event, capturing) => {
  * that leaves every accelerator live.
  */
 ipcMain.handle("telar:keybindings:scope", (_event, chords) => {
-  chordScope = Array.isArray(chords) ? chords.filter((chord) => typeof chord === "string") : [];
+  const accepted = chordScopes.setRenderer(chords);
   buildApplicationMenu();
-  return chordScope;
+  // The RENDERER's own list back, not the union: this answers "what did you take
+  // from my announcement", and a page's claim is not the caller's to hear about.
+  return accepted;
 });
 
 ipcMain.handle("telar:keybindings:set", (_event, overrides) => {
