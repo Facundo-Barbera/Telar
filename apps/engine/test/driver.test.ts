@@ -1294,6 +1294,34 @@ test("the Claude seam never turns an unsuccessful result into a completed turn",
   await expect(run(driver).result).rejects.toThrow("Claude did not complete successfully");
 });
 
+test("an errored result that still says `success` fails the turn — the subtype alone cannot see it (#779)", async () => {
+  /**
+   * THE SHAPE THAT WALKS PAST A SUBTYPE CHECK. The CLI's own safeguards —
+   * `[reasoning_extraction]` is the observed one — report a result with
+   * `subtype: "success"` AND `is_error: true`. The test above, built on a
+   * non-success subtype, passes against a guard that reads only the subtype;
+   * this one does not, which is the whole of the issue. Against the old code
+   * this turn resolved with "half an answer" as the model's reply.
+   */
+  const errored = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "assistant", message: { content: [{ type: "text", text: "half an answer" }] } };
+      yield { type: "result", subtype: "success", is_error: true, stop_reason: "end_turn" };
+    },
+  }));
+  await expect(run(errored).result).rejects.toThrow("Claude did not complete successfully (the result was flagged as an error)");
+
+  // AND THE CONTROL, so the guard is not "every result fails now": the same
+  // frames with the flag off are the turn they have always been.
+  const clean = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "assistant", message: { content: [{ type: "text", text: "half an answer" }] } };
+      yield { type: "result", subtype: "success", is_error: false, stop_reason: "end_turn" };
+    },
+  }));
+  await expect(run(clean).result).resolves.toMatchObject({ text: "half an answer" });
+});
+
 test("a missing local SDK is a typed provider-unavailable failure", async () => {
   const driver = createClaudeDriver(async () => Promise.reject(new Error("missing")));
   await expect(run(driver).result).rejects.toBeInstanceOf(ProviderUnavailableError);
@@ -3897,6 +3925,41 @@ describe("a turn the CLI started by itself is not this turn", () => {
     expect(wake.observations.some((o) => o.kind === "item.completed" && o.itemId === "item_toolu_merge" && o.status === "completed")).toBe(true);
     // Nothing of it leaked into the first turn's sink.
     expect(first.sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "command_execution")).toBe(false);
+  });
+
+  test("a wake-up's result flagged `is_error` closes as a failure, not as its own answer (#779)", async () => {
+    /**
+     * THE SAME BLIND SPOT AS THE TURN PUMP'S GUARD, with a worse consequence:
+     * there is nothing to throw here, so a safeguard's error read as
+     * `subtype: "success"` gets FILED — the wake-up's half-written prose
+     * closed as the answer to the shell that fired it. The subtype is
+     * `success`, so a test built on a non-success one passes either way.
+     */
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "sleep 5", task_type: "local_bash", is_backgrounded: true };
+        yield* reply(first.value!.uuid!, "started");
+        await woke;
+        yield { type: "system", subtype: "task_notification", task_id: "bg1", summary: "DONE" };
+        yield { type: "user", message: { role: "user", content: "Background task completed (DONE)." } };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "half an answer" }] } };
+        yield { type: "result", subtype: "success", is_error: true, stop_reason: "end_turn", origin: { kind: "task-notification" } };
+        await input.next();
+      },
+    }) as never);
+    const door = sessionDoor();
+    const first = run(driver, { sessionId: "session_idle_errored_success", session: door.hooks });
+    await expect(first.result).resolves.toMatchObject({ text: "started" });
+
+    releaseWake!();
+    await settle(() => door.turns[0]?.closed !== undefined);
+    // Measured against the old predicate: `{ text: "" }` — the safeguard's
+    // error filed as the wake-up's answer, and an empty one at that.
+    expect(door.turns[0]!.closed).toEqual({ failure: "Claude did not complete successfully (the result was flagged as an error)" });
   });
 
   test("a wake-up's retry and its final output count reach ITS turn, exactly as a human turn's do", async () => {

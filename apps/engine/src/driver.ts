@@ -1702,6 +1702,11 @@ export function createClaudeDriver(
          *  continue after their results — the turn is NOT over. Absent on
          *  older producers and the fake SDKs. */
         stop_reason?: string | null;
+        /** Result messages: the CLI's own verdict on the turn, which does
+         *  NOT always agree with `subtype`. Its safeguards report
+         *  `subtype: "success"` with this true — see the two result guards
+         *  below, which read both rather than the subtype alone (#779). */
+        is_error?: boolean;
         /** The join key of the send this frame answers — see `turnUuid`. On
          *  the first stream frame and the result of a turn only. */
         user_message_uuid?: string;
@@ -3452,6 +3457,27 @@ export function createClaudeDriver(
               throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
             }
             /**
+             * AND AN ERRORED RESULT CAN STILL SAY `success` (#779). The CLI's
+             * own safeguards report `subtype: "success"` with `is_error: true`
+             * — `[reasoning_extraction]` is the one we have seen — so the guard
+             * above, which reads the subtype alone, is blind to exactly the
+             * shape it looks like it catches. Today the SDK throws out of the
+             * iterator before this line runs, which is why such a turn already
+             * fails; this is what answers when it does not.
+             *
+             * SEPARATE from that branch on purpose, rather than widened into
+             * it. A non-success subtype is how an interrupt, our own steer cut
+             * and a standing limit arrive; an errored success is none of the
+             * three, and routing it through `consumeSteerCut()` would spend the
+             * cut token on a provider failure and pump on as if the turn were
+             * still alive.
+             */
+            if (item.is_error === true) {
+              // Same rule as above: the human's stop reads as a stop.
+              if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
+              throw new Error("Claude did not complete successfully (the result was flagged as an error)");
+            }
+            /**
              * IS THE QUERY ACTUALLY DONE? Reproduced on a live orchestration
              * session (session_7657b2ef…, events 15479–15560): the CLI can
              * emit a `result` for the assistant's text while tool_use blocks
@@ -4115,8 +4141,21 @@ export function createClaudeDriver(
                 // against the same query, so it takes the same baseline.
                 wake.usage = decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, idleRuntime)) ?? wake.usage);
                 if (wake.usage) emit({ kind: "usage", usage: wake.usage });
-                const failed = item.subtype !== "success";
-                await endWake(failed ? { failure: `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}` } : { text: wake.text });
+                /**
+                 * THE SAME TWO WAYS A RESULT FAILS as the turn pump's guards,
+                 * because it is the same producer: a subtype that is not
+                 * `success`, or a `success` the CLI flagged `is_error` anyway
+                 * (#779). Reading the subtype alone would file a safeguard's
+                 * error as the wake-up's answer. Widened inline here — this
+                 * branch has no interrupt, steer or limit handling to disturb.
+                 */
+                const failure =
+                  item.subtype !== "success"
+                    ? `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`
+                    : item.is_error === true
+                      ? "Claude did not complete successfully (the result was flagged as an error)"
+                      : undefined;
+                await endWake(failure ? { failure } : { text: wake.text });
                 continue;
               }
               const text = await pumpFrame(item, ownerTaskId, wake);
