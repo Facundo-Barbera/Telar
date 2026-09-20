@@ -79,9 +79,20 @@ function labelForType(type) {
   return PROCESS_TYPE_LABEL[type] || (typeof type === "string" && type ? type : "Unknown");
 }
 
-/** The kilobytes a process has pinned in physical RAM, or 0 for a metric that
- *  did not report it. `workingSetSize` is already in KB (Electron's MemoryInfo). */
-function memoryKb(metric) {
+/**
+ * The kilobytes a process has pinned in physical RAM, or 0 for a metric that
+ * did not report it. `workingSetSize` is already in KB (Electron's MemoryInfo).
+ *
+ * NOT CALLED `memoryKb`, and that is a scar rather than a style choice: it was,
+ * and the fold below built its rows with the shorthand `{ memoryKb }` while the
+ * local holding the value was called `memory`. The shorthand resolved to THIS
+ * FUNCTION, so every row carried a function where a number belonged — which
+ * structured clone refuses outright, so the IPC bridge threw and the whole
+ * surface was dead inside the shell. Nothing caught it until a real Electron
+ * tried to serialise the payload. A name that cannot collide with the field it
+ * computes is the cheap half of not repeating that.
+ */
+function memoryKbOf(metric) {
   const value = Number(metric?.memory?.workingSetSize);
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
@@ -162,7 +173,7 @@ function summarizeProcessMetrics({ metrics = [], rates = new Map(), liveProcessI
     const key = processKey(metric);
     const type = typeof metric.type === "string" && metric.type ? metric.type : "Unknown";
     const cpuPercent = Number(rates.get(key)) || 0;
-    const memory = memoryKb(metric);
+    const memory = memoryKbOf(metric);
     // "Hosts a page" is only a claim we can make about renderers. For a GPU or
     // a utility process it is not false, it is meaningless, and a column of
     // "no page" against the network service would read as an accusation.
@@ -182,7 +193,7 @@ function summarizeProcessMetrics({ metrics = [], rates = new Map(), liveProcessI
       type,
       label: labelForType(type),
       cpuPercent,
-      memoryKb,
+      memoryKb: memory,
       ...(typeof metric.name === "string" && metric.name ? { name: metric.name } : {}),
       ...(typeof metric.serviceName === "string" && metric.serviceName ? { serviceName: metric.serviceName } : {}),
       ...(hostsPage === undefined ? {} : { hostsPage }),

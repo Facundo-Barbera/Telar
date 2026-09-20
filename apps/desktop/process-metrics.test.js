@@ -100,6 +100,50 @@ describe("folding one poll for somebody looking at it", () => {
   });
 });
 
+describe("the answer has to survive the trip out of the main process", () => {
+  /**
+   * THIS IS THE TEST THAT WAS MISSING, and its absence cost a CI cycle to find.
+   *
+   * Every row of `busiest` carried a FUNCTION where `memoryKb` belonged — the
+   * fold built its rows with the shorthand `{ memoryKb }` while the local
+   * holding the value was called `memory`, so the shorthand resolved to the
+   * module-level helper of that name. Structured clone refuses a function, so
+   * `ipcMain.handle` threw "An object could not be cloned", and the entire
+   * surface was dead inside the shell while every assertion here passed: they
+   * read `types[].memoryKb`, which is summed rather than shorthanded, and never
+   * once read the field on a busiest row.
+   *
+   * A fold whose only consumers are across an IPC boundary and an HTTP one has
+   * "serialises" as part of its contract, not as an implementation detail. So
+   * it is asserted the way the boundary asserts it.
+   */
+  test("the summary is structured-cloneable, because both its consumers are across a boundary", () => {
+    const summary = summarizeProcessMetrics({
+      metrics: [metric(1, "Browser", 0), metric(2, "Tab", 0), metric(3, "Utility", 0, { name: "Network Service" })],
+      rates: new Map([["1:1000", 4], ["2:1000", 96]]),
+      liveProcessIds: [2],
+      readAt: 5_000,
+      windowMs: 2_000,
+    });
+    // Throws TypeError on a function, a symbol or anything else the clone
+    // algorithm refuses — which is exactly what the IPC reply does.
+    const cloned = structuredClone(summary);
+    expect(cloned).toEqual(summary);
+    // And specifically the field that was wrong, named rather than left to the
+    // deep-equal: a number, on every row, not just on the type totals.
+    for (const row of summary.busiest) expect(typeof row.memoryKb).toBe("number");
+    for (const entry of summary.types) expect(typeof entry.memoryKb).toBe("number");
+  });
+
+  test("a reader's live answer clones too, not just a hand-built fold", () => {
+    const { reader, advance } = readerOver([[metric(1, "Tab", 0)], [metric(1, "Tab", 1)]], { minIntervalMs: 0 });
+    reader.summary();
+    advance(1_000);
+    const live = reader.summary();
+    expect(structuredClone(live)).toEqual(live);
+  });
+});
+
 describe("rates come from cumulative CPU seconds", () => {
   test("a core fully used for the whole window reads as 100", () => {
     const rates = cpuRates({
