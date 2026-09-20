@@ -134,7 +134,44 @@ the thing it resembles.
 
 ---
 
-## 3. The tooling hazard: `grep` here is not `/usr/bin/grep`
+## 3. An empty search result is not evidence
+
+**The rule, and it is the whole of this section:**
+
+> **Treat every empty result as a claim needing a positive control.** Run the
+> same pattern, through the same command, against something you *know* contains
+> it. **If the control is also empty, the command is broken rather than the
+> codebase clean.**
+
+An absence read as an answer is the worst failure available to an audit, because
+every argument of the form *"this was never built"* rests on a search returning
+nothing. **Four separate mechanisms produced that false absence here**, and they
+are listed below as worked examples — but the list is the wrong defence, because
+it will always be one behind. Three of the four are flags on one tool; the
+fourth is not the tool's fault at all. A fifth will not resemble any of them.
+
+The control costs one line and catches all of them, including the fifth.
+
+### Why a rule and not a checklist — the case that proves it
+
+On **the first search of the first issue** of this audit, the shell printed:
+
+```
+(eval):1: no matches found: --include=*.js
+```
+
+That was read as a typo, re-run with the glob quoted, and forgotten. **The
+evidence of the whole hazard was in hand at the very start and went
+unrecognised** — and no flag list would have helped, because on that occasion
+the flag was not the problem. A positive control would have caught it in one
+line, without anyone needing to know what had gone wrong.
+
+That is the argument for the rule over the enumeration, and it is why the rule
+is stated first.
+
+---
+
+### The four routes, as worked examples
 
 In this environment `grep` resolves to a **shell function wrapping `ugrep`**:
 
@@ -144,11 +181,9 @@ ARGV0=ugrep "$_cc_bin" -G --ignore-files --hidden -I \
   --exclude-dir=.bzr --exclude-dir=.jj --exclude-dir=.sl "$@"
 ```
 
-Two flags there silently suppress matches, and **an absence then reads as an
-answer** — the worst possible failure for an audit, because every argument of
-the form *"this was never built"* rests on a grep returning nothing.
+Two flags there silently suppress matches.
 
-### `-I` — skip anything it calls binary
+#### 1. `-I` — skip anything it calls binary
 
 Several engine sources trip that classification on a stray byte. It produced two
 false negatives here before it was caught, both on the same file:
@@ -157,7 +192,7 @@ false negatives here before it was caught, both on the same file:
 which is the entirety of #594.** Under plain `/usr/bin/grep` the same file
 reports only `Binary file … matches`.
 
-### `--ignore-files` — honour `.gitignore`, so `node_modules` is invisible
+#### 2. `--ignore-files` — honour `.gitignore`, so `node_modules` is invisible
 
 **This is the more dangerous half**, and it is not what the flag name suggests.
 Reproduced deliberately: a directory named in `.gitignore`, containing a file
@@ -175,20 +210,21 @@ unsound"** is a different claim entirely — *"the library has no API for this"*
 is exactly what someone reads out of a directory the tool refuses to open, and
 then designs around.
 
-### A third route, which is not the wrapper's fault at all
+#### 3. An unquoted glob, which is not the tool's fault at all
 
 ```
 (eval):1: no matches found: --include=*.js
 ```
 
 **zsh globs an unquoted `--include=*.ts` before the command ever runs**, so the
-command does not run. The result is empty output — indistinguishable from a
-clean absence, and arriving by neither the binary skip nor `.gitignore`. It
-happened in this audit, on the very first search of the first issue.
+command does not run. Empty output, indistinguishable from a clean absence, by
+neither the binary skip nor `.gitignore`. **Quote your globs**: `--include="*.ts"`.
 
-**Quote your globs.** `--include="*.ts"`.
+#### 4. The next one
 
-### The rule, and the general defence
+Unknown. That is the point of the rule.
+
+### Two habits underneath the rule
 
 **Any conclusion resting on an absence uses `/usr/bin/grep -a`. Where the check
 is load-bearing, do it in-process** — `fs.readFileSync` + `matchAll`, or a
@@ -196,19 +232,10 @@ is load-bearing, do it in-process** — `fs.readFileSync` + `matchAll`, or a
 in this note that had to be exact (`display_open` at 655 chars, `warp` at 2,988)
 were taken that way.
 
-But flag-by-flag defences only cover the three routes known today. The general
-one:
-
-> **Treat every empty result as a claim that needs a positive control.** Run the
-> same pattern, through the same command, against something you *know* contains
-> it. If the control also comes back empty, **the command is broken rather than
-> the codebase clean.**
-
-That catches all three routes and the fourth nobody has found yet, and it costs
-one extra line. Worked example from the #531 re-check: before recording *"no
+**And the control in practice**, from the #531 re-check: before recording *"no
 `watch` tool on the Agent's wall"*, the same grep was run for `github_status`,
-`remember` and `sessions_find` against the same file — all three returned, so
-the empty answer for `watch` was the codebase talking and not the tool.
+`remember` and `sessions_find` against the same file. All three returned — so
+the empty answer for `watch` was the codebase talking, not the tool.
 
 ### What was re-verified, and the one correction
 
