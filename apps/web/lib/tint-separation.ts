@@ -120,10 +120,15 @@ export function toOklab(value: string): Oklab {
       return { L: lightness, a: chroma * Math.cos(radians), b: chroma * Math.sin(radians) };
     }
   }
-  const rgb = parseVsCodeColor(cssColorToHex(value)) ?? { r: 128, g: 128, b: 128 };
-  const r = srgbToLinear(rgb.r);
-  const g = srgbToLinear(rgb.g);
-  const b = srgbToLinear(rgb.b);
+  return rgbToOklab(parseVsCodeColor(cssColorToHex(value)) ?? { r: 128, g: 128, b: 128 });
+}
+
+/** An 8-bit sRGB triple as Oklab — the inverse of `oklabToRgb`, and the way
+ *  back for a colour that has already been through the screen. */
+export function rgbToOklab({ r: red, g: green, b: blue }: Rgb): Oklab {
+  const r = srgbToLinear(red);
+  const g = srgbToLinear(green);
+  const b = srgbToLinear(blue);
   const long = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
   const medium = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
   const short = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
@@ -146,6 +151,29 @@ export function oklabToRgb({ L, a, b }: Oklab): Rgb {
     g: linearToSrgb(-1.2684380046 * long + 2.6097574011 * medium - 0.3413193965 * short),
     b: linearToSrgb(-0.0041960863 * long - 0.7034186147 * medium + 1.707614701 * short),
   };
+}
+
+/**
+ * WOULD A SCREEN SHOW THIS COLOUR, OR SOMETHING ELSE?
+ *
+ * `oklabToRgb` clamps each channel independently, which is NOT what a browser
+ * does with an out-of-gamut `oklch()`: CSS Color 4 gamut-maps by reducing
+ * CHROMA. For MEASURING a colour that already arrived as sRGB the distinction
+ * never comes up. It comes up the moment something INVENTS a colour — which is
+ * what the repair below does, and emitting one the browser will quietly move
+ * somewhere this file never measured would be the same class of silent
+ * wrongness #705 is about.
+ *
+ * SO THE TEST IS PERCEPTUAL, NOT A CHANNEL BOUND, and it has to be: the shipped
+ * light `--success` sits so close to the sRGB boundary that a tenth of a step
+ * of lightness puts it nominally outside, while the colour a screen shows moves
+ * by almost nothing. What matters is not "did a channel clip" but "is what
+ * paints still the colour that was measured" — so the question is asked in the
+ * same JND this file already uses for tone separation, and answered by a round
+ * trip through the screen's own 8 bits.
+ */
+export function paintsAsMeasured(value: Oklab, tolerance = TONE_JND): boolean {
+  return deltaEOk(value, rgbToOklab(oklabToRgb(value))) <= tolerance;
 }
 
 /** Euclidean distance in Oklab — the space is built so that this IS perceptual
@@ -200,4 +228,184 @@ export function measureTint(ink: string, card: string, floor: number): { elevati
  */
 export function toneSeparation(first: string, second: string, floor: number): number {
   return floor * deltaEOk(toOklab(first), toOklab(second));
+}
+
+// ── The repair: move the INK, never the card (#705) ──────────────────────────
+
+/**
+ * THE THREE TONES `.tint-*` PAINTS, and the whole vocabulary this file repairs.
+ *
+ * `.tint-warning` has no call site outside globals.css today. It is carried
+ * anyway for the reason the test above carries it: the class exists, and the
+ * next reader to reach for it should find it already held to the bar.
+ */
+export const TINT_TONES = ["success", "warning", "destructive"] as const;
+export type TintTone = (typeof TINT_TONES)[number];
+
+/** Which scheme's vocabulary — the window's colour scheme, not a theme id. */
+export type TintScheme = "light" | "dark";
+
+/**
+ * `--tint-floor: 12%`, AS THE FRACTION `color-mix` MEANS BY IT.
+ *
+ * A SECOND COPY OF A NUMBER THAT PAINTS FROM globals.css, and the only reason
+ * it exists is that the repair runs in the browser, where there is no
+ * stylesheet to read. `tint-separation.test.ts` pulls the real declaration out
+ * of globals.css and asserts this equals it, so the copy cannot drift — the
+ * same bargain `theme-palettes.ts` strikes with its weight tables.
+ */
+export const TINT_FLOOR = 0.12;
+
+/**
+ * THE STATE VOCABULARY, BOTH SCHEMES — and the reason repairing it is safe.
+ *
+ * `--success` / `--warning` / `--destructive` are NOT in `THEME_TOKENS`: no
+ * Look can set them, no import writes them, no picker exposes them. So moving
+ * one cannot change anything a person chose, because there is no way for a
+ * person to have chosen it. That is the entire argument for repairing THIS end
+ * of the mix rather than the `--card` at the other end, which somebody did
+ * choose — and `tint-separation.test.ts` holds the premise as its own
+ * assertion, because every claim here rests on it.
+ *
+ * Read back out of globals.css by that test, character for character.
+ */
+export const STATE_INK: Record<TintScheme, Record<TintTone, string>> = {
+  light: {
+    success: "oklch(0.495 0.108 162)",
+    warning: "oklch(0.515 0.11 72)",
+    destructive: "oklch(0.50 0.19 25.5)",
+  },
+  dark: {
+    success: "oklch(0.73 0.15 162)",
+    warning: "oklch(0.78 0.15 72)",
+    destructive: "oklch(0.7 0.19 25.5)",
+  },
+};
+
+/**
+ * WHAT HAPPENED TO ONE TONE ON ONE CARD.
+ *
+ * `ink` IS ALWAYS WHAT TO PAINT, in all three arms — the `stranded` arm hands
+ * back the SHIPPED value untouched, so a caller that reads only `.ink` can
+ * never move a colour the search failed to fix. "Report, never rewrite" is a
+ * property of the type here rather than a rule a caller has to remember.
+ */
+export type InkRepair =
+  /** The shipped ink already clears both separations on this card. The fixed
+   *  point, and the case every Look this build ships lands in. */
+  | { outcome: "holds"; ink: string }
+  /** A lightness clears both. `moved` is how far in ΔE-Oklab — which is exactly
+   *  |ΔL|, since hue and chroma are held. */
+  | { outcome: "repaired"; ink: string; moved: number }
+  /** No lightness clears both: the card is sitting on the ink's own lightness,
+   *  so ELEVATION is what fails and no ink can answer it. Nothing changes. */
+  | { outcome: "stranded"; ink: string };
+
+/** The same three-part grammar `retint` writes and refuses to reformat. A value
+ *  that is not one — an alpha form, a hex — has no lightness to move. */
+const INK_OKLCH = /^oklch\(\s*([\d.]+)\s+([\d.]+)\s+(-?[\d.]+)\s*\)$/;
+
+/**
+ * THE SEARCH GRID. Three decimals is what the authored vocabulary is written
+ * to, so a candidate lands on the grid the stylesheet already uses rather than
+ * inventing a precision nobody else in the palette has.
+ */
+const INK_STEP = 0.001;
+
+/**
+ * THE ONE TERM IN THE EXPRESSION NOBODY CHOSE, MOVED UNTIL THE TINT READS.
+ *
+ * WHY LIGHTNESS AND NOTHING ELSE. `retint` carries a token's LIGHTNESS across
+ * verbatim and rewrites chroma and hue, because lightness is the contrast
+ * contract. This is that rule read backwards: contrast is what failed, so
+ * lightness is the only lever that can answer it — and holding hue and chroma
+ * is what keeps `tint-success` and `tint-destructive` as far apart afterwards
+ * as they were before (the separation `toneSeparation` proves card-independent
+ * lives almost entirely in a and b). Repairing by chroma would fix the ratio
+ * and merge added with removed.
+ *
+ * BOTH SEPARATIONS, NOT THE FAILING ONE. A card can pass elevation and fail
+ * readability; a candidate that answers readability alone can walk the fill
+ * back onto the card. Every candidate is asked both questions.
+ *
+ * NEAREST FIRST, AND AWAY FROM THE CARD ON A TIE. The repair is a rewrite of
+ * somebody's window, so the smallest one that works is the right one; when two
+ * are equally near, the one that moves the ink AWAY from the card's own
+ * lightness is the one that also helps the fill.
+ *
+ * AND ONLY WHAT A SCREEN CAN SHOW. A candidate a browser would gamut-map is one
+ * whose measured ratio is about a colour nobody will see — see
+ * `paintsAsMeasured`. Refusing those costs some repairs (they become
+ * `stranded`, which is reported rather than hidden) and buys the only thing
+ * that makes the measurement worth anything: the emitted colour is the painted
+ * colour. It is also what stops the search finding a degenerate answer, since
+ * "drive the ink to black" is always available and always out of gamut at the
+ * chroma the vocabulary carries.
+ *
+ * A FIXED POINT WHEN THE SHIPPED INK ALREADY HOLDS — the first line, before any
+ * parsing. That is what makes `compileComposition` byte-identical for every
+ * Look this build ships, and it is the property worth testing hardest.
+ */
+export function repairInk(ink: string, card: string, floor: number): InkRepair {
+  const clears = (value: string) => {
+    const { elevation, readability } = measureTint(value, card, floor);
+    return elevation >= TINT_ELEVATION && readability >= TINT_READABLE;
+  };
+  if (clears(ink)) return { outcome: "holds", ink };
+
+  const parsed = INK_OKLCH.exec(ink.trim());
+  if (!parsed) return { outcome: "stranded", ink };
+  const lightness = Number(parsed[1]);
+  if (!Number.isFinite(lightness)) return { outcome: "stranded", ink };
+
+  const away = toOklab(card).L <= lightness ? 1 : -1;
+  const steps = Math.round(1 / INK_STEP);
+  for (let step = 1; step <= steps; step += 1) {
+    for (const direction of [away, -away]) {
+      const candidate = lightness + direction * step * INK_STEP;
+      if (candidate < 0 || candidate > 1) continue;
+      const moved = `oklch(${candidate.toFixed(3)} ${parsed[2]} ${parsed[3]})`;
+      if (!paintsAsMeasured(toOklab(moved))) continue;
+      if (clears(moved)) return { outcome: "repaired", ink: moved, moved: deltaEOk(toOklab(ink), toOklab(moved)) };
+    }
+  }
+  return { outcome: "stranded", ink };
+}
+
+/** What a card costs the tints, once the repair has done what it can. */
+export type TintCost = {
+  /** The WORST `text-<tone>` on `.tint-<tone>` ratio this card yields AFTER the
+   *  repair — the number a reader actually meets, not the one they would have
+   *  met without it. */
+  readability: number;
+  /** Which tone that number belongs to. */
+  tone: TintTone;
+  /** Tones no lightness can rescue. These are REPORTED and left alone. */
+  stranded: readonly TintTone[];
+};
+
+/**
+ * ONE CARD, ALL THREE TONES — the number a report shows and the list it names.
+ *
+ * It measures the REPAIRED ink on purpose. A row that showed the unrepaired
+ * ratio would be saying a colour is unreadable while the window paints it
+ * readably; the only honest number for a surface to display is the one it is
+ * about to paint. Which means a red number here and a `stranded` entry are the
+ * same event seen twice, and that is the point: the repair's failure is the
+ * only thing a person has to know about.
+ */
+export function tintCost(card: string, ink: Record<TintTone, string>, floor: number): TintCost {
+  let readability = Number.POSITIVE_INFINITY;
+  let tone: TintTone = TINT_TONES[0];
+  const stranded: TintTone[] = [];
+  for (const candidate of TINT_TONES) {
+    const repair = repairInk(ink[candidate], card, floor);
+    if (repair.outcome === "stranded") stranded.push(candidate);
+    const measured = measureTint(repair.ink, card, floor).readability;
+    if (measured < readability) {
+      readability = measured;
+      tone = candidate;
+    }
+  }
+  return { readability, tone, stranded };
 }
