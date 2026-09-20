@@ -1701,6 +1701,10 @@ test("the gitignore write has an undo, and it is the project's own block only", 
 /** Whether a `gh` argv is the BOARD half of a read — the one asking for
  *  `projectItems`, which is separate precisely so it can fail alone. */
 const isBoardCall = (args: string[]) => args.includes("number,projectItems");
+/** The thread read (#814) — who wrote each comment. Like the board call it rides
+ *  beside a detail read and fails alone, so a test counting "how many times was
+ *  this issue fetched" must not count it. */
+const isThreadCall = (args: string[]) => args[0] === "api" && args[1] === "graphql";
 
 test("a GitHub read is cached, and only a refresh gets past the cache", async () => {
   // The one cached read in this store, because it is the one that costs
@@ -1910,8 +1914,9 @@ test("a FAILED detail read is not cached — the fix takes less than thirty seco
   const store = new EngineStore(root(), () => 1_000, {
     git: () => ({ status: 0, stdout: "", stderr: "" }),
     gh: async (_cwd, args) => {
-      // The board half is not the subject: it is a separate call by design.
-      if (!isBoardCall(args)) calls.push(args[1] ?? "");
+      // The board half and the thread half are not the subject: both are separate
+      // calls by design, and both fail without failing the detail read.
+      if (!isBoardCall(args) && !isThreadCall(args)) calls.push(args[1] ?? "");
       return signedIn
         ? { status: 0, stdout: JSON.stringify({ number: 4, title: "t", state: "OPEN", url: "u" }), stderr: "" }
         : { status: 1, stdout: "", stderr: "gh auth login" };

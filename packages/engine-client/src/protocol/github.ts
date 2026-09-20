@@ -79,12 +79,14 @@ export type GitHubLink = z.infer<typeof GitHubLink>;
 /**
  * Where an author's face is.
  *
- * DERIVED, NOT READ, AND `gh` IS THE REASON. There is no avatar field to ask for:
- * `--json author` answers `{id, is_bot, login, name}` on every list and detail
- * read, and a comment's author answers `{login}` alone — measured. So no field set
- * in the engine could have carried this, and the engine builds the URL from the
- * login instead. See `apps/engine/src/github.ts` for the measurement and for the
- * one case it cannot get right.
+ * DERIVED ON A ROW, READ ON A COMMENT, and the split is the whole of #814. There
+ * is no avatar field in `gh`'s projections to ask for: `--json author` answers
+ * `{id, is_bot, login, name}` on every list and detail read, and a comment's
+ * author answers `{login}` alone — measured. A ROW's author carries `is_bot`, so
+ * a derived `github.com/<login>.png` is safe there and costs nothing. A COMMENT's
+ * does not, so a bot's bare slug would render whichever human owns that login —
+ * and the thread read asks GitHub outright instead. See
+ * `apps/engine/src/github.ts` for both measurements.
  *
  * NO SIZE ON IT. `github.com/<login>.png` takes a `?size=` and the size is the
  * renderer's business — a 16px row glyph and a 40px comment face are the same
@@ -311,6 +313,29 @@ export type GitHubSnapshot = z.infer<typeof GitHubSnapshot>;
 // ── one issue, one pull request ─────────────────────────────────────────────
 
 /**
+ * One reaction GitHub is holding on a comment.
+ *
+ * GITHUB'S OWN WORD FOR THE CONTENT — `THUMBS_UP`, `HEART`, `ROCKET` — passed
+ * through rather than mapped to a glyph, because which emoji stands for
+ * `HOORAY` is a display decision and three clients should not each invent one.
+ *
+ * EMPTY GROUPS ARE DROPPED. The GraphQL read answers all eight contents for
+ * every comment whether or not anybody used them — measured — so a comment
+ * nobody reacted to would otherwise arrive as eight zeroes.
+ *
+ * `viewerHasReacted` IS CARRIED AND NOTHING CAN ACT ON IT YET. It is free on the
+ * read that already happens, and the write half (`addReaction`/`removeReaction`)
+ * does not exist — `gh`'s own comment projection drops the field entirely, so
+ * having it at all is the reason the thread read is GraphQL. See #814's issue B.
+ */
+export const GitHubReaction = z.object({
+  content: z.string().min(1),
+  count: z.number().int().positive(),
+  viewerHasReacted: z.boolean(),
+});
+export type GitHubReaction = z.infer<typeof GitHubReaction>;
+
+/**
  * One comment.
  *
  * `minimized` IS CARRIED RATHER THAN DROPPED, and it is not a nicety: GitHub
@@ -338,6 +363,21 @@ export const GitHubComment = z.object({
   /** GitHub's reason, when it hid the comment. */
   minimizedReason: z.string().min(1).optional(),
   url: z.string().min(1),
+  /**
+   * What GitHub is holding against this comment.
+   *
+   * ABSENT AND EMPTY MEAN DIFFERENT THINGS, which is why this is optional rather
+   * than defaulted. It rides a SECOND read (#814) that may fail on its own —
+   * absent is "this engine did not get to ask", `[]` is "asked, and nobody
+   * reacted". A surface that conflated them would draw "no reactions" over a
+   * failed read.
+   *
+   * NO SURFACE YET, on purpose. Where a reaction chip sits and whether it is
+   * actionable is the display decision #814's issue B is about; this is the half
+   * that was free on a read already being made, and it travels so that issue is
+   * a display change and not another round trip.
+   */
+  reactions: z.array(GitHubReaction).optional(),
   /**
    * WHICH TELAR SESSION THIS COMMENT CLAIMS TO COME FROM — issue #791, the one
    * thing github.com structurally cannot show.
