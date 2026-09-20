@@ -16,7 +16,7 @@
 import { z } from "zod";
 import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
 import type { RunCapability } from "./capability";
-import { RunIcon, type RunView } from "./types";
+import { RunIcon, RunShell, type RunView } from "./types";
 
 /** Tools that only read. Handed to the host, which decides the approval posture. */
 export const RUN_READ_ONLY_TOOLS = ["run_configs", "run_status", "run_output"] as const;
@@ -60,6 +60,9 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
         name: z.string().min(1).max(120).optional().describe("What a human picks in the Run menu, e.g. 'web dev'."),
         icon: RunIcon.optional().describe("The glyph the Run menu draws before the name. Default: 'play'."),
         command: z.string().min(1).optional().describe("The shell command, e.g. 'bun run dev'."),
+        shell: RunShell.optional().describe(
+          "Which program evaluates the command, spelled out: it is spawned with args followed by the command, e.g. {program:'/bin/bash', args:['-lc']}. Leave it out unless the recipe genuinely needs a particular shell — an absent one is resolved against whatever platform the run launches on, which is what keeps a recipe openable on another machine.",
+        ),
         cwd: z.string().optional().describe("Directory relative to the worktree root, e.g. 'apps/web'. Default: the root."),
         env: z
           .array(z.object({ key: z.string().min(1), value: z.string(), secret: z.boolean().optional() }))
@@ -75,6 +78,9 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
           // configuration would be stored with an icon nothing can draw.
           ...(RunIcon.safeParse(args.icon).success ? { icon: args.icon as RunIcon } : {}),
           ...(typeof args.command === "string" ? { command: args.command } : {}),
+          // Parsed, not cast, for the same reason as the icon: a malformed
+          // shell must be refused here rather than stored and spawned.
+          ...(RunShell.safeParse(args.shell).success ? { shell: RunShell.parse(args.shell) } : {}),
           ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
           ...(Array.isArray(args.env) ? { env: args.env as { key: string; value: string; secret?: boolean }[] } : {}),
           ...(typeof args.readinessUrl === "string" ? { readinessUrl: args.readinessUrl } : {}),

@@ -57,6 +57,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { nullRunJournal, RunJournalUnreadable, type RunJournal, type RunRecord } from "./journal";
 import { type GroupLiveness, processGroupFor, type RunKill, type RunProcessGroup } from "./platform";
+import { resolveShell } from "./shell";
 import { createOutputSplitter } from "./stream";
 import {
   isTerminal,
@@ -527,22 +528,29 @@ export class RunManager {
     // order loses a live process to a crash that is milliseconds wide.
     this.journal.open(this.record(run));
 
-    // `shell: true` so a saved recipe means what it reads like (`bun run dev`,
-    // `a && b`); `detached` comes from the PLATFORM — a POSIX group leader we
-    // can signal whole, and on Windows nothing of the sort, which is why
-    // stopping there is `taskkill /T` instead.
     /**
-     * `[]` AND THE PINNED TUPLE ARE BOTH LOAD-BEARING. Under `shell: true`
-     * there are no argv entries, but naming them picks the three-argument
-     * overload — the two-argument form resolves differently under the engine's
-     * `@types/node` and the cockpit's, and this file is compiled by both. The
-     * stdio tuple must stay a tuple or `stdout`/`stderr` come back nullable.
+     * `shell: false`, AND THE SHELL IS SPELLED OUT INSTEAD. A saved recipe
+     * still means what it reads like — `bun run dev`, `a && b` — because a
+     * shell still evaluates it; what changed is that WHICH shell, and where the
+     * command sits in its argv, is now a value this process computed and can
+     * show you (`resolveShell`) rather than something `shell: true` decides
+     * privately and differently per platform. Nobody downstream splits a string.
+     *
+     * `detached` comes from the platform: a POSIX group leader we can signal
+     * whole, and on Windows nothing of the sort, which is why stopping there is
+     * `taskkill /T` instead. The stdio tuple must stay a tuple or
+     * `stdout`/`stderr` come back nullable under the engine's `@types/node` and
+     * the cockpit's, and this file is compiled by both.
      */
-    const child = spawn(run.command, [], {
+    const launch = resolveShell(run.config, this.platform, process.env);
+    const child = spawn(launch.file, launch.args, {
       cwd: run.cwd,
       env,
-      shell: true,
+      shell: false,
       detached: this.group.detached,
+      // `cmd.exe` parses its own command line, so node must hand the string
+      // over unquoted; on every other path this is false and ignored.
+      windowsVerbatimArguments: launch.windowsVerbatimArguments,
       stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
     });
     run.child = child;

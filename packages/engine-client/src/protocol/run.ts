@@ -46,12 +46,34 @@ export type RunIcon = z.infer<typeof RunIcon>;
 
 export const DEFAULT_RUN_ICON: RunIcon = "play";
 
+/**
+ * WHICH PROGRAM IS HANDED THE COMMAND — explicit rather than implied.
+ *
+ * The engine spawns `program` with `[...args, command]` and no shell flag, so
+ * no layer on this wire has to know a convention for splitting a command line.
+ * `a && b` still works: `program` is a shell, and the string is its argument.
+ *
+ * ABSENT IS THE NORMAL CASE. An unpinned recipe is resolved against whichever
+ * platform it launches on, which is why a resolved `/bin/sh` is deliberately
+ * NOT written into the document: that would carry one machine's operating
+ * system into a recipe that has to open on another.
+ */
+export const RunShell = z.object({
+  /** The program spawned. An absolute path, or a name found on PATH. */
+  program: z.string().min(1).max(1024),
+  /** Argv BEFORE the command, e.g. `["-c"]`. The command is appended to it. */
+  args: z.array(z.string().max(4000)).max(32).optional(),
+});
+export type RunShell = z.infer<typeof RunShell>;
+
 /** What a client may store. Ids and timestamps are the engine's to mint. */
 export const RunConfigurationDraft = z.object({
   name: z.string().min(1).max(120),
   /** Which glyph the Run menu draws before the name. Default: `play`. */
   icon: RunIcon.optional(),
   command: z.string().min(1).max(4000),
+  /** Which shell, spelled out. Absent: the engine's platform default. */
+  shell: RunShell.optional(),
   /** Relative to the worktree the run is launched from. Default: its root. */
   cwd: z.string().max(1024).optional(),
   env: z.array(z.object({ key: z.string(), value: z.string(), secret: z.boolean().optional() })).max(200).optional(),
@@ -68,6 +90,8 @@ export const RunConfigurationView = z.object({
    *  saved since that kept the default. The cockpit draws `play` for both. */
   icon: RunIcon.optional(),
   command: z.string(),
+  /** Present only on a recipe that pinned one. Scrubbed like every other text. */
+  shell: RunShell.optional(),
   cwd: z.string().optional(),
   /** Always present, possibly empty — the engine emits the scrubbed list on
    *  every read, so a client never has to distinguish "no env" from "not sent". */
