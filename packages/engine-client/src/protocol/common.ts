@@ -590,10 +590,20 @@ export type JournalReclaim = z.infer<typeof JournalReclaim>;
 /**
  * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
  *
- * FOUR KINDS AND NOT A PATH, because three of them are things a person has to
+ * FIVE KINDS AND NOT A PATH, because four of them are things a person has to
  * be told rather than a location to quietly use: nothing chosen, chosen and
- * present, chosen and on a drive that is not connected, and a record this
- * build cannot read.
+ * present, chosen and on a drive that is not connected, a record this build
+ * cannot read, and — issue #665 — chosen on a platform that cannot tell which
+ * of those last two is true.
+ *
+ * `unverifiable` IS THE HONEST WINDOWS ANSWER, and it exists because the
+ * alternative was a confident wrong one. `mountRootsFor` returns an empty list
+ * on win32, so nothing is ever a mount point there and a checkouts root on
+ * `D:\` reported as *configured and fine* whether or not the drive was
+ * connected: `worktreesRootBlocker` returned nothing, the cut proceeded, and
+ * `mkdirSync` failed mid-session with an I/O error instead of the sentence this
+ * type exists to carry. This says "the location is recorded and this build
+ * cannot check the drive", which is exactly what is known.
  *
  * THERE IS NO `restartRequired` HERE, and its absence is a finding rather than
  * an omission. The root is consulted at exactly one moment — planning where a
@@ -609,7 +619,7 @@ export type JournalReclaim = z.infer<typeof JournalReclaim>;
  * the moment the drive is not there to be asked.
  */
 export const WorktreesRoot = z.object({
-  kind: z.enum(["default", "configured", "absent", "unreadable"]),
+  kind: z.enum(["default", "configured", "absent", "unreadable", "unverifiable"]),
   /** Where checkouts go, or would go. Absent only when the record is
    *  unreadable — the one state with no location to name. */
   root: z.string().min(1).optional(),

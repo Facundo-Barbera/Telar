@@ -113,6 +113,55 @@ test("a drive that is not connected is a state, named by the label recorded when
   expect(blocker).toContain("not connected");
 });
 
+/**
+ * THE PLATFORM THAT CANNOT ANSWER THE QUESTION — issue #665.
+ *
+ * `mountRootsFor` returns an empty list on win32, so nothing is ever a mount
+ * point there and `findVolumeMount` can never resolve a drive. Before this,
+ * a checkouts root on `D:\` took the `configured` branch and reported as fine
+ * whether or not the disk was connected: `worktreesRootBlocker` returned
+ * nothing, the cut proceeded, and `mkdirSync` failed mid-session with an I/O
+ * error instead of the sentence the design wrote for exactly this.
+ *
+ * The platform is INJECTED, because a test cannot change the one it runs on
+ * and a Windows branch asserted by not running it is a branch nobody has ever
+ * executed.
+ */
+test("a platform that cannot resolve volumes still uses a root that is there", () => {
+  const elsewhere = temp("telar-checkouts-");
+  fs.writeFileSync(
+    locationFile(),
+    JSON.stringify({ version: 1, root: elsewhere, volume: { mount: path.dirname(elsewhere), uuid: "SERIAL-1" }, label: "Backup", movedAt: 1 }),
+  );
+  const state = readWorktreesRoot(root, { platform: "win32" });
+  expect(state.kind).toBe("configured");
+  expect(rootOf(state)).toBe(elsewhere);
+  expect(worktreesRootBlocker(state)).toBeUndefined();
+});
+
+test("…and refuses the cut, in its own words, when the root is not there", () => {
+  // AN ABSOLUTE PATH IN THIS RUNTIME'S OWN SYNTAX, not `D:\…`: `path.isAbsolute`
+  // answers for the platform the process is on rather than the one being
+  // simulated, so a Windows-shaped path here would be refused as relative and
+  // this would assert the wrong branch. What is being simulated is the VOLUME
+  // resolution, which is what `platform` reaches.
+  const gone = path.join(temp("telar-checkouts-"), "cuts");
+  fs.writeFileSync(
+    locationFile(),
+    JSON.stringify({ version: 1, root: gone, volume: { mount: path.dirname(gone), uuid: "SERIAL-1" }, label: "Backup", movedAt: 1 }),
+  );
+  const state = readWorktreesRoot(root, { platform: "win32" });
+  // NOT `absent`. "Your drive is unplugged" is precisely the claim this
+  // platform cannot make, and a person looking at a connected drive being told
+  // to connect it trusts the next message less.
+  expect(state.kind).toBe("unverifiable");
+  expect(rootOf(state)).toBeUndefined();
+  const blocker = worktreesRootBlocker(state);
+  expect(blocker).toContain("Backup");
+  expect(blocker).toContain("cannot tell whether that drive is connected");
+  expect(blocker).not.toContain("Plug it back in");
+});
+
 test("a remount under a new name is a rename, not a loss", () => {
   /**
    * macOS mounts a second copy of a drive at `TelarVR 1`. #630 learnt to
