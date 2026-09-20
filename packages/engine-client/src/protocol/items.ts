@@ -90,15 +90,28 @@ export const ItemStatus = z.enum([
 export type ItemStatus = z.infer<typeof ItemStatus>;
 
 /**
- * Which stream a `content.delta` belongs to. One item can carry more than one
- * — a command has its own output, and the assistant may narrate around it — so
- * deltas name their stream rather than assuming the item has only one.
+ * Which stream a `content.delta` belongs to. Deltas name their stream rather
+ * than assuming the item has only one, so an item that later streams two can
+ * be read without a migration.
+ *
+ * ONLY THE FIRST TWO ARE EVER EMITTED — see the sets `apps/engine/test/
+ * execution-store.test.ts` asserts this against, and #686 for the measurement.
+ * The other three are room the contract keeps, not behaviour it has, and the
+ * difference matters to journal compaction: `compactJournal` drops a delta only
+ * where the item's own `item.completed` proves it holds that text, and only
+ * `assistant_message` and `reasoning` keep the streamed text on the settled
+ * row. Whoever first emits on a third stream is deciding, at that moment, that
+ * those deltas are HISTORY rather than redundancy — the only durable copy of
+ * what was streamed — and compaction must go on keeping them.
  */
 export const ContentStream = z.enum([
   "assistant_text",
   "reasoning_text",
+  /** Not emitted by any driver in this repository. See the note above. */
   "command_output",
+  /** Not emitted by any driver in this repository. See the note above. */
   "tool_output",
+  /** Not emitted by any driver in this repository. See the note above. */
   "unknown",
 ]);
 export type ContentStream = z.infer<typeof ContentStream>;
@@ -108,8 +121,21 @@ export const CommandExecutionDetail = z.object({
   command: z.string(),
   cwd: z.string().min(1).optional(),
   exitCode: z.number().int().optional(),
-  /** Truncated for transport; the full text streams as `command_output`
-   *  deltas. A client showing only this is showing a preview, not the output. */
+  /**
+   * THE FIRST 4,000 CHARACTERS AND AN ELLIPSIS, AND NOWHERE IS THERE MORE.
+   *
+   * This said the full text streamed as `command_output` deltas. It does not:
+   * nothing emits that stream (see `ContentStream`), so past 4,000 characters
+   * the output is not in the journal, not on this row, and not recoverable —
+   * it was only ever sent to the model. A client showing this is showing a
+   * preview, and so is everything else.
+   *
+   * NOT A VALID COMPARISON TARGET FOR JOURNAL COMPACTION. `compactJournal`
+   * drops deltas by proving the settled row is at least as long as what was
+   * streamed; a field capped at 4,000 would pass that test exactly when the
+   * output was too short to be worth compacting, and fail wherever it was
+   * long — with the failure looking like a check that works.
+   */
   outputPreview: z.string().optional(),
   durationMs: z.number().int().nonnegative().optional(),
 });
@@ -153,6 +179,13 @@ export const ToolCallDetail = z.object({
   name: z.string().min(1),
   server: z.string().min(1).optional(),
   input: z.unknown().optional(),
+  /**
+   * The same 4,000-character cap as `CommandExecutionDetail.outputPreview`,
+   * and for the same reason NOT A VALID COMPARISON TARGET FOR JOURNAL
+   * COMPACTION: `tool_output` is emitted by nothing, so past the cap the text
+   * is not in the journal either. `unknown` because the value's shape is the
+   * server's, not this contract's — the cap is applied to the string form.
+   */
   output: z.unknown().optional(),
   /** Provider-side call id, for matching a result back to its call. */
   toolUseId: z.string().min(1).optional(),
