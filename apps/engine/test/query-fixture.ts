@@ -74,6 +74,12 @@ export const MEASURED_TURNS = 30;
  *  worst case the byte table should be reporting. */
 export const ANSWER_CHARS = 4_000;
 
+/** Items on each measured turn — what `sessions_steps` lists and what its byte
+ *  number is the size OF. Exported so the assertion that the answer carries
+ *  them names the fixture's number rather than repeating a literal that would
+ *  quietly stop matching. */
+export const ITEMS_PER_TURN = 4;
+
 export const BIG_SESSION = "session_0";
 /**
  * THE CONTROL SESSION IS A 301ST, not one of the 300. It exists only to be the
@@ -176,7 +182,7 @@ export function seedMeasuredSession(store: EngineStore, sessionId: string, event
       `run_${index}`,
       `turn ${index}: the rail, the appearance rework, and what it concluded`,
       answerOf(`Conclusion ${index}, which mentions index.lock.`),
-      4,
+      ITEMS_PER_TURN,
     );
   }
   journal(store, sessionId, "run_journal", events);
