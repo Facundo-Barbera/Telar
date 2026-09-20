@@ -25,7 +25,12 @@ test("Agent is a pane under Runtime, wearing the rail entry's glyph", () => {
   // The same `SparklesIcon` components/session/agent-entry.tsx draws, so the nav
   // item and the thing it configures are one subject rather than two.
   expect(source).toContain('{ id: "agent", label: "Agent", icon: SparklesIcon, group: "Runtime" }');
-  expect(source).toContain('active === "agent" && <AgentSection />');
+  // The pane held ONE group until #543 put Scheduled work beside it — a schedule
+  // is an agent turn with a clock in front of it — so the claim is that the arm
+  // renders the Agent FIRST, not that it renders it alone.
+  expect(source).toContain('active === "agent" && (');
+  const pane = source.slice(source.indexOf('active === "agent"'));
+  expect(pane.indexOf("<AgentSection />")).toBeLessThan(pane.indexOf("<SchedulesSection />"));
 });
 
 test("the Agent's rows are off General, and General keeps the rest", () => {
