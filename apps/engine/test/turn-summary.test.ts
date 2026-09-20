@@ -7,13 +7,31 @@
  *      level when it ends, and backfilled for a store whose conversations
  *      predate this table.
  *   2. The routes are bounded, keyset-paged, and state what they left out.
- *   3. NONE OF IT FOLDS THE JOURNAL. The fixture holds a session of 60,000
- *      events beside 300 ordinary ones, and `outline` on the big one is asserted
- *      to cost what it costs on a small one — because if the answer were still
- *      being derived from events, that is the assertion that would fail.
+ *   3. NONE OF IT FOLDS THE JOURNAL. A session of 60,000 events beside one of a
+ *      handful, and `outline` on the big one is asserted to cost what it costs
+ *      on a small one — because if the answer were still being derived from
+ *      events, that is the assertion that would fail.
  *
- * The before/after numbers in the PR come from `bench:outline` below, which is
- * this file's fixture measured both ways.
+ * ── WHERE THE ACCEPTANCE NUMBERS LIVE, WHICH IS NOT HERE ───────────────────
+ * This header used to say the PR's before/after came from "`bench:outline`
+ * below". There was no such bench and no such script, here or anywhere: the
+ * sentence described an intention in the present tense, which is the one shape
+ * a reader cannot tell from a fact. It is worth keeping the correction visible
+ * rather than deleting the line, because the claim survived review.
+ *
+ * The measurements #516 asks for are now real and are in two places:
+ *
+ *   - `query-acceptance.test.ts` — the byte table and the latency comparison on
+ *     ONE engine of 300 sessions carrying a 60,000-event journal, against an
+ *     explicit fold control, with the instrument falsified before its result is
+ *     reported.
+ *   - `bench:outline` (`bench/outline.ts`) — the same two readers swept across
+ *     several journal sizes, for a person deciding whether to believe them.
+ *
+ * WHAT STAYS HERE is the projection's behaviour: that a row exists, that it is
+ * right, that the pages are bounded and keyset. The test below is the cheap
+ * regression guard for the fold; it is not the acceptance measurement, and it
+ * says so now rather than implying otherwise.
  */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
