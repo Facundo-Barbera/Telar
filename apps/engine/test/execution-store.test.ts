@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { ContentStream, ItemDetail } from "@telar/engine-client";
+import { ContentStream as ContentStreamSchema, ItemDetail as ItemDetailSchema } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
 import { ExecutionStore } from "../src/execution-store";
 
@@ -542,13 +544,20 @@ function journal(root: string, sessionId: string, store: ExecutionStore) {
   let id = 0;
   const at = Date.parse("2026-09-01T00:00:00Z");
   const runId = "run_one";
+  // The kind and the stream are PARAMETERS rather than constants because the
+  // reach test below has to write every item kind the contract has, and a
+  // fixture that can only write `assistant_message` can only ever confirm the
+  // one kind that was never in doubt. Both default to what the older tests
+  // here pass, which is why those say nothing about either.
   return {
-    start: (itemId: string) => store.append({ id: ++id, at, sessionId, runId, type: "item.started",
-      item: { id: itemId, runId, sessionId, status: "inProgress", detail: { type: "assistant_message", text: "" }, startedAt: at } } as never),
-    delta: (itemId: string, text: string) => store.append({ id: ++id, at, sessionId, runId, type: "content.delta",
-      itemId, stream: "assistant_text", text } as never),
-    complete: (itemId: string, text: string) => store.append({ id: ++id, at, sessionId, runId, type: "item.completed",
-      item: { id: itemId, runId, sessionId, status: "completed", detail: { type: "assistant_message", text }, startedAt: at, completedAt: at } } as never),
+    start: (itemId: string, detail: ItemDetail = { type: "assistant_message", text: "" }) =>
+      store.append({ id: ++id, at, sessionId, runId, type: "item.started",
+        item: { id: itemId, runId, sessionId, status: "inProgress", detail, startedAt: at } } as never),
+    delta: (itemId: string, text: string, stream: ContentStream = "assistant_text") =>
+      store.append({ id: ++id, at, sessionId, runId, type: "content.delta", itemId, stream, text } as never),
+    complete: (itemId: string, text: string, detail: ItemDetail = { type: "assistant_message", text }) =>
+      store.append({ id: ++id, at, sessionId, runId, type: "item.completed",
+        item: { id: itemId, runId, sessionId, status: "completed", detail, startedAt: at, completedAt: at } } as never),
     endTurn: () => store.append({ id: ++id, at, sessionId, runId, type: "turn.completed", resultText: "done" } as never),
   };
 }
@@ -621,86 +630,124 @@ test("an unfinished turn is left entirely alone, and swept once it ends", () => 
 });
 
 /**
- * THE SWEEP IS NOT ON THE OPEN PATH, and that is measured rather than tidy.
+ * HOW FAR COMPACTION REACHES, PER KIND, AND WHY IT STOPS WHERE IT DOES — #686.
  *
- * Running it in the constructor cost 54 SECONDS on the owner's gigabyte — a
- * one-time cost, but one-time on the launch right after an update, and a longer
- * stall than the VACUUM that is deliberately kept behind a button. So the open
- * returns and the sweep follows it.
+ * The guard compares an item's summed deltas against `detail.text` on its own
+ * `item.completed`. Three of the contract's eighteen detail kinds have a
+ * top-level `text`; the other fifteen keep their payload under a named field
+ * or do not keep it at all. So the reach is not a coverage gap somebody forgot
+ * to close — it is the guard correctly reporting that for those fifteen the
+ * completed row DOES NOT HOLD what was streamed, and dropping their deltas
+ * would be lossy rather than lossless. #686 opened as "compaction reaches 2 of
+ * 18 kinds"; the finding was that widening it is the bug, not the fix.
+ *
+ * THE FIXTURE IS DELIBERATELY GENEROUS. Every kind's completed detail carries
+ * the WHOLE streamed text in the most text-bearing field that kind has — the
+ * command's `outputPreview`, the tool call's `output`, the diff, the error
+ * message. They are kept anyway, which is the point: it is the shape the guard
+ * reads, not the presence of the characters somewhere on the row. In real
+ * traffic those fields are capped at 4,000 characters (see
+ * `CommandExecutionDetail.outputPreview`), so pointing the comparison at them
+ * would pass only where compaction was not worth doing.
+ *
+ * ASSERTED IN BOTH DIRECTIONS, WHICH IS WHAT MAKES IT A TEST. Only asserting
+ * "9 dropped" would pass just as well on a fixture that quietly stopped writing
+ * the other fifteen kinds' deltas. So the count is asserted BEFORE the sweep
+ * (every kind really wrote three), the sweep's own return is asserted, and the
+ * survivors are asserted per kind afterwards.
+ *
+ * THREE REACHABLE, TWO EMITTED. `user_message` is reachable and never streamed
+ * into — it is typed, not generated — so the issue's "2 of 18" is the emission
+ * count and this is the structural one. Both are worth having: the first can
+ * change without anyone touching this store, and the trip-wire below is what
+ * notices.
  */
-test("opening the store does not sweep; the sweep follows and says what it took", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-open-")); homes.push(root);
+const DELTAS_PER_KIND = 3;
+/** The detail kinds whose completed row keeps the streamed text where the
+ *  guard reads it — `$.item.detail.text`, no named field in between. */
+const REACHABLE: ItemDetail["type"][] = ["user_message", "assistant_message", "reasoning"];
+/** One row per contract kind: the stream that kind's deltas would arrive on if
+ *  anything emitted them, and the most generous completed detail it can hold. */
+const REACH: { kind: ItemDetail["type"]; stream: ContentStream; detail: (text: string) => ItemDetail }[] = [
+  { kind: "user_message", stream: "assistant_text", detail: (text) => ({ type: "user_message", text }) },
+  { kind: "notification", stream: "assistant_text", detail: (text) => ({ type: "notification", notification: { kind: "peer_message", summary: text, fetch: { sessionId: "session_one", runId: "run_one" }, body: text } }) },
+  { kind: "assistant_message", stream: "assistant_text", detail: (text) => ({ type: "assistant_message", text }) },
+  { kind: "reasoning", stream: "reasoning_text", detail: (text) => ({ type: "reasoning", text }) },
+  { kind: "plan", stream: "assistant_text", detail: (text) => ({ type: "plan", plan: { steps: [{ step: text, status: "completed" }] } }) },
+  { kind: "command_execution", stream: "command_output", detail: (text) => ({ type: "command_execution", command: { command: "bun test", outputPreview: text } }) },
+  { kind: "file_change", stream: "tool_output", detail: (text) => ({ type: "file_change", change: { path: "a.ts", kind: "edit", unifiedDiff: text } }) },
+  // Nowhere to put it at all: `FileReadDetail` is a path and a line range.
+  { kind: "file_read", stream: "tool_output", detail: () => ({ type: "file_read", read: { path: "a.ts" } }) },
+  { kind: "mcp_tool_call", stream: "tool_output", detail: (text) => ({ type: "mcp_tool_call", call: { name: "mcp__linear__search", output: text } }) },
+  { kind: "dynamic_tool_call", stream: "tool_output", detail: (text) => ({ type: "dynamic_tool_call", call: { name: "WebFetch", output: text } }) },
+  { kind: "web_search", stream: "tool_output", detail: (text) => ({ type: "web_search", query: text }) },
+  { kind: "browser_action", stream: "tool_output", detail: (text) => ({ type: "browser_action", call: { name: "browser_click", output: text } }) },
+  { kind: "task", stream: "assistant_text", detail: () => ({ type: "task", taskId: "task_one" }) },
+  { kind: "context_compaction", stream: "assistant_text", detail: (text) => ({ type: "context_compaction", reason: text }) },
+  { kind: "provider_wait", stream: "assistant_text", detail: () => ({ type: "provider_wait", wait: { kind: "api_retry", attempt: 1 } }) },
+  { kind: "conversation_import", stream: "assistant_text", detail: (text) => ({ type: "conversation_import", import: { provider: "claude", sourceSessionId: "session_src", sessionId: "session_one", firstPrompt: text, records: 1, cut: "whole", rows: 1, rowCut: "whole" } }) },
+  { kind: "error", stream: "assistant_text", detail: (text) => ({ type: "error", error: { message: text } }) },
+  { kind: "unknown", stream: "unknown", detail: (text) => ({ type: "unknown", label: text }) },
+];
+
+test("compaction reaches exactly the kinds whose settled row keeps the streamed text", () => {
+  // EXHAUSTIVE OR IT PROVES NOTHING. A nineteenth detail kind that nobody
+  // thought about compaction for fails here rather than being silently exempt.
+  expect(REACH.map((row) => row.kind)).toEqual(
+    ItemDetailSchema.options.map((option) => option.shape.type.value as ItemDetail["type"]),
+  );
+  expect(REACH).toHaveLength(18);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-reach-")); homes.push(root);
   fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
-  let store = new ExecutionStore(root);
+  const store = new ExecutionStore(root);
   try {
     const write = journal(root, "session_one", store);
-    for (let turn = 0; turn < 40; turn += 1) {
-      const item = `item_${turn}`;
-      write.start(item);
-      // Enough text that the freed pages are a file-size difference and not a
-      // rounding error; the point of `reclaim` is that the file itself shrinks.
-      for (let chunk = 0; chunk < 40; chunk += 1) write.delta(item, "x".repeat(512));
-      write.complete(item, "x".repeat(512 * 40));
+    const streamed = "one two three";
+    for (const { kind, stream, detail } of REACH) {
+      const itemId = `item_${kind}`;
+      write.start(itemId, detail(""));
+      // Three deltas summing to exactly the completed text, so the guard's
+      // `settled.chars >= streamed.chars` holds wherever it can read both.
+      write.delta(itemId, "one ", stream);
+      write.delta(itemId, "two ", stream);
+      write.delta(itemId, "three", stream);
+      write.complete(itemId, streamed, detail(streamed));
     }
     write.endTurn();
+
+    const deltasPerItem = (): Map<string, number> => {
+      const counted = new Map<string, number>();
+      for (const event of store.events("session_one")) {
+        if (event.type !== "content.delta") continue;
+        counted.set(event.itemId, (counted.get(event.itemId) ?? 0) + 1);
+      }
+      return counted;
+    };
+
+    // BEFORE: the fixture really wrote three for every kind. Without this the
+    // "kept: 3" below would be satisfied by a fixture that wrote three and by
+    // one that stopped emitting deltas for a kind entirely.
+    const before = deltasPerItem();
+    expect(REACH.map(({ kind }) => before.get(`item_${kind}`) ?? 0)).toEqual(REACH.map(() => DELTAS_PER_KIND));
+
+    // The sweep's own accounting: 3 reachable kinds × 3 deltas, and an
+    // `item.started` dropped for each of the 18 items that completed.
+    expect(store.compactJournal()).toEqual({ deltas: REACHABLE.length * DELTAS_PER_KIND, starts: REACH.length, sessions: 1 });
+
+    // AFTER, per kind and in both directions.
+    const after = deltasPerItem();
+    expect(REACH.map(({ kind }) => ({
+      kind,
+      kept: after.get(`item_${kind}`) ?? 0,
+      dropped: (before.get(`item_${kind}`) ?? 0) - (after.get(`item_${kind}`) ?? 0),
+    }))).toEqual(REACH.map(({ kind }) => REACHABLE.includes(kind)
+      ? { kind, kept: 0, dropped: DELTAS_PER_KIND }
+      : { kind, kept: DELTAS_PER_KIND, dropped: 0 }));
+
+    // And the deltas that are the only record of their text are still there.
+    expect(store.events("session_one").filter((event) => event.type === "content.delta")).toHaveLength(
+      (REACH.length - REACHABLE.length) * DELTAS_PER_KIND,
+    );
   } finally { store.close(); }
-
-  const told: { deltas: number; starts: number; sessions: number }[] = [];
-  store = new ExecutionStore(root, { onJournalCompacted: (swept) => told.push(swept) });
-  try {
-    // The open itself took nothing away — a person waiting on the daemon is
-    // not waiting on housekeeping.
-    expect(store.housekeeping.journal).toBeUndefined();
-    expect(store.events("session_one").filter((event) => event.type === "content.delta")).toHaveLength(1600);
-
-    // The sweep the timer would run, without waiting five seconds for it.
-    const swept = store.compactJournal();
-    expect(swept.deltas).toBe(1600);
-    expect(swept.starts).toBe(40);
-
-    // AND THE FILE IS EXACTLY AS BIG AS IT WAS. A DELETE moves pages to the
-    // freelist and returns nothing to the filesystem — the whole reason the
-    // button below exists. This is #646's own fact 1, as a test.
-    const file = path.join(root, "execution.sqlite");
-    const afterSweep = fs.statSync(file).size;
-    const reclaimed = store.reclaim();
-    expect(fs.statSync(file).size).toBeLessThan(afterSweep);
-    expect(reclaimed.after).toBeLessThan(reclaimed.before);
-    // Nothing left to compact, so pressing it again moves nothing — which is
-    // what the before/after in Settings is there to show a person.
-    expect(reclaimed.deltas).toBe(0);
-    expect(store.events("session_one").filter((event) => event.type === "item.completed")).toHaveLength(40);
-  } finally { store.close(); }
-
-  // AND THE DAEMON IS TOLD WHEN THE ROWS ACTUALLY GO, not at open: the line is
-  // a callback now, because there is no longer a moment during startup when
-  // the answer is known.
-  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-told-")); homes.push(fresh);
-  fs.mkdirSync(path.join(fresh, "sessions"), { recursive: true });
-  const seen: { deltas: number; starts: number; sessions: number }[] = [];
-  /**
-   * THE DELAY IS INJECTED RATHER THAN SLEPT THROUGH (#706).
-   *
-   * This used to sleep 5,400 ms and then assert the callback had fired — a
-   * four-hundred-millisecond margin against the real five-second timer, on a
-   * machine shared with the rest of the suite. That is not an assertion about
-   * this store; it is an assertion that nothing else was busy. It also could
-   * not pass at all under a bare root-level `bun test`, which gets bun's 5 s
-   * default rather than the suite's `--timeout 20000`.
-   *
-   * Now the sweep is told to run immediately and the test waits for the
-   * CALLBACK. What is asserted is what the sweep removed — the same answer
-   * idle or loaded — and the whole test costs milliseconds.
-   */
-  const announced = new ExecutionStore(fresh, { onJournalCompacted: (swept) => seen.push(swept), compactAfterOpenMs: 1 });
-  try {
-    const write = journal(fresh, "session_one", announced);
-    write.start("item_one");
-    write.delta("item_one", "hello");
-    write.complete("item_one", "hello");
-    write.endTurn();
-    const deadline = Date.now() + 4_000;
-    while (seen.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(seen).toEqual([{ deltas: 1, starts: 1, sessions: 1 }]);
-  } finally { announced.close(); }
 });
