@@ -5,7 +5,10 @@ is executed, because one of these steps destroys state that cannot be recreated
 without a new token from GitHub, and a half-removal is worse than either end
 state.
 
-## What is left on the Mac once the PRs merge
+## What is left on the Mac
+
+**#754 and #756 are merged** (2026-09-20, 04:51Z and 04:53Z), so this is the
+state of `main` rather than a plan.
 
 **Nothing.** Every workflow has been repointed:
 
@@ -68,10 +71,12 @@ Service definition:
 
 ## Preconditions
 
-1. **Every workflow repointed off the runner.** ✅ Done — PR #754 (`verify.yml`)
-   and PR #756 (the other five). No workflow targets `telar-nightly` any more.
-   **Both must be MERGED, not merely green**, or `main` still asks for a runner
-   that is about to disappear.
+1. **Every workflow repointed off the runner, and MERGED.** ✅ Done — #754
+   (`verify.yml`) merged 04:51Z, #756 (the other five) merged 04:53Z. Verified
+   against `main` itself rather than against the PRs: `main`'s `nightly-ios.yml`
+   reads `runs-on: macos-latest`, and no workflow on `main` targets
+   `telar-nightly`. Merged matters, not green — a green PR that has not landed
+   leaves `main` still asking for the runner.
 
 2. **`nightly-ios-tests.yml` has an answer.** ✅ Done — parked, see #755
    following #675. Disabled rather than deleted; it is the one job that cannot
