@@ -109,12 +109,27 @@ function testPreloads(source) {
  */
 function bunTestTimeouts(scripts) {
   const found = [];
+  for (const { script, command } of bunTestScripts(scripts)) {
+    for (const match of command.matchAll(/--timeout[= ]+([0-9_]+)/g)) {
+      found.push({ script, ms: Number(match[1].replace(/_/g, "")) });
+    }
+  }
+  return found;
+}
+
+/**
+ * The scripts that actually invoke bun's test runner — the same reading
+ * `bunTestTimeouts` does, minus the flag, so "carries a rival number" and
+ * "carries no number at all" are answered off one notion of what a test script
+ * is. A script that delegates to another (`bun run test:desktop:unit`) is not
+ * one of these: the ceiling belongs on the script that runs bun test.
+ */
+function bunTestScripts(scripts) {
+  const found = [];
   for (const [name, command] of Object.entries(scripts ?? {})) {
     if (name.startsWith("//") || typeof command !== "string") continue;
     if (!/\bbun test\b/.test(command)) continue;
-    for (const match of command.matchAll(/--timeout[= ]+([0-9_]+)/g)) {
-      found.push({ script: name, ms: Number(match[1].replace(/_/g, "")) });
-    }
+    found.push({ script: name, command });
   }
   return found;
 }
@@ -810,12 +825,21 @@ const CHECKS = [
    *     workspace's list is a copy, and a copy is a thing that falls out of step.
    *     The suite run from that directory silently drops to bun's 5 s default.
    *
-   *   - A `--timeout` FLAG COMES BACK onto a test script carrying a DIFFERENT
-   *     number. The flag still works — the preload reads it back off the
-   *     operating system and stands aside for it — so the danger is not that it
-   *     does nothing, but that one suite runs at a ceiling nobody reproduces by
-   *     running the same test any other way, with the difference invisible in the
-   *     failure.
+   *   - A `--timeout` FLAG ON A TEST SCRIPT CARRIES A DIFFERENT NUMBER. The flag
+   *     works — the preload reads it back off the operating system and stands
+   *     aside for it — so the danger is not that it does nothing, but that one
+   *     suite runs at a ceiling nobody reproduces by running the same test any
+   *     other way, with the difference invisible in the failure.
+   *
+   *   - A `--timeout` FLAG LEAVES A TEST SCRIPT ALTOGETHER, which is #792 and is
+   *     the reason the second rule is no longer enough. #740 removed the flag
+   *     from every workspace `test` script believing the preload had replaced
+   *     it. Measured afterwards on bun 1.3.11: a preload's `setDefaultTimeout`
+   *     reaches the FIRST test file of a run and no other, so the 182-file
+   *     engine suite ran at bun's 5 s default for 181 of them while
+   *     `__telarTestCeilingMs` reported 20 000 in every one. The preload is not
+   *     a substitute for the flag on a multi-file suite; it is the cover for the
+   *     single-file run a flag on a script cannot reach.
    *
    * THE THIRD CASE #740 ASKED THIS TO NOTICE: packages/env and
    * packages/engine-client set no ceiling at all, which is consistent rather than
@@ -837,7 +861,7 @@ const CHECKS = [
    */
   {
     name: "test-ceiling-is-registered",
-    protects: "#740: every bunfig that runs tests preloads the one ceiling, and no script sets a rival number",
+    protects: "#740/#792: every bunfig that runs tests preloads the one ceiling, and every bun test script carries it — no rival number, and none missing",
     async run() {
       const failures = [];
       const ceilingSource = await read(CEILING_PRELOAD).catch(() => null);
@@ -892,6 +916,15 @@ const CHECKS = [
           failures.push(`${manifest} is not valid JSON, so this check cannot read its scripts.`);
           continue;
         }
+        for (const { script, command } of bunTestScripts(scripts)) {
+          if (/--timeout[= ]+[0-9_]+/.test(command)) continue;
+          failures.push(
+            `${manifest}: \`${script}\` runs \`bun test\` with no --timeout, so every file after the FIRST one it ` +
+              `loads is on bun's 5000ms default (#792). The preload cannot cover this: bun applies a preload's ` +
+              `setDefaultTimeout to the first file only, which is how #740 left the 182-file engine suite running at ` +
+              `5 s while reporting ${ceilingMs}. Add \`--timeout ${ceilingMs}\`.`,
+          );
+        }
         for (const { script, ms } of bunTestTimeouts(scripts)) {
           if (ms === ceilingMs) continue;
           failures.push(
@@ -916,7 +949,7 @@ const CHECKS = [
    */
   {
     name: "test-ceiling-scan-self-test",
-    protects: "#740: the script scan still sees a flag through either desktop shape, and ignores prose about one",
+    protects: "#740/#792: the script scan sees a flag through either desktop shape, sees a bun test run without one, and ignores prose about both",
     async run() {
       const samples = [
         { expect: [20_000], why: "the glob shape (#763)", scripts: { t: "bun test --timeout 20000 ./*.test.js" } },
@@ -936,6 +969,31 @@ const CHECKS = [
         if (JSON.stringify(got) === JSON.stringify(wanted)) continue;
         failures.push(
           `the scan read ${JSON.stringify(got)} where ${JSON.stringify(wanted)} was right (${why}): ` +
+            `${JSON.stringify(Object.values(scripts)[0])}.`,
+        );
+      }
+
+      /**
+       * AND THE SAME SAMPLES AGAINST "RUNS bun test AT ALL" — #792's rule needs
+       * the shapes the flag rule ignores. The two that matter are the ones a
+       * `--timeout`-less scan must NOT claim: a script that delegates, and one
+       * that runs a different runner entirely. Getting those wrong would order
+       * a flag onto a command that has nowhere to put it.
+       */
+      const runners = [
+        { expect: ["t"], why: "a bare run is still a bun test run", scripts: { t: "bun test" } },
+        { expect: ["t"], why: "an env prefix does not hide it", scripts: { t: "NODE_ENV=test bun test" } },
+        { expect: ["t"], why: "the flag present is still a bun test run", scripts: { t: "bun test --timeout 20000" } },
+        { expect: [], why: "delegation to another script", scripts: { t: "bun run test:desktop:unit" } },
+        { expect: [], why: "an electron suite", scripts: { t: "env -u ELECTRON_RUN_AS_NODE electron ./x.electron-test.js" } },
+        { expect: [], why: "node's runner rather than bun's", scripts: { t: "node --test workers/push-relay/worker.test.mjs" } },
+        { expect: [], why: "prose in a // comment key", scripts: { "//t": "--timeout IS THE ONLY WAY, bun test aside" } },
+      ];
+      for (const { expect: wanted, why, scripts } of runners) {
+        const got = bunTestScripts(scripts).map((hit) => hit.script);
+        if (JSON.stringify(got) === JSON.stringify(wanted)) continue;
+        failures.push(
+          `the runner scan read ${JSON.stringify(got)} where ${JSON.stringify(wanted)} was right (${why}): ` +
             `${JSON.stringify(Object.values(scripts)[0])}.`,
         );
       }
