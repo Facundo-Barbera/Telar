@@ -15,7 +15,9 @@
  * the Claude SDK is a fake and Codex's app-server is a fake that records the
  * `thread/start` config it was given.
  */
-import { afterEach, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import {
   TELAR_MCP_SERVER,
   canonicalToolName,
@@ -35,6 +37,34 @@ import { allowCliInThisFile } from "./allow-cli";
  *  So this file opts past issue #532’s no-spawn gate, for its own scope only.
  *  See ./allow-cli.ts. */
 allowCliInThisFile();
+
+const FAKE_CLAUDE = path.join(import.meta.dir, "fixtures", "fake-claude");
+
+/**
+ * THE RESOLUTION IS PINNED, exactly as `plugin-approval-dispatch.test.ts` pins
+ * `CODEX_BIN` — and for the mirror-image reason (issue #752).
+ *
+ * That file pins so the driver cannot find the REAL `codex` and spawn it. This
+ * one pins so the driver cannot fail to find a `claude` at all: the path above
+ * is resolved on the way to the fake SDK and never executed, but `requireCli`
+ * throws when resolution comes up empty, and eight tests here went down with it.
+ *
+ * Unpinned, `cli-resolution.ts` searches PATH, then the login shell's and
+ * `launchctl`'s PATH, then three well-known directories — so a developer Mac
+ * essentially always finds something and a clean runner finds nothing. The
+ * suite therefore passed here and failed on `ubuntu-latest`, which is to say it
+ * was reporting a fact about the machine rather than about the code.
+ */
+let previousClaudeExecutable: string | undefined;
+beforeAll(() => {
+  if (!fs.existsSync(FAKE_CLAUDE)) throw new Error("the fake claude fixture is missing; refusing to run rather than fall back to whatever this machine has installed");
+  previousClaudeExecutable = process.env.CLAUDE_CODE_EXECUTABLE;
+  process.env.CLAUDE_CODE_EXECUTABLE = FAKE_CLAUDE;
+});
+afterAll(() => {
+  if (previousClaudeExecutable === undefined) delete process.env.CLAUDE_CODE_EXECUTABLE;
+  else process.env.CLAUDE_CODE_EXECUTABLE = previousClaudeExecutable;
+});
 
 const sockets: PluginToolSocket[] = [];
 const telarSockets: TelarToolSocket[] = [];

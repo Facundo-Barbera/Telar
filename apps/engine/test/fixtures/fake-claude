@@ -1,0 +1,16 @@
+#!/bin/sh
+# A CLAUDE CODE CLI THAT EXISTS AND NOTHING MORE (issue #752).
+#
+# `plugin-driver-seam.test.ts` drives a FAKE Claude SDK in-process and never
+# spawns a provider — but the driver still RESOLVES a binary path on its way
+# there, and `requireCli` throws when resolution finds nothing. Before this
+# fixture that resolution fell through to whatever the host happened to have,
+# so the suite passed on a machine with Claude Code installed and failed on a
+# clean one. It is pinned through CLAUDE_CODE_EXECUTABLE so the test asserts
+# what the driver sends rather than what the machine owns.
+#
+# EXITING NON-ZERO IS THE POINT. Nothing should ever execute this file; if a
+# change makes the seam spawn its provider after all, this says so loudly
+# instead of quietly succeeding and leaving a fake in a real provider's place.
+echo "fake-claude: this fixture exists to be RESOLVED, never executed (see issue #752)" >&2
+exit 64

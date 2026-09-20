@@ -1,0 +1,69 @@
+name: Verify 752
+
+# TEMPORARY — deleted before this branch merges.
+#
+# #752 cannot be verified on a developer Mac: `cli-resolution.ts` searches PATH,
+# then the login shell's and launchctl's PATH, then three well-known directories,
+# so a Mac essentially always resolves a real Claude Code CLI and the suite
+# passes there whether or not the fix works. A green run on that machine proves
+# nothing. This runs the affected suites where the failure is reliable.
+#
+# It also proves the macOS leg that has to exist after Verify moves: the `ditto`
+# swap-helper block is now skipped on non-darwin, and `Verify` is the only thing
+# in this repository that runs `test:desktop` at all — the nightly and release
+# workflows build and sign but run no tests. Without a macOS leg that block would
+# stop executing rather than start failing.
+
+on:
+  push:
+    branches: ["telar/752-hermetic-cli-resolution"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: "ubuntu: ${{ matrix.suite }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [engine, desktop, engine-client, env, web, workers]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+      - name: Test ${{ matrix.suite }}
+        run: bun run test:${{ matrix.suite }}
+
+  macos:
+    name: "macos-latest (hosted): desktop"
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+      # The point of this leg: prove the ditto block RUNS here rather than
+      # being skipped. A pass with it skipped everywhere is the failure mode.
+      - name: Test desktop, and prove the macOS-only block actually ran
+        run: |
+          set -euo pipefail
+          bun run test:desktop 2>&1 | tee /tmp/desktop.log
+          if ! grep -q "the swap helper, run for real against fake bundles" /tmp/desktop.log; then
+            echo "::error::the macOS-only swap-helper block did not run on macOS — it is being skipped everywhere"
+            exit 1
+          fi
+          echo "confirmed: the swap-helper block ran on macOS"
