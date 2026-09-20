@@ -1315,6 +1315,66 @@ export type RetentionPolicy = z.infer<typeof RetentionPolicy>;
 export const DEFAULT_RETENTION_POLICY: RetentionPolicy = { idleAfterDays: null, exportTo: null };
 
 /**
+ * A STANDING INSTRUCTION TO A SESSION — issue #543.
+ *
+ * ══ THE ZONE IS AN IANA NAME AND IT IS THE ROW'S, NOT THE MACHINE'S ══
+ *
+ * Never an offset. An offset is only true until the next DST transition, and a
+ * row is durable across many of them; and never the reader's zone at render
+ * time either, because a row made in Madrid keeps firing at 09:00 Madrid from
+ * Tokyo. A surface that showed it at the reader's local time would make a
+ * correct row look wrong, so `zone` travels with the row to be rendered in.
+ *
+ * ══ `lastRunStatus: "skipped"` IS THE FIELD THIS FEATURE FAILS WITHOUT ══
+ *
+ * The engine is an Electron child and Telar quits with its last window, so a
+ * scheduled task CANNOT fire while the app is closed. That is the boundary, not
+ * a bug — and the only way to ship it wrong is to ship it silently. `skipped`,
+ * with `lastSkippedAt` naming the instant that was missed, is what lets a
+ * surface say "09:00 did not happen, Telar was not running, and it was re-aimed
+ * rather than run late" instead of showing a row that simply never ran.
+ *
+ * NO `running` STATE. A run in flight is a turn, and the turn is already the
+ * thing every liveness surface reads; a second copy of that fact on this row
+ * would be one more thing to leave stale when the engine dies mid-turn.
+ */
+export const ScheduleRule = z.union([
+  z.object({ kind: z.literal("interval"), everyMs: z.number().int().min(60_000) }),
+  z.object({
+    kind: z.literal("fixed"),
+    hour: z.number().int().min(0).max(23),
+    minute: z.number().int().min(0).max(59),
+    /** 0 is Sunday, matching `Date.prototype.getDay`. EMPTY MEANS EVERY DAY —
+     *  the common case, said by omission rather than by listing seven. */
+    weekdays: z.array(z.number().int().min(0).max(6)).default([]),
+  }),
+]);
+export type ScheduleRule = z.infer<typeof ScheduleRule>;
+
+export const Schedule = z.object({
+  id: Id,
+  /** The session whose composer the prompt is submitted to. */
+  sessionId: Id,
+  prompt: z.string(),
+  rule: ScheduleRule,
+  /** An IANA zone name. See the header — never an offset. */
+  zone: z.string(),
+  enabled: z.boolean(),
+  createdAt: Timestamp,
+  /** Always strictly in the future after a sweep touches the row: a sweep
+   *  advances it past `now` in whole intervals rather than by one, which is
+   *  what keeps a three-day gap one turn instead of seventy-two. */
+  nextRunAt: Timestamp,
+  lastRunAt: Timestamp.optional(),
+  lastRunId: Id.optional(),
+  lastRunStatus: z.enum(["fired", "skipped"]).optional(),
+  /** The instant that was missed, present only alongside `skipped`. A surface
+   *  renders it as a sentence; without the number there is nothing to name. */
+  lastSkippedAt: Timestamp.optional(),
+});
+export type Schedule = z.infer<typeof Schedule>;
+
+/**
  * THE WINDOWS THE STORAGE PANE OFFERS, and it is a list rather than a slider
  * because the number that matters is the one beside it: a person choosing a
  * window is choosing between four counts of their own sessions, not between
@@ -2139,7 +2199,23 @@ export const Turn = z.object({
    *     nothing about them is a human decision.
    * Exactly one of `wakeReason` / `sender` is present on such a turn.
    */
-  origin: z.enum(["user", "provider", "session"]).optional(),
+  /**
+   * ── AND `schedule` IS THE FOURTH — issue #543 ──
+   *
+   * A turn a CLOCK started: a schedule row came due and submitted its prompt.
+   * `scheduleOrigin` names which row and the instant it was aimed at, so a
+   * transcript can say "this ran because you asked for it every weekday at
+   * 09:00" rather than presenting it as something a person typed.
+   *
+   * A FOURTH VALUE RATHER THAN A BORROWED THIRD. A schedule is not a session,
+   * so `wakeReason` — whose `sessionId` is required and means "the session that
+   * did the thing" — cannot carry it, and a fake `sender` would put every
+   * scheduled turn into the "who sent this" surfaces as a peer message. The
+   * exactly-one invariant in `submitTurn` widens to three rather than being
+   * told a lie.
+   */
+  origin: z.enum(["user", "provider", "session", "schedule"]).optional(),
+  scheduleOrigin: z.object({ scheduleId: Id, dueAt: Timestamp }).optional(),
   /**
    * WHO SENT A DIRECT `origin: "session"` MESSAGE. Stamped by the engine from
    * proof the worker supplies (the claim token of the turn doing the sending),
