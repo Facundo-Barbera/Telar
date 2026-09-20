@@ -24,7 +24,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { ProviderInstance, ProviderInstanceEnvVar } from "@telar/engine-client";
-import { compactionEdit, ProviderInstanceCard, type InstancePatch } from "./provider-instance-card";
+import { compactionEdit, ProviderInstanceCard, type InheritanceNotice, type InstancePatch } from "./provider-instance-card";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -39,7 +39,7 @@ function instanceWith(driver: ProviderInstance["driver"], env: ProviderInstanceE
   return { id: driver, driver, enabled: true, env, createdAt: 1, updatedAt: 1 };
 }
 
-async function mount(instance: ProviderInstance) {
+async function mount(instance: ProviderInstance, inheritance?: InheritanceNotice) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -52,6 +52,7 @@ async function mount(instance: ProviderInstance) {
         expanded
         onExpandedChange={() => undefined}
         onPatch={(patch) => patches.push(patch)}
+        {...(inheritance ? { inheritance } : {})}
       />,
     );
     await settle();
@@ -59,6 +60,10 @@ async function mount(instance: ProviderInstance) {
   return {
     host,
     patches,
+    button: (label: string) =>
+      [...host.querySelectorAll("button")].find((element) => element.textContent?.trim().startsWith(label)) as
+        | HTMLButtonElement
+        | undefined,
     radio: (label: string) =>
       [...host.querySelectorAll("[role=radio]")].find((button) => button.textContent?.trim() === label) as HTMLButtonElement | undefined,
     field: () => host.querySelector("[aria-label='Compact after how many tokens']") as HTMLInputElement | null,
@@ -153,6 +158,57 @@ describe("the compaction control", () => {
     expect(view.host.textContent).toContain("compacts earlier — never later");
     // The conversion consults no model, so the card must not imply one.
     expect(view.host.textContent).not.toContain("% of this model");
+    view.unmount();
+  });
+});
+
+/**
+ * WHAT CONFIGURING A LOGIN COST IT, on the card that caused it (#594).
+ *
+ * The rule is the engine's and is pinned there — this is the half a person
+ * meets. Two claims: that the notice names VARIABLES and never a value (three
+ * of the names it can carry are credentials), and that it appears only when the
+ * engine sent one, because on a Dock-launched Mac it never does.
+ */
+describe("the inheritance notice", () => {
+  const notice = (over: Partial<InheritanceNotice> = {}): InheritanceNotice => ({
+    names: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+    onCarryOver: () => undefined,
+    onDismiss: () => undefined,
+    ...over,
+  });
+
+  test("it names the variables, and shows no value for any of them", async () => {
+    const view = await mount(instanceWith("claude", [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }]), notice());
+    expect(view.host.textContent).toContain("stopped inheriting");
+    expect(view.host.textContent).toContain("ANTHROPIC_BASE_URL");
+    expect(view.host.textContent).toContain("ANTHROPIC_AUTH_TOKEN");
+    // There is nowhere for a value to have come from — the notice is handed
+    // names — and this is the assertion that keeps it that way if somebody
+    // later decides it would be helpful to show one.
+    expect(view.host.textContent).not.toContain("sk-ant");
+    expect(view.host.textContent).not.toContain("127.0.0.1");
+    view.unmount();
+  });
+
+  test("nothing is said when the engine said nothing", async () => {
+    const view = await mount(instanceWith("claude", [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }]));
+    // The ordinary case, and the only one on a Mac launched from the Dock.
+    expect(view.host.textContent).not.toContain("stopped inheriting");
+    view.unmount();
+  });
+
+  test("keeping them and dismissing are both offered", async () => {
+    let kept = 0;
+    let dismissed = 0;
+    const view = await mount(
+      instanceWith("claude", [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }]),
+      notice({ onCarryOver: () => (kept += 1), onDismiss: () => (dismissed += 1) }),
+    );
+    await press(view.button("Keep them for this login")!);
+    expect(kept).toBe(1);
+    await press([...view.host.querySelectorAll("button")].find((element) => element.getAttribute("aria-label") === "Dismiss")!);
+    expect(dismissed).toBe(1);
     view.unmount();
   });
 });

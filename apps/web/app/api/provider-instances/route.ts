@@ -44,6 +44,10 @@ export async function PUT(request: Request) {
       ...(body.binaryPath === undefined ? {} : { binaryPath: body.binaryPath as string | null }),
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
       ...(body.env === undefined ? {} : { env: body.env as never }),
+      // NAMES OF INHERITED VARIABLES TO KEEP (#594). Forwarded as given and
+      // validated by the engine, which is the only process that can say whether
+      // it is carrying them — and the only one that ever sees their values.
+      ...(body.carryOverInherited === undefined ? {} : { carryOverInherited: body.carryOverInherited as never }),
     });
     return Response.json(result);
   } catch (error) {

@@ -196,7 +196,7 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
-import { providerProcessEnv } from "./provider-instances";
+import { inheritedOwnedEnv, providerEnvIsCredential, providerOwnsEnv, providerProcessEnv, stoppedInheriting } from "./provider-instances";
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
 import type { ClaudeConversation, ForkCut } from "./claude-fork";
 import { describeImport } from "./claude-transcript";
@@ -2315,6 +2315,9 @@ export class EngineStore {
    */
   private readonly volumes: VolumeDeps;
   private readonly gh: GhRunner;
+  /** What a provider process would inherit from this engine — read to say what
+   *  a newly-configured login is about to stop inheriting (#594). */
+  private readonly ambientEnv: Record<string, string | undefined>;
   /** In memory and never persisted: it is a cache of somebody else's state, and
    *  a stale one surviving a restart would be worse than a slow first read. */
   private readonly githubCache = new Map<string, GitHubSnapshot>();
@@ -3672,6 +3675,13 @@ export class EngineStore {
    * `updateSession` uses — a settings form that could not distinguish "no accent
    * colour" from "did not touch the accent colour" would erase one edit with
    * the next.
+   *
+   * IT ALSO REPORTS WHAT THE SAVE COST, which is #594. The first variable on an
+   * instance makes it CONFIGURED, and a configured instance stops inheriting the
+   * fourteen variables its driver owns — correctly, but until now in silence,
+   * and since #593 that first variable can be written by a control about
+   * compaction. `stoppedInheriting` comes back with the answer so the change
+   * cannot be invisible; `carryOverInherited` is how a caller keeps them.
    */
   saveProviderInstance(input: {
     id: string;
@@ -3682,7 +3692,17 @@ export class EngineStore {
     configDir?: string | null;
     binaryPath?: string | null;
     env?: unknown;
-  }): ProviderInstance {
+    /**
+     * NAMES OF INHERITED VARIABLES TO KEEP, as explicit declarations of this
+     * login's own.
+     *
+     * THE VALUES ARE NEVER IN THE REQUEST and never leave this process: the
+     * engine reads them from its OWN environment. A route that carried the value
+     * would put `ANTHROPIC_AUTH_TOKEN` on the wire in both directions to achieve
+     * nothing the engine could not do on its own.
+     */
+    carryOverInherited?: unknown;
+  }): { instance: ProviderInstance; stoppedInheriting: string[] } {
     assertInstanceId(input.id);
     const instances = this.readProviderInstances();
     const existing = instances.find((instance) => instance.id === input.id);
@@ -3701,7 +3721,7 @@ export class EngineStore {
     }
     const at = this.now();
     const secrets = this.readProviderSecrets();
-    const env = this.applyEnvEdits(input.id, input.env, existing?.env ?? [], secrets);
+    const env = this.applyEnvEdits(input.id, this.withCarriedInheritance(input, driver, existing), existing?.env ?? [], secrets);
     const instance: ProviderInstance = {
       id: input.id,
       driver,
@@ -3745,7 +3765,65 @@ export class EngineStore {
       : [...instances, parsed.data];
     this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: next });
     this.writeDocument(this.paths.providerSecrets, { version: STATE_VERSION, secrets: env.secrets });
-    return structuredClone(this.listProviderInstances().find((entry) => entry.id === instance.id)!);
+    return {
+      instance: structuredClone(this.listProviderInstances().find((entry) => entry.id === instance.id)!),
+      // Computed against the instance as SAVED, so a carry-over in the same
+      // breath reports nothing lost — which is the truth, and the difference
+      // between an advisory and an alarm that fires after you have acted on it.
+      stoppedInheriting: stoppedInheriting({ before: existing, after: parsed.data, ambient: this.ambientEnv }),
+    };
+  }
+
+  /**
+   * The submitted environment with any carried-over inheritance appended.
+   *
+   * REFUSES RATHER THAN GUESSES, on every arm. A name this driver does not own
+   * would be a declaration that protects nothing from a scrub that never
+   * touches it; a name the engine is not actually carrying would be written as
+   * an EMPTY value, which is a variable the CLI reads rather than the absence
+   * the caller asked to preserve; and a name the save already declares is a
+   * caller that has lost track of its own request. The owner's rule for #594 is
+   * that a loud refusal beats a quiet guess, and this is where that is spent.
+   *
+   * ABSENT CARRY-OVER RETURNS `input.env` UNTOUCHED, `undefined` included, so
+   * the "absent leaves it alone" rule survives this function existing.
+   */
+  private withCarriedInheritance(
+    input: { id: string; env?: unknown; carryOverInherited?: unknown },
+    driver: ProviderDriverKind,
+    existing: ProviderInstance | undefined,
+  ): unknown {
+    if (input.carryOverInherited === undefined) return input.env;
+    if (!Array.isArray(input.carryOverInherited) || input.carryOverInherited.some((name) => typeof name !== "string")) {
+      throw new EngineStateError("invalid_request", "carryOverInherited must be an array of variable names");
+    }
+    const names = input.carryOverInherited as string[];
+    // The list this save would otherwise store: the submitted one when there is
+    // one, and what the instance already holds when the caller only asked to
+    // carry variables over.
+    const base = (input.env === undefined ? (existing?.env ?? []) : input.env) as ProviderInstanceEnvVar[];
+    if (!Array.isArray(base)) throw new EngineStateError("invalid_request", "provider instance environment is invalid");
+    const declared = new Set(base.map((variable) => variable?.name));
+    const inherited = new Set(inheritedOwnedEnv(driver, this.ambientEnv));
+    const carried: ProviderInstanceEnvVar[] = [];
+    for (const name of names) {
+      if (!providerOwnsEnv(driver, name)) {
+        throw new EngineStateError("invalid_request", `${name} is not a variable a ${driver} login owns`);
+      }
+      if (!inherited.has(name)) {
+        throw new EngineStateError("invalid_request", `Telar is not inheriting ${name}, so there is nothing to carry over`);
+      }
+      if (declared.has(name)) throw new EngineStateError("invalid_request", `${name} is already declared by this login`);
+      declared.add(name);
+      carried.push({
+        name,
+        value: this.ambientEnv[name] ?? "",
+        // A credential goes to the 0600 store and never comes back on a read;
+        // a routing fact stays readable by the person who set it.
+        sensitive: providerEnvIsCredential(name),
+      });
+    }
+    return [...base, ...carried];
   }
 
   /**
@@ -4164,6 +4242,17 @@ export class EngineStore {
        *  default reads the real machine's mounts and `diskutil`, and a test
        *  about an unplugged drive should not need a drive. */
       volumes?: VolumeDeps;
+      /**
+       * THE ENGINE'S OWN ENVIRONMENT — what a provider process would inherit
+       * from this one if nothing scrubbed it (#594).
+       *
+       * INJECTED BY TESTS ONLY. The default is `process.env`, which is the only
+       * correct answer in a running engine: the question "what is this login
+       * about to stop inheriting" is a question about THIS process, and a test
+       * that had to mutate the real environment to ask it would be a test that
+       * leaks into every other test in the file.
+       */
+      ambientEnv?: Record<string, string | undefined>;
     } = {},
   ) {
     this.notifier = options.notifier;
@@ -4181,6 +4270,7 @@ export class EngineStore {
     this.worktreeGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultWorktreeGitRunner);
     this.gh = options.gh ?? defaultGhRunner;
     this.volumes = options.volumes ?? {};
+    this.ambientEnv = options.ambientEnv ?? process.env;
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
