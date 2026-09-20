@@ -44,8 +44,17 @@ import type { NativeDatabase } from "./checkpointer";
  * `./identity.ts`). It is in the vocabulary because the shape #541 asks for
  * names it, and because the day something CAN address the Agent, the row it
  * writes should not need a migration to exist.
+ *
+ * `request_timeout` IS THE SIXTH and it is #541 D: a request that ran out its
+ * deadline and took the default its asker had stated, because nobody came. Its
+ * producer is `EngineStore.sweepRequestDeadlines`.
+ *
+ * IT IS DELIBERATELY NOT `request_opened`. That kind ranks first in the digest,
+ * under the heading WAITING ON YOU, and a request that has already resolved is
+ * precisely the one thing nobody is waiting on — reusing the kind would have put
+ * closed business at the top of every turn as an ask. See `./digest.ts`.
  */
-export type AgentInboxKind = WakeKind | "peer_message";
+export type AgentInboxKind = WakeKind | "peer_message" | "request_timeout";
 
 export type AgentInboxRow = {
   /** Monotonic within the file. The cursor a reader pages by, and the id a
@@ -210,19 +219,26 @@ function decode(raw: RawRow): AgentInboxRow {
  *
  * THE KIND COMES OFF `wakeKind` WHERE THERE IS ONE, because `NotificationKind`
  * has already collapsed the three terminal transitions into "wake" and the
- * digest ranks failed above completed. A `request` with no `wakeKind` — which
- * only a hand-built detail would be — falls back to `request_opened`, since that
- * is the only transition a request notification can be about.
+ * digest ranks failed above completed. A `request` with no `wakeKind` falls back
+ * to `request_opened`, since that is the transition an ordinary request
+ * notification is about.
+ *
+ * `kind` OVERRIDES ALL OF THAT, and exists for the one row whose transition
+ * `NotificationKind` cannot express: a deadline taking a request's default
+ * (#541 D). The alternative was a fourth `NotificationKind`, which would have
+ * rippled into every surface that renders a SESSION's notification item — for a
+ * distinction only the Agent's own inbox has any use for. The caller that knows
+ * passes it; nothing else does.
  *
  * NO `sessionId` MEANS NO ROW. Every inbox row names a session a person can be
  * pointed at; a notification with none is an agent outside any session, which
  * nothing can produce for the Agent today and which the digest would have
  * nothing to say about.
  */
-export function inboxRowFromNotification(detail: NotificationDetail): { sessionId: string; runId: string; kind: AgentInboxKind; intent?: AgentMessageIntent; summary: string } | undefined {
+export function inboxRowFromNotification(detail: NotificationDetail, kindOverride?: AgentInboxKind): { sessionId: string; runId: string; kind: AgentInboxKind; intent?: AgentMessageIntent; summary: string } | undefined {
   const sessionId = detail.sessionId;
   if (!sessionId) return undefined;
-  const kind: AgentInboxKind = detail.wakeKind ?? (detail.kind === "peer_message" ? "peer_message" : "request_opened");
+  const kind: AgentInboxKind = kindOverride ?? detail.wakeKind ?? (detail.kind === "peer_message" ? "peer_message" : "request_opened");
   return {
     sessionId,
     runId: detail.runId ?? "",

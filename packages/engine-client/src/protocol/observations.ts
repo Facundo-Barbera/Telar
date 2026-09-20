@@ -34,7 +34,7 @@ import {
 } from "./common";
 import { AgentMessageIntent, NotificationDetail, Turn, WakeReason } from "./entities";
 import { ContentStream, ItemDetail, ItemStatus } from "./items";
-import { RequestDecision, RequestDetail, RequestKind, RequestResolver } from "./requests";
+import { RequestDecision, RequestDefault, RequestDetail, RequestKind, RequestResolver } from "./requests";
 import { TaskSeed } from "./tasks";
 
 /** An item as the worker knows it, before the engine stamps ownership on it. */
@@ -519,6 +519,16 @@ export const RequestOpenInput = z.object({
   /** The timeline row this is about, when the worker already opened one. */
   itemId: Id.optional(),
   providerRefs: ProviderRefs.optional(),
+  /**
+   * THE ASKER'S OWN TERMS FOR BEING LEFT ALONE — issue #541 D.
+   *
+   * Still not the worker DECIDING anything: `default` is the answer to take if
+   * nobody comes, and the engine refuses it on a kind that may not carry one
+   * (`defaultAllowed`) exactly as it refuses everything else here. A deadline
+   * with no default beside it resolves nothing at all.
+   */
+  deadlineMs: z.number().int().positive().optional(),
+  default: RequestDefault.optional(),
 });
 export type RequestOpenInput = z.infer<typeof RequestOpenInput>;
 

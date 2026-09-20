@@ -108,6 +108,53 @@ export function wakeNotification(input: {
   };
 }
 
+/**
+ * A DEADLINE THAT TOOK A REQUEST'S DEFAULT, ANNOUNCED — issue #541 D.
+ *
+ * `kind: "request"` BECAUSE THAT IS WHAT IT IS ABOUT, and NO `wakeKind`, because
+ * nothing woke: no session finished, failed, stopped or parked anything. The
+ * clock ran out. The Agent's inbox is told which row this is by an explicit
+ * `inboxKind` on the wake (`AgentWake`) rather than by a fourth
+ * `NotificationKind` — see `agent/inbox.ts` for why that trade was taken.
+ *
+ * IT SAYS THE DECISION, NOT JUST THAT ONE WAS MADE. Every other notice in this
+ * file is deliberately a ping with the payload a fetch away, and this is the one
+ * exception: the whole value of the row is the sentence "I went with X because
+ * you were away", and a person who has to fetch to learn what X was has been
+ * told nothing they can act on. The decision is one word.
+ *
+ * AND IT SAYS IT IS DONE. A reader that took this for an ask would try to answer
+ * a resolved request and be refused by the store, which is a confusing way to
+ * learn something it could simply have been told.
+ */
+export function timeoutNotification(input: {
+  sessionId: string;
+  sessionTitle: string;
+  runId: string;
+  requestId: string;
+  requestKind: string;
+  /** The asker's own one-line description of what was being asked. */
+  title: string;
+  decision: "accept" | "decline";
+  deadlineMs: number;
+}): NotificationDetail {
+  const body = [
+    `[request: answered for you] Session ${input.sessionId} "${input.sessionTitle}" — request ${input.requestId} (kind ${input.requestKind}) sat for its whole ${Math.round(input.deadlineMs / 1000)}s deadline with nobody answering, so the default its asker stated was taken: ${input.decision.toUpperCase()}.`,
+    `What it was about: ${input.title}`,
+    "—",
+    `This is ALREADY DONE and cannot be un-answered — it is news, not a question. The turn it belongs to is sessions_read(sessionId: "${input.sessionId}", runId: "${input.runId}"). Tell the person what was decided for them if it matters.`,
+  ].join("\n");
+  return {
+    kind: "request",
+    sessionId: input.sessionId,
+    runId: input.runId,
+    requestId: input.requestId,
+    summary: summaryOf(body),
+    fetch: { sessionId: input.sessionId, runId: input.runId },
+    body,
+  };
+}
+
 /** One notification as an entry in a merged one. */
 export function asEntry(detail: NotificationDetail): NotificationEntry {
   return {

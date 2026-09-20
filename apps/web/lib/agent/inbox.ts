@@ -55,17 +55,23 @@ export function agentInboxLabel(row: Pick<AgentInboxRow, "kind" | "intent">): { 
 /**
  * THE RANKING THE DIGEST USES, applied to the strip.
  *
- * Waiting on you, then failed, then everything else newest-first. A person
- * glancing at this asks the same question the model was asked — "is anything
- * waiting on me" — and a list in arrival order buries it under whatever finished
- * last.
+ * Waiting on you, then answered for you, then failed, then everything else
+ * newest-first. A person glancing at this asks the same question the model was
+ * asked — "is anything waiting on me" — and a list in arrival order buries it
+ * under whatever finished last.
+ *
+ * `request_timeout` IS SECOND, exactly as in `agent/digest.ts`: a request that
+ * took its own default is a decision made in the person's absence, which is the
+ * next most interesting thing after one still waiting for them — and not the
+ * first, because nothing here can be acted on.
  */
 const RANK: Record<AgentInboxRow["kind"], number> = {
   request_opened: 0,
-  turn_failed: 1,
-  peer_message: 2,
-  turn_completed: 3,
-  turn_stopped: 4,
+  request_timeout: 1,
+  turn_failed: 2,
+  peer_message: 3,
+  turn_completed: 4,
+  turn_stopped: 5,
 };
 
 export function rankAgentInbox(rows: readonly AgentInboxRow[]): AgentInboxRow[] {

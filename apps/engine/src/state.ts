@@ -9,6 +9,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   autoResolution,
+  deadlineResolution,
+  defaultAllowed,
   PROVIDER_CAPABILITIES,
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
@@ -130,6 +132,7 @@ import {
   type Project,
   type EngineRequest,
   type RequestDecision,
+  type RequestDefault,
   type RequestDetail,
   type RequestKind,
   type RequestOpenResult,
@@ -189,7 +192,8 @@ import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRec
 import { commitSessionWork, gitOverview, gitOverviewAsync, projectRemoteAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
+import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, timeoutNotification, wakeNotification } from "./notification";
+import type { AgentInboxKind } from "./agent/inbox";
 import {
   commentOn,
   DEFAULT_ISSUE_FILTER,
@@ -312,6 +316,22 @@ function wakeMessage(
   );
   return lines.join("\n");
 }
+
+/**
+ * WHAT A TIMED-OUT REQUEST TELLS THE MODEL THAT ASKED — issue #541 D.
+ *
+ * Rides `EngineRequest.reason`, which `resolutionsForWorker` hands back to the
+ * worker and the drivers turn into the tool's own answer. Without it a declined
+ * default reads to the model exactly like a person saying no, and it adapts to a
+ * judgement nobody made; an accepted one reads like approval that was given.
+ *
+ * AND IT SAYS NOT TO ASK AGAIN THE SAME WAY, for `DECLINED_ANSWER`'s reason one
+ * file over: a model that reads a timeout as "that attempt failed" re-opens the
+ * identical request, which parks, which times out, which is a loop nobody is
+ * watching by construction.
+ */
+const TIMEOUT_REASON =
+  "Nobody answered before this request's deadline, so the default stated when it was opened was taken. A person did not decide this. Do not re-open the same request — say what happened and carry on, or ask something the person can answer later.";
 
 /** One clamped line for a wake. A wake is a ping; nothing in it is a payload. */
 function clampWake(text: string): string {
@@ -1800,8 +1820,14 @@ function isDeltaOnlyBatch(observations: unknown[]): boolean {
  *
  * STILL NO TURN AROUND IT: the Agent's runtime decides what a wake costs, which
  * is now an INSERT rather than a conversation. See `setAgentWakeSink`.
+ *
+ * `inboxKind` IS THE ONE THING THE NOTIFICATION CANNOT SAY (#541 D). A deadline
+ * taking a request's default is not one of `NotificationKind`'s three, and
+ * minting a fourth would have rippled through every surface that draws a
+ * SESSION's notification item to express a distinction only the Agent's inbox
+ * ranks on. Absent, the row's kind is derived exactly as it always was.
  */
-export type AgentWake = { notification: NotificationDetail };
+export type AgentWake = { notification: NotificationDetail; inboxKind?: AgentInboxKind };
 
 /**
  * How to read ONE file's patch — the two questions that change what git prints
@@ -11542,6 +11568,136 @@ export class EngineStore {
   }
 
   /**
+   * ══ EVERY REQUEST THAT RAN OUT ITS DEADLINE — issue #541 D ══
+   *
+   * THE FOURTH OF THESE, AND IT EXISTS FOR THE SAME REASON AS THE THIRD: a
+   * deadline passing is not an event, so nothing writes at one. `requests.ts`
+   * has said since it was written that a detached run which parks at minute
+   * three and sits until morning "is not autonomous; it is stuck" — this is the
+   * clock that makes the sentence enforceable rather than aspirational.
+   *
+   * ══ A DEADLINE ALONE RESOLVES NOTHING ══
+   *
+   * The whole of that rule is `deadlineResolution`, in the contract, which
+   * answers `null` for a request with no `default`. There is deliberately no
+   * second copy of it here — a reader asking "what stops this from answering a
+   * question nobody left an answer for" should find one function and be done.
+   * The engine never invents an answer; it takes the one the ASKER wrote down.
+   *
+   * ══ WHY THE LIVE QUEUE SET IS THE WHOLE CANDIDATE SET ══
+   *
+   * `openRequest` requires a RUNNING CLAIM, and every path that ends a turn
+   * cancels the requests it left behind (`closeOpenRequests`). So an open
+   * request implies a live queue, and walking `sessionIds()` the way the two
+   * sweeps above do would read every conversation ever started to find the
+   * nought-to-two a worker is actually blocked on — the fold #545 removed from
+   * this exact data.
+   *
+   * ══ THE WORKER HEARS ABOUT IT FOR FREE ══
+   *
+   * Nothing extra pushes the answer to the blocked provider: `reindexRequests`
+   * keeps a resolved row indexed while its turn is still running, which is
+   * precisely what `resolutionsForWorker` polls on the heartbeat. The worker
+   * sitting inside `canUseTool` unblocks on the next beat exactly as it would
+   * for a human's answer.
+   *
+   * Returns the request ids it resolved, so a caller — and a test — can see the
+   * tick's work without waiting on a timer.
+   */
+  sweepRequestDeadlines(): string[] {
+    const now = this.now();
+    const resolved: string[] = [];
+    for (const sessionId of [...this.liveQueueSessionIds()]) {
+      /**
+       * SNAPSHOT FIRST, RESOLVE SECOND. Each resolution rewrites the very index
+       * being read — `resolveRequest` is a wrapped command and `writeRequests`
+       * reindexes inside it — so resolving mid-iteration would be walking a map
+       * that moves underneath.
+       */
+      let due: Array<{ request: EngineRequest; answer: RequestDefault; deadlineMs: number }>;
+      try {
+        due = [...this.liveRequests(sessionId).values()].flatMap((request) => {
+          /**
+           * `=== null` RATHER THAN A TRUTHINESS TEST, and that is not a style
+           * note. A falsy check here would be a SECOND COPY of the no-default
+           * rule — it would filter out an `undefined` the contract should never
+           * have returned, and in doing so hide a broken `deadlineResolution`
+           * from every test in this file. Measured: with the contract's own
+           * `default === undefined` guard deleted, the truthy version of this
+           * line kept the sweep correct and only the unit test went red.
+           */
+          const answer = deadlineResolution(request, now);
+          if (answer === null || request.deadlineMs === undefined) return [];
+          return [{ request, answer, deadlineMs: request.deadlineMs }];
+        });
+      } catch {
+        // One unreadable session must not stop the sweep for the rest.
+        continue;
+      }
+      for (const { request, answer, deadlineMs } of due) {
+        try {
+          this.resolveRequest(sessionId, request.id, {
+            decision: answer.decision,
+            resolvedBy: "timeout",
+            /**
+             * SAID IN WORDS TO THE MODEL THAT ASKED, not only to the person.
+             * `reason` is fed back through `resolutionsForWorker`, and a worker
+             * told only "declined" reads it as a human's judgement and adapts to
+             * a decision nobody made. This is the one sentence that keeps that
+             * honest.
+             */
+            reason: TIMEOUT_REASON,
+            ...(answer.answers ? { answers: answer.answers } : {}),
+          });
+        } catch {
+          // Resolved, cancelled or gone between the snapshot and here. The
+          // request is settled either way, which is the outcome this wanted.
+          continue;
+        }
+        resolved.push(request.id);
+        this.announceTimeout(sessionId, request, answer.decision, deadlineMs);
+      }
+    }
+    return resolved;
+  }
+
+  /**
+   * ONE INBOX ROW FOR A DECISION TAKEN IN SOMEBODY'S ABSENCE — #541 D.
+   *
+   * AFTER THE RESOLUTION AND OUTSIDE ITS TRANSACTION, on `openRequest`'s own
+   * argument: the durable fact is the resolution, and an Agent that is switched
+   * off, reset, or simply absent must not be able to undo one by refusing to
+   * hear about it.
+   *
+   * IT IS NOT GATED ON A SUBSCRIPTION, and that is the difference from every
+   * other row in that inbox. A wake is news about work somebody asked to be told
+   * about; this is a decision made on the person's behalf, and "nobody had
+   * subscribed" is not a reason to keep that from them.
+   */
+  private announceTimeout(sessionId: string, request: EngineRequest, decision: "accept" | "decline", deadlineMs: number): void {
+    if (!this.agentWakeSink) return;
+    try {
+      const session = this.getSession(sessionId);
+      this.agentWakeSink({
+        notification: timeoutNotification({
+          sessionId,
+          sessionTitle: session.title,
+          runId: request.runId,
+          requestId: request.id,
+          requestKind: request.detail.kind,
+          title: clampWake(requestTitle(request.detail)),
+          decision,
+          deadlineMs,
+        }),
+        inboxKind: "request_timeout",
+      });
+    } catch {
+      // The Agent's runtime refusing a row must not undo a resolution that has
+      // already committed — `fireSubscriptions`' contract, one sweep over.
+    }
+  }
+
+  /**
    * The rows a wake could still be owed on.
    *
    * THE INDEXED STORE ANSWERS THIS IN ONE QUERY. The JSON backend has no
@@ -11989,14 +12145,45 @@ export class EngineStore {
    * Idempotent on `requestId`: a worker that retries after a dropped response
    * gets the same answer rather than opening a second request, which matters
    * because the provider is blocked on the first one.
+   *
+   * `deadlineMs` AND `default` ARE THE ASKER'S OWN TERMS — #541 D. They are
+   * refused here rather than silently dropped, because a caller that believed it
+   * had set a safe fallback and did not is worse off than one that was told no.
+   * See `RequestDefault` and `defaultAllowed` in the contract for what may carry
+   * one; `sweepRequestDeadlines` is what acts on them.
    */
   openRequest(
     sessionId: string,
     runId: string,
     claimToken: string,
-    input: { requestId: string; kind: RequestKind; detail: RequestDetail; itemId?: string; providerRefs?: EngineRequest["providerRefs"] },
+    input: {
+      requestId: string;
+      kind: RequestKind;
+      detail: RequestDetail;
+      itemId?: string;
+      providerRefs?: EngineRequest["providerRefs"];
+      deadlineMs?: number;
+      default?: RequestDefault;
+    },
   ): RequestOpenResult {
     assertId(input.requestId, "request id");
+    if (input.deadlineMs !== undefined && (!Number.isSafeInteger(input.deadlineMs) || input.deadlineMs <= 0)) {
+      throw new EngineStateError("invalid_request", "a request deadline is a positive whole number of milliseconds");
+    }
+    if (input.default !== undefined && !defaultAllowed(input.kind)) {
+      throw new EngineStateError("invalid_request", `a ${input.kind} request may not carry a default — a deadline may not release a secret`);
+    }
+    /**
+     * A DEFAULT WITH NO DEADLINE IS AN ANSWER NOTHING WILL EVER TAKE. Refused
+     * rather than stored, on the same argument as the refusals above: it reads
+     * as a safety net and is not one, and the caller is still here to be told.
+     * The other direction is NOT an error — a deadline with no default is the
+     * issue's own "requests with no default wait", and a caller may legitimately
+     * state one so a client can show how long this has been sitting.
+     */
+    if (input.default !== undefined && input.deadlineMs === undefined) {
+      throw new EngineStateError("invalid_request", "a request default needs a deadline for anything to take it");
+    }
     const turn = this.requireRunningClaim(sessionId, runId, claimToken);
     const session = this.getSession(sessionId);
     const requests = this.readRequests(sessionId);
@@ -12020,6 +12207,13 @@ export class EngineStore {
       ...(input.itemId ? { itemId: input.itemId } : {}),
       ...(input.providerRefs ? { providerRefs: input.providerRefs } : {}),
       ...(automatic ? { decision: automatic, resolvedBy: "policy" as const, resolvedAt: at } : {}),
+      /**
+       * ONLY ON A REQUEST THAT ACTUALLY PARKED. One the mode resolved on the
+       * spot was never waiting on anybody, so a clock on it would be a field
+       * that measured nothing and a row the sweeper had to skip for ever.
+       */
+      ...(!automatic && input.deadlineMs !== undefined ? { deadlineMs: input.deadlineMs } : {}),
+      ...(!automatic && input.default !== undefined ? { default: input.default } : {}),
     };
 
     if (!automatic) {

@@ -12,10 +12,16 @@
  *   1. WAITING ON YOU. A parked request is the only band a person can act on,
  *      and a digest that led with "three sessions finished" while one sat
  *      blocked would bury the single line that mattered.
- *   2. FAILED. Something went wrong and somebody should know why. Each failure
+ *   2. ANSWERED FOR YOU. A request whose deadline passed and whose stated
+ *      default was taken (#541 D). Second because it is about the person's own
+ *      authority rather than a worker's luck: a decision was made in their
+ *      absence and they may want it back. It is NOT first — nothing is waiting
+ *      on them here, and a band that cannot be acted on must not outrank one
+ *      that can.
+ *   3. FAILED. Something went wrong and somebody should know why. Each failure
  *      keeps its own line — see the cohort note below.
- *   3. COMPLETED. Good news, and the band that merges.
- *   4. EVERYTHING ELSE, AS COUNTS. A stopped turn and a peer's report are facts
+ *   4. COMPLETED. Good news, and the band that merges.
+ *   5. EVERYTHING ELSE, AS COUNTS. A stopped turn and a peer's report are facts
  *      worth knowing happened; neither is worth a line each at the top of a
  *      conversation about something else.
  *
@@ -134,6 +140,14 @@ export function renderDigest(rows: readonly AgentInboxRow[], options: { maxChars
 
   const bands: Array<{ kinds: AgentInboxKind[]; lines: string[] }> = [
     { kinds: ["request_opened"], lines: plain(ordered.filter((row) => row.kind === "request_opened"), "WAITING ON YOU") },
+    /**
+     * EACH ONE KEEPS ITS OWN LINE, on `failures`' argument rather than
+     * `completions`': the actionable half of "I went with X because you were
+     * away" is the X, and it is in the summary. Merged into "3 requests timed
+     * out" the person would have to ask which three and what each one decided —
+     * which is the fetch the row already saved them.
+     */
+    { kinds: ["request_timeout"], lines: plain(ordered.filter((row) => row.kind === "request_timeout"), "ANSWERED FOR YOU") },
     { kinds: ["turn_failed"], lines: plain(ordered.filter((row) => row.kind === "turn_failed"), "FAILED") },
     { kinds: ["turn_completed"], lines: completions(ordered.filter((row) => row.kind === "turn_completed")) },
     { kinds: ["turn_stopped", "peer_message"], lines: counted(ordered) },

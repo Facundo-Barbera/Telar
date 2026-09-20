@@ -1,6 +1,6 @@
 import type { TelarToolSocket } from "./telar-socket";
 // Provider-neutral execution boundary. Adapters report observations; only the engine writes state.
-import type { Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type { Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDefault, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./notes-tools/tools";
 import type { PromptsCapability } from "./prompts-tools/tools";
@@ -18,6 +18,19 @@ export type DriverRequest = {
   detail: RequestDetail;
   /** The provider's own tool-use id, so the row and the request correlate. */
   toolUseId: string;
+  /**
+   * WHAT TO DO IF NOBODY COMES — issue #541 D, and both halves or neither.
+   *
+   * A driver that can tell the engine how long this may sit, and what to take
+   * when it has, says so here; the engine refuses a default on a kind that may
+   * not carry one. NO DRIVER IN THIS TREE SETS THEM YET, and that is deliberate
+   * rather than unfinished: neither provider's tool shape carries a "here is my
+   * fallback" field, and READING ONE OUT OF A LABEL — an option whose text says
+   * "(Recommended)" — would be a guess at intent dressed as a contract. The seam
+   * exists so a driver that gains a real one has somewhere to put it.
+   */
+  deadlineMs?: number;
+  default?: RequestDefault;
 };
 
 /**

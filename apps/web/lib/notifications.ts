@@ -21,7 +21,7 @@
  * the copy it kept instead is half of what #572 is. A pure module both can
  * import has no direction to be wrong about.
  */
-import type { AgentInboxRow, AgentMessageIntent, NotificationKind, WakeKind } from "@telar/engine-client";
+import type { AgentInboxRow, AgentMessageIntent, NotificationKind, RequestResolver, WakeKind } from "@telar/engine-client";
 
 /** Everything the verb is decided from, and nothing else — so a caller holding
  *  a `NotificationDetail`, a `WakeReason` or an inbox row can all ask. */
@@ -31,6 +31,15 @@ export type NotificationSubject = {
   intent?: AgentMessageIntent;
   /** For a wake: which of the four transitions. */
   wakeKind?: WakeKind;
+  /**
+   * For a request: WHO ANSWERED IT, when it is already answered (#541 D).
+   *
+   * Only `"timeout"` is read, and only to tell "waiting on you" from "answered
+   * for you" — the same request kind, opposite instructions to a reader. It is
+   * the contract's own `RequestResolver` value rather than a boolean, so a
+   * surface that later wants to say "a peer answered this" has the field.
+   */
+  resolvedBy?: RequestResolver;
 };
 
 export type NotificationVerbs = {
@@ -56,6 +65,17 @@ export function notificationVerbs(subject: NotificationSubject): NotificationVer
         return { verb: "A session sent a message", short: "Sent a message", tone: "muted" };
     }
   }
+  /**
+   * A REQUEST THAT ANSWERED ITSELF IS THE OPPOSITE INSTRUCTION TO ONE THAT IS
+   * WAITING (#541 D), so it is tested FIRST — both are `kind: "request"`, and
+   * the branch below would otherwise tell a person to move on something that is
+   * already closed. `muted`, because nothing needs them: it is news about a
+   * decision taken in their absence, which they may want to look at and cannot
+   * undo.
+   */
+  if (subject.resolvedBy === "timeout") {
+    return { verb: "Session ran out its deadline and took its default", short: "Answered for you", tone: "muted" };
+  }
   // A PARKED REQUEST IS ITS OWN KIND, and the one a reader can act on. Keyed on
   // either field because the two spellings of it — a `request` notification and
   // a `request_opened` wake — are the same happening reaching two callers.
@@ -80,6 +100,9 @@ export function notificationVerbs(subject: NotificationSubject): NotificationVer
  *  session's own row describe one happening, so they classify it one way. */
 export function inboxSubject(row: Pick<AgentInboxRow, "kind"> & { intent?: AgentMessageIntent }): NotificationSubject {
   if (row.kind === "peer_message") return { kind: "peer_message", ...(row.intent ? { intent: row.intent } : {}) };
+  // Both are requests; the resolver is what tells "waiting on you" from
+  // "already answered for you" (#541 D). No `wakeKind` — nothing woke.
+  if (row.kind === "request_timeout") return { kind: "request", resolvedBy: "timeout" };
   if (row.kind === "request_opened") return { kind: "request", wakeKind: "request_opened" };
   return { kind: "wake", wakeKind: row.kind };
 }

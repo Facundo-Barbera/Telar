@@ -106,6 +106,7 @@ import {
   type Task,
   type EngineRequest,
   type RequestDecision,
+  type RequestDefault,
   type RequestDetail,
   type RequestKind,
   type RequestOpenResult,
@@ -835,10 +836,18 @@ export type AgentInboxRow = {
   /** Its turn — the one that ended, or the one a request belongs to. */
   runId: string;
   /** The four wake transitions, plus `peer_message` for a message addressed to
-   *  the Agent. Nothing can address it yet (see `apps/engine/src/agent/identity.ts`);
-   *  the kind is in the vocabulary so the row that lands the day something can
-   *  needs no migration. */
-  kind: "turn_completed" | "turn_failed" | "turn_stopped" | "request_opened" | "peer_message";
+   *  the Agent, plus `request_timeout` for a request that answered itself with
+   *  its own default because nobody came (#541 D).
+   *
+   *  `request_timeout` IS NOT `request_opened`, and the difference is the whole
+   *  reason it exists rather than reusing the kind: `request_opened` ranks as
+   *  WAITING ON YOU in the digest and the strip, and a request that has already
+   *  resolved is the one thing nobody is waiting on. It is news, not an ask.
+   *
+   *  Nothing can address the Agent yet (see `apps/engine/src/agent/identity.ts`);
+   *  `peer_message` is in the vocabulary so the row that lands the day something
+   *  can needs no migration. */
+  kind: "turn_completed" | "turn_failed" | "turn_stopped" | "request_opened" | "request_timeout" | "peer_message";
   /** For a peer message: what the sender said it was. */
   intent?: AgentMessageIntent;
   summary: string;
@@ -3255,7 +3264,16 @@ export class EngineClient {
     sessionId: string,
     runId: string,
     claimToken: string,
-    input: { requestId: string; kind: RequestKind; detail: RequestDetail; itemId?: string },
+    input: {
+      requestId: string;
+      kind: RequestKind;
+      detail: RequestDetail;
+      itemId?: string;
+      /** How long this may sit before its `default` is taken (#541 D). Inert
+       *  without one — see `deadlineResolution`. */
+      deadlineMs?: number;
+      default?: RequestDefault;
+    },
   ): Promise<RequestOpenResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/request`, {
       claimToken,
