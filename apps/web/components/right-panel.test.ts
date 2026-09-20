@@ -19,6 +19,7 @@ import {
   migratePanelTab,
   groupWarps,
   isLiveTask,
+  isMultiInstancePanelTab,
   isPanelTab,
   issuePanelNumber,
   issuePanelTab,
@@ -30,7 +31,9 @@ import {
   pullPanelNumber,
   pullPanelTab,
   splitRoster,
+  type PanelTab,
 } from "./right-panel";
+import { emptyPanelTabs, openNewPanelTab, openPanelTab } from "@/lib/right-panel-tabs";
 
 function fileChange(overrides: {
   path: string;
@@ -123,6 +126,47 @@ describe("the Run surface", () => {
     const { label, blurb } = describePanelTab("run");
     expect(label).toBe("Run");
     expect(blurb.length).toBeGreaterThan(0);
+  });
+});
+
+describe("the Terminal surface", () => {
+  test("is a real tab: it validates, it survives a restore, and it is not file-shaped", () => {
+    // The panel restores tab ids from storage, so a surface that does not
+    // validate here is one that silently disappears on the next reload — and
+    // with it the id of a shell that is still running.
+    expect(isPanelTab("terminal")).toBe(true);
+    expect(migratePanelTab("terminal")).toBe("terminal");
+    expect(isFilePanelTab("terminal")).toBe(false);
+  });
+
+  test("describes itself with no session and no shell", () => {
+    const { label, blurb } = describePanelTab("terminal");
+    expect(label).toBe("Terminal");
+    expect(blurb.length).toBeGreaterThan(0);
+  });
+
+  test("is multi-instance — a second terminal is a second shell", () => {
+    // And the three folds beside it are not, which is what makes this a
+    // statement about terminals rather than about the set's length.
+    expect(isMultiInstancePanelTab("terminal")).toBe(true);
+    expect(isMultiInstancePanelTab("run")).toBe(false);
+    expect(isMultiInstancePanelTab("processes")).toBe(false);
+  });
+
+  test("a second instance takes its own id, so its PTY cannot be the first's", () => {
+    // `nextPanelTabId` is what mints it, and the params keyed on that id are
+    // where each tab's terminal id is kept. Two tabs sharing an id would be two
+    // surfaces reading one shell's bytes.
+    let state = openPanelTab(emptyPanelTabs<PanelTab>(), "terminal");
+    state = openNewPanelTab(state, "terminal");
+    expect(state.tabs.map((entry) => entry.id)).toEqual(["terminal", "terminal#2"]);
+  });
+
+  test("it is NOT the Processes surface", () => {
+    // Processes folds the engine's background tasks — liveness and an owner.
+    // This is a shell you type into. Both exist; neither replaced the other.
+    expect(isPanelTab("processes")).toBe(true);
+    expect(describePanelTab("processes").label).toBe("Processes");
   });
 });
 

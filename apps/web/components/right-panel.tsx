@@ -23,6 +23,7 @@ import {
   PanelsTopLeftIcon,
   PlayIcon,
   PlusIcon,
+  SquareTerminalIcon,
   TerminalIcon,
   XIcon,
 } from "lucide-react";
@@ -70,6 +71,7 @@ import { ReportCadence } from "@/components/session/report-cadence";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
+import { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspace";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { cn } from "@/lib/utils";
@@ -110,6 +112,11 @@ const DataSurface = dynamic(() => import("@/components/session/data-surface").th
 const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface));
 const RunPanel = dynamic(() => import("@/components/run/run-panel").then((mod) => mod.RunPanel));
 const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface));
+/** THE HEAVIEST ARM ON THE LADDER: xterm.js, its WebGL renderer and its image
+ *  decoder. Nothing but this tab needs a terminal emulator in the bundle, and
+ *  the panel starts closed — so `dynamic` here is worth more than on any of the
+ *  surfaces above it. */
+const TerminalSurface = dynamic(() => import("@/components/session/terminal-surface").then((mod) => mod.TerminalSurface));
 /** Not a tab: an overlay over the whole panel, and only once an attachment is
  *  pressed — so it is never on screen on arrival either. */
 const ImageLightbox = dynamic(() => import("@/components/session/image-lightbox").then((mod) => mod.ImageLightbox));
@@ -243,6 +250,23 @@ const SURFACES = [
    * the edge case (components/run/run-panel.tsx).
    */
   { id: "run", label: "Run", icon: PlayIcon, blurb: "The project's dev server, and how to start it" },
+  /**
+   * THE TERMINAL, and it is a real one — a pseudo-terminal in the Electron main
+   * process (docs/terminal-host.md), not a log pane with a prompt drawn on it.
+   * `test -t 1` answers yes in here, which is the whole difference: a pipe
+   * cannot run vim, cannot draw a progress bar and cannot run the person's own
+   * shell startup.
+   *
+   * MULTI-INSTANCE, unlike every other tab on this list, and for the Editor's
+   * reason rather than a new one: a terminal is not a fold over a record that a
+   * second copy would duplicate. It holds the shell YOU started, in the
+   * directory you left it in, with your history — so a second one is a second
+   * thing, not a second view.
+   *
+   * NOT "PROCESSES". That tab folds the engine's background tasks — things an
+   * agent started, with liveness and an owner. This is a shell you type into.
+   */
+  { id: "terminal", label: "Terminal", icon: SquareTerminalIcon, blurb: "A real shell, in this session's checkout" },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
@@ -372,8 +396,13 @@ export type PanelTabItem = PanelTabInstance<PanelTab>;
  * A FILE, AN ISSUE AND A BROWSER PAGE ARE NOT ON THIS LIST either. A page
  * carries its subject in the kind, so two of them are two kinds; a file and an
  * issue are not kinds at all any more, but content inside a surface.
+ *
+ * AND A TERMINAL IS THE FOURTH (#198), on exactly the Editor's argument: it
+ * holds the shell you started, where you left it, with your history. Two of
+ * them are two shells — which is what a person means when they ask for a second
+ * terminal, and is the reason every terminal emulator ever written has tabs.
  */
-const MULTI_INSTANCE: ReadonlySet<string> = new Set<string>(["editor", "diff"]);
+const MULTI_INSTANCE: ReadonlySet<string> = new Set<string>(["editor", "diff", "terminal"]);
 
 export function isMultiInstancePanelTab(kind: PanelTab): boolean {
   return MULTI_INSTANCE.has(kind) || kind === LIVE_BROWSER_TAB;
@@ -560,6 +589,12 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => tab === "editor",
   (tab) => tab === "data",
   (tab) => tab === "latex",
+  /* A TERMINAL IS THE STRICTEST CASE ON THIS LIST. The others lose a scroll to a
+     line of chrome above them; this one loses ROWS — the fit addon measures the
+     box it was given, so every pixel the panel spends above it is a line the
+     shell is told it does not have, and `clear` then leaves the bottom of the
+     screen unreachable. */
+  (tab) => tab === "terminal",
 ];
 
 /* WHICH NUMBERS ARE ALREADY OPEN is no longer a question about the STRIP (#693).
@@ -1606,6 +1641,27 @@ export function PanelSurface({
    */
   if (kind === "run")
     return sessionId ? <RunPanel key={`${hostId ?? "local"}:${sessionId}`} sessionId={sessionId} {...(hostId ? { hostId } : {})} visible={visible} /> : null;
+  /**
+   * KEYED BY THE INSTANCE AND THE CHECKOUT, like the Editor above and for a
+   * harder reason: what this holds is not scroll position but a LIVE SHELL. A
+   * shared key would have React reuse one tab's emulator for another's PTY, so
+   * the bytes of one terminal would arrive in the other's screen.
+   *
+   * The PTY's id round-trips through the tab's own params — the same trip the
+   * Diff's filter and the Editor's open file make — which is what lets a
+   * remounted panel re-adopt a running shell instead of stranding it.
+   */
+  if (kind === "terminal")
+    return (
+      <TerminalSurface
+        key={`${hostId ?? "local"}:${sessionId ?? projectId ?? "none"}:${tab.id}`}
+        {...(sessionId ? { sessionId } : {})}
+        {...(projectId ? { projectId } : {})}
+        {...(tab.params[TERMINAL_ID_PARAM] ? { terminalId: tab.params[TERMINAL_ID_PARAM] } : {})}
+        {...(onTabParams ? { onTerminalId: (id: string) => onTabParams({ [TERMINAL_ID_PARAM]: id }) } : {})}
+        visible={visible}
+      />
+    );
   const filePath = filePanelPath(kind);
   if (filePath !== undefined)
     return (

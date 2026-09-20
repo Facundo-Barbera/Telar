@@ -78,6 +78,7 @@ import {
   closePanelTab,
   collapseBrowserTabs,
   emptyPanelTabs,
+  findPanelTab,
   movePanelTab,
   nextPanelTabId,
   openNewPanelTab,
@@ -90,6 +91,7 @@ import {
   type PanelTabParams,
   type PanelTabState,
 } from "@/lib/right-panel-tabs";
+import { endTerminalForTab } from "@/lib/terminal-bridge";
 import {
   editorFileForPath,
   editorFromLegacyTabs,
@@ -4077,7 +4079,18 @@ export function SessionCockpit({
           onOpenFileInNewTab={openFileInNewPanelTab}
           onInsertReference={insertIntoComposer}
           onAttach={attachFromPanel}
-          onCloseTab={(id) => updatePanel((current) => closePanelTab(current, id))}
+          /* CLOSING A TERMINAL TAB ENDS ITS SHELL, and this is the only place
+             that can say so: the surface unmounts on every tab switch, so it
+             cannot tell "you looked at the Diff" from "you are done with this
+             shell". Anything that is not a terminal answers undefined and this
+             is a no-op (lib/terminal-bridge.ts). */
+          onCloseTab={(id) => {
+            // Outside the reducer on purpose: a reducer runs twice under
+            // StrictMode, and killing a shell is not something to do twice.
+            const closing = findPanelTab(panel, id);
+            if (closing?.kind === "terminal") endTerminalForTab(closing.params);
+            updatePanel((current) => closePanelTab(current, id));
+          }}
           // A surface rewriting its own instance's params — the Diff's filter
           // (#335). Through the same `updatePanel` every other tab gesture
           // writes, so the strip's label and the persisted arrangement follow.
