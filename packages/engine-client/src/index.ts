@@ -166,6 +166,20 @@ export function snapshotQuery(window?: SnapshotWindow): string {
 }
 
 /**
+ * A QUERY STRING, OR NOTHING — for the routes whose parameters are all optional
+ * (#516's five).
+ *
+ * A BARE `?` IS NOT THE SAME URL, and the routes here distinguish absent from
+ * empty: `?limit=` is a caller saying something, and `positiveParam` reads an
+ * unparseable value as a 400 rather than as the default. So an empty parameter
+ * set produces no question mark at all.
+ */
+function query(params: URLSearchParams): string {
+  const written = params.toString();
+  return written ? `?${written}` : "";
+}
+
+/**
  * A TRANSPORT FAILURE, REDUCED TO SOMETHING SAFE TO KEEP.
  *
  * `fetch` rejects with a `TypeError` whose message and `cause` chain routinely
@@ -296,6 +310,129 @@ export type ReportWindowStatus = {
    */
   held: number;
 };
+
+/**
+ * ══ THE FIVE QUERY ROUTES — issue #516 ══
+ *
+ * `GET /v2/sessions/find`, `/:id/outline`, `/:id/runs/:runId/items[/:step]`,
+ * `/:id/answer` and `/:id/grep`: five reads that ASK a conversation something
+ * rather than paging it, each answered from the `turn_summary` projection or
+ * one indexed document span.
+ *
+ * ── WHY THEY ARE ON THE CLIENT AT ALL ───────────────────────────────────────
+ * Not for a cockpit surface — the transcript has the snapshot. They are here
+ * because the OUT-OF-PROCESS worker builds a session's tool wall out of this
+ * class: it holds no store handle by design, so every verb a session can reach
+ * goes back over HTTP. Without these six methods the query tools were mountable
+ * in the daemon's embedded worker and nowhere else, which would have made one
+ * tool answer differently depending on which worker claimed the turn.
+ *
+ * ── THE SHAPES ARE THE ROUTES', NOT A NARROWING OF THEM ─────────────────────
+ * Every field the route sends is declared, including the ones the tool wall
+ * does not read (`sequence`, `startedAt`, `index`). A client type that quietly
+ * dropped a key would make the engine's answer and the client's disagree about
+ * what the route returns, which is the drift this file exists to prevent.
+ */
+
+/** One hit from `GET /v2/sessions/find`, quoting the line that matched. */
+export type SessionSearchHit = {
+  id: string;
+  title?: string;
+  projectId?: string;
+  activity: string;
+  updatedAt: number;
+  /** The turn the match was found in, when it was found in one. */
+  runId?: string;
+  /** The matching line, clamped — so a chooser is not taking the engine's word
+   *  for the match. */
+  why: string;
+};
+
+export type SessionSearchAnswer = {
+  sessions: SessionSearchHit[];
+  /** Which index answered — FTS5 where this engine's sqlite has it, a bounded
+   *  `LIKE` scan where it does not. Reported so a caller comparing two engines'
+   *  results is never guessing. */
+  index: "fts5" | "like";
+  more: boolean;
+};
+
+/** One turn as an outline page draws it — `turn-summary.ts`'s `OutlineRow`. */
+export type SessionOutlineRow = {
+  runId: string;
+  sequence: number;
+  origin?: Turn["origin"];
+  state: Turn["state"];
+  /** The first line of what was asked, clamped. */
+  input: string;
+  items: number;
+  /** The first line of the answer, clamped. */
+  answer: string;
+  /** The WHOLE answer's length, so a caller can price `/answer` before it asks. */
+  answerChars: number;
+  endedAt?: number;
+  failure?: string;
+};
+
+export type SessionOutlineAnswer = {
+  turns: SessionOutlineRow[];
+  total: number;
+  more: boolean;
+  /** The `before` for the next page — a SEQUENCE, so appends underneath a
+   *  paging caller cannot shift its window. */
+  next?: number;
+};
+
+/** One step of one run, as the list shows it. `bytes` is what lets a caller
+ *  choose which step it can afford before it fetches one. */
+export type RunItemRow = {
+  index: number;
+  id: string;
+  title: string;
+  status: Item["status"];
+  bytes: number;
+};
+
+export type RunItemsAnswer = { items: RunItemRow[] };
+
+/** One step, whole — `text` is its `detail`, clamped to `maxChars` with the
+ *  marker that says how much was left behind. */
+export type RunItemRead = {
+  index: number;
+  id: string;
+  title: string;
+  status: Item["status"];
+  startedAt: number;
+  completedAt?: number;
+  taskId?: string;
+  text: string;
+  totalChars: number;
+  more: boolean;
+};
+
+/** One turn's answer text, sliced. The slices are VERBATIM: concatenated
+ *  across calls they are the text exactly as the turn wrote it. */
+export type TurnAnswerRead = {
+  runId: string;
+  sequence: number;
+  text: string;
+  from: number;
+  totalChars: number;
+  more: boolean;
+  next?: number;
+};
+
+/** One place a phrase appears in a session's journal, with the line around it. */
+export type SessionGrepMatch = {
+  /** The journal event's id — also the `before` cursor for the next page. */
+  id: number;
+  at: number;
+  type: string;
+  runId?: string;
+  context: string;
+};
+
+export type SessionGrepAnswer = { matches: SessionGrepMatch[]; more: boolean; next?: number };
 
 /**
  * What `GET /v2/sessions/:id/bootstrap` answers with — everything a cockpit
@@ -2450,6 +2587,76 @@ export class EngineClient {
   events(sessionId: string, after = 0, limit?: number): Promise<EventPage> {
     const bound = limit === undefined ? "" : `&limit=${limit}`;
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${bound}`);
+  }
+
+  /**
+   * ══ THE FIVE QUERY ROUTES (#516) — see the types above for why ══
+   *
+   * Every one of them is a GET with its bounds in the query string, and every
+   * bound is CLAMPED at the route rather than refused: a caller that asks for
+   * more than the ceiling is served the ceiling and told so by `more`. So these
+   * methods pass numbers through untouched and add nothing of their own — the
+   * tool wall clamps once for a model, the route clamps once for everybody, and
+   * a third opinion here would be a number nobody could find.
+   */
+
+  /** Which conversation was this — lexical, across every session on the engine. */
+  findSessions(query: { q: string; projectId?: string; settled?: boolean; since?: number; limit?: number }): Promise<SessionSearchAnswer> {
+    const search = new URLSearchParams({ q: query.q });
+    if (query.projectId !== undefined) search.set("projectId", query.projectId);
+    // EXPLICIT `0`/`1` RATHER THAN `String(boolean)`: the route reads `1` or
+    // `true`, and sending `false` for "open sessions only" has to mean that
+    // rather than being swallowed as an absent filter.
+    if (query.settled !== undefined) search.set("settled", query.settled ? "1" : "0");
+    if (query.since !== undefined) search.set("since", String(query.since));
+    if (query.limit !== undefined) search.set("limit", String(query.limit));
+    return this.request("GET", `/v2/sessions/find?${search.toString()}`);
+  }
+
+  /** Scroll a conversation: one row per turn, newest first. */
+  sessionOutline(sessionId: string, options: { limit?: number; before?: number } = {}): Promise<SessionOutlineAnswer> {
+    const search = new URLSearchParams();
+    if (options.limit !== undefined) search.set("limit", String(options.limit));
+    if (options.before !== undefined) search.set("before", String(options.before));
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/outline${query(search)}`);
+  }
+
+  /** What one run did, as a list to choose from — `bytes` per step. */
+  runItems(sessionId: string, runId: string): Promise<RunItemsAnswer> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/items`);
+  }
+
+  /**
+   * One step, whole. `step` is a POSITION when it is a number and an item id
+   * when it is a string — the route parses it the same way, so a caller that
+   * has just read `runItems` names an index and one that found the item in a
+   * journal page names its id.
+   */
+  runItem(sessionId: string, runId: string, step: number | string, options: { maxChars?: number } = {}): Promise<RunItemRead> {
+    const search = new URLSearchParams();
+    if (options.maxChars !== undefined) search.set("maxChars", String(options.maxChars));
+    return this.request(
+      "GET",
+      `/v2/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(String(step))}${query(search)}`,
+    );
+  }
+
+  /** What one turn concluded — the answer alone, sliced, with its true length. */
+  turnAnswer(sessionId: string, options: { runId?: string; from?: number; limit?: number } = {}): Promise<TurnAnswerRead> {
+    const search = new URLSearchParams();
+    if (options.runId !== undefined) search.set("runId", options.runId);
+    if (options.from !== undefined) search.set("from", String(options.from));
+    if (options.limit !== undefined) search.set("limit", String(options.limit));
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/answer${query(search)}`);
+  }
+
+  /** Where a phrase appears in one session's journal, newest first. Substring,
+   *  not a regular expression — see `grepEvents`. */
+  grepSession(sessionId: string, pattern: string, options: { limit?: number; before?: number } = {}): Promise<SessionGrepAnswer> {
+    const search = new URLSearchParams({ pattern });
+    if (options.limit !== undefined) search.set("limit", String(options.limit));
+    if (options.before !== undefined) search.set("before", String(options.before));
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/grep?${search.toString()}`);
   }
 
   /**
