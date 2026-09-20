@@ -1794,6 +1794,84 @@ function reportVolumesChanged() {
   postToEngine("/v2/projects/reprobe");
 }
 
+// --- The terminal surface (#198, W1) -----------------------------------------
+//
+// A REAL PTY LIVES IN THIS PROCESS. Why here and not in the engine, and what
+// `unknown` is for, are both in terminal-host.js — read that first; this file
+// only carries the wire.
+//
+// THE WIRE IS IPC, NOT A LOOPBACK PORT. browser-control-server.js is the right
+// template for a request/response lifecycle channel the ENGINE calls (which is
+// what W4 adds), and the wrong one for interactive bytes: a keystroke is not a
+// request, and a second HTTP surface is a second thing to authenticate. These
+// bytes go straight to the renderer that owns the terminal, over the channel
+// preload.js already exposes.
+//
+// THE COCKPIT'S OWN TOP FRAME ONLY, and this is the strictest guard in the
+// file rather than a copy of one. Every other handler wearing it risks a
+// profile or a permission; this one is arbitrary code execution as the user.
+// A browser tab's preload, a subframe, or anything an agent can reach must
+// never be able to open a shell.
+let terminalHost = null;
+/** Which renderer is reading each terminal. A terminal outlives a reload, so
+ *  this is looked up per delivery rather than held on the record. */
+const terminalReaders = new Map();
+
+function deliverToTerminalReader(id, channel, payload) {
+  const reader = terminalReaders.get(id);
+  if (!reader || reader.isDestroyed()) return;
+  reader.send(channel, payload);
+}
+
+function requireTerminalHost() {
+  if (terminalHost) return terminalHost;
+  const { TerminalHost } = require("./terminal-host");
+  terminalHost = new TerminalHost({
+    version: app.getVersion(),
+    onData: (id, data) => deliverToTerminalReader(id, "telar:terminal:data", { id, data }),
+    onExit: (id, ending) => {
+      deliverToTerminalReader(id, "telar:terminal:exit", ending);
+      terminalReaders.delete(id);
+    },
+  });
+  return terminalHost;
+}
+
+ipcMain.handle("telar:terminal:open", (event, input) => {
+  requireCockpitSender(event, "open a terminal");
+  const host = requireTerminalHost();
+  const opened = host.open({
+    shell: input?.shell,
+    args: input?.args,
+    cwd: input?.cwd,
+    cols: input?.cols,
+    rows: input?.rows,
+    // The SHELL's environment, not the renderer's idea of one. A renderer that
+    // could name arbitrary variables could set DYLD_INSERT_LIBRARIES.
+    env: process.env,
+  });
+  if (opened.pid !== undefined) terminalReaders.set(opened.id, event.sender);
+  return opened;
+});
+ipcMain.handle("telar:terminal:write", (event, input) => {
+  requireCockpitSender(event, "type into a terminal");
+  return { ok: requireTerminalHost().write(input?.id, input?.data) };
+});
+ipcMain.handle("telar:terminal:resize", (event, input) => {
+  requireCockpitSender(event, "resize a terminal");
+  return { ok: requireTerminalHost().resize(input?.id, input?.cols, input?.rows) };
+});
+ipcMain.handle("telar:terminal:kill", (event, input) => {
+  requireCockpitSender(event, "stop a terminal");
+  return { ok: requireTerminalHost().kill(input?.id, input?.signal || "SIGTERM") };
+});
+/** What is live right now — how a remounted panel finds the terminals its
+ *  previous render left running. Facts only; no handles cross this. */
+ipcMain.handle("telar:terminal:list", (event) => {
+  requireCockpitSender(event, "list terminals");
+  return { terminals: requireTerminalHost().list() };
+});
+
 // --- Native folder picker -----------------------------------------------------
 //
 // The one thing a browser sandbox genuinely cannot do: hand back an absolute
@@ -2964,6 +3042,12 @@ app.on("will-quit", () => {
   // EVERY window's inventory, not the focused one's: a second window's tabs are
   // as much "what that session had open" as the first window's are.
   for (const manager of browserManagers) { try { manager.persistSync(); } catch {} }
+  // EVERY LIVE TERMINAL BECOMES `unknown`, NOT `exited`. We are about to stop
+  // being able to see these processes, and some of them are dev servers with
+  // children. Saying "exited" here is how a slot gets freed for something that
+  // is still listening — see terminal-host.js. It deliberately does not kill
+  // them: that decision is the engine's, not the shell's.
+  if (terminalHost) { try { terminalHost.dispose("Telar quit"); } catch {} }
   killServer();
   closeBrowserControl();
   // The serve mapping outlives the process otherwise, pointing at a port
