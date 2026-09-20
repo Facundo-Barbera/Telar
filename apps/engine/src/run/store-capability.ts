@@ -112,5 +112,23 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
     async output(input) {
       return manager.output(target(input?.runId, "allow").runId, input?.after ?? 0);
     },
+
+    // `"allow"` for the same reason as `output`: the most useful thing to read
+    // is usually the run that just died, and a terminal showing its last screen
+    // is the point of keeping it.
+    async bytes(input) {
+      return manager.bytes(target(input?.runId, "allow").runId, input?.after ?? 0);
+    },
+
+    // AND `"refuse"` HERE, which is the opposite default and deliberate: a
+    // keystroke aimed at "whatever ran last" is a keystroke aimed at nothing,
+    // and falling back to a finished run would swallow it silently.
+    async write(input) {
+      return { delivered: await manager.write(target(input.runId).runId, input.data) };
+    },
+
+    async resize(input) {
+      return { resized: await manager.resize(target(input.runId).runId, input.cols, input.rows) };
+    },
   };
 }

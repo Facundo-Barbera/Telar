@@ -37,9 +37,34 @@
  * NOTHING HERE LOGS A BODY. A run's environment crosses this wire, and some of
  * those values are secrets the whole of `run/types.ts` exists to keep out of
  * sight. There is no request logging in this file on purpose, and an error is
- * reported by its message rather than with the input that caused it.
+ * reported by its message rather than with the input that caused it. THAT RULE
+ * GOT SHARPER WHEN `/write` LANDED: keystrokes cross this wire too, and
+ * redaction only ever covered what a process WRITES — see docs/run-terminal.md
+ * §5. A person answering `psql`'s password prompt is sending bytes through
+ * here that nothing downstream knows are a secret.
+ *
+ * WHY `/write` AND `/resize` BELONG ON THIS ROUTE SET AND NOWHERE ELSE. The
+ * owner's decision for #198 is that a run's terminal is writable — an installer
+ * asking `Proceed (Y/n)`, a dev server waiting on `r`, a migration asking for a
+ * passphrase are all things a person must be able to answer without taking the
+ * process outside the slot, the journal and the singleton. The bytes cannot go
+ * over `telar:terminal:*`, because that channel fans RAW node-pty output and an
+ * emulator on it would draw a run's secrets unredacted. So the same closed set
+ * that already means "start a process with this command line" gains "send bytes
+ * to a process you started", which does not widen what a leaked token buys.
  */
 const http = require("node:http");
+const { TerminalOwner } = require("./terminal-host");
+
+/**
+ * EVERY VERB ON THIS SERVER IS THE ENGINE'S SCOPE.
+ *
+ * The host refuses an id whose owner is not the caller, so this channel cannot
+ * reach a shell a person opened in a Terminal tab — and `telar:terminal:list`
+ * cannot see the ones opened here. Two doors, two sets of keys, checked at the
+ * handle rather than at either door.
+ */
+const ENGINE = TerminalOwner.ENGINE;
 
 /**
  * A run's environment and command line, and nothing that should ever be large.
@@ -52,7 +77,7 @@ const HEARTBEAT_MS = 2_000;
 
 /** Every route this server answers. Anything else is a 404 before a body is
  *  read or a terminal host is resolved. */
-const ROUTES = new Set(["POST /open", "POST /kill", "GET /events", "GET /state"]);
+const ROUTES = new Set(["POST /open", "POST /kill", "POST /write", "POST /resize", "GET /events", "GET /state"]);
 
 function json(response, status, value) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -185,7 +210,9 @@ function startRunTerminalServer({ port, token, getTerminalHost, heartbeatMs = HE
         return;
       }
       if (route === "GET /state") {
-        json(response, 200, { terminals: host.list() });
+        // The ENGINE's terminals. A person's Terminal tabs are not this
+        // channel's business and are not listed here.
+        json(response, 200, { terminals: host.list(ENGINE) });
         return;
       }
       const input = await readJson(request);
@@ -202,6 +229,7 @@ function startRunTerminalServer({ port, token, getTerminalHost, heartbeatMs = HE
           env: input.env && typeof input.env === "object" ? input.env : undefined,
           cols: input.cols,
           rows: input.rows,
+          owner: ENGINE,
         });
         json(response, 200, opened);
         return;
@@ -209,7 +237,25 @@ function startRunTerminalServer({ port, token, getTerminalHost, heartbeatMs = HE
       if (route === "POST /kill") {
         // BY ID. The engine never names a pid, which is what keeps a signal
         // from reaching a stranger the kernel handed that number to.
-        json(response, 200, { signalled: host.kill(String(input.id ?? ""), input.signal || "SIGTERM") });
+        json(response, 200, { signalled: host.kill(String(input.id ?? ""), input.signal || "SIGTERM", ENGINE) });
+        return;
+      }
+      if (route === "POST /write") {
+        /**
+         * A KEYSTROKE IS NOT A REQUEST TO START ANYTHING. `false` here means
+         * the bytes did not reach a process — an id this channel does not own,
+         * or one whose terminal has already ended — and the engine reports
+         * that rather than pretending the keys landed. It is NOT an error: the
+         * cockpit learns of an exit asynchronously, so a keystroke in flight
+         * across that gap is the ordinary case.
+         */
+        json(response, 200, { ok: host.write(String(input.id ?? ""), typeof input.data === "string" ? input.data : "", ENGINE) });
+        return;
+      }
+      if (route === "POST /resize") {
+        // The surface drawing this terminal decides its geometry; SIGWINCH is
+        // the PTY's job. Same `false` rule as `/write`.
+        json(response, 200, { ok: host.resize(String(input.id ?? ""), input.cols, input.rows, ENGINE) });
         return;
       }
     } catch (error) {

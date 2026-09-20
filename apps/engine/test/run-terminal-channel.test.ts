@@ -52,7 +52,15 @@ type FakeTerminal = { id: string; pid: number };
 
 class FakeHost {
   readonly terminals = new Map<string, FakeTerminal>();
-  readonly killed: Array<{ id: string; signal: string }> = [];
+  readonly killed: Array<{ id: string; signal: string; owner: string }> = [];
+  /** What the engine typed, and under whose scope. The real host refuses an id
+   *  whose owner is not the caller, so recording the owner is how this file
+   *  notices a route that stopped naming one. */
+  readonly wrote: Array<{ id: string; data: string; owner: string }> = [];
+  readonly resized: Array<{ id: string; cols: number; rows: number; owner: string }> = [];
+  /** Set to make the host drop writes, the way it does for a terminal that has
+   *  already ended — which is an answer, not an error. */
+  refuseWrites = false;
   onData: (id: string, data: string) => void = () => {};
   onExit: (id: string, ending: unknown) => void = () => {};
   private sequence = 0;
@@ -72,9 +80,21 @@ class FakeHost {
   }
   lastRequest?: { shell?: string; cwd?: string; env?: Record<string, string> };
 
-  kill(id: string, signal: string): boolean {
+  kill(id: string, signal: string, owner: string): boolean {
     if (!this.terminals.has(id)) return false;
-    this.killed.push({ id, signal });
+    this.killed.push({ id, signal, owner });
+    return true;
+  }
+
+  write(id: string, data: string, owner: string): boolean {
+    if (this.refuseWrites || !this.terminals.has(id)) return false;
+    this.wrote.push({ id, data, owner });
+    return true;
+  }
+
+  resize(id: string, cols: number, rows: number, owner: string): boolean {
+    if (!this.terminals.has(id)) return false;
+    this.resized.push({ id, cols, rows, owner });
     return true;
   }
 
@@ -420,4 +440,107 @@ test("the engine attaches to the event stream before it starts anything", async 
   host.exit(id, 0);
   expect(await until(() => manager.run(started.runId).status === "exited")).toBe(true);
   expect(manager.output(started.runId).lines.map((line) => line.text)).toContain("instant");
+});
+
+// ── the keyboard, over the real server ───────────────────────────────────────
+
+test("keystrokes cross the real channel and reach the terminal the run started", async () => {
+  // THE WHOLE POINT OF THE WRITABLE DECISION, end to end: an installer asking
+  // `Proceed (Y/n)` is answerable without stopping the run — which would take
+  // the process outside the slot, the journal and the singleton.
+  const { host, manager, dir } = await harness();
+  const started = await manager.start(input(dir));
+  const id = [...host.terminals.keys()][0]!;
+
+  expect(await manager.write(started.runId, "y\r")).toBe(true);
+  expect(await manager.resize(started.runId, 132, 43)).toBe(true);
+
+  // ADDRESSED BY ID AND SCOPED TO THE ENGINE. The id is the terminal the run
+  // started, not a pid and not a guess; the owner is what stops this channel
+  // reaching a shell a person opened in a Terminal tab.
+  expect(host.wrote).toEqual([{ id, data: "y\r", owner: "engine" }]);
+  expect(host.resized).toEqual([{ id, cols: 132, rows: 43, owner: "engine" }]);
+});
+
+test("a write the host drops is `false`, and the run is untouched by it", async () => {
+  // The desktop shell learns of an exit before the engine does, so a keystroke
+  // across that gap is the ordinary case. It must not settle the run, free the
+  // slot, or raise — all three of which a "the write failed" reading would.
+  const { host, manager, dir } = await harness();
+  const started = await manager.start(input(dir));
+  host.refuseWrites = true;
+
+  expect(await manager.write(started.runId, "y\r")).toBe(false);
+  expect(manager.run(started.runId).status).toBe("running");
+  expect(manager.activeRun("proj_1")?.runId).toBe(started.runId);
+  // And the control on the same host: writes work again the moment the host
+  // accepts them, so the `false` above was about the host and not about a
+  // manager that had given up on this run.
+  host.refuseWrites = false;
+  expect(await manager.write(started.runId, "n\r")).toBe(true);
+});
+
+test("a run that has ended refuses the keyboard rather than writing into nothing", async () => {
+  const { host, manager, dir } = await harness();
+  const started = await manager.start(input(dir));
+  const id = [...host.terminals.keys()][0]!;
+  // The control first: while it is running, this is allowed.
+  expect(await manager.write(started.runId, "a")).toBe(true);
+
+  host.exit(id, 0);
+  expect(await until(() => manager.run(started.runId).status === "exited")).toBe(true);
+  await expect(manager.write(started.runId, "b")).rejects.toThrow(/not running/);
+  // Nothing was sent after the exit — a refusal that still wrote would satisfy
+  // a test that only caught the throw.
+  expect(host.wrote.map((entry) => entry.data)).toEqual(["a"]);
+});
+
+// ── the byte ring, which is what the cockpit's emulator draws ────────────────
+
+test("the byte view carries the redacted stream, escapes and columns intact", async () => {
+  const { host, manager, dir } = await harness();
+  const secret = "sk-live-7b3f91";
+  const started = await manager.start(
+    input(dir, { config: config({ env: [{ key: "TOKEN", value: secret, secret: true }] }) }),
+  );
+  const id = [...host.terminals.keys()][0]!;
+  // A positioned screen rather than a tidy line: this is the shape the line
+  // view is a DEGRADED reading of, and the reason the byte view exists.
+  const screen = `\x1b[2J\x1b[1;1Hkey=${secret}\x1b[2;1Hnext`;
+  host.say(id, screen);
+  expect(await until(() => manager.bytes(started.runId).chunks.length > 0)).toBe(true);
+
+  const drawn = manager.bytes(started.runId).chunks.join("");
+  expect(drawn).not.toContain(secret);
+  // THE EQUALITY, not the absence: an empty or mangled buffer satisfies "the
+  // secret is gone" and fails this. Same length in as out, every escape at the
+  // offset it was written at.
+  expect(drawn).toBe(`\x1b[2J\x1b[1;1Hkey=${PTY_MASK.repeat(secret.length)}\x1b[2;1Hnext`);
+  expect(drawn).toHaveLength(screen.length);
+
+  // AND THE TWO VIEWS DO NOT REPLACE EACH OTHER. `/run/output` is still what an
+  // agent reads, and it still answers for the same run.
+  expect(manager.output(started.runId).cursor).toBeGreaterThanOrEqual(0);
+});
+
+test("the byte cursor resumes, and a cursor that went backwards means another run", async () => {
+  const { host, manager, dir } = await harness();
+  const started = await manager.start(input(dir));
+  const id = [...host.terminals.keys()][0]!;
+
+  host.say(id, "first");
+  expect(await until(() => manager.bytes(started.runId).cursor === 1)).toBe(true);
+  const first = manager.bytes(started.runId);
+  expect(first.chunks.join("")).toBe("first");
+
+  host.say(id, "second");
+  expect(await until(() => manager.bytes(started.runId).cursor === 2)).toBe(true);
+  // Resuming from the cursor hands back ONLY what is new — the property a poll
+  // rests on, and the one a reader that re-drew everything would violate
+  // invisibly.
+  const next = manager.bytes(started.runId, first.cursor);
+  expect(next.chunks.join("")).toBe("second");
+  expect(next.dropped).toBe(0);
+  // From the top, everything, in order.
+  expect(manager.bytes(started.runId, 0).chunks.join("")).toBe("firstsecond");
 });

@@ -18,11 +18,14 @@
 import { EngineApiError } from "@/lib/engine/client";
 import { pathnameFetcher } from "@/lib/hosts/client";
 import type {
+  RunBytesAnswer,
   RunConfigurationDraft,
   RunConfigurationView,
   RunOutputAnswer,
+  RunResizeAnswer,
   RunStatusAnswer,
   RunView,
+  RunWriteAnswer,
 } from "./types";
 
 type Fetcher = typeof fetch;
@@ -95,6 +98,24 @@ export function createRunApi(fetcher: Fetcher = pathnameFetcher) {
       request<RunView>(fetcher, "POST", runPath(sessionId, "/release"), { runId }),
     output: (sessionId: string, options: { runId?: string; after?: number } = {}) =>
       request<RunOutputAnswer>(fetcher, "GET", runPath(sessionId, "/output", { runId: options.runId, after: options.after })),
+    /**
+     * The same window as `output`, as the redacted bytes the emulator draws.
+     *
+     * OVER THE HOST HOP LIKE EVERY OTHER RUN CALL, which is the whole reason
+     * this route exists rather than the panel reading `telarDesktop.terminal`.
+     * `terminalBridge()` is undefined for a session on another Mac — on purpose
+     * — so a bridge-fed emulator would show a PAIRED session an empty screen
+     * for a run happening on the computer it is about. And the bridge fans RAW
+     * node-pty bytes: an emulator on it would draw a run's secrets unredacted.
+     */
+    bytes: (sessionId: string, options: { runId?: string; after?: number } = {}) =>
+      request<RunBytesAnswer>(fetcher, "GET", runPath(sessionId, "/bytes", { runId: options.runId, after: options.after })),
+    /** Keystrokes for the program the recipe named. Not redacted, and nothing
+     *  here pretends otherwise — docs/run-terminal.md §5. */
+    write: (sessionId: string, options: { runId?: string; data: string }) =>
+      request<RunWriteAnswer>(fetcher, "POST", runPath(sessionId, "/write"), options),
+    resize: (sessionId: string, options: { runId?: string; cols: number; rows: number }) =>
+      request<RunResizeAnswer>(fetcher, "POST", runPath(sessionId, "/resize"), options),
   };
 }
 

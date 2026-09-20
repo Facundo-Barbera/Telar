@@ -91,6 +91,29 @@ import {
 
 const MAX_LINES = 2000;
 const MAX_LINE_CHARS = 4000;
+/**
+ * THE REDACTED BYTE RING, WHICH IS WHAT A TERMINAL READS (#198).
+ *
+ * `lines` is a DEGRADED VIEW of a PTY's output and `capture()` says so: a
+ * terminal's output is not a list of lines, and a surface that draws it
+ * properly needs the bytes, escape sequences included. So a run keeps both, and
+ * neither replaces the other — `/run/output` is still what an agent reads
+ * (`run_output` wants lines, not `CSI H`) and still the only shape a caller who
+ * never wanted an emulator has to handle.
+ *
+ * KEPT AS CHUNKS RATHER THAN ONE STRING, and the reason is escape integrity.
+ * Dropping the front of a flat buffer can cut inside a `CSI 1;31 m`, and half a
+ * sequence is not a shorter sequence — it is a parser desync that eats whatever
+ * text follows it. Every chunk here comes out of `createPtyRedactor`, whose
+ * contract is that it never emits a partial sequence, so a CHUNK boundary is
+ * always a safe boundary and dropping whole chunks cannot desync a reader.
+ *
+ * BOUNDED TWICE, because either bound alone has a process that defeats it: a
+ * chunk count alone gives a one-byte-at-a-time writer a scrollback of nothing
+ * and a megabyte-at-a-time writer an unbounded one.
+ */
+const MAX_BYTE_CHUNKS = 4000;
+const MAX_BYTE_CHARS = 256_000;
 /** How long a polite SIGTERM gets before the group is killed outright. */
 const STOP_GRACE_MS = 5000;
 const READY_POLL_MS = 500;
@@ -149,6 +172,11 @@ type LiveRun = {
   released: boolean;
   lines: RunOutputLine[];
   dropped: number;
+  /** Redacted bytes, in the slices the redactor emitted them. See the ring's
+   *  note above for why the slicing is load-bearing and not an artefact. */
+  bytes: string[];
+  byteChars: number;
+  bytesDropped: number;
   secrets: string[];
   readyTimer?: ReturnType<typeof setInterval>;
   waiters: Array<() => void>;
@@ -298,6 +326,9 @@ export class RunManager {
         released: false,
         lines: [],
         dropped: 0,
+        bytes: [],
+        byteChars: 0,
+        bytesDropped: 0,
         secrets: [],
         waiters: [],
       };
@@ -341,6 +372,25 @@ export class RunManager {
       lines: run.lines.slice(start),
       cursor: run.dropped + run.lines.length,
       dropped: run.dropped,
+    };
+  }
+
+  /**
+   * The same window, in the shape a terminal can draw: redacted BYTES.
+   *
+   * SAME CURSOR CONTRACT AS `output`, deliberately — one poll shape for both,
+   * so the cockpit's existing host hop carries this with no new plumbing and a
+   * cursor that goes BACKWARDS still means "a different run", not "lost
+   * output". What differs is the unit: a chunk rather than a line, because a
+   * line is not a thing a terminal has.
+   */
+  bytes(runId: string, after = 0): { chunks: string[]; cursor: number; dropped: number } {
+    const run = this.require(runId);
+    const start = Math.max(0, after - run.bytesDropped);
+    return {
+      chunks: run.bytes.slice(start),
+      cursor: run.bytesDropped + run.bytes.length,
+      dropped: run.bytesDropped,
     };
   }
 
@@ -499,6 +549,9 @@ export class RunManager {
       released: false,
       lines: [],
       dropped: 0,
+      bytes: [],
+      byteChars: 0,
+      bytesDropped: 0,
       secrets: secretValues(input.config),
       waiters: [],
     };
@@ -802,7 +855,15 @@ export class RunManager {
       return (stream, chunk) => {
         let splitter = splitters.get(stream);
         if (!splitter) {
-          splitter = createOutputSplitter(run.secrets, MAX_LINE_CHARS, (text) => this.log(run, stream, text));
+          splitter = createOutputSplitter(run.secrets, MAX_LINE_CHARS, (text) => {
+            // THE BYTE VIEW EXISTS HERE TOO, RATHER THAN THE SURFACE DRAWING A
+            // BLACK BOX. With no Electron there is no PTY, so what a terminal
+            // gets is the redacted lines put back together — interleaved,
+            // because a terminal is one device, and `\r\n` because an emulator
+            // needs the carriage return to get its column back. It is a poorer
+            // terminal than a real PTY gives, and it is a working one.
+            this.keep(run, `${this.log(run, stream, text)}\r\n`);
+          });
           splitters.set(stream, splitter);
         }
         splitter.push(chunk);
@@ -814,6 +875,11 @@ export class RunManager {
     let carry = "";
     const emitLine = (text: string) => this.log(run, "stdout", text);
     const redactor = createPtyRedactor(run.secrets, (text) => {
+      // THE BYTES AS THE REDACTOR EMITTED THEM, before the line cut — the line
+      // view below is the degraded one. Fed from the redactor's OUTPUT and
+      // never its input: this is the one place a run's secrets could reach a
+      // surface unmasked, and #819 is what stops that.
+      this.keep(run, text);
       carry += text;
       for (let at = carry.indexOf("\n"); at !== -1; at = carry.indexOf("\n")) {
         emitLine(carry.slice(0, at));
@@ -829,12 +895,34 @@ export class RunManager {
     return (_stream, chunk) => redactor.push(chunk);
   }
 
-  private log(run: LiveRun, stream: "stdout" | "stderr", text: string): void {
+  /** Answers the redacted line it kept, so the byte ring can hold the same
+   *  text rather than a second scrub of the same input. */
+  private log(run: LiveRun, stream: "stdout" | "stderr", text: string): string {
     const clean = redactText(text.replace(/\r$/, ""), run.secrets).slice(0, MAX_LINE_CHARS);
     run.lines.push({ at: this.now(), stream, text: clean });
     if (run.lines.length > MAX_LINES) {
       run.dropped += run.lines.length - MAX_LINES;
       run.lines.splice(0, run.lines.length - MAX_LINES);
+    }
+    return clean;
+  }
+
+  /** One already-redacted slice into the byte ring, dropping WHOLE chunks from
+   *  the front so a cut can never land inside an escape sequence. */
+  private keep(run: LiveRun, text: string): void {
+    if (!text) return;
+    run.bytes.push(text);
+    run.byteChars += text.length;
+    // `length > 1` on the character bound: one chunk larger than the whole cap
+    // would otherwise empty the ring, leaving a reader with nothing at all
+    // rather than with the most recent thing the process said. The redactor
+    // holds at most `MAX_HOLD_CHARS` before flushing, so the overshoot that
+    // buys is bounded by one of those.
+    while (run.bytes.length > MAX_BYTE_CHUNKS || (run.bytes.length > 1 && run.byteChars > MAX_BYTE_CHARS)) {
+      const gone = run.bytes.shift();
+      if (gone === undefined) break;
+      run.byteChars -= gone.length;
+      run.bytesDropped += 1;
     }
   }
 
@@ -855,6 +943,68 @@ export class RunManager {
     }, this.readyPollMs);
     timer.unref?.();
     run.readyTimer = timer;
+  }
+
+  // ── typing into it ───────────────────────────────────────────────────────
+
+  /**
+   * KEYSTROKES REACH THE PROGRAM THE RECIPE NAMED, and that is the whole of
+   * what this is.
+   *
+   * IT IS NOT A SHELL PROMPT. `resolveShell` spawns `/bin/sh -c "<command>"` —
+   * non-login, non-interactive, no dotfiles, no history — so bytes arriving
+   * here go to `psql`, to `node`, to an installer asking `Proceed (Y/n)`, to a
+   * dev server waiting on `r`. A recipe that PINS its shell (`config.shell`) is
+   * the one case where they go to a real login shell, and that is a legitimate
+   * thing to save rather than a hole to close.
+   *
+   * WHAT THIS IS NOT ABLE TO PROMISE, stated at the door rather than found in a
+   * log: what a person types is NOT redacted, in any launcher shape. Redaction
+   * covers what a process WRITES. docs/run-terminal.md §5 is where that limit
+   * lives and this does not narrow it — read-only would not have narrowed it
+   * either, it would only have changed who could reach the keyboard.
+   *
+   * AND A RUN IS A PROJECT SINGLETON, so two sessions with this panel open are
+   * two keyboards on one process. The panel already says the run belongs to the
+   * project; nothing here pretends the second keyboard is not there.
+   */
+  async write(runId: string, data: string): Promise<boolean> {
+    const run = this.requireLiveKeyboard(runId, "type into");
+    return await run.handle!.write!(data);
+  }
+
+  /** The geometry the surface drawing it is using — SIGWINCH is the PTY's job,
+   *  and a program that draws a full screen needs to be told. */
+  async resize(runId: string, cols: number, rows: number): Promise<boolean> {
+    const run = this.requireLiveKeyboard(runId, "resize");
+    return await run.handle!.resize!(cols, rows);
+  }
+
+  /**
+   * The run whose keyboard `verb` is about, or a refusal naming which of the
+   * three reasons it is not one.
+   *
+   * THE THIRD REASON IS THE ONE WORTH SPELLING OUT. With no Electron there is
+   * no pseudo-terminal: `pipeLauncher` spawns with `stdio: ["ignore", …]`, so
+   * the process's stdin is /dev/null and there is genuinely nothing to type
+   * into. Saying so is better than a `write` that answers `true` and goes
+   * nowhere, and better than opening stdin — a program that reads it would then
+   * block waiting instead of seeing EOF, which is a behaviour change for every
+   * headless run in exchange for a keyboard nobody is sitting at.
+   */
+  private requireLiveKeyboard(runId: string, verb: string): LiveRun {
+    const run = this.require(runId);
+    if (run.status === "unknown") throw this.unknownConflict(run);
+    if (isTerminal(run.status) || run.handleClosed || !run.handle) {
+      throw new RunError("conflict", `"${run.configName}" is not running, so there is nothing to ${verb}`);
+    }
+    if (!run.handle.write || !run.handle.resize) {
+      throw new RunError(
+        "conflict",
+        `"${run.configName}" was started without a terminal — Telar's desktop shell is what provides one — so there is no keyboard to ${verb} with`,
+      );
+    }
+    return run;
   }
 
   // ── stopping ─────────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@ import { createElement as h, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { RunPanel } from "../../components/run/run-panel";
 import type { RunApi } from "../../lib/run/api";
-import type { RunConfigurationView, RunOutputAnswer, RunStatusAnswer, RunView } from "../../lib/run/types";
+import type { RunBytesAnswer, RunConfigurationView, RunOutputAnswer, RunStatusAnswer, RunView } from "../../lib/run/types";
 
 const SESSION = "sess_shared";
 /** The panel's container, addressed by id so helpers need no ref. */
@@ -95,6 +95,25 @@ const outputAnswer = (host: Host, after: number | undefined): RunOutputAnswer =>
   };
 };
 
+/**
+ * THE SAME MARKER, IN THE SHAPE THE EMULATOR READS (#198).
+ *
+ * The verdict strip reads the panel's own `textContent` for a host's mark, and
+ * xterm's DOM renderer puts its rows in the document — so `from-A` drawn in the
+ * terminal is visible to the same leak check that watched the old `<pre>`.
+ * Written with `\r\n` because a terminal needs the carriage return to get its
+ * column back, exactly as the engine's byte view sends it.
+ */
+let byteSeq: Record<Host, number> = { host_a: 0, host_b: 0 };
+const bytesAnswer = (host: Host, after: number | undefined): RunBytesAnswer => {
+  byteSeq[host] += 1;
+  return {
+    chunks: [`from-${MARK[host]} line ${byteSeq[host]}\r\n`],
+    cursor: (after ?? 0) + 1,
+    dropped: 0,
+  };
+};
+
 /** Hold answers, or let them through immediately. Toggled through
  *  `setHolding` so nothing assigns it from inside a component. */
 let holding = false;
@@ -149,6 +168,11 @@ function apiFor(host: Host): RunApi {
     restart: () => call(host, "restart", () => view(host, "starting")),
     release: () => call(host, "release", () => view(host, "unknown")),
     output: (_s, options = {}) => call(host, "output", () => outputAnswer(host, options.after)),
+    bytes: (_s, options = {}) => call(host, "bytes", () => bytesAnswer(host, options.after)),
+    // The writable half, counted like everything else: a keystroke that went to
+    // the wrong Mac is exactly the leak this page exists to make visible.
+    write: (_s, options) => call(host, "write", () => ({ delivered: options.data.length > 0 })),
+    resize: () => call(host, "resize", () => ({ resized: true })),
   };
 }
 
@@ -202,8 +226,8 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    name: "late OUTPUT leg from A lands after the switch",
-    note: "A's status answers first so the panel asks A for output; the switch happens while that second leg is in flight.",
+    name: "late BYTES leg from A lands after the switch",
+    note: "A's status answers first, which mounts A's terminal and starts its own byte poll; the switch happens while that leg is in flight. It is no longer chained behind status — the emulator polls on its own cadence — so this is the case that proves the terminal is pinned too, not only the panel.",
     run: async ({ setHost, hold }) => {
       hold(true);
       setHost("host_a");
@@ -354,6 +378,7 @@ function App() {
               ledger.startedAt = Date.now();
               for (const key of Object.keys(ledger.counts)) delete ledger.counts[key];
               outputSeq = { host_a: 0, host_b: 0 };
+              byteSeq = { host_a: 0, host_b: 0 };
               setLeak(undefined);
               setRunning(scenario.name);
               void settle()

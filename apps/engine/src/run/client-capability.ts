@@ -28,6 +28,9 @@ export type RunClient = Pick<
   | "restartRun"
   | "releaseRun"
   | "runOutput"
+  | "runBytes"
+  | "writeRun"
+  | "resizeRun"
 >;
 
 export function clientRunCapability(client: RunClient, sessionId: string): RunCapability {
@@ -44,5 +47,11 @@ export function clientRunCapability(client: RunClient, sessionId: string): RunCa
     restart: (input) => client.restartRun(sessionId, input?.runId),
     release: (input) => client.releaseRun(sessionId, input.runId),
     output: (input) => client.runOutput(sessionId, input ?? {}),
+    bytes: (input) => client.runBytes(sessionId, input ?? {}),
+    // Present so the two implementations cannot disagree about the shape. The
+    // toolkit does not expose either — typing into a project's one deployment
+    // is a person's act on a surface they are looking at.
+    write: (input) => client.writeRun(sessionId, input),
+    resize: (input) => client.resizeRun(sessionId, input),
   };
 }

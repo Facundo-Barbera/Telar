@@ -63,6 +63,23 @@ export type RunLaunchEvents = {
 export type RunHandle = {
   readonly pid: number | undefined;
   stop(force: boolean): void;
+  /**
+   * KEYSTROKES, AND THEY ARE OPTIONAL BECAUSE ONE LAUNCHER GENUINELY HAS NO
+   * KEYBOARD.
+   *
+   * A pipe-launched run is spawned with `stdio: ["ignore", …]` — its stdin is
+   * /dev/null, and the honest answer for `bun run src/main.ts` or CI is "there
+   * is nothing to type into", not a write that silently goes nowhere. The
+   * manager refuses with `conflict` and says which shape it got, rather than
+   * this port pretending both shapes are the same.
+   *
+   * Answers whether the bytes reached a process. `false` is the ordinary race
+   * against an exit, not an error — see `terminal-client.ts`.
+   */
+  write?(data: string): Promise<boolean>;
+  /** The geometry the surface drawing it is using. Same optionality, same
+   *  reason: a pipe has no columns. */
+  resize?(cols: number, rows: number): Promise<boolean>;
 };
 
 export type RunLauncher = {
@@ -174,6 +191,8 @@ export function terminalLauncher(client: RunTerminalClient, defaults: { cols?: n
       }
       return {
         pid: opened.pid,
+        write: (data: string) => client.write(opened.id, data),
+        resize: (cols: number, rows: number) => client.resize(opened.id, cols, rows),
         stop(force: boolean) {
           // BY ID, AND FIRE-AND-FORGET IS NOT AN OPTION. A kill whose request
           // never lands must not read as a kill that did, so a rejection is
