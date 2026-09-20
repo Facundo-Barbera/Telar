@@ -20,6 +20,15 @@
  * silently. A term's UTF-8 byte length is an upper bound on its token cost
  * rather than a guess at it, so the list can be short but never illegal.
  *
+ * THE BOUND IS NOW THE MEASURED ONE AND NOT THE PROVABLE ONE (#712). 500 bytes
+ * assumed the pathological one-byte-per-token case, which real words never
+ * reach; the boundary was walked against the live endpoint and sits between
+ * 1.70 and 2.83 bytes per token depending on the content, so the list is built
+ * to 700. WHAT MAKES THAT SAFE IS NOT THESE TESTS — it is `fit.ts`, which asks
+ * Deepgram and falls back to `DEEPGRAM_KEYTERM_PROVABLE_BYTES` when it cannot
+ * get an answer. What these tests still hold is that the builder respects
+ * whatever bound it is given, because the shrink depends on it.
+ *
  * What must not drift:
  *
  *   - the person's OWN terms come first, because they typed them into a box for
@@ -38,6 +47,8 @@
  */
 import { expect, test } from "bun:test";
 import {
+  DEEPGRAM_KEYTERM_BYTE_BUDGET,
+  DEEPGRAM_KEYTERM_PROVABLE_BYTES,
   DEEPGRAM_KEYTERM_TOKEN_BUDGET,
   TELAR_KEYTERMS,
   deepgramKeyterms,
@@ -101,7 +112,7 @@ test("the budget is the only ceiling, and short terms get far past the old forty
 test("the token budget bounds it, since a few dozen titles can be two thousand characters", () => {
   const long = Array.from({ length: 40 }, (_, index) => `${String(index).padStart(2, "0")}-${"x".repeat(57)}`);
   const terms = built({ vocabulary: long });
-  expect(bytes(terms)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
+  expect(bytes(terms)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_BYTE_BUDGET);
   expect(terms.length).toBeLessThan(long.length);
   expect(terms).toEqual(long.slice(0, terms.length));
 });
@@ -116,7 +127,7 @@ test("a term is charged what it weighs on the wire, not what it looks like", () 
   const withPlain = built({ vocabulary: Array.from({ length: 60 }, (_, index) => `${index}${plain}`) });
   // Same character count, fewer terms — because they cost more.
   expect(withAccents.length).toBeLessThan(withPlain.length);
-  expect(bytes(withAccents)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
+  expect(bytes(withAccents)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_BYTE_BUDGET);
 });
 
 test("nothing anybody can type pushes the list over Deepgram's limit", () => {
@@ -130,7 +141,7 @@ test("nothing anybody can type pushes the list over Deepgram's limit", () => {
       vocabulary: Array.from({ length: 200 }, (_, index) => `${index}${material.repeat(10)}`),
       context: { sessionTitles: Array.from({ length: 200 }, (_, index) => `t${index}${material.repeat(8)}`) },
     });
-    expect(bytes(terms)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
+    expect(bytes(terms)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_BYTE_BUDGET);
   }
 });
 
@@ -156,7 +167,7 @@ test("the glossary this Mac was failing on now fits, and keeps the words worth k
       branches: ["telar/974-revision-creatio-sin-ruta-odata-pgta-f7bd33", "telar/690-diff-miente-en-sesiones-local-3a-89157c"],
     },
   });
-  expect(bytes(terms)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
+  expect(bytes(terms)).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_BYTE_BUDGET);
   // AND IT IS STILL A GLOSSARY. The app's own words survive the cut, which is
   // what the priority order is for — a bound that kept the branch slugs and
   // dropped "Telar" would be inside the budget and useless.
@@ -198,6 +209,31 @@ test("blank and whitespace-only entries are not terms, and newlines are collapse
   const terms = built({ vocabulary: ["  ", "", "  Two   words \n here  "] });
   expect(terms).toContain("Two words here");
   expect(terms.every((term) => term.trim() === term && !term.includes("\n"))).toBe(true);
+});
+
+test("the bound is a parameter, because the shrink builds shorter lists with it (#712)", () => {
+  // `fit.ts` shortens a refused glossary by rebuilding it under a smaller
+  // budget, and the probe that measured the boundary had to build lists ABOVE
+  // it. Both need the same builder — ordering, dedup and collapsing included —
+  // with only the ceiling moved.
+  const many = Array.from({ length: 200 }, (_, index) => `Term${String(index).padStart(3, "0")}`);
+  const wide = deepgramKeyterms({ vocabulary: many, context: EMPTY, budgetBytes: 4000 });
+  const narrow = deepgramKeyterms({ vocabulary: many, context: EMPTY, budgetBytes: 200 });
+  expect(bytes(wide)).toBeGreaterThan(DEEPGRAM_KEYTERM_BYTE_BUDGET);
+  expect(bytes(narrow)).toBeLessThanOrEqual(200);
+  // AND THE SHORTER ONE IS A PREFIX OF THE LONGER, which is what lets the
+  // shrink drop the tail without reordering anything a person can see.
+  expect(narrow).toEqual(wide.slice(0, narrow.length));
+});
+
+test("the provable floor is below the built bound, or the shrink has no rungs", () => {
+  // If these ever met, `fit.ts` would have nothing to shrink TO and the raised
+  // bound would become load-bearing — which is exactly what #707 showed a
+  // measured number must never be.
+  expect(DEEPGRAM_KEYTERM_PROVABLE_BYTES).toBeLessThan(DEEPGRAM_KEYTERM_BYTE_BUDGET);
+  // And the floor is the token budget itself, because a token never covers
+  // fewer than one byte — that identity is the proof, not a coincidence.
+  expect(DEEPGRAM_KEYTERM_PROVABLE_BYTES).toBe(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
 });
 
 test("a Mac with nothing on it still sends the app's own words rather than an empty list", () => {
