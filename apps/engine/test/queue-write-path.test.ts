@@ -1,12 +1,23 @@
 /**
- * THE QUEUE DOCUMENT ON THE WRITE PATH — issue #547, the instrument.
+ * THE QUEUE DOCUMENT ON THE WRITE PATH — issue #547, step 2.
  *
- * THE INSTRUMENT FIRST, AND FALSIFIED ON ITS OWN. Everything #547 goes on to
- * claim about the write path is counted rather than argued, so the counter has
- * to be worth something before it certifies anything: `readAccounting` could
- * not see `readQueue` at all, which means it read 0 before and 0 after a change
- * that doubled the wall time. These two tests are what go red if that is ever
+ * THE INSTRUMENT FIRST, AND FALSIFIED ON ITS OWN. Everything #547 claims about
+ * the write path is counted rather than argued, so the counter has to be worth
+ * something before it certifies anything: `readAccounting` could not see
+ * `readQueue` at all, which means it read 0 before and 0 after a change that
+ * doubled the wall time. The first two tests are what go red if that is ever
  * true again.
+ *
+ * THEN THE CLAIM: THE ROW'S FOLD NO LONGER RE-PARSES WHAT THE COMMAND JUST
+ * WROTE. Measured, not asserted in prose — the parse counts below are exact,
+ * and reverting the pass-through in `writeQueue` adds one to each of them. A
+ * test that could not tell N from N+1 would not be testing this.
+ *
+ * THE COUNTS ARE ALSO A RATCHET. Fifteen whole-queue parses per turn survive
+ * this issue (5 + 4 + 2 + 4), and they are written down on purpose: this issue
+ * is about the write path reading the queue more often than it needs to, so a
+ * change that moves these numbers is a change somebody should look at, in
+ * either direction.
  */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -120,4 +131,99 @@ test("a session whose queue document is missing is not counted as a read", () =>
   expect(store.turns("session_one")).toEqual([]);
   expect(store.readAccounting.documentReads).toBe(0);
   expect(store.readAccounting.queueParses).toBe(0);
+});
+
+// ── step 2: the row's fold reads nothing the command already wrote ───────────
+
+for (const backend of BACKENDS) {
+  test(`a queue-writing command parses the queue a fixed number of times (${backend})`, () => {
+    /**
+     * THE NUMBERS, AND WHY THEY ARE WRITTEN DOWN RATHER THAN COMPARED.
+     *
+     * Each of the four transitions used to make one MORE whole-queue parse than
+     * this: `storeSessionRow` fetched the document back out of the store and
+     * re-parsed it to fold the activity, immediately after `writeQueue` had
+     * serialised the very same object. Reverting that pass-through turns
+     * 5/4/2/4 into 6/5/3/5 on sqlite, which is the red run this test exists to
+     * produce.
+     *
+     * THE JSON BACKEND IS THE CONTROL, not a second copy of the same proof. It
+     * has no index row at all — `indexedSessionOf` returns nothing without an
+     * execution store — so it never made the extra parse and reverting the
+     * pass-through does not move it. The two agreeing on 5/4/2/4 is the
+     * statement that sqlite now reads the queue as many times as a store with
+     * no row to fold, and no more.
+     */
+    const store = seeded(open(root(), backend), 5);
+
+    expect(queueParses(store, () => store.submitTurn("session_one", { runId: "run_x", input: "hello" }))).toBe(5);
+
+    let token = "";
+    expect(queueParses(store, () => { token = store.claimTurn("session_one", "worker_one")!.claim!.token; })).toBe(4);
+    expect(queueParses(store, () => store.markRunning("session_one", "run_x", token))).toBe(2);
+    expect(queueParses(store, () => store.completeTurn("session_one", "run_x", token, { text: "done" }))).toBe(4);
+
+    // AND A WRITE THAT CANNOT HAVE MOVED THE QUEUE still reads it once and not
+    // twice — `indexedSessionOf`'s carve-out means the row carries the folded
+    // fields over rather than folding them again.
+    expect(queueParses(store, () => store.updateSession("session_one", { title: "Renamed" }))).toBe(1);
+  });
+}
+
+test("the carried queue is the one the command wrote, at every transition", () => {
+  /**
+   * THE COUNT IS HALF THE CLAIM; THIS IS THE OTHER HALF.
+   *
+   * A pass-through that carried a STALE queue — the first of two writes in one
+   * command, or an object edited after the write — would keep the parse count
+   * at 5/4/2/4 and put a wrong pill on the rail. So the folded row is compared,
+   * transition by transition, against the same conversation folded from the
+   * documents on a store that has no index at all: `session-index.test.ts`'
+   * argument, applied to the write path rather than the read.
+   */
+  /**
+   * ONE CLOCK FOR BOTH, ADVANCED BY HAND. A clock that ticks per `now()` call
+   * gives the two backends different timestamps for the same transition — they
+   * do not read the clock the same number of times — and the comparison below
+   * would then fail for a reason that is not the thing under test.
+   */
+  let clock = 1_000;
+  const tick = (): number => clock;
+  const indexed = seeded(open(root(), "sqlite", tick), 3);
+  const documents = seeded(open(root(), "json", tick), 3);
+
+  const folded = (store: EngineStore): unknown => {
+    const row = store.liveSessionRows({ all: true }).sessions.find((session) => session.id === "session_one")!;
+    return {
+      activity: row.activity,
+      activityAt: row.activityAt,
+      lastTurnEndedAt: row.lastTurnEndedAt,
+      lastTurnFailed: row.lastTurnFailed,
+      lastTurnSequence: row.lastTurnSequence,
+    };
+  };
+
+  // The seeded conversations already agree, which is the baseline the steps
+  // below are read against.
+  expect(folded(indexed)).toEqual(folded(documents));
+  expect(folded(indexed)).toMatchObject({ activity: "idle", lastTurnSequence: 3 });
+
+  const step = (action: (store: EngineStore) => void, expected: Record<string, unknown>): void => {
+    clock += 10;
+    action(indexed);
+    action(documents);
+    expect(folded(indexed)).toEqual(folded(documents));
+    // …and it is the state we meant, not two stores agreeing on the old answer.
+    expect(folded(indexed)).toMatchObject(expected);
+  };
+
+  step((store) => store.submitTurn("session_one", { runId: "run_x", input: "hello" }), { activity: "queued" });
+  const tokens = new Map<EngineStore, string>();
+  step((store) => { tokens.set(store, store.claimTurn("session_one", "worker_one")!.claim!.token); }, { activity: "queued" });
+  step((store) => store.markRunning("session_one", "run_x", tokens.get(store)!), { activity: "working" });
+  step((store) => store.completeTurn("session_one", "run_x", tokens.get(store)!, { text: "done" }), { activity: "idle", lastTurnSequence: 4 });
+
+  // A metadata-only write afterwards must not disturb what the queue write
+  // folded — this is the carry-over half of `indexedSessionOf`, still working.
+  step((store) => store.updateSession("session_one", { title: "Renamed" }), { activity: "idle", lastTurnSequence: 4 });
 });

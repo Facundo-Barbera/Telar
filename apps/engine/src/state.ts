@@ -1928,18 +1928,32 @@ export class EngineStore {
    * that reached the disk without its document (or the other way round) is a
    * sidebar that disagrees with the conversation behind it.
    */
-  private inRowTransaction(owner: { id: string; movesActivity: boolean } | undefined, write: () => void): void {
+  private inRowTransaction(owner: { id: string; movesActivity: boolean } | undefined, write: () => void, written?: SessionQueue): void {
     if (owner === undefined || !this.executionStore) return write();
     if (this.commandDepth > 0) {
       write();
-      // OR, never overwrite: a command that moved the queue and then the
-      // metadata owes the full fold, whichever of the two it wrote last.
-      this.dirtySessionRows.set(owner.id, (this.dirtySessionRows.get(owner.id) ?? false) || owner.movesActivity);
+      const owed = this.dirtySessionRows.get(owner.id);
+      this.dirtySessionRows.set(owner.id, {
+        // OR, never overwrite: a command that moved the queue and then the
+        // metadata owes the full fold, whichever of the two it wrote last.
+        movesActivity: (owed?.movesActivity ?? false) || owner.movesActivity,
+        /**
+         * AND THE LATEST QUEUE WINS, WHICH IS THE WHOLE RISK HERE (#547).
+         *
+         * `dirtySessionRows` coalesces every write one command makes to a
+         * session, and a queue carried from the FIRST of two queue writes would
+         * fold a history the second one has already replaced. So a queue write
+         * replaces what is carried and any other write leaves it alone — the
+         * metadata, requests and tasks writes that also mark a row dirty cannot
+         * have moved the turns, so the queue in hand is still the one on disk.
+         */
+        queue: written ?? owed?.queue,
+      });
       return;
     }
     this.executionStore.atomically(() => {
       write();
-      this.storeSessionRow(owner.id, owner.movesActivity);
+      this.storeSessionRow(owner.id, owner.movesActivity, undefined, written);
     });
   }
 
@@ -1949,13 +1963,20 @@ export class EngineStore {
    * Emptied by `flushSessionRows` before the commit, and by `executeCommand`'s
    * rollback path — a row owed on behalf of a write that did not happen is a row
    * that would describe a document sqlite no longer has.
+   *
+   * `queue` IS THE DOCUMENT THE COMMAND JUST WROTE, kept so the fold at the end
+   * of it does not fetch and re-parse what is already in memory — see
+   * `storeSessionRow`. Absent when nothing in this command wrote the queue.
    */
-  private dirtySessionRows = new Map<string, boolean>();
+  private dirtySessionRows = new Map<string, { movesActivity: boolean; queue?: SessionQueue }>();
 
   /** Fold one session's four documents into its row and store it. The read is
    *  the same one the live fold used to make per session per poll; it is made
-   *  here instead, once per command that could have moved the answer. */
-  private storeSessionRow(sessionId: string, movesActivity = true, at = this.settlingClock()): void {
+   *  here instead, once per command that could have moved the answer.
+   *
+   *  `written` is the queue this command already wrote, when it wrote one — see
+   *  `dirtySessionRows`. */
+  private storeSessionRow(sessionId: string, movesActivity = true, at = this.settlingClock(), written?: SessionQueue): void {
     if (!this.executionStore) return;
     const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
     const before = this.executionStore.sessionRow(sessionId);
@@ -1983,9 +2004,22 @@ export class EngineStore {
      *
      * Without a row on file there is nothing to carry, so the fold runs — which
      * is what the backfill and a session's first write both take.
+     *
+     * AND WHEN THE QUEUE IS THE THING THAT MOVED, IT IS ALREADY IN HAND (#547).
+     * `writeQueue` holds the parsed document it has just serialised, and this
+     * fold used to fetch it back out of sqlite and re-parse it — a second whole
+     * parse of a megabyte the same command wrote, measured at 19 whole-queue
+     * parses per turn on a 400-turn fixture. `writeQueue` carries it through
+     * `dirtySessionRows` instead; the fall back to the read stays for the
+     * commands that moved `requests.json` or `tasks.json` and never touched the
+     * turns, and for the backfill, which has no write to carry anything from.
+     *
+     * THE ONE THING THIS TRUSTS is that a command does not edit its queue after
+     * writing it and then not write again — which would already be a lost
+     * write, on disk, before this line could be wrong about it.
      */
     const folded = movesActivity || before === undefined
-      ? this.withActivityFrom(record, this.readQueue(sessionId).turns)
+      ? this.withActivityFrom(record, (written ?? this.readQueue(sessionId)).turns)
       : {
           ...record,
           activity: before.activity,
@@ -2014,7 +2048,7 @@ export class EngineStore {
     const owed = [...this.dirtySessionRows];
     this.dirtySessionRows.clear();
     const at = this.settlingClock();
-    for (const [sessionId, movesActivity] of owed) this.storeSessionRow(sessionId, movesActivity, at);
+    for (const [sessionId, row] of owed) this.storeSessionRow(sessionId, row.movesActivity, at, row.queue);
   }
 
   /**
@@ -2209,15 +2243,17 @@ export class EngineStore {
    * parsing the whole thing, which is what every document written before this
    * existed already does.
    */
-  private writeIndexedDocument(file: string, indexFile: string, value: unknown, property: string, rows: Array<{ key: string; tag?: string }>): void {
+  private writeIndexedDocument(file: string, indexFile: string, value: unknown, property: string, rows: Array<{ key: string; tag?: string }>, written?: SessionQueue): void {
     const sqlite = this.executionStore?.owns(file);
     const text = sqlite ? JSON.stringify(value) : `${JSON.stringify(value, null, 2)}\n`;
     // The queue is one of the four the row folds over, so it takes the same
-    // route `writeDocument` does — document and row, one transaction.
+    // route `writeDocument` does — document and row, one transaction. `written`
+    // is that queue when this IS the queue write, so the row's fold can use it
+    // rather than read it back (#547); the item projection passes nothing.
     this.inRowTransaction(this.indexedSessionOf(file), () => {
       if (sqlite) this.executionStore!.writeText(file, text);
       else atomicWriteText(file, text);
-    });
+    }, written);
     const bytes = Buffer.from(text, "utf8");
     const ranges = arrayElementRanges(bytes, property);
     const index: DocumentIndex = ranges && ranges.length === rows.length
@@ -13063,6 +13099,9 @@ export class EngineStore {
       queue,
       "turns",
       queue.turns.map((turn) => ({ key: turn.runId, tag: turn.state })),
+      // CARRIED TO THE ROW'S FOLD (#547): this is the document, parsed, and the
+      // fold at the end of this command would otherwise read it straight back.
+      queue,
     );
     // INSIDE `writeQueue` BECAUSE IT IS THE ONLY WRITER — the same reason the
     // live index and the queue cache are maintained here rather than at each of
