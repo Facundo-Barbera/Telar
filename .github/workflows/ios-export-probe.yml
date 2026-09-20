@@ -1,22 +1,37 @@
 name: iOS export probe
 
-# THE QUESTION THIS ANSWERS: does `xcodebuild -exportArchive` finish on the
-# runner the nightly actually uses? #757 was four consecutive red nights in
+# PERMANENT, DESPITE THE NAME. This is not leftover scaffolding from the #757
+# investigation and it is not waiting to be tidied away — it is the only way to
+# run the iOS pipeline's export step without publishing a build to real people.
+# Deleting it puts that condition back.
+#
+# The condition cost four nights. #757 was four consecutive red nightlies in
 # which the ARCHIVE succeeded and the EXPORT died — `error: exportArchive Copy
-# failed`, exit 70 — and no way to test a fix, because the only workflow that
-# reaches the export is the one that publishes to real TestFlight testers on
-# its way past. A fix nobody can try before shipping it is how four reds went
-# out in a row.
+# failed`, exit 70 — and nobody could test a candidate fix, because the only
+# workflow reaching the export is the one that uploads to TestFlight internal
+# testers on its way past. A step you can only exercise by doing the
+# irreversible thing is a step that goes unverified until it breaks in public.
 #
 # So: archive, export, STOP. `nightly.sh --export-only` is that stopping point,
-# and the whole value of this probe is that it runs the production script
-# rather than a copy of its commands — a copy would test the copy.
+# and the value here is that it runs the PRODUCTION script rather than a copy
+# of its commands — a copy would only ever test the copy.
 #
-# PUBLISHES NOTHING. No altool, no TestFlight, no tag. It can be run on any
-# branch, as often as the answer is wanted.
+# The name was considered and kept: renaming cannot break the trigger below
+# (the glob matches BRANCH names, not this filename), but it would break the
+# continuity of this workflow's run history, which is where the evidence for
+# #757 lives — run 35492067186 among them. The header is what keeps it alive,
+# not the filename.
 #
-# NOT ON A SCHEDULE: this is an instrument, not a watchdog. nightly-ios.yml is
-# what has to be green; this is what you reach for when it is not.
+# ─── HOW TO RUN IT ────────────────────────────────────────────────────────
+#   By hand:    the Actions tab → "iOS export probe" → Run workflow, on any
+#               ref. That is `workflow_dispatch` below.
+#   By push:    push to a branch named `telar/*-probe-*` touching this file,
+#               apps/ios/nightly.sh, or apps/ios/ExportOptions.plist.
+#
+# DORMANT BY DESIGN. No schedule, no altool, no TestFlight, no tag — it cannot
+# publish anything, so it is safe to run as often as the answer is wanted, and
+# it costs nothing while nobody asks. nightly-ios.yml is what has to be green;
+# this is what you reach for when it is not.
 on:
   workflow_dispatch:
   # OPT IN BY BRANCH NAME. An earlier version fired on every `telar/757-*`
