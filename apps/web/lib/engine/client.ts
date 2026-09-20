@@ -108,8 +108,10 @@ import type {
   Subscription,
   WakeKind,
   GitFilePatch,
+  DiffBaseOption,
+  FilePatchOptions,
 } from "@telar/engine-client";
-import { forgeQuery, snapshotQuery } from "@telar/engine-client";
+import { diffBaseQuery, filePatchQuery, forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pathnameFetcher, pinnedHost } from "@/lib/hosts/client";
 // Type-only, like `Channel` above: `lib/fs-dirs.ts` reads the filesystem and
 // must not follow into the browser bundle.
@@ -1120,29 +1122,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  before its conversation exists. */
     projectDiff: (projectId: string) =>
       request<{ diff: SessionDiff }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/diff`),
-    projectFilePatch: (projectId: string, path: string, options: { untracked?: boolean } = {}) => {
-      const query = new URLSearchParams({ path });
-      if (options.untracked) query.set("untracked", "1");
-      return request<{ file: GitFilePatch }>(
+    projectFilePatch: (projectId: string, path: string, options: FilePatchOptions = {}) =>
+      request<{ file: GitFilePatch }>(
         fetcher,
         "GET",
-        `/api/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`,
-      );
+        `/api/projects/${encodeURIComponent(projectId)}/diff?${filePatchQuery(path, options)}`,
+      ),
+    /** What this session has done to the repository, against the base the Diff
+     *  surface asked for — see `DiffBaseOption` for the three states of one. */
+    sessionDiff: (sessionId: string, options: DiffBaseOption = {}) => {
+      const query = diffBaseQuery(options);
+      return request<{ diff: SessionDiff }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/diff${query ? `?${query}` : ""}`);
     },
-    /** What this session has done to the repository since it started — committed
-     *  and uncommitted together, from the base recorded at creation. */
-    sessionDiff: (sessionId: string) =>
-      request<{ diff: SessionDiff }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/diff`),
     /** One file's patch, opened on demand. */
-    sessionFilePatch: (sessionId: string, path: string, options: { untracked?: boolean } = {}) => {
-      const query = new URLSearchParams({ path });
-      if (options.untracked) query.set("untracked", "1");
-      return request<{ file: GitFilePatch }>(
-        fetcher,
-        "GET",
-        `/api/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`,
-      );
-    },
+    sessionFilePatch: (sessionId: string, path: string, options: FilePatchOptions = {}) =>
+      request<{ file: GitFilePatch }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/diff?${filePatchQuery(path, options)}`),
     /**
      * Every file in a checkout, for the Files tree — and one file's text.
      *

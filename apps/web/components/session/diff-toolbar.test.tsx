@@ -19,6 +19,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
+import { filePatchQuery, parseFilePatchQuery } from "@telar/engine-client";
 import { DEFAULT_DIFF_VIEW, type DiffView } from "@/lib/diff-view";
 import { DiffToolbar } from "./diff-surface";
 
@@ -91,15 +92,59 @@ describe("the diff toolbar", () => {
      * the request — and the request function has to CHANGE IDENTITY when it
      * flips, or an already-open row goes on showing the answer to the old
      * question.
+     *
+     * ─────────────────────────────────────────────────────────────────────────
+     * THIS TEST USED TO ASSERT THE SOURCE STRING AND PASSED WHILE THE FLAG WAS
+     * DEAD (#694, fixed in the scope-selector change).
+     *
+     * The option was built here correctly and the engine parsed it correctly;
+     * the cockpit's own adapter in between listed `untracked` and dropped the
+     * rest, and TypeScript does not check excess properties on a non-literal,
+     * so nothing anywhere failed. A test that reads the code that makes a claim
+     * proves the claim was WRITTEN. The URL is the claim's effect, so that is
+     * what this reads now — through the same builder every layer uses.
+     * ─────────────────────────────────────────────────────────────────────────
      */
+    expect(filePatchQuery("src/a.ts", {})).toBe("path=src%2Fa.ts");
+    expect(filePatchQuery("src/a.ts", { ignoreWhitespace: true })).toContain("ignoreWhitespace=1");
+    expect(filePatchQuery("src/a.ts", { untracked: true, ignoreWhitespace: true })).toContain("untracked=1");
+    // ...and a server makes the same option of it again.
+    expect(parseFilePatchQuery(new URLSearchParams(filePatchQuery("src/a.ts", { ignoreWhitespace: true })))).toMatchObject({
+      ignoreWhitespace: true,
+    });
+
     const surface = source("diff-surface.tsx");
+    // The flag is in the request, and in the dependencies that re-read it.
     expect(surface).toContain("view.ignoreWhitespace ? { ignoreWhitespace: true } : {}");
-    expect(surface).toContain("[sessionId, projectId, view.ignoreWhitespace]");
+    expect(surface).toContain("view.ignoreWhitespace");
     // ...and the row discards a patch that was read under the other flag.
     expect(surface).toContain("answer.reader === readPatch");
     // The renderer is told the other two and NOT this one, which is the proof
     // it never became a view option by accident.
-    const viewer = source("diff-code-view.tsx");
-    expect(viewer).not.toContain("ignoreWhitespace");
+    expect(source("diff-code-view.tsx")).not.toContain("ignoreWhitespace");
+  });
+
+  test("every layer between the toggle and git uses ONE query builder", () => {
+    /**
+     * THE STRUCTURAL HALF OF THE FIX ABOVE. Three layers stand between the
+     * toolbar and `git diff`: the cockpit's adapter, its Next route handler,
+     * and the engine's daemon. #694 shipped with the first of them enumerating
+     * parameters by hand, which is how one went missing — the same failure
+     * `forgeQuery` carries a note about for the GitHub filter.
+     *
+     * So none of them may list parameters any more, and this is what says so.
+     * A new option added to `FilePatchOptions` reaches git through all three
+     * without anybody remembering to update a fourth place.
+     */
+    const layers = {
+      "lib/engine/client.ts": readFileSync(path.join(dir, "../../lib/engine/client.ts"), "utf8"),
+      "app/api/sessions/[sessionId]/diff/route.ts": readFileSync(path.join(dir, "../../app/api/sessions/[sessionId]/diff/route.ts"), "utf8"),
+      "app/api/projects/[projectId]/diff/route.ts": readFileSync(path.join(dir, "../../app/api/projects/[projectId]/diff/route.ts"), "utf8"),
+    };
+    for (const [name, code] of Object.entries(layers)) {
+      expect(code, `${name} builds or parses the query with the shared pair`).toMatch(/filePatchQuery|parseFilePatchQuery/);
+      // The hand-written form that dropped the flag, in any of its spellings.
+      expect(code, `${name} does not read a diff parameter by hand`).not.toMatch(/searchParams\.get\("untracked"\)/);
+    }
   });
 });

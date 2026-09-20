@@ -40,6 +40,8 @@ import {
   type WorkerStatus,
   pluginEnabled,
   machineAllows,
+  parseDiffBaseQuery,
+  parseFilePatchQuery,
   readProjectPlugins,
   workspacePath,
 } from "@telar/engine-client";
@@ -60,6 +62,7 @@ import {
   migrateLegacyEngineRoot,
   statePaths,
   engineRootFromEnv,
+  type DiffBaseOption,
   type EngineNotifier,
   type FilePatchOptions,
   type StoppedClaim,
@@ -547,11 +550,17 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
  * other ignored would be a toolbar control that worked in a conversation and
  * did nothing on a canvas.
  */
+/**
+ * THE QUERY IS PARSED BY THE CONTRACT'S OWN PARSER, not by a copy written here
+ * — `protocol/diff-query.ts` carries the argument, and the bug it was written
+ * for was a hand-written third copy dropping a parameter in silence.
+ */
 function filePatchOptions(url: URL): FilePatchOptions {
-  return {
-    untracked: url.searchParams.get("untracked") === "1",
-    ignoreWhitespace: url.searchParams.get("ignoreWhitespace") === "1",
-  };
+  return parseFilePatchQuery(url.searchParams);
+}
+
+function requestedBase(url: URL): DiffBaseOption {
+  return parseDiffBaseQuery(url.searchParams);
 }
 
 /**
@@ -4223,7 +4232,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             });
             return;
           }
-          writeJson(response, 200, { diff: await store.sessionDiffAsync(session.sessionId) });
+          writeJson(response, 200, { diff: await store.sessionDiffAsync(session.sessionId, requestedBase(url)) });
           return;
         }
         /**

@@ -1,3 +1,5 @@
+import { parseDiffBaseQuery, parseFilePatchQuery } from "@telar/engine-client";
+
 import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 
 /**
@@ -9,6 +11,12 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
  * path is fenced inside the session's workspace by the ENGINE, not here — an
  * in-process caller must not be able to walk past a check that only ran on the
  * socket.
+ *
+ * THE QUERY IS PARSED BY THE CONTRACT'S PARSER, NOT BY HAND — this adapter is
+ * the layer that dropped `ignoreWhitespace` in #694 while every layer either
+ * side of it was correct, which is the same failure `forgeQuery` documents for
+ * the GitHub filter. Listing the parameters here is how that happens; parsing
+ * them with the same function the client builds them with is how it stops.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -22,9 +30,9 @@ export async function GET(request: Request, context: Context) {
     const engine = await engineClient();
     const target = url.searchParams.get("path");
     if (target) {
-      return Response.json(await engine.sessionFilePatch(sessionId, target, { untracked: url.searchParams.get("untracked") === "1" }));
+      return Response.json(await engine.sessionFilePatch(sessionId, target, parseFilePatchQuery(url.searchParams)));
     }
-    return Response.json(await engine.sessionDiff(sessionId));
+    return Response.json(await engine.sessionDiff(sessionId, parseDiffBaseQuery(url.searchParams)));
   } catch (error) {
     return engineErrorResponse(error);
   }
