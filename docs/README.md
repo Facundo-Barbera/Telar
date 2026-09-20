@@ -5,6 +5,14 @@ the interface, verification as the gate, and environment leasing as the
 scarce-resource manager. Normative companion: [`env-contract-v1.md`](env-contract-v1.md)
 (implemented by `packages/env`). A visual summary lives in [`artifacts/`](artifacts/).
 
+**Where Telar puts things is normative and lives here:**
+[`storage-shape.md`](storage-shape.md) — the four tiers, one rule each, and
+which tier a new kind of data goes in. It exists because that question had no
+written answer, so #630, #642, #646 and #658 each had to decide it again,
+locally, and each decided it reasonably and differently (#665). Read it before
+adding anything that writes to disk. [`store-location.md`](store-location.md) is
+its companion: how a store is moved, in detail.
+
 **One standing commitment lives in an investigation rather than in source**, because
 the code it governs does not exist yet and the sentence must not be lost before it
 does: [`investigations/627-remote-access-without-tailscale.md`](investigations/627-remote-access-without-tailscale.md)

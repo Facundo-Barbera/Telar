@@ -1,8 +1,21 @@
-# Where Telar's store lives — design for #630
+# Where Telar's store lives — #630
 
-Design only; nothing here is built. The store may be moved to any location the
-person chooses, including a removable volume, and changed again later without
-reinstalling.
+**Built, and this page is now the reasoning behind shipped code rather than a
+proposal.** It opened with "Design only; nothing here is built", which stopped
+being true on the day it was written: `apps/desktop/store-location.js`,
+`store-gate.js` and `store-migrate.js` all landed on 2026-09-18, and §3's
+`hostname` lock hazard was fixed the same day (`acquireDaemonLock` now calls
+`lockHeldElsewhere(owner)` and refuses a lock written by another host). A
+document that describes shipped behaviour as unbuilt is worse than no document,
+so the line is corrected here rather than left for the next reader to discover
+(#665).
+
+**Which tier a new kind of data belongs in is not decided here.** That is
+[`storage-shape.md`](storage-shape.md), which is normative; this page is the
+detail of how a tier-1 store is moved without losing it.
+
+The store may be moved to any location the person chooses, including a removable
+volume, and changed again later without reinstalling.
 
 The hard part is not the setting. It is that **a store that is absent and a
 store that never existed look identical from the filesystem**, and getting that
@@ -288,11 +301,22 @@ path, rewrites it. No project registry is needed: each worktree's own `.git`
 names its repository, which is what keeps this in the shell where the migration
 happens.
 
-### And a worktree on a removable volume must be locked
+### And a worktree must be locked — fixed, and more broadly than this asked
 
-This is a live defect independent of the migration, and it is the sharper half.
-`removeSessionWorktreeAsync` guards on the **project's** availability and then
-runs `git worktree prune`. Once the store is on a drive, those two facts come
+**Both halves of this shipped, and one of them shipped wider than written here
+(#665 re-checked it).** `removeSessionWorktreeAsync` now guards on the worktrees
+root being present (`worktree.ts`), which is item 3 below. And item 1 — "lock on
+creation *when the worktree lands on a removable volume*" — was superseded by
+#641: Telar locks **every** session worktree unconditionally, because the thing
+that actually deletes these is `gh pr merge --delete-branch`, which has nothing
+to do with which disk it is on. `store-migrate.js`'s `repairMovedWorktrees` also
+re-locks unconditionally, for the worktrees that arrived from a store written
+before the lock existed.
+
+The reasoning below is kept because it is why the lock exists at all.
+
+`removeSessionWorktreeAsync` guarded on the **project's** availability and then
+ran `git worktree prune`. Once the store is on a drive, those two facts come
 apart:
 
 - the project is on the internal disk and perfectly available,
