@@ -15,7 +15,7 @@
  * with different obligations.
  */
 import { z } from "zod";
-import { Timestamp } from "./common";
+import { Id, Timestamp } from "./common";
 
 /**
  * Why there is nothing to show, when there is nothing to show.
@@ -254,12 +254,35 @@ export const GitHubComment = z.object({
    *  `MEMBER`, `CONTRIBUTOR`, `NONE`. Passed through, not mapped: which of these
    *  is worth a badge is a display decision. */
   authorAssociation: z.string().optional(),
+  /** The comment as a reader should see it — the attribution marker removed.
+   *  GitHub's renderer drops an HTML comment anyway; this matters for the
+   *  surfaces that read raw text, like the head `github_status` hands a model. */
   body: z.string(),
   createdAt: Timestamp,
   minimized: z.boolean(),
   /** GitHub's reason, when it hid the comment. */
   minimizedReason: z.string().min(1).optional(),
   url: z.string().min(1),
+  /**
+   * WHICH TELAR SESSION THIS COMMENT CLAIMS TO COME FROM — issue #791, the one
+   * thing github.com structurally cannot show.
+   *
+   * A CLAIM, NOT A PROOF, and the distinction has to survive every reader of
+   * this field. A comment posted through the engine carries an id stamped from
+   * a verified claim token, exactly as `Session.startedFrom` is — so a model
+   * driving that path cannot name a session it is not. But a comment body is
+   * typed by whoever posts it, and an agent with a shell can run
+   * `gh issue comment` and write any marker it likes, including one it read off
+   * a public comment belonging to another session.
+   *
+   * So this answers "the body says session X", and a surface should present it
+   * as a link to a conversation rather than as a badge of authorship. NOTHING
+   * MAY AUTHORISE ON IT.
+   *
+   * Absent is the ordinary case: every comment written by a person, and every
+   * one an agent posted before this existed.
+   */
+  attribution: z.object({ sessionId: Id }).optional(),
 });
 export type GitHubComment = z.infer<typeof GitHubComment>;
 
@@ -514,6 +537,48 @@ export const GitHubMergeResult = z.union([
   z.object({ merged: z.literal(false), refusal: GitHubMergeRefusal, message: z.string().min(1).optional() }),
 ]);
 export type GitHubMergeResult = z.infer<typeof GitHubMergeResult>;
+
+// ── posting one comment ─────────────────────────────────────────────────────
+
+/**
+ * How long a comment body may be.
+ *
+ * GitHub's own ceiling is 65,536 characters and it answers a 422 past it. Held
+ * here as well because the body travels as an argv string to `gh`, and a body
+ * that overran the operating system's argument limit would fail as a confusing
+ * spawn error rather than as "that comment is too long".
+ */
+export const MAX_COMMENT_BODY = 65_536;
+
+export const GitHubCommentRefusal = z.enum([
+  /** There is no issue or pull request with that number here. */
+  "not_found",
+  /** The body was empty, or past `MAX_COMMENT_BODY`. */
+  "invalid_body",
+  /** Locked, archived, or this account cannot comment here. */
+  "not_permitted",
+  /** Anything else. `message` is `gh`'s, never invented. */
+  "failed",
+]);
+export type GitHubCommentRefusal = z.infer<typeof GitHubCommentRefusal>;
+
+/**
+ * What posting one comment answers.
+ *
+ * A REFUSAL IS DATA, exactly as a merge's is, and for the same reason: "GitHub
+ * would not take this comment" is something a surface renders.
+ *
+ * SUCCESS CARRIES THE URL AND THE ATTRIBUTION THE ENGINE STAMPED, which is the
+ * whole point of routing the write through here. The caller learns which
+ * session the comment was recorded as — from the engine's verified claim, not
+ * from anything the caller said — so a tool answer can state it rather than
+ * assert it.
+ */
+export const GitHubCommentResult = z.union([
+  z.object({ posted: z.literal(true), url: z.string().min(1), attribution: z.object({ sessionId: Id }) }),
+  z.object({ posted: z.literal(false), refusal: GitHubCommentRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitHubCommentResult = z.infer<typeof GitHubCommentResult>;
 
 // ── the wire encoding of a filter ───────────────────────────────────────────
 

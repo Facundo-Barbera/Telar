@@ -6,12 +6,16 @@
  * either tells a reader what to do or wastes their afternoon.
  */
 import { describe, expect, test } from "bun:test";
+import { MAX_COMMENT_BODY } from "@telar/engine-client";
 import {
+  classifyCommentFailure,
   classifyDetailFailure,
   classifyGhFailure,
   classifyMergeFailure,
   classifyProjectFailure,
+  commentOn,
   listArgv,
+  parseCommentUrl,
   MAX_CHECK_LOG_LINES,
   MAX_FACET_VALUES,
   MAX_THREAD_COMMENTS,
@@ -1062,5 +1066,145 @@ describe("classifyMergeFailure", () => {
     // "here is what gh said" beats a confident wrong diagnosis. Every sentence
     // above is a phrase match, so this fallback is the one that has to be safe.
     expect(classifyMergeFailure(failed("something entirely new"))).toEqual({ refusal: "failed", message: "something entirely new" });
+  });
+});
+
+/**
+ * ATTRIBUTION — issue #791, the one thing github.com structurally cannot show.
+ *
+ * THE ROUND TRIP IS THE TEST, and it is written that way on purpose. A check
+ * that a marker parses out of a HAND-BUILT body proves only that the test
+ * author can type the marker; it stays green if `commentOn` stops stamping
+ * altogether. So the body these assertions read is the one `commentOn` actually
+ * handed `gh` — captured off the argv — and it goes back in through
+ * `parseComments`, the same parser the panel uses.
+ */
+describe("comment attribution", () => {
+  const SESSION = "session_db5cb38d5339445aa30d5d1b2fdd71a2";
+  /** `gh` prints the new comment's URL and nothing else. */
+  const posted = (url: string) => ok(`${url}\n`);
+
+  /** The body `commentOn` built, taken from the argv it called `gh` with. */
+  function bodyFrom(calls: string[][]): string {
+    const call = calls.find((args) => args[1] === "comment");
+    if (!call) throw new Error("commentOn never called gh");
+    const at = call.indexOf("--body");
+    return call[at + 1] ?? "";
+  }
+
+  /** That same body as `gh issue view --json comments` would hand it back. */
+  const asThread = (body: string) => [{ body, createdAt: "2026-09-20T10:00:00Z", isMinimized: false, url: "https://example.invalid/c1" }];
+
+  test("a comment the engine posted comes back naming the session that wrote it", async () => {
+    const calls: string[][] = [];
+    const result = await commentOn(verbRunner({ "issue comment": posted("https://example.invalid/issues/791#issuecomment-1") }, calls), "/repo", {
+      kind: "issue",
+      number: 791,
+      body: "The finding, at length.",
+      sessionId: SESSION,
+    });
+
+    expect(result).toEqual({
+      posted: true,
+      url: "https://example.invalid/issues/791#issuecomment-1",
+      attribution: { sessionId: SESSION },
+    });
+
+    // THE ROUND TRIP. Through the real parser, on the real body.
+    const read = parseComments(asThread(bodyFrom(calls)));
+    expect(read.comments[0]!.attribution).toEqual({ sessionId: SESSION });
+    // And the marker is gone from what a reader is handed.
+    expect(read.comments[0]!.body).toBe("The finding, at length.");
+    expect(read.comments[0]!.body).not.toContain("telar-session");
+  });
+
+  /**
+   * THE FAILURE DIRECTION, which is what makes the test above mean anything: a
+   * comment that did NOT go through the stamping parses to no attribution at
+   * all. Revert `withSessionMarker` in `commentOn` and the test above fails
+   * exactly here — it is the same assertion with the stamping removed.
+   */
+  test("a comment nobody stamped is attributed to nobody", () => {
+    const read = parseComments(asThread("Posted by hand with `gh issue comment`."));
+    expect(read.comments[0]!.attribution).toBeUndefined();
+    expect(read.comments[0]!.body).toBe("Posted by hand with `gh issue comment`.");
+  });
+
+  test("nothing but the session id reaches github.com", async () => {
+    const calls: string[][] = [];
+    await commentOn(verbRunner({ "pr comment": posted("https://example.invalid/pull/1#issuecomment-2") }, calls), "/Volumes/Focaltec HD/live/Telar/worktree", {
+      kind: "pull",
+      number: 1,
+      body: "Rebased onto main.",
+      sessionId: SESSION,
+    });
+    const body = bodyFrom(calls);
+    /**
+     * THE PUBLICATION CHECK, against the whole argument rather than against the
+     * marker alone: the cwd above is a real worktree path shape, and none of it
+     * — nor the volume, nor the machine — may appear in what is posted.
+     */
+    expect(body).toBe(`Rebased onto main.\n\n<!-- telar-session: ${SESSION} -->`);
+    for (const forbidden of ["/Volumes", "Focaltec", "/Users", "worktree", ".local", "@"]) {
+      expect(body).not.toContain(forbidden);
+    }
+  });
+
+  test("a pull request comment is `pr comment`, an issue's is `issue comment`", async () => {
+    const calls: string[][] = [];
+    const gh = verbRunner(
+      { "pr comment": posted("https://example.invalid/p"), "issue comment": posted("https://example.invalid/i") },
+      calls,
+    );
+    await commentOn(gh, "/repo", { kind: "pull", number: 2, body: "a", sessionId: SESSION });
+    await commentOn(gh, "/repo", { kind: "issue", number: 3, body: "b", sessionId: SESSION });
+    expect(calls.map((args) => args.slice(0, 3).join(" "))).toEqual(["pr comment 2", "issue comment 3"]);
+  });
+
+  test("an empty or oversized body is refused before gh is asked", async () => {
+    const calls: string[][] = [];
+    const gh = verbRunner({ "issue comment": posted("https://example.invalid/i") }, calls);
+    expect(await commentOn(gh, "/repo", { kind: "issue", number: 1, body: "   ", sessionId: SESSION })).toMatchObject({
+      posted: false,
+      refusal: "invalid_body",
+    });
+    const huge = await commentOn(gh, "/repo", { kind: "issue", number: 1, body: "x".repeat(MAX_COMMENT_BODY + 1), sessionId: SESSION });
+    expect(huge).toMatchObject({ posted: false, refusal: "invalid_body" });
+    expect(huge.posted === false && huge.message).toContain(String(MAX_COMMENT_BODY));
+    // Neither reached GitHub.
+    expect(calls).toEqual([]);
+  });
+
+  test("an id that is not publishable refuses rather than posting an unstamped comment", async () => {
+    const calls: string[][] = [];
+    const result = await commentOn(verbRunner({ "issue comment": posted("https://example.invalid/i") }, calls), "/repo", {
+      kind: "issue",
+      number: 1,
+      body: "a finding",
+      sessionId: "/Users/facundo/Library/Application Support/Telar",
+    });
+    expect(result).toMatchObject({ posted: false, refusal: "invalid_body" });
+    // THE POINT: it did not fall back to posting the comment without a marker.
+    expect(calls).toEqual([]);
+  });
+
+  test("gh's refusals are named, and an unfamiliar one keeps gh's words", () => {
+    expect(classifyCommentFailure(failed("GraphQL: Could not resolve to an Issue with the number of 99999")).refusal).toBe("not_found");
+    expect(classifyCommentFailure(failed("HTTP 403: Resource not accessible by integration")).refusal).toBe("not_permitted");
+    expect(classifyCommentFailure(failed("Issue is locked. (HTTP 403)")).refusal).toBe("not_permitted");
+    expect(classifyCommentFailure(failed("something entirely new"))).toEqual({ refusal: "failed", message: "something entirely new" });
+  });
+
+  test("a comment that posted without a readable url is still reported as posted", async () => {
+    // `gh` printing something unfamiliar must not make a model post twice.
+    const result = await commentOn(verbRunner({ "issue comment": ok("Comment created.\n") }), "/repo", {
+      kind: "issue",
+      number: 7,
+      body: "a",
+      sessionId: SESSION,
+    });
+    expect(result).toMatchObject({ posted: true, url: "#7", attribution: { sessionId: SESSION } });
+    expect(parseCommentUrl("Comment created.\n")).toBeUndefined();
+    expect(parseCommentUrl("https://example.invalid/x\n")).toBe("https://example.invalid/x");
   });
 });

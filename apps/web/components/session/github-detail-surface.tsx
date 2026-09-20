@@ -350,6 +350,31 @@ export function EntryCard({ entry }: { entry: ForgeEntry }) {
           <span className="shrink-0 tabular-nums" title={when(entry.at)}>
             {fmtAgo(entry.at)}
           </span>
+          {/**
+           * WHICH SESSION WROTE THIS — issue #791, and the one thing on this
+           * surface github.com structurally cannot do.
+           *
+           * BESIDE THE AUTHOR, BECAUSE IT IS THE SAME FACT. Every agent comment
+           * in this repository says `Facundo-Barbera`, which is true and tells a
+           * reader nothing: the author is the account, and this is the
+           * conversation. Printed together for the reason the timestamp is — who
+           * said this, and when, and out of which thread is one question.
+           *
+           * A LINK, NOT A BADGE. The marker is a claim the body makes, not a
+           * signature (see `GitHubComment.attribution`), and the honest way to
+           * draw a claim is as somewhere to go and check: the session it names
+           * is one click away, with the reasoning that produced the comment in
+           * it. A badge would assert authorship this cannot prove.
+           */}
+          {entry.sessionId && (
+            <a
+              href={`/sessions/${encodeURIComponent(entry.sessionId)}`}
+              title={`Open the session this comment says it came from — ${entry.sessionId}`}
+              className="min-w-0 shrink truncate font-mono text-4xs underline-offset-2 hover:text-foreground hover:underline"
+            >
+              {entry.sessionId}
+            </a>
+          )}
           {entry.url && (
             <a
               href={entry.url}

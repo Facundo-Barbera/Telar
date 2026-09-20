@@ -24,10 +24,13 @@
  * with every absent thing — is how a surface teaches its reader to ignore it.
  */
 import { execFile } from "node:child_process";
+import { parseSessionAttribution, stripSessionMarker, withSessionMarker } from "./github-attribution";
 import type {
   GitHubCheck,
   GitHubCheckLog,
   GitHubComment,
+  GitHubCommentRefusal,
+  GitHubCommentResult,
   GitHubDetailUnavailable,
   GitHubFacets,
   GitHubIssue,
@@ -46,6 +49,7 @@ import type {
   GitHubSnapshot,
   GitHubUnavailable,
 } from "@telar/engine-client";
+import { MAX_COMMENT_BODY } from "@telar/engine-client";
 
 export type GhResult = { status: number; stdout: string; stderr: string };
 /** Injectable so tests never touch the network. */
@@ -514,14 +518,28 @@ function comment(entry: unknown): GitHubComment | undefined {
   // it has never been observed — dropped rather than rendered as a dead row.
   if (!url) return undefined;
   const reason = text(row.minimizedReason);
+  /**
+   * WHICH SESSION THE BODY CLAIMS — issue #791.
+   *
+   * PARSED HERE AND NOWHERE ELSE, so every reader of a comment gets the same
+   * answer: the panel, `github_status`, and whatever asks next. It is read from
+   * the body because the body is the only channel GitHub carries, and it is
+   * REMOVED from the body for the same reason the engine converts dates once —
+   * a surface should not each have to know the marker exists.
+   *
+   * A CLAIM, NOT A PROOF. See `GitHubComment.attribution`.
+   */
+  const body = text(row.body);
+  const attribution = parseSessionAttribution(body);
   return {
     ...(login(row.author) ? { author: login(row.author)! } : {}),
     ...(text(row.authorAssociation) ? { authorAssociation: text(row.authorAssociation) } : {}),
-    body: text(row.body),
+    body: attribution ? stripSessionMarker(body) : body,
     createdAt: epoch(row.createdAt),
     minimized: row.isMinimized === true,
     ...(reason ? { minimizedReason: reason } : {}),
     url,
+    ...(attribution ? { attribution } : {}),
   };
 }
 
@@ -1030,4 +1048,109 @@ export async function mergePull(
   // would be a lie about a merged pull request, so the pre-merge record goes back
   // with the fields the merge is now known to have changed.
   return { merged: true, pull: { ...pull, state: "MERGED", mergedAt: now(), readAt: now() } };
+}
+
+// ── commenting ─────────────────────────────────────────────────────────────
+
+/**
+ * Why `gh issue comment` refused.
+ *
+ * MATCHED ON PHRASING, like the two classifiers above and for the same reason:
+ * every one of these exits 1. Shorter than the merge's because there are fewer
+ * ways to be told no about a comment — the interesting refusals for a merge are
+ * all about a merge.
+ */
+export function classifyCommentFailure(result: GhResult): { refusal: GitHubCommentRefusal; message?: string } {
+  const text = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  const message = result.stderr.trim() || result.stdout.trim();
+  const carry = message ? { message } : {};
+  if (text.includes("could not resolve to") || text.includes("not found")) return { refusal: "not_found", ...carry };
+  if (
+    text.includes("locked") ||
+    text.includes("archived") ||
+    text.includes("permission") ||
+    text.includes("http 403") ||
+    text.includes("write access")
+  ) {
+    return { refusal: "not_permitted", ...carry };
+  }
+  return { refusal: "failed", ...carry };
+}
+
+/**
+ * `gh` prints the new comment's URL and nothing else. Anything that is not a
+ * URL is an unfamiliar `gh` rather than a failure — the comment IS posted at
+ * that point, so the caller is told so and loses only the link.
+ */
+export function parseCommentUrl(stdout: string): string | undefined {
+  const line = stdout
+    .split(/\r?\n/)
+    .map((each) => each.trim())
+    .filter(Boolean)
+    .at(-1);
+  return line && /^https?:\/\//.test(line) ? line : undefined;
+}
+
+/**
+ * Post one comment, stamped with the session that wrote it — issue #791.
+ *
+ * THE SESSION ID IS THE CALLER'S TO SUPPLY AND NOT THE MODEL'S TO CHOOSE, and
+ * that distinction is enforced one layer up rather than here: `projectGitHubComment`
+ * reads it off a VERIFIED CLAIM TOKEN, the same proof `Session.startedFrom` and
+ * `Turn.sender` are stamped from. This function is the mechanism and deliberately
+ * takes the id as an argument — it is the seam the tests drive, and putting the
+ * claim check here would mean `state.ts` importing a `gh` runner to do it.
+ *
+ * THE MARKER IS APPENDED HERE, NOT BY THE CALLER, so there is exactly one place
+ * a comment can acquire one and exactly one shape it can have. A caller that
+ * composed its own would be a second definition of the format, and the reader
+ * (`parseComments`) would have to tolerate both.
+ *
+ * `--body` RATHER THAN A FILE OR STDIN. `defaultGhRunner` is `execFile` with no
+ * stdin wired, and a temporary file for a body that is already in memory is a
+ * path to clean up on every failure branch. The length bound below is what keeps
+ * an argv string safe: 65,536 characters is GitHub's own ceiling and is two
+ * orders of magnitude under this platform's argument limit.
+ */
+export async function commentOn(
+  gh: GhRunner,
+  cwd: string,
+  input: { kind: "issue" | "pull"; number: number; body: string; sessionId: string },
+): Promise<GitHubCommentResult> {
+  const body = input.body.trim();
+  if (!body) return { posted: false, refusal: "invalid_body", message: "A comment needs something in it." };
+  if (body.length > MAX_COMMENT_BODY) {
+    return {
+      posted: false,
+      refusal: "invalid_body",
+      message: `That comment is ${body.length} characters; GitHub takes at most ${MAX_COMMENT_BODY}.`,
+    };
+  }
+  /**
+   * THE STAMP CAN REFUSE, AND IT REFUSES BEFORE GITHUB IS ASKED. `sessionMarker`
+   * throws on anything that is not a bare session id — see `github-attribution.ts`
+   * for why that is a throw rather than a silent omission. Caught here so a bad
+   * id is a typed refusal like every other failure in this file, rather than an
+   * exception crossing the store.
+   */
+  let stamped: string;
+  try {
+    stamped = withSessionMarker(body, input.sessionId);
+  } catch (error) {
+    return { posted: false, refusal: "invalid_body", message: error instanceof Error ? error.message : String(error) };
+  }
+
+  const result = await gh(cwd, [input.kind === "pull" ? "pr" : "issue", "comment", String(input.number), "--body", stamped]);
+  if (result.status !== 0) {
+    const failure = classifyCommentFailure(result);
+    return { posted: false, ...failure };
+  }
+  const url = parseCommentUrl(result.stdout);
+  /**
+   * A POSTED COMMENT WITH NO URL IS STILL POSTED. Reporting a refusal because
+   * this engine could not read `gh`'s output would tell a model to try again and
+   * produce a second comment — the one failure mode a comment write has that a
+   * merge does not.
+   */
+  return { posted: true, url: url ?? `#${input.number}`, attribution: { sessionId: input.sessionId } };
 }

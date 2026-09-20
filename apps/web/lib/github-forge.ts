@@ -328,6 +328,18 @@ export type ForgeEntry = {
   minimized?: boolean;
   minimizedReason?: string;
   url?: string;
+  /**
+   * WHICH TELAR SESSION THIS COMMENT CLAIMS TO COME FROM — issue #791.
+   *
+   * The one thing this panel can show that github.com structurally cannot: every
+   * agent comment in this repository arrives under one account, and the
+   * conversation behind it is otherwise unreachable from the comment.
+   *
+   * A CLAIM, NOT A PROOF — see `GitHubComment.attribution`. It is drawn as a
+   * link to a conversation, never as a badge of authorship, because the
+   * difference is the whole of what the marker can honestly say.
+   */
+  sessionId?: string;
 };
 
 export function buildForgeTimeline(input: {
@@ -347,6 +359,7 @@ export function buildForgeTimeline(input: {
     minimized: comment.minimized,
     ...(comment.minimizedReason ? { minimizedReason: comment.minimizedReason } : {}),
     url: comment.url,
+    ...(comment.attribution ? { sessionId: comment.attribution.sessionId } : {}),
   }));
 
   for (const [at, review] of (input.reviews ?? []).entries()) {
