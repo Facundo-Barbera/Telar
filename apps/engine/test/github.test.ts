@@ -212,6 +212,63 @@ describe("the author's face", () => {
     expect(reviews[0]).toMatchObject({ author: "alan", authorAvatar: "https://github.com/alan.png" });
   });
 
+  /**
+   * THE FORGE THIS WAS READ OUT OF DECIDES — issue #814, and the half that is
+   * invisible on this Mac.
+   *
+   * `gh` SUPPORTS GITHUB ENTERPRISE SERVER and `defaultGhRunner` forwards
+   * `process.env`, so `GH_HOST` works and a corporate checkout reaches this parser
+   * unimpeded. Nothing else in the engine gates on github.com — `parseRepoFromUrl`
+   * accepts any host and discards it. A corporate login is `jsmith`-shaped, and on
+   * public github.com `jsmith` is a stranger: that is the stranger's-face failure
+   * at every author rather than at a bot-slug collision.
+   */
+  describe("and it is only derived for a github.com forge", () => {
+    const GHES = "https://ghe.corp.example/o/r/issues/1";
+    const faceFor = (url: string) =>
+      parseIssues(JSON.stringify([{ number: 1, title: "t", state: "OPEN", url, updatedAt: DAY, author: { login: "ada" } }]))[0]!.authorAvatar;
+
+    test("a row from another host gets the login and NO face", () => {
+      const row = parseIssues(JSON.stringify([{ number: 1, title: "t", state: "OPEN", url: GHES, updatedAt: DAY, author: { login: "jsmith" } }]))[0]!;
+      // The author still travels — the face is the only thing this engine cannot
+      // honestly say, and saying nothing is what the monogram is for.
+      expect(row.author).toBe("jsmith");
+      expect(row.authorAvatar).toBeUndefined();
+    });
+
+    test("a comment and a review from another host do too", () => {
+      const thread = parseComments([{ url: `${GHES}#issuecomment-1`, body: "b", createdAt: DAY, author: { login: "jsmith" } }]);
+      expect(thread.comments[0]!.author).toBe("jsmith");
+      expect(thread.comments[0]!.authorAvatar).toBeUndefined();
+      // A review carries no url of its own in `gh`'s projection, so it is handed
+      // the PULL REQUEST's — otherwise a GHES thread would show faces on the
+      // reviews and none on the comments beside them.
+      const reviews = parseReviews([{ author: { login: "jsmith" }, state: "APPROVED", body: "", submittedAt: DAY }], GHES);
+      expect(reviews[0]!.authorAvatar).toBeUndefined();
+    });
+
+    test("github.com itself, and its www alias, still derive", () => {
+      expect(faceFor("https://github.com/o/r/issues/1")).toBe("https://github.com/ada.png");
+      expect(faceFor("http://github.com/o/r/issues/1")).toBe("https://github.com/ada.png");
+      expect(faceFor("https://www.github.com/o/r/issues/1")).toBe("https://github.com/ada.png");
+    });
+
+    test("a url that names NO host contradicts nothing, and still derives", () => {
+      // Absence is not a second forge. A relative url — and every fixture in this
+      // file that writes `url: "u"` — says nothing about which host answered, so it
+      // must not be read as "not github.com".
+      expect(rowWith({ login: "ada" }).authorAvatar).toBe("https://github.com/ada.png");
+      expect(faceFor("/o/r/issues/1")).toBe("https://github.com/ada.png");
+    });
+
+    test("a lookalike host is NOT github.com", () => {
+      // `github.com.evil.example` and `notgithub.com` both end in the right
+      // letters; a `.endsWith` test would hand them the derivation.
+      expect(faceFor("https://github.com.evil.example/o/r/issues/1")).toBeUndefined();
+      expect(faceFor("https://notgithub.com/o/r/issues/1")).toBeUndefined();
+    });
+  });
+
   test("a DETAIL read carries the face too, through the same row parser", () => {
     const issue = parseIssueDetail(JSON.stringify({ number: 7, title: "t", state: "OPEN", url: "u", createdAt: DAY, author: { login: "ada" } }), 1);
     expect(issue.authorAvatar).toBe("https://github.com/ada.png");

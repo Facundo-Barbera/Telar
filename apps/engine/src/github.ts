@@ -176,17 +176,40 @@ function isBot(value: unknown): boolean {
  * stranger's face. Fixing that means a second read per thread for
  * `user.avatar_url` (`gh api repos/{owner}/{repo}/issues/<n>/comments`), which is
  * the `readBoards` pattern and its own change.
+ *
+ * AND IT ONLY DERIVES A github.com FACE FOR A github.com ROW — issue #814, and
+ * the half of it that is invisible on this Mac. `gh` supports GitHub Enterprise
+ * Server and `defaultGhRunner` forwards `process.env`, so `GH_HOST` works and a
+ * corporate checkout reaches this code unimpeded; nothing else in the engine gates
+ * on github.com, since `parseRepoFromUrl` accepts any host and discards it. A
+ * corporate login is `jsmith`-shaped, and on public github.com `jsmith` is a
+ * stranger — which is the stranger's-face failure at every author rather than at a
+ * bot-slug collision. The row's own `url` is the only place a read says which host
+ * answered, so it decides.
  */
-function avatar(value: unknown): string | undefined {
+function avatar(value: unknown, url: string): string | undefined {
   const name = login(value);
-  if (!name || isBot(value)) return undefined;
+  if (!name || isBot(value) || !isGitHubDotCom(url)) return undefined;
   return `https://github.com/${encodeURIComponent(name)}.png`;
 }
 
-/** The author and their face, as every row, comment and review carries them. */
-function authorOf(value: unknown) {
+/**
+ * Whether a row read out of this url may have a github.com face derived for it.
+ *
+ * ABSENCE IS NOT A CONTRADICTION. A url with no scheme and host names no forge,
+ * so it cannot say this is not github.com; only a url that names a DIFFERENT host
+ * does. `www.github.com` is the same forge under GitHub's own alias.
+ */
+function isGitHubDotCom(url: string): boolean {
+  const host = /^https?:\/\/([^/]+)/i.exec(url)?.[1]?.toLowerCase();
+  return host === undefined || host === "github.com" || host === "www.github.com";
+}
+
+/** The author and their face, as every row, comment and review carries them.
+ *  `url` is the row's own, and it is what says whether this forge is github.com. */
+function authorOf(value: unknown, url: string) {
   const name = login(value);
-  const face = avatar(value);
+  const face = avatar(value, url);
   return {
     ...(name ? { author: name } : {}),
     ...(face ? { authorAvatar: face } : {}),
@@ -277,8 +300,9 @@ function rowFields(row: Record<string, unknown>) {
   return {
     // The author AND their face, from one helper: `login` on its own structurally
     // discarded everything else on the author object, so widening a field set here
-    // would never have reached a surface (#790).
-    ...authorOf(row.author),
+    // would never have reached a surface (#790). The row's own url goes with it,
+    // because a face is only derivable when the forge is github.com (#814).
+    ...authorOf(row.author, text(row.url)),
     labels: labels(row.labels),
     assignees: logins(row.assignees),
     ...(milestone(row.milestone) ? { milestone: milestone(row.milestone)! } : {}),
@@ -655,7 +679,7 @@ function comment(entry: unknown): GitHubComment | undefined {
   return {
     // A comment's author is `{login}` and nothing else — see `avatar` for what that
     // costs and for the one case it gets wrong.
-    ...authorOf(row.author),
+    ...authorOf(row.author, url),
     ...(text(row.authorAssociation) ? { authorAssociation: text(row.authorAssociation) } : {}),
     body: attribution ? stripSessionMarker(body) : body,
     createdAt: epoch(row.createdAt),
@@ -686,7 +710,9 @@ export function parseComments(value: unknown): { comments: GitHubComment[]; olde
   return { comments: all.slice(-MAX_THREAD_COMMENTS), olderComments: all.length - MAX_THREAD_COMMENTS };
 }
 
-export function parseReviews(value: unknown): GitHubReview[] {
+/** `url` is the PULL REQUEST's, because `gh`'s review projection carries none of
+ *  its own — and a face is only derivable when that url says github.com (#814). */
+export function parseReviews(value: unknown, url = ""): GitHubReview[] {
   if (!Array.isArray(value)) return [];
   return value
     .flatMap((entry) => {
@@ -697,7 +723,7 @@ export function parseReviews(value: unknown): GitHubReview[] {
       if (!state) return [];
       return [
         {
-          ...authorOf(row.author),
+          ...authorOf(row.author, url),
           state,
           body: text(row.body),
           submittedAt: epoch(row.submittedAt),
@@ -913,7 +939,7 @@ export function parsePullDetail(
     changedFiles: count(row.changedFiles),
     comments: thread.comments,
     olderComments: thread.olderComments,
-    reviews: parseReviews(row.reviews),
+    reviews: parseReviews(row.reviews, text(row.url)),
     checks: parseChecks(row.statusCheckRollup),
     createdAt: epoch(row.createdAt),
     ...(login(row.mergedBy) ? { mergedBy: login(row.mergedBy)! } : {}),
