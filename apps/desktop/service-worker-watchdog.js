@@ -107,9 +107,21 @@ function originOfScope(scope) {
  *     partition", because only the manager knows its tabs.
  *   · `previous` — the `hot` map this function returned last poll.
  *
- * Returns `{ kill, hot, candidates }`: the processes to terminate (each with
- * the origins that could have been it), the heat to carry into the next poll,
- * and the candidate origins the decision was made against.
+ * Returns `{ kill, hot, candidates, notices }`: the processes to terminate (each
+ * with the origins that could have been it), the heat to carry into the next
+ * poll, the candidate origins the decision was made against, and — issue #787 —
+ * what a person would want to be told about this poll.
+ *
+ * `notices` IS THE SAME EVIDENCE, NOT A SECOND OPINION. It is derived from the
+ * decision already being made here rather than from a second threshold, so
+ * there is nothing extra to compute, nothing to tune apart, and no way for the
+ * thing a person is shown to disagree with the thing that gets killed.
+ *
+ * IT COVERS THE KILL THIS FUNCTION REFUSES, which is the case #787 names as the
+ * worst one: with no candidate origin to name, a sustained-hot page-less
+ * renderer is deliberately NOT killed — so it can persist indefinitely, and
+ * before this it did so with nothing said anywhere. That notice carries
+ * `killed: false` and an empty `origins`.
  */
 function decideTerminations({
   metrics = [],
@@ -132,6 +144,7 @@ function decideTerminations({
 
   const hot = new Map();
   const kill = [];
+  const notices = [];
   for (const metric of metrics) {
     if (!metric || !RENDERER_TYPES.has(metric.type)) continue;
     // A renderer with a page in it is the person's page. Not ours.
@@ -145,11 +158,20 @@ function decideTerminations({
     // a candidate appearing next poll acts on a process already known hot.
     if (polls >= pollsToKill && candidates.length > 0) {
       kill.push({ ...record, origins: candidates });
+      notices.push({ ...record, origins: candidates, killed: true });
       continue; // killed processes start cold if their pid comes back
     }
+    /**
+     * SUSTAINED, PAGE-LESS, AND STAYING. Same evidence, and the kill above
+     * refused it only because no origin could be named. A notice every poll
+     * rather than once, deliberately: what a person is shown is the CURRENT
+     * state of the app, so a surface that went quiet while the core was still
+     * burning would be worse than one that never spoke.
+     */
+    if (polls >= pollsToKill) notices.push({ ...record, origins: [], killed: false });
     hot.set(key, record);
   }
-  return { kill, hot, candidates };
+  return { kill, hot, candidates, notices };
 }
 
 /**
@@ -167,6 +189,17 @@ function createServiceWorkerWatchdog({
   readWorkers,
   terminate,
   log = () => {},
+  /**
+   * WHAT THIS POLL WOULD TELL SOMEBODY — issue #787. Called once per poll with
+   * the poll's `notices`, INCLUDING THE EMPTY ARRAY: "nothing is hot" is the
+   * answer that takes an indicator back down, and a callback that only fired on
+   * trouble would leave one lit after the trouble ended.
+   *
+   * It never affects the kill. A throw is swallowed for `poll`'s own reason —
+   * a shell that cannot draw a warning is a browser missing a diagnostic, not a
+   * browser whose watchdog stops working.
+   */
+  onNotice = () => {},
   intervalMs = POLL_INTERVAL_MS,
   thresholdPercent = HOT_CPU_PERCENT,
   pollsToKill = HOT_POLLS_TO_KILL,
@@ -189,7 +222,10 @@ function createServiceWorkerWatchdog({
       });
     } catch (error) {
       log("warn", `browser: service-worker watchdog could not read this poll: ${error && error.message ? error.message : error}`);
-      return { kill: [], candidates: [] };
+      // A POLL THAT DID NOT HAPPEN SAYS NOTHING, rather than saying "all clear".
+      // Reporting an empty list here would clear a warning on the strength of a
+      // reading that failed — the one direction this surface must not get wrong.
+      return { kill: [], candidates: [], notices: [] };
     }
     previous = decision.hot;
     for (const victim of decision.kill) {
@@ -203,6 +239,28 @@ function createServiceWorkerWatchdog({
       } catch (error) {
         log("error", `browser: could not kill runaway renderer pid ${victim.pid} (${where}): ${error && error.message ? error.message : error}`);
       }
+    }
+    /**
+     * AND THE ONE LINE THAT NEVER REACHED A PERSON — issue #787. The kill is
+     * silent by design and the log is a file; both of the incidents behind #487
+     * and #488 were found with Activity Monitor, fifty minutes and an hour in.
+     * This is the same decision, handed to whoever wants to draw it.
+     */
+    for (const orphan of decision.notices) {
+      // ONCE PER PROCESS, not once per poll. The notices carry a persistent
+      // orphan every poll on purpose — a live indicator must not go quiet while
+      // the core is still burning — but a log line repeating itself every
+      // thirty seconds for an hour is how a log stops being read.
+      if (orphan.killed || orphan.polls !== pollsToKill) continue;
+      log(
+        "warn",
+        `browser: renderer pid ${orphan.pid} at ${Math.round(orphan.percent)}% CPU over ${orphan.polls} polls with no live page — not killed, no service worker is running without a tab to name it as`,
+      );
+    }
+    try {
+      onNotice(decision.notices);
+    } catch {
+      /* drawing a warning must never be the reason the watchdog stops */
     }
     return decision;
   }

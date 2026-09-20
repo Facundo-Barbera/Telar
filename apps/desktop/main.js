@@ -2723,6 +2723,55 @@ function processMetricsReader() {
  * renderer, and an MV3 worker is built to be killed when idle and restarted on
  * its next event, which is what Chrome itself does after thirty seconds.
  */
+/**
+ * A RUNAWAY RENDERER, WHERE SOMEBODY WILL SEE IT — issue #787.
+ *
+ * #488 put the same figures on the Usage page, live while that page is VISIBLE.
+ * So the honest answer to "would that have caught the 96%-for-seven-minutes" was
+ * "only if somebody had that page open", and the incidents behind #487 and #488
+ * are precisely the ones nobody was watching: fifty minutes in one case, an hour
+ * before Activity Monitor found it in the other.
+ *
+ * PUSHED, NOT POLLED, which is what makes it free at rest. The watchdog already
+ * decides this every thirty seconds and already has two polls of evidence before
+ * it acts; this hands that decision to the windows rather than computing a
+ * second one. The cockpit adds no timer and no `getAppMetrics()` caller — see
+ * process-metrics.js for why a second caller would be a problem rather than a
+ * cost.
+ *
+ * HELD, LIKE `lastUpdateStatus` AND FOR ITS REASON. A window that mounts between
+ * polls — a reload, a second window, a renderer that crashed and came back —
+ * would otherwise show nothing for up to thirty seconds while a core burns.
+ *
+ * AN EMPTY LIST IS A REAL ANSWER and is broadcast too: it is what takes the
+ * indicator back down. A poll that FAILED sends nothing at all (see the
+ * watchdog's `poll`), so a reading that could not be taken never reads as
+ * all-clear.
+ */
+let lastRunawayNotice = { at: 0, renderers: [] };
+function broadcastRunawayNotice(notices) {
+  lastRunawayNotice = {
+    at: Date.now(),
+    // Only what a person is shown. `key` and `creationTime` are the watchdog's
+    // own bookkeeping and mean nothing outside it.
+    renderers: (notices || []).map((notice) => ({
+      pid: notice.pid,
+      percent: notice.percent,
+      polls: notice.polls,
+      killed: Boolean(notice.killed),
+      origins: notice.origins || [],
+    })),
+  };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    try {
+      win.webContents.send("telar:metrics:runaway", lastRunawayNotice);
+    } catch {
+      /* a window that went away mid-broadcast is not the watchdog's problem */
+    }
+  }
+}
+
 function startServiceWorkerWatchdog() {
   const watchdog = serviceWorkerWatchdog.createServiceWorkerWatchdog({
     // A RATE OVER AT LEAST TWENTY-FIVE SECONDS, whatever else is sampling. The
@@ -2766,6 +2815,7 @@ function startServiceWorkerWatchdog() {
     },
     terminate: (pid) => process.kill(pid, "SIGKILL"),
     log: logShell,
+    onNotice: broadcastRunawayNotice,
   });
   watchdog.start();
   return watchdog;
@@ -3131,6 +3181,9 @@ ipcMain.handle("telar:push:provision-relay", async (_event, config) => provision
  * once, not twice.
  */
 ipcMain.handle("telar:metrics:read", () => processMetricsReader().summary());
+// The last thing the watchdog said, for a window that mounted between polls —
+// see `broadcastRunawayNotice`. Same shape as the push.
+ipcMain.handle("telar:metrics:runaway", () => lastRunawayNotice);
 
 /**
  * A SECOND WINDOW ON A PAGE OF THE APP — "Open in a new window", from the
