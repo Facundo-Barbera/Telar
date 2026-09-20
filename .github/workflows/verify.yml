@@ -734,12 +734,23 @@ jobs:
   # is the set of settings that decide what COMPILES, listed below; if those
   # drift apart this gate stops guarding the nightly, which is the one way
   # this can rot.
+  #
+  # IT ALSO RUNS THE SWIFT SUITE NOW (#755). The name still says "Archive"
+  # because `verify-passed` is the one required check and renaming jobs here is
+  # free only as long as nobody is pinning them — but the steps below archive
+  # Release, report the type-check floor, and then run TelarMobileTests on a
+  # simulator, in that order. Each has its own step name and its own assertion.
   ios:
     name: Archive iOS (only when something iOS changed)
     needs: [ios-changes]
     runs-on: ${{ needs.ios-changes.outputs.ios == 'true' && 'macos-latest' || 'ubuntu-latest' }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    timeout-minutes: 30
+    # 30 → 45 with the simulator leg (#755). The job now does a Release archive
+    # AND a Debug test build plus a simulator boot, so the ceiling has to cover
+    # both; the archive alone measured 3m48s–4m08s. A timeout is not a budget —
+    # if this job ever approaches 45 minutes something is wrong rather than
+    # slow, and the `IOS_TESTS_SECONDS` line below is what to read first.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         if: needs.ios-changes.outputs.ios == 'true'
@@ -900,6 +911,160 @@ jobs:
               | sed -E 's/.*took ([0-9]+)ms.*/\1 &/' | sort -rn | cut -d' ' -f2- | head -20 \
               | tee -a "$GITHUB_STEP_SUMMARY"
           fi
+
+      # THE 661 TESTS CI HAS NEVER RUN (#755, and #675 is why they exist).
+      # `apps/ios/TelarMobileTests` has been green only as often as someone
+      # remembered to run it by hand: `nightly-ios-tests.yml` carried the only
+      # `xcodebuild test` in this repository and its scheduler window was 8½
+      # hours wide around a cron that never came due, so GitHub's run count for
+      # it was 0 for its whole life. Deleted in this change; its reasoning is
+      # in apps/ios/README.md, and this is where the tests run now.
+      #
+      # STEPS ON THE EXISTING JOB, NOT A SECOND JOB. The checkout and the three
+      # remote SPM resolutions are already paid here, and `ios` already picks a
+      # Mac exactly when an iOS path changed — so the same
+      # `needs.ios-changes.outputs.ios == 'true'` guard inherits all of #818's
+      # wiring and adds nothing to the ~95% of pull requests that touch no iOS
+      # file. `verify-passed`'s "only success passes" rule is untouched. The
+      # cost is failure attribution: an archive break and a test failure land in
+      # one job, which the step names disambiguate.
+      #
+      # AFTER THE TYPE-CHECK REPORT, DELIBERATELY. That step is the instrument
+      # #764 reads its floor-10 map from; running the tests first would mean a
+      # red suite hides the measurement that the next refactor depends on.
+      #
+      # A SIMULATOR, NOT THE PHONE, AND THE SUITE DOES NOT CARE. All 64 files
+      # are `import Testing`; the census is 59 Foundation, 5 SwiftUI, 1 UIKit,
+      # 1 UniformTypeIdentifiers, and zero occurrences of `UIScreen`,
+      # `UIDevice`, `UIApplication` or `Bundle.main`. Nothing in the suite
+      # asserts anything only hardware can produce — the device destination was
+      # never about what the tests check, it was that the phone was the only
+      # iOS runtime on the maintainer's Mac. `macos-26-arm64` ships iOS 26.2 /
+      # 26.4 / 26.5 runtimes preinstalled against a deployment target of 18.0,
+      # so nothing is downloaded and nothing persists: the runner is destroyed
+      # after the job. apps/ios/README.md's "no simulators" rule is about that
+      # one Mac's disk and it stays exactly as it is.
+      #
+      # `name=iPhone 17` WITHOUT AN OS PIN — the device is present in all three
+      # preinstalled runtimes, so an image update that retires one of them does
+      # not invalidate this line. Debug because `test` needs a test bundle; the
+      # Release archive above is the configuration the type-check numbers come
+      # from and the two must not share a derived-data path.
+      #
+      # `-only-testing:TelarMobileTests` IS A FENCE, NOT A FILTER. The scheme's
+      # TestAction holds nothing else today, but `TelarMobileUITests` drives the
+      # app against apps/ios/scripts/preview-server.py and would hang here with
+      # no server running. Adding that target to the scheme must not silently
+      # change what this executes.
+      #
+      # NO SIGNING, same posture as the archive: simulator builds are ad-hoc
+      # signed, so this needs no certificate, no profile and no App Store
+      # Connect key. A red here is a compile or a test, never an expired cert.
+      - name: Run TelarMobileTests on a simulator
+        if: needs.ios-changes.outputs.ios == 'true'
+        env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+        run: |
+          set -euo pipefail
+          RESULT_BUNDLE="$RUNNER_TEMP/TelarMobileTests.xcresult"
+          rm -rf "$RESULT_BUNDLE"
+          started=$(date +%s)
+          xcodebuild \
+            -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 17' \
+            -destination-timeout 120 \
+            -derivedDataPath "$RUNNER_TEMP/DerivedDataTests" \
+            -resultBundlePath "$RESULT_BUNDLE" \
+            -only-testing:TelarMobileTests \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            test > "$RUNNER_TEMP/test.log" 2>&1 || {
+              status=$?
+              echo "::group::the test log, last 400 lines"
+              tail -400 "$RUNNER_TEMP/test.log"
+              echo "::endgroup::"
+              echo "::error::xcodebuild test failed (exit $status) — see the step after this one for which tests, if any, ran"
+              echo "IOS_TESTS_SECONDS $(( $(date +%s) - started ))"
+              exit "$status"
+            }
+          echo "IOS_TESTS_SECONDS $(( $(date +%s) - started ))"
+          echo "xcodebuild exited 0; $(wc -l < "$RUNNER_TEMP/test.log") lines of log"
+
+      # EXIT 0 IS NOT A TEST RUN, and this repository already owns both halves
+      # of that lesson: its macOS job once "proved the macOS block ran" by
+      # grepping a describe name, and a SKIPPED test prints its own name — the
+      # string was present exactly when the thing it guarded against had
+      # happened. `xcodebuild test` can exit 0 having executed nothing: a
+      # destination that resolved to something empty, a filter matching no
+      # target, a plan that skipped every suite.
+      #
+      # A FLOOR ON `passedTests`, NOT `totalTestCount > 0`. The step this is
+      # lifted from failed on `total == 0` and on `failed`, and so exited 0 when
+      # every test was SKIPPED and none failed — the same wound in a new
+      # costume. 661 is the count of `@Test` cases at the time of writing (662
+      # in the tree today, none parameterised, so one case per declaration), and
+      # a floor rather than an equality so that adding tests never reddens this
+      # and removing a suite always does. It also makes it irrelevant whether
+      # `totalTestCount` counts skipped cases, which is the more robust
+      # instrument either way — and is why that question was deliberately not
+      # looked up and relied on.
+      #
+      # RAISE THE FLOOR WHEN TESTS ARE ADDED, but only deliberately: it is the
+      # one number here that a human has to maintain, and lowering it to make a
+      # red go away is the failure this step exists to prevent.
+      #
+      # `environmentDescription` IS PRINTED because it names the runtime the
+      # run actually landed on, which is the cheap way to notice an image
+      # change before it becomes a mystery.
+      #
+      # always(), so a red suite still gets its failures named here rather than
+      # leaving a bare xcodebuild exit code above. That also covers the
+      # compile-failure case, where no bundle is written at all.
+      - name: Require that the tests actually ran
+        if: always() && needs.ios-changes.outputs.ios == 'true'
+        run: |
+          set -euo pipefail
+          RESULT_BUNDLE="$RUNNER_TEMP/TelarMobileTests.xcresult"
+          FLOOR=661
+
+          if [ ! -e "$RESULT_BUNDLE" ]; then
+            echo "::error::xcodebuild produced no result bundle at $RESULT_BUNDLE, so no test was executed. If the archive or the test build failed above, that is the cause; if neither did, the destination resolved to nothing."
+            exit 1
+          fi
+
+          xcrun xcresulttool get test-results summary --path "$RESULT_BUNDLE" --compact > "$RUNNER_TEMP/summary.json"
+          FLOOR="$FLOOR" python3 - "$RUNNER_TEMP/summary.json" <<'PY'
+          import json, os, sys
+
+          s = json.load(open(sys.argv[1]))
+          floor = int(os.environ["FLOOR"])
+          total = s.get("totalTestCount") or 0
+          passed = s.get("passedTests") or 0
+          failed = s.get("failedTests") or 0
+          skipped = s.get("skippedTests") or 0
+          where = s.get("environmentDescription", "unknown environment")
+
+          print(f"IOS_TESTS {passed} passed, {failed} failed, {skipped} skipped "
+                f"of {total} ({where})")
+
+          for f in s.get("testFailures") or []:
+              name = f.get("testName") or f.get("targetName") or "unknown test"
+              print(f"::error::{name}: {f.get('failureText', '').strip()}")
+
+          bad = False
+          if passed < floor:
+              print(f"::error::{passed} tests passed, under the floor of {floor}. Either a suite "
+                    f"was skipped or disabled, or the destination ran less than the whole target. "
+                    f"A run that executes nothing exits 0 from xcodebuild, which is why this "
+                    f"floor exists rather than a check that some tests ran.")
+              bad = True
+          if failed:
+              print(f"::error::{failed} test(s) failed.")
+              bad = True
+
+          sys.exit(1 if bad else 0)
+          PY
 
       # THE OTHER BRANCH, and it must not be able to print what the branch
       # above prints. `IOS_ARCHIVE_NOT_NEEDED` and `IOS_ARCHIVE_OK 2/2 …` are
