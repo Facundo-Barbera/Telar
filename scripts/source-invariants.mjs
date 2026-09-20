@@ -25,6 +25,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
+import { engineTestFiles, shardOf } from "./engine-shard.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFile(join(ROOT, path), "utf8");
@@ -63,6 +64,33 @@ async function testFilesUnder(directory) {
 
 /** The one file the per-test ceiling lives in, repo-relative (#740). */
 const CEILING_PRELOAD = "scripts/test-ceiling.mjs";
+
+/** The one file an engine test's wait budget lives in, repo-relative (#760). */
+const SHARED_WAIT_MODULE = "apps/engine/test/wait.ts";
+
+/**
+ * One engine test file's wait budget against its own tightest per-test ceiling,
+ * or `null` when the pair is sound or there is nothing to compare.
+ *
+ * Pure, and separate from the check that walks the tree, so the samples proving
+ * it fires live in a check of their own rather than in a paragraph.
+ */
+function waitBudgetFailure(name, source, sharedBudgetMs) {
+  const budgets = [...source.matchAll(/(?:ms|timeoutMs|deadlineMs) = ([0-9_]+)/g)].map((m) => Number(m[1].replace(/_/g, "")));
+  const importsShared = /from "\.\/wait"/.test(source);
+  if (importsShared) budgets.push(sharedBudgetMs);
+  const ceilings = [...source.matchAll(/^\}, *([0-9_]+)\);/gm)].map((m) => Number(m[1].replace(/_/g, "")));
+  if (budgets.length === 0 || ceilings.length === 0) return null;
+  const budget = Math.max(...budgets);
+  const ceiling = Math.min(...ceilings);
+  if (budget < ceiling) return null;
+  const whose = budget === sharedBudgetMs && importsShared ? ` (${SHARED_WAIT_MODULE}'s WAIT_BUDGET_MS)` : "";
+  return (
+    `apps/engine/test/${name}: a wait budget of ${budget}ms${whose} runs under a per-test ceiling of ${ceiling}ms. ` +
+    "The test dies before the wait can report, so the real reason is discarded and the run only says it timed out. " +
+    "Lower the budget below every ceiling in this file, or raise the ceiling above the budget."
+  );
+}
 
 /**
  * Every directory a bunfig.toml would be read from: the repo root and each
@@ -1200,24 +1228,72 @@ const CHECKS = [
    *
    * A file with no per-test ceiling is fine — it inherits the suite's 20 s,
    * which every helper here is already well under.
+   *
+   * AND A BUDGET CAN NOW LIVE IN ANOTHER FILE — #760. The helpers were 26
+   * private copies; one shared module replaced the copies in the files that
+   * import it, and a budget that has moved out of the file is a budget this scan
+   * stops seeing. That is how a guard is disabled without anyone deciding to:
+   * the check goes on printing `ok` about a pairing it can no longer read. So a
+   * file that imports the shared module is checked against the shared module's
+   * own default as well as against whatever it still declares locally.
    */
   {
     name: "test-wait-fits-its-ceiling",
-    protects: "engine test timeouts (#706): a wait's budget is strictly under the ceiling of the test running it",
+    protects: "engine test timeouts (#706, #760): a wait's budget — its own or the shared helper's — is strictly under the ceiling of the test running it",
     async run() {
+      const shared = await read(SHARED_WAIT_MODULE).catch(() => null);
+      if (shared === null) {
+        return [
+          `${SHARED_WAIT_MODULE} is missing. It is where the one wait budget lives (#760); without it this check ` +
+            "cannot tell what budget the files importing it are running under, and must not pretend otherwise.",
+        ];
+      }
+      const declared = /export const WAIT_BUDGET_MS = ([0-9_]+);/.exec(shared);
+      if (!declared) {
+        return [
+          `${SHARED_WAIT_MODULE} no longer declares \`export const WAIT_BUDGET_MS = <number>\` as a plain literal, so ` +
+            "this check cannot read the shared budget. Restore the declaration, or teach this check where it moved to.",
+        ];
+      }
+      const sharedBudgetMs = Number(declared[1].replace(/_/g, ""));
+
       const failures = [];
       const files = (await readdir(join(ROOT, "apps/engine/test"))).filter((name) => name.endsWith(".test.ts"));
       for (const name of files) {
-        const source = await read(join("apps/engine/test", name));
-        const budgets = [...source.matchAll(/(?:ms|timeoutMs|deadlineMs) = ([0-9_]+)/g)].map((m) => Number(m[1].replace(/_/g, "")));
-        const ceilings = [...source.matchAll(/^\}, *([0-9_]+)\);/gm)].map((m) => Number(m[1].replace(/_/g, "")));
-        if (budgets.length === 0 || ceilings.length === 0) continue;
-        const budget = Math.max(...budgets);
-        const ceiling = Math.min(...ceilings);
-        if (budget < ceiling) continue;
-        failures.push(
-          `apps/engine/test/${name}: a wait budget of ${budget}ms runs under a per-test ceiling of ${ceiling}ms. The test dies before the wait can report, so the real reason is discarded and the run only says it timed out. Lower the helper's default below every ceiling in this file, or raise the ceiling above the budget.`,
-        );
+        const failure = waitBudgetFailure(name, await read(join("apps/engine/test", name)), sharedBudgetMs);
+        if (failure) failures.push(failure);
+      }
+      return failures;
+    },
+  },
+
+  /**
+   * #721's standard, applied to the scan above: one that has never been shown to
+   * fail has demonstrated nothing. The sample that matters is the third — a file
+   * whose budget is entirely in the shared module, which is the exact shape the
+   * old scan read as "no budget here" and passed.
+   */
+  {
+    name: "test-wait-scan-self-test",
+    protects: "#706/#760: the wait-budget scan still sees an inverted pair through the shared helper, and stays quiet on a correct one",
+    async run() {
+      const ceiling = (ms) => `test("x", async () => {\n  await eventually(() => {});\n}, ${ms});\n`;
+      const importsShared = 'import { eventually } from "./wait";\n';
+      const localBudget = "const deadlineMs = 15_000;\n";
+      const samples = [
+        { fires: true, why: "the original #706 shape: a local 15s budget under a 10s ceiling", source: localBudget + ceiling(10_000) },
+        { fires: true, why: "equal is a coin toss, not a pass", source: localBudget + ceiling(15_000) },
+        { fires: true, why: "the budget moved into the shared module and the ceiling did not move with it", source: importsShared + ceiling(10_000) },
+        { fires: false, why: "the shared budget under the suite ceiling", source: importsShared + ceiling(20_000) },
+        { fires: false, why: "a local budget under its ceiling", source: localBudget + ceiling(20_000) },
+        { fires: false, why: "no ceiling at all inherits the suite's 20s", source: importsShared },
+        { fires: false, why: "a file with neither a budget nor an import", source: ceiling(10_000) },
+      ];
+      const failures = [];
+      for (const { fires, why, source } of samples) {
+        const failure = waitBudgetFailure("sample.test.ts", source, 15_000);
+        if (fires && failure === null) failures.push(`the scan MISSED a sample it must catch (${why}).`);
+        if (!fires && failure !== null) failures.push(`the scan FIRED on a sample it must ignore (${why}): ${failure}`);
       }
       return failures;
     },
@@ -1447,6 +1523,155 @@ const CHECKS = [
           `the runner scan read ${JSON.stringify(got)} where ${JSON.stringify(wanted)} was right (${why}): ` +
             `${JSON.stringify(Object.values(scripts)[0])}.`,
         );
+      }
+      return failures;
+    },
+  },
+
+  /**
+   * EVERY ENGINE TEST FILE IS IN EXACTLY ONE SHARD — #760's option A.
+   *
+   * The engine suite runs as three jobs now. The failure worth fearing is not a
+   * red shard; it is a shard that quietly runs fewer files than it should, which
+   * looks from the outside like the split having made the suite faster. Three
+   * things have to agree for that not to happen, and none of them is a comment:
+   * the shard count in verify.yml, the partition scripts/engine-shard.mjs
+   * computes, and the files actually on disk.
+   *
+   * WHAT IS CHECKED is the property, not the arithmetic that produces it — the
+   * union of the shards is the whole suite, no file is in two of them, and no
+   * shard is empty. A partition that satisfied those three by accident would
+   * still be a correct split.
+   *
+   * THE WORKFLOW IS READ RATHER THAN TRUSTED because the two can drift in the
+   * direction that is silent: raise `total` to 4 and forget the `shard` list and
+   * a quarter of the suite stops running, with four green jobs to say so.
+   */
+  {
+    name: "engine-shards-cover-every-test-file",
+    protects: "#760: verify.yml's engine shard matrix and scripts/engine-shard.mjs partition every engine test file — union whole, none shared, none empty",
+    async run() {
+      const workflow = await read(".github/workflows/verify.yml").catch(() => null);
+      if (workflow === null) return [".github/workflows/verify.yml is missing, so the engine shard matrix cannot be read."];
+
+      const job = /\n {2}test-engine:\n([\s\S]*?)(?=\n {2}[a-z][\w-]*:\n)/.exec(workflow);
+      if (!job) {
+        return [
+          "verify.yml no longer has a `test-engine:` job, so the engine suite is either unsharded or sharded " +
+            "somewhere this check cannot see. If the split moved, teach this check where — an unchecked split is " +
+            "how a shard starts dropping files without a red run (#760).",
+        ];
+      }
+      const block = job[1];
+
+      const failures = [];
+      const shardAxis = /\n {8}shard: \[([0-9, ]+)\]\n/.exec(block);
+      const totalAxis = /\n {8}total: \[([0-9]+)\]\n/.exec(block);
+      if (!shardAxis || !totalAxis) {
+        return [
+          "verify.yml's `test-engine` job no longer declares both `shard: [ ... ]` and `total: [ N ]` matrix axes in " +
+            "the shape this check reads. They are what tie the workflow's split to the one the script computes.",
+        ];
+      }
+      const shards = shardAxis[1].split(",").map((entry) => Number(entry.trim()));
+      const total = Number(totalAxis[1]);
+
+      const wanted = Array.from({ length: total }, (_unused, at) => at + 1);
+      if (JSON.stringify(shards) !== JSON.stringify(wanted)) {
+        failures.push(
+          `verify.yml runs engine shards ${JSON.stringify(shards)} out of a split of ${total}, which is not ` +
+            `${JSON.stringify(wanted)}. Every shard of the split must run: the ones missing here are test files that ` +
+            "no job opens, and the jobs that do run are green.",
+        );
+      }
+      if (!/- run: bun scripts\/engine-shard\.mjs \$\{\{ matrix\.shard \}\} \$\{\{ matrix\.total \}\}/.test(block)) {
+        failures.push(
+          "verify.yml's `test-engine` job no longer runs `bun scripts/engine-shard.mjs ${{ matrix.shard }} " +
+            "${{ matrix.total }}`. The matrix axes above are only meaningful if they are what the script is handed.",
+        );
+      }
+      // Split rather than a \bengine\b word match: `engine-client` is a suite of
+      // its own and a word boundary sits on the hyphen, so the naive pattern
+      // reports the double-run that is not there.
+      const suiteAxis = /\n {8}suite: \[([^\]]*)\]/.exec(workflow);
+      const suites = suiteAxis ? suiteAxis[1].split(",").map((entry) => entry.trim()) : [];
+      if (suites.includes("engine")) {
+        failures.push(
+          "verify.yml's `test` matrix still lists `engine` alongside the sharded `test-engine` job, so the engine " +
+            "suite runs twice — once whole and once split. That is not wrong so much as invisible: the sharded jobs " +
+            "could be dropping files and the whole-suite job would keep the run green.",
+        );
+      }
+      if (!/needs: \[[^\]]*\btest-engine\b[^\]]*\]/.test(workflow)) {
+        failures.push(
+          "verify.yml's `verify-passed` job does not list `test-engine` in `needs`, so a red engine shard does not " +
+            "stop the aggregate going green. A required check that cannot fail is the #772 shape.",
+        );
+      }
+
+      const files = await engineTestFiles();
+      const parts = wanted.map((index) => shardOf(files, index, total));
+      const covered = parts.flat();
+      const union = new Set(covered);
+      const empty = wanted.filter((index) => parts[index - 1].length === 0);
+      if (empty.length > 0) {
+        failures.push(
+          `engine shards ${JSON.stringify(empty)} of ${total} are empty. An empty shard is a green job that ran ` +
+            "nothing, which reads as a pass.",
+        );
+      }
+      if (covered.length !== union.size) {
+        const twice = covered.filter((file, at) => covered.indexOf(file) !== at);
+        failures.push(
+          `these engine test files are in more than one shard: ${JSON.stringify([...new Set(twice)])}. Duplicated ` +
+            "work is the harmless half of a broken partition; the other half is usually a gap.",
+        );
+      }
+      const missed = files.filter((file) => !union.has(file));
+      if (missed.length > 0) {
+        failures.push(
+          `these engine test files are in no shard, so nothing in CI runs them: ${JSON.stringify(missed)}. That is ` +
+            "coverage lost with every job still green, which is exactly what #760's split had to not do.",
+        );
+      }
+      return failures;
+    },
+  },
+
+  /**
+   * #721 again: the partition above is checked against the real tree, where it
+   * has always held, so it has never been seen to fail. These samples are where
+   * it is made to.
+   */
+  {
+    name: "engine-shard-partition-self-test",
+    protects: "#760: the shard function partitions — every item once, nothing invented, no shard left empty when there is work",
+    async run() {
+      const failures = [];
+      const files = Array.from({ length: 7 }, (_unused, at) => `test/f${at}.test.ts`);
+      for (const total of [1, 2, 3, 7]) {
+        const parts = Array.from({ length: total }, (_unused, at) => shardOf(files, at + 1, total));
+        const covered = parts.flat();
+        if (covered.length !== files.length || new Set(covered).size !== files.length) {
+          failures.push(`a split of ${total} over ${files.length} files covered ${JSON.stringify(covered)} — not a partition.`);
+        }
+        if (parts.some((part) => part.length === 0)) {
+          failures.push(`a split of ${total} over ${files.length} files left an empty shard: ${JSON.stringify(parts)}.`);
+        }
+      }
+      // More shards than files: some shards ARE empty, and the script refuses to
+      // run one rather than reporting a green job that opened nothing.
+      const sparse = shardOf(files, 9, 9);
+      if (sparse.length !== 0) failures.push(`shard 9 of 9 over 7 files should be empty, got ${JSON.stringify(sparse)}.`);
+      // And an index outside the split is a throw, not a quietly empty list.
+      for (const [index, total] of [[0, 3], [4, 3], [1, 0]]) {
+        let threw = false;
+        try {
+          shardOf(files, index, total);
+        } catch {
+          threw = true;
+        }
+        if (!threw) failures.push(`shardOf(files, ${index}, ${total}) returned instead of throwing; an impossible shard must not look empty.`);
       }
       return failures;
     },

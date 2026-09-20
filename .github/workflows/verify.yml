@@ -233,8 +233,12 @@ jobs:
   # THE SUITES, ONE JOB EACH. Serially these are 173s and engine alone is 128s
   # of that, so a matrix is worth far more than making the six concurrent on
   # one machine ever was (measured: 173.1s -> 139.8s, only 19%, because they
-  # then contend). Here engine gets a whole runner and the other five finish
-  # long before it.
+  # then contend).
+  #
+  # ENGINE IS NOT IN THIS LIST — it has its own job below, split three ways.
+  # Removing it from the matrix rather than adding a shard axis to it keeps
+  # `test:${{ matrix.suite }}` meaning exactly one thing; the five left here
+  # finish in well under a minute each.
   #
   # fail-fast: false because one red suite must not hide the state of the
   # others — "what else is broken" is the question you ask next.
@@ -246,7 +250,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [engine, web, desktop, env, engine-client, workers]
+        suite: [web, desktop, env, engine-client, workers]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -261,6 +265,56 @@ jobs:
           set -euo pipefail
           bun install --frozen-lockfile
       - run: bun run test:${{ matrix.suite }}
+
+  # THE ENGINE SUITE, SPLIT — #760.
+  #
+  # MEASURED, not assumed: across 19 successful `Verify` runs, `Test engine` was
+  # the longest job on all 12 where iOS did not archive — 109-147s against 58-80s
+  # for Electron, 47-52s for lint and 45-58s for typecheck. Install is 7s. So on
+  # roughly two runs in three this repository's wall-clock IS this one job, and
+  # it was one runner walking every engine test file in a row — 190 of them at
+  # the time — while the header above records a measured ceiling of at least 40
+  # concurrent hosted jobs.
+  #
+  # NO TEST IS TOUCHED BY THIS and none is skipped: the split is a partition of
+  # the same files, computed from the filesystem by scripts/engine-shard.mjs
+  # rather than listed anywhere. `test:desktop:unit` is why that matters — it
+  # carried 36 hand-typed filenames until #763 and silently stopped running the
+  # ones nobody remembered to add. A file added tomorrow lands in a shard because
+  # of where it is.
+  #
+  # THREE, AND WHY NOT MORE: at three the slowest shard lands near the Electron
+  # job, which then becomes the wall — a fourth shard buys runner-minutes and no
+  # wall-clock. `shard` and `total` are separate axes so the total lives in one
+  # place; `engine-shards-cover-every-test-file` in scripts/source-invariants.mjs
+  # reads both back out of this file and fails if the split here and the split
+  # the script computes ever disagree.
+  #
+  # TWO THINGS GO RED RATHER THAN QUIET IF A SHARD LOSES FILES. Each shard
+  # compares the file count bun reports against the number of paths it handed
+  # over, in band, on every run; and the summed `Ran N tests across M files` must
+  # still equal the single-job number, which is the count a dropped file cannot
+  # produce.
+  test-engine:
+    name: Test engine ${{ matrix.shard }}/${{ matrix.total }}
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+        total: [3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+      - run: bun scripts/engine-shard.mjs ${{ matrix.shard }} ${{ matrix.total }}
 
   # THE ONE THING HERE THAT REALLY NEEDS macOS — on a hosted Mac, not a person's.
   #
@@ -897,7 +951,7 @@ jobs:
     name: Verify passed
     runs-on: ubuntu-latest
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    needs: [source, typecheck, lint, test, macos, electron, ios-changes, ios]
+    needs: [source, typecheck, lint, test, test-engine, macos, electron, ios-changes, ios]
     timeout-minutes: 5
     steps:
       - name: Report the aggregate
