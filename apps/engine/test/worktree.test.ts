@@ -728,26 +728,64 @@ test("async git pool expires queued reads without spawning them and recovers cap
   /**
    * THE BUDGET COVERS MORE THAN IT LOOKS LIKE IT DOES (#706).
    *
-   * It reads as "a spawn takes under two seconds". It is not: at
-   * `concurrency: 1` this call is enqueued behind `stalled`, and the timeout
-   * path in `createAsyncGitRunner` does NOT free the slot. `release` is
-   * defined inside `start` and reached only from `execFile`'s callback, while
-   * the timer only splices the queue, SIGKILLs the child and resolves — so
-   * `active` stays at one until the killed child is actually REAPED. This
-   * call's deadline therefore spans reap + queue drain + spawn.
+   * It reads as "a spawn takes under two seconds", and it never was: at
+   * `concurrency: 1` this call is enqueued behind `stalled`, so its deadline
+   * spans queue drain and spawn rather than spawn alone. Nothing is compared
+   * against it — the claim under test is the line below, that the pool recovers
+   * capacity and a later read runs and returns its output — so it is a bound on
+   * a hang rather than an assertion, and is raised freely.
    *
-   * That makes it a bound on a hang rather than an assertion: nothing is
-   * compared against it, and the claim under test is the line below — that the
-   * pool recovers capacity and a later read runs and returns its output. So it
-   * is raised freely. Two seconds was never measuring this code.
-   *
-   * The release gap itself is a product observation and is filed separately;
-   * it is a delay rather than a leak, since the reap does eventually release.
+   * It used to cover the SIGKILLed child's reap as well, because the timeout
+   * path did not free the slot. #743 fixed that; WHEN the slot comes back is
+   * now pinned by its own test below rather than hidden inside this budget.
    */
   const recovered = await run(root, ["-e", "process.stdout.write('ready')"], { timeoutMs: 10_000 });
   expect(recovered).toEqual({ status: 0, stdout: "ready", stderr: "" });
   expect(fs.existsSync(marker)).toBe(false);
 });
+
+/**
+ * THE SLOT COMES BACK AT THE DEADLINE, NOT AT THE REAP — #743.
+ *
+ * The test above recovers capacity eventually, and that was all it ever claimed.
+ * This one pins WHEN, and it is a different property: `release` used to be
+ * reachable only from `execFile`'s callback, and that callback fires on stdio
+ * EOF rather than on process exit. `SIGKILL` reaps git; it does not reap what
+ * git spawned — a clean filter, a `textconv` driver, an fsmonitor hook — and
+ * those inherit git's stderr. So the slot was held for the HELPER's lifetime,
+ * which nothing here bounds.
+ *
+ * The fixture reproduces exactly that shape without git: a child that hands its
+ * inherited stdio to a helper and then blocks. The helper outlives the SIGKILL
+ * by thirty seconds, so before #743 the read below spent its whole ten-second
+ * budget queued and returned a timeout instead of `ready`.
+ */
+test("a timed-out read frees its slot while its child's helper still holds the pipe", async () => {
+  const root = tmp("telar-git-release-");
+  const pidFile = path.join(root, "helper.pid");
+  const script = `
+    const { spawn } = require("node:child_process");
+    const helper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" });
+    require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(helper.pid));
+    setTimeout(() => {}, 30000);
+  `;
+  const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
+  const stalled = run(root, ["-e", script], { timeoutMs: 500 });
+  expect((await stalled).timedOut).toBe(true);
+
+  const helper = Number(fs.readFileSync(pidFile, "utf8"));
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  try {
+    // The premise: the pipe is still held, so the pre-#743 release has not run.
+    expect(alive(helper)).toBe(true);
+    const recovered = await run(root, ["-e", "process.stdout.write('ready')"], { timeoutMs: 10_000 });
+    expect(recovered).toEqual({ status: 0, stdout: "ready", stderr: "" });
+    expect(alive(helper)).toBe(true);
+  } finally {
+    // Reap what this test spawned; nothing of it outlives the test.
+    try { process.kill(helper, "SIGKILL"); } catch { /* already gone */ }
+  }
+}, 20_000);
 
 /**
  * A POOL OF ITS OWN, NOT THE SINGLETON. What this test asserts is that the
