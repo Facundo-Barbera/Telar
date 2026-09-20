@@ -219,6 +219,9 @@ export type SessionsCapability = {
    * exactly what #199 spent a milestone refusing.
    */
   setReportWindow(sessionId: string, minutes: ReportCadence | null): Promise<Session>;
+  /** #543. Absent on an engine with no sqlite execution store, which the tool
+   *  reports rather than throwing. */
+  putSchedule?(input: { sessionId: string; prompt: string; rule: unknown; zone: string }): Promise<{ id: string; nextRunAt: number; zone: string }>;
   diff(sessionId: string): Promise<SessionDiff>;
   /**
    * WHO IS ASKING — present inside a turn, ABSENT on the outward socket. A
@@ -336,6 +339,23 @@ function cadencePhrase(cadence: Session["reportWindowMinutes"]): string {
 
 const NO_AGENT =
   "This door cannot address the Agent: a row in its inbox names the session that wrote it and the turn it spoke from, and this client is not a session. You are talking to a person who can reach their own Agent.";
+
+/**
+ * A CALLER THAT IS NOT A SESSION CANNOT SCHEDULE — issue #543, and it is the
+ * guard rather than a politeness.
+ *
+ * A row names the session its prompt is submitted to, so a caller with no
+ * `self` has nothing to put there. Writing one anyway would create WORK THAT
+ * OUTLIVES ITS CALLER and belongs to nobody — a clock firing into an id that
+ * is not a session, which the first sweep would disable hours later, long
+ * after anyone could connect the dead row to the call that made it.
+ *
+ * The same shape as `NO_AGENT` above and for the same reason: the door that
+ * hits this is the outward sessions socket, a client a person is typing at,
+ * and they can ask their own session for it.
+ */
+const NO_SESSION_TO_SCHEDULE =
+  "This door has no session to schedule: a scheduled run is submitted INTO a conversation, and this client is not one. Ask a session to schedule itself.";
 
 const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request — a notification in YOUR session, so you can end this turn rather than poll. It is a PING; sessions_read fetches the outcome.`;
 
@@ -1991,6 +2011,61 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
      * to compose the tools is a read at registration time. See its note.
      */
     ...sessionQueryTools(tool, deferredQuery(() => capability.query)),
+    /**
+     * A PROMPT ON A CLOCK — issue #543. Appended after the cadence for the same
+     * reason it was: the pinned name lists in the tests GROW rather than
+     * reorder.
+     *
+     * IT TAKES NO `sessionId`, exactly as the cadence above does not, and for
+     * the same argument: a session scheduling work into ANOTHER session would
+     * be one peer deciding when another must run, which is the relationship
+     * #199 spent a milestone refusing. `self` is the only session this can aim
+     * at.
+     *
+     * AND A WARP CHILD MAY NOT CALL IT AT ALL — `WARP_CHILD_DISALLOWED_TOOLS`.
+     * That list's rule is "a child may not create work that outlives the run",
+     * and a schedule is the purest instance of it.
+     */
+    tool(
+      "sessions_schedule",
+      "Run a prompt in THIS session on a clock — every N minutes, or at a fixed local time on chosen weekdays. A missed run is re-aimed rather than fired late, and nothing fires while Telar is closed.",
+      {
+        prompt: z.string().min(1).describe("What to send to this session when the schedule comes due."),
+        everyMinutes: z.number().int().min(1).optional().describe("Run every N minutes. Use this OR hour/minute, not both."),
+        hour: z.number().int().min(0).max(23).optional().describe("Local hour for a fixed-time schedule."),
+        minute: z.number().int().min(0).max(59).optional().describe("Local minute for a fixed-time schedule."),
+        weekdays: z.array(z.number().int().min(0).max(6)).optional().describe("0 is Sunday. Omit for every day."),
+        zone: z.string().optional().describe("IANA zone name, e.g. Europe/Madrid. Defaults to this machine's."),
+      },
+      async (args) => {
+        // THE GUARD: a caller that is not a session has no conversation for a
+        // run to land in, so it may not leave a clock behind. See the constant.
+        if (!capability.self) return err(NO_SESSION_TO_SCHEDULE);
+        if (!capability.putSchedule) return err("This engine cannot schedule.");
+        const fixed = args.hour !== undefined;
+        if (fixed && args.everyMinutes !== undefined) return err("A schedule is either every N minutes or at a fixed time, never both.");
+        if (!fixed && args.everyMinutes === undefined) return err("A schedule needs either everyMinutes or an hour.");
+        const rule = fixed
+          ? ({ kind: "fixed" as const, hour: Number(args.hour), minute: Number(args.minute ?? 0), weekdays: args.weekdays ?? [] })
+          : ({ kind: "interval" as const, everyMs: Number(args.everyMinutes) * 60_000 });
+        try {
+          const row = await capability.putSchedule({
+            sessionId: capability.self.sessionId,
+            prompt: String(args.prompt),
+            rule,
+            zone: String(args.zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone),
+          });
+          return json({
+            scheduleId: row.id,
+            nextRunAt: row.nextRunAt,
+            zone: row.zone,
+            note: "Nothing fires while Telar is closed. A run missed by more than five minutes is skipped and re-aimed at the next occurrence rather than fired late, and the row says so.",
+          });
+        } catch (error) {
+          return err(`Could not schedule that: ${failure(error)}`);
+        }
+      },
+    ),
   ];
 }
 

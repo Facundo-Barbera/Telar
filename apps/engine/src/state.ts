@@ -248,6 +248,8 @@ import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeMod
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
+import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./schedules";
+import type { ScheduleRow } from "./execution-store";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, type GitResult, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
@@ -9023,9 +9025,11 @@ export class EngineStore {
        */
       notification?: NotificationDetail;
       assignmentScope?: string;
-      origin?: "session";
+      origin?: "session" | "schedule";
       wakeReason?: WakeReason;
       sender?: { sessionId?: string };
+      /** A CLOCK started this turn — issue #543. See the origin enum. */
+      scheduleOrigin?: { scheduleId: string; dueAt: number };
       /**
        * THE ONE SENDER A HUMAN STOP DOES NOT LATCH OUT — set by
        * `submitAgentTurn` from the built-in Agent's proof and by nothing else.
@@ -9036,9 +9040,23 @@ export class EngineStore {
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
     assertText(input.input);
-    const companions = Number(input.wakeReason !== undefined) + Number(input.sender !== undefined);
-    if (input.origin === "session" ? companions !== 1 : companions !== 0) {
-      throw new EngineStateError("invalid_request", "a session-origin turn carries exactly one of a wake reason or a sender, and only such a turn does");
+    /**
+     * EXACTLY ONE COMPANION, AND NOW THERE ARE THREE OF THEM — issue #543.
+     *
+     * A `session`-origin turn carries a wake reason or a sender; a `schedule`
+     * one carries `scheduleOrigin`. WIDENED RATHER THAN BORROWED: a schedule is
+     * not a session, so passing a fake `sender` to satisfy the old shape would
+     * put every scheduled turn into the "who sent this" surfaces as a peer
+     * message — a lie told to an invariant rather than a change to it.
+     */
+    const companions =
+      Number(input.wakeReason !== undefined) + Number(input.sender !== undefined) + Number(input.scheduleOrigin !== undefined);
+    const wants = input.origin === "session" || input.origin === "schedule" ? 1 : 0;
+    if (companions !== wants) {
+      throw new EngineStateError("invalid_request", "a session- or schedule-origin turn carries exactly one companion, and only such a turn does");
+    }
+    if (input.origin === "schedule" && input.scheduleOrigin === undefined) {
+      throw new EngineStateError("invalid_request", "a schedule-origin turn names the schedule that started it");
     }
     const kind = input.kind === "compact" ? "compact" : undefined;
     const session = this.getSession(sessionId);
@@ -9148,6 +9166,9 @@ export class EngineStore {
       ...(input.origin === "session" && input.sender
         ? { origin: "session" as const, sender: input.sender.sessionId ? { sessionId: input.sender.sessionId } : {} }
         : {}),
+      // A CLOCK STARTED THIS ONE (#543), named so a transcript can say why it
+      // ran rather than drawing it as something a person typed.
+      ...(input.origin === "schedule" && input.scheduleOrigin ? { origin: "schedule" as const, scheduleOrigin: input.scheduleOrigin } : {}),
       ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
       ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
       ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
@@ -12535,6 +12556,116 @@ export class EngineStore {
    * Returns the sessions it woke, so a caller — and a test — can see the tick's
    * work without waiting on a timer.
    */
+  /* ── schedules (#543) ─────────────────────────────────────────────────── */
+
+  /**
+   * ══ EVERY SCHEDULE WHOSE APPOINTMENT HAS PASSED — issue #543 ══
+   *
+   * THE FIFTH SWEEP, AND THE SAME SHAPE AS THE OTHER FOUR because a deadline
+   * passing is still not an event. `sweepSnoozeWakes` is the direct precedent —
+   * a stored future timestamp with nobody to notice it — and `sweepRateLimited`
+   * is the stronger one, because it already REQUEUES A TURN from a deadline,
+   * unattended, on the argument that "a limit that lifted at 3am should not
+   * leave the session shelved".
+   *
+   * DEADLINE-DRIVEN, NEVER CATCH-UP. It asks which rows are due, not how many
+   * ticks it missed — so five seconds of lag and five days of sleep take the
+   * same path, and nothing here depends on whether `setInterval` is
+   * suspend-aware. The decision itself is `decideSchedule`, which is pure.
+   *
+   * ONE BAD ROW MUST NOT STOP THE PASS, the per-row `try` every sweep here has.
+   * A row whose session was deleted is the ordinary case rather than an error:
+   * it is disabled, so the sweep stops reconsidering it every thirty seconds
+   * for ever, and stays visible on the settings surface.
+   */
+  sweepSchedules(): string[] {
+    const store = this.executionStore;
+    if (!store) return [];
+    const now = this.now();
+    const acted: string[] = [];
+    for (const row of store.dueSchedules(now)) {
+      try {
+        const decision = decideSchedule(row.rule, row.zone, row.nextRunAt, now);
+        if (!decision.fire) {
+          // SKIPPED, AND SAID SO. Without the recorded instant the boundary —
+          // "Telar was not running at 09:00" — is invisible, and an invisible
+          // boundary is indistinguishable from a broken scheduler.
+          store.writeSchedule({ ...row, nextRunAt: decision.nextRunAt, lastRunStatus: "skipped", lastSkippedAt: decision.skipped ?? row.nextRunAt });
+          acted.push(row.id);
+          continue;
+        }
+        const runId = `run_sched_${row.id}_${row.nextRunAt}`;
+        this.submitTurn(row.sessionId, {
+          runId,
+          input: row.prompt,
+          origin: "schedule",
+          scheduleOrigin: { scheduleId: row.id, dueAt: row.nextRunAt },
+        });
+        store.writeSchedule({ ...row, nextRunAt: decision.nextRunAt, lastRunAt: now, lastRunId: runId, lastRunStatus: "fired" });
+        acted.push(row.id);
+      } catch {
+        /**
+         * The session is gone, or refused the turn. Disable rather than retry:
+         * a row that cannot fire is not made more likely to fire by being
+         * reconsidered every thirty seconds, and leaving it enabled would turn
+         * one deleted session into a permanent tick.
+         */
+        try {
+          store.writeSchedule({ ...row, enabled: false, nextRunAt: this.scheduleParkedAt(row.nextRunAt, now) });
+        } catch {
+          /* the store itself is unhappy; the next sweep tries again */
+        }
+      }
+    }
+    return acted;
+  }
+
+  /** Where a row that could not fire is parked: past `now`, so a re-enabled row
+   *  does not immediately fire the appointment it already failed. */
+  private scheduleParkedAt(dueAt: number, now: number): number {
+    return Math.max(dueAt, now) + 1;
+  }
+
+  listSchedules(sessionId?: string): ScheduleRow[] {
+    return this.executionStore?.listSchedules(sessionId) ?? [];
+  }
+
+  readSchedule(id: string): ScheduleRow | undefined {
+    return this.executionStore?.readSchedule(id);
+  }
+
+  /** Create or replace one schedule. The FIRST `nextRunAt` is computed here
+   *  rather than taken from the caller: a client that could name it could aim a
+   *  row at the past and make the grace rule meaningless. */
+  putSchedule(input: { id?: string; sessionId: string; prompt: string; rule: ScheduleRule; zone: string; enabled?: boolean }): ScheduleRow {
+    const store = this.executionStore;
+    if (!store) throw new EngineStateError("conflict", "schedules need the sqlite execution store");
+    if (!input.prompt.trim()) throw new EngineStateError("invalid_request", "a schedule needs a prompt");
+    this.requireSession(input.sessionId);
+    const now = this.now();
+    const existing = input.id ? store.readSchedule(input.id) : undefined;
+    const row: ScheduleRow = {
+      id: input.id ?? `sched_${crypto.randomUUID()}`,
+      sessionId: input.sessionId,
+      prompt: input.prompt,
+      rule: input.rule,
+      zone: usableZone(input.zone),
+      enabled: input.enabled ?? true,
+      createdAt: existing?.createdAt ?? now,
+      nextRunAt: nextOccurrence(input.rule, input.zone, now),
+      ...(existing?.lastRunAt === undefined ? {} : { lastRunAt: existing.lastRunAt }),
+      ...(existing?.lastRunId === undefined ? {} : { lastRunId: existing.lastRunId }),
+      ...(existing?.lastRunStatus === undefined ? {} : { lastRunStatus: existing.lastRunStatus }),
+      ...(existing?.lastSkippedAt === undefined ? {} : { lastSkippedAt: existing.lastSkippedAt }),
+    };
+    store.writeSchedule(row);
+    return row;
+  }
+
+  deleteSchedule(id: string): boolean {
+    return this.executionStore?.deleteSchedule(id) ?? false;
+  }
+
   sweepSnoozeWakes(): string[] {
     const now = this.now();
     const woken: string[] = [];

@@ -205,6 +205,8 @@ export type EngineDaemonOptions = {
    * a coarse grid is visible.
    */
   snoozeWakeSweepIntervalMs?: number;
+  /** #543's sweep. 30 s by default — see the wiring for why not 60. */
+  scheduleSweepIntervalMs?: number;
   /**
    * Testable cadence for the request-deadline sweep — issue #541 D.
    *
@@ -1391,6 +1393,31 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   }, options.snoozeWakeSweepIntervalMs ?? 60_000);
   snoozeWakeSweeper.unref();
   /**
+   * AND A SCHEDULE'S APPOINTMENT NEEDS ONE — issue #543.
+   *
+   * 30 s, MATCHING `reportWindowSweeper` AND NOT THE 60 s ABOVE, and the reason
+   * is arithmetic rather than taste: the shortest interval a schedule may carry
+   * is 60 s, and a sweep at 60 s would silently make that floor 120 s. A
+   * feature whose smallest number is a fiction is the class of bug this whole
+   * file keeps arguing against.
+   *
+   * IT DOES NOT MATTER THAT THIS TICK MAY BE LATE. The sweep is
+   * deadline-driven — it asks which rows are due, never how many ticks it
+   * missed — so a suspend that stops the timer for three days changes when a
+   * row is noticed and not what happens to it.
+   *
+   * A THROW HERE MUST NOT TAKE THE DAEMON DOWN, as above; the sweep already
+   * catches per row.
+   */
+  const scheduleSweeper = setInterval(() => {
+    try {
+      store.sweepSchedules();
+    } catch {
+      /* the next tick tries again */
+    }
+  }, options.scheduleSweepIntervalMs ?? 30_000);
+  scheduleSweeper.unref();
+  /**
    * AND A REQUEST DEADLINE NEEDS ONE — issue #541 D.
    *
    * The fourth instance of the gap the three above describe, and the one with a
@@ -1550,6 +1577,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
       // The bounds are the store's, like every member here — see #723.
       setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
+      // #543. Present only in-process; a worker reaching the wall over HTTP has
+      // no route for it yet and the tool reports that rather than throwing.
+      putSchedule: async (input) => store.putSchedule({ ...input, rule: input.rule as never }),
       diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
       unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
@@ -4417,6 +4447,53 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }
         };
         return;
+      }
+      /**
+       * SCHEDULES — issue #543.
+       *
+       * A flat CRUD door on the one table, in this file's own `if` chain. The
+       * session a row fires into is named in the BODY and validated by the
+       * store rather than taken on trust here, exactly as every other write
+       * route in this file does it.
+       *
+       * NO "RUN NOW". It looks like a kindness and it is a second way to start
+       * a turn, with none of the sweep's re-aiming — a person who pressed it
+       * twice would get two turns and a row whose `nextRunAt` meant nothing.
+       * Sending the prompt is what the composer is for.
+       */
+      if (url.pathname === "/v2/schedules") {
+        if (request.method === "GET") {
+          const sessionId = url.searchParams.get("sessionId") ?? undefined;
+          writeJson(response, 200, { schedules: store.listSchedules(sessionId) });
+          return;
+        }
+        if (request.method === "POST") {
+          const input = await body(request);
+          writeJson(response, 200, {
+            schedule: store.putSchedule({
+              ...(typeof input.id === "string" ? { id: input.id } : {}),
+              sessionId: String(input.sessionId ?? ""),
+              prompt: String(input.prompt ?? ""),
+              rule: input.rule as never,
+              zone: String(input.zone ?? "UTC"),
+              ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+            }),
+          });
+          return;
+        }
+      }
+      if (url.pathname.startsWith("/v2/schedules/")) {
+        const id = decodeURIComponent(url.pathname.slice("/v2/schedules/".length));
+        if (request.method === "GET") {
+          const row = store.readSchedule(id);
+          if (!row) throw new HttpError(404, "not_found", "schedule does not exist");
+          writeJson(response, 200, { schedule: row });
+          return;
+        }
+        if (request.method === "DELETE") {
+          writeJson(response, 200, { deleted: store.deleteSchedule(id) });
+          return;
+        }
       }
       if (request.method === "GET" && url.pathname === "/v2/sessions/activity") {
         writeJson(response, 200, { projects: store.projectActivity() });
