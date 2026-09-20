@@ -501,9 +501,54 @@ describe("cards must paint", () => {
         else if (fill.includes("/")) offenders.push(`${file}: ${fill} is an alpha, not a fill`);
       }
     }
-    // A regex that matched nothing would make this vacuous rather than failing.
-    expect(found, "the Git surfaces render more than one <pre>").toBeGreaterThan(1);
+    /**
+     * A regex that matched nothing would make this vacuous rather than failing.
+     *
+     * ONE, NOT TWO, SINCE #694. The Diff surface used to hold the second: a
+     * `<pre>` that split a patch on newlines and tinted each line by its first
+     * character. It renders through `@pierre/diffs` now, whose viewer is a
+     * custom element with a shadow root — so there is no `<pre>` in our source
+     * to hold to this rule, and this guard lost a patient. The test below is
+     * where it went: the viewer's fills are derived in `.diff-code-view` from
+     * the same --tint-floor against the same --card, which is the rule this one
+     * enforces by a different means for a surface that is no longer ours.
+     */
+    expect(found, "the Git surfaces still render a <pre>").toBeGreaterThan(0);
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * THE DIFF VIEWER IS HELD TO THE SAME FLOOR, through tokens rather than
+   * through class strings — #694.
+   *
+   * `@pierre/diffs` renders into a shadow root, so none of the guards above can
+   * see inside it and none of them ever will. What they CAN see is the one
+   * place the app tells it what to paint: a custom-property block in this
+   * stylesheet. If that block ever stops deriving the semantic fills from
+   * --tint-floor against --card, the diff goes back to being a colour nobody
+   * chose over a ground that can thin — which is #691 exactly, arriving through
+   * the one door #691's guards cannot watch.
+   */
+  test("the diff viewer's fills come from the tint floor, against the card", () => {
+    const viewer = block(".diff-code-view");
+    // Both semantic fills, both through the floor, both against the card.
+    for (const [override, token] of [
+      ["--diffs-bg-addition-override", "--success"],
+      ["--diffs-bg-deletion-override", "--destructive"],
+    ] as const) {
+      expect(viewer, `${override} mixes ${token} through the floor against the card`).toContain(
+        `${override}: color-mix(in oklab, var(${token}) var(--tint-floor), var(--card));`,
+      );
+    }
+    // The ground itself is the card, in BOTH arms of Pierre's light-dark():
+    // its shadow root sets `color-scheme: light dark`, so the arm it picks
+    // follows the SYSTEM scheme while this app's scheme is the `.dark` class.
+    // Feeding both arms a token that already carries the scheme is what makes
+    // the mismatch unobservable.
+    for (const arm of ["--diffs-light-bg", "--diffs-dark-bg"]) expect(viewer).toContain(`${arm}: var(--card);`);
+    // ...and the other half of that fix: the host is told the scheme outright.
+    expect(viewer).toContain("color-scheme: light;");
+    expect(block(".dark .diff-code-view")).toContain("color-scheme: dark;");
   });
 
   test("a semantic tint on a reading surface goes through the floor, not through an alpha", () => {

@@ -227,9 +227,13 @@ describe("the diff surface's file row", () => {
   });
 
   test("Expand / Collapse patch toggles the SAME `open` the row's disclosure button toggles", () => {
+    // The row stopped holding its own `open` when the toolbar grew collapse-all
+    // (#694) — the surface owns the set and hands each row one callback. The
+    // case is unchanged and now harder to break: there is no second toggle to
+    // drift from, because there is no local state for one to close over.
     const source = dif();
-    expect(source).toContain('<ContextMenuItem onClick={() => setOpen((current) => !current)}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>');
-    expect(source).toContain("onClick={() => setOpen((current) => !current)}\n          title=");
+    expect(source).toContain('<ContextMenuItem onClick={onToggle}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>');
+    expect(source).toContain("onClick={onToggle}\n          title=");
   });
 
   test("stage, unstage and revert are absent — a refused design, and a menu is where it would creep back", () => {
