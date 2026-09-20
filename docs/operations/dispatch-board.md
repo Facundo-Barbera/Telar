@@ -446,6 +446,20 @@ Filed as #807.
   recommended cut; he has not taken it.
 - **#760** — which tests earn their place. The analysis is done; what to delete
   is a judgement about risk appetite, not a measurement.
+- **#198's last piece: is a detached run's terminal read-only, or can you type
+  into it?** The engine↔desktop half shipped in #825 — a run now genuinely runs
+  on a PTY the shell holds. What is left is drawing it in the strip beside W2's
+  surface and retiring the `/run/output` poll, and that needs this answered
+  rather than defaulted.
+
+  It is a product decision because of the limit `docs/run-terminal.md` §5 names:
+  **a terminal is wider than its captured output.** Redaction covers what the
+  *process writes* — #819 does that correctly over a byte stream now — and does
+  not reach a secret a person **types**, nor xterm's client-side scrollback.
+  Neither is a regression; a log pane never protected against someone typing a
+  token either. Making it stronger means pattern-matching on tokens Telar was
+  never given, at a false-positive cost on every line, or refusing to echo, which
+  is refusing to be a terminal.
 - **#791's remaining half** — making agents produce attribution markers
   *routinely*. What shipped works on any comment that carries a marker and needs
   no decision. Coverage needs either a `github_comment` tool on the session wall,
