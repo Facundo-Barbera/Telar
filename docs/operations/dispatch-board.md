@@ -343,6 +343,30 @@ Waves are capped. **No more than 2 workers running concurrently per coordinator*
 and no more than 3 coordinators at once. Unbounded fan-out is what put the machine
 at load 27.
 
+### The cap is on the machine, not on a coordinator
+
+**One worker at a time per coordinator, and never more than four workers running
+across the whole machine at once.**
+
+The earlier rule — two workers per coordinator — was written when there was one
+coordinator, and it survived into a night with four. Two each is eight. On
+2026-09-20 that put the machine at **load 26.8**, with eight `bun` processes at
+~75% CPU apiece, each one a worker running its suite. That is the number the
+owner has named explicitly as the thing that must not happen again, and it was
+reached while every coordinator was individually obeying its cap.
+
+A per-coordinator limit does not bound the machine. It is the same failure this
+document's §3 is about — something true in one place, relied on somewhere its
+premise no longer holds — committed in a rule rather than in a report.
+
+**A coordinator running the suite itself is not a way around this.** It is the
+same load wearing a different name.
+
+Before starting a worker, look at what is already running across all
+coordinators, not just your own.
+
+---
+
 **Waves are retired.** On 2026-09-20 the owner stopped them:
 
 > *"te pedí hace un rato que fuéramos de lo más viejo a lo más nuevo y no has
