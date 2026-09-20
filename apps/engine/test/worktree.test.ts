@@ -819,13 +819,28 @@ test("async git pool expires queued reads without spawning them and recovers cap
  * inherited stdio to a helper and then blocks. The helper outlives the SIGKILL
  * by thirty seconds, so before #743 the read below spent its whole ten-second
  * budget queued and returned a timeout instead of `ready`.
+ *
+ * THE HELPER CALLS `setsid` ON ITSELF, AND THAT IS THE POINT — #771.
+ *
+ * #771 makes the timeout path kill git's process GROUP, which reaps an ordinary
+ * helper. An ordinary helper here would therefore stop holding the pipe, the
+ * pipe would close at the deadline, and this test would pass whether `release()`
+ * ran on the timeout path or only in the completion callback: still green, and
+ * no longer testing anything.
+ *
+ * A `detached` helper is the case a group kill cannot reach — its own session,
+ * out of the group, holding the inherited pipe regardless. Not a contrivance to
+ * keep a test alive: it is the residual leak #771 writes down and cannot close
+ * (`git fsmonitor--daemon` is the real instance), which makes it the one shape
+ * where #770's release-at-the-deadline is still the only thing standing between
+ * a stuck helper and a stuck pool.
  */
 test("a timed-out read frees its slot while its child's helper still holds the pipe", async () => {
   const root = tmp("telar-git-release-");
   const pidFile = path.join(root, "helper.pid");
   const script = `
     const { spawn } = require("node:child_process");
-    const helper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" });
+    const helper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit", detached: true });
     require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(helper.pid));
     setTimeout(() => {}, 30000);
   `;
