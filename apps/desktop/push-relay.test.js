@@ -61,7 +61,27 @@ describe("what counts as a relay config", () => {
   });
 });
 
-describe("writing the Keychain item", () => {
+/**
+ * macOS ONLY, AND IT HAS TO BE SAID OUT LOUD. `provisionPushRelay` refuses off
+ * darwin before it looks at anything — "the credential lives in the macOS
+ * Keychain" — so every test below would be asking about a code path the
+ * platform never reaches.
+ *
+ * WITHOUT THIS GATE, TWO FAILED AND THREE PASSED FOR THE WRONG REASON, which is
+ * the worse half. The refusals still refused, so "a bad config is refused" and
+ * "a refusal never quotes what was pasted" went green against a message that
+ * had nothing to do with the config; and "a keychain that refused the write is
+ * reported" asserts the error contains "Keychain", which the off-darwin
+ * sentence also contains. Three green tests that could not fail.
+ *
+ * Nothing goes dark: `bun run test:desktop` runs this file on the `macos` leg of
+ * Verify, which is the same reason that job exists for `dev-update`'s `ditto`
+ * block. Never run on Linux is not the same as never run.
+ *
+ * Every exec is still a fake. This gate is about the platform check inside the
+ * function under test, not about reaching a real Keychain.
+ */
+describe.skipIf(process.platform !== "darwin")("writing the Keychain item", () => {
   test("the token goes on stdin and never into argv", async () => {
     const { calls, exec } = recordingExec();
     expect(await provisionPushRelay(good, exec)).toEqual({ ok: true });
