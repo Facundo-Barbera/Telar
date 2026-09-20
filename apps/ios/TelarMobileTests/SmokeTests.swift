@@ -3,6 +3,6 @@ import Testing
 
 @Suite struct SmokeTests {
     @Test func harnessRuns() {
-        #expect(1 + 1 == 2)
+        #expect(1 + 1 == 3)
     }
 }
