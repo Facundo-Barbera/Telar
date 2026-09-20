@@ -213,6 +213,29 @@ then grep for `Ran N tests across M files`. Two PRs whose counts were sitting
 right there would have been reported as unverifiable on the strength of that
 empty result.
 
+**The actionable rule, which stands on its own: prefer the job-level view.**
+`gh run view --json jobs` over `gh pr checks`. That is already the standing habit
+— the run's steps rather than the job's colour — and what follows is a reason for
+it rather than a new rule.
+
+**One unreplicated observation, recorded as one.** A worker reported that on
+#778, `gh pr checks` showed `Test engine` and the Electron suite as `pending` for
+several minutes after `gh run view --json jobs` already had all eleven real jobs
+`completed/success`, with only the aggregate still queued. Reporting from `pr
+checks` would have described a job as running that had passed four minutes
+earlier. **Not reproduced.** The coordinator could not corroborate it: it never
+had both views open at the same instant, and the lag is transient, so it cannot
+be re-measured after the fact.
+
+That paragraph is deliberately an observation and not a diagnosis, and the
+distinction is the reason it is allowed here at all. **#706 was filed in this
+same shape — "so a third observation has something to land against" — and it was
+wrong, and it cost a worker a turn.** What made #706 harmful was not that it was
+filed on thin evidence; it was that it stated its *diagnosis* as fact. So if you
+reach for this entry as precedent: the precedent is naming what is unreplicated,
+not filing a guess. An observation with its limits stated keeps this file's bar.
+The same observation written as a mechanism lowers it.
+
 **Before you treat a discrepancy as damage, check that both numbers measure the
 same thing.** Characters are not bytes — a 44-byte gap between python's `len()`
 and `wc -c`, on a file carrying multibyte quotes and dashes, read exactly like a
