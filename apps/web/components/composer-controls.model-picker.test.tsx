@@ -4,21 +4,23 @@
  * Facundo asked for exactly two things after preferring T3 Code's picker to
  * ours — the row's organisation, and the rail collapsing in search mode.
  *
- * ── WHAT THIS FILE CAN AND CANNOT REACH ─────────────────────────────────────
- * THE SEARCH FIELD CANNOT BE TYPED INTO HERE, and that is a property of the
- * environment rather than of the picker. React 19 raises `onChange` for a
- * controlled text input through its own change plugin, and under Happy DOM that
- * plugin never fires: `onInput` on the same node fires, the value tracker shows
- * a genuine mismatch (`""` against the written value), and `onChange` still
- * does not run — for a plain `Event`, an `InputEvent`, a `change` event, a
- * direct assignment, and a prototype-setter write alike. No other test in this
- * app types into a controlled input either.
+ * ── THE SEARCH FIELD IS DRIVEN HERE (#732) ──────────────────────────────────
+ * It could not be when this file was written. The note that stood here said
+ * typing into a controlled input was impossible in this app's environment and
+ * that the rail's collapse and the empty state's wording were therefore left to
+ * a manual eye. That was true of the environment and false of the cause: React
+ * freezes `isInputEventSupported` from `canUseDOM` at import, and a test file's
+ * static `import` of `react-dom/client` is hoisted above its own
+ * `GlobalRegistrator.register()`, so React was routing controlled inputs down
+ * an IE polyfill. `scripts/test-dom.mjs` imports react-dom while the preload's
+ * DOM is up and the path works; `lib/testing/type-into.ts` is the helper.
  *
- * So the SCOPE RULE — which catalogues a live query reads, the half of the
- * collapse that is a decision rather than a layout — is exported as
- * `searchScope` and checked directly below. What is left uncovered is the line
- * that hides the rail (`{!searching && …}`) and the empty state's wording; both
- * are named in the PR as needing an eye rather than quietly assumed.
+ * So the residue #732 recorded is paid off below: a query really is typed, and
+ * the rail going away, the scope the query then reads, and the words the empty
+ * state chooses are all read off the mounted picker. `searchScope` stays
+ * exported and unit-checked — three drivers against two answers is cheaper
+ * stated directly than mounted six times — but it is no longer standing in for
+ * the wiring.
  *
  * ── THE REAL COMPONENT AGAINST A STUBBED `fetch` ────────────────────────────
  * `mock.module` would replace `lib/model-catalogue-cache` for the whole run,
@@ -35,6 +37,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
 import { AgentControl, searchScope } from "./composer-controls";
 import { forgetModelCatalogues } from "@/lib/model-catalogue-cache";
+import { typeInto } from "@/lib/testing/type-into";
 
 /** Registered here and released in `afterAll` — Happy DOM throws on a second
  *  `register`, so a file that takes a DOM and never gives it back fails
@@ -146,6 +149,26 @@ const rows = (): HTMLButtonElement[] => [...document.body.querySelectorAll<HTMLB
 /** The rail, identified by an entry only it has. */
 const rail = (): HTMLElement | null => document.body.querySelector('button[aria-label="Favourites"]');
 
+/** The search field. Portalled with the rest of the popover. */
+const search = (): HTMLInputElement => {
+  const found = document.body.querySelector<HTMLInputElement>('input[aria-label="Search models by name or connection"]');
+  if (!found) throw new Error("no search field");
+  return found;
+};
+
+/** Type a query and let the catalogue reads it triggers land — the first
+ *  keystroke of a cross-provider search is when the other providers are asked
+ *  for, and those reads are deferred like every other in this app. */
+async function type(text: string): Promise<void> {
+  await typeInto(search(), text);
+  await settle();
+}
+
+/** The empty state's sentence, which is the only place a hidden scope is
+ *  stated in words. */
+const emptyState = (): string | undefined =>
+  [...document.body.querySelectorAll("p")].map((p) => p.textContent?.replace(/\s+/g, " ").trim()).find((text) => text?.startsWith("Nothing matches"));
+
 /** Each row as the reader sees it: first line, then second. The two lines are
  *  the only direct children of the row's text column. */
 const rowText = (): string[] =>
@@ -204,10 +227,85 @@ describe("the rail is there until a query replaces it", () => {
 });
 
 /**
- * THE DECISION BEHIND THE COLLAPSE, checked where it can be: hiding the rail
- * while its scope stayed applied would leave a filter in force with nothing on
- * screen to show it or change it, so the collapse and the widening are one
- * rule, bounded by whether the provider is still yours to choose.
+ * THE COLLAPSE, DRIVEN (#657's other half, and #732's residue).
+ *
+ * Every assertion here needs a real keystroke, which is why none of them
+ * existed until #732 was fixed. The rail going away and the scope widening are
+ * ONE rule — hiding the rail while its filter stayed applied would leave a
+ * filter in force with nothing on screen to show it or change it — so they are
+ * checked together, through the field, rather than argued about separately.
+ */
+describe("a live query replaces the rail", () => {
+  test("the rail is gone while a query stands, and back when it is cleared", async () => {
+    await open();
+    expect(rail()).not.toBeNull();
+    await type("opus");
+    expect(rail()).toBeNull();
+    // `clear` is the control beside the field; the rail is what it restores.
+    await press(document.body.querySelector<HTMLButtonElement>('button[aria-label="Clear search"]')!);
+    expect(rail()).not.toBeNull();
+    expect(search().value).toBe("");
+  });
+
+  test("it collapses even where the provider is fixed — one live entry is not a control", async () => {
+    await open({ onDriverChange: undefined });
+    expect(rail()).not.toBeNull();
+    await type("luna");
+    expect(rail()).toBeNull();
+  });
+
+  test("the query reads every provider while the provider can still change", async () => {
+    await open();
+    // Only the session's own catalogue was read at rest...
+    expect(asked).toEqual(["opencode"]);
+    await type("opus");
+    // ...and the first keystroke is what asks for the rest of the scope.
+    expect([...asked].sort()).toEqual(["claude", "codex", "opencode"]);
+    // A match on another harness is reachable, which is the whole point of
+    // widening: "Opus 5" is Claude's and this session is on OpenCode.
+    expect(rowText()).toEqual(["Opus 5 | Claude"]);
+  });
+
+  test("a fixed session's query stays home — no other catalogue is even asked for", async () => {
+    await open({ onDriverChange: undefined });
+    await type("opus");
+    expect(asked).toEqual(["opencode"]);
+    expect(rowText()).toEqual([]);
+  });
+});
+
+/**
+ * THE WORDS, which are load-bearing exactly because the rail is gone: on the
+ * one screen where the scope is invisible and the list is empty, "nothing
+ * matches" and "nothing matches HERE" are different answers and only one of
+ * them is true.
+ */
+describe("the empty state says which scope came up empty", () => {
+  test("a cross-provider query that finds nothing says so of every provider", async () => {
+    await open();
+    await type("zzz");
+    expect(emptyState()).toBe("Nothing matches “zzz” on any provider — names, ids and connections are searched.");
+  });
+
+  test("a fixed session's names the provider it was bounded to, and why", async () => {
+    await open({ onDriverChange: undefined });
+    await type("opus");
+    // Opus 5 exists — on Claude. Saying only "nothing matches" here would be
+    // false, and is the case this sentence exists for.
+    expect(emptyState()).toBe("Nothing matches “opus” in OpenCode, the provider this session is fixed to — names, ids and connections are searched.");
+  });
+
+  test("it quotes the query as typed, trimmed", async () => {
+    await open();
+    await type("  zzz  ");
+    expect(emptyState()).toBe("Nothing matches “zzz” on any provider — names, ids and connections are searched.");
+  });
+});
+
+/**
+ * THE SAME RULE STATED DIRECTLY: three drivers against two answers, which is
+ * cheaper here than six mounts. It is no longer the only cover for the scope —
+ * see the driven tests above — but it is the one that says the rule in full.
  */
 describe("which catalogues a live query reads", () => {
   test("every harness while the provider can still change, the session's own first", () => {
