@@ -32,6 +32,15 @@ name: Verify
 # never reports blocks the PR forever. If work needs skipping, skip it with a
 # job-level `if:` — a job skipped that way reports success, where a workflow
 # skipped by `on: paths` stays pending for ever.
+#
+# WITH ONE REFINEMENT SINCE THAT WAS WRITTEN, and it is worth knowing before
+# reaching for the `if:`. A job skipped that way reports success TO THE PULL
+# REQUEST, which is what the paragraph above is about — but it reports
+# `skipped` to `verify-passed`, and that job fails on anything but `success`.
+# So the `if:` route works for a job outside the aggregate and not for one
+# inside it. The path-scoped iOS archive (#767) is inside it, and gets its
+# scoping from `runs-on` instead: it always runs, on a free Linux runner that
+# compiles nothing when no iOS path changed. See the `ios` job below.
 
 on:
   push:
@@ -135,8 +144,9 @@ concurrency:
 
 jobs:
   # One anchor for the fork guard and the shared setup would be nice; GitHub
-  # has neither, so each job repeats both. Five ubuntu jobs plus one macOS one,
-  # all independent, all starting at once.
+  # has neither, so each job repeats both. Six ubuntu jobs plus two macOS ones,
+  # all independent, all starting at once — except `ios`, which waits on
+  # `ios-changes` to learn which kind of runner it wants.
 
   source:
     name: Source invariants
@@ -475,6 +485,342 @@ jobs:
           [ "$failed" -eq 0 ] || exit 1
           echo "every Electron test ran to its end and passed"
 
+  # DOES THIS CHANGE TOUCH ANYTHING THE iOS ARCHIVE COMPILES? Decided once, on
+  # a Linux runner, in seconds — so the Mac below is only ever booted when
+  # there is something for it to compile. #767.
+  #
+  # WHY A JOB AND NOT `on: paths`. The header of this file already says it: a
+  # workflow filtered out by `on: paths` never reports, and a required check
+  # that never reports blocks the pull request for ever. The filter has to live
+  # at the job level, which means something has to compute it, which is this.
+  #
+  # WHY IT DIFFS RATHER THAN ASKS THE API. `git diff` needs only the
+  # `contents: read` this workflow already has, and the answer is derived from
+  # the same objects the archive would compile. Adding `pull-requests: read`
+  # for `gh api .../files` would buy a marginally shorter checkout.
+  #
+  # IT FAILS TOWARDS RUNNING THE ARCHIVE. Every path where the diff cannot be
+  # computed — a base commit that is not in the fetched history, a force-push
+  # that orphaned `github.event.before` — reports `true`. The wrong answer in
+  # that direction costs a macOS runner; the wrong answer in the other
+  # direction is the gap #767 was filed about.
+  ios-changes:
+    name: Does anything here reach the iOS build?
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 5
+    outputs:
+      ios: ${{ steps.detect.outputs.ios }}
+    steps:
+      # fetch-depth: 0 because the diff below reaches back to the merge base,
+      # which a depth-1 checkout does not have. The repository is ~37 MB.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # THE MATCHER, EXERCISED ON KNOWN ANSWERS BEFORE IT IS TRUSTED (#721).
+      # A path filter is a regex, regexes are wrong silently, and the failure
+      # mode here is the one that matters: a filter that matches nothing leaves
+      # every iOS change unarchived while this job stays green. So the same
+      # expression the real diff goes through is first run over a table of
+      # paths whose answers are known — including the two anchors, which are
+      # the parts that rot first.
+      - name: The path filter, against paths whose answers are known
+        run: |
+          set -euo pipefail
+          # ONE DEFINITION, USED TWICE. If this and the matcher below were two
+          # copies, the self-test would be testing the copy.
+          source .github/workflows/ios-paths.sh
+
+          failed=0
+          check() { # path expected
+            got=no
+            printf '%s\n' "$1" | ios_paths | /usr/bin/grep -q . && got=yes
+            if [ "$got" != "$2" ]; then
+              echo "::error::the iOS path filter says '$1' is ${got}, expected ${2}"
+              failed=1
+            fi
+          }
+
+          check 'apps/ios/TelarMobile/Views/SessionView.swift'   yes
+          check 'apps/ios/TelarMobile.xcodeproj/project.pbxproj' yes
+          check 'apps/ios/nightly.sh'                            yes
+          check 'apps/ios/Config/ActivityInfo.plist'             yes
+          # This file gates the archive, so a change to it must archive — which
+          # is also how this job's own pull request proves the gate fires.
+          check '.github/workflows/verify.yml'                   yes
+          check '.github/workflows/ios-paths.sh'                 yes
+          # The nightly's workflow does not change what compiles; it changes
+          # what publishes. nightly.sh above does, and is in.
+          check '.github/workflows/nightly-ios.yml'              no
+          check 'apps/web/src/App.tsx'                           no
+          check 'docs/operations/dispatch-board.md'              no
+          # THE THREE CASES THAT PIN THE PATTERN, and each fails under exactly
+          # one mutation of it — checked by running the table against those
+          # mutations rather than by reading the regex:
+          #   drop `^`                → the first matches
+          #   drop the trailing `/`   → the second matches
+          #   drop `$`                → the third matches
+          # An earlier draft used `apps/iosextra/…` for the first of these and
+          # it proved nothing: that path fails on the `/` whether or not `^` is
+          # there, so the anchor it was named for was untested.
+          check 'vendor/apps/ios/Thing.swift'                    no
+          check 'apps/iosextra/Thing.swift'                      no
+          check '.github/workflows/verify.yml.bak'               no
+          # A .swift outside apps/ios is not in the Xcode project.
+          check 'packages/whatever/Helper.swift'                 no
+
+          [ "$failed" -eq 0 ] || exit 1
+          echo "the iOS path filter answered all 13 known cases correctly"
+
+      - name: Diff this change against its base
+        id: detect
+        env:
+          # Empty on a push; both present on a pull request.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          # NOT `set -e`. Several commands below are meant to come back empty
+          # or non-zero — `grep` exits 1 on no match — and #768 records what
+          # that costs when it is not thought about: an instrument whose
+          # failure signal was indistinguishable from its success condition,
+          # red on exactly the run where the thing it measured had been fixed.
+          set -uo pipefail
+          source .github/workflows/ios-paths.sh
+
+          run_anyway() { # why
+            echo "::warning::$1 — archiving rather than guessing"
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            # Three dots: what this branch changed since it left the base, not
+            # what has happened on the base since. A `pull_request` checkout
+            # has both parents of the merge commit, so both SHAs are here.
+            changed=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" 2>&1) \
+              || run_anyway "cannot diff ${BASE_SHA}...${HEAD_SHA}: ${changed}"
+          else
+            git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null \
+              || run_anyway "push event's before-commit ${BEFORE_SHA} is not in this history"
+            changed=$(git diff --name-only "${BEFORE_SHA}" "${GITHUB_SHA}" 2>&1) \
+              || run_anyway "cannot diff ${BEFORE_SHA}..${GITHUB_SHA}: ${changed}"
+          fi
+
+          total=$(printf '%s\n' "$changed" | /usr/bin/grep -c .)
+          matched=$(printf '%s\n' "$changed" | ios_paths)
+          hits=$(printf '%s\n' "$matched" | /usr/bin/grep -c .)
+
+          # A COUNT, NOT A COLOUR. "$hits of $total" is a pair of numbers a
+          # reader can check against the PR's own file list; "iOS: true" is a
+          # claim you would have to take on trust.
+          echo "$hits of $total changed path(s) reach the iOS build"
+          [ "$hits" -gt 0 ] && printf '%s\n' "$matched" | head -40
+
+          if [ "$hits" -gt 0 ]; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ios=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # THE ARCHIVE THAT WAS MISSING — an iOS build break, caught on the pull
+  # request that causes it rather than on the night it takes TestFlight dark.
+  # #767, and #758 is the class of thing it is for: a Swift type-check
+  # regression is CUMULATIVE, so no single PR looks like the cause and a
+  # per-PR signal is worth more here than it would be in most places.
+  #
+  # THIS JOB ALWAYS RUNS, AND `runs-on` IS WHAT MAKES THAT AFFORDABLE. When
+  # nothing iOS changed it takes a free Linux runner and compiles nothing, in
+  # about ten seconds; when something did, it takes a Mac and archives. The
+  # alternative — skipping the job outright — would have meant teaching
+  # `verify-passed` below to accept `skipped` for one named job, which is the
+  # one rule in this file it cannot afford to relax. A job that always reports
+  # `success` leaves that rule untouched, and the cost of the difference is a
+  # Linux runner boot on the ~95% of pull requests that touch no iOS file.
+  #
+  # NO SECRETS, and the archive is what makes that possible: signing lives in
+  # the EXPORT (nightly.sh re-signs to Apple Distribution on the way to an
+  # IPA), so `CODE_SIGNING_ALLOWED=NO` archives with no certificate, no
+  # profile and no App Store Connect key. Probe run 35490217749 established
+  # this. It also means a red here is a COMPILE failure and never an expired
+  # certificate, which is the difference between a gate people read and a gate
+  # people learn to re-run.
+  #
+  # WHY NOT `nightly.sh --no-upload`, which would archive the same app: that
+  # script is the PUBLISHING path — unique build numbers, export options,
+  # altool — and coupling the pull-request gate to it means a change to how
+  # Telar publishes can redden every iOS pull request. What is copied from it
+  # is the set of settings that decide what COMPILES, listed below; if those
+  # drift apart this gate stops guarding the nightly, which is the one way
+  # this can rot.
+  ios:
+    name: Archive iOS (only when something iOS changed)
+    needs: [ios-changes]
+    runs-on: ${{ needs.ios-changes.outputs.ios == 'true' && 'macos-latest' || 'ubuntu-latest' }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.ios-changes.outputs.ios == 'true'
+
+      - name: Confirm the Xcode
+        if: needs.ios-changes.outputs.ios == 'true'
+        run: xcodebuild -version
+
+      # THE FIVE SETTINGS COPIED FROM nightly.sh, because they are the ones
+      # that decide what the compiler sees: project, scheme, `Release`,
+      # `generic/platform=iOS`, `DEVELOPMENT_TEAM`. Everything else there is
+      # about publishing and is deliberately absent — no `-allowProvisioningUpdates`
+      # (it exists for cloud signing, which needs the keys this job does not
+      # have), no build number, no display name.
+      #
+      # THE MEASUREMENT, which is the half of #767 that turns this from binary
+      # into a number: #758 was a THRESHOLD, not a break — an expression that
+      # fit on the maintainer's Mac and not on a hosted runner — so an archive
+      # that merely passes today can be one modifier from failing. 500 ms is
+      # the bar #768 settled on; it left the worst layer at 79 ms, six times
+      # under it. `$(inherited)` keeps whatever the project sets: a bare
+      # assignment on the command line is the highest level there is and would
+      # otherwise erase the target's own flags.
+      #
+      # THE LOG GOES TO A FILE, not the console, and not through `-quiet`.
+      # `-quiet` would drop the swiftc command lines, and those are the only
+      # evidence that the flags above reached the compiler at all — which the
+      # step after next asserts rather than assumes.
+      - name: Archive TelarMobile, unsigned
+        if: needs.ios-changes.outputs.ios == 'true'
+        env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -archivePath "$RUNNER_TEMP/TelarMobile.xcarchive" \
+            DEVELOPMENT_TEAM=MM74W7WGAM \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            OTHER_SWIFT_FLAGS='$(inherited) -Xfrontend -warn-long-expression-type-checking=500 -Xfrontend -warn-long-function-bodies=500' \
+            archive > "$RUNNER_TEMP/archive.log" 2>&1 || {
+              status=$?
+              echo "::group::the archive log, last 300 lines"
+              tail -300 "$RUNNER_TEMP/archive.log"
+              echo "::endgroup::"
+              echo "::error::xcodebuild archive failed (exit $status) — the iOS app does not build from this branch"
+              exit "$status"
+            }
+          echo "xcodebuild exited 0; $(wc -l < "$RUNNER_TEMP/archive.log") lines of log"
+
+      # EXIT 0 IS NOT AN ARCHIVE. This repository has been bitten by
+      # instruments that cannot fail — its own macOS job once "proved the
+      # macOS block ran" by grepping a describe name, and a SKIPPED test
+      # prints its own name, so the string was present exactly when the thing
+      # it guarded against had happened.
+      #
+      # So this asserts on something the failure state cannot produce: Mach-O
+      # binaries inside the `.xcarchive`. An archive that did not happen leaves
+      # no directory; one that half-happened leaves a directory with nothing
+      # executable in it; a job that short-circuited prints no count at all.
+      # The count is 2 because the app embeds the TelarActivity extension —
+      # if the extension ever stops building, this reads 1/2 and goes red
+      # rather than quietly archiving half the product.
+      - name: Assert the archive holds a built app and its extension
+        if: needs.ios-changes.outputs.ios == 'true'
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RUNNER_TEMP/TelarMobile.xcarchive"
+          APP="$ARCHIVE/Products/Applications/TelarMobile.app"
+          if [ ! -d "$ARCHIVE" ]; then
+            echo "::error::xcodebuild exited 0 but produced no .xcarchive at $ARCHIVE"
+            exit 1
+          fi
+
+          found=0
+          report=""
+          for binary in "$APP/TelarMobile" "$(find "$APP" -maxdepth 2 -name '*.appex' -print -quit 2>/dev/null)/TelarActivity"; do
+            name=$(basename "$binary")
+            if [ ! -f "$binary" ]; then
+              echo "::error::$name is missing from the archive"
+              continue
+            fi
+            # `file` says Mach-O only of something that actually linked.
+            if ! /usr/bin/file -b "$binary" | /usr/bin/grep -q 'Mach-O'; then
+              echo "::error::$name exists in the archive but is not a Mach-O executable"
+              continue
+            fi
+            found=$((found + 1))
+            report="$report $name=$(/usr/bin/stat -f%z "$binary")B/$(/usr/bin/lipo -archs "$binary")"
+          done
+
+          if [ "$found" -ne 2 ]; then
+            echo "::error::the archive carries $found of the 2 expected Mach-O products"
+            find "$ARCHIVE/Products" -maxdepth 4 2>/dev/null | head -30
+            exit 1
+          fi
+          echo "IOS_ARCHIVE_OK 2/2$report"
+
+      # A NUMBER, NOT A VERDICT — this step does not fail on a slow expression.
+      # Whether a 900 ms view should stop a pull request is a policy nobody has
+      # chosen yet (#764 tracks the views nearest the bar); reporting it is
+      # what #767 asked for. The ARCHIVE above is the thing that fails.
+      #
+      # WHAT IT DOES FAIL ON is its own wiring. If no swiftc command line
+      # carries the floor, every number below is an absence of evidence rather
+      # than evidence of absence, and "no warnings" would read as good news
+      # from an instrument that was never switched on.
+      #
+      # TWO TRAPS FROM #768, BOTH REPRODUCED THERE AND BOTH AVOIDED HERE: this
+      # runs without `set -e`, because `grep` exiting 1 on no match is the
+      # SUCCESS case and killed that probe on the run where the fix worked;
+      # and nothing here filters by an unanchored filename, which silently
+      # credited `SessionView.swift` with `NewSessionView.swift`'s 171 ms.
+      - name: How much type-checker budget is left?
+        if: needs.ios-changes.outputs.ios == 'true'
+        run: |
+          set -uo pipefail
+          LOG="$RUNNER_TEMP/archive.log"
+          FLOOR=500
+
+          carriers=$(/usr/bin/grep -ac -- "-warn-long-expression-type-checking=$FLOOR" "$LOG" || true)
+          if [ "${carriers:-0}" -eq 0 ]; then
+            echo "::error::no swiftc command line in the archive log carries -warn-long-expression-type-checking=$FLOOR. The measurement is not wired up, so it has nothing to report — this is not a clean bill of health."
+            exit 1
+          fi
+
+          over=$(/usr/bin/grep -aE 'took [0-9]+ms to type-check' "$LOG" | sed 's|^.*/||' | sort -u || true)
+          count=$(printf '%s\n' "$over" | /usr/bin/grep -c . || true)
+
+          echo "TYPE_CHECK_FLOOR ${FLOOR}ms carriers=$carriers over=$count"
+          {
+            echo "### iOS type-check budget"
+            echo
+            echo "\`$carriers\` swiftc invocation(s) carried the ${FLOOR}ms floor; **$count** expression(s) or function body(ies) exceeded it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${count:-0}" -gt 0 ]; then
+            # Worst first. Each file is type-checked twice per archive, so the
+            # same declaration can appear twice with different numbers; both
+            # are shown rather than averaged.
+            echo "::warning::$count expression(s) or function body(ies) are over the ${FLOOR}ms floor"
+            printf '%s\n' "$over" \
+              | sed -E 's/.*took ([0-9]+)ms.*/\1 &/' | sort -rn | cut -d' ' -f2- | head -20 \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # THE OTHER BRANCH, and it must not be able to print what the branch
+      # above prints. `IOS_ARCHIVE_NOT_NEEDED` and `IOS_ARCHIVE_OK 2/2 …` are
+      # different strings on purpose: a reader who greps the log for either one
+      # learns which of the two things happened, and neither can be mistaken
+      # for the other.
+      - name: Nothing here reaches the iOS build
+        if: needs.ios-changes.outputs.ios != 'true'
+        run: |
+          echo "IOS_ARCHIVE_NOT_NEEDED — no path under apps/ios/ and no change to the gate itself"
+          echo "This job took a ${RUNNER_OS} runner and compiled nothing."
+
   # THE SINGLE CHECK, so the set above can change without renaming a required
   # check every time.
   #
@@ -493,11 +839,28 @@ jobs:
   # be the fork case, any skip reaching here is a job that quietly did not run,
   # and treating it as a pass is how this kind of gate rots. `cancelled` fails
   # for the same reason: a cancelled run is not a verified one.
+  #
+  # `ios` DOES NOT GET AN EXEMPTION FROM THAT, and it was built so it would not
+  # need one (#767). The obvious shape for a path-scoped check — skip the job
+  # when nothing relevant changed — would have put a `skipped` in front of this
+  # loop on ~95% of pull requests, and the only way through is to teach the
+  # loop that a skip is sometimes fine. That is the rule above, weakened, for
+  # one job, for ever. Instead `ios` always runs and always reports `success`:
+  # on a Linux runner doing nothing when no iOS path changed, on a Mac
+  # archiving when one did. So the line below gains two jobs and the rule it
+  # enforces is unchanged — which is the point, and the reason the extra Linux
+  # runner boot is worth paying for.
+  #
+  # THE PROPERTY THAT HAS TO HOLD: an iOS file changed and the archive did not
+  # run cannot be green. It holds through `ios-changes` being in this list too.
+  # If detection fails, `ios` is skipped for want of its output AND
+  # `ios-changes` reports `failure` — two reasons this goes red, neither of
+  # which depends on anyone having remembered the first one.
   verify-passed:
     name: Verify passed
     runs-on: ubuntu-latest
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    needs: [source, typecheck, lint, test, macos, electron]
+    needs: [source, typecheck, lint, test, macos, electron, ios-changes, ios]
     timeout-minutes: 5
     steps:
       - name: Report the aggregate
