@@ -1,0 +1,92 @@
+/**
+ * THE DETAIL SUB-STRIP INSIDE THE ISSUES AND PULL-REQUEST SURFACES — issue #693.
+ *
+ * `lib/forge-workspace.test.ts` holds the state; these are the two claims about
+ * the MARKUP that the state cannot make on its own.
+ *
+ * FIRST, that a surface nobody has drilled into is untouched. The move is only
+ * free if it costs nothing on the common path, and an always-drawn strip holding
+ * one chip reading "Issues", above a panel tab that already says Issues, is 32px
+ * spent to repeat a word.
+ *
+ * SECOND, that the list and a detail are a SWAP rather than a stack — the list's
+ * filter row is gone while an issue is open, which is what makes this a sub-strip
+ * and not a drill-down with the list scrolled off above it.
+ *
+ * STATIC MARKUP, like `github-detail-surface.test.tsx` beside it: nothing here
+ * depends on an effect or a click, and the detail behind a chip is loaded through
+ * `next/dynamic`, so what this file can honestly assert is the strip and which
+ * body is mounted under it.
+ */
+// @ts-expect-error bun:test has no types in this app's tsconfig
+import { describe, expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+import { GitHubSurface } from "./github-surface";
+
+const draw = (props: Parameters<typeof GitHubSurface>[0]) => renderToStaticMarkup(<GitHubSurface {...props} />);
+
+describe("a surface nobody has drilled into", () => {
+  test("draws no sub-strip at all", () => {
+    const markup = draw({ kind: "issues", projectId: "p" });
+    expect(markup).not.toContain('role="tablist"');
+    expect(markup).not.toContain("Open issues");
+  });
+});
+
+describe("the sub-strip", () => {
+  const open = { numbers: [675, 666], at: 675 };
+
+  test("holds the list as its first chip and one chip per open detail", () => {
+    const markup = draw({ kind: "issues", projectId: "p", open });
+    expect(markup).toContain('aria-label="Open issues"');
+    // The list keeps its name; a detail wears its NUMBER, which is the shortest
+    // thing that identifies it and the thing a person says out loud.
+    expect(markup).toContain("Issues");
+    expect(markup).toContain("#675");
+    expect(markup).toContain("#666");
+    // Every detail chip closes on its own; the list chip has no ×.
+    expect(markup).toContain('aria-label="Close #675"');
+    expect(markup).toContain('aria-label="Close #666"');
+  });
+
+  test("names the pull-request list by its own name, not 'Issues'", () => {
+    const markup = draw({ kind: "pulls", projectId: "p", open: { numbers: [700] } });
+    expect(markup).toContain('aria-label="Open pull requests"');
+    expect(markup).toContain("Pull requests");
+  });
+
+  test("exactly one chip is selected, whichever body is showing", () => {
+    const detail = draw({ kind: "issues", projectId: "p", open });
+    expect(detail.match(/aria-selected="true"/g)).toHaveLength(1);
+    expect(detail).toContain('title="Issue #675"');
+    // Back on the list the LIST chip is the selected one — the list is a state
+    // of this surface rather than the absence of one.
+    const list = draw({ kind: "issues", projectId: "p", open: { numbers: [675, 666] } });
+    expect(list.match(/aria-selected="true"/g)).toHaveLength(1);
+    expect(list).toContain('title="All issues"');
+  });
+});
+
+describe("the list and a detail are a swap", () => {
+  test("the list is not mounted under a detail", () => {
+    // Not merely scrolled out of view: a drill-down that kept the list above it
+    // is the shape this surface is deliberately not. The list's own read is the
+    // tell — with a detail open it has not started one (which is also why an
+    // issue restored from a saved layout does not spend a `gh` call on a list
+    // nobody is looking at).
+    const list = draw({ kind: "issues", projectId: "p", open: { numbers: [675] } });
+    expect(list).toContain("asking gh…");
+    const detail = draw({ kind: "issues", projectId: "p", open: { numbers: [675], at: 675 } });
+    expect(detail).not.toContain("asking gh…");
+    // …and the way back is still on screen.
+    expect(detail).toContain('aria-label="Open issues"');
+    expect(detail).toContain('title="All issues"');
+  });
+
+  test("the surface owns its height, so a detail's pinned merge footer has a floor", () => {
+    // The panel stopped scrolling this surface when it joined `OWNS_ITS_HEIGHT`;
+    // an `h-full` detail inside an auto-height box is how an issue's comments
+    // became unreachable once before.
+    expect(draw({ kind: "pulls", projectId: "p" })).toContain("h-full");
+  });
+});

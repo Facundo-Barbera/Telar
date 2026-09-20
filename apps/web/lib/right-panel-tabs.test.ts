@@ -402,6 +402,42 @@ describe("migrates the old string list into instances", () => {
     expect(kinds(readPanelTabs<PanelTab>("session_a", isKnown))).toEqual(["agents"]);
   });
 
+  test("INSTANCES that migrate to one kind collapse too, not just old bare strings (#693)", () => {
+    /**
+     * The defect this pins. Collapsing used to key off the stored SHAPE — a bare
+     * string meant "written before instances existed", and every merge so far had
+     * also been a format change, so that held. It stopped holding when `issue:675`
+     * and `issue:666` — written by THIS build, as instances — both began naming
+     * `issues`: shape-based dedupe restored two tabs, both labelled Issues, both
+     * showing the same list. The question was never how old an entry is but
+     * whether `migrate` moved it.
+     */
+    let panel = openPanelTab(emptyPanelTabs<PanelTab>(), "diff");
+    panel = openNewPanelTab(panel, "issue:675" as PanelTab);
+    panel = openNewPanelTab(panel, "issue:666" as PanelTab);
+    writePanelTabs("session_a", panel, 1);
+    const migrate = (kind: string) => (kind.startsWith("issue:") ? "issues" : kind);
+    const restored = readPanelTabs<PanelTab>("session_a", isKnown, migrate);
+    expect(kinds(restored)).toEqual(["diff", "issues"]);
+    // ONE tab, and it takes the id a fresh open would — not `issue:675`, which
+    // names a kind that no longer exists and would break "the first instance of
+    // a kind IS the kind".
+    expect(ids(restored)).toEqual(["diff", "issues"]);
+    // The active tab was the SECOND of the merged ids; it still selects the
+    // merger rather than falling back to the first tab in the strip.
+    expect(restored.activeTab).toBe("issues");
+  });
+
+  test("two instances of a kind that was NOT migrated are still two tabs", () => {
+    // The other half of the rule above: `migrate` leaves `editor` alone, so two
+    // deliberate Editors must not collapse into one.
+    let panel = openPanelTab(emptyPanelTabs<PanelTab>(), "editor");
+    panel = openNewPanelTab(panel, "editor");
+    writePanelTabs("session_a", panel, 1);
+    const restored = readPanelTabs<PanelTab>("session_a", isKnown, (kind) => (kind.startsWith("issue:") ? "issues" : kind));
+    expect(ids(restored)).toEqual(["editor", "editor#2"]);
+  });
+
   test("`readPanelTabIds` still answers in KINDS, which is the vocabulary its callers speak", () => {
     // The Editor reads it to find the files an older layout had open, and
     // those ids (`file:src/a.ts`) were written by a build with no instances.
