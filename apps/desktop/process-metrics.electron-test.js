@@ -52,11 +52,30 @@ app.setPath("userData", userData);
 
 const CONTROL_TOKEN = "metrics-" + "z".repeat(16);
 
+/**
+ * A HANG IS A FAILURE, AND MUST LOOK LIKE ONE.
+ *
+ * The CI job's own note says a tier that cannot fail is the same bug as a tier
+ * that never runs. A test that hangs is the third version of that: it burns the
+ * job's whole 25-minute budget, reports nothing about the code, and the only
+ * thing anybody learns is that a macOS runner was busy. So this file holds
+ * itself to a deadline and says which step it was on when it expired.
+ *
+ * Generous on purpose — the work here is milliseconds, and the margin is for a
+ * shared runner rather than for anything this test does.
+ */
+const DEADLINE_MS = 60_000;
+let stage = "app.whenReady()";
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
 const note = (line) => console.log(`PROCESS_METRICS ${line}`);
+const at = (next) => {
+  stage = next;
+  note(`… ${next}`);
+};
 
 /** main.js's own reading, copied here because requiring main.js would start the
  *  whole app. The point of the copy is assertion 3: these pids and the metrics'
@@ -92,6 +111,7 @@ function findType(summary, type) {
 
 async function main() {
   // ── 1. the field the whole design rests on ────────────────────────────────
+  at("reading app.getAppMetrics()");
   const raw = app.getAppMetrics();
   assert(Array.isArray(raw) && raw.length > 0, "app.getAppMetrics() reported no processes at all");
   const browser = raw.find((metric) => metric.type === "Browser");
@@ -114,6 +134,7 @@ async function main() {
   });
 
   // A window, so there is a renderer that really is hosting a page.
+  at("opening a window");
   const page = path.join(userData, "page.html");
   fs.writeFileSync(page, "<!doctype html><title>metrics fixture</title><body>ok</body>");
   const window = new BrowserWindow({
@@ -140,6 +161,7 @@ async function main() {
   });
 
   try {
+    at("loading the fixture page");
     await window.loadFile(page);
     const rendererPid = window.webContents.getOSProcessId();
     assert(rendererPid > 0, "the window's renderer would not name its OS process");
@@ -198,6 +220,7 @@ async function main() {
     );
 
     // ── 4a. out through the contextBridge ─────────────────────────────────
+    at("reading the bridge from a real renderer");
     const throughBridge = await window.webContents.executeJavaScript(
       "window.telarDesktop && window.telarDesktop.metrics ? window.telarDesktop.metrics.read() : null",
     );
@@ -220,10 +243,23 @@ async function main() {
     note(`bridge answered ${throughBridge.totals.processes} processes over ${throughBridge.windowMs}ms`);
 
     // ── 4b. out through the loopback wire /api/desktop/metrics proxies ────
-    const unauthorized = await fetch(`http://127.0.0.1:${control.port}/metrics`);
+    //
+    // EVERY BODY IS DRAINED, AND THAT IS NOT TIDINESS — it is the whole reason
+    // the first version of this file hung a CI job for twenty-five minutes.
+    // The main process's `fetch` is Node's (undici): a response whose body is
+    // never read holds its connection open, and `server.close()` completes when
+    // the last connection ENDS rather than when the port stops listening. So
+    // the 401 assertion below, which only ever wanted `.status`, left a socket
+    // mid-response and the teardown waited on it for ever. Reading the body of
+    // a response you are going to discard looks pointless and is load-bearing.
+    at("reading /metrics over loopback");
+    const unauthorized = await fetch(`http://127.0.0.1:${control.port}/metrics`, {
+      headers: { connection: "close" },
+    });
+    await unauthorized.text();
     assert(unauthorized.status === 401, `the control server answered ${unauthorized.status} to an unauthenticated /metrics`);
     const response = await fetch(`http://127.0.0.1:${control.port}/metrics`, {
-      headers: { Authorization: `Bearer ${CONTROL_TOKEN}` },
+      headers: { Authorization: `Bearer ${CONTROL_TOKEN}`, connection: "close" },
     });
     assert(response.status === 200, `the control server answered ${response.status} to /metrics`);
     const overWire = await response.json();
@@ -240,16 +276,29 @@ async function main() {
 
     console.log("PROCESS_METRICS_OK");
   } finally {
+    at("tearing down");
     ipcMain.removeHandler("telar:metrics:read");
-    await control.close();
+    // BOUNDED, because a teardown is not worth hanging a CI job over. The
+    // header above should make the close immediate; if some socket outlives it
+    // anyway, the process is about to exit and the port goes with it.
+    await Promise.race([control.close(), new Promise((resolve) => setTimeout(resolve, 2_000))]);
     window.destroy();
     fs.rmSync(userData, { recursive: true, force: true });
   }
 }
 
+const deadline = setTimeout(() => {
+  console.error(`PROCESS_METRICS_FAIL timed out after ${DEADLINE_MS}ms while: ${stage}`);
+  app.exit(1);
+}, DEADLINE_MS);
+
 app.whenReady().then(main).then(
-  () => app.exit(0),
+  () => {
+    clearTimeout(deadline);
+    app.exit(0);
+  },
   (error) => {
+    clearTimeout(deadline);
     console.error("PROCESS_METRICS_FAIL", error);
     app.exit(1);
   },
