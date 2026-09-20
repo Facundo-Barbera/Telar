@@ -307,7 +307,19 @@ const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. R
  * state in a sentence. `after` still narrows which events the summary's "did"
  * lines are drawn from, so it is honoured rather than ignored.
  */
-const READ = `What a session has done: by default a turn-by-turn summary. runId answers ONE turn; mode: events for the raw journal, which is long.`;
+/**
+ * AND IT POINTS AT THE SIX FIRST, which is #516's own sentence: "`sessions_read`
+ * stays for the raw journal; its description should point at these first."
+ *
+ * IT IS PAID FOR PER LAP, so it is one clause and not a menu. The three named
+ * are the ones a caller reaching for `sessions_read` actually wanted — which
+ * turn, what it concluded, what one step did — and the routing rule a model
+ * needs at the moment it is choosing is "there is a narrower verb", not the
+ * whole list. `sessions_find` and `sessions_grep` answer a question this tool
+ * was never a candidate for, so naming them here would be bytes spent on a
+ * choice nobody is making.
+ */
+const READ = `What a session has done: by default a turn-by-turn summary. runId answers ONE turn; mode: events for the raw journal, which is long. Narrower and cheaper first: sessions_outline for its turns, sessions_answer for one conclusion, sessions_steps for what a turn did.`;
 
 const STATUS = `Working, waiting on a person, or idle, and how recent turns ended. The cheap "is it finished yet", before sessions_read. Changes nothing.`;
 

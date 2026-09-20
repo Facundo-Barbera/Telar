@@ -241,6 +241,25 @@ describe("what the wall is", () => {
     // than becoming boilerplate on every tool.
     expect(tools.get("sessions_list")!.description).not.toContain("refused");
   });
+
+  /**
+   * `sessions_read` POINTS AT THE NARROWER READS FIRST — #516's own sentence,
+   * and the reason it is asserted rather than left to prose is that this is the
+   * ONE place a model is told, at the moment it is choosing, that a cheaper verb
+   * exists. A journal read it did not need is the waste the six were built to
+   * remove, and a description that stopped naming them would put it back
+   * silently.
+   */
+  test("the journal read names the cheaper verbs that came with #516", () => {
+    const { store } = engine();
+    const read = wall(store).get("sessions_read")!.description;
+    for (const cheaper of ["sessions_outline", "sessions_answer", "sessions_steps"]) {
+      expect(read).toContain(cheaper);
+    }
+    // It still says what it IS. A pointer that replaced the description would
+    // leave a model unable to tell when the raw journal is the right ask.
+    expect(read).toContain("raw journal");
+  });
 });
 
 // ── creating: a peer, with no link to anybody ───────────────────────────────
