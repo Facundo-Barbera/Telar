@@ -6252,7 +6252,18 @@ export class EngineStore {
   private anchorTurn(sessionId: string, runId: string, side: "before" | "after"): void {
     let cwd: string | undefined;
     try {
-      cwd = this.anchorReadRoot(this.getSession(sessionId));
+      /**
+       * `requireSession`, NOT `getSession` — #545's lesson, and this method is
+       * exactly the caller it was written about.
+       *
+       * `getSession` folds the session's ACTIVITY, which parses `queue.json`,
+       * `requests.json` and `tasks.json` to derive a pill nothing here looks
+       * at. This runs INSIDE `markRunning` and the three terminal transitions,
+       * which `queue-write-path.test.ts` pins at a fixed number of whole-queue
+       * parses each — so the fold turned `markRunning`'s 2 into 3. All this
+       * wants is the workspace and the project id.
+       */
+      cwd = this.anchorReadRoot(this.requireSession(sessionId));
     } catch {
       // A session that vanished between the transition and this line has
       // nothing to anchor; the turn's own record is already written.
