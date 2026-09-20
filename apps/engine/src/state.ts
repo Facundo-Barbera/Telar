@@ -636,6 +636,7 @@ const GITHUB_CACHE_MS = 30_000;
  *  subprocess — and the answer changes far less often. */
 const MODEL_CACHE_MS = 5 * 60_000;
 
+
 /**
  * What could not possibly be a model id.
  *
@@ -8942,10 +8943,19 @@ export class EngineStore {
      * directory exists. Dispatching it would spawn a provider process with its
      * cwd set to a path nothing has made yet.
      *
-     * BOTH STATES, not just `preparing`. A `failed` session has no checkout and
-     * is not going to grow one on its own; its turn waits, in order, while the
-     * row carries git's reason for a person to act on. Waiting loses nothing —
-     * the message keeps its place — and running loses the turn.
+     * BOTH STATES REFUSE THE CLAIM, AND THEY MEAN DIFFERENT THINGS — #813.
+     *
+     * `preparing` is a wait: the cut is running and the turn keeps its place.
+     * `failed` is not, and treating it as one is the defect this issue is
+     * about. A failed session has no checkout and is not going to grow one, so
+     * its turn waited forever while the row carried git's reason — for 45
+     * minutes, with every surface an agent could read still saying `running`.
+     *
+     * THE ACTING SPLIT IS IN `claimNextTurn`, not here, and deliberately: this
+     * method may not write a queue it was not given, and the scan is already
+     * the one place that fails a turn nothing can claim (see the Claude-model
+     * branch beside it). This stays a refusal for both, as the backstop for a
+     * direct caller that never went through the scan.
      */
     if (this.getSession(sessionId).preparation) return undefined;
     const queue = this.readQueue(sessionId);
@@ -9318,13 +9328,24 @@ export class EngineStore {
   }
 
   /** Settle a never-claimed turn as failed. Mirrors `failTurn`'s shape without
-   *  a claim, because there is deliberately no worker involved. */
-  private failQueuedTurn(sessionId: string, queue: SessionQueue, turn: Turn, message: string): void {
+   *  a claim, because there is deliberately no worker involved.
+   *
+   *  THE CODE IS THE CALLER'S, defaulting to the one this method was written
+   *  for. #813 added a second caller whose failure has nothing to do with a
+   *  provider, and a shared `provider_unavailable` would have told a reader to
+   *  wait out an outage that is not happening. */
+  private failQueuedTurn(
+    sessionId: string,
+    queue: SessionQueue,
+    turn: Turn,
+    message: string,
+    code: TurnFailureCode = "provider_unavailable",
+  ): void {
     const at = this.now();
     turn.state = "failed";
     turn.completedAt = at;
     turn.updatedAt = at;
-    turn.failure = { code: "provider_unavailable", message };
+    turn.failure = { code, message };
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
     // This turn's own bookkeeping only: no worker ran, so there are no items or
@@ -9409,6 +9430,7 @@ export class EngineStore {
   private resumesAfterRateLimit(session: Session): boolean {
     return session.resumeAfterRateLimit ?? session.driver === "claude";
   }
+
 
   /**
    * REQUEUE A TURN WHOSE USAGE LIMIT HAS LIFTED, or record that we decided not
@@ -9524,9 +9546,44 @@ export class EngineStore {
       // winning the sort and stalling every other session for a poll.
       const session = this.getSession(sessionId);
       if (session.paused) continue;
-      // Same, for a session whose checkout is still being cut or failed to be
-      // (#496) — `claimTurn` is authoritative and would refuse it anyway.
-      if (session.preparation) continue;
+      /**
+       * A CUT STILL RUNNING IS A WAIT; A CUT THAT FAILED IS NOT — #813.
+       *
+       * `preparing` keeps #496's behaviour exactly: the turn holds its place
+       * in order while the checkout is made, because a message is not lost by
+       * waiting and a turn dispatched into a directory nothing has made yet
+       * is. It is seconds, and it ends.
+       *
+       * `failed` never ends. The session has no checkout and nothing is going
+       * to give it one, so the turn sat `queued` — and `sessions_status` read
+       * `running: true` over the top of it, which is how #813's coordinator
+       * spent 45 minutes believing work was in flight. It fails here, the same
+       * way and in the same place as a Claude turn whose window cannot be
+       * resolved, carrying git's own sentence about what went wrong.
+       */
+      if (session.preparation?.state === "preparing") continue;
+      if (session.preparation?.state === "failed") {
+        // Writes, so it takes a queue of its own rather than editing the copy
+        // every other reader is sharing — see the `selection === "failed"`
+        // branch below, which is the same shape for the same reason.
+        const own = this.readQueue(sessionId);
+        const failing = own.turns.find((candidate) => candidate.runId === next.runId);
+        if (failing) {
+          this.failQueuedTurn(
+            sessionId,
+            own,
+            failing,
+            // GIT'S OWN WORDS FIRST. `preparation.error` is what the cut said
+            // and it is the only part of this a person can act on; the rest
+            // says what the engine did and did not do with it.
+            `This session's checkout could not be created, so nothing can run in it. Git said: ${
+              session.preparation.error ?? "no reason was recorded"
+            }. Nothing was sent to a provider. Fix the checkout — or make a new session — and send again.`,
+            "workspace_unavailable",
+          );
+        }
+        continue;
+      }
       /**
        * A CLAUDE TURN WITH NO MODEL IS NOT CLAIMABLE UNTIL ITS WINDOW IS KNOWN.
        * Decided here, before a candidate exists, so no lease is taken and

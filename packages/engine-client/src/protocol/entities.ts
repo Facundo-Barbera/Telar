@@ -1634,6 +1634,22 @@ export const TurnFailureCode = z.enum([
    * and resuming continues the provider session rather than replaying it.
    */
   "rate_limited",
+  /**
+   * THE SESSION HAS NO CHECKOUT, AND IS NOT GOING TO GROW ONE — issue #813.
+   *
+   * `git worktree add` failed, so there is nowhere for this turn to run. It is
+   * NOT `provider_unavailable`: no provider was asked, nothing was sent, and
+   * the sentence a reader needs is git's own rather than one about a model.
+   *
+   * ITS OWN CODE RATHER THAN A SHARED ONE because the two call for different
+   * actions. A provider outage is waited out; this is a checkout a person has
+   * to make — plug the drive back in, free the disk, delete the branch that
+   * collided — and then send again.
+   *
+   * IT CLAIMS NOTHING HAPPENED, and here that is actually true: the turn was
+   * never claimed, no worker ran it, and `message` carries what git said.
+   */
+  "workspace_unavailable",
 ]);
 export type TurnFailureCode = z.infer<typeof TurnFailureCode>;
 
