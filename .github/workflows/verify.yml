@@ -254,11 +254,18 @@ jobs:
 
   # THE ONE THING HERE THAT REALLY NEEDS macOS — on a hosted Mac, not a person's.
   #
-  # `dev-update.test.js`'s swap-helper block runs a generated bash script that
-  # calls `ditto`, so it is skipped off darwin. This job is the ONLY thing in
-  # the repository that then runs it: the nightly and release workflows build
-  # and sign but run no tests. Drop this job and that block stops executing
-  # rather than starting to fail, which is the quiet kind of coverage loss.
+  # TWO BLOCKS ARE SKIPPED OFF DARWIN AND SO RUN NOWHERE ELSE. The nightly and
+  # release workflows build and sign but run no tests, so this job is the only
+  # thing in the repository that executes either:
+  #
+  #   - `dev-update.test.js` > "the swap helper, run for real against fake
+  #     bundles" — runs a generated bash script that calls `ditto`.
+  #   - `push-relay.test.js` > "writing the Keychain item" — `provisionPushRelay`
+  #     refuses off darwin before it looks at anything, so every test in the
+  #     block would be asking about a path the platform never reaches (#763).
+  #
+  # Drop this job and both stop executing rather than start failing, which is
+  # the quiet kind of coverage loss.
   macos:
     name: Test desktop on macOS (the ditto swap helper)
     runs-on: macos-latest
@@ -273,17 +280,69 @@ jobs:
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
-      # AND PROVE IT ACTUALLY RAN. A `skipIf` that starts matching everywhere
+      # AND PROVE THEY ACTUALLY RAN. A `skipIf` that starts matching everywhere
       # would leave this job green while testing nothing, which is exactly the
-      # failure this job exists to prevent. So assert the block by name.
-      - name: Test desktop, and prove the macOS-only block ran
+      # failure this job exists to prevent.
+      #
+      # THE PREVIOUS VERSION OF THIS GUARD DID NOT WORK, and it is worth saying
+      # exactly how, because it is the same defect #763 found inside
+      # `push-relay.test.js` — an assertion satisfied by something other than the
+      # thing it was guarding. It grepped the console log for the describe name:
+      #
+      #     grep -q "the swap helper, run for real against fake bundles"
+      #
+      # A SKIPPED BLOCK PRINTS ITS OWN NAME. bun writes one line per test, and a
+      # skipped one reads `(skip) the swap helper, run for real against fake
+      # bundles > …`. So the string the guard looked for is present precisely
+      # when the thing it was guarding against has happened. Verified against a
+      # real CI log — the ubuntu leg of run 35492116321, where all four of those
+      # lines are `(skip)` — and that grep matches it.
+      #
+      # SO KEY ON THE JUNIT REPORT, NOT ON CONSOLE TEXT. `--reporter=junit`
+      # emits, per describe block, `tests`, `assertions` and `skipped` counts,
+      # which distinguish the two states rather than sharing a substring:
+      #
+      #   ran:     tests="6" assertions="17" failures="0" skipped="0"
+      #   skipped: tests="6" assertions="0"  failures="0" skipped="6"
+      #
+      # `skipped="0"` cannot be produced by a skipped block, and `assertions`
+      # above zero cannot be produced by one either — a block that runs but
+      # asserts nothing fails this too. Neither is a count that drifts as tests
+      # are added, so nothing here needs maintaining when the blocks grow.
+      #
+      # The flags go through `bun run … --` rather than being spelled out, so
+      # the suite is still defined in exactly one place (`test:desktop:unit`'s
+      # glob) and this step cannot fall out of step with it.
+      - name: Test desktop, and prove the macOS-only blocks ran
         run: |
           set -euo pipefail
-          bun run test:desktop 2>&1 | tee /tmp/desktop.log
-          if ! grep -q "the swap helper, run for real against fake bundles" /tmp/desktop.log; then
-            echo "::error::the macOS-only swap-helper block did not run on macOS — it is being skipped everywhere and this job is proving nothing"
-            exit 1
-          fi
+          report=/tmp/desktop-junit.xml
+          bun run test:desktop -- --reporter=junit --reporter-outfile="$report"
+          prove() {
+            block="$1"
+            what="$2"
+            line=$(grep -F "<testsuite name=\"$block\"" "$report" | head -1 || true)
+            if [ -z "$line" ]; then
+              echo "::error::no block named '$block' is in the test report — it was renamed or removed, and $what is now asserted by nothing"
+              exit 1
+            fi
+            case "$line" in
+              *'skipped="0"'*) ;;
+              *)
+                echo "::error::the macOS-only block '$block' was SKIPPED on macOS — its skipIf is matching everywhere, so this job is proving nothing about $what"
+                exit 1
+                ;;
+            esac
+            case "$line" in
+              *'assertions="0"'*)
+                echo "::error::the block '$block' ran without making one assertion, so it proves nothing about $what"
+                exit 1
+                ;;
+            esac
+            echo "ran on macOS — $block"
+          }
+          prove "the swap helper, run for real against fake bundles" "the ditto swap helper"
+          prove "writing the Keychain item" "the push relay's Keychain write"
 
   # THE ELECTRON SUITE, WHICH NOTHING RAN UNTIL NOW (#622).
   #
