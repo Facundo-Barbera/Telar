@@ -30,6 +30,9 @@ import { describe, expect, test } from "bun:test";
 import type { EngineEvent, EngineRequest, ProjectNote, Session, Subscription, Turn } from "@telar/engine-client";
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
 import { notesTools, type NotesCapability } from "../src/notes-tools/tools";
+import { displayTools } from "../src/display/tools";
+import { WARP_DESCRIPTION } from "../src/driver";
+import { TELAR_SKILL } from "../src/orientation";
 import { MAX_ANSWER_CHARS } from "../src/tool-kit";
 
 /** The fixture's size, and the reason each number is what it is. */
@@ -346,5 +349,43 @@ describe("every tool description is short enough to carry", () => {
 
   test("and every tool still says something — a cap is not an excuse for a blank", () => {
     for (const entry of wall().registered) expect(entry.description.length).toBeGreaterThan(80);
+  });
+
+  /**
+   * THE OTHER TWO SURFACES #515 NAMED, which the wall above cannot reach.
+   *
+   * Item 5 of that issue caps "notes, display, warp, browser tools". Notes ride
+   * on `wall()`; browser has its own `BROWSER_DESCRIPTION_MAX_BYTES` test. These
+   * two had no guard at all and had drifted furthest — `display_open` to 655
+   * characters and `warp` to 2,988, which is ~3.3 KB carried in every turn of
+   * every session whether or not either tool is ever called.
+   *
+   * `warp` is asserted against its exported constant rather than a registered
+   * tool because it is Claude-only and has no toolkit to enumerate — the same
+   * reason `orientation.test.ts` names it explicitly.
+   */
+  test("display and warp are capped too — the two that had no guard", () => {
+    const { registered, factory } = register();
+    displayTools(factory, { open: async ({ path }) => ({ path }) });
+    const display = registered.find((entry) => entry.name === "display_open");
+    expect(display).toBeDefined();
+    expect(display!.description.length).toBeLessThanOrEqual(MAX_DESCRIPTION);
+    expect(display!.description.length).toBeGreaterThan(80);
+
+    expect(WARP_DESCRIPTION.length).toBeLessThanOrEqual(MAX_DESCRIPTION);
+    expect(WARP_DESCRIPTION.length).toBeGreaterThan(80);
+  });
+
+  /**
+   * The cap is only honest if what was cut is still readable somewhere. Both
+   * descriptions now point at the `telar` skill, which is written to disk once
+   * and costs nothing until a model asks for it — so the reference has to
+   * actually be there, or the cap traded 3.3 KB of context for a dead end.
+   */
+  test("what the cap displaced is in the skill, not deleted", () => {
+    expect(WARP_DESCRIPTION).toContain("telar");
+    for (const owed of ["export const meta", "pipeline(items, ...stages)", "parallel(thunks)", "agent(prompt, opts?)", "Math.random()"]) {
+      expect(TELAR_SKILL).toContain(owed);
+    }
   });
 });
