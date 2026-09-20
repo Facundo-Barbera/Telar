@@ -1378,18 +1378,31 @@ struct ComposerPillLabel: View {
     let label: String
     var tint: Color = Theme.text
 
+    /// A CAPPED WIDTH IS NOT A FIXED ONE (#674). #449 grouped this pill with
+    /// the composer's 44pt circles and held its sizes back; it does not belong
+    /// there. The circles are fixed in both dimensions, this is height-fixed
+    /// and width-CAPPED, and under the rule as every later sweep applied it
+    /// the text converts. It now matches `ModelPillView`, which is the same
+    /// control and converted on time — the two had drifted apart at large text
+    /// sizes and this is the half that was wrong.
+    ///
+    /// Height and cap scale off `.subheadline`, the label's own style, so the
+    /// capsule grows with the words in it instead of clipping them.
+    @ScaledMetric(relativeTo: .subheadline) private var height: CGFloat = 44
+    @ScaledMetric(relativeTo: .subheadline) private var cap: CGFloat = 172
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(tint)
+            Image(systemName: icon).font(.system(Theme.subhead)).foregroundStyle(tint)
             Text(label)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(Theme.subhead, weight: .semibold))
                 .lineLimit(1)
                 .foregroundStyle(Theme.text)
-            Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.text)
+            Image(systemName: "chevron.down").font(.system(Theme.caption, weight: .medium)).foregroundStyle(Theme.text)
         }
         .padding(.horizontal, 14)
-        .frame(height: 44)
-        .frame(maxWidth: 172)
+        .frame(height: height)
+        .frame(maxWidth: cap)
         .background(Theme.subtle)
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
