@@ -49,8 +49,13 @@ import Testing
         #expect(CodeLayout.widestLineColumns("") == 0)
         // The last line has no terminator and still counts.
         #expect(CodeLayout.widestLineColumns("a\nbbbbb") == 5)
-        // Tabs and wide glyphs measure the same inside a file as on their own.
-        #expect(CodeLayout.widestLineColumns("short\n\tif x:\n日本") == 7)
+        // Tabs and wide glyphs measure the same inside a file as on their own:
+        // `short` is 5, `\tif x:` is the tab's full stop of 4 plus 5, and `日本`
+        // is 4 — so the tabbed line wins at 9. This read 7 until the suite was
+        // first executed by CI (#755); 7 contradicts the sentence above it and
+        // `tabsAdvanceToTheNextStop`, which pins `columns("\t")` at 4.
+        #expect(CodeLayout.widestLineColumns("short\n\tif x:\n日本") == 9)
+        #expect(CodeLayout.widestLineColumns("\tif x:") == CodeLayout.columns("\tif x:"))
     }
 
     @Test func aSingleLineWithNoNewlineIsTheWholeMeasure() {
