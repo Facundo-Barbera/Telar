@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
 import { createProviderProber, providerProcessEnv, signInOf, statusOf } from "../src/provider-instances";
+import { resolveChildEnv } from "../src/claude-identity";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -198,6 +199,178 @@ test("declaring an owned variable still works — only inheriting it stops", () 
     updatedAt: at,
   });
   expect(patch.ANTHROPIC_BASE_URL).toBe("https://proxy.example");
+});
+
+// ── what becoming configured costs, said out loud (#594) ───────────────────
+//
+// The scrub above is right and is not what these pin. What they pin is that it
+// stops being SILENT: one variable — including one written by the compaction
+// control, which is somebody thinking about compaction and nothing else — makes
+// an instance configured and drops everything its driver owns out of the child.
+
+/** An engine launched from a terminal that had a proxy and a routing switch
+ *  set: the situation the issue is about. The values are synthetic; the two
+ *  that carry information are distinctive so the leak check below can look for
+ *  them by substring. */
+const PROXIED = {
+  PATH: "/usr/bin",
+  ANTHROPIC_BASE_URL: "http://127.0.0.1:4000",
+  CLAUDE_CODE_USE_BEDROCK: "1",
+  ANTHROPIC_AUTH_TOKEN: "sk-ant-not-a-real-token",
+} as const;
+
+/** A Mac launched from the Dock, which is every user who has not gone out of
+ *  their way: none of the fourteen names is here. */
+const DOCK = { PATH: "/usr/bin" } as const;
+
+const storeWith = (ambient: Record<string, string | undefined>): EngineStore =>
+  new EngineStore(root(), () => 100, { ambientEnv: ambient });
+
+/** The environment the child process ACTUALLY gets — the patch merged over the
+ *  engine's own, exactly as `driver.ts` does it. Asserting on the patch alone
+ *  would be asserting on an intention. */
+const childEnv = (engine: EngineStore, id: string, driver: "claude" | "codex" | "opencode", ambient: Record<string, string | undefined>) =>
+  resolveChildEnv(ambient, providerProcessEnv(engine.resolveProviderInstance(id, driver)))!;
+
+test("a login gaining its first variable reports what it stops inheriting, by name", () => {
+  const engine = storeWith(PROXIED);
+  // The compaction control's own write and nothing else — one variable, about
+  // something unrelated to identity.
+  const saved = engine.saveProviderInstance({
+    id: "claude",
+    env: [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }],
+  });
+
+  expect(saved.stoppedInheriting).toEqual(["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK"]);
+  // And it is what actually happened: the child really has lost them.
+  expect(childEnv(engine, "claude", "claude", PROXIED)).toEqual({ PATH: "/usr/bin", DISABLE_AUTO_COMPACT: "1" });
+
+  // NAMES, NEVER VALUES. Three of the fourteen are credentials, so a report
+  // that showed what was about to be lost would be the leak this exists to
+  // prevent. Checked against the WHOLE serialised answer rather than the array
+  // alone, because a value smuggled into a message would pass a check on the
+  // array — and against the two ambient values that carry information, since a
+  // bare `1` would collide with the variable the caller itself just sent.
+  const answer = JSON.stringify(saved);
+  expect(answer).not.toContain(PROXIED.ANTHROPIC_AUTH_TOKEN);
+  expect(answer).not.toContain(PROXIED.ANTHROPIC_BASE_URL);
+  // And the report is a list of NAMES: nothing in it is a value at all.
+  expect(saved.stoppedInheriting.every((name) => /^[A-Z][A-Z0-9_]*$/.test(name))).toBe(true);
+  // The save stored exactly what was submitted — nothing was quietly folded in.
+  expect(saved.instance.env).toEqual([{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }]);
+});
+
+test("with a clean environment there is nothing to report", () => {
+  const engine = storeWith(DOCK);
+  const saved = engine.saveProviderInstance({
+    id: "claude",
+    env: [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }],
+  });
+  // A Dock-launched Mac inherits none of them, so nothing is lost and nothing
+  // is said. A warning nobody can act on is one nobody reads.
+  expect(saved.stoppedInheriting).toEqual([]);
+});
+
+test("carrying a variable over declares it, and the child keeps the value it had", () => {
+  const engine = storeWith(PROXIED);
+  const before = childEnv(engine, "claude", "claude", PROXIED);
+  expect(before.ANTHROPIC_BASE_URL).toBe(PROXIED.ANTHROPIC_BASE_URL);
+
+  engine.saveProviderInstance({ id: "claude", env: [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }] });
+  const carried = engine.saveProviderInstance({ id: "claude", carryOverInherited: ["ANTHROPIC_BASE_URL"] });
+
+  // The declaration is applied AFTER the scrub, so it survives it — which is
+  // the mechanism the issue identified and the reason this remedy works.
+  const after = childEnv(engine, "claude", "claude", PROXIED);
+  expect(after.ANTHROPIC_BASE_URL).toBe(before.ANTHROPIC_BASE_URL);
+  expect(after.DISABLE_AUTO_COMPACT).toBe("1");
+  // Still scrubbed, because they were not carried: only what was asked for came
+  // back.
+  expect("CLAUDE_CODE_USE_BEDROCK" in after).toBe(false);
+  // Carrying it over in the same breath means nothing was lost by that save.
+  expect(carried.stoppedInheriting).toEqual([]);
+});
+
+test("a login that is already configured loses nothing by gaining a second variable", () => {
+  const engine = storeWith(PROXIED);
+  engine.saveProviderInstance({ id: "claude", env: [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }] });
+  const second = engine.saveProviderInstance({
+    id: "claude",
+    env: [
+      { name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false },
+      { name: "CLAUDE_CODE_DISABLE_ADVISOR_TOOL", value: "1", sensitive: false },
+    ],
+  });
+  // It stopped inheriting them on the FIRST variable. Saying so again would be
+  // announcing a change that did not happen, and is how a warning becomes
+  // wallpaper.
+  expect(second.stoppedInheriting).toEqual([]);
+});
+
+test("a config folder is a transition too, and the folder's own variable is not a loss", () => {
+  const engine = storeWith(PROXIED);
+  const saved = engine.saveProviderInstance({ id: "claude_work", driver: "claude", configDir: "~/.claude-work" });
+  // CLAUDE_CONFIG_DIR is inherited here as well — but this save REPLACES it
+  // with the folder that was just named, which is the entire point of naming
+  // one. Reporting it would send somebody to fix something that is working.
+  expect(saved.stoppedInheriting).toEqual(["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK"]);
+});
+
+test("a variable the same save declares is not reported as lost", () => {
+  const engine = storeWith(PROXIED);
+  const saved = engine.saveProviderInstance({
+    id: "claude_proxy",
+    driver: "claude",
+    env: [{ name: "ANTHROPIC_BASE_URL", value: "https://proxy.example", sensitive: false }],
+  });
+  // Declared beats inherited and survives the scrub, so this login is not
+  // losing that variable — it is choosing its own.
+  expect(saved.stoppedInheriting).not.toContain("ANTHROPIC_BASE_URL");
+  expect(childEnv(engine, "claude_proxy", "claude", PROXIED).ANTHROPIC_BASE_URL).toBe("https://proxy.example");
+});
+
+test("a carried-over credential is stored as a secret and does not come back", () => {
+  const engine = storeWith(PROXIED);
+  engine.saveProviderInstance({ id: "claude", env: [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }] });
+  engine.saveProviderInstance({ id: "claude", carryOverInherited: ["ANTHROPIC_AUTH_TOKEN"] });
+
+  const listed = engine.listProviderInstances().find((instance) => instance.id === "claude")!;
+  // The settings page reads this. A token carried over in the user's interest
+  // must not be echoed back to whoever opens the pane.
+  expect(listed.env).toContainEqual({ name: "ANTHROPIC_AUTH_TOKEN", value: "", sensitive: true, valueRedacted: true });
+  expect(JSON.stringify(listed)).not.toContain(PROXIED.ANTHROPIC_AUTH_TOKEN);
+  // And the child still gets it, which is the whole point of carrying it.
+  expect(childEnv(engine, "claude", "claude", PROXIED).ANTHROPIC_AUTH_TOKEN).toBe(PROXIED.ANTHROPIC_AUTH_TOKEN);
+});
+
+test("a carry-over that would have to guess is refused rather than guessed", () => {
+  const engine = storeWith(PROXIED);
+  // Not a variable this driver owns: a declaration would protect it from a
+  // scrub that never touches it.
+  expect(() => engine.saveProviderInstance({ id: "claude", carryOverInherited: ["OPENAI_API_KEY"] })).toThrow(/claude login owns/);
+  // Not being inherited: writing it would store an EMPTY value, which is a
+  // variable the CLI reads rather than the absence that was asked for.
+  expect(() => engine.saveProviderInstance({ id: "claude", carryOverInherited: ["ANTHROPIC_API_KEY"] })).toThrow(/not inheriting/);
+  // Already declared by this save: the caller has lost track of its own request.
+  expect(() =>
+    engine.saveProviderInstance({
+      id: "claude",
+      env: [{ name: "ANTHROPIC_BASE_URL", value: "https://proxy.example", sensitive: false }],
+      carryOverInherited: ["ANTHROPIC_BASE_URL"],
+    }),
+  ).toThrow(/already declared/);
+  expect(() => engine.saveProviderInstance({ id: "claude", carryOverInherited: "ANTHROPIC_BASE_URL" })).toThrow(/array of variable names/);
+});
+
+test("an empty inherited value is not an inheritance", () => {
+  // `ANTHROPIC_BASE_URL=` reaches a child as a variable the CLI reads as unset,
+  // so losing it loses nothing — and there would be nothing to carry over.
+  const engine = storeWith({ PATH: "/usr/bin", ANTHROPIC_BASE_URL: "   " });
+  const saved = engine.saveProviderInstance({
+    id: "claude",
+    env: [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }],
+  });
+  expect(saved.stoppedInheriting).toEqual([]);
 });
 
 // ── the probe ──────────────────────────────────────────────────────────────

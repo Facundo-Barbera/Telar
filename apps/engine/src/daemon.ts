@@ -239,6 +239,16 @@ export type EngineDaemonOptions = {
    */
   volumes?: VolumeDeps;
   /**
+   * The engine's own environment — what a provider process would inherit from
+   * it (#594).
+   *
+   * INJECTED BY TESTS ONLY; the default is this process's. A route test about
+   * what a newly-configured login stops inheriting has to be able to launch the
+   * engine "from a terminal that had a proxy set", and mutating the real
+   * `process.env` to do it would leak into every other test in the file.
+   */
+  ambientEnv?: Record<string, string | undefined>;
+  /**
    * Run a worker inside the daemon process.
    *
    * WHY THIS EXISTS: without it, `startEngine()` produces a control plane that
@@ -824,6 +834,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.git ? { git: options.git } : {}),
     ...(options.models ? { models: options.models } : {}),
     ...(options.volumes ? { volumes: options.volumes } : {}),
+    ...(options.ambientEnv ? { ambientEnv: options.ambientEnv } : {}),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,
     // not defaulted in the store, so tests never read the real machine. The
@@ -3695,21 +3706,36 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         const input = await body(request);
+        const saved = store.saveProviderInstance({
+          id,
+          // Every field is forwarded VERBATIM, including an explicit `null`:
+          // the store owns the three-state rule (clear / keep / set), and a
+          // route that coerced null away here would make "remove the accent
+          // colour" unexpressible over HTTP.
+          ...(input.driver === undefined ? {} : { driver: input.driver }),
+          ...(input.displayName === undefined ? {} : { displayName: input.displayName as string | null }),
+          ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor as string | null }),
+          ...(input.configDir === undefined ? {} : { configDir: input.configDir as string | null }),
+          ...(input.binaryPath === undefined ? {} : { binaryPath: input.binaryPath as string | null }),
+          ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+          ...(input.env === undefined ? {} : { env: input.env }),
+          ...(input.carryOverInherited === undefined ? {} : { carryOverInherited: input.carryOverInherited }),
+        });
+        /**
+         * WHAT THIS SAVE STOPPED THE LOGIN INHERITING — #594, and NAMES ONLY.
+         *
+         * Present only when there is something to say, so a client can treat
+         * its presence as the event rather than comparing an empty array. It is
+         * on the SAVE rather than on the list because it is a fact about a
+         * change: an instance that was already configured lost nothing here.
+         *
+         * NO VALUE IS IN THIS ANSWER. Three of the names it can carry are
+         * credentials, and a response that showed what was about to be lost
+         * would be the leak this warning exists to avoid.
+         */
         writeJson(response, 200, {
-          providerInstance: store.saveProviderInstance({
-            id,
-            // Every field is forwarded VERBATIM, including an explicit `null`:
-            // the store owns the three-state rule (clear / keep / set), and a
-            // route that coerced null away here would make "remove the accent
-            // colour" unexpressible over HTTP.
-            ...(input.driver === undefined ? {} : { driver: input.driver }),
-            ...(input.displayName === undefined ? {} : { displayName: input.displayName as string | null }),
-            ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor as string | null }),
-            ...(input.configDir === undefined ? {} : { configDir: input.configDir as string | null }),
-            ...(input.binaryPath === undefined ? {} : { binaryPath: input.binaryPath as string | null }),
-            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
-            ...(input.env === undefined ? {} : { env: input.env }),
-          }),
+          providerInstance: saved.instance,
+          ...(saved.stoppedInheriting.length > 0 ? { stoppedInheriting: saved.stoppedInheriting } : {}),
         });
         return;
       }

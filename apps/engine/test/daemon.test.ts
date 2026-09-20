@@ -249,6 +249,60 @@ test("the provider registry answers with its probe, and never with a secret", as
   await expect(client.removeProviderInstance("claude_work")).resolves.toEqual({ removed: true });
 });
 
+test("configuring a login reports what it stopped inheriting, and can be told to keep it", async () => {
+  // An engine launched from a terminal that had a proxy set — the situation
+  // #594 is about. Values are synthetic and checked for ABSENCE below.
+  const ambientEnv = { PATH: "/usr/bin", ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", ANTHROPIC_AUTH_TOKEN: "sk-ant-not-a-real-token" };
+  const daemon = await startEngine({
+    models: stubModels,
+    engineRoot: root(),
+    ambientEnv,
+    probeProviderVersion: async () => ({ installed: true, version: "2.1.0" }),
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+
+  // The compaction control's own write: one variable, about something that has
+  // nothing to do with this login's identity.
+  const first = await client.saveProviderInstance({
+    id: "claude",
+    env: [{ name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false }],
+  });
+  expect(first.stoppedInheriting).toEqual(["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]);
+  // NAMES CROSS THE WIRE, VALUES DO NOT. Two of the fourteen owned names are
+  // credentials, and a response that showed what was about to be lost would be
+  // the leak this warning exists to prevent.
+  const wire = JSON.stringify(first);
+  expect(wire).not.toContain(ambientEnv.ANTHROPIC_AUTH_TOKEN);
+  expect(wire).not.toContain(ambientEnv.ANTHROPIC_BASE_URL);
+
+  // Keeping one sends its NAME back; the engine reads the value from its own
+  // environment, so the credential never travels in either direction.
+  const kept = await client.saveProviderInstance({ id: "claude", carryOverInherited: ["ANTHROPIC_AUTH_TOKEN"] });
+  expect(kept.stoppedInheriting).toBeUndefined();
+  // It is stored as a secret, so the settings page still cannot read it.
+  expect(kept.providerInstance.env).toContainEqual({ name: "ANTHROPIC_AUTH_TOKEN", value: "", sensitive: true, valueRedacted: true });
+  expect(JSON.stringify(kept)).not.toContain(ambientEnv.ANTHROPIC_AUTH_TOKEN);
+
+  // A second variable on an already-configured login says nothing: it stopped
+  // inheriting on the first one, and nothing changes here.
+  const second = await client.saveProviderInstance({
+    id: "claude",
+    env: [
+      { name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false },
+      { name: "ANTHROPIC_AUTH_TOKEN", value: "", sensitive: true, valueRedacted: true },
+      { name: "CLAUDE_CODE_DISABLE_ADVISOR_TOOL", value: "1", sensitive: false },
+    ],
+  });
+  expect(second.stoppedInheriting).toBeUndefined();
+
+  // A carry-over the engine would have to guess at is refused rather than
+  // written as an empty variable the CLI would read.
+  await expect(client.saveProviderInstance({ id: "claude", carryOverInherited: ["ANTHROPIC_API_KEY"] })).rejects.toMatchObject({
+    status: 400,
+  });
+});
+
 /** A minimal but REAL published look — the client parses what it reads, so a
  *  hand-waved blob would come back as `null` and prove nothing. Only the
  *  members the parser treats as load-bearing are spelt out; the rest of a Look

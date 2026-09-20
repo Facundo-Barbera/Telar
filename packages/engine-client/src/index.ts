@@ -2758,8 +2758,17 @@ export class EngineClient {
     return this.request("POST", `/v2/provider-updates/${encodeURIComponent(instanceId)}`, {});
   }
 
-  /** `null` clears a field, an absent key leaves it alone. Two different
-   *  requests, and JSON has no other way to say so. */
+  /**
+   * `null` clears a field, an absent key leaves it alone. Two different
+   * requests, and JSON has no other way to say so.
+   *
+   * `stoppedInheriting` COMES BACK WHEN THIS SAVE COST SOMETHING — #594. An
+   * instance's FIRST variable (or its first config folder) makes it configured,
+   * and a configured login stops inheriting the variables its driver owns. That
+   * is deliberate and is not changing; what changed is that it now says so.
+   * Present only when non-empty, and NAMES ONLY — several of them are
+   * credentials.
+   */
   saveProviderInstance(input: {
     id: string;
     driver?: ProviderDriverKind;
@@ -2769,7 +2778,11 @@ export class EngineClient {
     binaryPath?: string | null;
     enabled?: boolean;
     env?: ProviderInstanceEnvVar[];
-  }): Promise<{ providerInstance: ProviderInstance }> {
+    /** Inherited variables to keep, as this login's own declarations. NAMES
+     *  ONLY: the engine reads the values from its own environment, so no
+     *  credential crosses this call in either direction. */
+    carryOverInherited?: string[];
+  }): Promise<{ providerInstance: ProviderInstance; stoppedInheriting?: string[] }> {
     const { id, ...patch } = input;
     return this.request("PUT", `/v2/provider-instances/${encodeURIComponent(id)}`, patch);
   }
