@@ -31,6 +31,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { stubModels } from "./stub-models";
 import { DEEPGRAM_MAX_TTL_SECONDS, DICTATION_TTL_SECONDS, grantDictationToken } from "../src/dictation/token";
 import { dictationKeyFile, readDictationKey, writeDictationKey } from "../src/dictation/credentials";
+import { DEEPGRAM_KEYTERM_TOKEN_BUDGET, TELAR_KEYTERMS } from "../src/dictation/keyterms";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -442,9 +443,20 @@ test("the list stays bounded however many conversations are open", async () => {
   // THE BUDGET IS THE BOUND, and the only one (owner, 2026-09-17): the count of
   // forty was the headset's habit, and the terms it hid were free — keyterm
   // prompting bills per minute dictated, not per term.
-  expect(keyterms.join("").length).toBeLessThanOrEqual(2000);
-  // Sixty short titles now all fit, which the old count would have cut at forty.
-  expect(keyterms.length).toBeGreaterThan(40);
+  //
+  // AND IT IS CHARGED IN BYTES NOW (#707), which is why this cuts sooner than
+  // it used to. Spending the budget against four-characters-to-a-token let an
+  // over-budget glossary onto the socket, Deepgram refused the upgrade, and
+  // dictation failed on every press with a sentence that could not say why. A
+  // term's byte length cannot understate what it costs, so the list is shorter
+  // than it was and is never illegal. Sixty of these titles no longer all fit,
+  // and that is the trade: fewer terms is a degradation, over the limit is an
+  // outage.
+  expect(new TextEncoder().encode(keyterms.join("")).length).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
+  // STILL WELL PAST NOTHING, and still a prefix of what was offered — the cut
+  // comes off the tail rather than choosing by length.
+  expect(keyterms.length).toBeGreaterThan(TELAR_KEYTERMS.length);
+  expect(keyterms.length).toBeLessThan(60);
   // The app's own name survives a busy Mac, which is the failure mode the
   // obvious ordering has.
   expect(keyterms).toContain("Telar");
