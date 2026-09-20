@@ -2,7 +2,7 @@
 // the snapshot shape, which typechecked happily while the engine grew a field it
 // never learned about — `tasks` was invisible here for exactly that reason.
 import type { EngineEvent, Item, SessionBootstrap, SessionSnapshot, SnapshotPage, SnapshotWindow, Subscription, Task, Turn } from "@telar/engine-client";
-import { journalCursor } from "./journal";
+import { isActiveTurn, journalCursor } from "./journal";
 
 export type SessionSyncApi = {
   session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot>;
@@ -29,6 +29,60 @@ export type SessionSyncApi = {
  */
 export const INITIAL_TURNS = 10;
 export const OLDER_PAGE_TURNS = 20;
+
+/**
+ * HOW OFTEN THE COCKPIT RE-READS THE JOURNAL — 1 s while a turn is running,
+ * 3 s once the conversation has settled.
+ *
+ * A PORT, NOT A DESIGN. iOS has shipped exactly this since
+ * `SessionSyncEngine.interval` (`apps/ios/TelarMobile/Sync/SessionSyncEngine.swift`),
+ * and the web cockpit is simply the client that never got it. Two clients
+ * disagreeing about when a conversation is worth watching is the class of bug
+ * #490 keeps turning up, so the numbers here are the Swift ones rather than
+ * fresh opinions.
+ *
+ * WHY THIS AND NOT A VISIBILITY GATE. The obvious saving — stop polling when
+ * nobody is looking — is not available in Telar's own shell: `apps/desktop`
+ * sets `webPreferences.backgroundThrottling: false` as the renderer half of the
+ * anti-flicker pair for the translucent window, and that flag SUPPRESSES THE
+ * PAGE VISIBILITY API outright. `document.visibilityState` reads `"visible"`
+ * for the life of the window and `visibilitychange` never fires, so a gate
+ * written against it is dead code on the only platform this app ships.
+ * Measured in a real Electron with a one-token control; see the #490 comment of
+ * 2026-09-20. This cadence needs none of that — it follows turn state, which is
+ * true on every platform.
+ *
+ * AND IT CANNOT WEDGE, which is the property that matters more than the
+ * saving. Every tick still happens; only the spacing changes. A settled cockpit
+ * polling at 3 s still notices a turn somebody else started — a peer assigning
+ * work, a detached run finishing — within one tick, and re-arms to 1 s. There
+ * is no edge to miss and no state to get stuck in, which is the defect a
+ * "stop polling until something wakes us" design would have re-created in a new
+ * place (#490 §4.5's snooze bug, one layer along).
+ *
+ * WHAT IT SAVES: an idle cockpit on a settled conversation drops from 86,400
+ * reads a day to 28,800, and the saving is identical on a store with three
+ * conversations and one with three hundred.
+ */
+export const TAIL_LIVE_MS = 1_000;
+export const TAIL_SETTLED_MS = 3_000;
+
+/**
+ * The tail's period for a conversation in this state.
+ *
+ * FROM TURNS ALREADY IN HAND — never a separate probe. The whole point is to
+ * spend fewer requests, so asking the engine whether it is worth asking the
+ * engine would be the same cost wearing a different hat. `turns` is what the
+ * last tail wrote, so this is free.
+ *
+ * `queued` COUNTS AS LIVE, via `isActiveTurn`. A turn waiting its place in the
+ * queue is about to produce rows, and the backlog's own position changes as the
+ * one ahead of it finishes — a reader watching a queue of three wants that at
+ * 1 s like anything else in motion.
+ */
+export function tailIntervalMs(turns: readonly Pick<Turn, "state">[]): number {
+  return turns.some((turn) => isActiveTurn(turn.state)) ? TAIL_LIVE_MS : TAIL_SETTLED_MS;
+}
 
 export type HydratedSession = SessionSnapshot & {
   events: EngineEvent[];
