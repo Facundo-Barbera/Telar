@@ -212,9 +212,17 @@ started. Nothing was lost and nothing had landed. The report read as progress
 because it described the future in the present tense, which is what a working
 agent's status update also does.
 
-**Check the remote, not the narration.** `git branch -r --list 'origin/telar/*'`
-and `gh pr list` answer this in one call each, and they answer it about the world
-rather than about the report.
+**Check the remote, not the narration.** `gh pr list` and `git ls-remote --heads
+origin` answer this in one call each, and they answer it about the world rather
+than about the report.
+
+**Do not use a branch-name glob for it.** The first version of this entry
+suggested `git branch -r --list 'origin/telar/*'`, which is this same failure one
+level down: the worker above was on `fix/740-test-ceiling-preload` while its
+session branch was `telar/740-748-…`, so that glob would have answered "nothing
+pushed" for a branch that had been. Only `gh pr list` carried the original
+conclusion. **A check that assumes a naming convention is a check on the
+convention.**
 
 For coordinators specifically: **a worker's turn ending is not a worker's work
 finishing.** Confirm against pushed branches and open PRs before you relay a
