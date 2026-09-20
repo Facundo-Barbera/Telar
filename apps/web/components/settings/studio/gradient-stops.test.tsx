@@ -25,6 +25,7 @@ GlobalRegistrator.register({ url: "http://localhost/" });
 const { GradientStops } = await import("./gradient-stops");
 const { forgetRecentColours } = await import("@/lib/recent-colours");
 const { DEFAULT_GRADIENT_SPECS } = await import("@/lib/gradient-starters");
+const { clearField, typeInto } = await import("@/lib/testing/type-into");
 type Spec = (typeof DEFAULT_GRADIENT_SPECS)["light"];
 
 /** The app's own colours the chip row always offers, distinct enough from each
@@ -89,21 +90,38 @@ function byLabel<T extends Element = HTMLInputElement>(label: string): T | null 
 }
 
 /**
- * Type into a React-controlled input the way a person does: focus it, put the
- * text in through the value setter React's change tracker watches, and press a
- * key.
+ * Replace what is in the hex field with `text`, typed.
  *
- * ALL THREE ARE LOAD-BEARING in this DOM. React notices a controlled value
- * moved by watching the FOCUSED field and comparing on a key event; a bare
- * `input` event on a node it was never told had focus reaches `onInput` and
- * never `onChange`, which is a silent no-op rather than a failure.
+ * FOCUS FIRST, AND IT IS NOT CEREMONY: HexField shows its own draft only while
+ * `editing`, which `onFocus` turns on. Typing into an unfocused field would
+ * append to the committed value instead of the draft, and the live commits
+ * along the way would then be read back as input.
+ *
+ * ONE CHARACTER AT A TIME, through `typeInto` (lib/testing/type-into.ts) —
+ * which is the repo's answer to #732 and the reason this file does not roll its
+ * own. It also makes the live field honest: "#1e1e2e" really does pass through
+ * "#1e1" on the way, so what these tests assert is the value that LANDS rather
+ * than the only one that was ever offered.
  */
 async function type(input: HTMLInputElement, text: string): Promise<void> {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
   await act(async () => {
     input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
-    setter?.call(input, text);
-    input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: text.slice(-1) || "a" }));
+  });
+  await clearField(input);
+  await typeInto(input, text);
+}
+
+/**
+ * What the OS colour dialog does when it hands a colour back: the whole value
+ * at once, and an `input` event over it. NOT `typeInto` — nobody types into an
+ * `<input type="color">`, and a per-character "#", "#f", "#ff" is not a colour
+ * the control could ever hold.
+ */
+async function pickInDialog(input: HTMLInputElement, hex: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  await act(async () => {
+    setter?.call(input, hex);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
 
@@ -154,7 +172,7 @@ describe("the selected stop's colour field", () => {
   });
 
   test("the swatch still opens the OS picker for the stop", async () => {
-    await type(swatch(), "#ff0000");
+    await pickInDialog(swatch(), "#ff0000");
     expect(spec.stops[0]!.color).toBe("#ff0000");
   });
 });
