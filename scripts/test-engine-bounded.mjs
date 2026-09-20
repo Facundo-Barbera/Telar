@@ -51,7 +51,7 @@
  * three-valued liveness in which `unanswerable` is never a synonym for `gone` —
  * rather than a second copy of it here.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -69,6 +69,63 @@ const DEFAULT_BUDGET_MS = 15 * 60_000;
 
 /** How long the group gets to unwind politely before the forceful pass. */
 const STOP_GRACE_MS = 2_000;
+
+/** A `ps` that hangs must not be the reason a bounded runner stops being bounded. */
+const PS_CEILING_MS = 5_000;
+
+/** Enough rows to name a leak; a runaway fork bomb is not worth printing in full. */
+const MAX_GROUP_ROWS = 40;
+
+/**
+ * WHAT WAS ACTUALLY STILL IN THE GROUP — #849, and the gap #807's investigation
+ * named under *Parentage*:
+ *
+ *   "The table records no `ppid`. If any two of the five were a
+ *   `test-ceiling.test.ts` parent/child pair, that would be close to decisive,
+ *   and it is exactly what was not captured. Whatever records the next
+ *   occurrence should carry `ppid` and `pgid`."
+ *
+ * Until now this file could say that something was left behind and could stop
+ * it; it could not say WHAT. "Something was left" is not actionable, and the
+ * suite has reported it on two clean green runs, so the next occurrence should
+ * arrive already naming a command line.
+ *
+ * `ps -Ao … ` AND FILTER HERE, NOT `ps -g <pgid>`. #849 suggests the latter and
+ * it is wrong on the runner: on macOS BSD `ps`, `-g` selects by process group,
+ * but on procps-ng — which is what `ubuntu-latest` has — `-g` selects by
+ * SESSION id or effective group NAME. The same command would quietly answer a
+ * different question on CI than on a Mac, and answer it without failing, which
+ * is the shape of every instrument this repository has had to throw away. `-A`
+ * and `-o` are POSIX and mean one thing everywhere; the pgid comparison is done
+ * here where it can be read.
+ *
+ * READ-ONLY, AND BOUNDED. This inspects; the stopping is still `group.stop`.
+ */
+function inspectProcessGroup(pgid, phase) {
+  if (process.platform === "win32") {
+    return { phase, supported: false, reason: "POSIX `ps` only; Windows stops the tree through taskkill /T /F", rows: [] };
+  }
+  const ps = spawnSync("ps", ["-Ao", "pid=,ppid=,pgid=,etime=,command="], {
+    encoding: "utf8",
+    timeout: PS_CEILING_MS,
+    killSignal: "SIGKILL",
+  });
+  if (ps.error || typeof ps.stdout !== "string") {
+    return { phase, supported: true, reason: `ps failed: ${ps.error?.message ?? "no output"}`, rows: [] };
+  }
+  const rows = [];
+  for (const line of ps.stdout.split("\n")) {
+    // pid, ppid, pgid, etime, then the command line — which has spaces in it,
+    // so only the first four fields are split off.
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+    if (!match) continue;
+    if (Number(match[3]) !== pgid) continue;
+    // This process asked the question; it is not one of the survivors.
+    if (Number(match[1]) === process.pid) continue;
+    rows.push({ pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), etime: match[4], command: match[5] });
+  }
+  return { phase, supported: true, truncated: rows.length > MAX_GROUP_ROWS, rows: rows.slice(0, MAX_GROUP_ROWS) };
+}
 
 /**
  * WHAT THE CHILD COUNTED, read off the end-of-run tallies bun writes once.
@@ -199,8 +256,18 @@ async function main() {
     }
   };
 
+  /**
+   * WHAT WAS IN THE GROUP WHEN IT WAS STOPPED. Filled on both paths that stop
+   * anything, and ALWAYS BEFORE THE SIGNAL: after the kill there is nothing
+   * left to name, which is how #807 came to be reported as five bare pids.
+   */
+  let groupInspection = null;
+
   const budget = setTimeout(() => {
     timedOut = true;
+    // A hang's group is as diagnostic as a survivor's — more so, because the
+    // process holding it open is still there to be identified.
+    groupInspection = inspectProcessGroup(childPid, "budget");
     stop(false);
     setTimeout(() => stop(true), STOP_GRACE_MS).unref?.();
   }, options.budgetMs);
@@ -239,6 +306,13 @@ async function main() {
   let reapedSurvivors = false;
   if (group.liveness(childPid) === "alive") {
     reapedSurvivors = true;
+    // NAMED BEFORE IT IS STOPPED (#849). This is the whole of the change: the
+    // run exits 0, prints a clean tally, and something is still in its group —
+    // and until this line the only record of it was the sentence "the run left
+    // processes in its group", which cannot be acted on. `ps` here turns that
+    // into a pid, a ppid and a command line, which is enough to find the test
+    // file that leaked it.
+    groupInspection = inspectProcessGroup(childPid, "survivors");
     stop(true);
   }
   // POLLED, NOT SAMPLED ONCE. A process killed a moment ago is still answerable
@@ -273,6 +347,7 @@ async function main() {
     fail: tally?.fail ?? null,
     groupLiveness,
     reapedSurvivors,
+    groupInspection,
     childPid,
     logPath,
     lastLine: lastLine.trim(),
@@ -294,6 +369,25 @@ async function main() {
   // SAID OUT LOUD, because a run that passes while leaving processes behind is
   // exactly the shape #807 reports and the one nobody would otherwise look at.
   if (reapedSurvivors) process.stdout.write(`[test-engine-bounded] the run left processes in its group after exiting; they were stopped\n`);
+  // THE ROWS, IN THE LOG AND ON SCREEN. Printed for both phases, because the
+  // reader of a hung run wants the same table as the reader of a leaky one.
+  // A supported inspection that found nothing says so rather than printing
+  // nothing at all: absent output and an empty group are different facts, and
+  // this repository has been bitten by them being written the same way.
+  if (groupInspection) {
+    const { phase, supported, reason, rows, truncated } = groupInspection;
+    const what = phase === "budget" ? "holding the run open at its budget" : "still in the group after a clean exit";
+    if (!supported || reason) {
+      process.stdout.write(`[test-engine-bounded] could not enumerate what was ${what}: ${reason}\n`);
+    } else if (rows.length === 0) {
+      process.stdout.write(`[test-engine-bounded] nothing was ${what} by the time ps ran — it had already exited\n`);
+    } else {
+      process.stdout.write(`[test-engine-bounded] ${rows.length}${truncated ? `+ (capped at ${MAX_GROUP_ROWS})` : ""} process(es) ${what}:\n`);
+      for (const row of rows) {
+        process.stdout.write(`[test-engine-bounded]   pid=${row.pid} ppid=${row.ppid} pgid=${row.pgid} etime=${row.etime} ${row.command}\n`);
+      }
+    }
+  }
   process.stdout.write(`[test-engine-bounded] log: ${logPath}\n`);
 
   /**
