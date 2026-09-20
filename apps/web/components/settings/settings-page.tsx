@@ -77,6 +77,7 @@ const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => m
 const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
 const StorageSection = dynamic(() => import("./storage-section").then((mod) => mod.StorageSection));
 const WorktreesRootSection = dynamic(() => import("./worktrees-root-section").then((mod) => mod.WorktreesRootSection));
+const WorktreeListSection = dynamic(() => import("./worktree-list-section").then((mod) => mod.WorktreeListSection));
 const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
 const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
 
@@ -398,6 +399,14 @@ export function SettingsPage() {
               moving the store does not. The cheaper, safer choice should be
               the one a reader meets first. */}
           <WorktreesRootSection />
+          {/* AND THEN WHICH ONES CAN GO (#671). It reads directly under the
+              row that says where checkouts live and the figure that says what
+              they cost, because that is the order the question arrives in:
+              somebody reads "Session checkouts — 7.3 GB", and the next thing
+              they want is the list of them and which are finished. Before
+              this there was no such screen anywhere — the only mention of a
+              worktree in the whole cockpit was a count. */}
+          <WorktreeListSection />
           <StoreSection />
         </>
       )}
