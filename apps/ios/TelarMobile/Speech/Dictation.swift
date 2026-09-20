@@ -274,8 +274,17 @@ import Foundation
                     }
                     self.listen()
                 case .failure:
-                    self.error = "The connection to the transcription service ended."
+                    // WHAT A DROPPED SOCKET CARRIES: nothing. The refusal that
+                    // caused it was an ordinary HTTP response and this task
+                    // never sees it, the same way a browser's `WebSocket` error
+                    // event carries no reason. So this sentence is the honest
+                    // one, shown AT ONCE — waiting on a round trip would be
+                    // silence at the moment somebody is wondering whether the
+                    // tap registered — and the Mac is then asked for a better
+                    // one (#711).
+                    self.error = Self.socketEnded
                     self.stop()
+                    self.diagnose(replacing: Self.socketEnded)
                 }
             }
         }
@@ -338,6 +347,38 @@ import Foundation
     /// `EngineAPIError` is a `LocalizedError` whose `errorDescription` already
     /// passes an unrecognised code's message through, so a 409 about a missing
     /// key arrives as its sentence rather than as a status.
+    /// WHAT A DROPPED SOCKET CAN HONESTLY SAY BY ITSELF. Named rather than
+    /// inlined because `diagnose` replaces exactly this sentence and nothing
+    /// else — two spellings of it would make the replacement silently stop
+    /// happening.
+    static let socketEnded = "The connection to the transcription service ended."
+
+    /// ASK THE MAC WHY, AND SAY THAT INSTEAD (#711).
+    ///
+    /// THIS PHONE CANNOT LEARN IT. A refused upgrade is an ordinary HTTP
+    /// response and `URLSessionWebSocketTask` reports it as a read failure with
+    /// nothing in it — so `400 Bad Request — Keyterm limit exceeded` arrives as
+    /// "the connection ended", which is what sent the owner to replace a key
+    /// that was fine. The Mac holds the key and can ask; it answers every
+    /// surface from one route.
+    ///
+    /// ONLY IF THE SENTENCE IT IS REPLACING IS STILL THE ONE ON SCREEN. A
+    /// person who tapped again while this was in flight is looking at a live
+    /// dictation or a newer refusal, and overwriting either with the diagnosis
+    /// of an older tap would be the app answering a question nobody is still
+    /// asking.
+    ///
+    /// EVERY FAILURE HERE IS SILENT. This is a better sentence for a refusal
+    /// that already has one; a Mac too old for the route, or one that is off,
+    /// leaves the honest sentence standing, which is the right outcome.
+    private func diagnose(replacing said: String) {
+        Task { @MainActor in
+            guard let better = try? await api.dictationDiagnosis(), !better.reason.isEmpty else { return }
+            guard self.phase == .idle, self.error == said else { return }
+            self.error = better.reason
+        }
+    }
+
     private func sentence(for error: Error) -> String {
         if case DictationFailure.audio(let said) = error { return said }
         return error.localizedDescription

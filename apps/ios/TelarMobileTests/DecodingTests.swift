@@ -292,6 +292,34 @@ func fixture(_ name: String) throws -> Data {
         #expect(session.activity == .idle)
     }
 
+    /// WHY A DICTATION FAILED, OFF THE WIRE (#711).
+    ///
+    /// The sentence is the whole of what this screen shows, so `reason` is
+    /// required and everything else is not. `fault` is a PLAIN STRING for
+    /// `provider`'s reason: a Mac that has learned a fifth kind of fault must
+    /// not fail to decode on a phone that has not been updated — the phone
+    /// would lose the one sentence the whole route exists to deliver.
+    @Test func dictationDiagnosisDecodesAndToleratesAFaultThisBuildHasNotHeardOf() throws {
+        let known = try JSONDecoder().decode(
+            DictationDiagnosisAnswer.self,
+            from: Data(#"{"fault":"refused","reason":"Deepgram refused the transcription connection: HTTP 400 — Keyterm limit exceeded."}"#.utf8),
+        )
+        #expect(known.fault == "refused")
+        #expect(known.reason.contains("Keyterm limit exceeded"))
+
+        let newer = try JSONDecoder().decode(
+            DictationDiagnosisAnswer.self,
+            from: Data(#"{"fault":"throttled","reason":"Deepgram is rate limiting this account."}"#.utf8),
+        )
+        #expect(newer.reason.contains("rate limiting"))
+
+        // AND A MAC THAT SENDS ONLY THE SENTENCE still decodes, because the
+        // sentence is the only field anything here reads.
+        let bare = try JSONDecoder().decode(DictationDiagnosisAnswer.self, from: Data(#"{"reason":"This Mac could not reach Deepgram at all."}"#.utf8))
+        #expect(bare.fault == nil)
+        #expect(bare.reason.contains("could not reach"))
+    }
+
     @Test func userInputRequestDecodesFields() throws {
         let data = Data("""
         {"id":"req_1","runId":"run_1","sessionId":"s","state":"open","openedAt":1,
