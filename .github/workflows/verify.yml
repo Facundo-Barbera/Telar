@@ -442,7 +442,13 @@ jobs:
           run_case profile-cookies PROFILE_COOKIES_OK
           run_case host-header     HOST_HEADER_OK
           run_case popup-geometry  POPUP_GEOMETRY_OK
-          run_case clipboard       "CLIPBOARD OK"
+          # SCRATCH — NOT FOR MERGE (#789). Fifteen samples of the clipboard
+          # case per run, to measure the pasteboard lag and to see whether the
+          # intermittency reproduces under repetition. On a pull request, so
+          # main-red.yml (branches: [main]) cannot fire and nobody is paged.
+          for _sample in $(seq 1 15); do
+            run_case clipboard     "CLIPBOARD OK"
+          done
           # #488: the per-process-type surface. Here rather than only in the
           # unit suite because everything load-bearing about it is a question
           # about a REAL Electron — whether `cumulativeCPUUsage` is reported at
