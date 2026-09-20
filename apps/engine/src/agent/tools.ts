@@ -2,6 +2,16 @@
  * WHAT THE AGENT CAN DO — the two walls it already had, and three reads it
  * did not (#531).
  *
+ * ── WHERE THE QUERY READS WENT (#516) ──────────────────────────────────────
+ * `sessions_find`, `sessions_outline` and `sessions_answer` were declared in
+ * this file, over a capability called `AgentQueryCapability`, and that made them
+ * the AGENT's — a session could not reach them, because a session holds a
+ * `SessionsCapability` and nothing about it points at a LangGraph thread. They
+ * now live in `../sessions-tools/query.ts` with the three the issue also asked
+ * for, mounted on the shared wall, and the Agent takes them the same way it
+ * takes `sessions_list`: by supplying the port. Nothing about the Agent's list
+ * changed except that it is three tools longer.
+ *
  * ── WHICH CAPABILITY, AND WHY NEITHER GIVES THE GATE AWAY ───────────────────
  * There are two builds of `SessionsCapability` in this engine and the issue
  * asks which one the Agent should take.
@@ -47,8 +57,8 @@ import { z } from "zod";
 import { collectTools, toolInputSchema, type SocketTool } from "../mcp-socket";
 import { notesTools, PREVIEW_CHARS, type NotesCapability } from "../notes-tools/tools";
 import { sessionsTools, type SessionsCapability } from "../sessions-tools/tools";
-import { err, failure, json, type ToolFactory } from "../tool-kit";
-import { TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "../state";
+import { clampLimit, err, failure, json, type ToolFactory } from "../tool-kit";
+import type { SessionsQueryCapability } from "../sessions-tools/query";
 import { CROWDED_CHARS, SECTION_CHARS, STANDING_CHARS, STANDING_SECTION_KEYS, type RememberResult, type StandingSection } from "./memory";
 import type { AgentRecallHit } from "./thread-log";
 import { head } from "../turn-summary";
@@ -57,267 +67,19 @@ import type { GitHubIssueDetail, GitHubIssueRead, GitHubPullDetail, GitHubPullRe
 export { AGENT_SELF_ID } from "./identity";
 
 /* ------------------------------------------------------------------ *
- * The three query tools — #516's reads, with the Agent as their first user.
+ * The query reads — #516's, now on the shared wall next door.
  * ------------------------------------------------------------------ */
 
 /**
- * The store methods behind `sessions_find`, `sessions_outline` and
- * `sessions_answer`, as a capability rather than a store handle — the seam
- * every other wall in this engine uses, so a test drives these three with three
- * functions and no daemon.
+ * THE AGENT SUPPLIES THE PORT AND TAKES THE TOOLS WITH THE REST OF THE WALL.
+ *
+ * `collectAgentTools` below hands this to `sessionsTools` as
+ * `SessionsCapability.query`, so the six reads the Agent gets are the same six
+ * objects a session gets, built by the same factory, with the same clamps. The
+ * daemon fills it from `store.*` (see `daemon.ts`); the reason it is a port at
+ * all rather than a store handle is `../sessions-tools/query.ts`'s.
  */
-export type AgentQueryCapability = {
-  find(query: { q: string; projectId?: string; settled?: boolean; since?: number; limit: number }): Promise<{
-    sessions: Array<{ id: string; title?: string; projectId?: string; activity: string; updatedAt: number; runId?: string; why: string }>;
-    index: string;
-    more: boolean;
-  }>;
-  outline(sessionId: string, window: { limit: number; before?: number }): Promise<{ turns: unknown[]; total: number; more: boolean; next?: number }>;
-  answer(sessionId: string, options: { runId?: string; from: number; limit: number }): Promise<{
-    runId: string;
-    sequence: number;
-    text: string;
-    from: number;
-    totalChars: number;
-    more: boolean;
-    next?: number;
-  }>;
-};
-
-/**
- * THE SAME CEILINGS THE ROUTES APPLY, and deliberately the same numbers rather
- * than a second opinion — `daemon.ts`'s query-route block is where they are
- * argued for. A tool answer is a context window spent (#515), so these are
- * clamps and not suggestions: asking for more is served less, and the answer
- * says so.
- */
-const FIND_LIMIT_DEFAULT = 10;
-const FIND_LIMIT_MAX = 50;
-const OUTLINE_PAGE_DEFAULT = 20;
-const OUTLINE_PAGE_MAX = 100;
-const ANSWER_SLICE_DEFAULT = 8_000;
-const ANSWER_SLICE_MAX = 64_000;
-/**
- * THE BACKSTOP THIS ANSWER NEEDS, RATHER THAN THE TOOLKIT'S DEFAULT (#608).
- *
- * A DEFECT FOUND WHILE MEASURING THE PAGING: `json()` clamps at 16,000 and this
- * tool will hand over a 64,000-character slice, so any caller taking the tool at
- * its word got JSON cut off mid-string with a marker appended — text it could
- * still read, but a reply whose `more` and `totalChars` were no longer parseable
- * and whose slices no longer concatenated into the answer.
- *
- * `MAX_RUN_ANSWER_CHARS` in `sessions-tools/tools.ts` is the same judgment for
- * the same reason: a slice that is VERBATIM by contract cannot be clipped by a
- * backstop that knows nothing about it. The budget is the largest slice the tool
- * may legitimately be asked for, plus room for the envelope around it.
- */
-const ANSWER_MAX_CHARS = ANSWER_SLICE_MAX + 2_000;
-
-const FIND =
-  "Which conversation was this — a lexical search over every session, each hit carrying the line that matched. " +
-  "The cheap first step before sessions_read.";
-
-const OUTLINE =
-  "Scroll a conversation without reading it: one row per turn, newest first — what was asked, what it did, how it ended.";
-
-const ANSWER =
-  "What one turn concluded — the answer alone, without its events. Defaults to the latest turn that said something.";
-
-/**
- * THE FIRST CALL IS THE WHOLE ANSWER WHERE THE ANSWER FITS (#608).
- *
- * ── THE MEASURED FAILURE IS NOT A DEFAULT THAT IS TOO SMALL ─────────────────
- * The default slice is 8,000 characters and every wasteful read in the log asked
- * for LESS: limits of 2,500, 2,400, 3,000, 4,000. Worst case, 20,273 characters
- * fetched across eight overlapping windows for an answer of 6,127 — and an
- * 883-character answer read five times at 2500/4000/4000/3000/4000, where the
- * limit was never the constraint at all. The model was discovering the size by
- * trial, and a bigger default would not have changed one of those calls.
- *
- * ── SO `limit` IS A CEILING A CALLER MAY RAISE, NOT ONE IT MAY LOWER ────────
- * Anything at or under the default slice is served WHOLE, whatever was asked
- * for. The overrun is bounded by the default itself — a caller asking for 2,500
- * can be handed at most 8,000, which is what it would have got by omitting the
- * argument — and it buys `more: false` on the first call, which is both the
- * honest answer to "is that all of it" and the signal the turn's dedup keys on.
- *
- * Above the default the number is the caller's again: a 40,000-character answer
- * is paged, because that IS a case where the window is the constraint.
- */
-const ANSWER_WHOLE_UNDER = ANSWER_SLICE_DEFAULT;
-
-/**
- * WHAT A `sessions_answer` REPLY SAYS ABOUT THE RUN IT RESOLVED TO (#608).
- *
- * ── WHY THE TURN'S MEMO CANNOT DERIVE THIS FROM THE ARGUMENTS ───────────────
- * #592's memo keys on the literal arguments, and the waste this answers has
- * arguments that DIFFER while the payload does not: `{from: 0, limit: 2500}` and
- * `{from: 2500, limit: 2400}` are two calls for one run's text, and an omitted
- * `runId` is a third spelling of the same read. The identity that matters is the
- * RESOLVED `(sessionId, runId)`, and only the reply knows it.
- *
- * ── AND IT LIVES HERE, BESIDE THE TOOL THAT WRITES THE SHAPE ────────────────
- * `runtime.ts` owns the memo; this owns what a reply looks like. Reading the
- * reply's JSON in the graph would put a parser for this tool's output two files
- * away from the `json(...)` call that produces it, which is how a field rename
- * silently turns a dedup off.
- *
- * `latest` SEPARATES THE TWO SPELLINGS. A reply to a call that NAMED a runId
- * says nothing about which turn is newest — it may well be an old one — so only
- * a resolution the store made for us is worth remembering as "the latest".
- */
-export type AnswerIdentity = { sessionId: string; runId: string; latest: boolean; whole: boolean };
-
-export function answerIdentity(name: string, args: Record<string, unknown>, text: string): AnswerIdentity | undefined {
-  if (name !== "sessions_answer") return undefined;
-  const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
-  if (!sessionId) return undefined;
-  let reply: { runId?: unknown; more?: unknown };
-  try {
-    reply = JSON.parse(text) as { runId?: unknown; more?: unknown };
-  } catch {
-    // An error answer is not JSON, and a shape this cannot read is simply not
-    // memoised — the failure direction is a duplicate page, never a wrong one.
-    return undefined;
-  }
-  if (typeof reply?.runId !== "string" || !reply.runId) return undefined;
-  return { sessionId, runId: reply.runId, latest: typeof args.runId !== "string" || !args.runId, whole: reply.more === false };
-}
-
-/**
- * WHEN THERE IS NOTHING TO READ, SAY SO IN A SENTENCE THAT CLOSES (#592).
- *
- * ── WHAT THE OLD ONES DID ───────────────────────────────────────────────────
- * The measured turn's two failures read `…: turn does not exist` and `…: this
- * session has no answered turn`. Both DESCRIBE the miss and neither CLOSES the
- * door, so the model tried again with different arguments — and the second is
- * the worse of the two, because "has no answered turn" reads as "pick a
- * different turn" when the true meaning is "there is nothing here, stop
- * asking". A refusal a model reads as a hint about arguments is a refusal that
- * costs two more calls.
- *
- * ── THE SHAPE, WHICH IS `DECLINED_ANSWER`'S ─────────────────────────────────
- * Name the fact, shut the retry down in as many words, and point at the one
- * move that is not a retry. `approval.ts` argues that shape for a declined
- * call; this is the same problem with the person taken out of it.
- *
- * ── AND WHY THE CLOSING HALF IS HERE RATHER THAN AT THE THROW ───────────────
- * The store's sentences are served to an HTTP client too, and "do not guess
- * another runId" is advice to a language model. So the store states the fact
- * and the TOOL — whose only reader is a model — says what to do about it.
- */
-const ANSWER_MISSES: Readonly<Record<string, string>> = {
-  [TURN_ANSWER_NONE]:
-    "this session has never left an answer. There is nothing here to read and no runId will produce one, so do not ask it again — sessions_status says what it is doing, sessions_outline what its turns were.",
-  [TURN_ANSWER_NO_SUCH_RUN]:
-    "no turn with that runId is in this session. Do not guess another — omit runId for the latest turn that said something, or sessions_outline to see which turns there are.",
-};
-
-export function agentQueryTools(tool: ToolFactory, capability: AgentQueryCapability): unknown[] {
-  return [
-    tool(
-      "sessions_find",
-      FIND,
-      {
-        q: z.string().min(1).describe("Lexical, not semantic — the phrase you remember seeing."),
-        projectId: z.string().min(1).optional(),
-        settled: z.boolean().optional().describe("true for shelved only, false for open. Omit for both."),
-        since: z.number().int().min(0).optional().describe("Epoch milliseconds."),
-        limit: z.number().int().min(1).max(FIND_LIMIT_MAX).optional().describe(`Default ${FIND_LIMIT_DEFAULT}.`),
-      },
-      async (args) => {
-        try {
-          const found = await capability.find({
-            q: String(args.q ?? ""),
-            ...(typeof args.projectId === "string" && args.projectId ? { projectId: args.projectId } : {}),
-            ...(typeof args.settled === "boolean" ? { settled: args.settled } : {}),
-            ...(typeof args.since === "number" ? { since: args.since } : {}),
-            limit: clamp(args.limit, FIND_LIMIT_DEFAULT, FIND_LIMIT_MAX),
-          });
-          return json({
-            ...found,
-            // WHICH INDEX ANSWERED, carried through from the store. A caller
-            // comparing two engines' results deserves to know whether it got
-            // FTS5 or the bounded scan.
-            note: found.more ? "More sessions matched than are shown. Narrow with projectId, settled or since rather than raising the limit." : undefined,
-          });
-        } catch (error) {
-          return err(`Could not search: ${failure(error)}`);
-        }
-      },
-    ),
-    tool(
-      "sessions_outline",
-      OUTLINE,
-      {
-        sessionId: z.string().min(1),
-        before: z.number().int().min(0).optional().describe("The `next` a previous page returned, so appends cannot shift the window."),
-        limit: z.number().int().min(1).max(OUTLINE_PAGE_MAX).optional().describe(`Default ${OUTLINE_PAGE_DEFAULT}.`),
-      },
-      async (args) => {
-        const sessionId = String(args.sessionId ?? "");
-        try {
-          return json(
-            await capability.outline(sessionId, {
-              limit: clamp(args.limit, OUTLINE_PAGE_DEFAULT, OUTLINE_PAGE_MAX),
-              ...(typeof args.before === "number" ? { before: args.before } : {}),
-            }),
-          );
-        } catch (error) {
-          return err(`Could not outline "${sessionId}": ${failure(error)}`);
-        }
-      },
-    ),
-    tool(
-      "sessions_answer",
-      ANSWER,
-      {
-        sessionId: z.string().min(1),
-        runId: z.string().min(1).optional().describe("Omit for the latest turn that left text — the usual case after a wake."),
-        from: z.number().int().min(0).optional().describe("Character offset; the reply says the total."),
-        limit: z.number().int().min(1).max(ANSWER_SLICE_MAX).optional().describe(`Default ${ANSWER_SLICE_DEFAULT}, which is also the least it sends.`),
-      },
-      async (args) => {
-        const sessionId = String(args.sessionId ?? "");
-        try {
-          const answered = await capability.answer(sessionId, {
-            ...(typeof args.runId === "string" && args.runId ? { runId: args.runId } : {}),
-            from: typeof args.from === "number" ? Math.max(0, args.from) : 0,
-            // A FLOOR, NOT A DEFAULT — see `ANSWER_WHOLE_UNDER`.
-            limit: Math.max(clamp(args.limit, ANSWER_SLICE_DEFAULT, ANSWER_SLICE_MAX), ANSWER_WHOLE_UNDER),
-          });
-          /**
-           * THE ANSWER SAYS WHETHER IT IS ALL OF IT, in the sentence rather than
-           * only in a boolean. `more` and `totalChars` have been in this reply
-           * since #516 and nothing read them; a model that is told in words does
-           * not have to infer "there is no more" from two fields agreeing.
-           */
-          const next = answered.next ?? answered.from + answered.text.length;
-          return json(
-            {
-              ...answered,
-              note: answered.more
-                ? `Characters ${answered.from}-${next} of ${answered.totalChars}. Continue with sessions_answer(sessionId: "${sessionId}", runId: "${answered.runId}", from: ${next}).`
-                : `That is the whole answer (${answered.totalChars} characters). There is no more of it to fetch, at any offset or limit — do not read this run again.`,
-            },
-            ANSWER_MAX_CHARS,
-          );
-        } catch (error) {
-          const said = failure(error);
-          return err(`Could not read the answer from "${sessionId}": ${ANSWER_MISSES[said] ?? said}`);
-        }
-      },
-    ),
-  ];
-}
-
-/** A caller's number, or the default, never above the ceiling. Clamped rather
- *  than refused, because a model that asked for 500 wants as many as it can
- *  have and the answer says what it got. */
-function clamp(raw: unknown, fallback: number, ceiling: number): number {
-  if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 1) return fallback;
-  return Math.min(raw, ceiling);
-}
+export type { SessionsQueryCapability } from "../sessions-tools/query";
 
 /* ------------------------------------------------------------------ *
  * `fleet_status` — the whole answer to "how are things" (#570).
@@ -523,7 +285,7 @@ export function agentFleetTools(tool: ToolFactory, capability: AgentFleetCapabil
         limit: z.number().int().min(1).max(FLEET_LIMIT_MAX).optional().describe(`Default ${FLEET_LIMIT_DEFAULT}, which is also the most it will return.`),
       },
       async (args) => {
-        const limit = clamp(args.limit, FLEET_LIMIT_DEFAULT, FLEET_LIMIT_MAX);
+        const limit = clampLimit(args.limit, FLEET_LIMIT_DEFAULT, FLEET_LIMIT_MAX);
         try {
           /**
            * THE THREE SOURCES, READ TOGETHER. They do not depend on each other,
@@ -762,7 +524,7 @@ export function agentMemoryTools(tool: ToolFactory, capability: AgentMemoryCapab
       },
       async (args) => {
         try {
-          const hits = capability.recall(String(args.q ?? ""), clamp(args.limit, RECALL_LIMIT_DEFAULT, RECALL_LIMIT_MAX));
+          const hits = capability.recall(String(args.q ?? ""), clampLimit(args.limit, RECALL_LIMIT_DEFAULT, RECALL_LIMIT_MAX));
           return json({
             hits,
             ...(hits.length === 0 ? { note: "Nothing in this conversation matched. It is lexical — try the words you actually used." } : {}),
@@ -954,9 +716,14 @@ function pullStatus(pull: GitHubPullDetail) {
  * ------------------------------------------------------------------ */
 
 export type AgentWalls = {
-  sessions: SessionsCapability;
+  /** Everything but the query port, which arrives as `query` below — the two
+   *  are merged into one `SessionsCapability` at the bottom of this file. They
+   *  stay apart HERE because their owners differ: the sessions verbs come from
+   *  the daemon's shared `buildSessionsCapability`, the queries from a handful
+   *  of `store.*` reads beside it. */
+  sessions: Omit<SessionsCapability, "query">;
   notes: NotesCapability;
-  query: AgentQueryCapability;
+  query: SessionsQueryCapability;
   /** "How are things" in one call (#570). Absent in a test that is only asking
    *  what the two shared walls hold. */
   fleet?: AgentFleetCapability;
@@ -968,14 +735,17 @@ export type AgentWalls = {
 };
 
 /**
- * The Agent's whole tool list: 13 sessions tools, 3 query tools, the fleet read,
+ * The Agent's whole tool list: 13 sessions tools, 6 query tools, the fleet read,
  * 5 notes tools, one GitHub read, and the two it has about itself.
  *
  * SESSIONS FIRST, then the queries beside them, then the notebook — the order a
  * model is shown them in, and it is deliberate: the sessions wall is what the
  * Agent is FOR, and a read that narrows the rail belongs next to the one that
  * lists it. Its own memory is last, because it is the only pair that is about
- * the Agent rather than about Telar's work.
+ * the Agent rather than about Telar's work. Since #516 that order is not this
+ * function's to arrange: the queries sit at the end of `sessionsTools` itself,
+ * and `sessions_report_window` — the one tool filtered out below — was already
+ * the last of the verbs, so the shape the paragraph describes is what falls out.
  *
  * `fleet_status` SITS WITH THE QUERIES, immediately after them, because it is
  * the widest of the same family: `sessions_answer` is one turn, `sessions_outline`
@@ -1000,8 +770,12 @@ const NOT_ON_THE_AGENTS_WALL = new Set(["sessions_report_window"]);
 
 export function collectAgentTools(walls: AgentWalls): SocketTool[] {
   return [
-    ...collectTools(sessionsTools as never, walls.sessions as never).filter((tool) => !NOT_ON_THE_AGENTS_WALL.has(tool.name)),
-    ...collectTools(agentQueryTools as never, walls.query as never),
+    // ONE COLLECTION WHERE THERE WERE TWO (#516). The queries are part of the
+    // sessions wall now, so the Agent takes them by handing over the port
+    // rather than by building a second list beside it — which is what makes
+    // "the Agent's reads" and "a session's reads" the same objects rather than
+    // two lists that happen to agree today.
+    ...collectTools(sessionsTools as never, { ...walls.sessions, query: walls.query } as never).filter((tool) => !NOT_ON_THE_AGENTS_WALL.has(tool.name)),
     ...(walls.fleet ? collectTools(agentFleetTools as never, walls.fleet as never) : []),
     ...collectTools(notesTools as never, walls.notes as never),
     ...(walls.github ? collectTools(agentGitHubTools as never, walls.github as never) : []),
@@ -1075,6 +849,12 @@ const SPOKEN_WALL: Readonly<Record<string, "spoken" | "withheld">> = {
   sessions_read: "withheld",
   sessions_outline: "withheld",
   sessions_diff: "withheld",
+  // #516's three, and every one of them pages: a list of steps, one step's raw
+  // payload, and a page of journal matches. None of the three is a sentence a
+  // person can be told out loud, which is the whole rule.
+  sessions_steps: "withheld",
+  sessions_step: "withheld",
+  sessions_grep: "withheld",
   notes_projects: "withheld",
   notes_list: "withheld",
   notes_read: "withheld",

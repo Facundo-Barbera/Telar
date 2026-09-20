@@ -42,7 +42,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { agentQueryTools } from "./../src/agent/tools";
+import { sessionQueryTools } from "./../src/sessions-tools/query";
 import { startEngine, type EngineDaemon } from "./../src/daemon";
 import { collectTools, type SocketTool } from "./../src/mcp-socket";
 import { stubModels } from "./stub-models";
@@ -229,26 +229,22 @@ describe("every query answer is bounded at default arguments", () => {
  * actually asks for: the routes are the engine's, the tools are what a caller's
  * context window pays for, and the wrapper between them is not free.
  *
- * THREE OF THE SIX ARE REACHABLE TODAY. `sessions_find`, `sessions_outline` and
- * `sessions_answer` are registered in `agent/tools.ts` over
- * `AgentQueryCapability`; `sessions_steps`, `sessions_step` and `sessions_grep`
- * have routes and store methods but no tool anywhere yet, and mounting all six
- * on the `sessions-tools` wall is the parallel half of this issue. When that
- * lands, the remaining three belong in `tool-budgets.test.ts`'s `CASES` table
- * beside the other twenty-four, measured against these same ceilings — this
- * file is where the numbers to set them by come from.
- *
- * THE CAPABILITY IS THE DAEMON'S OWN, built from `store.*` exactly as
- * `daemon.ts` builds it, so what is priced here is the real answer over the
- * real fixture rather than a fake's idea of one.
+ * ALL SIX ARE REACHABLE NOW. When this block was written three of them lived on
+ * the cockpit Agent's wall and three existed nowhere; they are all on the shared
+ * `sessions-tools` wall, over one `SessionsQueryCapability`, and this builds it
+ * from `store.*` exactly as `daemon.ts` does — so what is priced here is the
+ * real answer over the real fixture rather than a fake's idea of one.
  */
 describe("#516's tools, on the same 300-session fixture", () => {
   const wall = (): Map<string, SocketTool> => {
     const store = daemon.store;
-    const tools = collectTools(agentQueryTools as never, {
+    const tools = collectTools(sessionQueryTools as never, {
       find: async (query: Parameters<typeof store.findSessions>[0]) => store.findSessions(query),
       outline: async (sessionId: string, window: Parameters<typeof store.turnOutline>[1]) => store.turnOutline(sessionId, window),
       answer: async (sessionId: string, options: Parameters<typeof store.turnAnswer>[1]) => store.turnAnswer(sessionId, options),
+      steps: async (sessionId: string, runId: string) => ({ items: store.runItems(sessionId, runId) }),
+      step: async (sessionId: string, runId: string, step: number | string, maxChars: number) => store.runItem(sessionId, runId, step, maxChars),
+      grep: async (sessionId: string, pattern: string, window: Parameters<typeof store.grepSession>[2]) => store.grepSession(sessionId, pattern, window),
     } as never);
     return new Map(tools.map((tool) => [tool.name, tool]));
   };
@@ -259,50 +255,81 @@ describe("#516's tools, on the same 300-session fixture", () => {
   };
 
   /**
-   * MEASURED AT 7,048 BYTES AGAINST THE ISSUE'S 6 KB, AND THAT GAP IS THE
-   * FINDING RATHER THAN A NUMBER TO TUNE AWAY.
+   * THE DECISION THIS BLOCK USED TO LEAVE OPEN, MADE.
    *
-   * The route answers 5,918 B for the same page, so `OUTLINE_PAGE_BYTES` is
-   * doing its job: what the store hands over is inside the budget. The
-   * difference is the envelope — `json()` in `tool-kit.ts` pretty-prints at two
-   * spaces, deliberately and for every tool on every wall — and two-space
-   * indentation on a page of twenty small objects is ~19%.
+   * Measured at 7,048 B against the issue's 6 KB, with the route answering
+   * 5,918 B for the same page: `OUTLINE_PAGE_BYTES` was doing its job and the
+   * gap was the envelope — `json()` pretty-prints at two spaces, deliberately
+   * and for every tool on every wall, which is ~19% on a page of twenty small
+   * objects. Two ways out were on the table: drop the page budget so the
+   * rendered answer lands under 6 KB, or restate the budget as being about the
+   * route.
    *
-   * SO THE ISSUE'S "UNDER 6 KB PER PAGE" IS MET BY THE ROUTE AND MISSED BY THE
-   * TOOL, and which of those the budget was written about is a decision for
-   * whoever mounts these on the `sessions-tools` wall — either the page budget
-   * drops to ~5 KB so the rendered answer lands under 6, or the budget is
-   * restated as being about the route. Raising this ceiling quietly to make a
-   * test green would have buried the one number the issue asked for, so it is
-   * set at the measurement plus headroom and argued here instead.
+   * THE BULLET IS ABOUT THE TOOL, so the tool is what meets it. The page budget
+   * is NOT what moved — the route has other callers (the issue names the web
+   * transcript) and already met its own number, and shrinking a shared page to
+   * fix one consumer's serialisation would have put this accounting two files
+   * away from the `json()` call that causes it. `sessions_outline` bounds its
+   * own answer again, in the units that are delivered, against
+   * `OUTLINE_ANSWER_CHARS`. Restating the budget as the route's was refused: the
+   * route already passed, so that reading makes the criterion vacuous.
    */
   test("sessions_outline, at its default page, on the largest session", async () => {
     const text = await call("sessions_outline", { sessionId: BIG_SESSION });
-    table.push({ answer: "tool sessions_outline", bytes: Buffer.byteLength(text, "utf8"), note: "default limit 20 — OVER the issue's 6 KB; see the comment" });
-    expect(text.length).toBeLessThanOrEqual(7_500);
+    const bytes = Buffer.byteLength(text, "utf8");
+    table.push({ answer: "tool sessions_outline", bytes, note: "default limit 20 — under the issue's 6 KB" });
+    expect(bytes).toBeLessThan(6_000);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
   });
 
   /**
-   * AND THE GAP IS THE ENVELOPE, not the page — asserted so that the paragraph
-   * above cannot quietly stop being true. If the rows themselves ever grow past
-   * the budget this fails, and the argument has to be made again rather than
-   * inherited.
+   * AND THE PAGE IS STILL HONEST ABOUT WHAT IT DROPPED — the half a byte
+   * ceiling alone would not catch. A tool that met 6 KB by trimming rows and
+   * keeping the store's cursor would page straight over every turn it trimmed,
+   * which is silent loss wearing a passing test.
    */
-  test("the page the store hands over is inside 6 KB; the rendering is what is not", async () => {
+  test("the delivered page carries its own cursor, not the store's", async () => {
     const route = await get(`/v2/sessions/${BIG_SESSION}/outline`);
-    const text = await call("sessions_outline", { sessionId: BIG_SESSION });
-    const rendered = Buffer.byteLength(text, "utf8");
-    expect(route.bytes).toBeLessThan(6_000);
-    expect(rendered).toBeGreaterThan(route.bytes);
-    // Whitespace alone: the same object, written compactly, is the route's size.
-    expect(Buffer.byteLength(JSON.stringify(JSON.parse(text)), "utf8")).toBeLessThan(6_000);
+    const body = JSON.parse(await call("sessions_outline", { sessionId: BIG_SESSION })) as {
+      turns: Array<{ sequence: number }>;
+      more: boolean;
+      next: number;
+    };
+    // The tool's page is a prefix of the route's — same rows, fewer of them
+    // where two-space JSON costs more than the store's compact budget knew.
+    expect(body.turns.length).toBeLessThanOrEqual((route.body.turns as unknown[]).length);
+    expect(body.more).toBe(true);
+    // THE CURSOR IS THE LAST ROW ACTUALLY SHOWN. Paging with it lands on the
+    // next turn down rather than skipping whatever the byte bound removed.
+    expect(body.next).toBe(body.turns.at(-1)!.sequence);
+    const older = JSON.parse(
+      await call("sessions_outline", { sessionId: BIG_SESSION, before: body.next }),
+    ) as { turns: Array<{ sequence: number }> };
+    expect(older.turns[0]!.sequence).toBeLessThan(body.next);
   });
 
+  /**
+   * UNDER THE ISSUE'S 3 KB, AND THE MARGIN IS SMALL ENOUGH TO BE WORTH SAYING.
+   *
+   * 2,801 B measured here against the route's 2,003 B — the same ~40% the
+   * two-space rendering costs everywhere on this wall. What fills the answer is
+   * the quoted line: `WHY_CHARS` is 200 and ten hits is the default, so 2 KB of
+   * it is quotation before a single title or id. That is the verb working — a
+   * list an agent can choose from rather than one it must open to evaluate —
+   * and it is also why the margin here is a few hundred bytes rather than a few
+   * thousand.
+   *
+   * `tool-budgets.test.ts` holds the same tool at 5,000 on a deliberately
+   * worst-case fixture, where every row's title and `why` are filled to the last
+   * character. Both numbers are real: this one is the acceptance measurement,
+   * that one is the ceiling a fixture designed to break the bound has to stay
+   * under.
+   */
   test("sessions_find, at its default limit, across 300 sessions", async () => {
     const text = await call("sessions_find", { q: "appearance" });
-    table.push({ answer: "tool sessions_find", bytes: Buffer.byteLength(text, "utf8"), note: "default limit 10" });
-    expect(text.length).toBeLessThanOrEqual(3_500);
+    const bytes = Buffer.byteLength(text, "utf8");
+    table.push({ answer: "tool sessions_find", bytes, note: "default limit 10 — under the issue's 3 KB" });
+    expect(bytes).toBeLessThan(3_000);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
   });
 
@@ -310,6 +337,33 @@ describe("#516's tools, on the same 300-session fixture", () => {
     const text = await call("sessions_answer", { sessionId: BIG_SESSION });
     table.push({ answer: "tool sessions_answer", bytes: Buffer.byteLength(text, "utf8"), note: "default slice 8000" });
     expect(text.length).toBeLessThanOrEqual(8_600);
+    expect(() => JSON.parse(text) as unknown).not.toThrow();
+  });
+
+  test("sessions_steps, at its default page", async () => {
+    const text = await call("sessions_steps", { sessionId: BIG_SESSION, runId: "run_0" });
+    table.push({ answer: "tool sessions_steps", bytes: Buffer.byteLength(text, "utf8"), note: "default limit 50, with each step's bytes" });
+    expect(text.length).toBeLessThanOrEqual(8_600);
+    expect(() => JSON.parse(text) as unknown).not.toThrow();
+  });
+
+  test("sessions_step, at the 8,000-character default", async () => {
+    const text = await call("sessions_step", { sessionId: BIG_SESSION, runId: "run_0", step: 0 });
+    table.push({ answer: "tool sessions_step", bytes: Buffer.byteLength(text, "utf8"), note: "one step, maxChars 8000" });
+    expect(text.length).toBeLessThanOrEqual(8_800);
+    expect(() => JSON.parse(text) as unknown).not.toThrow();
+  });
+
+  /**
+   * THE ONE WHOSE ROUTE IS ALREADY PAST THE TOOLKIT'S BACKSTOP: 6,116 B from
+   * the route at its default 20 matches, and 100 is what a caller may ask for.
+   * `GREP_CHARS` is what keeps the rendered answer from reaching `bounded`,
+   * which clips characters and would hand back JSON that does not parse.
+   */
+  test("sessions_grep, at its default page of 20 matches", async () => {
+    const text = await call("sessions_grep", { sessionId: BIG_SESSION, pattern: "index.lock" });
+    table.push({ answer: "tool sessions_grep", bytes: Buffer.byteLength(text, "utf8"), note: "default limit 20, 200 chars of context each" });
+    expect(text.length).toBeLessThanOrEqual(12_000);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
   });
 
@@ -324,22 +378,25 @@ describe("#516's tools, on the same 300-session fixture", () => {
       ["sessions_outline", { sessionId: BIG_SESSION }],
       ["sessions_find", { q: "appearance" }],
       ["sessions_answer", { sessionId: BIG_SESSION }],
+      ["sessions_steps", { sessionId: BIG_SESSION, runId: "run_0" }],
+      ["sessions_step", { sessionId: BIG_SESSION, runId: "run_0", step: 0 }],
+      ["sessions_grep", { sessionId: BIG_SESSION, pattern: "index.lock" }],
     ] as const) {
       expect(await call(name, args)).not.toContain("more characters not shown");
     }
   });
 
   /**
-   * THE DESCRIPTION CAP #516 ASKS FOR, WHICH NOTHING GUARDED.
-   *
-   * `tool-budgets.test.ts` caps the sessions and notes walls at 350 characters
-   * each; these three are on the agent's wall and were outside every guard in
-   * the suite. A description is paid for on EVERY turn whether or not the tool
-   * is called, so it is the one cost here that is never conditional.
+   * THE DESCRIPTION CAP #516 ASKS FOR. These are on the shared wall now, so
+   * `tool-budgets.test.ts` covers them too — kept here because this file is
+   * where the six are enumerated as six, and a tool that went missing from the
+   * wall would fail this count rather than quietly stop being measured.
    */
-  test("every description is under 350 characters, and none of them is a blank", () => {
+  test("all six are here, every description under 350 characters and none of them a blank", () => {
     const tools = [...wall().values()];
-    expect(tools.length).toBe(3);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "sessions_find", "sessions_outline", "sessions_answer", "sessions_steps", "sessions_step", "sessions_grep",
+    ]);
     const over = tools.filter((tool) => tool.description.length > 350).map((tool) => `${tool.name} (${tool.description.length})`);
     expect(over).toEqual([]);
     for (const tool of tools) expect(tool.description.length).toBeGreaterThan(80);

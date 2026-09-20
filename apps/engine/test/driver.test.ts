@@ -1646,6 +1646,12 @@ test("a toolkit registers under the SAME one server, and only when the turn carr
     "sessions_requests",
     "sessions_resolve_request",
     "sessions_report_window",
+    "sessions_find",
+    "sessions_outline",
+    "sessions_answer",
+    "sessions_steps",
+    "sessions_step",
+    "sessions_grep",
     "warp",
   ]);
 

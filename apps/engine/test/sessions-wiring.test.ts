@@ -161,6 +161,12 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_requests",
     "sessions_resolve_request",
     "sessions_report_window",
+    "sessions_find",
+    "sessions_outline",
+    "sessions_answer",
+    "sessions_steps",
+    "sessions_step",
+    "sessions_grep",
     "warp",
   ]);
 
@@ -186,8 +192,17 @@ test("the sessions toolkit registers under the SAME one server, and only when th
  */
 async function turnWith(
   body: (sessions: SessionsCapability) => Promise<void>,
+  /** The backend the daemon opens with. Absent is the JSON store these tests
+   *  have always used; `"sqlite"` is what the query routes need, because two of
+   *  them refuse outright without an index to read (#516). */
+  options: { executionStorage?: "sqlite" } = {},
 ): Promise<{ client: EngineClient; hostId: string; projectId: string; sawCapability: boolean }> {
-  const daemon = await startEngine({ models: stubModels, engineRoot: tmp("telar-sessions-wiring-"), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({
+    models: stubModels,
+    engineRoot: tmp("telar-sessions-wiring-"),
+    workerLeaseMs: 1_000,
+    ...(options.executionStorage ? { executionStorage: options.executionStorage } : {}),
+  });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const { project } = await client.registerProject({ name: "aurora", root: repo() });
@@ -275,14 +290,74 @@ test("the worker cannot archive, delete or accept anything — the client it hol
     // one field of `updateSession`, on the CALLER's own session, reached through
     // `setSessionReportWindow` rather than by widening the Pick to the whole
     // patch — the same treatment `settle` already gets.
+    // `query` joined with #516: the six READS that ask a conversation something
+    // rather than paging it, grouped as a sub-port because they are answered by
+    // the projection and the query routes rather than by a store verb each.
+    // Read-only by construction — see `SessionsQueryCapability`, which has no
+    // member that writes for one to be misfiled as.
     expect(surface).toEqual([
-      "create", "cursor", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
+    expect(Object.keys(sessions.query).sort()).toEqual(["answer", "find", "grep", "outline", "step", "steps"]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
       expect(surface).not.toContain(forbidden);
     }
   });
   expect(sawCapability).toBe(true);
+});
+
+/**
+ * THE HALF #516 COULD NOT SHIP WITHOUT — the six queries over HTTP.
+ *
+ * The daemon's embedded worker answers these from `store.*` and is nearly free;
+ * this one had no client method for a single one of the five routes behind
+ * them, so mounting the tools without this would have made a session's answer
+ * to "what did step twelve do" depend on which worker claimed its turn. Nothing
+ * here is stubbed: a real daemon, a real claim, and six reads that go out over
+ * the loopback socket and come back shaped.
+ */
+test("the six queries reach the engine's routes from an out-of-process turn", async () => {
+  const seen: Record<string, unknown> = {};
+  const { sawCapability } = await turnWith(async (sessions) => {
+    // WHO IS ASKING is on the capability itself — the claim's own session id,
+    // which is the only id a turn holds without being told one.
+    const self = sessions.self!.sessionId;
+    // The turn running RIGHT NOW is this session's own, so the outline has a
+    // row for it and the row says what it was asked.
+    seen.outline = await sessions.query.outline(self, { limit: 10 });
+    seen.find = await sessions.query.find({ q: "asking", limit: 5 });
+    seen.grep = await sessions.query.grep(self, "go", { limit: 5 });
+    seen.steps = await sessions.query.steps(self, "run_one");
+    // AND THE ERROR PATHS CROSS THE WIRE TOO, which is the half a happy-path
+    // test would miss: a 404 from a route has to arrive as a throw the wall can
+    // turn into a sentence, not as an empty answer.
+    seen.step = await sessions.query.step(self, "run_one", 99, 1_000).catch((error: Error) => error.message);
+    seen.answer = await sessions.query.answer(self, { from: 0, limit: 100 }).catch((error: Error) => error.message);
+  }, { executionStorage: "sqlite" });
+  expect(sawCapability).toBe(true);
+
+  const outline = seen.outline as { turns: Array<{ runId: string; input: string }>; total: number };
+  expect(outline.turns.map((turn) => turn.runId)).toContain("run_one");
+  expect(outline.turns.find((turn) => turn.runId === "run_one")!.input).toBe("go");
+  expect(outline.total).toBe(1);
+
+  // A SEARCH ACROSS SESSIONS, answered by whichever index this engine has, and
+  // it finds the session by its own title.
+  const found = seen.find as { sessions: Array<{ id: string }>; index: string };
+  expect(["fts5", "like"]).toContain(found.index);
+  expect(found.sessions.length).toBeGreaterThan(0);
+
+  // A JOURNAL SEARCH, scanned inside sqlite with only the page materialised.
+  expect((seen.grep as { matches: unknown[] }).matches.length).toBeGreaterThan(0);
+
+  // A RUN WITH NO REPORTED ITEMS IS AN EMPTY LIST, never a failure: this driver
+  // reports no observations, and "it has done nothing yet" is a real answer.
+  expect((seen.steps as { items: unknown[] }).items).toEqual([]);
+
+  // A step that is not there and an answer that does not exist yet both arrive
+  // as the store's own sentence rather than as silence.
+  expect(String(seen.step)).toContain("no such step");
+  expect(String(seen.answer)).toContain("answered turn");
 });
 
 test("a turn's capability knows who it is, and a subscription made mid-turn wakes the host over the wire", async () => {

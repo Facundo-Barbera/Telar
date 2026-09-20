@@ -137,7 +137,8 @@ It is not this CLI's own notion of a session, and not a chat thread.
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
 \`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,
 \`sessions_subscribe\`, \`sessions_unsubscribe\`, \`sessions_subscriptions\`,
-\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_report_window\`.
+\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_report_window\`,
+and the six reads below.
 
 ### Reading a peer without spending your context on it
 
@@ -162,6 +163,25 @@ name the exact next call.
   the answer, and a peer's message in full — and long ones come back in verbatim
   slices on \`resultAfter\` / \`messageAfter\` that concatenate exactly. Fetch when
   it matters; skip when it does not.
+
+### Asking a conversation a question instead of paging it
+
+\`sessions_read\` walks a session. These six ASK one, and none of them replays a
+journal to answer — so reach for them first and keep \`sessions_read\` for the raw
+trace.
+
+- \`sessions_find\` — WHICH conversation was this. Lexical, across every session,
+  each hit quoting the line that matched. The cheap first step when you have a
+  phrase and no id.
+- \`sessions_outline\` — scroll ONE conversation: a row per turn, newest first,
+  what was asked and what it concluded. \`before\` pages.
+- \`sessions_answer\` — what one turn concluded, the text alone. The most common
+  read after a wake; omit \`runId\` for the latest turn that said anything.
+- \`sessions_steps\` then \`sessions_step\` — what a turn DID. The first lists its
+  steps with the BYTE COST of each, so you choose before you spend; the second
+  reads the one you chose.
+- \`sessions_grep\` — where a phrase appears in one session's journal. A
+  substring, not a regular expression.
 
 ### Being told on a clock instead of one at a time
 

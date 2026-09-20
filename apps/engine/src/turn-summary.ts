@@ -35,6 +35,26 @@
  */
 import type { Item, Turn } from "@telar/engine-client";
 
+/**
+ * THE TWO WAYS `turnAnswer` MISSES, NAMED RATHER THAN TYPED OUT TWICE (#592).
+ *
+ * THEY STAY PLAIN STATEMENTS OF FACT, because the HTTP route serves the same
+ * throw and "do not guess another runId" is advice to a language model, not to
+ * a browser. `sessions-tools/query.ts`'s `sessions_answer` is where that half is
+ * added, and it compares against THESE — matching a retyped string literal is
+ * how a pairing like that quietly stops working the first time one side is
+ * reworded.
+ *
+ * THEY LIVE HERE RATHER THAN IN `state.ts`, WHICH IS WHERE THEY ARE THROWN, for
+ * one reason: this module has no runtime imports at all, and `state.ts` pulls in
+ * the whole `EngineStore` — sqlite, git, the worktree machinery. The query wall
+ * is bound inside the OUT-OF-PROCESS worker, which holds no store by design, so
+ * reaching for these two strings there must not be what puts one in its process.
+ * `state.ts` re-exports them, so every existing importer is untouched.
+ */
+export const TURN_ANSWER_NONE = "this session has no answered turn";
+export const TURN_ANSWER_NO_SUCH_RUN = "turn does not exist";
+
 /** The first input line, as the outline draws it. Long enough to tell two
  *  messages apart, short enough that twenty of them are a page. */
 export const INPUT_LINE_CHARS = 120;

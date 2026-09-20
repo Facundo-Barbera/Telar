@@ -179,6 +179,17 @@ export const WARP_CHILD_DISALLOWED_TOOLS = [
   "mcp__telar__sessions_requests",
   "mcp__telar__sessions_resolve_request",
   "mcp__telar__sessions_report_window",
+  // #516's six queries. READ-ONLY, and denied anyway: the rule above is "every
+  // other `sessions_*` tool goes with it rather than only the create verb",
+  // because reading another session from inside a fan-out is still the fan-out
+  // reaching outside the script — and because the wall's own test walks the
+  // wall and fails a new tool until it is denied here too.
+  "mcp__telar__sessions_find",
+  "mcp__telar__sessions_outline",
+  "mcp__telar__sessions_answer",
+  "mcp__telar__sessions_steps",
+  "mcp__telar__sessions_step",
+  "mcp__telar__sessions_grep",
   // The SAME wall under its HTTP key (`sessions-tools/run-socket.ts`). A warp
   // child is Claude-run and the worker leases the socket to Codex turns only,
   // so today these names are unreachable twice over — listed for the same
@@ -198,6 +209,12 @@ export const WARP_CHILD_DISALLOWED_TOOLS = [
   "mcp__telar-sessions__sessions_requests",
   "mcp__telar-sessions__sessions_resolve_request",
   "mcp__telar-sessions__sessions_report_window",
+  "mcp__telar-sessions__sessions_find",
+  "mcp__telar-sessions__sessions_outline",
+  "mcp__telar-sessions__sessions_answer",
+  "mcp__telar-sessions__sessions_steps",
+  "mcp__telar-sessions__sessions_step",
+  "mcp__telar-sessions__sessions_grep",
 ] as const;
 
 const userMessage = (text: string): WarpUserMessage => ({

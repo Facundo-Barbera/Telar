@@ -98,6 +98,24 @@ export function fillWithin<T, R>(items: readonly T[], shape: (item: T) => R, opt
   return { rows, shown: rows.length };
 }
 
+/**
+ * A CALLER'S NUMBER, OR THE DEFAULT, NEVER ABOVE THE CEILING.
+ *
+ * CLAMPED RATHER THAN REFUSED, which is the opposite of what the HTTP routes do
+ * with the same argument and deliberately so: a `?limit=all` is a bug in a
+ * program and is worth a 400, while a model that asked for 500 wants as many as
+ * it can have and the answer says what it got. Anything that is not a positive
+ * safe integer is the default — a model passing `"20"` or `null` should not get
+ * an error message where it expected a list.
+ *
+ * Here rather than in one wall because three of them reach for it, and a second
+ * copy is how two tools come to disagree about what "no limit given" means.
+ */
+export function clampLimit(raw: unknown, fallback: number, ceiling: number): number {
+  if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 1) return fallback;
+  return Math.min(raw, ceiling);
+}
+
 export const ok = (text: string) => ({ content: [{ type: "text", text }] });
 export const err = (text: string) => ({ content: [{ type: "text", text }], isError: true });
 /** A JSON answer, always bounded. `max` raises or lowers the backstop for one

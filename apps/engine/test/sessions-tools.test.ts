@@ -57,7 +57,13 @@ const tmp = (prefix: string): string => {
   return directory;
 };
 
+/** Stores that hold an open sqlite handle — the query tests' backend. Closed
+ *  before their directory is removed, because a handle outliving its file is
+ *  how one test's cleanup becomes the next one's mystery. */
+const openStores: EngineStore[] = [];
+
 afterEach(() => {
+  for (const store of openStores.splice(0)) store.closeExecutionStore();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -113,6 +119,17 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
     requests: async (sessionId) => store.requests(sessionId),
     resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
+    // #516's six, the daemon's own wiring again — so the query tools below are
+    // exercised against a real projection and a real journal rather than
+    // against six functions that agree with the assertions.
+    query: {
+      find: async (search) => store.findSessions(search),
+      outline: async (sessionId, window) => store.turnOutline(sessionId, window),
+      answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
+      steps: async (sessionId, runId) => ({ items: store.runItems(sessionId, runId) }),
+      step: async (sessionId, runId, step, maxChars) => store.runItem(sessionId, runId, step, maxChars),
+      grep: async (sessionId, pattern, window) => store.grepSession(sessionId, pattern, window),
+    },
   };
 }
 
@@ -131,6 +148,15 @@ const WALL_NAMES = [
   "sessions_requests",
   "sessions_resolve_request",
   "sessions_report_window",
+  // #516's six queries, appended in the order the wall registers them — the
+  // list GROWS rather than reorders, which is what makes a change that adds a
+  // tool unable to also move one.
+  "sessions_find",
+  "sessions_outline",
+  "sessions_answer",
+  "sessions_steps",
+  "sessions_step",
+  "sessions_grep",
 ];
 
 function wall(store: EngineStore, self?: { sessionId: string }, diff?: SessionsCapability["diff"]): Map<string, Registered> {
@@ -172,7 +198,7 @@ async function call(tools: Map<string, Registered>, name: string, args: Record<s
 // ── the wall's shape ────────────────────────────────────────────────────────
 
 describe("what the wall is", () => {
-  test("exactly fourteen tools, every one declaring the `sessions` capability in its name", () => {
+  test("exactly twenty tools, every one declaring the `sessions` capability in its name", () => {
     const { store } = engine();
     const names = [...wall(store).keys()];
     // PINNED AS A SET, not merely counted: a tool added here has to be added
@@ -214,6 +240,25 @@ describe("what the wall is", () => {
     // And the read-only ones do NOT, so the sentence stays meaningful rather
     // than becoming boilerplate on every tool.
     expect(tools.get("sessions_list")!.description).not.toContain("refused");
+  });
+
+  /**
+   * `sessions_read` POINTS AT THE NARROWER READS FIRST — #516's own sentence,
+   * and the reason it is asserted rather than left to prose is that this is the
+   * ONE place a model is told, at the moment it is choosing, that a cheaper verb
+   * exists. A journal read it did not need is the waste the six were built to
+   * remove, and a description that stopped naming them would put it back
+   * silently.
+   */
+  test("the journal read names the cheaper verbs that came with #516", () => {
+    const { store } = engine();
+    const read = wall(store).get("sessions_read")!.description;
+    for (const cheaper of ["sessions_outline", "sessions_answer", "sessions_steps"]) {
+      expect(read).toContain(cheaper);
+    }
+    // It still says what it IS. A pointer that replaced the description would
+    // leave a model unable to tell when the raw journal is the right ask.
+    expect(read).toContain("raw journal");
   });
 });
 
@@ -271,7 +316,7 @@ describe("creating a session", () => {
     // turn's does (`self`) — for subscriptions, which are recorded on the
     // subscription and on neither session.
     expect(Object.keys(capabilityOver(store)).sort()).toEqual([
-      "create", "diff", "list", "read", "requests", "resolveRequest", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "diff", "list", "query", "read", "requests", "resolveRequest", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
   });
 
@@ -1278,16 +1323,266 @@ describe("subscribing and answering", () => {
   });
 });
 
+// ── the six queries ─────────────────────────────────────────────────────────
+
+/**
+ * ASKING A CONVERSATION SOMETHING, FROM THE WALL — issue #516.
+ *
+ * `turn-summary.test.ts` pins what the STORE answers and that none of it folds
+ * the journal. These pin what the WALL does with those answers, which is a
+ * different set of claims: the clamps a model's number meets, the cursor it is
+ * handed back, and the sentence it gets when there is nothing to say. Same rule
+ * as the rest of this file — a real store, real turns, real items.
+ *
+ * SQLITE EXPLICITLY, because two of the six cannot exist without it: a journal
+ * search and a cross-session search are the two reads the JSON backend has no
+ * way to answer without reading everything, and it REFUSES them rather than
+ * answering empty. The last test here is that refusal; the rest are the
+ * backend a cockpit actually runs.
+ */
+function queryEngine(): { store: EngineStore; projectId: string } {
+  const projectRoot = repo();
+  const store = new EngineStore(tmp("telar-sessions-query-"), () => Date.now(), { executionStorage: "sqlite" });
+  openStores.push(store);
+  const project = store.registerProject({ name: "aurora", root: projectRoot });
+  return { store, projectId: project.id };
+}
+
+/** One completed turn through the public path — `turn-summary.test.ts`'s own
+ *  helper, because a hand-written queue would price a store no engine wrote. */
+function conversation(store: EngineStore, sessionId: string, runId: string, input: string, answer: string, items = 3): void {
+  store.submitTurn(sessionId, { runId, input });
+  const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
+  store.markRunning(sessionId, runId, token);
+  store.ingestObservations(
+    sessionId,
+    runId,
+    token,
+    Array.from({ length: items }, (_, step) => `${runId}_item_${step}`).flatMap((id, step) => [
+      { kind: "item.started" as const, item: { id, title: `step ${step} of ${runId}`, detail: { type: "assistant_message" as const, text: "" } } },
+      { kind: "item.completed" as const, itemId: id, status: "completed" as const, detail: { type: "assistant_message" as const, text: `body of step ${step}` } },
+    ]),
+  );
+  store.completeTurn(sessionId, runId, token, { text: answer });
+}
+
+describe("the six query tools", () => {
+  test("each one answers its own question, from the projection rather than the journal", async () => {
+    const { store, projectId } = queryEngine();
+    const session = store.createSession({ projectId, title: "the appearance rework" });
+    conversation(store, session.id, "run_1", "rework the appearance panel\nand a second line", "I finished the appearance rework.");
+    const tools = wall(store);
+
+    // FIND — the session, with the line that matched quoted back.
+    const found = await call(tools, "sessions_find", { q: "appearance" });
+    const hits = found.json!.sessions as Array<{ id: string; why: string }>;
+    expect(hits.map((hit) => hit.id)).toContain(session.id);
+    expect(hits.find((hit) => hit.id === session.id)!.why).toContain("appearance");
+    // Which index answered is carried through, so a reader is never guessing.
+    expect(["fts5", "like"]).toContain(found.json!.index);
+
+    // OUTLINE — one row per turn, with the first line of each side of it.
+    const outline = await call(tools, "sessions_outline", { sessionId: session.id });
+    const turns = outline.json!.turns as Array<{ runId: string; input: string; answer: string; items: number; answerChars: number }>;
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.runId).toBe("run_1");
+    expect(turns[0]!.input).toBe("rework the appearance panel");
+    expect(turns[0]!.items).toBe(3);
+    // The WHOLE answer's length rides the row, which is what lets a caller
+    // price `sessions_answer` before it asks.
+    expect(turns[0]!.answerChars).toBe("I finished the appearance rework.".length);
+
+    // ANSWER — the text alone, and the note says it is all of it.
+    const answered = await call(tools, "sessions_answer", { sessionId: session.id });
+    expect(answered.json!.text).toBe("I finished the appearance rework.");
+    expect(answered.json!.runId).toBe("run_1");
+    expect(answered.json!.more).toBe(false);
+    expect(String(answered.json!.note)).toContain("That is the whole answer");
+
+    // STEPS — the list to choose from, and `bytes` is why it exists.
+    const steps = await call(tools, "sessions_steps", { sessionId: session.id, runId: "run_1" });
+    const rows = steps.json!.items as Array<{ index: number; id: string; title: string; bytes: number }>;
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.index)).toEqual([0, 1, 2]);
+    expect(rows[0]!.title).toBe("step 0 of run_1");
+    expect(rows.every((row) => row.bytes > 0)).toBe(true);
+    expect(steps.json!.total).toBe(3);
+    expect(steps.json!.more).toBe(false);
+
+    // STEP — that one step, whole, addressed by the index the list just gave.
+    const step = await call(tools, "sessions_step", { sessionId: session.id, runId: "run_1", step: 1 });
+    expect(step.json!.index).toBe(1);
+    expect(String(step.json!.text)).toContain("body of step 1");
+    expect(step.json!.more).toBe(false);
+    expect(String(step.json!.note)).toContain("That step, whole");
+
+    // GREP — where a phrase appears in this session's journal.
+    const grepped = await call(tools, "sessions_grep", { sessionId: session.id, pattern: "body of step 2" });
+    const matches = grepped.json!.matches as Array<{ id: number; context: string; type: string }>;
+    expect(matches.length).toBeGreaterThan(0);
+    expect(matches[0]!.context).toContain("body of step 2");
+  });
+
+  test("a long run is paged by rows and by bytes, and the cursor skips nothing", async () => {
+    const { store, projectId } = queryEngine();
+    const session = store.createSession({ projectId });
+    conversation(store, session.id, "run_long", "do a great many things", "done", 140);
+    const tools = wall(store);
+
+    const first = await call(tools, "sessions_steps", { sessionId: session.id, runId: "run_long" });
+    const page = first.json!.items as Array<{ index: number }>;
+    // THE DEFAULT IS 50 OF THEM, not the 140 the route would hand over: the
+    // route is unbounded by design (a cockpit renders the list) and the wall is
+    // what stands between that and a model's context window.
+    expect(page).toHaveLength(50);
+    expect(first.json!.total).toBe(140);
+    expect(first.json!.more).toBe(true);
+    expect(first.json!.next).toBe(50);
+    expect(String(first.json!.note)).toContain("after: 50");
+
+    // Paging with the cursor loses nothing and repeats nothing.
+    const seen = [...page.map((row) => row.index)];
+    let cursor = first.json!.next as number;
+    for (let guard = 0; guard < 10; guard += 1) {
+      const next = await call(tools, "sessions_steps", { sessionId: session.id, runId: "run_long", after: cursor });
+      for (const row of next.json!.items as Array<{ index: number }>) seen.push(row.index);
+      if (next.json!.more !== true) break;
+      cursor = next.json!.next as number;
+    }
+    expect(seen).toEqual(Array.from({ length: 140 }, (_, index) => index));
+
+    // A caller asking for more than the ceiling is served the ceiling, never
+    // refused — the clamp is the wall's whole job here.
+    const widest = await call(tools, "sessions_steps", { sessionId: session.id, runId: "run_long", limit: 5_000 });
+    expect((widest.json!.items as unknown[]).length).toBeLessThanOrEqual(140);
+  });
+
+  test("a step is addressed by index or by item id, and a step that is not there refuses readably", async () => {
+    const { store, projectId } = queryEngine();
+    const session = store.createSession({ projectId });
+    conversation(store, session.id, "run_1", "ask", "answer");
+    const tools = wall(store);
+
+    const byIndex = await call(tools, "sessions_step", { sessionId: session.id, runId: "run_1", step: 2 });
+    const byId = await call(tools, "sessions_step", { sessionId: session.id, runId: "run_1", step: byIndex.json!.id as string });
+    // THE TWO SPELLINGS ARE ONE READ. A caller that has just read the list
+    // names a position; one that found the item in a journal page holds its id.
+    expect(byId.json!.id).toBe(byIndex.json!.id);
+    expect(byId.json!.index).toBe(2);
+
+    const missing = await call(tools, "sessions_step", { sessionId: session.id, runId: "run_1", step: 99 });
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toContain("no such step");
+    // The refusal names the call that would have told it which steps exist.
+    expect(missing.text).toContain("run_1");
+
+    // And a `step` that is neither a position nor an id never reaches the
+    // store: the wall says what a step is, and names the list.
+    const nonsense = await call(tools, "sessions_step", { sessionId: session.id, runId: "run_1", step: -4 });
+    expect(nonsense.isError).toBe(true);
+    expect(nonsense.text).toContain("sessions_steps");
+  });
+
+  test("a step longer than the budget is clamped, marked, and says how to ask for more", async () => {
+    const { store, projectId } = queryEngine();
+    const session = store.createSession({ projectId });
+    store.submitTurn(session.id, { runId: "run_big", input: "write a lot" });
+    const token = store.claimTurn(session.id, "worker_one")!.claim!.token;
+    store.markRunning(session.id, "run_big", token);
+    const huge = "the body of one enormous step, said again and again. ".repeat(400);
+    store.ingestObservations(session.id, "run_big", token, [
+      { kind: "item.started", item: { id: "item_big", title: "a big step", detail: { type: "assistant_message", text: "" } } },
+      { kind: "item.completed", itemId: "item_big", status: "completed", detail: { type: "assistant_message", text: huge } },
+    ]);
+    store.completeTurn(session.id, "run_big", token, { text: "done" });
+    const tools = wall(store);
+
+    const clamped = await call(tools, "sessions_step", { sessionId: session.id, runId: "run_big", step: 0, maxChars: 2_000 });
+    expect(clamped.json!.more).toBe(true);
+    expect(clamped.json!.totalChars as number).toBeGreaterThan(2_000);
+    // MARKED WHERE IT WAS CUT, by the store, and the wall does not cut it a
+    // second time — a marker with another truncation after it is a lie.
+    expect(String(clamped.json!.text)).toContain("more characters]");
+    expect(String(clamped.json!.note)).toContain("Raise maxChars");
+
+    const whole = await call(tools, "sessions_step", { sessionId: session.id, runId: "run_big", step: 0, maxChars: 64_000 });
+    expect(whole.json!.more).toBe(false);
+    expect(String(whole.json!.text)).not.toContain("more characters]");
+  });
+
+  test("grep pages newest first, and an empty search says so rather than looking like a small answer", async () => {
+    const { store, projectId } = queryEngine();
+    const session = store.createSession({ projectId });
+    for (let lap = 0; lap < 6; lap += 1) conversation(store, session.id, `run_${lap}`, `lap ${lap}`, `could not take the index.lock on lap ${lap}`);
+    const tools = wall(store);
+
+    const page = await call(tools, "sessions_grep", { sessionId: session.id, pattern: "index.lock", limit: 2 });
+    const matches = page.json!.matches as Array<{ id: number }>;
+    expect(matches).toHaveLength(2);
+    expect(page.json!.more).toBe(true);
+    // NEWEST FIRST, and the cursor is the OLDEST row actually shown — a cursor
+    // taken from the store's own page rather than from what the wall kept would
+    // page straight over a match the byte bound had trimmed.
+    expect(matches[0]!.id).toBeGreaterThan(matches[1]!.id);
+    expect(page.json!.next).toBe(matches[1]!.id);
+    const older = await call(tools, "sessions_grep", { sessionId: session.id, pattern: "index.lock", limit: 2, before: page.json!.next as number });
+    expect((older.json!.matches as Array<{ id: number }>)[0]!.id).toBeLessThan(page.json!.next as number);
+
+    const nothing = await call(tools, "sessions_grep", { sessionId: session.id, pattern: "a phrase nobody ever wrote" });
+    expect(nothing.json!.matches).toEqual([]);
+    expect(String(nothing.json!.note)).toContain("substring match");
+  });
+
+  /**
+   * THE REFUSAL IS THE FEATURE, and it is the one thing about these two tools a
+   * caller cannot recover from being wrong about. A JSON-backed store has no
+   * way to scan a journal or search across sessions without reading everything,
+   * which is the cost the projection exists to avoid — and "no matches" would
+   * be a sentence an agent acts on and reports onward as fact.
+   */
+  test("on a store that cannot search, find and grep refuse in words rather than answering empty", async () => {
+    const { store, projectId } = engine();
+    const session = store.createSession({ projectId });
+    conversation(store, session.id, "run_1", "the appearance rework", "done");
+    const tools = wall(store);
+
+    const found = await call(tools, "sessions_find", { q: "appearance" });
+    expect(found.isError).toBe(true);
+    expect(found.text).toContain("cannot search across sessions");
+
+    const grepped = await call(tools, "sessions_grep", { sessionId: session.id, pattern: "appearance" });
+    expect(grepped.isError).toBe(true);
+    expect(grepped.text).toContain("cannot search a journal");
+
+    // THE OTHER FOUR STILL ANSWER THERE. `turnOutline` and `turnAnswer` fold
+    // the QUEUE rather than the journal when there is no index, which is why
+    // this backend keeps four of the six rather than none.
+    const outline = await call(tools, "sessions_outline", { sessionId: session.id });
+    expect((outline.json!.turns as unknown[]).length).toBe(1);
+    /**
+     * AND THE BARE `sessions_answer` RESOLVES A RUN HERE TOO. It did not: with
+     * no projection to name "the latest turn that left text", every bare call on
+     * this backend refused with `TURN_ANSWER_NONE` — whose sentence tells a
+     * model there is nothing here and not to ask again, in front of a session
+     * whose answer was in `queue.json`. See `turnAnswer`'s fold.
+     */
+    expect((await call(tools, "sessions_answer", { sessionId: session.id })).json!.text).toBe("done");
+    expect((await call(tools, "sessions_answer", { sessionId: session.id, runId: "run_1" })).json!.text).toBe("done");
+    expect((await call(tools, "sessions_steps", { sessionId: session.id, runId: "run_1" })).json!.total).toBe(3);
+    expect((await call(tools, "sessions_step", { sessionId: session.id, runId: "run_1", step: 0 })).json!.index).toBe(0);
+  });
+});
+
 // ── the fan-out guard ───────────────────────────────────────────────────────
 
 describe("a warp child may not reach these tools", () => {
   test("every tool on the wall is denied to a warp child, by name", () => {
     // STRUCTURAL, not a copied list: the names come from the wall itself, so a
-    // fourteenth tool fails this until it is denied too. `sessions_create` is
-    // fan-out wearing another hat, and the rest are steering a session from
-    // inside a script that cannot see it.
+    // twenty-first tool fails this until it is denied too. `sessions_create` is
+    // fan-out wearing another hat, and the rest are steering — or now READING —
+    // a session from inside a script that cannot see it.
     const names = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
-    expect(names.length).toBe(14);
+    expect(names.length).toBe(20);
     for (const name of names) {
       expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(qualifyTelarTool(name));
     }

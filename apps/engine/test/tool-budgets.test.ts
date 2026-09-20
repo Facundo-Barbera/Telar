@@ -34,6 +34,11 @@ import { displayTools } from "../src/display/tools";
 import { WARP_DESCRIPTION } from "../src/driver";
 import { TELAR_SKILL } from "../src/orientation";
 import { MAX_ANSWER_CHARS } from "../src/tool-kit";
+import { GREP_CONTEXT_CHARS, WHY_CHARS } from "../src/turn-summary";
+
+/** The widest `find` the route will serve — the fixture answers at it, so the
+ *  wall's own byte bound is what the ceiling below measures. */
+const FIND_LIMIT_MAX = 50;
 
 /** The fixture's size, and the reason each number is what it is. */
 const SESSIONS = 500;
@@ -218,6 +223,100 @@ function capabilities(): { sessions: SessionsCapability; notes: NotesCapability 
       ),
     resolveRequest: async () =>
       ({ id: "req_1", runId: RUN_ID, sessionId: SESSION_ID, state: "resolved", openedAt: 1, decision: "accept", resolvedBy: "session", detail: { kind: "tool_call", call: { name: "Read", server: "fs", input: {} } } }) as unknown as EngineRequest,
+    /**
+     * #516's SIX, AND THE FIXTURE ANSWERS THEM AS WIDE AS THE ROUTE WOULD.
+     *
+     * Same rule as `list` above: a stub that honoured the wall's own limit
+     * would make every ceiling below pass without the paging ever running. So
+     * each of these hands back the MAXIMUM the route may serve, at the worst
+     * per-row size the projection allows — a 200-character `why`, a
+     * 200-character grep context, 400 steps — and the wall is measured against
+     * that rather than against a happy answer.
+     */
+    query: {
+      find: async () => ({
+        sessions: Array.from({ length: FIND_LIMIT_MAX }, (_, index) => ({
+          id: `session_fixture_${index}`,
+          title: `Rework the ${index} case so the paging cursor survives a concurrent append`,
+          projectId: `project_${index % 12}`,
+          activity: "idle",
+          updatedAt: 2_000 + index,
+          runId: `run_fixture_${index}`,
+          why: `…${"the line that matched, as long as the projection lets a why line be. ".repeat(3)}`.slice(0, WHY_CHARS),
+        })),
+        index: "fts5" as const,
+        more: true,
+      }),
+      /**
+       * A FULL PAGE OF WORST-CASE ROWS, which is the case the issue's "under
+       * 6 KB per page" is about.
+       *
+       * The store bounds this page at `OUTLINE_PAGE_BYTES` measured on COMPACT
+       * json — 5,918 B leaving the store on the measured engine, 7,048 B once
+       * `json()` has pretty-printed it. So the fixture answers as wide as the
+       * store's own bound allows and the ceiling below is on what a caller
+       * actually receives. A fixture that returned a short page would make that
+       * ceiling pass for the wrong reason.
+       */
+      outline: async (_id, window) => ({
+        turns: Array.from({ length: window.limit }, (_, index) => ({
+          runId: `run_fixture_${index}`,
+          sequence: index,
+          state: "completed",
+          input: `Line ${index} of the ask, as long as an input line is allowed to be before it`.slice(0, 120),
+          items: 40,
+          answer: `The answer to ${index}, as long as an outline answer line may be, and no longer than that`.slice(0, 200),
+          answerChars: 12_000,
+          endedAt: 2_000 + index,
+        })),
+        total: TURNS,
+        more: true,
+        next: 0,
+      }),
+      answer: async (_id, options) => {
+        const whole = TURNS_FIXTURE[0]!.resultText ?? "";
+        const text = whole.slice(options.from, options.from + options.limit);
+        const more = options.from + text.length < whole.length;
+        return { runId: RUN_ID, sequence: 1, text, from: options.from, totalChars: whole.length, more, ...(more ? { next: options.from + text.length } : {}) };
+      },
+      // 400 STEPS is the tail of the dogfood store's per-turn item count, and
+      // it is the number `turn-summary.ts` cites for why a row keeps twelve
+      // titles rather than all of them.
+      steps: async () => ({
+        items: Array.from({ length: 400 }, (_, index) => ({
+          index,
+          id: `item_${index}`,
+          title: `Read apps/engine/src/some/deeply/nested/path/number-${index}.ts`,
+          status: "completed" as const,
+          bytes: 1_200 + index,
+        })),
+      }),
+      step: async (_id, _runId, step, maxChars) => {
+        const text = `{\n  "type": "assistant_message",\n  "text": "${"Words that a real item really does carry. ".repeat(4_000)}"\n}`;
+        return {
+          index: typeof step === "number" ? step : 0,
+          id: "item_12",
+          title: "Read apps/engine/src/some/deeply/nested/path/number-12.ts",
+          status: "completed" as const,
+          startedAt: 1_012,
+          completedAt: 1_013,
+          text: text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n[… ${text.length - maxChars} more characters]`,
+          totalChars: text.length,
+          more: text.length > maxChars,
+        };
+      },
+      grep: async (_id, _pattern, window) => ({
+        matches: Array.from({ length: window.limit }, (_, index) => ({
+          id: EVENTS - index,
+          at: 1_000 + index,
+          type: "item.completed",
+          runId: RUN_ID,
+          context: `…${"Words around the phrase that matched, as many of them as a context window holds. ".repeat(3)}`.slice(0, GREP_CONTEXT_CHARS),
+        })),
+        more: true,
+        next: EVENTS - window.limit,
+      }),
+    },
   };
 
   const stamp = { label: "Thu 10:00", at: 1 };
@@ -289,6 +388,48 @@ const CASES: Array<{ tool: string; args?: Record<string, unknown>; ceiling: numb
   { tool: "sessions_subscriptions", ceiling: MAX_ANSWER_CHARS, why: "200 subscriptions" },
   { tool: "sessions_requests", args: { sessionId: SESSION_ID }, ceiling: MAX_ANSWER_CHARS, why: "200 open questions with their fields" },
   { tool: "sessions_resolve_request", args: { sessionId: SESSION_ID, requestId: "req_1", decision: "accept" }, ceiling: 1_000, why: "one request and a sentence" },
+  /**
+   * #516'S SIX, AT THE ARGUMENTS THAT COST THE MOST.
+   *
+   * Each appears twice where the maximum is reachable: once bare, which is what
+   * a model actually calls, and once at the ceiling the route allows — because
+   * three of these are bounded at the route by a COUNT alone, and a count alone
+   * does not bound bytes. The second case of each pair is what the wall's own
+   * byte budget exists for, and it is the one that would have tripped the
+   * backstop before it had one.
+   */
+  /**
+   * 4,809 CHARACTERS HERE AGAINST 2,801 ON THE REAL FIXTURE, and the difference
+   * is the fixture rather than the tool.
+   *
+   * The issue asks for `find` under 3 KB at default arguments, and
+   * `query-acceptance.test.ts` measures exactly that on a 300-session engine:
+   * 2,801 B, inside the budget. This file's rows are deliberately the worst case
+   * — every title 74 characters, every `why` filled to the last of its 200 —
+   * which is what a ceiling should be measured against and is NOT the number the
+   * acceptance criterion is about.
+   *
+   * So this ceiling is the worst case plus a little, stated rather than nudged,
+   * and the acceptance number lives in the file that measures acceptance.
+   */
+  { tool: "sessions_find", args: { q: "appearance" }, ceiling: 5_000, why: "ten worst-case hits, each quoting a full 200-character line" },
+  { tool: "sessions_find", args: { q: "appearance", limit: 50 }, ceiling: MAX_ANSWER_CHARS, why: "50 hits each quoting a 200-character line" },
+  /**
+   * THE ISSUE'S OWN NUMBER, ON THE THING THE ISSUE BUDGETS. "Under 6 KB per
+   * page" is asked of `sessions_outline`, and what a caller receives is the
+   * pretty-printed answer — 7,048 B measured before this, against 5,918 B
+   * leaving the store. See `OUTLINE_ANSWER_CHARS`.
+   */
+  { tool: "sessions_outline", args: { sessionId: SESSION_ID }, ceiling: 6_000, why: "the issue's per-page budget, measured on what is delivered" },
+  { tool: "sessions_outline", args: { sessionId: SESSION_ID, limit: 100 }, ceiling: 6_000, why: "the widest ask — the delivered bound holds whatever was asked for" },
+  { tool: "sessions_answer", args: { sessionId: SESSION_ID }, ceiling: 12_000, why: "the 8,000-character floor slice, plus the envelope" },
+  { tool: "sessions_answer", args: { sessionId: SESSION_ID, limit: 64_000 }, ceiling: 66_000, why: "a verbatim slice the backstop may not clip — see ANSWER_MAX_CHARS" },
+  { tool: "sessions_steps", args: { sessionId: SESSION_ID, runId: RUN_ID }, ceiling: MAX_ANSWER_CHARS, why: "50 of a 400-step run" },
+  { tool: "sessions_steps", args: { sessionId: SESSION_ID, runId: RUN_ID, limit: 200 }, ceiling: MAX_ANSWER_CHARS, why: "the widest ask against the longest run" },
+  { tool: "sessions_step", args: { sessionId: SESSION_ID, runId: RUN_ID, step: 12 }, ceiling: 12_000, why: "one step at the 8,000-character default" },
+  { tool: "sessions_step", args: { sessionId: SESSION_ID, runId: RUN_ID, step: 12, maxChars: 64_000 }, ceiling: 66_000, why: "the most a caller may ask one step for" },
+  { tool: "sessions_grep", args: { sessionId: SESSION_ID, pattern: "index.lock" }, ceiling: MAX_ANSWER_CHARS, why: "20 matches with 200 characters of context each" },
+  { tool: "sessions_grep", args: { sessionId: SESSION_ID, pattern: "index.lock", limit: 100 }, ceiling: MAX_ANSWER_CHARS, why: "the widest ask — 100 × 200 characters is past the backstop unbounded" },
   { tool: "notes_projects", ceiling: 2_000, why: "12 projects" },
   { tool: "notes_list", ceiling: MAX_ANSWER_CHARS, why: "200 notes as titles and previews" },
   { tool: "notes_read", args: { noteId: "note_0" }, ceiling: MAX_ANSWER_CHARS, why: "one note, whole — this is the call that carries a body" },
