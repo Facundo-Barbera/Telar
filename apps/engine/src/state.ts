@@ -31,7 +31,9 @@ import {
   TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
   MAX_AUTO_SETTLE_HOURS,
+  MAX_REPORT_WINDOW_MINUTES,
   MIN_AUTO_SETTLE_HOURS,
+  MIN_REPORT_WINDOW_MINUTES,
   McpServer as McpServerSchema,
   McpServerSpec as McpServerSpecSchema,
   ModelSelection,
@@ -166,6 +168,7 @@ import {
 import { TELAR_ORIENTATION } from "./orientation";
 import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
+import { lastKeytermFit, type KeytermFit } from "./dictation/fit";
 import { dictationLanguages, isDictationLanguage, isDictationProviderId, type DictationLanguage, type DictationProviderId } from "./dictation/provider";
 import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings } from "./dictation/settings";
 import type { DictationContext } from "./dictation/keyterms";
@@ -1794,12 +1797,21 @@ export type AgentWake = { notification: NotificationDetail };
  * them accepted and another silently dropped would be a toolbar toggle that
  * worked on a session and did nothing on a canvas.
  */
-export type FilePatchOptions = {
-  /** Untracked files are in no diff at all — see `sessionFilePatch`. */
-  untracked?: boolean;
-  /** Re-indentation and blank lines are not changes worth reading (#694). */
-  ignoreWhitespace?: boolean;
-};
+/**
+ * `DiffBaseOption` AND `FilePatchOptions` COME FROM THE CONTRACT, not from
+ * here — `protocol/diff-query.ts` owns the shape, its query builder and its
+ * parser together, because a fourth hand-written copy of this is precisely
+ * what dropped the ignore-whitespace flag in silence. Re-exported so the
+ * engine's own callers need not reach past their own module boundary.
+ */
+export type { DiffBaseOption, FilePatchOptions } from "@telar/engine-client";
+import type { DiffBaseOption, FilePatchOptions } from "@telar/engine-client";
+
+/** Absent keeps the recorded base; `null` drops it; a string replaces it. */
+function resolveRequestedBase(options: DiffBaseOption, recorded: string | undefined): string | undefined {
+  if (options.base === undefined) return recorded;
+  return options.base === null ? undefined : options.base;
+}
 
 export class EngineStore {
   private executionStore?: ExecutionStore;
@@ -3056,13 +3068,28 @@ export class EngineStore {
     language: string;
     languages: readonly DictationLanguage[];
     vocabulary: string[];
+    keyterms?: KeytermFit;
   } {
     // `languages` RIDES THE SAME ANSWER rather than getting a route of its own
     // (#560). It is the vocabulary the `language` beside it is written in, and
     // a client that had to fetch the two separately could draw a picker with
     // nothing in it, or with the stored code missing from the list. One
     // document, one moment.
-    return { ...readDictationSettings(this.dictationDir), ...this.dictationCredential(), languages: dictationLanguages() };
+    //
+    // AND SO DOES WHAT THE LAST MINT ACTUALLY SENT (#712), for a different
+    // reason: it is not a setting, it is what HAPPENED to the setting. The
+    // provider may shorten the glossary to fit its own budget, and the pane
+    // that holds the vocabulary box is the one place a person would go about
+    // it. NOT STORED — see `lastKeytermFit`: it describes this engine's current
+    // glossary, and a value that outlived a restart would be a claim about a
+    // list nobody has checked.
+    const fit = lastKeytermFit();
+    return {
+      ...readDictationSettings(this.dictationDir),
+      ...this.dictationCredential(),
+      languages: dictationLanguages(),
+      ...(fit ? { keyterms: fit } : {}),
+    };
   }
 
   /** Choose a provider, or switch dictation off. The only writer, so `off` is
@@ -5770,8 +5797,9 @@ export class EngineStore {
 
   /** NOT `async`, so a session with no directory is refused BEFORE the first
    *  await — see the projectless-session test, which asserts exactly that. */
-  sessionDiffAsync(sessionId: string): Promise<SessionDiff> {
+  sessionDiffAsync(sessionId: string, options: DiffBaseOption = {}): Promise<SessionDiff> {
     const session = this.getSession(sessionId);
+    const base = resolveRequestedBase(options, workspaceBaseRef(session.workspace));
     /**
      * A WORKTREE SESSION'S CHECKOUT IS ON THE INTERNAL DISK AND ITS `.git` IS
      * NOT — see `worktree.ts`'s header. So the availability that matters to this
@@ -5779,9 +5807,9 @@ export class EngineStore {
      * perfectly readable while every git command inside it fails.
      */
     return this.withAvailability(
-      this.cachedGitRead(`diff:${workspaceRootOf(session)}:${workspaceBaseRef(session.workspace) ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
+      this.cachedGitRead(`diff:${workspaceRootOf(session)}:${base ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
         cwd: workspaceRootOf(session),
-        ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
+        ...(base ? { baseRef: base } : {}),
       })),
       this.projectOfSession(session),
       // Outside the cached read, like the availability above it: two local
@@ -5797,7 +5825,15 @@ export class EngineStore {
 
   sessionFilePatchAsync(sessionId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {
     const session = this.getSession(sessionId);
-    return this.readFilePatchAsync(workspaceRootOf(session), target, options, workspaceBaseRef(session.workspace));
+    /**
+     * THE ROW'S PATCH IS READ AGAINST THE SAME BASE THE LIST WAS (#694).
+     *
+     * They are one answer shown at two depths: a list built from `unstaged`
+     * over a row's patch built from the session's base would put hunks under a
+     * row whose ± counts came from a different comparison, and neither figure
+     * would be wrong on its own.
+     */
+    return this.readFilePatchAsync(workspaceRootOf(session), target, options, resolveRequestedBase(options, workspaceBaseRef(session.workspace)));
   }
 
   private readFilePatchAsync(cwd: string, target: string, options: FilePatchOptions, baseRef?: string): Promise<GitFilePatch> {
@@ -6808,6 +6844,13 @@ export class EngineStore {
        *  one — see `Session.resumeAfterRateLimit`. Three answers, so not a
        *  boolean: "on", "off", and "whatever this provider does". */
       resumeAfterRateLimit?: boolean | null;
+      /**
+       * HOW OFTEN ROUTINE PEER REPORTS ARE DELIVERED — issue #723. `null` turns
+       * the window off and returns the session to arrival delivery; a number of
+       * minutes turns it on. Two answers plus "leave it alone", so not a
+       * boolean and not a bare number.
+       */
+      reportWindowMinutes?: number | null;
     },
   ): Session {
     const session = this.getSession(sessionId);
@@ -6909,6 +6952,30 @@ export class EngineStore {
         next.snoozedAt = this.now();
       }
     }
+    /**
+     * THE REPORT WINDOW — issue #723.
+     *
+     * TURNING IT OFF DOES NOT DELIVER WHAT IS HELD, and that is deliberate
+     * rather than an omission. The mailbox already has four drains and a sweep;
+     * flushing here would mean a person adjusting a cadence setting hands the
+     * session a turn it did not ask for, at the moment they were configuring it.
+     * What was held stays held and goes out at the next drain — which, with the
+     * window off, is the very next turn boundary.
+     */
+    if (patch.reportWindowMinutes !== undefined) {
+      if (patch.reportWindowMinutes === null) {
+        delete next.reportWindowMinutes;
+      } else {
+        const minutes = Number(patch.reportWindowMinutes);
+        if (!Number.isInteger(minutes) || minutes < MIN_REPORT_WINDOW_MINUTES || minutes > MAX_REPORT_WINDOW_MINUTES) {
+          throw new EngineStateError(
+            "invalid_request",
+            `reportWindowMinutes must be a whole number of minutes between ${MIN_REPORT_WINDOW_MINUTES} and ${MAX_REPORT_WINDOW_MINUTES}`,
+          );
+        }
+        next.reportWindowMinutes = minutes;
+      }
+    }
 
     // Nothing changed: no write, no event. A client polling a "save" button
     // should not fill the journal with rows that say nothing happened.
@@ -6919,6 +6986,7 @@ export class EngineStore {
       next.settledOverride === session.settledOverride &&
       next.snoozedUntil === session.snoozedUntil &&
       next.resumeAfterRateLimit === session.resumeAfterRateLimit &&
+      next.reportWindowMinutes === session.reportWindowMinutes &&
       // COMPARED WHOLE, not field by field. The hand-written version listed
       // `model` and `effort`, so when the selection grew a context window and a
       // fast-mode switch, a patch that changed only those looked like a no-op
@@ -8526,7 +8594,25 @@ export class EngineStore {
      */
     const shelved = this.getSession(sessionId);
     const wouldBeLost = !this.hasLiveTurn(sessionId) && shelved.settledOverride !== "settled" && shelved.snoozedUntil === undefined;
-    const delivery = intent === "task" || intent === "blocker" || waiting || wouldBeLost ? "wake" : "passive";
+    /**
+     * AND A RECIPIENT MAY ASK TO BE TOLD ON A CLOCK INSTEAD — issue #723.
+     *
+     * `wouldBeLost` above is what makes an idle recipient take a routine report
+     * the moment it lands. That is right for one sender and unreadable for five:
+     * a coordinator with five workers is woken five times, and the interleaving
+     * is what made hand-run orchestration illegible rather than the per-message
+     * cost. A window says "hold them and tell me together".
+     *
+     * IT ONLY WITHDRAWS THE `wouldBeLost` WAKE, and that is the whole change.
+     * The message is not lost — it goes to the same mailbox a busy recipient's
+     * does, and `sweepReportWindows` delivers the cohort when the window closes.
+     * The other three clauses are untouched, so a `task`, a `blocker` and an
+     * AWAITED `result` still wake a session that set a window: one is work
+     * arriving, one is a peer asking for intervention now, and one is the event
+     * this session called `sessions_subscribe` to be woken for.
+     */
+    const windowed = shelved.reportWindowMinutes !== undefined;
+    const delivery = intent === "task" || intent === "blocker" || waiting || (wouldBeLost && !windowed) ? "wake" : "passive";
     /**
      * THE NOTICE IS MINTED HERE, ONCE, AND STORED — see `agent-notice.ts`.
      *
@@ -11093,6 +11179,71 @@ export class EngineStore {
     return settled;
   }
 
+  /**
+   * EVERY REPORT WINDOW THAT HAS CLOSED — the cadence tick, issue #723.
+   *
+   * The mailbox's four existing drains all hang off a turn ENDING, which is
+   * exactly what does not happen to the session this feature is for: a
+   * coordinator that set a window and then went quiet has nothing to end. So the
+   * window needs something that ticks, and this is it — the same shape, and the
+   * same argument, as `sweepDelegatedSettling` above.
+   *
+   * A CLOSED WINDOW WITH AN EMPTY BOX DELIVERS NOTHING. No turn, no event, no
+   * row: a turn that says "no reports this window" is a model invocation paid
+   * for silence, and #199's rule is that passive traffic costs none. Absence of
+   * a delivery IS the report, and `sessions_status` reports the box meanwhile.
+   *
+   * CHEAP REFUSALS FIRST, in the order that costs least: a session with no
+   * window is one document read, and a window with an empty box is one more.
+   * Only a box that is both non-empty and due reaches the flush.
+   *
+   * Returns the sessions it delivered to, so a caller — and a test — can see the
+   * tick's work without waiting on a timer.
+   */
+  sweepReportWindows(): string[] {
+    const now = this.now();
+    const delivered: string[] = [];
+    for (const sessionId of this.sessionIds()) {
+      try {
+        const session = this.getSession(sessionId);
+        const minutes = session.reportWindowMinutes;
+        if (minutes === undefined) continue;
+        /**
+         * A SHELVED OR SNOOZED SESSION IS NOT DELIVERED TO, and this is the one
+         * place that has to say so out loud. `flushPendingNotifications` submits
+         * a turn, and `submitTurn` treats new work as the shelf lifting itself —
+         * so a tick that flushed here would un-shelve a row a person put away,
+         * which is precisely the exclusion #631 part 2 made deliberate for a
+         * peer's routine report. The mail keeps waiting, as that comment
+         * promises, and `sessions_status` reports it meanwhile.
+         *
+         * IT IS NOT A CONDITION ON THE FLUSH ITSELF: a session that ENDS A TURN
+         * is awake by demonstration, whatever its pin says, and the four
+         * turn-boundary drains are unchanged.
+         */
+        if (session.settledOverride === "settled" || session.snoozedUntil !== undefined) continue;
+        if (this.readPendingNotifications(sessionId).length === 0) continue;
+        /**
+         * A BOX WITH NO STAMP IS DUE NOW. It was filled before this field
+         * existed, so its mail has already waited at least as long as any window
+         * — inventing `now` as its start would make the oldest mail in the store
+         * the last to be delivered.
+         */
+        const since = this.heldSince(sessionId);
+        if (since !== undefined && now - since < minutes * 60_000) continue;
+        // A live turn is not interrupted. `flushPendingNotifications` refuses on
+        // its own, and the turn's own end is the drain — so the cohort goes out
+        // one turn boundary later rather than into the middle of a thought.
+        const before = this.readPendingNotifications(sessionId).length;
+        this.flushPendingNotifications(sessionId);
+        if (this.readPendingNotifications(sessionId).length < before) delivered.push(sessionId);
+      } catch {
+        // One unreadable session must not stop the sweep for the rest.
+      }
+    }
+    return delivered;
+  }
+
   /** The whole rule for one session: gather, fold, and write if it says so. */
   private settleDelegateIfDue(sessionId: string): boolean {
     let session: Session;
@@ -11277,8 +11428,37 @@ export class EngineStore {
     return parsed.success ? parsed.data : [];
   }
 
-  private writePendingNotifications(sessionId: string, pending: NotificationDetail[]): void {
-    this.writeDocument(notificationsFile(this.paths, sessionId), { version: STATE_VERSION, pending });
+  private writePendingNotifications(sessionId: string, pending: NotificationDetail[], heldSince?: number): void {
+    this.writeDocument(notificationsFile(this.paths, sessionId), {
+      version: STATE_VERSION,
+      pending,
+      ...(heldSince === undefined ? {} : { heldSince }),
+    });
+  }
+
+  /**
+   * WHEN THIS BOX STARTED WAITING — the report window's clock, issue #723.
+   *
+   * ON THE MAILBOX RATHER THAN THE SESSION, because it is a fact about the box:
+   * stamped when a hold makes it non-empty, gone when a flush empties it, and
+   * written by the same two functions that write `pending`. A copy on the
+   * session record would be a second truth about one thing, drifting on the one
+   * path that matters — a crash between the two writes.
+   *
+   * SO THE WINDOW OPENS ON THE FIRST HELD REPORT, not on a timer the engine
+   * keeps running. A session with nothing waiting has no clock to be wrong
+   * about, and "the next window is measured from the delivery" needs no code:
+   * the flush clears the box, and the next report stamps a fresh one.
+   *
+   * ABSENT ON A BOX FILLED BEFORE THIS EXISTED, which `windowDueAt` reads as
+   * "due now" rather than inventing a stamp — mail that has already been
+   * waiting is not made fresher by the field arriving.
+   */
+  private heldSince(sessionId: string): number | undefined {
+    const stored = this.readDocument(notificationsFile(this.paths, sessionId));
+    if (stored === undefined) return undefined;
+    const held = (stored as { heldSince?: unknown }).heldSince;
+    return typeof held === "number" && Number.isFinite(held) ? held : undefined;
   }
 
   /** Is a turn of this session's actually in front of a provider right now? The
@@ -11308,7 +11488,11 @@ export class EngineStore {
     );
     if (index >= 0) pending[index] = detail;
     else pending.push(detail);
-    this.writePendingNotifications(sessionId, pending.slice(-MAX_COHORT_ENTRIES));
+    // THE OLDEST WAIT IS WHAT THE WINDOW MEASURES, so an existing stamp is kept:
+    // a newer report joining the cohort must not push the delivery back, or a
+    // steady trickle of them would hold the box open for ever (#723).
+    const heldSince = this.heldSince(sessionId) ?? this.now();
+    this.writePendingNotifications(sessionId, pending.slice(-MAX_COHORT_ENTRIES), heldSince);
   }
 
   /**

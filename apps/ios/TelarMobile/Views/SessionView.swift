@@ -588,7 +588,7 @@ struct SessionView: View {
                 .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
                 .padding(.horizontal, 14)
-                .frame(height: 32)
+                .scaledHeight(32, relativeTo: .footnote)
                 .background(Theme.subtle)
                 .clipShape(Capsule())
                 .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))

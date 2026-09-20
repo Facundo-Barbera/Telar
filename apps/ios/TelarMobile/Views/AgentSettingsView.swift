@@ -259,7 +259,7 @@ struct AgentSettingsView: View {
         }
         .foregroundStyle(Theme.text)
         .padding(.horizontal, 12)
-        .frame(height: 32)
+        .scaledHeight(32, relativeTo: .footnote)
         .background(Theme.subtle)
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))

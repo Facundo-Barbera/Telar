@@ -3932,6 +3932,10 @@ export function SessionCockpit({
           projectId={session?.projectId ?? projectId}
           {...(session?.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {})}
           items={items}
+          // The Diff's `turn` scope names a turn by what it was asked to do,
+          // which only the turn records know — the journal says which RUN wrote
+          // a file and nothing about why (#694).
+          turns={turns}
           tasks={roster}
           {...(focusedTask ? { focusedTask } : {})}
           {...(browserCanStart ? { onOpenBrowser: openBrowser, browserStart } : {})}

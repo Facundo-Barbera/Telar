@@ -49,6 +49,9 @@ struct NewSessionView: View {
     /// straight past the palette into the draft.
     @State private var autoTarget: NewConversationTarget?
     @State private var addingProject = false
+    /// The palette row's project avatar, off the project name's own style
+    /// (`.callout`) so the mark keeps pace with the words it labels (#718).
+    @ScaledMetric(relativeTo: .callout) private var targetMark: CGFloat = 27
     /// Which Mac the `+` registers a folder on. Nil until the sheet opens.
     @State private var addHostId: HostID?
     /// The branch a "New session on `<branch>`" carried in, handed to the
@@ -207,8 +210,11 @@ struct NewSessionView: View {
     /// something you compare character by character rather than read.
     private func targetRow(_ target: NewConversationTarget) -> some View {
         HStack(spacing: 12) {
+            // The avatar scales with the project name beside it (#718) —
+            // `ProjectAvatar` is proportional to whatever `size` it is given,
+            // so the literal at the call site was the only thing pinning it.
             ProjectAvatar(name: target.project.name, projectId: target.project.id, hostId: target.hostId,
-                          icon: target.project.icon, api: settings.api(for: target.hostId), size: 27)
+                          icon: target.project.icon, api: settings.api(for: target.hostId), size: targetMark)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(target.project.name)
@@ -494,7 +500,7 @@ struct NewSessionDraftView: View {
                                 }
                                 .foregroundStyle(Theme.textMuted)
                                 .padding(.horizontal, 14)
-                                .frame(height: 44)
+                                .scaledHeight(44, relativeTo: .subheadline)
                                 .background(Theme.subtle)
                                 .clipShape(Capsule())
                                 .overlay(Capsule().strokeBorder(Theme.borderSubtle, lineWidth: 1))
@@ -700,7 +706,7 @@ struct NewSessionDraftView: View {
             }
             .foregroundStyle(Theme.text)
             .padding(.horizontal, 14)
-            .frame(height: 44)
+            .scaledHeight(44, relativeTo: .subheadline)
             .background(Theme.subtle)
             .clipShape(Capsule())
             .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))

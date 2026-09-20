@@ -152,6 +152,34 @@ describe("setPanelTabParams", () => {
     // A REPLACE, not a merge — a key nobody could clear would be worse.
     expect(setPanelTabParams(named, "editor", {}).tabs[0]!.params).toEqual({});
   });
+
+  test("a partial write erases the keys it did not mention — which is why the Diff writes its whole tab", () => {
+    /**
+     * THE HAZARD THE REPLACE CREATES, pinned as behaviour rather than left as
+     * a sentence in a comment. The Diff tab carries a filter AND a scope AND a
+     * remembered base (#694, #335); a handler writing one of them would erase
+     * the others, silently, and only for somebody who had touched both.
+     * `diffTabParams` exists so there is one writer for the whole set.
+     */
+    const panel = addPanelTab(emptyPanelTabs<Tab>(), { id: "diff", kind: "diff", params: { scope: "branch", base: "origin/main", filter: "apps/web" } });
+    expect(setPanelTabParams(panel, "diff", { filter: "apps/engine" }).tabs[0]!.params).toEqual({ filter: "apps/engine" });
+  });
+
+  test("two panels on one session keep their own params", () => {
+    /**
+     * WHY THE DIFF'S SCOPE LIVES HERE AT ALL. Each window holds its own
+     * `PanelTabState`, which is what lets one show the working tree while the
+     * other shows a turn — the same property #693 relies on for "one issue
+     * here, another one there" after detail tabs moved inside their list.
+     */
+    const base = addPanelTab(emptyPanelTabs<Tab>(), { id: "diff", kind: "diff", params: {} });
+    const left = setPanelTabParams(base, "diff", { scope: "turn", turn: "run_7" });
+    const right = setPanelTabParams(base, "diff", { scope: "branch", base: "origin/main" });
+    expect(left.tabs[0]!.params).toEqual({ scope: "turn", turn: "run_7" });
+    expect(right.tabs[0]!.params).toEqual({ scope: "branch", base: "origin/main" });
+    // ...and neither write reached the state the other was made from.
+    expect(base.tabs[0]!.params).toEqual({});
+  });
 });
 
 describe("closePanelTab", () => {

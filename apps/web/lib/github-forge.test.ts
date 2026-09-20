@@ -17,6 +17,7 @@ import {
   issueStatus,
   mergeReadiness,
   MERGE_REFUSAL,
+  offersMerge,
   pullStatus,
   reviewLabel,
   STATUS_LABEL,
@@ -164,6 +165,34 @@ describe("pullStatus", () => {
     // it, when in fact nobody is going to.
     expect(pullStatus({ state: "CLOSED", isDraft: true })).toBe("closed");
     expect(pullStatus({ state: "OPEN", isDraft: true })).toBe("draft");
+  });
+});
+
+describe("offersMerge", () => {
+  test("an open pull request has a merge control behind its row", () => {
+    expect(offersMerge({ state: "OPEN", isDraft: false })).toBe(true);
+  });
+
+  test("nothing that MergeFooter would refuse or omit gets the sign", () => {
+    // Each of these is a row that would point at a control which is disabled on
+    // arrival, or absent entirely — which is worse than saying nothing, because it
+    // teaches the capability by showing it not working.
+    expect(offersMerge({ state: "OPEN", isDraft: true })).toBe(false); // MergeFooter disables a draft
+    expect(offersMerge({ state: "MERGED", isDraft: false })).toBe(false); // …and renders nothing at all
+    expect(offersMerge({ state: "CLOSED", isDraft: false })).toBe(false);
+    expect(offersMerge({ state: "CLOSED", isDraft: false, mergedAt: 1 })).toBe(false);
+  });
+
+  test("it is not a mergeability claim, and could not be one", () => {
+    // THE WHOLE POINT, and the reason this is a separate function from
+    // `mergeReadiness`: a list row carries no `mergeable` and no
+    // `mergeStateStatus`, so the two pull requests below — one GitHub would take
+    // and one it is holding — are INDISTINGUISHABLE here and both get the sign.
+    // The detail is what tells them apart.
+    const row = { state: "OPEN", isDraft: false };
+    expect(offersMerge(row)).toBe(true);
+    expect(mergeReadiness({ ...row, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" }).canMerge).toBe(true);
+    expect(mergeReadiness({ ...row, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED" }).canMerge).toBe(false);
   });
 });
 

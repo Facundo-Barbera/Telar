@@ -774,6 +774,19 @@ export const ClaudeConversation = z.object({
 });
 export type ClaudeConversation = z.infer<typeof ClaudeConversation>;
 
+/**
+ * THE BOUNDS ON A REPORT WINDOW — `Session.reportWindowMinutes`, issue #723.
+ *
+ * A MINUTE IS THE FLOOR rather than a second, because a window measured in
+ * seconds is not a cadence: it delays each report by less than the turn it
+ * would open and gives a reader the same interleaving it was set to fix. A day
+ * is the ceiling on the same argument from the other end — past that, "held"
+ * and "lost" are the same experience, and the mailbox cap (`MAX_COHORT_ENTRIES`)
+ * would be doing the deciding instead of the window.
+ */
+export const MIN_REPORT_WINDOW_MINUTES = 1;
+export const MAX_REPORT_WINDOW_MINUTES = 24 * 60;
+
 export const Session = z.object({
   id: Id,
   /**
@@ -1022,6 +1035,37 @@ export const Session = z.object({
    */
   agentMessagesBlockedAt: Timestamp.optional(),
 
+  /**
+   * HOW LONG ROUTINE PEER REPORTS ARE HELD BEFORE ONE MERGED DELIVERY — the
+   * report cadence, issue #723.
+   *
+   * ABSENT MEANS TODAY'S BEHAVIOUR, which is the only safe default: a routine
+   * report reaching an idle session is delivered on arrival (#631 part 2, so it
+   * is not silently lost). That is right for one sender and unreadable for five
+   * — a coordinator with five workers is woken five times, and the interleaving
+   * rather than the per-message cost is what made hand-run orchestration
+   * illegible. With a window set, those arrivals are HELD in the session's
+   * mailbox instead and the window's close delivers them as ONE turn.
+   *
+   * IT BELONGS TO THE RECIPIENT, and that is the whole reason it lives on
+   * `Session` rather than on an assignment or a subscription. The mailbox is
+   * keyed per recipient and so is the cohort merge, so "one merged notice per
+   * window" is only well-defined when one window governs one box. A
+   * sender-owned interval would put five clocks on one mailbox, which is the
+   * per-event problem with extra steps.
+   *
+   * ONLY ROUTINE TRAFFIC IS HELD: a `report`, and a `result` nobody is awaiting
+   * — exactly the set that is `passive` today. A `task` is work arriving, a
+   * `blocker` is a peer asking for intervention now, and an awaited `result` is
+   * the event a coordinator called `sessions_subscribe` to be woken for. A
+   * window that delayed any of those three would be flattening the distinction
+   * #199 exists to keep.
+   *
+   * MINUTES, because it is a cadence a person states out loud ("report every
+   * 25 minutes") and no reader of this field wants to count zeros.
+   */
+  reportWindowMinutes: z.number().int().min(MIN_REPORT_WINDOW_MINUTES).max(MAX_REPORT_WINDOW_MINUTES).optional(),
+
   /** Legacy pause metadata, accepted when reading older state. Startup and
    * session Stop settle its held backlog and remove the latch without replay.
    * New clients use session Stop; no command creates a pause latch. */
@@ -1076,6 +1120,10 @@ export const LiveSessionRow = Session.omit({
   agentMessagesBlockedAt: true,
   paused: true,
   unsettledAssignments: true,
+  /** A delivery cadence, which no row renders — it decides WHEN a session is
+   *  told something, not what a reader of a list sees. Same argument as the
+   *  latches above; a surface that configures it reads the whole record. */
+  reportWindowMinutes: true,
 });
 export type LiveSessionRow = z.infer<typeof LiveSessionRow>;
 

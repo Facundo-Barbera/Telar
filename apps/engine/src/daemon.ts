@@ -40,6 +40,8 @@ import {
   type WorkerStatus,
   pluginEnabled,
   machineAllows,
+  parseDiffBaseQuery,
+  parseFilePatchQuery,
   readProjectPlugins,
   workspacePath,
 } from "@telar/engine-client";
@@ -60,6 +62,7 @@ import {
   migrateLegacyEngineRoot,
   statePaths,
   engineRootFromEnv,
+  type DiffBaseOption,
   type EngineNotifier,
   type FilePatchOptions,
   type StoppedClaim,
@@ -184,6 +187,13 @@ export type EngineDaemonOptions = {
    * either side of its hour and nobody can tell.
    */
   delegationSweepIntervalMs?: number;
+  /**
+   * Testable cadence for the report-window sweep — issue #723.
+   *
+   * FASTER THAN THE SWEEP ABOVE, because the shortest window a person may set is
+   * a minute and a pass slower than that would silently become the real window.
+   */
+  reportWindowSweepIntervalMs?: number;
   /**
    * Told when a worker registration retires. AN OBSERVER, NOT THE CLEANUP:
    * ending that worker's claims happens on the default path inside
@@ -547,11 +557,17 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
  * other ignored would be a toolbar control that worked in a conversation and
  * did nothing on a canvas.
  */
+/**
+ * THE QUERY IS PARSED BY THE CONTRACT'S OWN PARSER, not by a copy written here
+ * — `protocol/diff-query.ts` carries the argument, and the bug it was written
+ * for was a hand-written third copy dropping a parameter in silence.
+ */
 function filePatchOptions(url: URL): FilePatchOptions {
-  return {
-    untracked: url.searchParams.get("untracked") === "1",
-    ignoreWhitespace: url.searchParams.get("ignoreWhitespace") === "1",
-  };
+  return parseFilePatchQuery(url.searchParams);
+}
+
+function requestedBase(url: URL): DiffBaseOption {
+  return parseDiffBaseQuery(url.searchParams);
 }
 
 /**
@@ -1208,6 +1224,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
   }, options.delegationSweepIntervalMs ?? 5 * 60_000);
   delegationSweeper.unref();
+  /**
+   * AND A REPORT WINDOW NEEDS ONE TOO — issue #723.
+   *
+   * The same gap as the sweep above, for the same reason: the mailbox's drains
+   * all hang off a turn ending, and a coordinator that set a window and went
+   * quiet has no turn to end. The tick is FASTER than the delegation sweep
+   * because the shortest window a person can set is a minute, and a five-minute
+   * pass would make that window a five-minute one.
+   *
+   * IT IS STILL CHEAP. A session with no window costs one document read and a
+   * closed window with an empty box costs one more; nothing here reads a queue
+   * unless a cohort is actually going out.
+   */
+  const reportWindowSweeper = setInterval(() => {
+    try {
+      store.sweepReportWindows();
+    } catch {
+      /* the next tick tries again */
+    }
+  }, options.reportWindowSweepIntervalMs ?? 30_000);
+  reportWindowSweeper.unref();
 
   // Read once: it names the Mac to another cockpit (`.local` dropped — it is
   // mDNS's suffix, not the name), and a name that flickered per request
@@ -4223,7 +4260,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             });
             return;
           }
-          writeJson(response, 200, { diff: await store.sessionDiffAsync(session.sessionId) });
+          writeJson(response, 200, { diff: await store.sessionDiffAsync(session.sessionId, requestedBase(url)) });
           return;
         }
         /**

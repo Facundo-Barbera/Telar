@@ -83,7 +83,45 @@ struct ScaledSquare: ViewModifier {
     }
 }
 
+/// A BAR AS TALL AS THE TEXT IN IT (#717).
+///
+/// The sweep's rule — convert unless the container is fixed in BOTH dimensions
+/// — left a third shape behind: a strip, toolbar, chip or row pinned to a
+/// height with scaling text inside it. Correct at normal sizes, clipping at the
+/// accessibility ones, and not a regression, because before the sweep the text
+/// did not scale either. Half-finished rather than broken.
+///
+/// UNLIKE `scaledGlyphBox`, THE REFERENCE STYLE IS THE CALLER'S. A tap target
+/// answers to the finger and wants one ratio across the whole app; a bar
+/// answers to the words inside it, and a toolbar of `.caption` icons and a chip
+/// of `.subheadline` text do not want the same growth. Pass the style the
+/// content is actually drawn in.
+///
+/// THIS IS FOR A HEIGHT THAT BOUNDS TEXT, and nothing else. A `height: 1` rule
+/// is a hairline, not a container — scaling it draws a thick line. A
+/// `ProgressView().frame(height: 60)` reserves room for an image that is about
+/// to arrive, and type has no opinion about how big that is. A `minHeight:` is
+/// already the answer, since content grows past it, and a `maxHeight:` caps a
+/// scroller whose content scrolls. None of those take this.
+struct ScaledHeight: ViewModifier {
+    @ScaledMetric private var height: CGFloat
+
+    init(_ height: CGFloat, relativeTo style: Font.TextStyle) {
+        _height = ScaledMetric(wrappedValue: height, relativeTo: style)
+    }
+
+    func body(content: Content) -> some View {
+        content.frame(height: height)
+    }
+}
+
 extension View {
+    /// A fixed bar height that grows with the text inside it. `relativeTo` is
+    /// the style that text is drawn in — see `ScaledHeight`.
+    func scaledHeight(_ height: CGFloat, relativeTo style: Font.TextStyle) -> some View {
+        modifier(ScaledHeight(height, relativeTo: style))
+    }
+
     /// A glyph and the square it is locked in, scaling together. Replaces a
     /// `.font(.system(size:))` and a `.frame(width:height:)` that agreed with
     /// each other by hand and stopped agreeing the moment the reader moved the

@@ -184,6 +184,53 @@ or when confidence matters more than speed (independent attempts, adversarial
 verification). It spawns a real process per concurrent child, so a single
 straight line of work should stay a single straight line of work. Tool: \`warp\`.
 
+### Writing the script
+
+The script must begin with a pure object literal — no variables, no calls, no
+interpolation:
+
+    export const meta = { name: 'find-flaky-tests', description: 'Find flaky tests and propose fixes', phases: [{ title: 'Scan' }, { title: 'Fix' }] }
+
+Then write statements at the top level. Top-level \`await\` and top-level
+\`return\` both work; whatever you return becomes the tool's result.
+Available as globals:
+
+- \`agent(prompt, opts?)\` -> Promise<any>. One sub-agent. Resolves to its
+  final text, or — with \`opts.schema\` (a JSON Schema) — to a validated
+  object, which is what makes the code between stages ordinary code instead of
+  another agent hired to read the last one's paragraphs. Resolves to
+  \`null\` if the child died, so \`.filter(Boolean)\` before using
+  results. \`opts\`: { model, effort, schema, label, phase, maxTurns,
+  agentType }. Omit \`model\` to inherit the session's.
+- \`parallel(thunks)\` -> Promise<any[]>. Concurrent, WITH A BARRIER:
+  everything settles before it resolves. Correct only when the next step
+  genuinely needs all of the previous one at once — a dedupe across the whole
+  set, an early exit on a total, a prompt that compares one finding against the
+  others.
+- \`pipeline(items, ...stages)\` -> Promise<any[]>. Each item through every
+  stage independently, NO barrier. This is the default for multi-stage work:
+  item A can be in stage 3 while item B is still in stage 1, so the run costs
+  the slowest single chain rather than the sum of the slowest-per-stage. Every
+  stage receives \`(previousResult, originalItem, index)\`. A stage that
+  throws drops that item to \`null\` and keeps the others flowing.
+- \`phase(title)\` opens a progress group; \`log(message)\` narrates to
+  the human; \`args\` is the JSON value passed alongside the script.
+
+### What a script cannot do
+
+\`Date.now()\`, \`new Date()\` and \`Math.random()\` THROW — a
+script that branched on the clock could not be replayed. \`require\`,
+\`import\`, \`process\` and \`fs\` are absent; a script orchestrates
+agents and does not touch the host. A script that cannot parse, is missing its
+\`meta\`, or reaches for a banned name is refused before anything is spent,
+with the line number.
+
+A Warp child may not create work that outlives the run or escapes the script:
+fan-out (Agent, Task, Workflow), scheduling (cron, wake-ups), messaging other
+sessions, and switching worktrees are all withheld from it. So the script is the
+only place parallelism is expressed. Children run in the same checkout as this
+session and inherit its permissions.
+
 ## The browser
 
 Telar has its OWN integrated browser, shared between you and the person. When

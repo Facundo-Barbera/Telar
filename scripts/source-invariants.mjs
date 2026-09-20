@@ -22,12 +22,44 @@
  * when it holds). Keep the failure text actionable — it is read by someone
  * who has just been stopped by it and does not yet know why.
  */
-import { readFile, readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFile(join(ROOT, path), "utf8");
+
+/**
+ * Every test file under a directory, repo-relative, POSIX-separated.
+ *
+ * BUILD OUTPUTS ARE SKIPPED, and not as tidiness: `release/` and `.next-desktop/`
+ * hold COPIES of web source with the tests included, so a check that swept them
+ * would report the same file twice — once as itself and once as a stale artefact
+ * nobody can fix — which is why both bunfig.toml files exclude exactly these from
+ * the test run too.
+ */
+async function testFilesUnder(directory) {
+  const found = [];
+  const walk = async (relative) => {
+    let entries;
+    try {
+      entries = await readdir(join(ROOT, relative), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const next = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "release" || entry.name.startsWith(".next")) continue;
+        await walk(next);
+      } else if (/\.test\.tsx?$/.test(entry.name)) {
+        found.push(next);
+      }
+    }
+  };
+  await walk(directory);
+  return found;
+}
 
 /**
  * A SWEPT FILE STAYS SWEPT — the Dynamic Type sweep's regression guard (#248).
@@ -124,17 +156,228 @@ const SWEPT_FILES = [
 ];
 
 /**
- * `.system(size:` followed by a digit. The digit is the whole test: a number
- * is absolute, a property is not. Global so `String.match` returns every hit
- * rather than the first — `match` resets `lastIndex` itself, so sharing one
- * compiled regex across files is safe here in a way `test` would not be.
+ * THE SPELLINGS OF AN ABSOLUTE SIZE (#721). A digit after the colon is still
+ * the whole test — a number is absolute, a property is not — but `.system` is
+ * not the only call that takes one, and #674 shipped a guard that knew exactly
+ * one spelling. These are the ones that qualify, and the ones that were
+ * considered and deliberately left out are recorded below them, because a
+ * guard's exclusions are the part people later mistake for oversight.
+ *
+ * WHAT COUNTS IS "DOES IT SCALE", NOT "IS IT A LITERAL". That distinction
+ * decides every row, and it is the one I got wrong first time round: #721 was
+ * filed arguing `.custom(_:size:)` probably did not belong because a hard size
+ * in a non-system face might be a deliberate type treatment. That reasoning is
+ * irrelevant, because Apple's own documentation settles it — see EXCLUDED.
  */
-const ABSOLUTE_SIZE = /\.system\(\s*size:\s*\d/g;
+const ABSOLUTE_SIZES = [
+  {
+    /**
+     * `.system(size: 14)`. Whitespace-tolerant now: the #674 pattern required
+     * `.system(` and `size:` tight, so `.system (size: 14)` and
+     * `.system(size : 14)` both walked straight past it.
+     */
+    what: ".system(size:)",
+    re: /\.system\s*\(\s*size\s*:\s*\d/g,
+    uikit: false,
+  },
+  {
+    /**
+     * `.custom("Inter", fixedSize: 14)`. Apple: "Create a custom font with the
+     * given name and a fixed size that DOES NOT SCALE with Dynamic Type." It
+     * is the one `Font.custom` overload that is unambiguously this defect, and
+     * the one #721 never thought to name.
+     */
+    what: ".custom(_:fixedSize:)",
+    re: /\.custom\s*\([^()]*,\s*fixedSize\s*:\s*\d/g,
+    uikit: false,
+  },
+  {
+    /**
+     * `UIFont.systemFont(ofSize: 14)` and its bold/italic/monospaced
+     * siblings, all of which end in `ystemFont(ofSize:`. Apple: "Instead of
+     * using this method… it's often more appropriate to use
+     * preferredFont(forTextStyle:) because that method respects the user's
+     * selected content size category."
+     */
+    what: "UIFont…systemFont(ofSize:)",
+    re: /\.\w*[sS]ystemFont\s*\(\s*ofSize\s*:\s*\d/g,
+    uikit: true,
+  },
+  {
+    /** `UIFont(name: "Inter", size: 14)` — same, by the other constructor. */
+    what: "UIFont(name:size:)",
+    re: /\bUIFont\s*\(\s*name\s*:[^()]*\bsize\s*:\s*\d/g,
+    uikit: true,
+  },
+];
+
+/**
+ * EXCLUDED, AND ON PURPOSE — these hold a literal and still scale, so adding
+ * them would make the guard fire on correct code:
+ *
+ *   - `.custom("Inter", size: 14)` — Apple: "Create a custom font with the
+ *     given name and size that SCALES WITH THE BODY text style." A literal
+ *     here is not the defect; it is the seed the system scales from.
+ *   - `.custom("Inter", size: 14, relativeTo: .caption)` — the same, against a
+ *     style you choose.
+ *
+ * Also not covered, and not coverable from source text: a literal passed as a
+ * call-site ARGUMENT rather than written as a font size, e.g.
+ * `ProviderIconView(driver: …, size: 11)` where the view multiplies it into a
+ * font internally. No regex over font calls can see those. #718 is the record.
+ *
+ * `.preferredFont(forTextStyle:)` and `UIFontMetrics` are the UIKit ways to
+ * scale, and are what the failure text points at.
+ */
+
+/**
+ * THE UIKIT CARVE-OUT, deliberately coarse and deliberately LOUD. Wrapping a
+ * fixed UIFont in `UIFontMetrics` is the documented way to make it scale, and
+ * the wrapper contains the literal:
+ *
+ *     UIFontMetrics.default.scaledFont(for: .systemFont(ofSize: 17))
+ *
+ * So a UIKit hit on a line that also says `UIFontMetrics` is skipped. LINE
+ * level, not file level, and that choice is the point: a file-level carve-out
+ * would let one legitimate `UIFontMetrics` blind a whole file to every other
+ * UIKit literal in it, which is a hole. Line level errs the other way — split
+ * that call across two lines and the guard fires on correct code. A guard that
+ * occasionally asks a question you can answer is worth more than one that
+ * quietly stops looking, and the failure text says so.
+ *
+ * The app uses no UIKit font construction at all today, so this costs nothing
+ * now; it exists so that the first one to arrive is noticed.
+ */
+const UIKIT_SCALING = /UIFontMetrics/;
+
+/** Every absolute-size hit in one source file, already carved out. */
+function absoluteSizesIn(source) {
+  const hits = [];
+  for (const { what, re, uikit } of ABSOLUTE_SIZES) {
+    for (const match of source.matchAll(re)) {
+      if (uikit) {
+        const lineStart = source.lastIndexOf("\n", match.index) + 1;
+        let lineEnd = source.indexOf("\n", match.index);
+        if (lineEnd === -1) lineEnd = source.length;
+        if (UIKIT_SCALING.test(source.slice(lineStart, lineEnd))) continue;
+      }
+      hits.push(what);
+    }
+  }
+  return hits;
+}
+
+/**
+ * THE GUARD ABOVE, GUARDED (#721). A check that reports "ok" has proved that
+ * it found nothing — which is a different claim from "there is nothing", and
+ * the two only coincide while the patterns actually fire. #674's evidence for
+ * that was a person pasting an absolute into a file by hand, watching it go
+ * red, and taking it out again. That worked once and protects nothing after.
+ *
+ * So the samples live here and run on every CI pass. Each MUST row is a
+ * positive control; each MUST-NOT row is a negative one, and the negatives
+ * matter more, because a pattern that is too greedy fires on correct code and
+ * the next person's fix is to delete the pattern.
+ *
+ * If you widen `ABSOLUTE_SIZES`, add both kinds of row here. A new pattern
+ * with no sample is a claim with no evidence.
+ */
+const GUARD_SAMPLES = [
+  // Fires: these genuinely do not scale.
+  { fires: true, why: "the plain absolute", code: `Text("x").font(.system(size: 14))` },
+  { fires: true, why: "space before the paren", code: `Text("x").font(.system (size: 14))` },
+  { fires: true, why: "space before the colon", code: `Text("x").font(.system(size : 14))` },
+  { fires: true, why: "wrapped onto the next line", code: `Text("x").font(.system(\n    size: 14))` },
+  { fires: true, why: "Font.system spelt in full", code: `let f = Font.system(size: 14)` },
+  { fires: true, why: "a custom face pinned with fixedSize", code: `Text("x").font(.custom("Inter", fixedSize: 14))` },
+  { fires: true, why: "UIKit's system font", code: `label.font = .systemFont(ofSize: 14)` },
+  { fires: true, why: "UIKit's bold system font", code: `label.font = .boldSystemFont(ofSize: 14)` },
+  { fires: true, why: "UIKit's monospaced system font", code: `label.font = .monospacedSystemFont(ofSize: 14, weight: .regular)` },
+  { fires: true, why: "UIKit by font name", code: `label.font = UIFont(name: "Inter", size: 14)` },
+
+  // Silent: these hold a literal and scale anyway. A hit on any of them is the
+  // guard failing on correct code, which is worse than the hole it closes.
+  { fires: false, why: "custom(_:size:) scales with body", code: `Text("x").font(.custom("Inter", size: 14))` },
+  { fires: false, why: "custom(_:size:relativeTo:) scales", code: `Text("x").font(.custom("Inter", size: 14, relativeTo: .caption))` },
+  { fires: false, why: "a @ScaledMetric driving the size", code: `Text("x").font(.system(size: glyph))` },
+  { fires: false, why: "a fraction of the caller's own box", code: `Text("OC").font(.system(size: size * 0.65))` },
+  { fires: false, why: "UIFontMetrics is the scaling path", code: `let f = UIFontMetrics.default.scaledFont(for: .systemFont(ofSize: 17))` },
+  { fires: false, why: "the UIKit text-style path", code: `label.font = .preferredFont(forTextStyle: .body)` },
+  { fires: false, why: "prose about the sweep", code: `/// was .system(size:) before the sweep` },
+];
+
+/** Views whose every glyph is a fraction of the `size:` their caller passes. */
+const PROPORTIONAL_MARKS = ["ProjectAvatar", "ProviderIconView"];
+
+/**
+ * Every `size:` argument handed to one of those views as a LITERAL. Walks the
+ * call with a paren counter rather than a character class, so a nested call in
+ * an earlier argument cannot end the scan early.
+ */
+function markSizeArguments(source) {
+  const found = [];
+  for (const name of PROPORTIONAL_MARKS) {
+    let from = 0;
+    for (;;) {
+      const at = source.indexOf(`${name}(`, from);
+      if (at === -1) break;
+      const open = at + name.length;
+      from = open;
+      let depth = 0;
+      let close = -1;
+      for (let i = open; i < source.length; i += 1) {
+        if (source[i] === "(") depth += 1;
+        else if (source[i] === ")") {
+          depth -= 1;
+          if (depth === 0) {
+            close = i;
+            break;
+          }
+        }
+      }
+      if (close === -1) continue;
+      const args = source.slice(open + 1, close);
+      const size = args.match(/\bsize:\s*([^,]+?)\s*(?:,|$)/);
+      if (!size || !/^\d/.test(size[1])) continue;
+      found.push({
+        name,
+        value: size[1],
+        line: source.slice(0, at).split("\n").length,
+      });
+    }
+  }
+  return found;
+}
 
 const CHECKS = [
   {
+    name: "ios-type-scale-self-test",
+    protects: "#721: the absolute-size patterns still fire on what they claim, and stay quiet on correct code",
+    async run() {
+      const failures = [];
+      for (const { fires, why, code } of GUARD_SAMPLES) {
+        const hits = absoluteSizesIn(code);
+        if (fires && hits.length === 0) {
+          failures.push(
+            `the guard MISSED a sample it must catch (${why}): ${JSON.stringify(code)}. ` +
+              "A pattern in ABSOLUTE_SIZES has stopped matching, so ios-type-scale below is now reporting green " +
+              "for a spelling it no longer sees.",
+          );
+        }
+        if (!fires && hits.length > 0) {
+          failures.push(
+            `the guard FIRED on a sample it must ignore (${why}): ${JSON.stringify(code)} — matched ${hits.join(", ")}. ` +
+              "This spelling scales; flagging it makes the guard wrong about correct code, and the next person to " +
+              "hit it will delete the pattern rather than argue with it.",
+          );
+        }
+      }
+      return failures;
+    },
+  },
+  {
     name: "ios-type-scale",
-    protects: "the Dynamic Type sweep (#248, #674): no swept iOS file holds an absolute font size",
+    protects: "the Dynamic Type sweep (#248, #674, #721): no swept iOS file holds an absolute font size",
     async run() {
       const failures = [];
       for (const [path, note] of SWEPT_FILES) {
@@ -145,13 +388,16 @@ const CHECKS = [
           failures.push(`${path}: listed as swept but the file is missing — was it moved or renamed?`);
           continue;
         }
-        const found = (source.match(ABSOLUTE_SIZE) ?? []).length;
-        if (found === 0) continue;
+        const hits = absoluteSizesIn(source);
+        if (hits.length === 0) continue;
+        const spellings = [...new Set(hits)].join(", ");
         failures.push(
-          `${path}: ${found} absolute font size${found === 1 ? "" : "s"}. A .system(size: <number>) came back. ` +
+          `${path}: ${hits.length} absolute font size${hits.length === 1 ? "" : "s"} (${spellings}). ` +
             "Use a Dynamic Type style (Theme.captionTiny/caption/footnote/subhead), or — if the number has to survive, " +
             "as it does for a glyph locked in a fixed frame — a named @ScaledMetric seeded with it, which keeps the " +
-            `size and still scales. See apps/ios/TelarMobile/Views/ScaledFrame.swift.${note ? ` (note on this file: ${note})` : ""}`,
+            "size and still scales; see apps/ios/TelarMobile/Views/ScaledFrame.swift. In UIKit the scaling paths are " +
+            "UIFont.preferredFont(forTextStyle:) and UIFontMetrics — if this IS a UIFontMetrics call split across " +
+            `lines, put it on one line and the guard will read it correctly.${note ? ` (note on this file: ${note})` : ""}`,
         );
       }
       return failures;
@@ -287,6 +533,127 @@ const CHECKS = [
   },
 
   /**
+   * A TEST THAT TAKES THE GLOBAL DOM MUST GIVE IT BACK — #719's landmine.
+   *
+   * WHY THIS DEFECT IS SILENT, which is the whole reason it needs a machine and
+   * not a reviewer. `GlobalRegistrator.register` is PROCESS-WIDE and throws on a
+   * second call, and bun runs every `apps/web` test file in one process. So a
+   * file that registers happy-dom and never unregisters does not fail: the NEXT
+   * file to register dies, with `Failed to register. Happy DOM has already been
+   * globally registered.` and no failing assertion anywhere to explain it. The
+   * blame lands on whichever file bun happened to load afterwards — its author
+   * reads a green local run of their own file and a red CI log about a global
+   * they never touched.
+   *
+   * IT ALSO HIDES FROM ITS OWN PULL REQUEST. #719 introduced exactly this and
+   * passed, because at that moment nothing registered after it in bun's ordering.
+   * It detonated on the next branch to add a DOM test — a branch whose diff did
+   * not contain the bug. Nothing about that is discoverable by reading either
+   * diff, which is what makes it an invariant rather than a review note.
+   *
+   * WHY HERE AND NOT IN A LINT RULE OR THE TEST GUIDANCE: #691's lesson. The
+   * wash contract lived in prose and in a stylesheet test that never looked at
+   * the call sites, so a violating call site survived for months. A convention
+   * written down is not enforcement; `bun run check:source` is, and verify.yml
+   * runs it on every pull request.
+   */
+  {
+    name: "web-test-dom-release",
+    protects:
+      "the web suite's shared process (#719): a test file that registers happy-dom also unregisters it",
+    async run() {
+      const files = await testFilesUnder("apps/web");
+      const registers = [];
+      const unbalanced = [];
+      for (const path of files) {
+        const source = await read(path);
+        if (!/GlobalRegistrator\s*\.\s*register\s*\(/.test(source)) continue;
+        registers.push(path);
+        if (!/GlobalRegistrator\s*\.\s*unregister\s*\(/.test(source)) unbalanced.push(path);
+      }
+
+      /**
+       * NON-VACUITY FIRST, because the failure this check is most likely to
+       * suffer is the one it exists to catch, pointed the other way: a walk or a
+       * pattern that quietly stops matching sweeps nothing, finds nothing wrong,
+       * and reports `ok` forever. An empty result is a claim, and it needs a
+       * positive control — so the check refuses to pass unless it can still see
+       * the corpus it is about. (Measured when written: 270 test files under
+       * apps/web, 32 of them registering.)
+       */
+      if (files.length === 0) {
+        return [
+          "apps/web: found no *.test.ts(x) files at all, so this check swept nothing and proved nothing. The walk in testFilesUnder has stopped matching — fix it in scripts/source-invariants.mjs rather than trusting the pass.",
+        ];
+      }
+      if (registers.length === 0) {
+        return [
+          `apps/web: scanned ${files.length} test files and found none that call GlobalRegistrator.register, which cannot be true while this app has DOM tests. Either the call was renamed or the pattern here has rotted; either way this check is now vacuous and must be re-anchored, not removed.`,
+        ];
+      }
+
+      return unbalanced.map(
+        (path) =>
+          `${path}: registers happy-dom and never unregisters it. Add \`afterAll(async () => { await GlobalRegistrator.unregister(); });\` — the registration is process-wide, so the file this breaks is the NEXT one to register, not this one, and the error it throws names that file instead. ${registers.length - unbalanced.length} other file${registers.length - unbalanced.length === 1 ? "" : "s"} in apps/web already pair the two.`,
+      );
+    },
+  },
+  /**
+   * A MARK IS THE SIZE OF THE LINE IT LABELS — the call-site literal (#718).
+   *
+   * `ProjectAvatar` and `ProviderIconView` are both proportional to the `size`
+   * they are handed: every glyph inside them is a fraction of that number, so
+   * they are correct at any size and #674 rightly left them alone. The literal
+   * is not inside them. It is in the CALLER, as an argument:
+   *
+   *     ProviderIconView(driver: row.session.driver, size: 11)
+   *
+   * The row's text scales; that 11 does not; the mark stops being the size of
+   * the line it labels. #718 filed this and said in as many words that
+   * `source-invariants.mjs` could never catch it, "because the literal is a
+   * call-site argument rather than a font size, so no regex over font calls
+   * will ever see it". That was true of a regex over FONT calls and false as a
+   * general claim — a regex over THESE calls sees it perfectly well. The gap
+   * was in where the guard was looking, not in what is knowable from source.
+   *
+   * SO IT IS NARROW ON PURPOSE. It knows two view names, and it will not
+   * generalise to "any view taking a size:" — that would flag every deliberate
+   * fixed-size caller in the app and be deleted within a week. Two names, both
+   * proportional by construction, both drawn beside text. Add a third only
+   * when a third genuinely has this shape.
+   *
+   * PAREN-BALANCED rather than regex-matched, because the first version of
+   * this scan used `[^)]*` and silently missed four of the seven sites: these
+   * calls contain nested calls (`api: settings.api(for: row.hostId)`), and the
+   * character class stopped at the inner `)`. The miss looked exactly like a
+   * clean result.
+   */
+  {
+    name: "ios-mark-sizes",
+    protects: "#718: a project or provider mark is never pinned to a literal at its call site",
+    async run() {
+      const failures = [];
+      for (const [path] of SWEPT_FILES) {
+        let source;
+        try {
+          source = await read(path);
+        } catch {
+          continue; // the type-scale check above already reports a missing file
+        }
+        for (const { line, name, value } of markSizeArguments(source)) {
+          failures.push(
+            `${path}:${line}: ${name}(… size: ${value}) is pinned to a literal. Both views are proportional to the ` +
+              "size they are given, so the caller decides whether the mark scales — and a hard number means it does " +
+              "not, while the text beside it does. Give it a @ScaledMetric relative to the style of the text it sits " +
+              "next to (not one shared reference: a mark tracks its own line). See SessionSidebar.swift.",
+          );
+        }
+      }
+      return failures;
+    },
+  },
+
+  /**
    * A WAIT MUST FIT UNDER THE CEILING IT RUNS UNDER — #706's other half.
    *
    * `apps/engine/package.json` sets `--timeout 20000` and its comment explains
@@ -326,6 +693,45 @@ const CHECKS = [
         failures.push(
           `apps/engine/test/${name}: a wait budget of ${budget}ms runs under a per-test ceiling of ${ceiling}ms. The test dies before the wait can report, so the real reason is discarded and the run only says it timed out. Lower the helper's default below every ceiling in this file, or raise the ceiling above the budget.`,
         );
+      }
+      return failures;
+    },
+  },
+
+  /**
+   * The same standard #721 holds the font patterns to: a scan that has never
+   * been shown to fail has demonstrated nothing. The nested-call sample is the
+   * one that matters — it is the exact shape that defeated the first attempt.
+   */
+  {
+    name: "ios-mark-sizes-self-test",
+    protects: "#718: the mark-size scan still sees a literal through a nested call, and ignores a scaled one",
+    async run() {
+      const samples = [
+        { fires: true, why: "the plain literal", code: `ProviderIconView(driver: d, size: 11)` },
+        {
+          fires: true,
+          why: "a literal behind a nested call — the shape that defeated the first scan",
+          code: `ProjectAvatar(name: p.name, api: settings.api(for: row.hostId), size: 13)`,
+        },
+        { fires: true, why: "spaced out", code: `ProviderIconView( driver: d , size:  12 )` },
+        { fires: false, why: "a @ScaledMetric", code: `ProviderIconView(driver: d, size: badge)` },
+        { fires: false, why: "a scaled metric behind a nested call", code: `ProjectAvatar(api: settings.api(for: h), size: slimProjectMark)` },
+        { fires: false, why: "a computed size", code: `ProviderIconView(driver: d, size: box * 0.5)` },
+        { fires: false, why: "some other view's literal size", code: `SomeOtherThing(size: 11)` },
+      ];
+      const failures = [];
+      for (const { fires, why, code } of samples) {
+        const hits = markSizeArguments(code);
+        if (fires && hits.length === 0) {
+          failures.push(`the scan MISSED a sample it must catch (${why}): ${JSON.stringify(code)}.`);
+        }
+        if (!fires && hits.length > 0) {
+          failures.push(
+            `the scan FIRED on a sample it must ignore (${why}): ${JSON.stringify(code)}. ` +
+              "Flagging a scaled size makes the check wrong about correct code.",
+          );
+        }
       }
       return failures;
     },

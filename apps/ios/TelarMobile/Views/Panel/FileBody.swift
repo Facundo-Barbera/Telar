@@ -56,7 +56,7 @@ struct FileAddressRow: View {
             if let trailing { trailing }
         }
         .padding(.horizontal, 10)
-        .frame(height: 30)
+        .scaledHeight(30, relativeTo: .caption)
         .background(Theme.sheet)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
     }
