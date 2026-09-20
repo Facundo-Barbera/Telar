@@ -22,9 +22,9 @@
  * when it holds). Keep the failure text actionable — it is read by someone
  * who has just been stopped by it and does not yet know why.
  */
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFile(join(ROOT, path), "utf8");
@@ -58,6 +58,64 @@ async function testFilesUnder(directory) {
     }
   };
   await walk(directory);
+  return found;
+}
+
+/** The one file the per-test ceiling lives in, repo-relative (#740). */
+const CEILING_PRELOAD = "scripts/test-ceiling.mjs";
+
+/**
+ * Every directory a bunfig.toml would be read from: the repo root and each
+ * workspace. Enumerated rather than listed, so a workspace added next year is
+ * covered without anyone remembering to come back here.
+ */
+async function workspaceDirectories() {
+  const found = [""];
+  for (const group of ["apps", "packages", "workers"]) {
+    let entries;
+    try {
+      entries = await readdir(join(ROOT, group), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name !== "node_modules") found.push(`${group}/${entry.name}`);
+    }
+  }
+  return found;
+}
+
+/**
+ * The `[test] preload` list of a bunfig, as written. No TOML parser here on
+ * purpose: the only shapes in this repo are a one-line array and a multi-line
+ * one, and a dependency to read four files would be its own liability.
+ */
+function testPreloads(source) {
+  if (!/^\s*\[test\]\s*$/m.test(source)) return null;
+  const list = /(?:^|\n)\s*preload\s*=\s*\[([^\]]*)\]/.exec(source);
+  if (!list) return [];
+  return [...list[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+}
+
+/**
+ * Every `--timeout N` a package's scripts hand to `bun test`.
+ *
+ * WHAT IS NOT PARSED is the list of test files, and that is deliberate: it was
+ * 36 filenames typed out by hand until #763 made it `./*.test.js`, and a check
+ * that cared which would have broken on a change that had nothing to do with
+ * it. `//`-prefixed keys are this repo's comment convention, not commands —
+ * three of them discuss `--timeout` in prose, so reading them would report a
+ * flag that does not exist.
+ */
+function bunTestTimeouts(scripts) {
+  const found = [];
+  for (const [name, command] of Object.entries(scripts ?? {})) {
+    if (name.startsWith("//") || typeof command !== "string") continue;
+    if (!/\bbun test\b/.test(command)) continue;
+    for (const match of command.matchAll(/--timeout[= ]+([0-9_]+)/g)) {
+      found.push({ script: name, ms: Number(match[1].replace(/_/g, "")) });
+    }
+  }
   return found;
 }
 
@@ -656,8 +714,9 @@ const CHECKS = [
   /**
    * A WAIT MUST FIT UNDER THE CEILING IT RUNS UNDER — #706's other half.
    *
-   * `apps/engine/package.json` sets `--timeout 20000` and its comment explains
-   * the pairing: the per-test `until` / `eventually` helpers hold a smaller
+   * `scripts/test-ceiling.mjs` sets the 20 s ceiling — it was `--timeout 20000`
+   * on `apps/engine`'s test script until #740 — and its comment explains the
+   * pairing: the per-test `until` / `eventually` helpers hold a smaller
    * wall-clock bound "so a wait can outlast a loaded runner without outlasting
    * the ceiling". The pairing is right. Nothing was checking it.
    *
@@ -732,6 +791,153 @@ const CHECKS = [
               "Flagging a scaled size makes the check wrong about correct code.",
           );
         }
+      }
+      return failures;
+    },
+  },
+
+  /**
+   * THE CEILING IS REGISTERED WHEREVER TESTS ARE RUN FROM — #740's guard.
+   *
+   * The per-test ceiling is one `setDefaultTimeout` in scripts/test-ceiling.mjs,
+   * reached through `preload` in each bunfig.toml. That makes it configuration,
+   * and the history here is entirely configuration failing without a word:
+   * #414's `[test] timeout` was ignored for days while everyone believed the
+   * engine suite ran at 20 s. Two ways this one rots, both quiet:
+   *
+   *   - A BUNFIG STOPS LISTING IT, or lists a path that no longer resolves. Bun
+   *     reads bunfig.toml only from the directory it was invoked in, so each
+   *     workspace's list is a copy, and a copy is a thing that falls out of step.
+   *     The suite run from that directory silently drops to bun's 5 s default.
+   *
+   *   - A `--timeout` FLAG COMES BACK onto a test script carrying a DIFFERENT
+   *     number. The flag still works — the preload reads it back off the
+   *     operating system and stands aside for it — so the danger is not that it
+   *     does nothing, but that one suite runs at a ceiling nobody reproduces by
+   *     running the same test any other way, with the difference invisible in the
+   *     failure.
+   *
+   * THE THIRD CASE #740 ASKED THIS TO NOTICE: packages/env and
+   * packages/engine-client set no ceiling at all, which is consistent rather than
+   * a trap — until someone adds `--timeout` to one of them for a good reason
+   * without knowing any of this. The second rule is what has something to say
+   * then, and it says it at the moment the flag is added rather than months later
+   * in a misread duration.
+   *
+   * WHAT IS DELIBERATELY NOT CHECKED HERE is the other direction — that the
+   * preload cannot silently CLAMP an explicit `--timeout` down to its own
+   * ceiling, which is the defect this fix was one edit away from shipping. That
+   * claim is about behaviour rather than text, and the only honest check of it is
+   * a run: apps/engine/test/test-ceiling.test.ts puts a flag on a child's command
+   * line and asserts what the child reported, and both of its cases were
+   * confirmed to FAIL against an implementation calling `setDefaultTimeout`
+   * unconditionally. A regex here that tried to recognise "does this code clamp"
+   * would be satisfiable by code that clamps — the vacuous shape #772 deleted,
+   * where a "prove the block ran" grep matched the skipped block's own name.
+   */
+  {
+    name: "test-ceiling-is-registered",
+    protects: "#740: every bunfig that runs tests preloads the one ceiling, and no script sets a rival number",
+    async run() {
+      const failures = [];
+      const ceilingSource = await read(CEILING_PRELOAD).catch(() => null);
+      if (ceilingSource === null) {
+        return [
+          `${CEILING_PRELOAD} is missing. It is where the per-test ceiling lives (#740); without it every suite is on ` +
+            "bun's 5 s default and the bunfig preloads below point at nothing.",
+        ];
+      }
+      const canonical = /export const TEST_CEILING_MS = ([0-9_]+);/.exec(ceilingSource);
+      if (!canonical) {
+        return [
+          `${CEILING_PRELOAD} no longer declares \`export const TEST_CEILING_MS = <number>\`, so this check cannot read ` +
+            "the canonical ceiling and must not pretend the numbers below agree with it. Restore the export, or teach " +
+            "this check where the number moved to.",
+        ];
+      }
+      const ceilingMs = Number(canonical[1].replace(/_/g, ""));
+
+      for (const directory of await workspaceDirectories()) {
+        const bunfig = directory ? `${directory}/bunfig.toml` : "bunfig.toml";
+        const source = await read(bunfig).catch(() => null);
+        if (source === null) continue;
+        const preloads = testPreloads(source);
+        if (preloads === null) continue; // no [test] table: bun reads nothing about tests from here
+        const resolved = preloads.map((entry) => relative(ROOT, resolve(join(ROOT, directory), entry)).split("\\").join("/"));
+        if (!resolved.includes(CEILING_PRELOAD)) {
+          failures.push(
+            `${bunfig} has a [test] table but does not preload ${CEILING_PRELOAD}. Tests run from this directory get ` +
+              `bun's 5 s default instead of ${ceilingMs}ms, and nothing says so — that is #740 exactly. Add it to the ` +
+              "preload list.",
+          );
+        }
+        for (const [index, entry] of resolved.entries()) {
+          const exists = await stat(join(ROOT, entry)).then(() => true).catch(() => false);
+          if (exists) continue;
+          failures.push(
+            `${bunfig} preloads ${JSON.stringify(preloads[index])}, which does not exist. Bun fails the run on a ` +
+              "missing preload, so this is loud rather than silent — but it is loud in every suite run from here.",
+          );
+        }
+      }
+
+      for (const directory of await workspaceDirectories()) {
+        const manifest = directory ? `${directory}/package.json` : "package.json";
+        const source = await read(manifest).catch(() => null);
+        if (source === null) continue;
+        let scripts;
+        try {
+          scripts = JSON.parse(source).scripts;
+        } catch {
+          failures.push(`${manifest} is not valid JSON, so this check cannot read its scripts.`);
+          continue;
+        }
+        for (const { script, ms } of bunTestTimeouts(scripts)) {
+          if (ms === ceilingMs) continue;
+          failures.push(
+            `${manifest}: \`${script}\` passes --timeout ${ms}, but the repo's ceiling is ${ceilingMs}ms ` +
+              `(${CEILING_PRELOAD}). A flag on a script still works — the preload stands aside for an explicit one — ` +
+              `which is exactly why a rival number is a problem: this suite would run at ${ms}ms while the same test ` +
+              `run any other way runs at ${ceilingMs}ms, and the difference is invisible in the failure. Match the ` +
+              `canonical number, or change it in ${CEILING_PRELOAD}, where every invocation reads it.`,
+          );
+        }
+      }
+      return failures;
+    },
+  },
+
+  /**
+   * The standard #721 holds every other scan here to: one that has never been
+   * shown to fail has demonstrated nothing. The shapes that matter are the two
+   * the desktop script has actually had — 36 hand-typed filenames before #763
+   * and a glob after — and the `//` comment keys, three of which discuss
+   * `--timeout` in prose and would otherwise be read as commands.
+   */
+  {
+    name: "test-ceiling-scan-self-test",
+    protects: "#740: the script scan still sees a flag through either desktop shape, and ignores prose about one",
+    async run() {
+      const samples = [
+        { expect: [20_000], why: "the glob shape (#763)", scripts: { t: "bun test --timeout 20000 ./*.test.js" } },
+        { expect: [20_000], why: "the hand-listed shape it replaced", scripts: { t: "bun test --timeout 20000 ./a.test.js ./b.test.js" } },
+        { expect: [20_000], why: "the = spelling", scripts: { t: "bun test --timeout=20000" } },
+        { expect: [5_000], why: "a rival number", scripts: { t: "bun test --timeout 5000" } },
+        { expect: [], why: "an env prefix and no flag", scripts: { t: "NODE_ENV=test bun test" } },
+        { expect: [], why: "a bare run", scripts: { t: "bun test" } },
+        { expect: [], why: "delegation to another script", scripts: { t: "bun run test:desktop:unit" } },
+        { expect: [], why: "an electron suite", scripts: { t: "env -u ELECTRON_RUN_AS_NODE electron ./x.electron-test.js" } },
+        { expect: [], why: "prose in a // comment key", scripts: { "//t": "--timeout IS THE ONLY WAY, bun test aside" } },
+        { expect: [], why: "node's runner rather than bun's", scripts: { t: "node --test workers/push-relay/worker.test.mjs" } },
+      ];
+      const failures = [];
+      for (const { expect: wanted, why, scripts } of samples) {
+        const got = bunTestTimeouts(scripts).map((hit) => hit.ms);
+        if (JSON.stringify(got) === JSON.stringify(wanted)) continue;
+        failures.push(
+          `the scan read ${JSON.stringify(got)} where ${JSON.stringify(wanted)} was right (${why}): ` +
+            `${JSON.stringify(Object.values(scripts)[0])}.`,
+        );
       }
       return failures;
     },
