@@ -95,10 +95,18 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     create: async (input) => store.createSession({ ...input, origin: "session" }),
     send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
     read: async (sessionId, after) => store.readEvents(sessionId, after),
-    status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
+    status: async (sessionId) => ({
+      session: store.getSession(sessionId),
+      turns: store.turns(sessionId),
+      // The held mail, as the daemon's own build reports it — without this the
+      // wall's answer could not say what is waiting, which is the poll the
+      // delivery cap and the report window both depend on.
+      pendingNotifications: store.pendingNotifications(sessionId),
+    }),
     // The same wiring the daemon uses: an agent's stop IS a stop.
     stop: async (sessionId) => store.stopSession(sessionId, "agent"),
     settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
+    setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
     diff: async (sessionId) => store.sessionDiff(sessionId),
     subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
     unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
@@ -122,6 +130,7 @@ const WALL_NAMES = [
   "sessions_subscriptions",
   "sessions_requests",
   "sessions_resolve_request",
+  "sessions_report_window",
 ];
 
 function wall(store: EngineStore, self?: { sessionId: string }, diff?: SessionsCapability["diff"]): Map<string, Registered> {
@@ -163,7 +172,7 @@ async function call(tools: Map<string, Registered>, name: string, args: Record<s
 // ── the wall's shape ────────────────────────────────────────────────────────
 
 describe("what the wall is", () => {
-  test("exactly thirteen tools, every one declaring the `sessions` capability in its name", () => {
+  test("exactly fourteen tools, every one declaring the `sessions` capability in its name", () => {
     const { store } = engine();
     const names = [...wall(store).keys()];
     // PINNED AS A SET, not merely counted: a tool added here has to be added
@@ -262,7 +271,7 @@ describe("creating a session", () => {
     // turn's does (`self`) — for subscriptions, which are recorded on the
     // subscription and on neither session.
     expect(Object.keys(capabilityOver(store)).sort()).toEqual([
-      "create", "diff", "list", "read", "requests", "resolveRequest", "send", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "diff", "list", "read", "requests", "resolveRequest", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
   });
 
@@ -396,6 +405,61 @@ describe("driving a session", () => {
 
     const missing = await call(tools, "sessions_settle", { sessionId: "session_nope" });
     expect(missing.isError).toBe(true);
+  });
+
+  /**
+   * THE CADENCE VERB — issue #723. It names no session, so there is nothing here
+   * to point at somebody else's: a peer setting another peer's cadence would be
+   * one session deciding how another may be interrupted.
+   */
+  test("the report window is the CALLER's own, settable and clearable, and refused where there is no caller", async () => {
+    const { store, projectId } = engine();
+    const mine = store.createSession({ projectId, title: "coordinator" });
+    const other = store.createSession({ projectId, title: "somebody else" });
+    const tools = wall(store, { sessionId: mine.id });
+
+    const set = await call(tools, "sessions_report_window", { minutes: 25 });
+    expect(set.isError).toBe(false);
+    expect(set.json).toMatchObject({ sessionId: mine.id, reportWindowMinutes: 25 });
+    expect(String(set.json!.note)).toContain("held and delivered together");
+    expect(store.getSession(mine.id).reportWindowMinutes).toBe(25);
+    // NOBODY ELSE'S. The shape carries no session id at all, so the only proof
+    // needed is that the other session was untouched.
+    expect(store.getSession(other.id).reportWindowMinutes).toBeUndefined();
+
+    const off = await call(tools, "sessions_report_window", { minutes: null });
+    expect(off.json).toMatchObject({ reportWindowMinutes: null });
+    expect(String(off.json!.note)).toContain("as they arrive");
+    expect(store.getSession(mine.id).reportWindowMinutes).toBeUndefined();
+
+    // Out of bounds is the store's refusal, surfaced rather than swallowed.
+    const bad = await call(tools, "sessions_report_window", { minutes: 0 });
+    expect(bad.isError).toBe(true);
+
+    // And on the outward socket there is no session to set a cadence for.
+    const socket = wall(store);
+    const nobody = await call(socket, "sessions_report_window", { minutes: 25 });
+    expect(nobody.isError).toBe(true);
+    expect(nobody.text).toContain("no session");
+  });
+
+  test("status reports a window beside the mail it is holding, so held never reads as lost", async () => {
+    const { store, projectId } = engine();
+    const host = store.createSession({ projectId, title: "coordinator" });
+    const worker = store.createSession({ projectId, title: "worker" });
+    const tools = wall(store, { sessionId: host.id });
+    await call(tools, "sessions_report_window", { minutes: 25 });
+
+    // A routine report from a proven sender, which the window now holds.
+    store.submitTurn(worker.id, { runId: "run_source", input: "work" });
+    const token = store.claimTurn(worker.id, "worker_one")!.claim!.token;
+    store.markRunning(worker.id, "run_source", token);
+    store.submitAgentTurn(host.id, { runId: "run_report", input: "progress", intent: "report" }, { sessionId: worker.id, runId: "run_source", claimToken: token });
+
+    const status = await call(tools, "sessions_status", { sessionId: host.id });
+    expect(status.json!.reportWindowMinutes).toBe(25);
+    expect((status.json!.pendingNotifications as string[]).length).toBe(1);
+    expect(String(status.json!.note)).toContain("at most every 25 minutes");
   });
 
   test("stop STOPS the session: the running turn ends, what was queued is settled, and it is idle after", async () => {
@@ -1219,11 +1283,11 @@ describe("subscribing and answering", () => {
 describe("a warp child may not reach these tools", () => {
   test("every tool on the wall is denied to a warp child, by name", () => {
     // STRUCTURAL, not a copied list: the names come from the wall itself, so a
-    // thirteenth tool fails this until it is denied too. `sessions_create` is
+    // fourteenth tool fails this until it is denied too. `sessions_create` is
     // fan-out wearing another hat, and the rest are steering a session from
     // inside a script that cannot see it.
     const names = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
-    expect(names.length).toBe(13);
+    expect(names.length).toBe(14);
     for (const name of names) {
       expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(qualifyTelarTool(name));
     }

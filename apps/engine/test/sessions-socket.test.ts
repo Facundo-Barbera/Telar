@@ -169,7 +169,7 @@ describe("the protocol surface", () => {
     // so a tool added to the toolkit appears here in the same change or this
     // fails.
     expect(result.tools.map((tool) => tool.name)).toEqual(wallNames);
-    expect(result.tools.length).toBe(13);
+    expect(result.tools.length).toBe(14);
     for (const tool of result.tools) {
       expect(tool.name).not.toMatch(/accept|approve|merge|land|archive|delete|promote|finish|complete/);
       expect(tool.description.length).toBeGreaterThan(0);

@@ -78,6 +78,10 @@ const TOOL_EFFECT: Readonly<Record<string, "reads" | "lands">> = {
   sessions_subscribe: "lands",
   sessions_unsubscribe: "lands",
   sessions_resolve_request: "lands",
+  // NO `sessions_report_window`, and its absence is the table working rather
+  // than an omission: this table is held against the tools the AGENT is given,
+  // and that tool is deliberately not one of them — the Agent is a thread, not a
+  // session, so it has no mailbox to hold reports in. See `NOT_ON_THE_AGENTS_WALL`.
   // The three queries and the fleet read.
   sessions_find: "reads",
   sessions_outline: "reads",

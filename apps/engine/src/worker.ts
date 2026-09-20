@@ -45,6 +45,9 @@ type WorkerClient = Pick<
   | "ackSteer"
   // Shelve/unshelve only — never the whole `updateSession`. See `settleSession`.
   | "settleSession"
+  // And its own report cadence, on the same terms: one field, not the title, the
+  // model or the runtime mode. See `setSessionReportWindow` (#723).
+  | "setSessionReportWindow"
   // The project notebook's verbs. THE WORKER STILL HOLDS NO STORE HANDLE —
   // these go back over the same loopback socket as everything else here, which
   // is what makes the toolkit identical in the embedded worker and the
@@ -1392,6 +1395,9 @@ export class EngineWorker {
         // let this worker claim the peer's next message a heartbeat later.
         stop: (id) => this.options.client.stopSession(id, "agent"),
         settle: async (id, settled) => (await this.options.client.settleSession(id, settled)).session,
+        // The wall passes `self` and nothing else, so the only cadence a turn can
+        // set through here is its own — see `SessionsCapability` (#723).
+        setReportWindow: async (id, minutes) => (await this.options.client.setSessionReportWindow(id, minutes)).session,
         diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
         subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,
         unsubscribe: async (id, subscriber) => (await this.options.client.unsubscribe(id, { subscriberSessionId: subscriber })).removed,
