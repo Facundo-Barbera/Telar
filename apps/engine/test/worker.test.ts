@@ -8,6 +8,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { ProviderUnavailableError, type TurnDriver } from "../src/driver";
 import { defaultWorkerConcurrency, EngineWorker } from "../src/worker";
 import { stubModels } from "./stub-models";
+import { eventually, until } from "./wait";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -35,24 +36,6 @@ afterEach(async () => {
   for (const daemon of daemons.splice(0).reverse()) await daemon.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
-
-async function eventually(check: () => void | Promise<void>, deadlineMs = 15_000): Promise<void> {
-  // A wall-clock bound (below the 20s ceiling in bunfig.toml), not a retry count: the
-  // former 60×5ms window was ~300ms only when each check was instant, and
-  // one full-gate run under load failed it. Settles on the first pass.
-  const deadline = Date.now() + deadlineMs;
-  let last: unknown;
-  do {
-    try {
-      await check();
-      return;
-    } catch (error) {
-      last = error;
-      await Bun.sleep(20);
-    }
-  } while (Date.now() < deadline);
-  throw last;
-}
 
 /**
  * A BARRIER AT THE CLAIM PUMP'S BOUNDARIES, not a sleep.
@@ -305,10 +288,15 @@ test("engine connectivity loss aborts active provider execution — once it outl
   await worker.tick();
   expect(sawAbort).toBe(false);
   // Past the engine's own lease it IS gone as far as this worker may assume,
-  // and the abort lands.
-  await Bun.sleep(1_100);
-  await worker.tick();
-  await eventually(() => expect(sawAbort).toBe(true));
+  // and the abort lands. Heartbeats until it does rather than a sleep sized to
+  // outlast the lease: the claim is that the abort arrives once the budget is
+  // spent, and a literal `1_100` both asserts a margin nobody chose and pays
+  // for it on every run, including the runs where the budget was spent at 1_000.
+  await until("the lease to lapse and the abort to land", async () => {
+    await worker.tick();
+    return sawAbort;
+  });
+  expect(sawAbort).toBe(true);
 });
 
 test("a completed Claude session id is persisted and used for the next claimed turn", async () => {
@@ -1177,13 +1165,23 @@ test("a Stop reaches an embedded worker's provider in-process, without waiting f
   let abortedAt: number | undefined;
   let ready!: () => void;
   const running = new Promise<void>((resolve) => { ready = resolve; });
+  /**
+   * THE PROVIDER IS HELD OPEN BY THIS TEST, NOT BY A CLOCK (#760). It used to
+   * sleep for a literal three seconds — chosen to outlast the assertions
+   * below, and paid in full on every run of the suite including the ones that
+   * finished measuring in forty milliseconds. What the test needs is that
+   * the driver has not returned yet, which is a condition, so it is written as
+   * one: the driver ignores its abort exactly as before and returns when the
+   * assertions are done with it.
+   */
+  let providerMayReturn = false;
   const driver: TurnDriver = {
     async run({ signal, onObservations }) {
       await onObservations([{ kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } }]);
       ready();
       signal.addEventListener("abort", () => { abortedAt = Date.now(); }, { once: true });
       // Ignores the stop, the way a CLI inside a long tool call does.
-      await Bun.sleep(3_000);
+      await until("the test to release the provider", () => providerMayReturn);
       return { text: "too late" };
     },
   };
@@ -1209,6 +1207,8 @@ test("a Stop reaches an embedded worker's provider in-process, without waiting f
   await eventually(() => expect(abortedAt).toBeDefined());
   // The point of the whole change: well inside one heartbeat, not after it.
   expect(abortedAt! - pressedAt).toBeLessThan(1_000);
+  // Only now may the provider unwind, so nothing above raced its return.
+  providerMayReturn = true;
 });
 
 test("a provider that ignores a Stop never delays the turn's stopped state", async () => {
@@ -1217,11 +1217,16 @@ test("a provider that ignores a Stop never delays the turn's stopped state", asy
   let ready!: () => void;
   const running = new Promise<void>((resolve) => { ready = resolve; });
   let returnedAfterStop = false;
+  // Held open by the test, not by a three-second sleep — see the note on the
+  // previous test. `returnedAfterStop` is now false because the provider has
+  // genuinely not been let go, rather than because 3 s happened not to have
+  // elapsed yet on this runner.
+  let providerMayReturn = false;
   const driver: TurnDriver = {
     async run({ onObservations }) {
       await onObservations([{ kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } }]);
       ready();
-      await Bun.sleep(3_000);
+      await until("the test to release the provider", () => providerMayReturn);
       returnedAfterStop = true;
       return { text: "too late" };
     },
@@ -1263,12 +1268,15 @@ test("a provider that ignores a Stop never delays the turn's stopped state", asy
    */
   expect(stopped.live?.completedAt).toBeDefined();
   expect(lastEvent!.at - stopped.live!.completedAt!).toBeLessThan(300);
-  // A loose wall-clock ceiling under the three seconds the driver sleeps, so a
-  // stop that hangs somewhere the engine's own timestamps cannot see — the
-  // socket, the daemon's request handling — still fails this test.
+  // A loose wall-clock ceiling, so a stop that hangs somewhere the engine's own
+  // timestamps cannot see — the socket, the daemon's request handling — still
+  // fails this test. It used to be justified as "under the three seconds the
+  // driver sleeps"; the driver no longer sleeps at all, which makes this an
+  // independent bound rather than one racing the fixture's own clock.
   expect(Date.now() - pressedAt).toBeLessThan(2_000);
   // …and the provider really was still running when that was already true.
   expect(returnedAfterStop).toBe(false);
+  providerMayReturn = true;
 });
 
 test("a Stop for another worker's claim is ignored, and the claim it does hold is aborted once", async () => {
