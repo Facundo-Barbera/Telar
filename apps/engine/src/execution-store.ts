@@ -301,6 +301,21 @@ export type ExecutionStoreOptions = {
   /** Told what the background journal sweep removed, once it has. The daemon
    *  prints it; a test asserts on it without waiting on a timer. */
   onJournalCompacted?: (swept: { deltas: number; starts: number; sessions: number }) => void;
+  /**
+   * How long after opening the first sweep starts. Defaults to
+   * `COMPACT_AFTER_OPEN_MS`; nothing in production passes it.
+   *
+   * IT EXISTS SO A TEST NEED NOT SLEEP THROUGH IT (#706). Asserting the sweep
+   * ran meant waiting out the real five seconds and then hoping the callback
+   * had fired — a test whose margin was four hundred milliseconds of a shared
+   * machine, which is not an assertion about this store at all. Worse, it put
+   * a 5.4 s sleep in a suite that a bare root-level `bun test` runs under
+   * bun's 5 s default, so the test could not pass there at any load. With the
+   * delay injectable the test waits for the callback instead of the clock, and
+   * asserts what the sweep REMOVED, which is the same answer on an idle
+   * machine and a loaded one.
+   */
+  compactAfterOpenMs?: number;
 };
 
 /** One authoritative execution database; legacy files become a migration backup.
@@ -572,7 +587,7 @@ export class ExecutionStore {
      * backlog. `unref` for the same reason as the timers above: housekeeping is
      * never the reason a process stays up.
      */
-    this.compactTimer = setTimeout(() => { this.sweepJournal(); }, COMPACT_AFTER_OPEN_MS);
+    this.compactTimer = setTimeout(() => { this.sweepJournal(); }, options.compactAfterOpenMs ?? COMPACT_AFTER_OPEN_MS);
     this.compactTimer.unref?.();
   }
 
