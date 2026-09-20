@@ -69,26 +69,22 @@ struct PanelView: View {
                 Button {
                     panel.setFullScreen(!panel.isFullScreen)
                 } label: {
-                    // BOTH CHROME GLYPHS KEEP AN ABSOLUTE SIZE — this one and
-                    // the close button below. Each sits in a 30pt square fixed
-                    // in both dimensions, which clips, so a glyph that grew
-                    // with the reader's text would only outgrow its own box.
-                    // They want a @ScaledMetric frame (#674).
+                    // BOTH CHROME GLYPHS SCALE WITH THEIR SQUARE — this one
+                    // and the close button below, 12-in-30 at every text size
+                    // (#674).
                     Image(systemName: panel.isFullScreen
                           ? "arrow.down.right.and.arrow.up.left"
                           : "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Theme.textMuted)
-                        .frame(width: 30, height: 30)
+                        .scaledGlyphBox(30, glyph: 12, weight: .semibold)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(panel.isFullScreen ? "Leave full screen" : "Fill the window")
             }
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Theme.textMuted)
-                    .frame(width: 30, height: 30)
+                    .scaledGlyphBox(30, glyph: 12, weight: .semibold)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close panel")

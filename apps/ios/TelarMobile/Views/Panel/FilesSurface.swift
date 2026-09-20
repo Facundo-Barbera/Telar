@@ -67,15 +67,10 @@ struct FilesSurface: View {
             Button {
                 panel.setTreeShown(!panel.editor.treeShown)
             } label: {
-                // THE ONE ABSOLUTE SIZE LEFT IN THIS FILE. The square is fixed
-                // in both dimensions and it clips, so a glyph that grew with
-                // the reader's text would only outgrow its own target. It
-                // wants a @ScaledMetric frame — a layout change rather than a
-                // token swap — so it waits for that pass.
+                // The toggle's square scales with its glyph (#674).
                 Image(systemName: panel.editor.treeShown ? "sidebar.left" : "sidebar.leading")
-                    .font(.system(size: 12))
                     .foregroundStyle(Theme.textMuted)
-                    .frame(width: 28, height: 28)
+                    .scaledGlyphBox(28, glyph: 12)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(panel.editor.treeShown ? "Hide tree" : "Show tree")
