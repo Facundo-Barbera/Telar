@@ -32,11 +32,14 @@
  */
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
+import type { Look } from "@telar/engine-client";
+import { applyLook, type LookAppearance } from "./looks";
 
 export type FollowMode = "follow" | "detached";
 
 const MODE_KEY = "telar-follow-host";
 const STAMP_KEY = "telar-host-look-applied";
+const NOTICE_KEY = "telar-host-look-notice";
 
 const listeners = new Set<() => void>();
 
@@ -111,6 +114,61 @@ export function writeAppliedStamp(stamp: number | null): void {
   } catch {
     // Lost persistence means one redundant apply after reload. Harmless.
   }
+}
+
+/**
+ * WHAT THE LAST AUTOMATIC WEAR COST, KEPT RATHER THAN DROPPED (#705).
+ *
+ * `applyLook` returns a sentence when part of a Look could not be worn, and
+ * every place a person presses Apply shows it. The FOLLOWER had no person in
+ * the loop and threw the sentence away — which made a host's publication the
+ * one path where a Look somebody else made can leave this window's tints
+ * unreadable with nothing anywhere saying so.
+ *
+ * SO IT IS PARKED, NOT SHOUTED. A remote window is not looking at a toast when
+ * the ten-second poll lands, and interrupting whatever it IS doing to report a
+ * colour would be worse than the silence it replaces. The sentence goes where
+ * somebody would go to ask "why does this window look like this" — the
+ * Appearance pane, beside the follow row that explains where the look came
+ * from — and it is cleared the moment a wear has nothing to report, so it can
+ * never outlive the Look it is about.
+ */
+export function readFollowNotice(): string | undefined {
+  try {
+    return window.localStorage.getItem(NOTICE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeFollowNotice(notice: string | undefined): void {
+  if (readFollowNotice() === notice) return;
+  try {
+    if (notice === undefined) window.localStorage.removeItem(NOTICE_KEY);
+    else window.localStorage.setItem(NOTICE_KEY, notice);
+  } catch {
+    // Private browsing: the listeners still carry it for this session.
+  }
+  notify();
+}
+
+export function useFollowNotice(): string | undefined {
+  return useSyncExternalStore(subscribe, readFollowNotice, () => undefined);
+}
+
+/**
+ * WEAR A PUBLICATION, AND KEEP WHAT IT COST.
+ *
+ * The wear itself is `applyLook`, exactly as a press of Apply would do it — the
+ * follower's whole contract is that a remote window ends up wearing what
+ * opening the host's card and pressing Apply would have produced. What is HERE
+ * rather than in the component is the one line the component used to get wrong:
+ * the message `applyLook` returns is parked instead of dropped, and an
+ * `undefined` clears whatever the last wear left, so the notice can never
+ * outlive the Look it is about.
+ */
+export function wearPublication(look: Look, setAppearance: (patch: LookAppearance) => void): void {
+  writeFollowNotice(applyLook(look, setAppearance));
 }
 
 /**
