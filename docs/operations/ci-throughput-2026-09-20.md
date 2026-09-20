@@ -120,6 +120,37 @@ Four things fall out of this, three of them against prior assumptions:
 **The repository is public, so standard GitHub-hosted runners are free and
 unlimited.** There is no billing dimension to weigh for standard runners.
 
+### The concurrent-job ceiling is at least 40
+
+"Hosted" is not automatically "unlimited slots" — GitHub caps concurrent jobs
+per account, and a matrix multiplies jobs per merge. A six-way split with four
+merges in flight is 24 concurrent jobs, which would be over some plans' limits.
+So the cap decides whether a matrix **removes** the queueing or **relocates**
+it, harder to see than before because it would spread across matrix legs rather
+than sit in one visible line behind one Mac.
+
+Measured, run `35488350415` — 40 jobs each holding a slot for 25 seconds:
+
+```
+35 jobs started 04:07:47Z
+ 4 jobs started 04:07:48Z
+ 1 job  started 04:07:49Z
+```
+
+**All 40 started within two seconds, with no second wave.** A cap below 40 would
+have shown one: jobs beyond the limit would start ~25s later, as the first batch
+released their slots.
+
+**Read this as ≥40, not as 40.** The probe establishes a floor, not the ceiling —
+it was widened until it cleared the number in question and then stopped. Any
+future shape wanting more than 40 concurrent jobs needs a wider probe. The scope
+is account-wide, so nightlies and releases running hosted draw on the same pool.
+
+GitHub documents 20 concurrent jobs for the Free plan and we measured twice that,
+so either this account is not on Free or public repositories differ. Which of the
+two is **not** determined here: `gh api user` returns `plan: null` for the token
+available, and an unverified reason is not worth writing down.
+
 ### "Nothing here needs a Mac" is not true
 
 `verify.yml`'s header says so. Nine tests disagree, and eight of them are a
@@ -206,9 +237,12 @@ single point of failure.
 
 **Moving to hosted** is free (public repo), runs the six suites in 85 seconds
 wall instead of 206 serial, and frees the Mac for the work that genuinely needs
-macOS: the nightly build, the iOS device tests, signing. It costs the 9 tests
-above, of which 8 are a hermeticity bug worth fixing regardless and 1 is truly
-Mac-only and would need `runs-on: macos-*` or a skip.
+macOS: the nightly build, the iOS device tests, signing. The concurrent-job
+ceiling measured above (≥40) is wide enough that a six-way matrix removes the
+queueing rather than relocating it. It costs the 9 tests above, of which 8 are a
+hermeticity bug worth fixing regardless and 1 is truly Mac-only and would need
+`runs-on: macos-*` or a skip. **A hosted move is a nine-test fix first, not a
+label change.**
 
 **More runner instances on the Mac** — explicitly not actioned, nothing
 installed. What it would take, for the record: the runner at
