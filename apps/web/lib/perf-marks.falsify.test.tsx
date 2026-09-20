@@ -116,6 +116,7 @@ mockNavigation();
  * calls `app-shell.tsx:116-119` makes.
  */
 
+const { forgetInboxPolicies, readInboxPolicy } = await import("@/lib/inbox-policy");
 const { SessionCockpit } = await import("@/components/session-cockpit");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
 const { installNavigationMarks, markNavigation, navigationTimings, startNavigation } = await import("./perf-marks");
@@ -198,12 +199,37 @@ beforeEach(() => {
   root = createRoot(host);
 });
 
+/**
+ * EVERY PIECE OF PROCESS-WIDE STATE A MOUNT HERE WARMS, PUT BACK.
+ *
+ * Mounting the real cockpit is not a local act. `lib/inbox-policy.ts` keeps a
+ * `Map` keyed by host at module scope with a 30 s TTL (`:38`, `:44`), and the
+ * cockpit's `useInboxPolicy()` fills the `"local"` entry from this file's stub
+ * answer to `/api/inbox`. `inbox-policy.test.ts` then asserts that nine callers
+ * make ONE request — and is served zero, because the entry is already warm.
+ *
+ * THAT FAILURE IS A FLAKE, WHICH IS WHY IT REACHED CI AND NOT THE LOCAL RUN.
+ * It needs the two files to land within thirty seconds of each other in one
+ * process, so file order and machine speed decide it: green here, red on the
+ * shared runner. A green local suite is not evidence about this class of bug —
+ * see the test at the end of this file, which is.
+ *
+ * THE THIRD INSTANCE OF ONE SHAPE in this file alone: `mock.module` is
+ * per-process, `installNavigationMarks` latches per-process, and a module-level
+ * cache is per-process. Anything a mounted component touches above its own
+ * tree belongs in here.
+ */
+function releaseProcessWideState(): void {
+  forgetInboxPolicies();
+}
+
 afterEach(async () => {
   globalThis.fetch = realFetch;
   if (root) await act(async () => root!.unmount());
   host?.remove();
   root = undefined;
   host = undefined;
+  releaseProcessWideState();
 });
 
 afterAll(async () => {
@@ -387,5 +413,39 @@ describe("the navigation clock, made slow on purpose", () => {
     // the whole finding.
     expect(second?.idle).toBeDefined();
     expect(second!.idle!).toBeLessThan(second!.transcript!);
+  });
+
+  test("and this file leaves no warm cache behind for the next one", async () => {
+    /**
+     * THE REGRESSION TEST FOR THE FLAKE THIS FILE CAUSED, written so that it
+     * cannot pass for the wrong reason: it checks BOTH halves.
+     *
+     * First that the leak is real — right after an opening, a fresh
+     * `readInboxPolicy("local", …)` is served from cache and the fetcher is
+     * never called. An assertion that only checked the cleared state would pass
+     * just as well against a cockpit that never touched the cache at all, and
+     * would then go on passing after somebody removed the clear.
+     *
+     * Then that `releaseProcessWideState` — which `afterEach` runs — actually
+     * puts it back, which is the property `inbox-policy.test.ts` depends on and
+     * has no way to defend for itself.
+     */
+    await open("falsify_leak", 0);
+
+    let calls = 0;
+    const count = async () => {
+      calls += 1;
+      return { autoSettleAfterHours: 20 } as Awaited<ReturnType<typeof readInboxPolicy>>;
+    };
+
+    // The leak, demonstrated: warm, so nobody asks.
+    await readInboxPolicy("local", count);
+    expect(calls).toBe(0);
+
+    // ...and the cleanup, demonstrated: cold again, so the next file's first
+    // caller does the asking its own test expects it to.
+    releaseProcessWideState();
+    await readInboxPolicy("local", count);
+    expect(calls).toBe(1);
   });
 });

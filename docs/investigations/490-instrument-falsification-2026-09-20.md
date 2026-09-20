@@ -158,6 +158,43 @@ it: real anchor clicks started the clock when the new file ran alone and
 silently did nothing in the full suite. Recorded because the next person to try
 to test this file will lose the same hour.
 
+### 3.5 A fourth: a mounted component's reach is process-wide, and so is the damage
+
+Found by CI, not by this pass, and it is the third distinct instance of one
+shape in a single file.
+
+`lib/inbox-policy.ts` keeps a `Map` keyed by host **at module scope** with a
+30 s TTL (`:38`, `:44`). Mounting the real cockpit calls `useInboxPolicy()`,
+which fills the `"local"` entry from this file's stubbed `/api/inbox` answer.
+`lib/inbox-policy.test.ts` then asserts that nine simultaneous callers make
+**one** request — and is served **zero**, because the entry is already warm.
+
+**It is a flake, and that is the whole lesson.** It needs the two files to land
+within thirty seconds of each other in one process, so file order and machine
+speed decide it: green on this machine, red on the shared runner, and green
+again on a re-run. The full local suite passed at 3602/285 *with the bug still
+in it*.
+
+So: **a green suite is not evidence about this class of bug, and neither is a
+green re-run.** What is evidence is a test that pins the mechanism. The fix is
+a `releaseProcessWideState()` in `afterEach`, and the test that defends it
+checks **both** halves — that immediately after an opening the cache is warm
+and a fresh read asks nobody (`calls === 0`, which is the leak, demonstrated),
+and that after the cleanup it is cold again (`calls === 1`). Checking only the
+cleared state would pass equally against a cockpit that never touched the cache
+at all, and would go on passing after somebody deleted the clear.
+
+The three instances together, because the next person will meet a fourth:
+
+| per-process thing | how it bit |
+|---|---|
+| `mock.module` registration | a second stub of `app-sidebar` silently answered `app-shell.solo.test.tsx`'s loader |
+| `installNavigationMarks`' `listening` latch | bound to a document another file had since unregistered |
+| a module-level cache with a TTL | warmed by a mount, read by a later file's first test |
+
+**Anything a mounted component touches above its own tree is shared state, and
+belongs in the teardown.**
+
 ## 4. The negative controls — proof that the new tests can go red
 
 The instrument was sabotaged two ways at `perf-marks.ts:141` and both suites
@@ -185,19 +222,30 @@ one carrying the falsification.
 
 ## 5. Gate evidence
 
-Full `apps/web` suite, `--reporter=junit`, **on this worktree's base** — which
-is older than `main`, so the absolute totals will not match CI's. **The delta is
-the claim: +4 tests, +1 file, 0 failures.**
+Full `apps/web` suite in **one process**, `--reporter=junit`, rebased onto
+`main` at `825b88a1`:
 
 ```
-before (this file absent): 3574 tests, 21428 assertions, 0 failures, 280 files
-after:                     3578 tests, 21439 assertions, 0 failures, 281 files
-<testsuites name="bun test" tests="3578" assertions="21439" failures="0" skipped="0" time="33.278895">
+main:  3598 tests, 284 files
+after: 3603 tests, 23548 assertions, 0 failures, 285 files
+<testsuites name="bun test" tests="3603" assertions="23548" failures="0" skipped="0" time="43.991273">
 ```
 
-`skipped="0"` with `assertions>0`, and the test total moved by **exactly the
-four** that were added. Both totals are from real runs; the "before" run was
-taken with the new file moved out of the tree, not inferred.
+`skipped="0"` with `assertions>0`, and the total moved by **exactly the five**
+that were added: **+5 tests, +1 file**. The whole suite in one process rather
+than this file alone, deliberately — §3.5 is a bug that only exists when two
+files share a process, and a per-file pass says nothing about it.
+
+**Two verification mistakes made while producing this document, recorded
+because the audit is where the habit gets read:**
+
+1. The first version of this section quoted absolute totals against a base
+   older than `main`. Absolute suite counts are a fact about a base; **quote
+   the delta**.
+2. This branch's PR was reported as "open and green" on the strength of a
+   different PR's CI. A report *about* a PR is not the PR. §3.5 is the failure
+   that was live at the time, and it was a flake — so even "I looked and it was
+   green" would have been worth little without looking at which run.
 
 One honest note on the way there: the first cut of the new file mounted
 `<AppShell>` and **broke `app-shell.solo.test.tsx`** — four of its six cases,
