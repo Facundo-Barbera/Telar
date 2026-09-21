@@ -46,6 +46,17 @@ export type JournalTurn = {
   origin?: "user" | "provider" | "session" | "schedule";
   /** For a provider turn: the row whose ending woke it, when known. */
   wokenBy?: string;
+  /**
+   * For a provider turn the engine opened so a LIVE task could have a tool
+   * call decided (#891): the row that asked. Kept apart from `wokenBy`
+   * deliberately — nothing woke the model here, no prose was written, and
+   * drawing it as "Sub-agent reported" would be a sentence about something
+   * that did not happen.
+   */
+  askedBy?: string;
+  /** That turn exists for the claim, not for a reply. True even when the
+   *  asking task could not be named. */
+  decidedForBackgroundWork?: boolean;
   /** For a session turn: what the other session did, and which one. */
   wakeReason?: Turn["wakeReason"];
   /** For a session turn an AGENT sent directly (`sessions_send`): who. Drawn
@@ -198,7 +209,11 @@ export function projectJournal(
         prompt: turn.input,
         ...(turn.kind ? { kind: turn.kind } : {}),
         ...(turn.origin ? { origin: turn.origin } : {}),
-        ...(turn.providerReason?.taskId ? { wokenBy: turn.providerReason.taskId } : {}),
+        ...(turn.providerReason?.kind === "background_task"
+          ? { decidedForBackgroundWork: true, ...(turn.providerReason.taskId ? { askedBy: turn.providerReason.taskId } : {}) }
+          : turn.providerReason?.taskId
+            ? { wokenBy: turn.providerReason.taskId }
+            : {}),
         ...(turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
         ...(turn.sender ? { sender: turn.sender } : {}),
         ...(turn.agentDelivery ? { agentDelivery: turn.agentDelivery } : {}),
@@ -318,7 +333,11 @@ export function projectJournal(
             prompt: event.turn.input,
             ...(event.turn.kind ? { kind: event.turn.kind } : {}),
             ...(event.turn.origin ? { origin: event.turn.origin } : {}),
-            ...(event.turn.providerReason?.taskId ? { wokenBy: event.turn.providerReason.taskId } : {}),
+            ...(event.turn.providerReason?.kind === "background_task"
+              ? { decidedForBackgroundWork: true, ...(event.turn.providerReason.taskId ? { askedBy: event.turn.providerReason.taskId } : {}) }
+              : event.turn.providerReason?.taskId
+                ? { wokenBy: event.turn.providerReason.taskId }
+                : {}),
             ...(event.turn.wakeReason ? { wakeReason: event.turn.wakeReason } : {}),
             ...(event.turn.sender ? { sender: event.turn.sender } : {}),
             ...(event.turn.agentDelivery ? { agentDelivery: event.turn.agentDelivery } : {}),

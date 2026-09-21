@@ -407,6 +407,42 @@ describe("turn state", () => {
     expect(projected!.wokenBy).toBe("task_bg");
   });
 
+  test("a turn opened so LIVE background work could be decided is not drawn as a wake-up (#891)", () => {
+    /**
+     * Same shape, opposite fact. The engine opens this turn because a task it
+     * kept alive past turn end needs a tool call decided — nothing woke the
+     * model and nothing was said. Projected as `wokenBy` it read as
+     * "Sub-agent reported", a sentence about something that did not happen.
+     */
+    const claim: Turn = {
+      runId: "run_claim",
+      sessionId: "s1",
+      sequence: 2,
+      input: "",
+      origin: "provider",
+      providerReason: { kind: "background_task", taskId: "task_agent" },
+      state: "running",
+      acceptedAt: 10,
+      startedAt: 10,
+      updatedAt: 10,
+    };
+    const opened = { at: 10, sessionId: "s1", runId: "run_claim" } as const;
+    const [projected] = projectJournal([], [], [
+      { ...opened, id: 1, type: "turn.accepted", turn: claim, replayed: false },
+      { ...opened, id: 2, type: "turn.claimed", workerId: "worker_1" },
+      { ...opened, id: 3, type: "turn.started" },
+    ]);
+    expect(projected!.decidedForBackgroundWork).toBe(true);
+    expect(projected!.askedBy).toBe("task_agent");
+    expect(projected!.wokenBy).toBeUndefined();
+    // And through the snapshot path, which is the one a client opening a cold
+    // session reads.
+    const [fromSnapshot] = projectJournal([claim], [], []);
+    expect(fromSnapshot!.decidedForBackgroundWork).toBe(true);
+    expect(fromSnapshot!.askedBy).toBe("task_agent");
+    expect(fromSnapshot!.wokenBy).toBeUndefined();
+  });
+
   test("an event for an unknown run does not invent a turn", () => {
     const projected = projectJournal([turn], [], [
       { ...envelope, id: 1, runId: "run_other", type: "turn.started" },

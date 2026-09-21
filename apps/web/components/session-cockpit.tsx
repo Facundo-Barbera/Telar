@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, Minimize2Icon, ShieldCheckIcon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
@@ -722,11 +722,23 @@ export { agentSenderLabel, AgentMessageBubble };
 
 function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readonly JournalTask[]; onOpen?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);
-  const task = turn.wokenBy ? roster.find((candidate) => candidate.id === turn.wokenBy) : undefined;
-  const { verb, Icon } = turn.wakeReason ? sessionWakeLabel(turn.wakeReason) : wakeUpLabel(task);
+  /**
+   * A CLAIM TURN IS NOT A WAKE-UP (#891). The engine opens one so background
+   * work that outlived its turn has somewhere to ask for a decision: nothing
+   * woke the model, nothing was said, and there is no prose to expand. Drawn as
+   * what it is — every other verb here would describe something that did not
+   * happen.
+   */
+  const namedTask = turn.askedBy ?? turn.wokenBy;
+  const task = namedTask ? roster.find((candidate) => candidate.id === namedTask) : undefined;
+  const { verb, Icon } = turn.decidedForBackgroundWork
+    ? { verb: task ? "Decided a tool call for" : "Decided a tool call for background work", Icon: ShieldCheckIcon }
+    : turn.wakeReason
+      ? sessionWakeLabel(turn.wakeReason)
+      : wakeUpLabel(task);
   const label = turn.wakeReason
     ? `session …${turn.wakeReason.sessionId.slice(-6)}`
-    : (task?.title ?? (task ? undefined : turn.wokenBy ? `task ${turn.wokenBy.slice(-6)}` : undefined));
+    : (task?.title ?? (task ? undefined : namedTask ? `task ${namedTask.slice(-6)}` : undefined));
   const body = turn.prompt.trim();
   return (
     <div className="rounded-md">
@@ -840,7 +852,7 @@ function sameTurnRender(prev: SessionTurnProps, next: SessionTurnProps): boolean
   // The roster is read by ONE row — the wake-up line — and only on a turn that
   // names the task that woke it. Everywhere else it is a prop the body never
   // opens, so comparing it would be work for an answer nobody reads.
-  if (next.turn.wokenBy !== undefined && !sameRoster(prev.roster, next.roster)) return false;
+  if ((next.turn.wokenBy ?? next.turn.askedBy) !== undefined && !sameRoster(prev.roster, next.roster)) return false;
   return sameTurnContent(prev.turn, next.turn);
 }
 
@@ -880,6 +892,8 @@ function sameTurnContent(prev: JournalTurn, next: JournalTurn): boolean {
     prev.kind === next.kind &&
     prev.origin === next.origin &&
     prev.wokenBy === next.wokenBy &&
+    prev.askedBy === next.askedBy &&
+    prev.decidedForBackgroundWork === next.decidedForBackgroundWork &&
     prev.wakeReason?.kind === next.wakeReason?.kind &&
     prev.wakeReason?.sessionId === next.wakeReason?.sessionId &&
     prev.sender?.sessionId === next.sender?.sessionId &&
