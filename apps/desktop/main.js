@@ -762,6 +762,8 @@ function startEngineChild(home) {
     execArgv: ["--require", path.join(__dirname, "server-preload.js")],
     env: {
       ...childEnv(home),
+      // What `ps` calls this child — see server-preload.js and #835.
+      TELAR_PROCESS_TITLE: DEV_BUILD ? "telar-engine-dev" : "telar-engine",
       NODE_ENV: "production",
       // @playwright/mcp is neither traced into the bundle nor on a
       // Finder-launched app's PATH, so the engine's walk-up resolver would find
@@ -887,6 +889,11 @@ function startServer(port, home) {
     execArgv: ["--require", path.join(__dirname, "server-preload.js")],
     env: {
       ...childEnv(home),
+      // NOT `next-server (vX)`. That is what Next names itself, and it is the
+      // name of every dev server on the machine too — so an agent's routine
+      // `pkill -f next-server` used to close Telar (#835). The preload keeps
+      // this one against Next's own assignment.
+      TELAR_PROCESS_TITLE: DEV_BUILD ? "telar-ui-dev" : "telar-ui",
       PORT: String(port),
       HOSTNAME: serverBindHost(home),
       // The ts.net endpoint the Remote access panel lists — present only when
