@@ -133,6 +133,26 @@ export function iipSizeFiller(): (data: string) => string {
 }
 
 /**
+ * EVERY BYTE FROM A PTY GOES THROUGH THIS, WHICHEVER SURFACE OWNS THE PTY.
+ *
+ * The three corrections above (short colon truecolour, a CSI split across
+ * chunks, an inline image without `size=`) are properties of xterm.js and of
+ * the programs that write to a PTY, not of the Terminal tab. A Run tab reads
+ * the same kind of bytes from the engine's journal and draws them with the
+ * same emulator, so it takes the same writer; a second copy of the pipeline
+ * in run-terminal.tsx is how the two tabs would drift.
+ */
+export function ptyByteWriter(term: Pick<TerminalLike, "write">): (data: string) => void {
+  let pending = "";
+  const fillImageSize = iipSizeFiller();
+  return (data) => {
+    const split = splitTrailingCsi(pending + fillImageSize(data));
+    pending = split.pending;
+    if (split.ready !== "") term.write(normaliseTruecolourSgr(split.ready));
+  };
+}
+
+/**
  * Connect an emulator to a terminal the host has already opened. Answers the
  * detach, which every caller must hold: the bridge's `onData` is a single
  * channel for EVERY terminal in the window, so a listener that outlives its
@@ -148,13 +168,9 @@ export function attachTerminal(
   offs.push(term.onData((data) => void bridge.write(id, data)).dispose);
   // FILTERED BY ID, both ways. Two terminal tabs share one IPC channel, and an
   // unfiltered listener is how one tab's `ls` ends up drawn in the other's.
-  let pending = "";
-  const fillImageSize = iipSizeFiller();
+  const writeBytes = ptyByteWriter(term);
   const offData = bridge.onData((chunk) => {
-    if (chunk.id !== id) return;
-    const split = splitTrailingCsi(pending + fillImageSize(chunk.data));
-    pending = split.pending;
-    if (split.ready !== "") term.write(normaliseTruecolourSgr(split.ready));
+    if (chunk.id === id) writeBytes(chunk.data);
   });
   if (offData) offs.push(offData);
   const offExit = bridge.onExit((ending) => {

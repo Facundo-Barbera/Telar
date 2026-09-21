@@ -44,7 +44,7 @@ import { EngineApiError } from "@/lib/engine/client";
 import type { RunApi } from "@/lib/run/api";
 import { byteDroppedNotice, byteFeed } from "@/lib/run/terminal-feed";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
-import { terminalKeyHandler } from "@/lib/terminal-session";
+import { ptyByteWriter, terminalKeyHandler } from "@/lib/terminal-session";
 import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
 
 /** Deep enough to hold a build's output and the failure above it; a run panel
@@ -75,6 +75,10 @@ type Props = {
 export function RunTerminal({ api, sessionId, runId, live, visible = true }: Props) {
   const host = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
+  /** The same byte pipeline the Terminal tab uses (`ptyByteWriter`): a run's
+   *  output is PTY bytes too, and the corrections it needs are the emulator's,
+   *  not the tab's. Held across polls because a sequence can end in one. */
+  const writeRef = useRef<((data: string) => void) | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const cursor = useRef(0);
   const [dropped, setDropped] = useState(0);
@@ -131,6 +135,7 @@ export function RunTerminal({ api, sessionId, runId, live, visible = true }: Pro
       macOptionIsMeta: false,
     });
     termRef.current = term;
+    writeRef.current = ptyByteWriter(term);
     const fit = new FitAddon();
     term.loadAddon(fit);
     fitRef.current = fit;
@@ -208,8 +213,11 @@ export function RunTerminal({ api, sessionId, runId, live, visible = true }: Pro
         setDropped(answer.dropped);
         const term = termRef.current;
         if (term) {
-          if (feed.reset) term.reset();
-          if (feed.text) term.write(feed.text);
+          if (feed.reset) {
+            term.reset();
+            writeRef.current = ptyByteWriter(term);
+          }
+          if (feed.text) (writeRef.current ?? ptyByteWriter(term))(feed.text);
         }
       } catch {
         // A refusal here is the panel's to report — it is already asking for
