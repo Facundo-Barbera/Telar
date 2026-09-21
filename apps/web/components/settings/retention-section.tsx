@@ -162,7 +162,7 @@ export function RetentionSection() {
   return (
     <SettingsGroup
       title="How long the turn journal is kept"
-      description="The raw journal is the step-by-step record behind a conversation — what an agent can grep and replay. Your transcript, the rail, search and every answer are kept somewhere else and are never touched by this."
+      description="The step-by-step record an agent can grep and replay. Transcripts, the rail and search are kept elsewhere and are not touched."
     >
       <Row
         icon={FolderDownIcon}
@@ -170,7 +170,7 @@ export function RetentionSection() {
         hint={
           policy?.exportTo
             ? `${policy.exportTo} — a folder per conversation, in the same shape a whole-store export writes. Nothing is dropped from the database until its copy is written and counted, so retiring MOVES a journal rather than destroying it: the disk gets that space back when you delete the exports.`
-            : "Choose a folder first. Telar will not delete a journal it has not written out, so a window cannot be set until there is somewhere to put the copy."
+            : "Choose a folder first. Nothing is deleted until a copy has been written out."
         }
         {...(failure ? { error: failure } : {})}
         control={
@@ -191,7 +191,7 @@ export function RetentionSection() {
         label="Retire journals idle longer than"
         hint={
           window_ === null
-            ? "Never. Nothing ages out until you choose a window, and each one below is priced against this store before you do."
+            ? "Never. Each window below shows what it would free before you choose."
             : `${chosen ? bucketLabel(chosen) : "…"} would be retired the next time the sweep runs.`
         }
         control={

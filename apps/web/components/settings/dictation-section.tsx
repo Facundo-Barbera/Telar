@@ -113,11 +113,9 @@ const PROVIDERS: { id: DictationProviderId; label: string }[] = [
 ];
 
 const PROVIDER_HINT: Record<DictationProviderId, string> = {
-  off: "No mic button anywhere — on this Mac’s composers or on a paired phone. macOS dictation and anything like Wispr Flow keep working in the message box exactly as they do now; Telar simply does not add one of its own.",
-  // THE PRIVACY FACT AND NOTHING ELSE (#643). "…and the words appear in the box
-  // as they are heard" was the third copy of one sentence — the caption said it,
-  // "How it works" said it, and the live demo below now shows it.
-  deepgram: "A mic button on every message box here and on the phone. Audio goes from the device straight to Deepgram — it does not pass through this Mac.",
+  off: "No mic button anywhere. macOS dictation and tools like Wispr Flow keep working as they do now.",
+  // THE PRIVACY FACT AND NOTHING ELSE (#643).
+  deepgram: "A mic button on every message box, here and on the phone. Audio goes straight to Deepgram, not through this Mac.",
 };
 
 export function DictationSection() {
@@ -209,8 +207,8 @@ export function DictationSection() {
               // rather than a warning about a thing nobody has done.
               hint={
                 language === DICTATION_AUTOMATIC
-                  ? "Words are transcribed in whichever supported language they are spoken in, including switching between two of them inside one sentence — which is what a name dropped into another language actually is."
-                  : "Only this language is transcribed. More accurate than Automatic within it, and wrong for anything else — a sentence in another language comes back as whatever this one sounded closest to."
+                  ? "Any supported language, switching mid-sentence."
+                  : "Only this language. More accurate within it, wrong for anything else."
               }
               control={
                 // `Dropdown` RATHER THAN A SELECT WRITTEN OUT HERE, for the one
@@ -240,8 +238,8 @@ export function DictationSection() {
               {...(configured ? { status: "set" } : {})}
               hint={
                 configured
-                  ? "Stored with this Mac’s engine state and never shown again. It stays here: each dictation spends it once for a token that expires in five minutes, and that token is what the browser or the phone gets."
-                  : "Without one, the mic button says so and nothing is recorded. Create a key at console.deepgram.com — it needs no more than the default permissions."
+                  ? "Stays on this Mac. Browsers and phones get a five-minute token instead."
+                  : "Create one at console.deepgram.com with the default permissions."
               }
               control={
                 <div className="flex items-center gap-2">
@@ -274,12 +272,12 @@ export function DictationSection() {
                 </div>
               }
             >
-              {keySaved && <p className="mt-2 text-xs text-muted-foreground">Saved. The mic button on the composer works now.</p>}
+              {keySaved && <p className="mt-2 text-xs text-muted-foreground">Saved.</p>}
             </Row>
             <Row
               label="Vocabulary"
               icon={BookMarkedIcon}
-              hint="Words the recogniser has no reason to expect — a product name, a colleague's surname, a piece of jargon — one per line. Your conversations, your projects and their branches are already sent; this is for the rest. Saved when you click away."
+              hint="Names and jargon the recogniser would not guess, one per line. Projects, branches and open conversations are already sent. Saves on blur."
               control={
                 <Textarea
                   className="h-28 w-64 font-mono text-xs"
@@ -310,8 +308,8 @@ export function DictationSection() {
                 <p className="mt-2 text-xs text-muted-foreground">
                   {`Deepgram took ${keyterms.sent} of the ${keyterms.built} words Telar sent it last time. `}
                   {keyterms.reason === "refused"
-                    ? "The rest were over its budget. What goes is the end of the list — branch names first, then project names, then your oldest open conversations. The words in this box are never the ones dropped."
-                    : "Deepgram could not be asked which would fit, so Telar sent the number it can prove is safe. The next press tries the full list again."}
+                    ? "Over budget: branch names go first, then projects, then old conversations. This box is never cut."
+                    : "Telar sent the number it can prove is safe; the next press tries the full list again."}
                 </p>
               )}
             </Row>

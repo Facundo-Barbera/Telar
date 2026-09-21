@@ -75,7 +75,7 @@ const api = createEngineApi();
 const CATEGORIES: Record<StorageCategory, { label: string; hint: string; icon: LucideIcon }> = {
   worktrees: {
     label: "Session checkouts",
-    hint: "A git checkout per session. Reproducible: the engine re-cuts one from the base commit it recorded, so what is lost with them is uncommitted work, not history.",
+    hint: "One git checkout per session. Re-cut from the recorded base commit; only uncommitted work is lost.",
     icon: FolderGitIcon,
   },
   /**
@@ -97,22 +97,22 @@ const CATEGORIES: Record<StorageCategory, { label: string; hint: string; icon: L
    */
   journal: {
     label: "Turn journal",
-    hint: "Every turn, item and receipt this engine has recorded, in one SQLite database and its write-ahead log.",
+    hint: "Every turn, item and receipt, in one SQLite database and its log.",
     icon: DatabaseIcon,
   },
   sessions: {
     label: "Conversation history",
-    hint: "What each session was asked and what it answered. Nothing reproduces this — it is the only copy.",
+    hint: "What each session was asked and answered. The only copy.",
     icon: MessagesSquareIcon,
   },
   python: {
     label: "Python environments",
-    hint: "Interpreters and packages the data-science plugin installed. Rebuilt by re-running the install.",
+    hint: "Interpreters and packages the data-science plugin installed. Rebuildable.",
     icon: PackageIcon,
   },
   "browser-profiles": {
     label: "Browser profiles",
-    hint: "Cookies and signed-in sessions for Telar's own browser. Removing one signs those accounts out.",
+    hint: "Cookies and logins for Telar's browser. Removing one signs those accounts out.",
     icon: MonitorIcon,
   },
   usage: {
@@ -132,7 +132,7 @@ const CATEGORIES: Record<StorageCategory, { label: string; hint: string; icon: L
   },
   other: {
     label: "Everything else",
-    hint: "Everything under the store root that is none of the above, counted so the rows still add up to the total.",
+    hint: "Everything else under the store root, so the rows add up.",
     icon: HardDriveIcon,
   },
 };

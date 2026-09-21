@@ -83,12 +83,12 @@ export function DictationMicrophoneSection() {
           gone
             ? `${gone.label} is not connected. Dictation is using the system default until it is plugged back in — the choice is kept, not cleared.`
             : withheld
-              ? "This browser hides input names until a microphone has been allowed once. Test the level below and the list fills in."
+              ? "Names appear once a microphone has been allowed. Test the level below."
               : // WHAT THE CONTROL CANNOT SAY: where the answer lives. Every other
                 // row on this pane is a fact about the Mac, stored with its
                 // engine state and read by the phone as well; this one is not,
                 // and somebody who set it here would otherwise expect it there.
-                "Kept in this browser alone — not sent to the engine, so a paired phone and another Mac each keep their own."
+                "Per browser. A paired phone or another Mac keeps its own."
         }
         control={
           <Dropdown<string>
@@ -114,8 +114,8 @@ export function DictationMicrophoneSection() {
           reading
             ? hearing(level)
               ? "Hearing you."
-              : "Open, and hearing nothing. If the bar stays flat while you speak, the input above is the wrong one."
-            : "Reads the input directly — no transcription, no key, nothing sent anywhere. A muted or dead microphone is flat here too, which is how this tells a broken microphone from a broken transcription."
+              : "Hearing nothing. If the bar stays flat while you speak, pick another input."
+            : "Reads the input directly, nothing sent anywhere. Flat here means the microphone, not the transcription."
         }
         {...(meterError ? { error: meterError } : {})}
         control={
@@ -145,8 +145,8 @@ export function DictationMicrophoneSection() {
           listening
             ? // SAID WHILE IT IS TRUE, and only what cannot be seen: the rewriting
               // is on screen, the cost and the discarding are not.
-              "Live — this is transcribing now, which is a paid request. The words are thrown away when you stop."
-            : "Runs a real transcription here so you can see the words arrive, then discards them. It spends provider credit while it runs, and touches no message box."
+              "Transcribing now, as a paid request. The words are discarded when you stop."
+            : "A real transcription, discarded afterwards. Spends provider credit; touches no message box."
         }
         control={
           <Button

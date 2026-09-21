@@ -186,7 +186,7 @@ describe("what the pane shows before anybody has chosen", () => {
     expect(host.textContent).toContain("Automatic (any supported language)");
     // THE POINT OF `multi` IN WORDS, not just its name: switching languages
     // inside one sentence is the thing picking `es` would break.
-    expect(host.textContent).toContain("inside one sentence");
+    expect(host.textContent).toContain("switching mid-sentence");
 
     await unmount();
   });
@@ -257,9 +257,9 @@ describe("what the pane shows before anybody has chosen", () => {
     });
 
     // Where the audio goes, which no control on this pane states.
-    expect(host.textContent).toContain("does not pass through this Mac");
+    expect(host.textContent).toContain("not through this Mac");
     // What the key is actually spent on.
-    expect(host.textContent).toContain("expires in five minutes");
+    expect(host.textContent).toContain("five-minute token");
     // What the vocabulary box does not need to be told.
     expect(host.textContent).toContain("already sent");
 
@@ -288,7 +288,7 @@ describe("what the pane shows before anybody has chosen", () => {
 
     expect(host.textContent).toContain("Spanish");
     // The honest half: more accurate inside that language, wrong outside it.
-    expect(host.textContent).toContain("sounded closest to");
+    expect(host.textContent).toContain("wrong for anything else");
 
     await unmount();
   });
@@ -350,10 +350,10 @@ describe("what the pane shows before anybody has chosen", () => {
     // THE METER IS ITS OWN ROW because "is it hearing me" has to be answerable
     // without a key and without a provider — the entire diagnostic value.
     expect(host.querySelector('[role="meter"]')).not.toBeNull();
-    expect(host.textContent).toContain("no transcription, no key, nothing sent anywhere");
+    expect(host.textContent).toContain("nothing sent anywhere");
     // AND THE DEMO SAYS IT COSTS MONEY BEFORE IT IS PRESSED.
     expect(host.textContent).toContain("Live transcript");
-    expect(host.textContent).toContain("spends provider credit");
+    expect(host.textContent).toContain("Spends provider credit");
 
     await unmount();
   });
@@ -382,7 +382,7 @@ describe("what the pane shows before anybody has chosen", () => {
     // The trigger reads the LABEL, never the value — #318, which is why this
     // row goes through `Dropdown` rather than a hand-written Select.
     expect(host.querySelector('[aria-label="Dictation microphone"]')?.textContent).toContain("System default");
-    expect(host.textContent).toContain("Kept in this browser alone");
+    expect(host.textContent).toContain("Per browser");
 
     await unmount();
   });
@@ -412,7 +412,7 @@ describe("what the pane shows before anybody has chosen", () => {
     const { host, settled, unmount } = await pane(configured);
     await settled(() => host.textContent?.includes("hides input names") === true);
 
-    expect(host.textContent).toContain("hides input names until a microphone has been allowed once");
+    expect(host.textContent).toContain("Names appear once a microphone has been allowed");
     expect(host.querySelector('[aria-label="Dictation microphone"]')?.textContent).toContain("System default");
 
     await unmount();

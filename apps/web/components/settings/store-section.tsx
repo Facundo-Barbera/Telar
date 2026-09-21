@@ -151,7 +151,7 @@ export function StoreSection() {
           status?.pinnedByEnvironment
             ? `TELAR_HOME is set for this run, so Telar is using ${status.path} and will not move it.`
             : moved
-              ? "Moved. Telar will use the new location the next time it starts — nothing has changed in this session, and your old store is still on disk."
+              ? "Moved. Takes effect on the next start; the old store stays on disk."
               : onVolume
                 ? `${where} — on a drive. ${REMOVABLE_DRIVE_WARNING}`
                 : where
@@ -192,7 +192,7 @@ export function StoreSection() {
         hint={
           copied
             ? copied
-            : "Writes a consistent copy of your history, settings and notes into a new folder — without touching this one. Session checkouts, Python environments and toolchains are not carried: Telar can re-make those."
+            : "Copies history, settings and notes to a new folder, leaving this one untouched. Checkouts, Python environments and toolchains are re-made, not carried."
         }
         control={
           <Button size="sm" variant="outline" disabled={busy || copying} onClick={() => void copyStore()}>
