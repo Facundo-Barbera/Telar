@@ -25,5 +25,6 @@ export type {
   RunReadiness,
   RunStatus,
   RunStatusAnswer,
+  RunStatusEvent,
   RunView,
 } from "@telar/engine-client";

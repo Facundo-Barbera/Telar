@@ -6,6 +6,14 @@
  * (This app has no DOM test environment; every component test renders through
  * `react-dom/server`, which runs no effects. So the async rules live in the
  * exported guard the component's only job is to consult.)
+ *
+ * THE STATUS CHANNEL LEFT THIS FILE WITH THE POLL (#890). The guard's latch
+ * existed so two overlapping status POLLS could not land out of order; status
+ * is now one read followed by a stream, whose frames are ordered by the
+ * connection they arrive on and folded by `applyRunStatusEvent` (tested in
+ * lib/run/status-stream.test.ts). What is still guarded — and still tested
+ * here — is the CONFIGURATIONS list, which is read on mount and on every open
+ * and which a save must not be able to overwrite with an older answer.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
@@ -13,22 +21,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createReadGuard, RunHeaderControl, type ReadGuard } from "./run-header-control";
 import { createRunApi, runPath } from "@/lib/run/api";
 import type { RunApi } from "@/lib/run/api";
-import type { RunConfigurationView, RunStatusAnswer, RunView } from "@/lib/run/types";
+import type { RunConfigurationView, RunStatusAnswer } from "@/lib/run/types";
 
-const view = (over: Partial<RunView> = {}): RunView => ({
-  runId: "run_1",
-  projectId: "project_1",
-  configId: "config_dev",
-  configName: "dev server",
-  command: "bun dev",
-  worktreePath: "/w",
-  cwd: "/w",
-  status: "ready",
-  readiness: { kind: "none" },
-  startedAt: 1,
-  env: [],
-  ...over,
-});
 const config = (id: string) => ({ id, name: id }) as unknown as RunConfigurationView;
 
 /** A client whose answers the test releases by hand, in the order it chooses. */
@@ -40,20 +34,6 @@ function deferred() {
     configurations: () => new Promise<{ configurations: RunConfigurationView[] }>((resolve) => configs.push(resolve)),
   } as unknown as RunApi;
   return { api, status, configs };
-}
-
-/** The component's own status read, expressed once so every test drives the
- *  same sequence production does. */
-function readStatus(guard: ReadGuard, api: RunApi, applied: RunStatusAnswer[]) {
-  const token = guard.takeStatus();
-  if (!token) return { blocked: true as const, done: Promise.resolve() };
-  const done = api
-    .status("session_1")
-    .then((answer) => {
-      if (!guard.stale(token)) applied.push(answer);
-    })
-    .finally(() => guard.releaseStatus(token));
-  return { blocked: false as const, done };
 }
 
 function readConfigs(guard: ReadGuard, api: RunApi, applied: RunConfigurationView[][]) {
@@ -80,63 +60,6 @@ describe("the pinned client", () => {
     const { api } = deferred();
     expect(renderToStaticMarkup(<RunHeaderControl sessionId="s" hostId="host_a" api={api} />)).toContain("Run this project");
     expect(renderToStaticMarkup(<RunHeaderControl sessionId="s" api={api} />)).toContain("Run this project");
-  });
-});
-
-describe("the status latch is owned by its token", () => {
-  test("old status → invalidate → new status → old finally → a third read STAYS blocked", async () => {
-    // The exact hole: an unconditional release let the OLD read's `finally`
-    // free the latch the NEW read is holding, so a third poll could overlap.
-    const guard = createReadGuard();
-    const { api, status } = deferred();
-    const applied: RunStatusAnswer[] = [];
-
-    const old = readStatus(guard, api, applied); // holds the latch
-    expect(old.blocked).toBe(false);
-    guard.invalidate(); // a mutation, or unmount
-    const fresh = readStatus(guard, api, applied); // takes the latch again
-    expect(fresh.blocked).toBe(false);
-
-    // The OLD request settles now — its finally must not free the NEW holder.
-    status[0]!({ history: [], sessionWorktreePath: "/old" });
-    await old.done;
-
-    expect(readStatus(guard, api, applied).blocked).toBe(true);
-
-    // And only the post-invalidate answer is ever applied.
-    status[1]!({ history: [], sessionWorktreePath: "/new" });
-    await fresh.done;
-    expect(applied).toHaveLength(1);
-    expect(applied[0]!.sessionWorktreePath).toBe("/new");
-
-    // With the holder gone, the next read may proceed.
-    expect(readStatus(guard, api, applied).blocked).toBe(false);
-  });
-
-  test("the latch is released on settle, so an answered read never wedges the pill", async () => {
-    const guard = createReadGuard();
-    const { api, status } = deferred();
-    const applied: RunStatusAnswer[] = [];
-    const first = readStatus(guard, api, applied);
-    status[0]!({ history: [] });
-    await first.done;
-    expect(readStatus(guard, api, applied).blocked).toBe(false);
-  });
-
-  test("a mutation frees the latch, so the re-read a start needs is never suppressed", () => {
-    const guard = createReadGuard();
-    const { api } = deferred();
-    readStatus(guard, api, []);
-    expect(readStatus(guard, api, []).blocked).toBe(true);
-    guard.invalidate();
-    expect(readStatus(guard, api, []).blocked).toBe(false);
-  });
-
-  test("two guards are independent — a new mount is never suppressed by the old one", () => {
-    const departed = createReadGuard();
-    const { api } = deferred();
-    readStatus(departed, api, []);
-    expect(readStatus(createReadGuard(), api, []).blocked).toBe(false);
   });
 });
 
@@ -176,23 +99,5 @@ describe("reads on one channel order among themselves", () => {
 
     expect(applied).toHaveLength(1);
     expect(applied[0]!.map((entry) => entry.id)).toEqual(["config_dev", "config_new"]);
-  });
-
-  test("the channels are separate — a status read does not age a configs read", () => {
-    const guard = createReadGuard();
-    const configsToken = guard.open("configs");
-    guard.takeStatus();
-    expect(guard.stale(configsToken)).toBe(false);
-  });
-
-  test("a status answer from a departed mount is discarded", async () => {
-    const guard = createReadGuard();
-    const { api, status } = deferred();
-    const applied: RunStatusAnswer[] = [];
-    const { done } = readStatus(guard, api, applied);
-    guard.invalidate(); // unmount
-    status[0]!({ active: view(), history: [] });
-    await done;
-    expect(applied).toEqual([]);
   });
 });

@@ -239,6 +239,18 @@ export type RunView = {
   readiness: RunReadiness;
   readinessUrl?: string;
   pid?: number;
+  /**
+   * The desktop host's id for the pseudo-terminal this run is on, while it is
+   * on one. WHAT IT IS FOR IS POINTING: since #890 a run is a shell in the
+   * cockpit's Terminal strip, so the surface has to be able to name the terminal
+   * it should attach to, and an agent answering `run_status` can say where in
+   * the cockpit the output already is instead of describing it.
+   *
+   * ABSENT IS ORDINARY, TWICE OVER. A pipe-launched run (no Electron) never had
+   * a terminal; a finished one no longer has the handle that named it. Same rule
+   * as `pid`: it is published only while the handle is still ours.
+   */
+  terminalId?: string;
   startedAt: number;
   endedAt?: number;
   exitCode?: number;

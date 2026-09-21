@@ -18,8 +18,17 @@ import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
 import type { RunCapability } from "./capability";
 import { RunIcon, RunShell, type RunView } from "./types";
 
-/** Tools that only read. Handed to the host, which decides the approval posture. */
-export const RUN_READ_ONLY_TOOLS = ["run_configs", "run_status", "run_output"] as const;
+/**
+ * Tools that only read. Handed to the host, which decides the approval posture.
+ *
+ * `run_wait` IS ON THIS LIST, AND IT IS THE ONE WORTH ARGUING ABOUT. It blocks
+ * for up to a minute, which is not what "read" usually suggests — but it
+ * SIGNALS NOTHING, STARTS NOTHING AND CHANGES NOTHING, and the alternative an
+ * approval prompt produces is the one this tool exists to replace: an agent
+ * that cannot wait sleeps and guesses instead. Waiting behind a prompt would
+ * make the deterministic path the expensive one.
+ */
+export const RUN_READ_ONLY_TOOLS = ["run_configs", "run_status", "run_output", "run_wait"] as const;
 
 function describe(run: RunView): string {
   const where = run.worktreeBranch ? `${run.worktreePath} (${run.worktreeBranch})` : run.worktreePath;
@@ -32,7 +41,11 @@ function describe(run: RunView): string {
           ? ` — readiness cannot be attributed to this process (${run.readiness.reason})`
           : "";
   const ended = run.endedAt ? ` exit ${run.exitCode ?? run.signal ?? "?"}.` : "";
-  return `"${run.configName}" is ${run.status} (run ${run.runId}) from ${where}, cwd ${run.cwd}.${readiness}${ended}${run.error ? ` ${run.error}` : ""}`;
+  // WHERE IT ALREADY IS, so an answer can point rather than describe: since
+  // #890 a live run is a shell in the cockpit's Terminal strip, and the id is
+  // the only name for it that both halves agree on.
+  const surface = run.terminalId ? ` Its terminal is ${run.terminalId} — the human sees it as a chip in the Terminal tab.` : "";
+  return `"${run.configName}" is ${run.status} (run ${run.runId}) from ${where}, cwd ${run.cwd}.${readiness}${ended}${run.error ? ` ${run.error}` : ""}${surface}`;
 }
 
 export function runTools(tool: ToolFactory, capability: RunCapability): unknown[] {
@@ -165,11 +178,22 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
 
     tool(
       "run_stop",
-      "Stop the project's deployment — the whole process group, so watchers and child servers go too. Defaults to the live run.",
-      { runId: z.string().min(1).optional().describe("A specific run. Default: whatever is deployed now.") },
+      "Stop the project's deployment — the whole process group, so watchers and child servers go too. Defaults to the live run. This is the ONLY way to stop a run: never use pkill, killall or kill on it.",
+      {
+        runId: z.string().min(1).optional().describe("A specific run. Default: whatever is deployed now."),
+        signal: z
+          .enum(["SIGTERM", "SIGINT", "SIGKILL"])
+          .optional()
+          .describe(
+            "Which signal the polite attempt sends. Default SIGTERM. Use SIGINT for a server that traps SIGTERM to drain connections and only really stops on Ctrl-C. If the polite attempt is ignored Telar escalates to SIGKILL by itself, so you do not need to ask for that one.",
+          ),
+      },
       async (args) => {
         try {
-          const run = await capability.stop(typeof args.runId === "string" ? { runId: args.runId } : {});
+          const run = await capability.stop({
+            ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
+            ...(args.signal === "SIGTERM" || args.signal === "SIGINT" || args.signal === "SIGKILL" ? { signal: args.signal } : {}),
+          });
           return ok(`Stopped ${describe(run)}`);
         } catch (error) {
           return err(`Did not stop: ${failure(error)}`);
@@ -193,22 +217,91 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
 
     tool(
       "run_output",
-      "Captured stdout and stderr for a run, including after it exited. Output is a bounded window — the oldest lines are dropped under load and the count of dropped lines is reported. Pass the cursor from a previous call to read only what is new.",
+      "Captured stdout and stderr for a run, including after it exited. Output is a bounded window — the oldest lines are dropped under load and the count of dropped lines is reported. Pass the cursor from a previous call to read only what is new; tail, grep and stream narrow what comes back WITHOUT moving that cursor, so you can grep now and still resume over everything later.",
       {
         runId: z.string().min(1).optional().describe("A specific run. Default: whatever is deployed now."),
         after: z.number().int().min(0).optional().describe("A cursor from an earlier call; only newer lines come back."),
+        tail: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .optional()
+          .describe("Only the last N lines of the window. The usual way to look at a dev server: the end is where it says what went wrong."),
+        grep: z.string().min(1).max(500).optional().describe("A regular expression; only matching lines come back. The cursor still advances over the ones it hid."),
+        stream: z
+          .enum(["stdout", "stderr"])
+          .optional()
+          .describe("One stream only. A run on a terminal has only stdout — a pseudo-terminal is one device and the two were merged before Telar saw them."),
       },
       async (args) => {
         try {
           const result = await capability.output({
             ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
             ...(typeof args.after === "number" ? { after: args.after } : {}),
+            ...(typeof args.tail === "number" ? { tail: args.tail } : {}),
+            ...(typeof args.grep === "string" ? { grep: args.grep } : {}),
+            ...(args.stream === "stdout" || args.stream === "stderr" ? { stream: args.stream } : {}),
           });
           const body = result.lines.map((line) => (line.stream === "stderr" ? `! ${line.text}` : line.text)).join("\n");
           const dropped = result.dropped ? `[${result.dropped} earlier line(s) dropped]\n` : "";
-          return ok(`${dropped}${body || "(no output yet)"}\n[cursor ${result.cursor}]`);
+          // WHICH EMPTY THIS IS. "No output yet" and "nothing matched your
+          // filter" are different facts, and a model told the first one when
+          // the second is true concludes the process is silent and stops
+          // looking — or worse, restarts it.
+          const narrowed = args.tail !== undefined || args.grep !== undefined || args.stream !== undefined;
+          const empty = narrowed ? "(no line in this window matched)" : "(no output yet)";
+          return ok(`${dropped}${body || empty}\n[cursor ${result.cursor}]`);
         } catch (error) {
           return err(`Could not read the output: ${failure(error)}`);
+        }
+      },
+    ),
+
+    tool(
+      "run_wait",
+      "Wait until a run says something, becomes ready, or ends — then carry on. THIS IS HOW YOU WAIT FOR A SERVER: never sleep and hope. Give at least one of pattern, ready or exit; the answer says which one fired, so a timeout is distinguishable from a match and you never curl a port nothing is listening on. It returns the lines that arrived while waiting, and a cursor to resume run_output from.",
+      {
+        runId: z.string().min(1).optional().describe("A specific run. Default: whatever is deployed now."),
+        pattern: z.string().min(1).max(500).optional().describe("A regular expression over lines printed from now on, e.g. 'Ready in|Listening on'."),
+        ready: z
+          .boolean()
+          .optional()
+          .describe("Wait for the configuration's readinessUrl to answer. Refused if the configuration has none, since that could only ever time out."),
+        exit: z.boolean().optional().describe("Wait for the run to finish — the way to wait out a build or a test run."),
+        timeoutMs: z
+          .number()
+          .int()
+          .min(0)
+          .max(60_000)
+          .describe("How long to wait, at most 60000. A tool call that can park for ever is a turn that can park for ever, so pick a budget and handle 'timeout'."),
+      },
+      async (args) => {
+        if (args.pattern === undefined && args.ready !== true && args.exit !== true) {
+          return err("run_wait needs something to wait FOR: pass pattern, ready or exit. Waiting for nothing is a sleep, which is what this tool exists to replace.");
+        }
+        try {
+          const result = await capability.wait({
+            ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
+            ...(typeof args.pattern === "string" ? { pattern: args.pattern } : {}),
+            ...(args.ready === true ? { ready: true } : {}),
+            ...(args.exit === true ? { exit: true } : {}),
+            timeoutMs: Number(args.timeoutMs),
+          });
+          const body = result.lines.map((line) => (line.stream === "stderr" ? `! ${line.text}` : line.text)).join("\n");
+          // THE VERDICT FIRST AND IN WORDS. `fired: "timeout"` read past in a
+          // wall of log output is how an agent convinces itself a server is up.
+          const verdict =
+            result.fired === "timeout"
+              ? "TIMED OUT — the condition did not happen in the time given. The run may still be starting; do not assume it is up."
+              : result.fired === "ready"
+                ? "READY — the readiness URL answered."
+                : result.fired === "exit"
+                  ? "EXITED — the run has finished; run_status says how."
+                  : "MATCHED — a line matched your pattern.";
+          return ok(`${verdict}\n${body || "(nothing was printed while waiting)"}\n[cursor ${result.cursor}]`);
+        } catch (error) {
+          return err(`Could not wait on that run: ${failure(error)}`);
         }
       },
     ),

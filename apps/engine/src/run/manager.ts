@@ -126,6 +126,53 @@ const GROUP_DRAIN_MS = 1000;
 const GROUP_POLL_MS = 25;
 /** Finished runs stay readable — output after exit is most of the value. */
 const KEEP_TERMINAL = 10;
+/**
+ * How often `wait` re-reads state THIS PROCESS ALREADY HOLDS.
+ *
+ * ENGINE-LOCAL, AND THAT IS THE WHOLE POINT. Nothing about this tick crosses a
+ * wire: the lines, the readiness verdict and the status are all in memory here.
+ * A wait that polled the desktop, or that an agent built out of repeated
+ * `run_output` calls, would be the poll this milestone is deleting wearing a
+ * tool's name.
+ */
+const WAIT_TICK_MS = 50;
+
+/**
+ * How much of a run's output a reader wants, and which of it.
+ *
+ * NONE OF THESE MOVE THE CURSOR. `after` is the cursor; these narrow what comes
+ * back within the window it opened. A caller that greps and then resumes from
+ * the returned cursor has still read past everything that did not match, which
+ * is what makes `grep` a filter rather than a second, divergent stream.
+ */
+export type RunOutputFilter = {
+  /** Only the last N lines of the window, after the filters below. */
+  tail?: number;
+  /** A regular expression; only matching lines come back. */
+  grep?: string;
+  /** Only one of the two streams. A PTY-launched run has only `stdout`. */
+  stream?: "stdout" | "stderr";
+};
+
+/** What `run_wait` answers: WHICH condition fired, a cursor to resume from, and
+ *  the lines that arrived while waiting — not the whole scrollback. */
+export type RunWaitOutcome = { fired: "pattern" | "ready" | "exit" | "timeout"; cursor: number; lines: RunOutputLine[] };
+
+/**
+ * A caller's regular expression, refused rather than thrown raw.
+ *
+ * A BAD PATTERN IS THE CALLER'S MISTAKE AND HAS TO READ LIKE ONE. `new RegExp`
+ * throws a `SyntaxError` whose message is about the engine's parser; wrapped in
+ * `RunError("invalid_request")` it arrives at an agent as "your argument was
+ * wrong", which is the only thing that makes it retry differently.
+ */
+function compile(source: string, field: string): RegExp {
+  try {
+    return new RegExp(source);
+  } catch (error) {
+    throw new RunError("invalid_request", `${field} is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 export type StartRunInput = {
   projectId: string;
@@ -227,8 +274,44 @@ const defaultProbe: RunProbe = async (url) => {
   }
 };
 
+/**
+ * ONE FRAME OF "A RUN CHANGED", AND THE FULL VIEW IS ON IT DELIBERATELY.
+ *
+ * Every other feed in this engine is thin — an id and a kind, re-derivable from
+ * a cursor'd read — because the thing it names is a JOURNAL ENTRY that a reader
+ * can page back to. A run's status is not journalled anywhere a client can page:
+ * it lives in this process's memory, and the only read of it is `/run/status`,
+ * which is precisely the poll this event exists to delete. A thin frame here
+ * would buy a request per transition instead of one every four seconds, which is
+ * not the trade #890 asked for.
+ *
+ * SO THE FRAME IS THE ANSWER, and it is the SAME `RunView` `/run/status` hands
+ * back — same redaction, same rule about when `pid` and `terminalId` appear.
+ * A reader that connects late reads `/run/status` ONCE and then never again; a
+ * reader that missed a frame gets the next one, which carries the whole state
+ * rather than a delta, so there is nothing to reconcile.
+ */
+export type RunStatusEvent = {
+  type: "run.status";
+  projectId: string;
+  run: RunView;
+  /**
+   * WHETHER THIS RUN HOLDS THE PROJECT'S DEPLOYMENT SLOT, right now.
+   *
+   * ON THE EVENT RATHER THAN ON THE VIEW, because it is not a property of the
+   * run: it is the answer to "which of this project's runs is the live one",
+   * and `holder()` is the only thing entitled to give it. A client cannot
+   * re-derive it from the status either — `release()` frees the slot while the
+   * run stays `unknown` for ever, which is the whole point of `unknown` — so a
+   * reader left to guess would show a released ghost as deployed.
+   */
+  active: boolean;
+};
+
 export class RunManager {
   private readonly runs = new Map<string, LiveRun>();
+  /** Everyone listening for `run.status`. See `RunStatusEvent`. */
+  private readonly watchers = new Set<(event: RunStatusEvent) => void>();
   /** projectId → runId holding the one deployment slot. */
   private readonly active = new Map<string, string>();
   /** Projects mid stop-then-start. A transition holds the slot across the gap. */
@@ -341,6 +424,44 @@ export class RunManager {
     return recovered;
   }
 
+  // ── watching ─────────────────────────────────────────────────────────────
+
+  /**
+   * Be told when any run's state changes. Answers the unsubscribe.
+   *
+   * NOT FILTERED BY PROJECT HERE. A watcher is a transport — the daemon's SSE
+   * route — and which projects one connection may see is that route's knowledge,
+   * not this file's. Filtering here would mean this map had to be told about
+   * sessions.
+   *
+   * A LISTENER THAT THROWS DOES NOT STOP THE OTHERS, and does not take down the
+   * status transition that emitted the frame: `announce` is called from `exit`
+   * handlers reached through `void`, where a rejection ends the daemon.
+   */
+  watch(listener: (event: RunStatusEvent) => void): () => void {
+    this.watchers.add(listener);
+    return () => {
+      this.watchers.delete(listener);
+    };
+  }
+
+  private announce(run: LiveRun): void {
+    if (this.watchers.size === 0) return;
+    const event: RunStatusEvent = {
+      type: "run.status",
+      projectId: run.projectId,
+      run: this.view(run),
+      active: this.holder(run.projectId)?.runId === run.runId,
+    };
+    for (const watcher of this.watchers) {
+      try {
+        watcher(event);
+      } catch {
+        // A broken reader is that reader's problem, not this run's.
+      }
+    }
+  }
+
   // ── reading ──────────────────────────────────────────────────────────────
 
   activeRun(projectId: string): RunView | undefined {
@@ -365,14 +486,82 @@ export class RunManager {
    * from the front under load, and `dropped` is reported rather than hidden so a
    * client can say "earlier output was discarded" instead of showing a gap.
    */
-  output(runId: string, after = 0): { lines: RunOutputLine[]; cursor: number; dropped: number } {
+  output(runId: string, after = 0, filter: RunOutputFilter = {}): { lines: RunOutputLine[]; cursor: number; dropped: number } {
     const run = this.require(runId);
     const start = Math.max(0, after - run.dropped);
+    let lines = run.lines.slice(start);
+    if (filter.stream) lines = lines.filter((line) => line.stream === filter.stream);
+    if (filter.grep !== undefined) {
+      const pattern = compile(filter.grep, "grep");
+      lines = lines.filter((line) => pattern.test(line.text));
+    }
+    // TAIL LAST, AND THE CURSOR IS NOT TAKEN FROM IT. `tail` narrows what is
+    // SHOWN; the cursor still advances over everything in the window, so a
+    // caller alternating `tail` and `after` reads each line at most once and
+    // never re-reads the ones tail hid.
+    if (filter.tail !== undefined && lines.length > filter.tail) lines = lines.slice(lines.length - filter.tail);
     return {
-      lines: run.lines.slice(start),
+      lines,
       cursor: run.dropped + run.lines.length,
       dropped: run.dropped,
     };
+  }
+
+  /**
+   * BLOCK UNTIL SOMETHING HAPPENS — the tool that replaces `sleep 2 && curl`.
+   *
+   * FOUR CONDITIONS, AND THE ANSWER SAYS WHICH ONE FIRED, because "it came
+   * back" is not the same fact as "the server is up": an agent that could not
+   * tell a timeout from a match would curl a port nothing is listening on and
+   * report the connection refusal as the project's bug.
+   *
+   * OVER STATE THIS PROCESS ALREADY HOLDS — see `WAIT_TICK_MS`.
+   *
+   * CHECKED BEFORE THE FIRST SLEEP. A run that is ALREADY ready, or already
+   * finished, answers at once: an agent that called this after the server came
+   * up would otherwise pay the whole timeout to be told what was true when it
+   * asked.
+   *
+   * `ready` ON A RECIPE WITH NO READINESS URL IS REFUSED rather than waited
+   * out. There is nothing that could ever make it fire, so honouring it would
+   * spend a minute of somebody's turn arriving at `timeout` — which an agent
+   * would then read as "the server did not come up".
+   *
+   * `lines` IS WHAT ARRIVED WHILE WAITING, from the cursor this call opened at
+   * — not the whole scrollback — so the answer is about the wait rather than
+   * about the run's history, which `output` is for.
+   */
+  async wait(runId: string, options: { pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitOutcome> {
+    const run = this.require(runId);
+    const pattern = options.pattern === undefined ? undefined : compile(options.pattern, "pattern");
+    if (options.ready && !run.config.readinessUrl) {
+      throw new RunError(
+        "invalid_request",
+        `"${run.configName}" has no readiness URL, so waiting for it to be ready could only ever time out. Wait for a pattern in its output instead, or give the configuration a readinessUrl.`,
+      );
+    }
+    const from = run.dropped + run.lines.length;
+    const since = () => this.output(runId, from).lines;
+    const answer = (fired: RunWaitOutcome["fired"], lines: RunOutputLine[]): RunWaitOutcome => ({ fired, cursor: from + lines.length, lines });
+    // WALL CLOCK, NOT THE INJECTED ONE. `this.now` stamps lines and a test is
+    // entitled to freeze it; the budget below is what `setTimeout` is measured
+    // against, and a frozen deadline against a real timer never expires.
+    const deadline = Date.now() + options.timeoutMs;
+
+    for (;;) {
+      const seen = since();
+      if (options.ready && run.readiness.kind === "ready") return answer("ready", seen);
+      // SETTLED, NOT MERELY TERMINAL. The window between a shell's exit and the
+      // verdict on its group is exactly when `exit` must NOT fire: the run may
+      // still become `unknown` with the slot held, which is a different answer
+      // for the agent than a clean exit.
+      if (options.exit && run.settled) return answer("exit", seen);
+      if (pattern && seen.some((line) => pattern.test(line.text))) return answer("pattern", seen);
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_TICK_MS, left)));
+    }
+    return answer("timeout", since());
   }
 
   /**
@@ -558,6 +747,11 @@ export class RunManager {
     this.runs.set(run.runId, run);
     this.active.set(input.projectId, run.runId);
     this.prune(input.projectId);
+    // `starting` IS A STATE WORTH ANNOUNCING. The slot is already held, so a
+    // cockpit that waited for `running` would show nothing for the length of a
+    // readiness baseline and a spawn — which is exactly the window a person
+    // presses the button twice in.
+    this.announce(run);
     return run;
   }
 
@@ -690,6 +884,9 @@ export class RunManager {
     if (isTerminal(run.status) || run.status === "unknown") return;
 
     run.status = "running";
+    // Announced here rather than after the journal write below, because that
+    // write is allowed to fail and a live run must not go unannounced over it.
+    this.announce(run);
     // EVERYTHING THAT CANNOT FAIL, FIRST. Readiness is pure registration; the
     // second journal write is disk I/O and can throw, and a throw between the
     // spawn and this would leave a live process with no readiness poll.
@@ -747,6 +944,7 @@ export class RunManager {
       run.settled = true;
       this.closeRecord(run);
       this.wake(run);
+      this.announce(run);
       return;
     }
     const code = detail.exitCode;
@@ -879,7 +1077,18 @@ export class RunManager {
       // view below is the degraded one. Fed from the redactor's OUTPUT and
       // never its input: this is the one place a run's secrets could reach a
       // surface unmasked, and #819 is what stops that.
-      this.keep(run, text);
+      const cursor = this.keep(run, text);
+      /**
+       * AND STRAIGHT BACK TO THE HOST, so the cockpit's Terminal strip draws
+       * this slice rather than the raw one the desktop fans (#890).
+       *
+       * FROM HERE AND NOT FROM `keep`, because this is the redactor's output
+       * and `keep` is a ring. The two happen to be the same string today; the
+       * one that must be mirrored is the one that came out of the redactor,
+       * and saying so here is what stops a later change to the ring from
+       * silently putting unmasked bytes on a wire.
+       */
+      run.handle?.mirror?.(text, cursor);
       carry += text;
       for (let at = carry.indexOf("\n"); at !== -1; at = carry.indexOf("\n")) {
         emitLine(carry.slice(0, at));
@@ -907,10 +1116,17 @@ export class RunManager {
     return clean;
   }
 
-  /** One already-redacted slice into the byte ring, dropping WHOLE chunks from
-   *  the front so a cut can never land inside an escape sequence. */
-  private keep(run: LiveRun, text: string): void {
-    if (!text) return;
+  /**
+   * One already-redacted slice into the byte ring, dropping WHOLE chunks from
+   * the front so a cut can never land inside an escape sequence.
+   *
+   * ANSWERS THE CURSOR A READER HOLDS ONCE IT HAS THIS CHUNK — the same number
+   * `bytes()` would hand back — because the mirror to the desktop carries a
+   * position, and a position computed anywhere but here could drift from the
+   * ring it is meant to index.
+   */
+  private keep(run: LiveRun, text: string): number {
+    if (!text) return run.bytesDropped + run.bytes.length;
     run.bytes.push(text);
     run.byteChars += text.length;
     // `length > 1` on the character bound: one chunk larger than the whole cap
@@ -924,6 +1140,7 @@ export class RunManager {
       run.byteChars -= gone.length;
       run.bytesDropped += 1;
     }
+    return run.bytesDropped + run.bytes.length;
   }
 
   private pollReadiness(run: LiveRun): void {
@@ -939,6 +1156,7 @@ export class RunManager {
         run.readiness = { kind: "ready", at: this.now() };
         if (run.status === "running") run.status = "ready";
         clearInterval(timer);
+        this.announce(run);
       });
     }, this.readyPollMs);
     timer.unref?.();
@@ -1009,11 +1227,17 @@ export class RunManager {
 
   // ── stopping ─────────────────────────────────────────────────────────────
 
-  async stop(runId: string): Promise<RunView> {
-    return this.view(await this.stopRun(this.require(runId)));
+  /**
+   * `signal` IS THE POLITE ATTEMPT'S, AND ONLY ITS. A dev server that traps
+   * SIGTERM to drain connections needs SIGINT to stop the way Ctrl-C stops it;
+   * the escalation below stays SIGKILL, because the second attempt exists
+   * precisely to be the one that cannot be argued with.
+   */
+  async stop(runId: string, signal?: NodeJS.Signals): Promise<RunView> {
+    return this.view(await this.stopRun(this.require(runId), signal));
   }
 
-  private async stopRun(run: LiveRun): Promise<LiveRun> {
+  private async stopRun(run: LiveRun, signal?: NodeJS.Signals): Promise<LiveRun> {
     if (isTerminal(run.status)) return run;
     if (run.status === "unknown") throw this.unknownConflict(run);
     if (run.status === "starting" || !run.handle) {
@@ -1027,7 +1251,7 @@ export class RunManager {
       throw this.unknownConflict(run);
     }
 
-    if (!this.stopGroup(run, false)) throw this.unknownConflict(run);
+    if (!this.stopGroup(run, false, signal)) throw this.unknownConflict(run);
     if (await this.waitForExit(run, this.stopGraceMs)) return this.settled(run);
 
     if (!run.handleClosed && !this.stopGroup(run, true)) throw this.unknownConflict(run);
@@ -1053,11 +1277,11 @@ export class RunManager {
    * the run is on a terminal. Which one applies is the HANDLE's business, and
    * that is the point: this file never gets to aim at a number by itself.
    */
-  private stopGroup(run: LiveRun, force: boolean): boolean {
+  private stopGroup(run: LiveRun, force: boolean, signal?: NodeJS.Signals): boolean {
     if (run.handleClosed) return true;
     if (!run.handle) return true;
     try {
-      run.handle.stop(force);
+      run.handle.stop(force, signal);
       return true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -1104,6 +1328,7 @@ export class RunManager {
     // The human has said "I checked". The durable record exists to make them
     // check; once they have, it would only haunt the next daemon start.
     this.closeRecord(run);
+    this.announce(run);
     return this.view(run);
   }
 
@@ -1177,6 +1402,7 @@ export class RunManager {
     // The same sentence, and it must arrive scrubbed here too — `readiness` is
     // handed to clients whole.
     if (run.readiness.kind === "pending") run.readiness = { kind: "unattributable", reason };
+    this.announce(run);
   }
 
   private finish(run: LiveRun, status: "exited" | "failed", detail: { exitCode?: number; signal?: string; error?: string }): void {
@@ -1191,6 +1417,7 @@ export class RunManager {
     // Accounted for: nothing is left for a future daemon to warn about.
     this.closeRecord(run);
     this.wake(run);
+    this.announce(run);
   }
 
   private wake(run: LiveRun): void {
@@ -1225,6 +1452,7 @@ export class RunManager {
       readiness: run.readiness,
       ...(run.config.readinessUrl ? { readinessUrl: redactText(run.config.readinessUrl, run.secrets) } : {}),
       ...(run.handle?.pid !== undefined && !run.handleClosed ? { pid: run.handle.pid } : {}),
+      ...(run.handle?.terminalId !== undefined && !run.handleClosed ? { terminalId: run.handle.terminalId } : {}),
       startedAt: run.startedAt,
       ...(run.endedAt ? { endedAt: run.endedAt } : {}),
       ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),

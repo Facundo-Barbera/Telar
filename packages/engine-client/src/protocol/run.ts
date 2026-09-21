@@ -167,6 +167,13 @@ export const RunView = z.object({
   readinessUrl: z.string().optional(),
   /** Present only while the engine still holds the process handle. */
   pid: z.number().optional(),
+  /**
+   * The desktop host's id for the pseudo-terminal this run is on, while it is
+   * on one — what the cockpit's Terminal strip attaches to (#890), and what an
+   * agent quotes to say where the output already is. Absent for a run with no
+   * terminal (no Electron) and for one whose handle is gone.
+   */
+  terminalId: z.string().optional(),
   startedAt: z.number(),
   endedAt: z.number().optional(),
   exitCode: z.number().optional(),
@@ -177,6 +184,28 @@ export const RunView = z.object({
 });
 export type RunView = z.infer<typeof RunView>;
 
+/**
+ * ONE RUN CHANGED — the frame `/run/stream` carries (#890).
+ *
+ * THE WHOLE VIEW IS ON IT, unlike the session feed's frames, and the reason is
+ * that there is nothing to page back to: a run's status lives in the engine's
+ * memory and the only read of it is `/run/status`, the poll this feed exists to
+ * delete. The frame IS the state, so a reader that missed one is corrected by
+ * the next rather than having to reconcile.
+ *
+ * `active` IS NOT A PROPERTY OF THE RUN and is deliberately not on `RunView`.
+ * It answers "does this run hold the project's one deployment slot", which only
+ * the engine can say: a released run stays `unknown` for ever with the slot
+ * free, so a client re-deriving it from the status would show a ghost.
+ */
+export const RunStatusEvent = z.object({
+  type: z.literal("run.status"),
+  projectId: z.string(),
+  run: RunView,
+  active: z.boolean(),
+});
+export type RunStatusEvent = z.infer<typeof RunStatusEvent>;
+
 export const RunStatusAnswer = z.object({
   active: RunView.optional(),
   /** Newest first, the live one included. History is what makes an exit readable. */
@@ -185,6 +214,60 @@ export const RunStatusAnswer = z.object({
   sessionWorktreePath: z.string().optional(),
 });
 export type RunStatusAnswer = z.infer<typeof RunStatusAnswer>;
+
+/**
+ * HOW MUCH OF A RUN'S OUTPUT, AND WHICH OF IT (#890).
+ *
+ * WHAT AN AGENT ACTUALLY NEEDS FROM A LONG-RUNNING PROCESS. `run_output` used
+ * to answer one bounded window and nothing else, so "show me the last five
+ * lines" and "show me the errors" were both "read everything and think about
+ * it" — which on a dev server's log is a context window spent on a scrollback
+ * nobody wanted.
+ *
+ * NONE OF THESE MOVES THE CURSOR, which is the property that makes them
+ * composable with `after`: the cursor advances over the whole window, so a
+ * caller that greps and then resumes has still read past what did not match.
+ */
+export const RunOutputFilter = z.object({
+  /** Only the last N lines of the window, after the other two. */
+  tail: z.number().int().min(1).max(1000).optional(),
+  /** A regular expression; only matching lines come back. */
+  grep: z.string().min(1).max(500).optional(),
+  /** One stream only. A PTY-launched run has only `stdout` — a pseudo-terminal
+   *  is one device, and nothing downstream can un-merge what went into it. */
+  stream: z.enum(["stdout", "stderr"]).optional(),
+});
+export type RunOutputFilter = z.infer<typeof RunOutputFilter>;
+
+/**
+ * WHICH SIGNAL A STOP'S POLITE ATTEMPT SENDS.
+ *
+ * A CLOSED SET, because these three have distinct meanings to a process and
+ * anything wider would be a hole a caller could aim anywhere. SIGINT is the one
+ * that earns the field: a dev server that traps SIGTERM to drain connections
+ * stops the way Ctrl-C stops it and no other way. The forceful escalation stays
+ * SIGKILL whatever was asked for.
+ */
+export const RunStopSignal = z.enum(["SIGTERM", "SIGINT", "SIGKILL"]);
+export type RunStopSignal = z.infer<typeof RunStopSignal>;
+
+/**
+ * WHAT A WAIT ANSWERS — and `fired` is the whole of why this is a tool rather
+ * than a sleep.
+ *
+ * "It came back" is not the same fact as "the server is up". An agent that
+ * could not tell a timeout from a match would curl a port nothing is listening
+ * on and report the connection refusal as the project's bug.
+ *
+ * `lines` IS WHAT ARRIVED WHILE WAITING, from the cursor the call opened at —
+ * not the whole scrollback, which `run_output` is for.
+ */
+export const RunWaitAnswer = z.object({
+  fired: z.enum(["pattern", "ready", "exit", "timeout"]),
+  cursor: z.number(),
+  lines: z.array(RunOutputLine),
+});
+export type RunWaitAnswer = z.infer<typeof RunWaitAnswer>;
 
 /**
  * A window of captured output. `cursor` resumes; `dropped` is REPORTED rather

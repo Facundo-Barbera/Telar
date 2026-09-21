@@ -148,6 +148,18 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     kill: (id, signal) => ipcRenderer.invoke("telar:terminal:kill", { id, signal }),
     // How a remounted panel finds the terminals its previous render left running.
     list: () => ipcRenderer.invoke("telar:terminal:list"),
+    /**
+     * READ A RUN'S TERMINAL (#890) — a chip in the strip, beside the shells.
+     *
+     * The only id this accepts is one the ENGINE opened, and the only thing it
+     * grants is being sent that terminal's frames. Typing into a run, resizing
+     * it and stopping it all still go through the engine's own routes, where
+     * the project's singleton and its journal live. The frames that arrive are
+     * the engine's REDACTED mirror of the output, never the raw PTY bytes.
+     */
+    adopt: (id) => ipcRenderer.invoke("telar:terminal:adopt", { id }),
+    /** Put those frames down. Does not stop the run — the engine owns it. */
+    abandon: (id) => ipcRenderer.invoke("telar:terminal:abandon", { id }),
     onData: (listener) => on("telar:terminal:data", listener),
     onExit: (listener) => on("telar:terminal:exit", listener),
   },

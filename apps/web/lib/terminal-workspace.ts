@@ -36,8 +36,30 @@ export type TerminalShell = {
   terminalId?: string;
   /** What the shell called itself through OSC 0/2 — `~/code/telar`, `nvim`,
    *  whatever the person's prompt sets. Absent until it says something, which
-   *  is what `shellLabel` falls back for. */
+   *  is what `shellLabel` falls back for. A RUN's chip carries its
+   *  configuration's name here instead, because a run does not name itself. */
   title?: string;
+  /**
+   * THE PROJECT'S DEPLOYMENT, WHEN THIS CHIP IS ONE (#890).
+   *
+   * A run and a person's shell are the same kind of thing — a terminal the
+   * desktop holds — so they belong in one strip rather than in two surfaces.
+   * What is NOT the same is who owns the process: a shell belongs to whoever
+   * opened it and dies with its tab, and a run belongs to the PROJECT. That is
+   * the whole of why this field exists rather than a `kind`, and every rule
+   * that reads it is a rule about ownership:
+   *
+   *   - `terminalIds` does not list it, so closing the Terminal tab does not
+   *     reap a deployment another session may be watching.
+   *   - closing the chip stops nothing; the chip's own stop action does.
+   *   - a live run with no chip gets one back on the next mount, because the
+   *     run outlived the surface rather than the other way round.
+   *
+   * `configId` rides along with `runId` so the chip can draw the recipe's glyph
+   * without a second read: the run answers which configuration it came from,
+   * and a recipe deleted mid-run simply has no glyph.
+   */
+  run?: { runId: string; configId: string };
 };
 
 export type TerminalWorkspace = {
@@ -89,6 +111,77 @@ export function addShell(state: TerminalWorkspace, id: string = nextShellId(stat
   return { shells: [...state.shells, { id }], active: id };
 }
 
+/** The chip showing this run, if the strip has one. */
+export function shellForRun(state: TerminalWorkspace, runId: string): TerminalShell | undefined {
+  return state.shells.find((shell) => shell.run?.runId === runId);
+}
+
+/**
+ * Put a run in the strip, or update the chip it already has.
+ *
+ * IDEMPOTENT BY RUN ID, and that is load-bearing rather than tidy. This is
+ * called from a status feed and from the mount that adopts whatever was already
+ * running, so the same run arrives more than once by construction; minting a
+ * chip per arrival would give one deployment three chips reading the same PTY.
+ *
+ * IT DOES NOT TAKE FOCUS, unlike `addShell`. A run can start from an agent's
+ * tool call or another session's button, and a strip that jumped to it would
+ * move the shell out from under whatever somebody was typing. `focus: true` is
+ * for the one case where a person asked — pressing play themselves.
+ *
+ * THE TERMINAL ID MAY ARRIVE LATE OR GO. A run is `starting` before the host
+ * has named its PTY, and stops naming one once the handle is gone, so this
+ * writes what it was given and never invents or keeps a stale id.
+ */
+export function upsertRunShell(
+  state: TerminalWorkspace,
+  run: { runId: string; configId: string; terminalId?: string; title?: string },
+  options: { focus?: boolean } = {},
+): TerminalWorkspace {
+  const existing = shellForRun(state, run.runId);
+  const shape = (id: string): TerminalShell => ({
+    id,
+    ...(run.terminalId ? { terminalId: run.terminalId } : {}),
+    ...(run.title ? { title: run.title } : {}),
+    run: { runId: run.runId, configId: run.configId },
+  });
+  if (existing) {
+    const next = shape(existing.id);
+    const unchanged = existing.terminalId === next.terminalId && existing.title === next.title && existing.run?.configId === next.run?.configId;
+    // Identity-stable when nothing moved: this runs on every frame of a status
+    // feed, and a new object each time would write the tab's params back to
+    // storage — and re-render every pane in the strip — for no change at all.
+    if (unchanged && !options.focus) return state;
+    return {
+      ...state,
+      shells: state.shells.map((shell) => (shell.id === existing.id ? next : shell)),
+      ...(options.focus ? { active: existing.id } : {}),
+    };
+  }
+  const id = nextRunShellId(state);
+  return {
+    shells: [...state.shells, shape(id)],
+    ...(options.focus || state.active === undefined ? { active: id } : { active: state.active }),
+  };
+}
+
+/**
+ * The chip id for a run: `run`, then `run#2`, in `nextShellId`'s own spelling.
+ *
+ * NOT THE RUN ID ITSELF. A chip id is written into the tab's params and read
+ * back by a build that may be older or newer; keeping it in the same vocabulary
+ * as every other chip means nothing downstream has to know which chips are runs
+ * to be able to address one.
+ */
+function nextRunShellId(state: TerminalWorkspace): string {
+  const taken = (id: string) => state.shells.some((shell) => shell.id === id);
+  if (!taken("run")) return "run";
+  for (let n = 2; ; n += 1) {
+    const id = `run#${n}`;
+    if (!taken(id)) return id;
+  }
+}
+
 /**
  * Close a shell and choose the next active one.
  *
@@ -124,6 +217,11 @@ export function setShellTerminal(state: TerminalWorkspace, id: string, terminalI
   return { ...state, shells: state.shells.map((shell) => (shell.id === id ? { ...shell, terminalId } : shell)) };
 }
 
+/** Every chip that is a run, in strip order. */
+export function runShells(state: TerminalWorkspace): TerminalShell[] {
+  return state.shells.filter((shell) => shell.run !== undefined);
+}
+
 /**
  * What the shell calls itself (xterm's `onTitleChange`, i.e. OSC 0/2).
  *
@@ -137,7 +235,17 @@ export function setShellTitle(state: TerminalWorkspace, id: string, title: strin
   if (!current || (current.title ?? "") === wanted) return state;
   return {
     ...state,
-    shells: state.shells.map((shell) => (shell.id === id ? { id: shell.id, ...(shell.terminalId ? { terminalId: shell.terminalId } : {}), ...(wanted ? { title: wanted } : {}) } : shell)),
+    shells: state.shells.map((shell) =>
+      shell.id === id
+        ? {
+            id: shell.id,
+            ...(shell.terminalId ? { terminalId: shell.terminalId } : {}),
+            ...(wanted ? { title: wanted } : {}),
+            // A run keeps being a run whatever its program calls itself.
+            ...(shell.run ? { run: shell.run } : {}),
+          }
+        : shell,
+    ),
   };
 }
 
@@ -172,16 +280,38 @@ export function activeShell(state: TerminalWorkspace): TerminalShell | undefined
  * rather than a label.
  */
 export function shellLabel(state: TerminalWorkspace, id: string): string {
-  const index = state.shells.findIndex((shell) => shell.id === id);
-  if (index === -1) return "Shell";
-  return state.shells[index]!.title || `Shell ${index + 1}`;
+  const shell = state.shells.find((entry) => entry.id === id);
+  if (!shell) return "Shell";
+  if (shell.title) return shell.title;
+  // A RUN IS NOT NUMBERED WITH THE SHELLS, and it is not counted among them
+  // either: its label is its configuration's name, which the surface writes as
+  // the title, and numbering the person's shells around it would make "Shell 2"
+  // mean the first shell you can see. Counting only shells keeps that phrase
+  // true whatever else is in the strip.
+  if (shell.run) return "Run";
+  const shells = state.shells.filter((entry) => entry.run === undefined);
+  return `Shell ${shells.findIndex((entry) => entry.id === id) + 1}`;
 }
 
-/** Every PTY this workspace is holding, in strip order — what the reaper kills
- *  when the outer tab closes. Shells still waiting on a spawn contribute
- *  nothing, because there is nothing yet to kill. */
+/**
+ * Every PTY this workspace is holding AND is entitled to end, in strip order —
+ * what the reaper kills when the outer tab closes. Shells still waiting on a
+ * spawn contribute nothing, because there is nothing yet to kill.
+ *
+ * A RUN'S TERMINAL IS NOT ON THIS LIST (#890), and that is the sharpest rule in
+ * this file. A run belongs to the PROJECT: it was started from a menu or from
+ * an agent's tool call, it outlives the conversation that launched it, and
+ * another session may be watching it right now. Closing a Terminal tab is a
+ * statement about the shells in it and about nothing else — so a reaper that
+ * read this list and found a run's id would stop somebody else's dev server
+ * because a person here closed a tab. Stopping a run is the chip's own action,
+ * the header menu's, or `run_stop`.
+ */
 export function terminalIds(state: TerminalWorkspace): string[] {
-  return state.shells.map((shell) => shell.terminalId).filter((id): id is string => typeof id === "string" && id !== "");
+  return state.shells
+    .filter((shell) => shell.run === undefined)
+    .map((shell) => shell.terminalId)
+    .filter((id): id is string => typeof id === "string" && id !== "");
 }
 
 // ── the tab's params ───────────────────────────────────────────────────────
@@ -227,12 +357,13 @@ function parseWorkspace(raw: string): TerminalWorkspace | undefined {
     const shells: TerminalShell[] = [];
     for (const entry of record.shells) {
       if (!entry || typeof entry !== "object") continue;
-      const shell = entry as { id?: unknown; terminalId?: unknown; title?: unknown };
+      const shell = entry as { id?: unknown; terminalId?: unknown; title?: unknown; run?: unknown };
       if (typeof shell.id !== "string" || !shell.id || shells.some((other) => other.id === shell.id)) continue;
       shells.push({
         id: shell.id,
         ...(typeof shell.terminalId === "string" && shell.terminalId ? { terminalId: shell.terminalId } : {}),
         ...(typeof shell.title === "string" && shell.title ? { title: shell.title } : {}),
+        ...(runOf(shell.run) ? { run: runOf(shell.run)! } : {}),
       });
     }
     if (shells.length === 0) return undefined;
@@ -241,6 +372,23 @@ function parseWorkspace(raw: string): TerminalWorkspace | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A stored `run`, validated — BOTH IDS OR NEITHER.
+ *
+ * A half-written pair is not a run chip that is missing a field, it is a chip
+ * nothing can address: with no `runId` there is no deployment to stop and no
+ * status to follow, so it would draw as a permanently blank run. Refusing it
+ * here restores it as an ordinary (empty) shell instead, which a person can
+ * close.
+ */
+function runOf(value: unknown): { runId: string; configId: string } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const run = value as { runId?: unknown; configId?: unknown };
+  if (typeof run.runId !== "string" || !run.runId) return undefined;
+  if (typeof run.configId !== "string" || !run.configId) return undefined;
+  return { runId: run.runId, configId: run.configId };
 }
 
 /** Every PTY a terminal tab's params name, whichever vocabulary they were

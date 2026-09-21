@@ -98,7 +98,7 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
     },
 
     async stop(input) {
-      return await manager.stop(target(input?.runId).runId);
+      return await manager.stop(target(input?.runId).runId, input?.signal);
     },
 
     async restart(input) {
@@ -110,7 +110,23 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
     },
 
     async output(input) {
-      return manager.output(target(input?.runId, "allow").runId, input?.after ?? 0);
+      return manager.output(target(input?.runId, "allow").runId, input?.after ?? 0, {
+        ...(input?.tail === undefined ? {} : { tail: input.tail }),
+        ...(input?.grep === undefined ? {} : { grep: input.grep }),
+        ...(input?.stream === undefined ? {} : { stream: input.stream }),
+      });
+    },
+
+    // `"refuse"` LIKE THE KEYBOARD AND UNLIKE `output`: waiting on "whatever
+    // ran last" is waiting on nothing, and a timeout against a finished run
+    // would spend a minute of a turn saying so.
+    async wait(input) {
+      return await manager.wait(target(input.runId).runId, {
+        ...(input.pattern === undefined ? {} : { pattern: input.pattern }),
+        ...(input.ready === undefined ? {} : { ready: input.ready }),
+        ...(input.exit === undefined ? {} : { exit: input.exit }),
+        timeoutMs: input.timeoutMs,
+      });
     },
 
     // `"allow"` for the same reason as `output`: the most useful thing to read

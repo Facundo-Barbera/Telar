@@ -296,9 +296,11 @@ Tools: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
 - The Run menu — a project's saved commands, owned by the daemon so a dev
   server outlives the conversation that started it. A project with no run
   configuration can be given one rather than being told it lacks the
-  capability. Tools: \`run_configs\`, \`run_save_config\`, \`run_delete_config\`,
-  \`run_start\`, \`run_stop\`, \`run_restart\`, \`run_status\`, \`run_output\`,
-  \`run_release\`.
+  capability. Its output is a chip in the cockpit's Terminal strip, beside the
+  person's own shells. Tools: \`run_configs\`, \`run_save_config\`,
+  \`run_delete_config\`, \`run_start\`, \`run_stop\`, \`run_restart\`,
+  \`run_status\`, \`run_output\`, \`run_wait\`, \`run_release\`. Wait for a
+  server with \`run_wait\`, never with \`sleep\`.
 
 A project may also opt into data science (\`ds_*\`, \`notebook_*\`) and LaTeX
 (\`latex_*\`). Those toolkits exist only where the project turned them on, and

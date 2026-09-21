@@ -82,7 +82,11 @@ export const runRoutes: RunRoute[] = [
   {
     method: "POST",
     pattern: /^\/run\/stop$/,
-    handle: async ({ capability, input }) => await capability.stop(parse(RunIdOnly, input)),
+    handle: async ({ capability, input }) =>
+      // `signal` IS THE POLITE ATTEMPT'S ONLY, and it is a closed set: three
+      // signals with distinct meanings to a process, rather than a field a
+      // caller could aim anywhere (#890).
+      await capability.stop(parse(RunIdOnly.extend({ signal: z.enum(["SIGTERM", "SIGINT", "SIGKILL"]).optional() }), input)),
   },
   {
     method: "POST",
@@ -98,7 +102,48 @@ export const runRoutes: RunRoute[] = [
     method: "GET",
     pattern: /^\/run\/output$/,
     handle: async ({ capability, input }) =>
-      await capability.output(parse(RunIdOnly.extend({ after: z.coerce.number().int().min(0).optional() }), input)),
+      await capability.output(
+        parse(
+          RunIdOnly.extend({
+            after: z.coerce.number().int().min(0).optional(),
+            // THE THREE NARROWINGS (#890). `z.coerce` on `tail` because these
+            // arrive as query strings; `grep` is compiled by the manager, which
+            // is what turns a bad pattern into "your argument was wrong"
+            // rather than into a parser's complaint about itself.
+            tail: z.coerce.number().int().min(1).max(1000).optional(),
+            grep: z.string().min(1).max(500).optional(),
+            stream: z.enum(["stdout", "stderr"]).optional(),
+          }),
+          input,
+        ),
+      ),
+  },
+  /**
+   * WAIT FOR ONE OF FOUR THINGS — the route that replaces `sleep 2 && curl`.
+   *
+   * A POST, AND NOT FOR THE BODY'S SAKE. This is the one route here that HOLDS
+   * ITS CONNECTION, for up to a minute, which is a thing to do deliberately
+   * rather than to a path that reads like a cheap read.
+   *
+   * THE CEILING IS ENFORCED HERE AS WELL AS IN THE TOOL SCHEMA. The schema is
+   * the model's contract and the HTTP surface is everyone else's; a route that
+   * trusted the caller would let one park a worker for as long as it liked.
+   */
+  {
+    method: "POST",
+    pattern: /^\/run\/wait$/,
+    handle: async ({ capability, input }) =>
+      await capability.wait(
+        parse(
+          RunIdOnly.extend({
+            pattern: z.string().min(1).max(500).optional(),
+            ready: z.boolean().optional(),
+            exit: z.boolean().optional(),
+            timeoutMs: z.number().int().min(0).max(60_000),
+          }),
+          input,
+        ),
+      ),
   },
   /**
    * THE SAME WINDOW, IN BYTES — what the cockpit's emulator reads (#198).

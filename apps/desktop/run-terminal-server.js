@@ -77,7 +77,7 @@ const HEARTBEAT_MS = 2_000;
 
 /** Every route this server answers. Anything else is a 404 before a body is
  *  read or a terminal host is resolved. */
-const ROUTES = new Set(["POST /open", "POST /kill", "POST /write", "POST /resize", "GET /events", "GET /state"]);
+const ROUTES = new Set(["POST /open", "POST /kill", "POST /write", "POST /resize", "POST /mirror", "GET /events", "GET /state"]);
 
 function json(response, status, value) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -115,8 +115,15 @@ function readJson(request) {
  * server does not load node-pty — the same lazy rule `terminal-host.js` states
  * for itself, for the same reason (the desktop unit suite runs on ubuntu, where
  * node-pty has no prebuild).
+ *
+ * `onMirror` IS THE ONE ARROW THAT POINTS BACK (#890). Every other route is the
+ * engine asking this process to do something; `/mirror` is the engine handing
+ * over a run's output AFTER its redactor has been through it, so the cockpit can
+ * draw that instead of the raw node-pty frames `main.js` fans. It is optional:
+ * a shell with no cockpit attached has nowhere to put one, and the run itself
+ * does not depend on anybody drawing it.
  */
-function startRunTerminalServer({ port, token, getTerminalHost, heartbeatMs = HEARTBEAT_MS }) {
+function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartbeatMs = HEARTBEAT_MS }) {
   if (!token) throw new Error("A run terminal token is required.");
 
   /**
@@ -204,6 +211,26 @@ function startRunTerminalServer({ port, token, getTerminalHost, heartbeatMs = HE
     }
 
     try {
+      /**
+       * BEFORE ANY HOST IS RESOLVED, because this route touches no handle.
+       * It carries bytes the engine has already redacted, addressed to whoever
+       * in the cockpit is reading that terminal — so a shell whose host has not
+       * been built yet (or has gone) has nothing to refuse here, and answering
+       * 503 would make a missing DRAW look like a missing PROCESS.
+       *
+       * NOTHING IS LOGGED, as everywhere else in this file: these are a run's
+       * own bytes, and redacted is not the same as harmless.
+       */
+      if (route === "POST /mirror") {
+        const input = await readJson(request);
+        const id = String(input.id ?? "");
+        const data = typeof input.data === "string" ? input.data : "";
+        const cursor = Number.isFinite(input.cursor) ? Number(input.cursor) : undefined;
+        const mirrored = Boolean(id && data);
+        if (mirrored) onMirror?.(id, data, cursor);
+        json(response, 200, { mirrored });
+        return;
+      }
       const host = getTerminalHost();
       if (!host) {
         json(response, 503, { error: "This Telar shell has no terminal host." });

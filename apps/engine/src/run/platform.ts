@@ -53,8 +53,14 @@ export type RunProcessGroup = {
    * Stop the whole tree led by `pid`. `force` is the second, impolite attempt.
    * Throws the way `process.kill` does — in particular with `code: "ESRCH"`
    * when there was nothing left to stop, which the manager reads as success.
+   *
+   * `signal` REPLACES THE POLITE ONE, NEVER THE FORCEFUL ONE. A dev server that
+   * traps SIGTERM to drain connections needs SIGINT — Ctrl-C semantics — and
+   * #890 lets a caller ask for it. The escalation stays SIGKILL whatever was
+   * asked for: a stop that cannot be refused is the point of having a second
+   * attempt at all.
    */
-  stop(pid: number, force: boolean): void;
+  stop(pid: number, force: boolean, signal?: NodeJS.Signals): void;
   /** Is anything still alive in the tree led by `pid`? */
   liveness(pid: number): GroupLiveness;
 };
@@ -67,8 +73,8 @@ export type RunProcessGroup = {
 export function posixProcessGroup(kill: RunKill): RunProcessGroup {
   return {
     detached: true,
-    stop(pid, force) {
-      kill(-pid, force ? "SIGKILL" : "SIGTERM");
+    stop(pid, force, signal) {
+      kill(-pid, force ? "SIGKILL" : (signal ?? "SIGTERM"));
     },
     liveness(pid) {
       try {
@@ -109,6 +115,11 @@ const TASKKILL_NOT_FOUND = 128;
  * PLATFORM PRODUCES. `taskkill /T /F` exiting 0 means the tree was terminated,
  * so `liveness` may answer `gone` for that pid — and only for that pid. Every
  * other pid stays `unanswerable`, because nothing here enumerates a tree.
+ *
+ * A REQUESTED SIGNAL IS IGNORED HERE, AND SAYING SO IS BETTER THAN PRETENDING.
+ * `taskkill` posts `WM_CLOSE` or terminates; there is no SIGINT to send and no
+ * handler on the other side to receive one. A caller that asked for one gets
+ * this platform's polite attempt, which is the nearest true thing.
  */
 export function windowsProcessGroup(taskkill: RunTaskkill = systemTaskkill): RunProcessGroup {
   /**

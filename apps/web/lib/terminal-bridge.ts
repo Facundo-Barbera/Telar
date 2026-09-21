@@ -50,7 +50,23 @@ export type TerminalEnding = {
   at?: number;
 };
 
-export type TerminalChunk = { id: string; data: string };
+export type TerminalChunk = {
+  id: string;
+  data: string;
+  /**
+   * WHERE THIS CHUNK SITS IN THE ENGINE'S BYTE RING — on a RUN's frames only
+   * (#890), because only a run has a ring to index into.
+   *
+   * A person's shell has no scrollback anywhere but in the emulator drawing it:
+   * the host forwards bytes and records none, so there is no position to carry
+   * and no join to make. A run's output IS recorded — `/run/bytes` hands back a
+   * window and a cursor — so a chip that attaches to a run already in flight
+   * reads that window and then follows these frames, and this is what tells it
+   * which of them it has already drawn. Without it the join would either repeat
+   * a screen or leave a hole in one.
+   */
+  cursor?: number;
+};
 
 /** What is live in the host right now. Facts only; no handles cross the IPC. */
 export type LiveTerminal = {
@@ -84,6 +100,19 @@ export type TerminalBridge = {
   resize: (id: string, cols: number, rows: number) => Promise<{ ok: boolean }>;
   kill: (id: string, signal?: string) => Promise<{ ok: boolean }>;
   list: () => Promise<{ terminals: LiveTerminal[] }>;
+  /**
+   * BECOME THE READER OF A RUN'S TERMINAL (#890) — an id this renderer did not
+   * open, and the only kind it may ask for: the host refuses anything that is
+   * not one of the engine's. `ok: false` means that terminal is not (or is no
+   * longer) there, which is the ordinary answer for a run that just ended.
+   *
+   * OPTIONAL BECAUSE THE SHELL MAY PREDATE IT. A cockpit running against an
+   * older preload has no `adopt`, and the run chip falls back to the same poll
+   * a remote host uses rather than drawing nothing.
+   */
+  adopt?: (id: string) => Promise<{ ok: boolean }>;
+  /** Stop reading it. Does NOT stop the run: the engine owns the process. */
+  abandon?: (id: string) => Promise<{ ok: boolean }>;
   onData: (listener: (chunk: TerminalChunk) => void) => (() => void) | undefined;
   onExit: (listener: (ending: TerminalEnding) => void) => (() => void) | undefined;
 };

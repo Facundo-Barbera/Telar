@@ -8,24 +8,27 @@ LaTeX and Run, and you can have as many of them as you open.
 This file records the decisions a future reader would otherwise re-litigate, and
 the three places the brief for this work turned out to be wrong.
 
-## 0. A Terminal tab is your `$SHELL`. A Run tab is `/bin/sh`.
+## 0. A shell chip is your `$SHELL`. A run chip is `/bin/sh`.
 
-**There are two emulators in the cockpit now and almost nothing in this file is
-about the second one.** Everything below describes the **Terminal** tab. A
-**Run** tab also draws an xterm — `apps/web/components/run/run-terminal.tsx`,
-added for the same issue — and the difference is not cosmetic:
+**There are two kinds of pane in this one surface and almost nothing in this
+file is about the second.** Everything below describes a SHELL — the chips a
+person opens with `+` or ⌘T. A RUN is a chip in the same strip since #890
+(`apps/web/components/session/run-pane.tsx`, which is the old Run tab's emulator
+moved), and the difference is not cosmetic:
 
-| | Terminal tab | Run tab |
+| | a shell chip | a run chip |
 |---|---|---|
 | What it starts | the person's `$SHELL`, interactive, with their dotfiles | `/bin/sh -c "<command>"` from a saved recipe — non-login, non-interactive, no dotfiles, no prompt, no history |
 | Who chose the program | the person, implicitly, by having a `$SHELL` | the recipe, explicitly; `resolveShell` takes a pinned `config.shell` literally |
-| Where the bytes come from | `telar:terminal:*`, this Mac's PTY host, over IPC | the **engine**, over HTTP, already redacted — `docs/run-terminal.md` |
+| Where the bytes come from | `telar:terminal:*`, this Mac's PTY host, over IPC, RAW | `telar:terminal:*` too — but the engine's REDACTED mirror of them, never the host's own frames; over HTTP where there is no bridge. `docs/run-terminal.md` §7 |
+| Who may address it | this renderer, which opened it | nobody here: write, resize and kill go to the engine, where the singleton and the journal are |
 | How many | as many as you open | one per project, because a run is a project singleton |
+| What closing the chip does | ends that shell | **nothing** — the run belongs to the project and outlives the tab |
 
-**So §2's and §5's caveats do not apply to a Run tab.** A Nerd Font glyph that
+**So §2's and §5's caveats do not apply to a run chip.** A Nerd Font glyph that
 does not render, `fastfetch`'s IIP logo, oh-my-posh, the grey
 `ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE` — every one of those comes from a dotfile that
-a `/bin/sh -c` never reads. **A Run tab looks the same for every user whatever
+a `/bin/sh -c` never reads. **A run looks the same for every user whatever
 their configuration**, which is the useful half of that: it is a recipe's output
 and not a person's environment, and a bug reported against it reproduces
 anywhere.
@@ -130,12 +133,12 @@ One cost, stated: this repo's chord vocabulary folds Control and Command into
 one `CommandOrControl` token, so claiming `^W` also stands ⌘W down while a
 terminal tab is up. Nothing is bound to either by default.
 
-**The Run tab claims the same three, and releases them when it goes off
-screen.** This surface claims while MOUNTED, because a claim released on blur
-would race the application menu's rebuild. A Run tab can do better without that
-race: it claims on `visible`, which changes on a tab switch rather than on
-focus. That matters more there — a Run tab sits open for hours with a dev server
-scrolling in it and nobody typing, and taking Escape from the whole cockpit for
+**A run's pane claims the same three, and releases them when it goes off
+screen.** A shell claims while MOUNTED, because a claim released on blur would
+race the application menu's rebuild. A run can do better without that race: it
+claims on being the ACTIVE chip and visible, which changes on a chip switch
+rather than on focus. That matters more there — a run sits open for hours with a
+dev server scrolling in it and nobody typing, and taking Escape from the whole cockpit for
 that whole time is a worse trade than taking it while somebody is in a shell.
 
 ### The panel and Escape

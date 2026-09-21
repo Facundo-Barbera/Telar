@@ -159,7 +159,10 @@ describe("the surface chooser lays out in columns", () => {
 
   test("ROW-MAJOR: the cards keep the order the strip declares them in", () => {
     const markup = chooser();
-    const order = ["Agents", "Processes", "Diff", "Editor", "Issues", "Pull requests", "Run"];
+    // `Run` left this list with the tab (#890): a run is a chip in the
+    // Terminal's strip now, so the chooser has one fewer card and the surface
+    // that ends the row is Terminal.
+    const order = ["Agents", "Processes", "Diff", "Editor", "Issues", "Pull requests", "Terminal"];
     const at = order.map((label) => markup.indexOf(`>${label}<`));
     expect(at.every((index) => index > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);

@@ -82,10 +82,20 @@ const LIST_READS = new Set(["sessions/live", "health", "inbox", "projects"]);
  *  on a schedule. `sessions/stream` joined on #586. */
 const STREAMS = new Set(["agent/stream", "sessions/stream"]);
 
+/**
+ * AND ONE STREAM WHOSE ROUTE CARRIES A SESSION ID IN THE MIDDLE OF IT (#890):
+ * `sessions/<id>/run/stream`, which no fixed string can match. A run's feed is
+ * idle for as long as nothing is launched — which is most of the time — so the
+ * exemption matters here for exactly the reason it matters above.
+ */
+function isRunStream(path: readonly string[]): boolean {
+  return path.length === 4 && path[0] === "sessions" && path[2] === "run" && path[3] === "stream";
+}
+
 export function upstreamTimeout(request: Pick<Request, "method">, path: readonly string[]): number {
   if (request.method.toUpperCase() !== "GET") return UPSTREAM_TIMEOUT_MS;
   const route = path.join("/");
-  if (STREAMS.has(route)) return Number.POSITIVE_INFINITY;
+  if (STREAMS.has(route) || isRunStream(path)) return Number.POSITIVE_INFINITY;
   return LIST_READS.has(route) ? LIST_READ_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
 }
 

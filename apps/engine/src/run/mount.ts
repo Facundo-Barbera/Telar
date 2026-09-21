@@ -20,7 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { RunJournalFile } from "./journal";
 import { terminalLauncher } from "./launcher";
-import { RunManager } from "./manager";
+import { RunManager, type RunStatusEvent } from "./manager";
 import { matchRunRoute } from "./routes";
 import { RunStore } from "./store";
 import { storeRunCapability, type RunSessionContext } from "./store-capability";
@@ -38,6 +38,15 @@ export type RunMount = {
    * moves between worktrees is not answered from a stale one.
    */
   handle(method: string, tail: string, input: Record<string, unknown>, context: () => RunSessionContext): Promise<unknown> | undefined;
+  /**
+   * Every run transition, for one project. THE ROUTE THAT USES THIS IS AN SSE
+   * ARM RATHER THAN A TABLE ENTRY, because `RunRoute` returns a value and a
+   * stream does not have one — see `daemon.ts`.
+   *
+   * SCOPED HERE RATHER THAN IN THE MANAGER: which project a connection may see
+   * is the session's business, and the manager is not told about sessions.
+   */
+  watch(projectId: string, listener: (event: RunStatusEvent) => void): () => void;
   /** Runs the last daemon did not see end. Reported, never adopted. */
   recovered: RunView[];
   /** Whether runs go on a real pseudo-terminal the desktop shell holds. */
@@ -87,6 +96,11 @@ export function createRunMount(options: { root: string; env?: NodeJS.ProcessEnv 
         params: matched.params,
         input,
         capability: storeRunCapability({ store, manager, context }),
+      });
+    },
+    watch(projectId, listener) {
+      return manager.watch((event) => {
+        if (event.projectId === projectId) listener(event);
       });
     },
     shutdown: () => manager.shutdown(),

@@ -11,7 +11,17 @@
  * daemon side rather than from an argument. A tool that could name any project
  * would let one conversation stop another project's server by typo.
  */
+import type { RunOutputFilter, RunWaitOutcome } from "./manager";
 import type { RunConfigurationInput, RunConfigurationView, RunOutputLine, RunView } from "./types";
+
+/**
+ * WHICH SIGNAL THE POLITE STOP SENDS — a closed set, because these three are
+ * the ones with distinct meanings to a process and the rest would be a hole a
+ * caller could aim anywhere.
+ */
+export type RunStopSignal = "SIGTERM" | "SIGINT" | "SIGKILL";
+
+export type RunWaitAnswer = RunWaitOutcome;
 
 export type RunStatusAnswer = {
   /** The project's one live deployment, when there is one. */
@@ -35,12 +45,23 @@ export type RunCapability = {
    * rather than something to quietly stop.
    */
   start(input: { configId: string; replace?: boolean }): Promise<RunView>;
-  /** Defaults to the project's active run when no id is given. */
-  stop(input?: { runId?: string }): Promise<RunView>;
+  /**
+   * Defaults to the project's active run when no id is given.
+   *
+   * `signal` IS THE POLITE ATTEMPT'S ONLY. Ctrl-C semantics matter to a dev
+   * server that traps TERM (#890); the forceful escalation stays SIGKILL.
+   */
+  stop(input?: { runId?: string; signal?: RunStopSignal }): Promise<RunView>;
   restart(input?: { runId?: string }): Promise<RunView>;
   /** Free the slot held by a run Telar can no longer verify. Signals nothing. */
   release(input: { runId: string }): Promise<RunView>;
-  output(input?: { runId?: string; after?: number }): Promise<{ lines: RunOutputLine[]; cursor: number; dropped: number }>;
+  output(input?: { runId?: string; after?: number } & RunOutputFilter): Promise<{ lines: RunOutputLine[]; cursor: number; dropped: number }>;
+  /**
+   * Block until one of four things happens. See `RunManager.wait` — this is a
+   * pass-through, because the conditions are all facts the engine already holds
+   * and a worker waiting over HTTP would be polling by another name.
+   */
+  wait(input: { runId?: string; pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitAnswer>;
   /**
    * The same window as `output`, in the shape a terminal draws: redacted bytes.
    *

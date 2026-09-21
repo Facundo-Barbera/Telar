@@ -62,7 +62,24 @@ export type RunLaunchEvents = {
  */
 export type RunHandle = {
   readonly pid: number | undefined;
-  stop(force: boolean): void;
+  /**
+   * THE HOST'S NAME FOR THIS PTY, when the run is on one — and the reason it is
+   * published rather than kept private is that the cockpit needs to point at it.
+   *
+   * A run and a person's shell are the same kind of thing now (#890): both are
+   * terminals the desktop holds, and the strip draws them side by side. To draw
+   * a run the renderer has to be able to say WHICH terminal, and the only name
+   * that survives the trip is the host's id — a pid is reused by the kernel and
+   * an id is not. Absent for the pipe launcher, which has no terminal at all.
+   */
+  readonly terminalId?: string;
+  /**
+   * `signal` REPLACES THE POLITE ATTEMPT AND NEVER THE FORCEFUL ONE. Ctrl-C
+   * semantics matter to a dev server that traps TERM to drain connections
+   * (#890), so a caller may ask for SIGINT — but a `force` stop stays SIGKILL,
+   * because a stop that can be refused is not what a second attempt is for.
+   */
+  stop(force: boolean, signal?: NodeJS.Signals): void;
   /**
    * KEYSTROKES, AND THEY ARE OPTIONAL BECAUSE ONE LAUNCHER GENUINELY HAS NO
    * KEYBOARD.
@@ -80,6 +97,20 @@ export type RunHandle = {
   /** The geometry the surface drawing it is using. Same optionality, same
    *  reason: a pipe has no columns. */
   resize?(cols: number, rows: number): Promise<boolean>;
+  /**
+   * THE REDACTED BYTES, BACK TO WHOEVER IS HOLDING THE TERMINAL (#890).
+   *
+   * Only the terminal handle has one, and that is the whole of the asymmetry:
+   * a PTY held by the desktop shell has a SECOND audience — the cockpit's
+   * Terminal strip — reading the same device over IPC, and what that audience
+   * must see is the output of `manager.ts`'s redactor rather than the raw
+   * frames the host fans. A pipe-launched run has no such audience: there is no
+   * shell, no IPC and no chip, so there is nothing to mirror to.
+   *
+   * FIRE AND FORGET, AND DELIBERATELY SO. See `terminal-client.ts`: a repaint
+   * is not worth a run's slot.
+   */
+  mirror?(data: string, cursor: number): void;
 };
 
 export type RunLauncher = {
@@ -140,9 +171,9 @@ export function pipeLauncher(group: RunProcessGroup): RunLauncher {
         get pid() {
           return child.pid;
         },
-        stop(force: boolean) {
+        stop(force: boolean, signal?: NodeJS.Signals) {
           if (child.pid === undefined) return;
-          group.stop(child.pid, force);
+          group.stop(child.pid, force, signal);
         },
       });
     },
@@ -191,15 +222,22 @@ export function terminalLauncher(client: RunTerminalClient, defaults: { cols?: n
       }
       return {
         pid: opened.pid,
+        terminalId: opened.id,
         write: (data: string) => client.write(opened.id, data),
         resize: (cols: number, rows: number) => client.resize(opened.id, cols, rows),
-        stop(force: boolean) {
+        mirror: (data: string, cursor: number) => {
+          // SWALLOWED, unlike `stop`'s rejection. A kill nobody answered must
+          // become `unknown`; a repaint nobody answered is a repaint, and the
+          // scrollback the chip re-reads on its next attach is the recovery.
+          void client.mirror(opened.id, data, cursor).catch(() => {});
+        },
+        stop(force: boolean, signal?: NodeJS.Signals) {
           // BY ID, AND FIRE-AND-FORGET IS NOT AN OPTION. A kill whose request
           // never lands must not read as a kill that did, so a rejection is
           // re-raised into the manager's `stopGroup`, which turns it into
           // `unknown` — the slot stays held rather than being freed on a
           // request nobody answered.
-          void client.kill(opened.id, force ? "SIGKILL" : "SIGTERM").catch((error: unknown) => {
+          void client.kill(opened.id, force ? "SIGKILL" : (signal ?? "SIGTERM")).catch((error: unknown) => {
             events.lost(
               `Telar could not ask its terminal host to stop this run: ${error instanceof Error ? error.message : String(error)}`,
             );

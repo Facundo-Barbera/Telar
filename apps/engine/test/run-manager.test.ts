@@ -95,6 +95,42 @@ const alive = (pid: number): boolean => {
   }
 };
 
+test("a watcher is told every transition, with the whole view and who holds the slot", async () => {
+  /**
+   * #890: the cockpit stopped polling `/run/status`, so every state a person
+   * can see has to ARRIVE. Two properties are worth pinning. The frame carries
+   * the WHOLE view, because there is no journal to page back to. And `active`
+   * is the engine's own answer rather than something a reader guesses from the
+   * status — a released run stays `unknown` with the slot free, so a reader
+   * that inferred "not terminal, therefore deployed" would show a ghost.
+   */
+  const manager = runManager();
+  const seen: Array<{ status: string; active: boolean; runId: string }> = [];
+  const stop = manager.watch((event) => {
+    expect(event.type).toBe("run.status");
+    expect(event.projectId).toBe("proj_1");
+    seen.push({ status: event.run.status, active: event.active, runId: event.run.runId });
+  });
+
+  const tree = worktree();
+  const started = await manager.start(input(tree, config("exit 0")));
+  expect(await until(() => seen.some((frame) => frame.status === "exited"))).toBe(true);
+
+  // `starting` is announced too: the slot is held from that moment, and a
+  // surface that waited for `running` would show nothing across the spawn.
+  expect(seen[0]).toEqual({ status: "starting", active: true, runId: started.runId });
+  const last = seen[seen.length - 1]!;
+  expect(last.status).toBe("exited");
+  // The slot is free the moment the run is terminal, and the frame says so.
+  expect(last.active).toBe(false);
+
+  // Unsubscribing is real: a panel that closed must stop costing transitions.
+  stop();
+  const before = seen.length;
+  await manager.start(input(tree, config("exit 0", { id: "runcfg_two" })));
+  expect(seen.length).toBe(before);
+});
+
 test("a run lands in the configured directory with the configured environment, and its output is kept after it exits", async () => {
   const tree = worktree();
   fs.mkdirSync(path.join(tree, "apps", "web"), { recursive: true });

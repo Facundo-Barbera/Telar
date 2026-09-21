@@ -384,21 +384,21 @@ describe("movePanelTab", () => {
     tabs: [
       { id: "issues", kind: "issues", params: {} },
       { id: "diff", kind: "diff", params: {} },
-      { id: "run", kind: "run", params: {} },
+      { id: "processes", kind: "processes", params: {} },
     ],
     activeTab: "diff",
     open: true,
   };
 
   test("`toIndex` is where the tab lands in the strip once it has left its old place", () => {
-    expect(kinds(movePanelTab(strip, "issues", 2))).toEqual(["diff", "run", "issues"]);
-    expect(kinds(movePanelTab(strip, "run", 0))).toEqual(["run", "issues", "diff"]);
-    expect(kinds(movePanelTab(strip, "issues", 1))).toEqual(["diff", "issues", "run"]);
+    expect(kinds(movePanelTab(strip, "issues", 2))).toEqual(["diff", "processes", "issues"]);
+    expect(kinds(movePanelTab(strip, "processes", 0))).toEqual(["processes", "issues", "diff"]);
+    expect(kinds(movePanelTab(strip, "issues", 1))).toEqual(["diff", "issues", "processes"]);
   });
 
   test("past either end means that end, because that is what the pointer said", () => {
-    expect(kinds(movePanelTab(strip, "issues", 99))).toEqual(["diff", "run", "issues"]);
-    expect(kinds(movePanelTab(strip, "run", -4))).toEqual(["run", "issues", "diff"]);
+    expect(kinds(movePanelTab(strip, "issues", 99))).toEqual(["diff", "processes", "issues"]);
+    expect(kinds(movePanelTab(strip, "processes", -4))).toEqual(["processes", "issues", "diff"]);
   });
 
   test("a move to where it already is, or of a tab that is not open, changes nothing", () => {
@@ -409,7 +409,7 @@ describe("movePanelTab", () => {
   test("neither the active tab nor the panel's openness moves with it", () => {
     // Reordering says where a tab SITS. A strip that also switched what you
     // were reading would be answering a question nobody asked.
-    const out = movePanelTab(strip, "run", 0);
+    const out = movePanelTab(strip, "processes", 0);
     expect(out.activeTab).toBe("diff");
     expect(out.open).toBe(true);
   });
@@ -465,12 +465,12 @@ describe("persistence", () => {
 
 describe("migrates the old string list into instances", () => {
   test("each stored kind becomes ONE instance with empty params, keeping its order", () => {
-    writeLegacy("session_a", ["issues", "editor", "run"], "editor");
+    writeLegacy("session_a", ["issues", "editor", "processes"], "editor");
     const restored = readPanelTabs<PanelTab>("session_a", isKnown);
     expect(restored.tabs).toEqual([
       { id: "issues", kind: "issues", params: {} },
       { id: "editor", kind: "editor", params: {} },
-      { id: "run", kind: "run", params: {} },
+      { id: "processes", kind: "processes", params: {} },
     ]);
     // The stored `activeTab` was a KIND; it resolves to that kind's instance.
     expect(restored.activeTab).toBe("editor");

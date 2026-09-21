@@ -21,7 +21,6 @@ import {
   PanelRightCloseIcon,
   PanelRightOpenIcon,
   PanelsTopLeftIcon,
-  PlayIcon,
   PlusIcon,
   SquareTerminalIcon,
   TerminalIcon,
@@ -109,7 +108,6 @@ const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then
 const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface));
 const DataSurface = dynamic(() => import("@/components/session/data-surface").then((mod) => mod.DataSurface));
 const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface));
-const RunPanel = dynamic(() => import("@/components/run/run-panel").then((mod) => mod.RunPanel));
 const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface));
 /** THE HEAVIEST ARM ON THE LADDER: xterm.js, its WebGL renderer and its image
  *  decoder. Nothing but this tab needs a terminal emulator in the bundle, and
@@ -241,20 +239,20 @@ const SURFACES = [
    */
   { id: "latex", label: "LaTeX", icon: SigmaIcon, blurb: "Compile status, errors and the log" },
   /**
-   * THE RUN SURFACE, and it is the project's rather than this session's. A
-   * project has ONE local deployment; every session looking at the project sees
-   * the same one, which is why this tab is not gated on anything the session
-   * opted into and why the panel inside it names the worktree the run came from.
-   * Reading it from a session sitting on another branch is the normal case, not
-   * the edge case (components/run/run-panel.tsx).
-   */
-  { id: "run", label: "Run", icon: PlayIcon, blurb: "The project's dev server, and how to start it" },
-  /**
    * THE TERMINAL, and it is a real one — a pseudo-terminal in the Electron main
    * process (docs/terminal-host.md), not a log pane with a prompt drawn on it.
    * `test -t 1` answers yes in here, which is the whole difference: a pipe
    * cannot run vim, cannot draw a progress bar and cannot run the person's own
    * shell startup.
+   *
+   * AND THE PROJECT'S DEPLOYMENT IS IN HERE TOO (#890). There was a RUN tab
+   * beside this one, with its own emulator drawing the same kind of bytes with
+   * the same `ptyByteWriter`, so "the thing that is running" had two homes.
+   * A run is a terminal the desktop holds, exactly as a shell is; what differs
+   * is that it belongs to the PROJECT rather than to whoever opened it. That is
+   * a property of one chip, not a reason for a second surface — so a run is a
+   * chip in this strip, with its recipe's glyph and a state dot, and the Run
+   * HEADER CONTROL stays where it was: it is the launcher, not a surface.
    *
    * MULTI-INSTANCE, unlike every other tab on this list, and for the Editor's
    * reason rather than a new one: a terminal is not a fold over a record that a
@@ -265,7 +263,7 @@ const SURFACES = [
    * NOT "PROCESSES". That tab folds the engine's background tasks — things an
    * agent started, with liveness and an owner. This is a shell you type into.
    */
-  { id: "terminal", label: "Terminal", icon: SquareTerminalIcon, blurb: "A real shell, in this session's checkout" },
+  { id: "terminal", label: "Terminal", icon: SquareTerminalIcon, blurb: "Shells in this session's checkout, and what the project is running" },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
@@ -325,6 +323,20 @@ export function migratePanelTab(value: string): string {
   // `files` was retired in favour of Editor (#193). A saved arrangement that
   // names it opens on Editor's tree rather than on nothing.
   if (value === "files") return "editor";
+  /**
+   * AND `run` WAS RETIRED INTO THE TERMINAL (#890) — a run is a chip in that
+   * tab's strip now, not a surface of its own.
+   *
+   * THE RENAME IS THE WHOLE MIGRATION, AND IT IS NOT DOING IT ALONE. Pointing
+   * the id at `terminal` is what stops a saved Run tab restoring as a blank
+   * pane; what folds it INTO the Terminal somebody also had open — params and
+   * all, so their shells are not orphaned — is `collapseTerminalTabs`, which
+   * #889 already built for exactly this shape and which the cockpit already
+   * runs on every restore. The CHIP is not seeded here either: the surface
+   * reads `/run/status` once on mount and gives the project's live run a chip,
+   * which is the same path a run started by an agent takes.
+   */
+  if (value === "run") return "terminal";
   if (issuePanelNumber(value as PanelTab) !== undefined) return "issues";
   if (pullPanelNumber(value as PanelTab) !== undefined) return "pulls";
   return isFilePanelTab(value) ? "editor" : value;
@@ -1483,14 +1495,6 @@ export function PanelSurface({
   if (kind === "latex")
     return <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))} />;
   /**
-   * KEYED BY HOST AND SESSION. The surface polls and holds a cursor into one
-   * run's output, so a move must not carry that cursor across — and session ids
-   * are per-Mac, so the session alone would reuse one host's panel for
-   * another's. The host is in the props too (components/run/run-panel.tsx).
-   */
-  if (kind === "run")
-    return sessionId ? <RunPanel key={`${hostId ?? "local"}:${sessionId}`} sessionId={sessionId} {...(hostId ? { hostId } : {})} visible={visible} /> : null;
-  /**
    * KEYED BY THE INSTANCE AND THE CHECKOUT, like the Editor above and for a
    * harder reason: what this holds is not scroll position but LIVE SHELLS. A
    * shared key would have React reuse one tab's emulators for another's PTYs,
@@ -1506,6 +1510,10 @@ export function PanelSurface({
         key={`${hostId ?? "local"}:${sessionId ?? projectId ?? "none"}:${tab.id}`}
         {...(sessionId ? { sessionId } : {})}
         {...(projectId ? { projectId } : {})}
+        // The run chips in the strip read a HOST-SCOPED door (#890), and
+        // session ids are per-host: an unpinned client could come back
+        // describing another Mac's deployment rather than failing.
+        {...(hostId ? { hostId } : {})}
         params={tab.params}
         {...(onTabParams ? { onParams: onTabParams } : {})}
         {...(onCloseSelf ? { onCloseSelf } : {})}
