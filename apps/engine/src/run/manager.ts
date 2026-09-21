@@ -227,8 +227,44 @@ const defaultProbe: RunProbe = async (url) => {
   }
 };
 
+/**
+ * ONE FRAME OF "A RUN CHANGED", AND THE FULL VIEW IS ON IT DELIBERATELY.
+ *
+ * Every other feed in this engine is thin — an id and a kind, re-derivable from
+ * a cursor'd read — because the thing it names is a JOURNAL ENTRY that a reader
+ * can page back to. A run's status is not journalled anywhere a client can page:
+ * it lives in this process's memory, and the only read of it is `/run/status`,
+ * which is precisely the poll this event exists to delete. A thin frame here
+ * would buy a request per transition instead of one every four seconds, which is
+ * not the trade #890 asked for.
+ *
+ * SO THE FRAME IS THE ANSWER, and it is the SAME `RunView` `/run/status` hands
+ * back — same redaction, same rule about when `pid` and `terminalId` appear.
+ * A reader that connects late reads `/run/status` ONCE and then never again; a
+ * reader that missed a frame gets the next one, which carries the whole state
+ * rather than a delta, so there is nothing to reconcile.
+ */
+export type RunStatusEvent = {
+  type: "run.status";
+  projectId: string;
+  run: RunView;
+  /**
+   * WHETHER THIS RUN HOLDS THE PROJECT'S DEPLOYMENT SLOT, right now.
+   *
+   * ON THE EVENT RATHER THAN ON THE VIEW, because it is not a property of the
+   * run: it is the answer to "which of this project's runs is the live one",
+   * and `holder()` is the only thing entitled to give it. A client cannot
+   * re-derive it from the status either — `release()` frees the slot while the
+   * run stays `unknown` for ever, which is the whole point of `unknown` — so a
+   * reader left to guess would show a released ghost as deployed.
+   */
+  active: boolean;
+};
+
 export class RunManager {
   private readonly runs = new Map<string, LiveRun>();
+  /** Everyone listening for `run.status`. See `RunStatusEvent`. */
+  private readonly watchers = new Set<(event: RunStatusEvent) => void>();
   /** projectId → runId holding the one deployment slot. */
   private readonly active = new Map<string, string>();
   /** Projects mid stop-then-start. A transition holds the slot across the gap. */
@@ -339,6 +375,44 @@ export class RunManager {
       recovered.push(this.view(run));
     }
     return recovered;
+  }
+
+  // ── watching ─────────────────────────────────────────────────────────────
+
+  /**
+   * Be told when any run's state changes. Answers the unsubscribe.
+   *
+   * NOT FILTERED BY PROJECT HERE. A watcher is a transport — the daemon's SSE
+   * route — and which projects one connection may see is that route's knowledge,
+   * not this file's. Filtering here would mean this map had to be told about
+   * sessions.
+   *
+   * A LISTENER THAT THROWS DOES NOT STOP THE OTHERS, and does not take down the
+   * status transition that emitted the frame: `announce` is called from `exit`
+   * handlers reached through `void`, where a rejection ends the daemon.
+   */
+  watch(listener: (event: RunStatusEvent) => void): () => void {
+    this.watchers.add(listener);
+    return () => {
+      this.watchers.delete(listener);
+    };
+  }
+
+  private announce(run: LiveRun): void {
+    if (this.watchers.size === 0) return;
+    const event: RunStatusEvent = {
+      type: "run.status",
+      projectId: run.projectId,
+      run: this.view(run),
+      active: this.holder(run.projectId)?.runId === run.runId,
+    };
+    for (const watcher of this.watchers) {
+      try {
+        watcher(event);
+      } catch {
+        // A broken reader is that reader's problem, not this run's.
+      }
+    }
   }
 
   // ── reading ──────────────────────────────────────────────────────────────
@@ -558,6 +632,11 @@ export class RunManager {
     this.runs.set(run.runId, run);
     this.active.set(input.projectId, run.runId);
     this.prune(input.projectId);
+    // `starting` IS A STATE WORTH ANNOUNCING. The slot is already held, so a
+    // cockpit that waited for `running` would show nothing for the length of a
+    // readiness baseline and a spawn — which is exactly the window a person
+    // presses the button twice in.
+    this.announce(run);
     return run;
   }
 
@@ -690,6 +769,9 @@ export class RunManager {
     if (isTerminal(run.status) || run.status === "unknown") return;
 
     run.status = "running";
+    // Announced here rather than after the journal write below, because that
+    // write is allowed to fail and a live run must not go unannounced over it.
+    this.announce(run);
     // EVERYTHING THAT CANNOT FAIL, FIRST. Readiness is pure registration; the
     // second journal write is disk I/O and can throw, and a throw between the
     // spawn and this would leave a live process with no readiness poll.
@@ -747,6 +829,7 @@ export class RunManager {
       run.settled = true;
       this.closeRecord(run);
       this.wake(run);
+      this.announce(run);
       return;
     }
     const code = detail.exitCode;
@@ -939,6 +1022,7 @@ export class RunManager {
         run.readiness = { kind: "ready", at: this.now() };
         if (run.status === "running") run.status = "ready";
         clearInterval(timer);
+        this.announce(run);
       });
     }, this.readyPollMs);
     timer.unref?.();
@@ -1104,6 +1188,7 @@ export class RunManager {
     // The human has said "I checked". The durable record exists to make them
     // check; once they have, it would only haunt the next daemon start.
     this.closeRecord(run);
+    this.announce(run);
     return this.view(run);
   }
 
@@ -1177,6 +1262,7 @@ export class RunManager {
     // The same sentence, and it must arrive scrubbed here too — `readiness` is
     // handed to clients whole.
     if (run.readiness.kind === "pending") run.readiness = { kind: "unattributable", reason };
+    this.announce(run);
   }
 
   private finish(run: LiveRun, status: "exited" | "failed", detail: { exitCode?: number; signal?: string; error?: string }): void {
@@ -1191,6 +1277,7 @@ export class RunManager {
     // Accounted for: nothing is left for a future daemon to warn about.
     this.closeRecord(run);
     this.wake(run);
+    this.announce(run);
   }
 
   private wake(run: LiveRun): void {

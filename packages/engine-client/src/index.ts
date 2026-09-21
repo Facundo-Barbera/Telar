@@ -3089,6 +3089,28 @@ export class EngineClient {
   }
 
   /**
+   * EVERY RUN TRANSITION FOR THIS SESSION'S PROJECT — issue #890.
+   *
+   * A URL AND HEADERS RATHER THAN A SUBSCRIPTION, exactly like `agentStream`
+   * and `sessionsStream`: the caller opens it, so a cockpit route can pipe the
+   * body untouched.
+   *
+   * ITS FRAMES CARRY THE WHOLE `RunView`, WHICH THE OTHER TWO FEEDS' FRAMES
+   * DELIBERATELY DO NOT. Their rule — a frame names a journal entry a reader
+   * can page back to — has nothing to stand on here: a run's status lives in
+   * the engine's memory, and the only read of it is `/run/status`, which is the
+   * poll this feed exists to delete. So a reader reads status ONCE on mount and
+   * then never again, and a missed frame costs nothing because the next one
+   * carries the whole state rather than a delta.
+   */
+  runStream(sessionId: string): { url: string; headers: Record<string, string> } {
+    return {
+      url: `http://${this.discovery.host}:${this.discovery.port}${runBase(sessionId)}/stream`,
+      headers: { authorization: `Bearer ${this.discovery.token}` },
+    };
+  }
+
+  /**
    * Type into the program a run's recipe named.
    *
    * NOT A SHELL, usually: an unpinned recipe is `/bin/sh -c "<command>"`, so

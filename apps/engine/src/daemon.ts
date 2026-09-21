@@ -5155,6 +5155,69 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          * below still needs it. `run/mount.ts` owns everything else and answers
          * `undefined` when the request is not a run request.
          */
+        /**
+         * THE RUN FEED — #890, and it is what deletes two poll loops.
+         *
+         * BEFORE THE TABLE, because `RunRoute` returns a VALUE and this route
+         * has none: it holds the socket open for the life of the panel. Same
+         * frame shape as `/v2/sessions/stream` — the `: open` flush that puts
+         * headers on the wire, the 25 s `: beat`, the `openStreams`
+         * registration so `server.close()` is not parked on a connection that
+         * by design never ends — and every reason written out there applies
+         * here verbatim.
+         *
+         * THE FRAME CARRIES THE WHOLE `RunView`, WHICH THE SESSION FEED'S
+         * FRAMES DELIBERATELY DO NOT. That rule exists because a thin frame
+         * names a journal entry a reader can page back to; a run's status is
+         * in the engine's memory and the only read of it is `/run/status` —
+         * the poll this route exists to delete. See `RunStatusEvent`.
+         *
+         * SCOPED TO THE SESSION'S PROJECT. A run belongs to a project, and a
+         * connection that saw every project's runs would be a cross-project
+         * read granted by a typo.
+         */
+        if (request.method === "GET" && session.tail === "/run/stream") {
+          const record = store.getSession(session.sessionId);
+          if (!record.projectId) throw new HttpError(400, "invalid_request", "runs need a project");
+          response.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            Connection: "keep-alive",
+          });
+          response.write(": open\n\n");
+          const stop = runMount.watch(record.projectId, (event) => {
+            try {
+              response.write(`data: ${JSON.stringify(event)}\n\n`);
+            } catch {
+              // The socket has gone; the close handler below unsubscribes.
+            }
+          });
+          const beat = setInterval(() => {
+            try {
+              response.write(": beat\n\n");
+            } catch {
+              /* the close handler is what actually tidies up */
+            }
+          }, 25_000);
+          beat.unref();
+          const finish = () => {
+            clearInterval(beat);
+            stop();
+            openStreams.delete(finish);
+          };
+          openStreams.add(finish);
+          request.on("close", finish);
+          response.on("close", finish);
+          (finish as { end?: () => void }).end = () => {
+            finish();
+            try {
+              response.end();
+            } catch {
+              /* already gone */
+            }
+          };
+          return;
+        }
         if (session.tail === "/run" || session.tail.startsWith("/run/")) {
           const runAnswer = runMount.handle(
             request.method ?? "",

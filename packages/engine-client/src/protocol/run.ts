@@ -184,6 +184,28 @@ export const RunView = z.object({
 });
 export type RunView = z.infer<typeof RunView>;
 
+/**
+ * ONE RUN CHANGED — the frame `/run/stream` carries (#890).
+ *
+ * THE WHOLE VIEW IS ON IT, unlike the session feed's frames, and the reason is
+ * that there is nothing to page back to: a run's status lives in the engine's
+ * memory and the only read of it is `/run/status`, the poll this feed exists to
+ * delete. The frame IS the state, so a reader that missed one is corrected by
+ * the next rather than having to reconcile.
+ *
+ * `active` IS NOT A PROPERTY OF THE RUN and is deliberately not on `RunView`.
+ * It answers "does this run hold the project's one deployment slot", which only
+ * the engine can say: a released run stays `unknown` for ever with the slot
+ * free, so a client re-deriving it from the status would show a ghost.
+ */
+export const RunStatusEvent = z.object({
+  type: z.literal("run.status"),
+  projectId: z.string(),
+  run: RunView,
+  active: z.boolean(),
+});
+export type RunStatusEvent = z.infer<typeof RunStatusEvent>;
+
 export const RunStatusAnswer = z.object({
   active: RunView.optional(),
   /** Newest first, the live one included. History is what makes an exit readable. */
