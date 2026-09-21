@@ -168,8 +168,11 @@ test("changing the enabled set rebinds: the new credential works and the old bea
   await eventually(() => expect(sockets).toHaveLength(1));
   const leaseA = sockets[0]!;
   // The `telar` wall carries the core toolkits too, so assert the plugin's
-  // presence rather than exclusivity.
-  expect((await list(leaseA)).names).toEqual(expect.arrayContaining(["hello_ping", "hello_state"]));
+  // presence rather than exclusivity. THE RUN TOOLKIT IS ONE OF THOSE: a
+  // session with a project and a working directory gets `run_*`, which is what
+  // `RUN_BRIEFING` has been promising every agent since #198 W4 — and what no
+  // worker ever put on the wall until this assertion.
+  expect((await list(leaseA)).names).toEqual(expect.arrayContaining(["hello_ping", "hello_state", "run_save_config", "run_start", "run_output"]));
 
   // ── set B: a DIFFERENT non-empty set, which is the case that broke ───────
   await client.updateProject("project_one", { plugins: { second: { enabled: true } } });

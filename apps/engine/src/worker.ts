@@ -15,6 +15,8 @@ import { notebookTools } from "./ds/notebook-tools";
 import { latexTools } from "./latex/latex-tools";
 import { createDisplayCapability } from "./display/capability";
 import { clientLatexCapability } from "./latex/client-capability";
+import { clientRunCapability } from "./run/client-capability";
+import { runTools } from "./run/tools";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
@@ -79,6 +81,21 @@ type WorkerClient = Pick<
   | "liveSessions"
   | "ds"
   | "latex"
+  // The run door: `clientRunCapability` speaks these verbs, and every one is an
+  // HTTP call to the daemon, which owns the process group.
+  | "runConfigurations"
+  | "createRunConfiguration"
+  | "updateRunConfiguration"
+  | "removeRunConfiguration"
+  | "runStatus"
+  | "startRun"
+  | "stopRun"
+  | "restartRun"
+  | "releaseRun"
+  | "runOutput"
+  | "runBytes"
+  | "writeRun"
+  | "resizeRun"
   // The generic plugin door. ONE verb for every plugin.
   | "plugin"
   | "createSession"
@@ -1605,6 +1622,7 @@ export class EngineWorker {
         ...(promptsCapability ? { prompts: promptsCapability } : {}),
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
         ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
+        ...(claim.projectId && claim.projectRoot ? { run: clientRunCapability(this.options.client, sessionId) } : {}),
         ...pluginCapabilities,
       };
       if (driverKind !== "claude" && this.options.telarSocket) {
@@ -1622,6 +1640,7 @@ export class EngineWorker {
               { name: "ds", build: dsTools as never, capability: () => box.current.ds },
               { name: "notebook", build: notebookTools as never, capability: () => box.current.ds },
               { name: "latex", build: latexTools as never, capability: () => box.current.latex },
+              { name: "run", build: runTools as never, capability: () => box.current.run },
               ...pluginToolModules().map((module) => ({
                 name: `plugin:${module.meta.id}`,
                 build: ((tool: never, capability: never) => module.tools(tool, capability) as unknown[]) as never,
@@ -1733,6 +1752,15 @@ export class EngineWorker {
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
         // The compile door, same shape: HTTP to the daemon, which owns the jobs.
         ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
+        /**
+         * THE RUN DOOR, same shape again. `clientRunCapability` and the `run_*`
+         * toolkit shipped with #198 W4, and every driver gates its toolkit and
+         * `RUN_BRIEFING` on this field — but nothing ever set it, so the briefing
+         * told every agent about tools it did not have. The daemon's own gate
+         * (`runs need a project`, `runs need a working directory`) is what this
+         * condition mirrors: a run is a process in a directory.
+         */
+        ...(claim.projectId && claim.projectRoot ? { run: clientRunCapability(this.options.client, sessionId) } : {}),
         // Claude's driver binds its own telar socket and reads these through its
         // per-turn bindings; Codex and OpenCode consume the worker's lease.
         ...(Object.keys(pluginCapabilities).length > 0 ? { plugins: pluginCapabilities } : {}),
