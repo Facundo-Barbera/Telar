@@ -45,11 +45,11 @@ export type TerminalLike = {
  * and exactly three following subparams is touched; the five-subparam form,
  * semicolons, and every other sequence pass through untouched.
  */
-const SHORT_COLON_TRUECOLOUR = /\[([0-9;:]*?)([345]8):2:(\d+):(\d+):(\d+)(?=[;m])/g;
+const SHORT_COLON_TRUECOLOUR = /\x1b\[([0-9;:]*?)([345]8):2:(\d+):(\d+):(\d+)(?=[;m])/g;
 
 export function normaliseTruecolourSgr(data: string): string {
   if (!data.includes(":2:")) return data;
-  return data.replace(SHORT_COLON_TRUECOLOUR, (_all, before: string, kind: string, r: string, g: string, b: string) => `[${before}${kind}:2::${r}:${g}:${b}`);
+  return data.replace(SHORT_COLON_TRUECOLOUR, (_all, before: string, kind: string, r: string, g: string, b: string) => `\u001b[${before}${kind}:2::${r}:${g}:${b}`);
 }
 
 /**
@@ -59,11 +59,11 @@ export function normaliseTruecolourSgr(data: string): string {
  * is not an unfinished `ESC [` goes through as it arrived.
  */
 export function splitTrailingCsi(data: string): { ready: string; pending: string } {
-  const esc = data.lastIndexOf("");
+  const esc = data.lastIndexOf("\u001b");
   if (esc === -1) return { ready: data, pending: "" };
   const tail = data.slice(esc);
   // `ESC` alone, or `ESC [` followed only by parameter/intermediate bytes.
-  if (tail === "" || /^\[[0-9;:?<=>!]*$/.test(tail)) return { ready: data.slice(0, esc), pending: tail };
+  if (tail === "\x1b" || /^\x1b\[[0-9;:?<=>!]*$/.test(tail)) return { ready: data.slice(0, esc), pending: tail };
   return { ready: data, pending: "" };
 }
 
@@ -84,7 +84,7 @@ export function splitTrailingCsi(data: string): { ready: string; pending: string
  * not touched. A sequence that grows past the addon's own limit is released
  * as it came, because at that point the addon would refuse it anyway.
  */
-const IIP_HEADER = "]1337;File=";
+const IIP_HEADER = "\u001b]1337;File=";
 const IIP_HOLD_LIMIT = 20_000_000 * 1.4; // addon's iipSizeLimit, as base64
 
 function base64ByteLength(payload: string): number {
@@ -93,8 +93,8 @@ function base64ByteLength(payload: string): number {
 }
 
 function iipTerminator(text: string, from: number): { at: number; length: number } | undefined {
-  const bel = text.indexOf("", from);
-  const st = text.indexOf("\\", from);
+  const bel = text.indexOf("\u0007", from);
+  const st = text.indexOf("\u001b\\", from);
   if (bel === -1 && st === -1) return undefined;
   if (st === -1 || (bel !== -1 && bel < st)) return { at: bel, length: 1 };
   return { at: st, length: 2 };
