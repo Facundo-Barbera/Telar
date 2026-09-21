@@ -45,7 +45,7 @@ import type { RunApi } from "@/lib/run/api";
 import { byteDroppedNotice, byteFeed } from "@/lib/run/terminal-feed";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
 import { terminalKeyHandler } from "@/lib/terminal-session";
-import { cssColorReader, cssVariableReader, terminalFont, terminalTheme } from "@/lib/terminal-theme";
+import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
 
 /** Deep enough to hold a build's output and the failure above it; a run panel
  *  is not a place anyone reads twenty thousand lines back. xterm's default is
@@ -114,6 +114,10 @@ export function RunTerminal({ api, sessionId, runId, live, visible = true }: Pro
     let disposed = false;
     const read = cssColorReader(element, document.createElement("canvas"));
     const { fontFamily, fontSize } = terminalFont(cssVariableReader(element));
+    /** Started before the terminal exists and awaited before the first fit —
+     *  see `loadTerminalFonts`. A grid measured mid-download is a grid sized
+     *  against the fallback face. */
+    const fontsReady = loadTerminalFonts(fontFamily, fontSize);
     const term = new Terminal({
       allowProposedApi: true,
       theme: terminalTheme(read),
@@ -163,7 +167,9 @@ export function RunTerminal({ api, sessionId, runId, live, visible = true }: Pro
 
     const observer = new ResizeObserver(() => measure());
     observer.observe(element);
-    measure();
+    void fontsReady.then(() => {
+      if (!disposed) measure();
+    });
 
     return () => {
       disposed = true;

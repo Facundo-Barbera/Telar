@@ -126,6 +126,79 @@ const DEFAULT_FONT_SIZE = 12;
  * with it; a machine with none of these falls through to the cockpit's mono
  * face and then the platform's.
  */
+/**
+ * THE ONE FACE TELAR SHIPS, AND WHY SHIPPING A FONT IS NOT A CONTRADICTION OF
+ * "THE CHAIN ONLY USES WHAT IS ALREADY ON THE MACHINE".
+ *
+ * `SymbolsNerdFontMono-Regular.woff2` (Nerd Fonts, MIT, beside its LICENCE in
+ * `public/fonts/`) carries NO text glyphs — no letters, no digits, no
+ * punctuation. It is the private-use ranges only: powerline separators,
+ * devicons, the symbols a prompt and `eza --icons` draw with. A face with no
+ * text glyphs cannot change a single cell's metrics, because it never wins a
+ * character the text face can draw. So it goes at the FRONT of the chain and
+ * composes with whatever text face follows it.
+ *
+ * That is what makes it not a font choice: nothing about the terminal's
+ * appearance moves, and the person's own Nerd Font — if they have one — still
+ * draws every symbol it covers, since the two agree on the codepoints. What
+ * changes is the machine with none installed, which used to render tofu.
+ *
+ * No setting. A setting here would be asking someone to decide whether they
+ * want squares instead of icons. T3 Code vendors the same file for the same
+ * reason.
+ */
+export const TERMINAL_SYMBOLS_FONT = "Symbols Nerd Font Mono";
+const TERMINAL_SYMBOLS_FONT_URL = "/fonts/SymbolsNerdFontMono-Regular.woff2";
+
+/** One load per page, shared by every terminal. Held as the PROMISE rather than
+ *  a boolean so a second terminal opening mid-download waits for the same
+ *  download instead of starting another. */
+let symbolsFontLoad: Promise<void> | null = null;
+
+/**
+ * Register the bundled symbols face, once, lazily — and never fail.
+ *
+ * FAILURE IS A LOOK, NOT AN ERROR. No network, a 404 from a packaged build, an
+ * engine with no `FontFace`: each of those means the chain falls through to a
+ * locally installed Nerd Font or to tofu, which is exactly where this app was
+ * before. A terminal that refused to open because a decoration did not download
+ * would be the worse outcome by a long way.
+ */
+export function ensureTerminalSymbolsFont(): Promise<void> {
+  if (symbolsFontLoad !== null) return symbolsFontLoad;
+  symbolsFontLoad = (async () => {
+    try {
+      const face = new FontFace(TERMINAL_SYMBOLS_FONT, `url(${TERMINAL_SYMBOLS_FONT_URL})`);
+      document.fonts.add(await face.load());
+    } catch {
+      // Whatever is installed locally still applies.
+    }
+  })();
+  return symbolsFontLoad;
+}
+
+/**
+ * The symbols face, plus the rest of the chain at the size the terminal will
+ * draw at — awaited BEFORE the first `fit()`.
+ *
+ * WHY BEFORE THE FIT. xterm measures one cell to derive cols and rows. Measure
+ * it while a face is still downloading and the grid is sized against the
+ * fallback, then the real face arrives and every cell is a fraction off: a
+ * prompt that wraps one column early, and a `fit()` nobody asked for. Loading
+ * first costs a frame and buys a grid measured against what is actually drawn.
+ *
+ * Swallows everything, for the same reason as above.
+ */
+export async function loadTerminalFonts(fontFamily: string, fontSize: number): Promise<void> {
+  await ensureTerminalSymbolsFont();
+  try {
+    await document.fonts.load(`${fontSize}px ${fontFamily}`);
+  } catch {
+    // A chain this parser dislikes, or no Font Loading API at all (a test DOM).
+    // Locally installed faces need no loading; the rest will arrive when it does.
+  }
+}
+
 const NERD_FONTS = [
   '"JetBrainsMono Nerd Font"',
   '"JetBrainsMonoNL Nerd Font"',
@@ -146,8 +219,10 @@ const PLATFORM_MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
  * resulting tofu in `eza --icons` "the owner's choice in Settings ▸ Appearance".
  * That was backwards. Appearance picks the cockpit's font; a terminal is the
  * person's, and `docs/terminal-host.md` §1 says we contribute a font *fallback*,
- * not a font. Nothing here asks anyone to install anything: the chain only ever
- * uses what is already on the machine.
+ * not a font. Nothing here asks anyone to install anything: the chain uses what
+ * is already on the machine, ahead of it the one symbols-only face Telar ships
+ * (`TERMINAL_SYMBOLS_FONT`, which draws no text and therefore displaces no text
+ * face), and behind it the platform's own monospace.
  */
 export function terminalFont(read: CssVarReader): { fontFamily: string; fontSize: number } {
   const family = read("--app-font-mono")?.trim();
@@ -155,7 +230,7 @@ export function terminalFont(read: CssVarReader): { fontFamily: string; fontSize
   const parsed = rawSize === undefined ? Number.NaN : Number.parseFloat(rawSize);
   const appMono = family !== undefined && family !== "" ? family : undefined;
   return {
-    fontFamily: [...NERD_FONTS, ...(appMono ? [appMono] : []), PLATFORM_MONO].join(", "),
+    fontFamily: [`"${TERMINAL_SYMBOLS_FONT}"`, ...NERD_FONTS, ...(appMono ? [appMono] : []), PLATFORM_MONO].join(", "),
     fontSize: Number.isFinite(parsed) && parsed >= MIN_FONT_SIZE ? parsed : DEFAULT_FONT_SIZE,
   };
 }

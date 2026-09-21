@@ -1,7 +1,15 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { cssColorReader, terminalFont, terminalTheme, type CssVarReader } from "@/lib/terminal-theme";
+import {
+  cssColorReader,
+  ensureTerminalSymbolsFont,
+  loadTerminalFonts,
+  TERMINAL_SYMBOLS_FONT,
+  terminalFont,
+  terminalTheme,
+  type CssVarReader,
+} from "@/lib/terminal-theme";
 
 // Only `cssColorReader` needs one — everything above it is pure, which is the
 // point of the injected reader. Registered at module scope and handed back in
@@ -82,7 +90,10 @@ describe("terminalFont", () => {
     // ORDER, not equality: equality with the app font is the old behaviour.
     const font = terminalFont(reader({ "--app-font-mono": '"Fira Code", monospace', "--app-font-mono-size": "13px" }));
     const at = (needle: string) => font.fontFamily.indexOf(needle);
-    expect(at('"JetBrainsMono Nerd Font"')).toBe(0);
+    // The bundled symbols face leads: it carries no text glyphs, so it draws
+    // the prompt's icons and hands every letter to whatever follows.
+    expect(at('"Symbols Nerd Font Mono"')).toBe(0);
+    expect(at('"JetBrainsMono Nerd Font"')).toBeGreaterThan(at('"Symbols Nerd Font Mono"'));
     expect(at('"Fira Code"')).toBeGreaterThan(at('"MesloLGS NF"'));
     expect(at("ui-monospace")).toBeGreaterThan(at('"Fira Code"'));
     expect(font.fontSize).toBe(13);
@@ -98,6 +109,49 @@ describe("terminalFont", () => {
 
   test("no tokens at all still yields a monospace family", () => {
     expect(terminalFont(reader({})).fontFamily).toContain("monospace");
+  });
+});
+
+describe("the bundled symbols face", () => {
+  /**
+   * ONE REGISTRATION PER PAGE, and the module remembers with a module-level
+   * promise — so this whole describe gets exactly one chance to observe the
+   * first call. Both assertions live in one test for that reason.
+   */
+  test("registers once for the whole page, and a failure is silent", async () => {
+    const loaded: string[] = [];
+    const added: unknown[] = [];
+    class FakeFontFace {
+      constructor(
+        readonly family: string,
+        readonly source: string,
+      ) {}
+      async load() {
+        loaded.push(this.source);
+        return this;
+      }
+    }
+    const previousFace = (globalThis as { FontFace?: unknown }).FontFace;
+    (globalThis as { FontFace?: unknown }).FontFace = FakeFontFace;
+    const fonts = {
+      add: (face: unknown) => added.push(face),
+      // A chain this parser cannot take: the swallow is the assertion.
+      load: async () => {
+        throw new Error("no such font shorthand");
+      },
+    };
+    Object.defineProperty(document, "fonts", { value: fonts, configurable: true });
+    try {
+      // The face is asked for by URL, not by name — nothing has to be installed.
+      await loadTerminalFonts('"Symbols Nerd Font Mono", monospace', 13);
+      // Second terminal on the same page: the same download, not another.
+      await ensureTerminalSymbolsFont();
+      expect(loaded).toEqual(["url(/fonts/SymbolsNerdFontMono-Regular.woff2)"]);
+      expect(added).toHaveLength(1);
+      expect((added[0] as FakeFontFace).family).toBe(TERMINAL_SYMBOLS_FONT);
+    } finally {
+      (globalThis as { FontFace?: unknown }).FontFace = previousFace;
+    }
   });
 });
 
