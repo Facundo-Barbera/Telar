@@ -32,7 +32,7 @@ import {
   splitRoster,
   type PanelTab,
 } from "./right-panel";
-import { emptyPanelTabs, openNewPanelTab, openPanelTab } from "@/lib/right-panel-tabs";
+import { emptyPanelTabs, openPanelTab } from "@/lib/right-panel-tabs";
 
 function fileChange(overrides: {
   path: string;
@@ -144,21 +144,28 @@ describe("the Terminal surface", () => {
     expect(blurb.length).toBeGreaterThan(0);
   });
 
-  test("is multi-instance — a second terminal is a second shell", () => {
-    // And the three folds beside it are not, which is what makes this a
-    // statement about terminals rather than about the set's length.
-    expect(isMultiInstancePanelTab("terminal")).toBe(true);
+  test("is SINGLE-instance — a second shell is an inner tab, not an outer one", () => {
+    // It used to be multi-instance, which wrote "Terminal", "Terminal",
+    // "Terminal" across the strip and pushed Diff and Issues off the edge. A
+    // Terminal now carries its own strip of shells (lib/terminal-workspace.ts),
+    // which is Issues' and Pull requests' arrangement: the surface is one, its
+    // contents are many. The Editor and the Diff beside it still are two, which
+    // is what makes this a statement about terminals rather than about the
+    // set's length.
+    expect(isMultiInstancePanelTab("terminal")).toBe(false);
+    expect(isMultiInstancePanelTab("editor")).toBe(true);
+    expect(isMultiInstancePanelTab("diff")).toBe(true);
     expect(isMultiInstancePanelTab("run")).toBe(false);
     expect(isMultiInstancePanelTab("processes")).toBe(false);
   });
 
-  test("a second instance takes its own id, so its PTY cannot be the first's", () => {
-    // `nextPanelTabId` is what mints it, and the params keyed on that id are
-    // where each tab's terminal id is kept. Two tabs sharing an id would be two
-    // surfaces reading one shell's bytes.
+  test("asking for a terminal twice focuses the one you have", () => {
+    // The gesture that used to mint `terminal#2` is now the `+` inside the
+    // surface, where a second shell costs no room in this strip.
     let state = openPanelTab(emptyPanelTabs<PanelTab>(), "terminal");
-    state = openNewPanelTab(state, "terminal");
-    expect(state.tabs.map((entry) => entry.id)).toEqual(["terminal", "terminal#2"]);
+    state = openPanelTab(state, "terminal");
+    expect(state.tabs.map((entry) => entry.id)).toEqual(["terminal"]);
+    expect(state.activeTab).toBe("terminal");
   });
 
   test("it is NOT the Processes surface", () => {

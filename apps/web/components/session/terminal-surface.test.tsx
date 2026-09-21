@@ -26,6 +26,17 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { TERMINAL_IMAGE_OPTIONS, TerminalSurface } from "./terminal-surface";
 import type { LiveTerminal, TerminalChunk, TerminalEnding, TerminalOpenRequest } from "@/lib/terminal-bridge";
+import {
+  activateShell,
+  addShell,
+  emptyWorkspace,
+  nextShellId,
+  readWorkspace,
+  setShellTerminal,
+  terminalIds,
+  workspaceParams,
+  TERMINAL_ID_PARAM,
+} from "@/lib/terminal-workspace";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -129,6 +140,55 @@ async function mount(props: Parameters<typeof TerminalSurface>[0] = {}): Promise
   return host;
 }
 
+/** The params a tab carries after N shells were left open on it — written in
+ *  the workspace's own vocabulary rather than by hand, so these tests break if
+ *  the encoding moves. */
+function restored(...terminals: string[]): Record<string, string> {
+  let state = emptyWorkspace();
+  for (const terminal of terminals) {
+    const id = nextShellId(state);
+    state = setShellTerminal(addShell(state, id), id, terminal);
+  }
+  return workspaceParams(activateShell(state, state.shells[0]!.id));
+}
+
+/** The strip's chips — `role="tab"`, which is also what tells this apart from
+ *  the close button beside each one. */
+function tabs(host: HTMLElement): HTMLElement[] {
+  return [...host.querySelectorAll('[role="tablist"][aria-label="Terminal tabs"] [role="tab"]')] as HTMLElement[];
+}
+
+/** The "open a shell in your home folder instead" action, by what it says. */
+function retry(host: HTMLElement): HTMLButtonElement | null {
+  return ([...host.querySelectorAll("button")] as HTMLButtonElement[]).find((button) => button.textContent?.includes("home folder")) ?? null;
+}
+
+async function click(button: HTMLButtonElement): Promise<void> {
+  await act(async () => {
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+/** A chord at the surface's own box. The strip handles these on the CAPTURE
+ *  phase, before xterm's handler and before the cockpit's window listener. */
+async function press(host: HTMLElement, key: string, options: { shiftKey?: boolean; code?: string; metaKey?: boolean } = {}): Promise<void> {
+  const target = (host.querySelector('[role="tablist"]')?.parentElement ?? host) as HTMLElement;
+  await act(async () => {
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key,
+        code: options.code ?? "",
+        metaKey: options.metaKey ?? true,
+        shiftKey: options.shiftKey ?? false,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 describe("without the desktop shell", () => {
   test("it says why there is no terminal instead of drawing an empty one", async () => {
     const host = await mount();
@@ -141,15 +201,15 @@ describe("without the desktop shell", () => {
 describe("opening a shell", () => {
   test("one mount asks for exactly one shell, and remembers its id on the tab", async () => {
     const bridge = installBridge({ openId: "term_a" });
-    const remembered: string[] = [];
-    await mount({ sessionId: "session_a", onTerminalId: (id) => remembered.push(id) });
+    const written: Array<Record<string, string>> = [];
+    await mount({ sessionId: "session_a", onParams: (params) => written.push(params) });
 
     // TWO would be the real defect: the panel unmounts this surface on every
     // tab switch, so a second `open` per glance is a shell per glance.
     expect(bridge.opens.length).toBe(1);
-    expect(remembered).toEqual(["term_a"]);
     // Remembering the id is what makes the NEXT mount an adoption rather than
     // another spawn — so this assertion is load-bearing for the one above.
+    expect(terminalIds(readWorkspace(written[written.length - 1] ?? {}))).toEqual(["term_a"]);
   });
 
   test("the emulator's own size is what the PTY is told, so SIGWINCH is not a guess", async () => {
@@ -202,9 +262,10 @@ describe("a cwd the host refuses (#851)", () => {
     // The bug this fixes: a blank white xterm canvas under the banner, with
     // nothing to do. There must be no emulator mounted at all for this fate.
     expect(host.querySelector(".xterm")).toBeNull();
-    const button = host.querySelector("button");
-    expect(button).not.toBeNull();
-    expect(button?.textContent).toContain("home folder");
+    // Found by what it SAYS, not by being the first button on screen — the
+    // strip above it has a chip and a `+` of its own now.
+    expect(retry(host)).not.toBeNull();
+    expect(retry(host)?.textContent).toContain("home folder");
   });
 
   test("the action retries the same tab with no cwd, so the host falls back to the shell's own default", async () => {
@@ -213,11 +274,7 @@ describe("a cwd the host refuses (#851)", () => {
     expect(bridge.opens.length).toBe(1);
     expect(bridge.opens[0]?.cwd).toBe(CHECKOUT);
 
-    const button = host.querySelector("button") as HTMLButtonElement;
-    await act(async () => {
-      button.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await click(retry(host) as HTMLButtonElement);
 
     expect(bridge.opens.length).toBe(2);
     // Omitted entirely, not sent as `cwd: undefined` — the host's own
@@ -231,15 +288,17 @@ describe("a cwd the host refuses (#851)", () => {
 
     expect(host.textContent).toContain("never started");
     // No way forward is offered for a reason that isn't about the directory —
-    // there is nothing this tab can retry that would fix it.
-    expect(host.querySelector("button")).toBeNull();
+    // there is nothing this shell can retry that would fix it.
+    expect(retry(host)).toBeNull();
   });
 });
 
 describe("re-adopting a running shell", () => {
   test("a terminal the host still lists is adopted, not replaced", async () => {
     const bridge = installBridge({ live: [{ id: "term_old", pid: 99 }] });
-    await mount({ sessionId: "session_a", terminalId: "term_old" });
+    // In the vocabulary a tab written by the PREVIOUS build carries, which the
+    // workspace reads as one shell on that PTY.
+    await mount({ sessionId: "session_a", params: { [TERMINAL_ID_PARAM]: "term_old" } });
     // The whole point of W1's `list()`: no second spawn, and the first shell is
     // not left running with nobody reading it.
     expect(bridge.opens).toEqual([]);
@@ -248,8 +307,134 @@ describe("re-adopting a running shell", () => {
 
   test("a terminal that has since died is replaced rather than left blank", async () => {
     const bridge = installBridge({ live: [], openId: "term_new" });
-    await mount({ sessionId: "session_a", terminalId: "term_gone" });
+    await mount({ sessionId: "session_a", params: { [TERMINAL_ID_PARAM]: "term_gone" } });
     expect(bridge.opens.length).toBe(1);
+  });
+
+  test("a tab restored with three shells re-adopts all three, and opens nothing", async () => {
+    const bridge = installBridge({ live: [{ id: "t1" }, { id: "t2" }, { id: "t3" }] });
+    const host = await mount({ sessionId: "session_a", params: restored("t1", "t2", "t3") });
+    expect(bridge.opens).toEqual([]);
+    expect(tabs(host).length).toBe(3);
+  });
+});
+
+/**
+ * THE INNER STRIP — the whole of what this change is for. Three shells live in
+ * ONE outer Terminal tab, and the gestures are the Browser's: `+`, a close per
+ * chip, ⌘T / ⌘W / ⌘1–9.
+ */
+describe("the strip of shells", () => {
+  test("one chip per shell, and the strip is a tablist of its own", async () => {
+    installBridge({ live: [{ id: "t1" }, { id: "t2" }] });
+    const host = await mount({ sessionId: "session_a", params: restored("t1", "t2") });
+    expect(host.querySelector('[role="tablist"]')?.getAttribute("aria-label")).toBe("Terminal tabs");
+    expect(tabs(host).map((tab) => tab.textContent)).toEqual(["Shell 1", "Shell 2"]);
+    // The LAST restored shell is not the active one — the first is, so the
+    // strip you come back to reads left to right.
+    expect(tabs(host)[0]?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("+ opens one more shell, in the session's checkout, and selects it", async () => {
+    const bridge = installBridge({ live: [{ id: "t1" }], openId: "t2" });
+    const host = await mount({ sessionId: "session_a", params: restored("t1") });
+    expect(bridge.opens.length).toBe(0);
+
+    await click(host.querySelector('button[aria-label="New shell"]') as HTMLButtonElement);
+
+    expect(bridge.opens.length).toBe(1);
+    // The same `startingDirectory` the first shell uses.
+    expect(bridge.opens[0]?.cwd).toBe(CHECKOUT);
+    expect(tabs(host).length).toBe(2);
+    expect(tabs(host)[1]?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("closing a chip ends that shell and focuses its neighbour", async () => {
+    const bridge = installBridge({ live: [{ id: "t1" }, { id: "t2" }, { id: "t3" }] });
+    const host = await mount({ sessionId: "session_a", params: restored("t1", "t2", "t3") });
+
+    // Select the middle one, then close it: the NEIGHBOUR takes focus, not the
+    // first chip — the eye does not jump the strip on every close.
+    await click(tabs(host)[1] as HTMLButtonElement);
+    await click(host.querySelector('button[aria-label="Close Shell 2"]') as HTMLButtonElement);
+
+    expect(bridge.kills).toEqual(["t2"]);
+    expect(tabs(host).length).toBe(2);
+    expect(tabs(host)[1]?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("an inactive pane is MOUNTED and hidden, because unmounting is what drops scrollback", async () => {
+    installBridge({ live: [{ id: "t1" }, { id: "t2" }] });
+    const host = await mount({ sessionId: "session_a", params: restored("t1", "t2") });
+
+    const panes = [...host.querySelectorAll('[data-testid="terminal-pane"]')];
+    // BOTH are in the document — the host forwards bytes and does not record
+    // them, so a pane that came back would arrive with an empty screen over a
+    // live shell.
+    expect(panes.length).toBe(2);
+    expect(panes.map((pane) => pane.getAttribute("data-active"))).toEqual(["true", "false"]);
+    expect(panes[1]?.className).toContain("hidden");
+    // Each one has its own emulator, so the bytes of one shell cannot arrive
+    // in the other's screen.
+    expect(host.querySelectorAll('[data-testid="terminal-host"]').length).toBe(2);
+  });
+});
+
+describe("the strip's keys", () => {
+  test("Cmd+T opens a shell, Cmd+2 selects the second, Cmd+W closes the active one", async () => {
+    const bridge = installBridge({ live: [{ id: "t1" }], openId: "t2" });
+    const host = await mount({ sessionId: "session_a", params: restored("t1") });
+
+    await press(host, "t");
+    expect(bridge.opens.length).toBe(1);
+    expect(tabs(host).length).toBe(2);
+
+    await press(host, "1");
+    expect(tabs(host)[0]?.getAttribute("aria-selected")).toBe("true");
+    await press(host, "2");
+    expect(tabs(host)[1]?.getAttribute("aria-selected")).toBe("true");
+
+    await press(host, "w");
+    expect(tabs(host).length).toBe(1);
+    expect(bridge.kills).toEqual(["t2"]);
+  });
+
+  test("Cmd+Shift+] and Cmd+Shift+[ walk the strip, wrapping at both ends", async () => {
+    installBridge({ live: [{ id: "t1" }, { id: "t2" }] });
+    const host = await mount({ sessionId: "session_a", params: restored("t1", "t2") });
+
+    await press(host, "}", { shiftKey: true, code: "BracketRight" });
+    expect(tabs(host)[1]?.getAttribute("aria-selected")).toBe("true");
+    await press(host, "}", { shiftKey: true, code: "BracketRight" });
+    expect(tabs(host)[0]?.getAttribute("aria-selected")).toBe("true");
+    await press(host, "{", { shiftKey: true, code: "BracketLeft" });
+    expect(tabs(host)[1]?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  /**
+   * THE ONE THAT CROSSES THE BOUNDARY. A Terminal with no shells in it is a
+   * blank pane with a `+`, so the last ⌘W is the gesture that closes the OUTER
+   * tab — which only the panel can do, and only because the surface asks.
+   */
+  test("Cmd+W on the LAST shell asks the panel to close the outer tab", async () => {
+    const bridge = installBridge({ live: [{ id: "t1" }] });
+    let asked = 0;
+    const host = await mount({ sessionId: "session_a", params: restored("t1"), onCloseSelf: () => (asked += 1) });
+
+    await press(host, "w");
+    expect(bridge.kills).toEqual(["t1"]);
+    expect(asked).toBe(1);
+  });
+
+  test("a key the strip does not own is left for the shell", async () => {
+    const bridge = installBridge({ live: [{ id: "t1" }, { id: "t2" }] });
+    const host = await mount({ sessionId: "session_a", params: restored("t1", "t2") });
+    // No ninth shell to select, and no modifier at all: neither may move the
+    // strip, or a `9` typed at a prompt would switch tabs.
+    await press(host, "9");
+    await press(host, "t", { metaKey: false });
+    expect(tabs(host).length).toBe(2);
+    expect(bridge.opens).toEqual([]);
   });
 });
 

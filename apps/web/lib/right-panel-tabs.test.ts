@@ -14,6 +14,7 @@ import {
   closeOtherPanelTabs,
   closePanelTab,
   collapseBrowserTabs,
+  collapseTerminalTabs,
   emptyPanelTabs,
   movePanelTab,
   nextPanelTabId,
@@ -27,6 +28,7 @@ import {
   type PanelTabState,
 } from "./right-panel-tabs";
 import { browserPanelTab, browserTabId, browserTabLabel, describePanelTab, describePanelTabInstance, isPanelTab, LIVE_BROWSER_TAB, panelTabSuffix, type PanelTab } from "@/components/right-panel";
+import { foldTerminalParams, readWorkspace, terminalIds, TERMINAL_ID_PARAM } from "@/lib/terminal-workspace";
 
 /** The strip as kinds, which is what every assertion below is actually about —
  *  ids are an implementation detail except where a test says otherwise. */
@@ -56,6 +58,74 @@ describe("collapseBrowserTabs (desktop upgrade path)", () => {
   test("the collapsed tab describes as a single Browser surface", () => {
     expect(describePanelTab(LIVE_BROWSER_TAB).label).toBe("Browser");
     expect(describePanelTab(LIVE_BROWSER_TAB).missing).toBeUndefined();
+  });
+});
+
+/**
+ * THE SAME UPGRADE, ONE SURFACE LATER. A shell used to be its own outer tab, so
+ * a session persisted before the Terminal grew an inner strip still has
+ * "Terminal", "Terminal", "Terminal" in storage — each with a LIVE PTY id on
+ * it. Folding them must keep every one of those ids, or the upgrade orphans
+ * somebody's running shells.
+ */
+describe("collapseTerminalTabs (the inner-strip upgrade path)", () => {
+  const isTerminal = (kind: PanelTab) => kind === "terminal";
+  const terminal = (id: string, pty?: string): PanelTabInstance<PanelTab> => ({
+    id,
+    kind: "terminal",
+    params: pty ? { [TERMINAL_ID_PARAM]: pty } : {},
+  });
+  const instance = (kind: PanelTab): PanelTabInstance<PanelTab> => ({ id: kind, kind, params: {} });
+
+  test("three outer terminal tabs fold into one, keeping order, active and all three PTYs", () => {
+    const state: PanelTabState<PanelTab> = {
+      tabs: [
+        instance("issues"),
+        terminal("terminal", "term_1"),
+        instance("diff"),
+        terminal("terminal#2", "term_2"),
+        terminal("terminal#3", "term_3"),
+      ],
+      activeTab: "terminal#2",
+      open: true,
+    };
+    const collapsed = collapseTerminalTabs(state, isTerminal, "terminal", foldTerminalParams);
+
+    // ONE Terminal, at the position of the first, and the other tabs keep both
+    // their order and their own ids.
+    expect(kinds(collapsed)).toEqual(["issues", "terminal", "diff"]);
+    expect(ids(collapsed)).toEqual(["issues", "terminal", "diff"]);
+    // The active tab was a terminal, so the selection follows it into the one
+    // that replaced it rather than falling back to the first tab.
+    expect(collapsed.activeTab).toBe("terminal");
+    expect(collapsed.open).toBe(true);
+
+    // The load-bearing half: nobody's shells are orphaned by the upgrade.
+    const workspace = readWorkspace(collapsed.tabs[1]!.params);
+    expect(terminalIds(workspace)).toEqual(["term_1", "term_2", "term_3"]);
+    expect(workspace.shells.length).toBe(3);
+  });
+
+  test("a state with no terminal tabs is left exactly as it was", () => {
+    const state: PanelTabState<PanelTab> = { tabs: [instance("issues"), instance("diff")], activeTab: "diff", open: true };
+    expect(collapseTerminalTabs(state, isTerminal, "terminal", foldTerminalParams)).toBe(state);
+  });
+
+  test("a non-terminal active tab keeps the selection", () => {
+    const state: PanelTabState<PanelTab> = { tabs: [terminal("terminal", "term_1"), instance("editor")], activeTab: "editor", open: true };
+    expect(collapseTerminalTabs(state, isTerminal, "terminal", foldTerminalParams).activeTab).toBe("editor");
+  });
+
+  test("a session already migrated is handed back its own state, not a copy", () => {
+    // This runs on every restore, not only the one after the upgrade — a new
+    // object each time would write the panel back to storage for no reason.
+    const once = collapseTerminalTabs(
+      { tabs: [terminal("terminal", "term_1")], activeTab: "terminal", open: true },
+      isTerminal,
+      "terminal",
+      foldTerminalParams,
+    );
+    expect(collapseTerminalTabs(once, isTerminal, "terminal", foldTerminalParams)).toBe(once);
   });
 });
 
