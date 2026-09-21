@@ -1,19 +1,27 @@
 /**
- * WHAT THE LOOK CONTRIBUTES TO A TERMINAL, AND WHAT IT DELIBERATELY DOES NOT
+ * WHAT THE APP CONTRIBUTES TO A TERMINAL, AND WHAT IT DELIBERATELY DOES NOT
  * (#198).
  *
- * Three colours and a font. That is the whole of it, and the cut is measured
- * rather than lazy: `lib/looks.ts`, `lib/theme-palettes.ts` and
- * `lib/appearance.ts` carry no sixteen-colour ANSI set between them, and they
- * are not growing one. The owner's prompt (oh-my-posh catppuccin_frappe) and
- * his syntax highlighting are TRUECOLOR and bypass a palette entirely, so a
- * per-Look ANSI set would be sixteen more values to maintain that his own
- * terminal would never draw with.
+ * FOUR COLOURS AND A FONT: background, foreground, cursor and its accent, plus
+ * the selection wash. THE SIXTEEN ANSI COLOURS ARE NOT OURS. They are the
+ * emulator's, exactly as they are in every desktop terminal where the app
+ * chrome and the terminal palette are separate things — and exactly as they are
+ * in T3 Code, which renders nvim correctly and contributes background,
+ * foreground, cursor and selection and nothing else.
  *
- * SO THE ANSI SIXTEEN ARE CONSTANTS — xterm.js's own defaults, restated here so
- * the theme is one readable object — and `overrides` is how anything changes
- * them. No speculative `--terminal-ansi-*` variables: a hook with no caller is
- * a hook nobody has tested.
+ * WHY THIS IS A CHANGE. This module used to restate xterm.js's sixteen as
+ * constants "so the theme is one readable object". A hand-copied table is a
+ * table that drifts: the owner opened nvim and the palette was wrong, because
+ * the copy is what every ANSI-colouring program (his prompt, `ls`, a
+ * statusline) painted with. Omitting a key is not a gap — xterm.js fills each
+ * of the sixteen from its own `DEFAULT_ANSI_COLORS` when the theme object does
+ * not carry it (`ThemeService._setTheme`: `ansi = DEFAULT_ANSI_COLORS.slice()`,
+ * then `ansi[n] = v(theme.black, DEFAULT_ANSI_COLORS[n])`, where `v` returns
+ * its fallback for `undefined`). So the shortest correct table is no table.
+ *
+ * `overrides` still accepts ANSI keys, so a future Look that genuinely carries
+ * a palette can supply one without this module growing speculative
+ * `--terminal-ansi-*` variables nobody has tested.
  *
  * AND WHAT IT LOOKS LIKE UNDER A LIGHT LOOK IS NOT OURS TO FIX. The owner's
  * `~/.zshrc` hardcodes `ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=#666666"`, which is
@@ -30,47 +38,22 @@ export type TerminalTheme = {
   cursor: string;
   cursorAccent: string;
   selectionBackground: string;
-  black: string;
-  red: string;
-  green: string;
-  yellow: string;
-  blue: string;
-  magenta: string;
-  cyan: string;
-  white: string;
-  brightBlack: string;
-  brightRed: string;
-  brightGreen: string;
-  brightYellow: string;
-  brightBlue: string;
-  brightMagenta: string;
-  brightCyan: string;
-  brightWhite: string;
 };
 
 /**
- * xterm.js's own sixteen, verbatim. A terminal whose palette disagrees with
- * every other terminal renders other people's programs wrongly — `ls --color`'s
- * blue directory is meant to be THE blue.
+ * What a caller may override on top of the five above: the ANSI sixteen, each
+ * optional, and typed here only so a Look that one day carries a palette has a
+ * name for the shape. Nothing in this app supplies them — the emulator's own
+ * defaults stand.
  */
-const ANSI_16 = {
-  black: "#2e3436",
-  red: "#cc0000",
-  green: "#4e9a06",
-  yellow: "#c4a000",
-  blue: "#3465a4",
-  magenta: "#75507b",
-  cyan: "#06989a",
-  white: "#d3d7cf",
-  brightBlack: "#555753",
-  brightRed: "#ef2929",
-  brightGreen: "#8ae234",
-  brightYellow: "#fce94f",
-  brightBlue: "#729fcf",
-  brightMagenta: "#ad7fa8",
-  brightCyan: "#34e2e2",
-  brightWhite: "#eeeeec",
-} as const;
+export type TerminalAnsiOverrides = Partial<
+  Record<
+    | "black" | "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "white"
+    | "brightBlack" | "brightRed" | "brightGreen" | "brightYellow"
+    | "brightBlue" | "brightMagenta" | "brightCyan" | "brightWhite",
+    string
+  >
+>;
 
 /**
  * The three the Look owns, and where each comes from.
@@ -100,8 +83,14 @@ const LOOK_TOKENS = {
  */
 export type CssVarReader = (variable: string) => string | undefined;
 
-/** The Look's three colours and xterm's sixteen, as one theme object. */
-export function terminalTheme(read: CssVarReader, overrides: Partial<TerminalTheme> = {}): TerminalTheme {
+/**
+ * The four colours the app owns (plus the selection wash), as one theme object.
+ * No ANSI keys: leaving them out is what hands the sixteen back to xterm.js.
+ */
+export function terminalTheme(
+  read: CssVarReader,
+  overrides: Partial<TerminalTheme> & TerminalAnsiOverrides = {},
+): TerminalTheme & TerminalAnsiOverrides {
   const look = (token: keyof typeof LOOK_TOKENS): string => {
     const { variable, fallback } = LOOK_TOKENS[token];
     const value = read(variable);
@@ -119,7 +108,6 @@ export function terminalTheme(read: CssVarReader, overrides: Partial<TerminalThe
     // visible over the background AND over whatever truecolour the shell
     // painted, and a solid accent would hide the text it is selecting.
     selectionBackground: "rgba(120, 150, 200, 0.3)",
-    ...ANSI_16,
     ...overrides,
   };
 }

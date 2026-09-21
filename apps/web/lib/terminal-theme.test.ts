@@ -45,32 +45,30 @@ describe("terminalTheme", () => {
     expect(terminalTheme(reader({ "--card": "   " })).background).toMatch(/^#[0-9a-f]{6}$/);
   });
 
-  test("all sixteen ANSI colours are present, because a missing one renders as the default fg", () => {
-    const theme = terminalTheme(reader({}));
-    const ansi = [
-      "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-      "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
-    ] as const;
-    for (const name of ansi) expect(theme[name]).toMatch(/^#[0-9a-f]{6}$/);
-    // Sixteen DISTINCT colours: a palette with duplicates is one where `ls
-    // --color` cannot tell a directory from a symlink.
-    expect(new Set(ansi.map((name) => theme[name])).size).toBe(16);
+  const ANSI_KEYS = [
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+    "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+  ] as const;
+
+  test("the theme carries no ANSI keys unless overridden — the sixteen are the emulator's", () => {
+    // Omitting them is the whole point: xterm.js's ThemeService starts from
+    // `DEFAULT_ANSI_COLORS.slice()` and only replaces an entry when the theme
+    // object actually names it, so a table we do not write is a table that
+    // cannot drift from every other terminal's.
+    const theme = terminalTheme(reader({ "--card": "#000", "--foreground": "#fff", "--primary": "#f0f" })) as Record<
+      string,
+      unknown
+    >;
+    for (const name of ANSI_KEYS) expect(name in theme).toBe(false);
   });
 
-  test("the Look does not reach the ANSI sixteen — that cut is deliberate", () => {
-    // No Look in this app carries an ANSI palette (looks.ts, theme-palettes.ts,
-    // appearance.ts), and if one day one appears it must come through
-    // `overrides` rather than by these silently reading a new variable.
-    const withLook = terminalTheme(reader({ "--card": "#000", "--foreground": "#fff", "--primary": "#f0f" }));
-    const without = terminalTheme(reader({}));
-    expect(withLook.red).toBe(without.red);
-    expect(withLook.brightBlue).toBe(without.brightBlue);
-  });
-
-  test("overrides win, which is what `overridable defaults` means", () => {
+  test("overrides win, which is how a Look could one day supply a palette", () => {
     const theme = terminalTheme(reader({}), { red: "#ff0000", background: "#123456" });
     expect(theme.red).toBe("#ff0000");
     expect(theme.background).toBe("#123456");
+    // And only the one asked for: an override is not a reason to materialise
+    // the other fifteen.
+    expect("blue" in (theme as Record<string, unknown>)).toBe(false);
   });
 });
 
