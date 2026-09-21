@@ -1060,6 +1060,100 @@ async function codeFilesUnder(directory) {
   return found;
 }
 
+/** `import dynamic from "next/dynamic"`, however the binding is spelled. */
+const NEXT_DYNAMIC_IMPORT = /import\s+(?:\w+|\{[^}]*\}|\w+\s*,\s*\{[^}]*\})\s+from\s+["']next\/dynamic["']/;
+
+/**
+ * EVERY `dynamic(…)` IN A FILE THAT RENDERS NO BOUNDARY OF ITS OWN — #896.
+ *
+ * WHAT IS COUNTED, and why it is not simply "every dynamic()". Next's
+ * `Loadable` adds a `Suspense` when the declaration carries `ssr: false` or a
+ * `loading`, and a bare `Fragment` when it carries neither. Only the bare
+ * spelling needs a boundary from us, and flagging the other two would make this
+ * fire on declarations Next has already wrapped — the kind of false positive
+ * that gets a check deleted rather than argued with.
+ *
+ * PAREN-BALANCED rather than matched with `[^)]*`, for the reason `ios-mark-sizes`
+ * records: these calls nest (`dynamic(() => import("x").then((m) => m.Y))`), and
+ * a character class stops at the first inner `)` — which would read every one of
+ * this repo's declarations as optionless and be right by accident.
+ *
+ * THE BOUNDARY IS LOOKED FOR PER FILE, not per render site. A declaration and
+ * the JSX that renders it are hundreds of lines apart here (the panel declares
+ * twelve at the top and renders one, chosen by a ladder, at the bottom), so
+ * pairing them textually would mean parsing the component. A file that declares
+ * a bare `dynamic` and contains no `<Suspense` at all is the claim this can
+ * make honestly, and it is the one that would have caught #896 in all four
+ * files it affected.
+ */
+function bareDynamicWithoutBoundary(source) {
+  if (!NEXT_DYNAMIC_IMPORT.test(source)) return [];
+  if (/<Suspense[\s/>]/.test(source)) return [];
+  const hits = [];
+  for (const match of source.matchAll(/\bdynamic\s*\(/g)) {
+    const open = match.index + match[0].length - 1;
+    let depth = 0;
+    let close = -1;
+    for (let at = open; at < source.length; at += 1) {
+      if (source[at] === "(") depth += 1;
+      else if (source[at] === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          close = at;
+          break;
+        }
+      }
+    }
+    // An unbalanced call is a file this scan cannot read; say nothing rather
+    // than guess, since the non-vacuity guard above is what catches a scan
+    // that has stopped seeing its corpus.
+    if (close === -1) continue;
+    const call = source.slice(match.index, close + 1);
+    if (/\bssr\s*:/.test(call) || /\bloading\s*:/.test(call)) continue;
+    hits.push({ line: source.slice(0, match.index).split("\n").length, what: call.replace(/\s+/g, " ").slice(0, 80) });
+  }
+  return hits;
+}
+
+/** The shapes the scan above must and must not see. */
+const BARE_DYNAMIC_SAMPLES = [
+  {
+    flags: true,
+    why: "a bare declaration in a file with no boundary anywhere — #896 itself",
+    code: `import dynamic from "next/dynamic";\nconst Editor = dynamic(() => import("./editor").then((m) => m.Editor));\nexport const P = () => <Editor />;`,
+  },
+  {
+    flags: false,
+    why: "the same declaration in a file that renders a Suspense",
+    code: `import dynamic from "next/dynamic";\nimport { Suspense } from "react";\nconst Editor = dynamic(() => import("./editor").then((m) => m.Editor));\nexport const P = () => <Suspense fallback={null}><Editor /></Suspense>;`,
+  },
+  {
+    flags: false,
+    why: "a self-closing boundary, which is still a boundary",
+    code: `import dynamic from "next/dynamic";\nconst E = dynamic(() => import("./e"));\nexport const P = () => <Suspense/>;`,
+  },
+  {
+    flags: false,
+    why: "`ssr: false`, which Next wraps itself",
+    code: `import dynamic from "next/dynamic";\nconst E = dynamic(() => import("./e"), { ssr: false });\nexport const P = () => <E />;`,
+  },
+  {
+    flags: false,
+    why: "a `loading` declaration, which Next also wraps itself",
+    code: `import dynamic from "next/dynamic";\nconst E = dynamic(() => import("./e"), { loading: () => null });\nexport const P = () => <E />;`,
+  },
+  {
+    flags: false,
+    why: "a file that never imports next/dynamic, however much it says `dynamic(`",
+    code: `const dynamic = (f) => f;\nconst E = dynamic(() => import("./e"));\nexport const P = () => <E />;`,
+  },
+  {
+    flags: true,
+    why: "a nested loader, which a `[^)]*` match would read as carrying no options and pass for the wrong reason",
+    code: `import dynamic from "next/dynamic";\nconst E = dynamic(() => import("./e").then((m) => m.E));\nexport const P = () => <E />;`,
+  },
+];
+
 const CHECKS = [
   /**
    * A SYNC CHILD WAIT IS OUTSIDE EVERY CEILING ABOVE IT — #807.
@@ -2096,6 +2190,69 @@ const CHECKS = [
       // failure mode that looks exactly like success.
       if (scanned === 0) {
         failures.push("no code file was found under apps/, packages/ or workers/, which cannot be right — codeFilesUnder() has stopped walking, so this check is green because it read nothing.");
+      }
+      return failures;
+    },
+  },
+
+  {
+    name: "dynamic-render-sites-have-a-boundary-self-test",
+    protects: "#896: the scan still fires on a bare `dynamic()` with no Suspense, and stays quiet on the two declarations that bring their own",
+    async run() {
+      const failures = [];
+      for (const { flags, why, code } of BARE_DYNAMIC_SAMPLES) {
+        const hits = bareDynamicWithoutBoundary(code);
+        const shown = JSON.stringify(code);
+        if (flags && hits.length === 0) {
+          failures.push(`the scan MISSED a sample it must catch (${why}): ${shown}. dynamic-render-sites-have-a-boundary below is now green for a shape it no longer sees.`);
+        }
+        if (!flags && hits.length > 0) {
+          failures.push(`the scan FIRED on a sample it must ignore (${why}): ${shown}. A guard that flags a declaration Next already wraps is one the next person deletes rather than argues with.`);
+        }
+      }
+      return failures;
+    },
+  },
+  {
+    name: "dynamic-render-sites-have-a-boundary",
+    protects: "#896: a file that declares a bare next/dynamic also declares the Suspense that catches its first render",
+    async run() {
+      const failures = [];
+      const files = await sourceFilesUnder("apps/web");
+      let declaring = 0;
+      for (const file of files.sort()) {
+        const source = await read(file);
+        if (!NEXT_DYNAMIC_IMPORT.test(source)) continue;
+        declaring += 1;
+        for (const hit of bareDynamicWithoutBoundary(source)) {
+          failures.push(
+            `${file}:${hit.line}: \`${hit.what}\` is declared with neither \`ssr: false\` nor \`loading\`, and this file renders no \`<Suspense>\`.\n` +
+              "        In that exact configuration Next's Loadable wraps its React.lazy in a Fragment and adds NO boundary " +
+              "(node_modules/next/dist/shared/lib/lazy-dynamic/loadable.js: `hasSuspenseBoundary = !opts.ssr || !!opts.loading`), " +
+              "so the first render of an unfetched chunk suspends up to the nearest one — the ROUTE's loading.tsx. The whole " +
+              "page is replaced by its skeleton and drawn again when the chunk lands, and only ever on the first open, which is " +
+              "why #896 was reported as a reload rather than as a bug.\n" +
+              "        Wrap the render site in `<Suspense fallback={null}>`. Not a `loading:` spinner — the chunk comes off the " +
+              "origin the page came from and a spinner that resolves in the next frame is a flash, not feedback — and not " +
+              "`ssr: false`, which renders permanently nothing under this suite's environment (the header of " +
+              "apps/web/components/right-panel.tsx argues both).",
+          );
+        }
+      }
+
+      /**
+       * NON-VACUITY, in both directions. A walk that stopped walking and a
+       * pattern that stopped matching both look exactly like a clean tree —
+       * and this check's whole job is to notice an absence. (Measured when
+       * written: four files under apps/web import next/dynamic.)
+       */
+      if (files.length === 0) {
+        return ["apps/web: sourceFilesUnder() returned nothing, so this check swept no files and proved nothing. Fix the walk rather than trusting the pass."];
+      }
+      if (declaring === 0) {
+        return [
+          `apps/web: scanned ${files.length} source files and found none importing next/dynamic, which cannot be true while the panel, the settings panes, the sidebar and the annotate overlay are all code-split. Either the import was spelled a new way or NEXT_DYNAMIC_IMPORT has rotted; either way this check is now vacuous and must be re-anchored, not removed.`,
+        ];
       }
       return failures;
     },
