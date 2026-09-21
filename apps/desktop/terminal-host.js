@@ -559,6 +559,22 @@ class TerminalHost {
   }
 
   /**
+   * WHO OPENED THIS TERMINAL, or nothing once the host no longer holds it.
+   *
+   * ASKED BY THE FAN-OUT, NOT BY A VERB (#890). `_owned` answers "may this
+   * caller address that id", which is the question every verb asks; this one
+   * answers "whose bytes are these", which is what `main.js` needs before it
+   * decides where a frame may go. A run's RAW output must reach the engine and
+   * nobody else — the cockpit gets the engine's redacted mirror of it instead —
+   * so the delivery has to be able to tell the two scopes apart without being
+   * entitled to act on either.
+   */
+  ownerOf(id) {
+    const record = this.terminals.get(id);
+    return record ? record.owner : undefined;
+  }
+
+  /**
    * THE HOST IS GOING AWAY WHILE TERMINALS ARE STILL RUNNING.
    *
    * Every one of them becomes `unknown`, never `exited`. This is the case the

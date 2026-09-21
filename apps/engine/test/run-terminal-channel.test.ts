@@ -42,6 +42,7 @@ type StartServer = (options: {
   port: number;
   token: string;
   getTerminalHost: () => unknown;
+  onMirror?: (id: string, data: string, cursor?: number) => void;
   heartbeatMs?: number;
 }) => Promise<{ port: number; onData: (id: string, data: string) => void; onExit: (id: string, ending: unknown) => void; close: () => Promise<unknown> }>;
 const { startRunTerminalServer } = (await import(desktopServer)) as { startRunTerminalServer: StartServer };
@@ -143,10 +144,15 @@ afterEach(async () => {
 
 async function harness(options: { heartbeatMs?: number; missedBeats?: number } = {}) {
   const host = new FakeHost();
+  /** What came BACK over the channel for a renderer to draw — the redacted
+   *  mirror (#890). This is the desktop's side of it, collected where `main.js`
+   *  would instead hand each frame to whichever renderer adopted that id. */
+  const mirrored: Array<{ id: string; data: string; cursor?: number }> = [];
   const server = await startRunTerminalServer({
     port: 0,
     token: "test-token",
     getTerminalHost: () => host,
+    onMirror: (id, data, cursor) => mirrored.push({ id, data, ...(cursor === undefined ? {} : { cursor }) }),
     ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
   });
   servers.push(server);
@@ -163,7 +169,7 @@ async function harness(options: { heartbeatMs?: number; missedBeats?: number } =
   managers.push(manager);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-run-channel-"));
   tempDirs.push(dir);
-  return { host, server, client, manager, dir };
+  return { host, server, client, manager, dir, mirrored };
 }
 
 const config = (overrides: Partial<RunConfiguration> = {}): RunConfiguration => ({
@@ -540,6 +546,66 @@ test("the byte view carries the redacted stream, escapes and columns intact", as
   // AND THE TWO VIEWS DO NOT REPLACE EACH OTHER. `/run/output` is still what an
   // agent reads, and it still answers for the same run.
   expect(manager.output(started.runId).cursor).toBeGreaterThanOrEqual(0);
+});
+
+// ── the mirror: what the cockpit's Terminal strip is allowed to draw ─────────
+
+test("the bytes mirrored back to the shell are the REDACTED ones, at the journal's own cursor", async () => {
+  /**
+   * THE DECISION #890 §2 ASKED FOR, ASSERTED END TO END. A run is a chip in the
+   * Terminal strip, so a renderer reads its PTY — and the desktop fans RAW
+   * node-pty bytes, which would draw a project's secrets. So the engine mirrors
+   * its redactor's OUTPUT back over the same channel, and THAT is what a
+   * renderer is given. One redactor, engine-side.
+   */
+  const { host, manager, dir, mirrored } = await harness();
+  const secret = "sk-live-7b3f91";
+  const started = await manager.start(input(dir, { config: config({ env: [{ key: "TOKEN", value: secret, secret: true }] }) }));
+  const id = [...host.terminals.keys()][0]!;
+
+  host.say(id, `\x1b[32mup\x1b[0m with ${secret}`);
+  expect(await until(() => mirrored.length > 0)).toBe(true);
+
+  // Addressed by the terminal's id, because that is the only name the two
+  // halves agree on and the only one a chip can attach by.
+  expect(mirrored[0]!.id).toBe(id);
+  expect(mirrored[0]!.data).not.toContain(secret);
+  // BYTE FOR BYTE WHAT THE JOURNAL HOLDS — equality, not absence: a mangled or
+  // empty frame would satisfy "the secret is gone" and draw nothing.
+  expect(mirrored[0]!.data).toBe(manager.bytes(started.runId).chunks.join(""));
+  expect(mirrored[0]!.data).toBe(`\x1b[32mup\x1b[0m with ${PTY_MASK.repeat(secret.length)}`);
+
+  // AND THE CURSOR IS THE RING'S OWN, so a chip that read its scrollback from
+  // `/run/bytes` can join these frames onto it without repeating or gapping a
+  // screen. It is the position a reader holds ONCE it has this chunk.
+  expect(mirrored[0]!.cursor).toBe(manager.bytes(started.runId).cursor);
+
+  host.say(id, "more");
+  expect(await until(() => mirrored.length > 1)).toBe(true);
+  expect(mirrored[1]!.cursor).toBe(manager.bytes(started.runId).cursor);
+  // The second frame carries only what is new — it is a frame, not a redraw —
+  // and resuming the ring from the FIRST cursor hands back exactly it.
+  expect(manager.bytes(started.runId, mirrored[0]!.cursor!).chunks.join("")).toBe(mirrored[1]!.data);
+});
+
+test("a shell that cannot take the mirror does not cost the run its slot", async () => {
+  // A repaint is not worth a deployment. The mirror is fire-and-forget on
+  // purpose (launcher.ts), so a host refusing it must leave the run running
+  // rather than turning into the `unknown` a failed KILL produces.
+  const { host, server, manager, dir } = await harness();
+  const started = await manager.start(input(dir));
+  const id = [...host.terminals.keys()][0]!;
+  // The channel goes down in the one direction the mirror uses; the run's own
+  // fate is still whatever the host says it is.
+  host.say(id, "before");
+  expect(await until(() => manager.bytes(started.runId).chunks.length > 0)).toBe(true);
+  expect(manager.run(started.runId).status).toBe("running");
+  await server.close();
+  // Losing the channel is `unknown` for its own reason — the host stopped
+  // reporting — and NOT because a mirror was refused: the run is only ever
+  // moved by `lost`/`exited`, which this asserts by the slot still being held.
+  expect(await until(() => manager.run(started.runId).status === "unknown")).toBe(true);
+  expect(manager.activeRun("proj_1")?.runId).toBe(started.runId);
 });
 
 test("the byte cursor resumes, and a cursor that went backwards means another run", async () => {

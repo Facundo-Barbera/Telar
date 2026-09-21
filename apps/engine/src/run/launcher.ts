@@ -91,6 +91,20 @@ export type RunHandle = {
   /** The geometry the surface drawing it is using. Same optionality, same
    *  reason: a pipe has no columns. */
   resize?(cols: number, rows: number): Promise<boolean>;
+  /**
+   * THE REDACTED BYTES, BACK TO WHOEVER IS HOLDING THE TERMINAL (#890).
+   *
+   * Only the terminal handle has one, and that is the whole of the asymmetry:
+   * a PTY held by the desktop shell has a SECOND audience — the cockpit's
+   * Terminal strip — reading the same device over IPC, and what that audience
+   * must see is the output of `manager.ts`'s redactor rather than the raw
+   * frames the host fans. A pipe-launched run has no such audience: there is no
+   * shell, no IPC and no chip, so there is nothing to mirror to.
+   *
+   * FIRE AND FORGET, AND DELIBERATELY SO. See `terminal-client.ts`: a repaint
+   * is not worth a run's slot.
+   */
+  mirror?(data: string, cursor: number): void;
 };
 
 export type RunLauncher = {
@@ -205,6 +219,12 @@ export function terminalLauncher(client: RunTerminalClient, defaults: { cols?: n
         terminalId: opened.id,
         write: (data: string) => client.write(opened.id, data),
         resize: (cols: number, rows: number) => client.resize(opened.id, cols, rows),
+        mirror: (data: string, cursor: number) => {
+          // SWALLOWED, unlike `stop`'s rejection. A kill nobody answered must
+          // become `unknown`; a repaint nobody answered is a repaint, and the
+          // scrollback the chip re-reads on its next attach is the recovery.
+          void client.mirror(opened.id, data, cursor).catch(() => {});
+        },
         stop(force: boolean) {
           // BY ID, AND FIRE-AND-FORGET IS NOT AN OPTION. A kill whose request
           // never lands must not read as a kill that did, so a rejection is

@@ -1869,11 +1869,20 @@ function deliverToTerminalReader(id, channel, payload) {
 /**
  * ONE HOST, TWO AUDIENCES (#198 W4). A terminal the human opened is read by the
  * renderer that owns it; a terminal the ENGINE started for a run is read by the
- * engine over `run-terminal-server.js`. Both get every frame, because neither
+ * engine over `run-terminal-server.js`. Both get every FATE, because neither
  * knows which terminals belong to the other and a fate delivered to the wrong
  * one is a fate nobody acts on. The renderer lookup already drops frames for a
  * terminal it has no reader for, and the engine's client drops frames for an id
  * it is not tracking, so the fan-out costs nothing but a map lookup.
+ *
+ * THE BYTES ARE NOT FANNED THE SAME WAY, AND #890 IS WHERE THAT SPLIT LANDED.
+ * A run is now drawn in the cockpit's Terminal strip, so a renderer DOES read a
+ * run's terminal — but never these frames. These are raw node-pty bytes, and a
+ * run's are redacted by `pty-stream.ts` in the engine, one call site, which is
+ * what keeps a project's secrets off the screen (#819). So raw run output goes
+ * to the engine alone, and the engine hands its redactor's OUTPUT back over
+ * `POST /mirror`, which is what reaches the renderer. One redactor, engine-side;
+ * the chip draws byte-for-byte what the journal holds.
  */
 function requireTerminalHost() {
   if (terminalHost) return terminalHost;
@@ -1881,7 +1890,11 @@ function requireTerminalHost() {
   terminalHost = new TerminalHost({
     version: app.getVersion(),
     onData: (id, data) => {
-      deliverToTerminalReader(id, "telar:terminal:data", { id, data });
+      // A RUN'S RAW BYTES STOP HERE. See above: the renderer gets the engine's
+      // mirror of them instead, and asking the host WHOSE terminal this is —
+      // rather than whether somebody happens to have registered as its reader —
+      // is what makes that a property of the terminal rather than of timing.
+      if (terminalHost?.ownerOf(id) !== TerminalOwner.ENGINE) deliverToTerminalReader(id, "telar:terminal:data", { id, data });
       runTerminalChannel?.onData(id, data);
     },
     onExit: (id, ending) => {
@@ -1943,6 +1956,45 @@ ipcMain.handle("telar:terminal:kill", (event, input) => {
 ipcMain.handle("telar:terminal:list", (event) => {
   requireCockpitSender(event, "list terminals");
   return { terminals: requireTerminalHost().list(RENDERER) };
+});
+
+/**
+ * READ A TERMINAL THIS RENDERER DID NOT OPEN — and ONLY a run's (#890).
+ *
+ * A run is drawn as a chip in the cockpit's Terminal strip now, beside the
+ * shells a person opened, so the renderer has to be able to register as the
+ * reader of an id the ENGINE minted. That is the whole of what this grants:
+ * being sent frames. It confers no verb — `write`, `resize` and `kill` still
+ * refuse an engine id to a renderer caller, and a run is typed into and stopped
+ * through the engine's own routes, where the singleton and the journal are.
+ *
+ * GATED ON THE HOST'S OWN LIST, not on a shape or a prefix. An id this process
+ * does not hold under `engine` is refused, so this cannot be turned into a way
+ * to steal another renderer's shell by guessing an id — a person's terminals
+ * are not on that list at all.
+ *
+ * AND THE FRAMES IT WILL RECEIVE ARE THE REDACTED ONES. `requireTerminalHost`
+ * above sends a run's raw bytes only to the engine; what arrives here is what
+ * came back over `POST /mirror`, after `pty-stream.ts`.
+ */
+ipcMain.handle("telar:terminal:adopt", (event, input) => {
+  requireCockpitSender(event, "read a run's terminal");
+  const id = String(input?.id ?? "");
+  if (!id) return { ok: false };
+  const host = requireTerminalHost();
+  if (!host.list(TerminalOwner.ENGINE).some((entry) => entry.id === id)) return { ok: false };
+  terminalReaders.set(id, event.sender);
+  return { ok: true };
+});
+
+/** Stop being that terminal's reader. Closing a run's chip does NOT stop the
+ *  run — the engine owns it — so the one thing the close has to do is put the
+ *  frames down, and only the sender currently holding the id may do it. */
+ipcMain.handle("telar:terminal:abandon", (event, input) => {
+  requireCockpitSender(event, "stop reading a run's terminal");
+  const id = String(input?.id ?? "");
+  if (id && terminalReaders.get(id) === event.sender) terminalReaders.delete(id);
+  return { ok: true };
 });
 
 // --- Native folder picker -----------------------------------------------------
@@ -3444,6 +3496,14 @@ if (SMOKE) {
           // first terminal this process ever has. Constructing the host does not
           // load node-pty — that is lazy behind its `spawnPty` getter.
           getTerminalHost: () => requireTerminalHost(),
+          /**
+           * AND THE WAY BACK (#890): the engine's redacted view of a run's
+           * output, delivered to whichever renderer adopted that terminal. The
+           * `cursor` rides along so a chip that read its scrollback from
+           * `/run/bytes` can tell a frame it has already drawn from a new one
+           * and join the two exactly, instead of repeating or gapping a screen.
+           */
+          onMirror: (id, data, cursor) => deliverToTerminalReader(id, "telar:terminal:data", { id, data, cursor }),
         });
         let url = OVERRIDE_URL;
         if (!url) {

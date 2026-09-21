@@ -63,14 +63,18 @@ function fakeHost() {
 
 async function serve(options = {}) {
   const host = options.host ?? fakeHost();
+  /** What `/mirror` handed back — in main.js this is the frame delivered to
+   *  whichever renderer adopted that run's terminal (#890). */
+  const mirrored = [];
   const server = await startRunTerminalServer({
     port: 0,
     token: "t0ken",
     getTerminalHost: () => (options.noHost ? null : host),
+    onMirror: (id, data, cursor) => mirrored.push({ id, data, cursor }),
     ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
   });
   servers.push(server);
-  return { host, server, url: `http://127.0.0.1:${server.port}` };
+  return { host, server, mirrored, url: `http://127.0.0.1:${server.port}` };
 }
 
 const auth = { authorization: "Bearer t0ken", "content-type": "application/json" };
@@ -133,12 +137,13 @@ test("every route needs the token, and a wrong one is refused before anything ru
   expect(host.wrote).toHaveLength(0);
 });
 
-test("the route set is closed: a path that is not one of the six is a 404", async () => {
+test("the route set is closed: a path that is not one of the seven is a 404", async () => {
   const { host, url } = await serve();
-  // `/write` and `/resize` moved OUT of this list when they were built, so the
-  // list is kept adjacent to the positive cases below rather than trusted on
-  // its own: a route set that 404'd everything would satisfy this half alone.
-  for (const path of ["/", "/exec", "/open/../state", "/writes", "/resize/all"]) {
+  // `/write`, `/resize` and `/mirror` each moved OUT of this list when they
+  // were built, so the list is kept adjacent to the positive cases below rather
+  // than trusted on its own: a route set that 404'd everything would satisfy
+  // this half alone.
+  for (const path of ["/", "/exec", "/open/../state", "/writes", "/resize/all", "/mirrors"]) {
     const response = await fetch(`${url}${path}`, { method: "POST", headers: auth, body: "{}" });
     expect(response.status).toBe(404);
     await response.body?.cancel();
@@ -255,6 +260,50 @@ test("a write with no data reaches the host as the empty string rather than as u
   const { host, url } = await serve();
   await (await fetch(`${url}/write`, { method: "POST", headers: auth, body: "{}" })).json();
   expect(host.wrote).toEqual([{ id: "", data: "", owner: "engine" }]);
+});
+
+// ── the mirror, which is the one arrow pointing back ─────────────────────────
+
+test("a mirrored frame is handed on with its id and its cursor, and touches no terminal", async () => {
+  const { host, mirrored, url } = await serve();
+  const response = await fetch(`${url}/mirror`, {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({ id: "term_9", data: "[32mup[0m", cursor: 12 }),
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ mirrored: true });
+  expect(mirrored).toEqual([{ id: "term_9", data: "[32mup[0m", cursor: 12 }]);
+
+  // NO HANDLE IS TOUCHED. These are bytes on their way to a screen, not a verb:
+  // a route that reached the host here would be able to address a terminal
+  // while claiming to be describing one.
+  expect(host.wrote).toHaveLength(0);
+  expect(host.killed).toHaveLength(0);
+  expect(host.listedAs).toHaveLength(0);
+});
+
+test("a shell with no terminal host still takes a mirror", async () => {
+  // 503 is the answer for a verb that needs a handle. A mirror needs none — it
+  // is addressed at a renderer — and answering "this shell has no terminal
+  // host" would make a missing DRAW look like a missing PROCESS.
+  const { mirrored, url } = await serve({ noHost: true });
+  const response = await fetch(`${url}/mirror`, { method: "POST", headers: auth, body: JSON.stringify({ id: "term_1", data: "x", cursor: 1 }) });
+  expect(response.status).toBe(200);
+  expect(mirrored).toEqual([{ id: "term_1", data: "x", cursor: 1 }]);
+});
+
+test("a mirror with nothing to draw is answered and dropped rather than fanned", async () => {
+  // Same rule as everywhere else on this server: this side does not invent a
+  // value. A frame with no id has nowhere to go and a frame with no data has
+  // nothing to say, and either one reaching a renderer would be a repaint of
+  // whatever it last drew.
+  const { mirrored, url } = await serve();
+  for (const body of ["{}", JSON.stringify({ id: "term_1" }), JSON.stringify({ data: "x" })]) {
+    const response = await fetch(`${url}/mirror`, { method: "POST", headers: auth, body });
+    expect(await response.json()).toEqual({ mirrored: false });
+  }
+  expect(mirrored).toHaveLength(0);
 });
 
 // ── the stream, which is what `unknown` rests on ─────────────────────────────

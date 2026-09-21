@@ -962,7 +962,18 @@ export class RunManager {
       // view below is the degraded one. Fed from the redactor's OUTPUT and
       // never its input: this is the one place a run's secrets could reach a
       // surface unmasked, and #819 is what stops that.
-      this.keep(run, text);
+      const cursor = this.keep(run, text);
+      /**
+       * AND STRAIGHT BACK TO THE HOST, so the cockpit's Terminal strip draws
+       * this slice rather than the raw one the desktop fans (#890).
+       *
+       * FROM HERE AND NOT FROM `keep`, because this is the redactor's output
+       * and `keep` is a ring. The two happen to be the same string today; the
+       * one that must be mirrored is the one that came out of the redactor,
+       * and saying so here is what stops a later change to the ring from
+       * silently putting unmasked bytes on a wire.
+       */
+      run.handle?.mirror?.(text, cursor);
       carry += text;
       for (let at = carry.indexOf("\n"); at !== -1; at = carry.indexOf("\n")) {
         emitLine(carry.slice(0, at));
@@ -990,10 +1001,17 @@ export class RunManager {
     return clean;
   }
 
-  /** One already-redacted slice into the byte ring, dropping WHOLE chunks from
-   *  the front so a cut can never land inside an escape sequence. */
-  private keep(run: LiveRun, text: string): void {
-    if (!text) return;
+  /**
+   * One already-redacted slice into the byte ring, dropping WHOLE chunks from
+   * the front so a cut can never land inside an escape sequence.
+   *
+   * ANSWERS THE CURSOR A READER HOLDS ONCE IT HAS THIS CHUNK — the same number
+   * `bytes()` would hand back — because the mirror to the desktop carries a
+   * position, and a position computed anywhere but here could drift from the
+   * ring it is meant to index.
+   */
+  private keep(run: LiveRun, text: string): number {
+    if (!text) return run.bytesDropped + run.bytes.length;
     run.bytes.push(text);
     run.byteChars += text.length;
     // `length > 1` on the character bound: one chunk larger than the whole cap
@@ -1007,6 +1025,7 @@ export class RunManager {
       run.byteChars -= gone.length;
       run.bytesDropped += 1;
     }
+    return run.bytesDropped + run.bytes.length;
   }
 
   private pollReadiness(run: LiveRun): void {

@@ -180,6 +180,32 @@ export class RunTerminalClient {
     return answer?.ok === true;
   }
 
+  /**
+   * THE REDACTED BYTES, HANDED BACK TO THE HOST SO THE COCKPIT MAY DRAW THEM
+   * (#890).
+   *
+   * THE ARROW POINTS THE UNUSUAL WAY ON PURPOSE. Everything else on this
+   * channel is the engine asking the host to do something; this is the engine
+   * telling the host what a run's output looks like ONCE IT HAS BEEN THROUGH
+   * `pty-stream.ts`. The host fans RAW node-pty bytes, and a renderer reading
+   * those would draw a run's secrets unmasked — so the renderer is given these
+   * frames instead, and the raw ones stop at the channel. ONE REDACTOR, ON THIS
+   * SIDE: the cockpit sees byte-for-byte what the journal holds.
+   *
+   * `cursor` IS WHAT MAKES THE SEAM EXACT. A chip attaching to a run that is
+   * already going reads its scrollback from `/run/bytes` and follows these
+   * frames; without a position it could not tell a frame it has already drawn
+   * from a new one, and the join would either duplicate a screen or gap it.
+   * This is the reader's cursor AFTER this chunk, in `bytes()`'s own units.
+   *
+   * IT NEVER FAILS A RUN. A mirror that does not land costs the person a
+   * repaint they can get back by reopening the chip; taking the run `unknown`
+   * over it would be spending the project's deployment slot on a redraw.
+   */
+  async mirror(id: string, data: string, cursor: number): Promise<void> {
+    await this.post("/mirror", { id, data, cursor });
+  }
+
   /** The surface drawing this terminal says how big it is; SIGWINCH is the
    *  PTY's job. Same `false` rule as `write`. */
   async resize(id: string, cols: number, rows: number): Promise<boolean> {
