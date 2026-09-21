@@ -79,17 +79,15 @@ export function DictationMicrophoneSection() {
         label="Input"
         icon={MicIcon}
         {...(gone ? { status: <span className="text-2xs text-muted-foreground">Not connected</span> } : {})}
-        hint={
-          gone
-            ? `${gone.label} is not connected. Dictation is using the system default until it is plugged back in — the choice is kept, not cleared.`
-            : withheld
-              ? "Names appear once a microphone has been allowed. Test the level below."
-              : // WHAT THE CONTROL CANNOT SAY: where the answer lives. Every other
-                // row on this pane is a fact about the Mac, stored with its
-                // engine state and read by the phone as well; this one is not,
-                // and somebody who set it here would otherwise expect it there.
-                "Per browser. A paired phone or another Mac keeps its own."
-        }
+        {...(gone
+          ? { hint: `${gone.label} is not connected; using the system default until it is.` }
+          : withheld
+            ? { hint: "Names appear once a microphone has been allowed." }
+            : {})}
+        // WHAT THE CONTROL CANNOT SAY: where the answer lives. Every other row
+        // on this pane is a fact about the Mac, read by the phone as well;
+        // this one is per browser.
+        info="Kept in this browser only. A paired phone or another Mac keeps its own."
         control={
           <Dropdown<string>
             value={choice?.deviceId ?? ""}
@@ -110,13 +108,8 @@ export function DictationMicrophoneSection() {
       <Row
         label="Level"
         icon={AudioLinesIcon}
-        hint={
-          reading
-            ? hearing(level)
-              ? "Hearing you."
-              : "Hearing nothing. If the bar stays flat while you speak, pick another input."
-            : "Reads the input directly, nothing sent anywhere. Flat here means the microphone, not the transcription."
-        }
+        {...(reading && !hearing(level) ? { hint: "Hearing nothing. Pick another input." } : {})}
+        info="Reads the input directly; nothing is sent anywhere."
         {...(meterError ? { error: meterError } : {})}
         control={
           <div className="flex items-center gap-3">
@@ -141,13 +134,9 @@ export function DictationMicrophoneSection() {
         label="Live transcript"
         icon={TypeIcon}
         {...(demo.error ? { error: demo.error.text } : {})}
-        hint={
-          listening
-            ? // SAID WHILE IT IS TRUE, and only what cannot be seen: the rewriting
-              // is on screen, the cost and the discarding are not.
-              "Transcribing now, as a paid request. The words are discarded when you stop."
-            : "A real transcription, discarded afterwards. Spends provider credit; touches no message box."
-        }
+        // Only what cannot be seen: the rewriting is on screen, the cost and
+        // the discarding are not.
+        info="A real, paid transcription. The words are discarded and touch no message box."
         control={
           <Button
             size="sm"

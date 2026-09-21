@@ -6,7 +6,8 @@
 // from theme tokens only; nothing hard-codes a palette.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
-import { ArrowLeftIcon, CircleAlertIcon, Undo2Icon } from "lucide-react";
+import { ArrowLeftIcon, CircleAlertIcon, InfoIcon, Undo2Icon } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { settingsRowId, type SettingsSearchEntry, type SettingsSearchIndex } from "@/lib/settings-search";
 import { SettingsSearchNav } from "./settings-search-nav";
@@ -614,6 +615,7 @@ export function Row({
   id,
   label,
   hint,
+  info,
   icon: Icon,
   status,
   control,
@@ -626,6 +628,16 @@ export function Row({
   id?: string;
   label: ReactNode;
   hint?: ReactNode;
+  /**
+   * THE ⓘ, FOR THE FEW ROWS A LABEL AND A CONTROL CANNOT CARRY ALONE. A
+   * setting should explain itself: the label says what it is, the control
+   * shows its value. What remains is the fact a person cannot infer and would
+   * be wrong to guess — where audio goes, what a key is spent on — and that
+   * lives behind a hover, out of the way of the people who already know. Use
+   * it sparingly: a pane with an ⓘ on every row has the problem hints had,
+   * one hover further away.
+   */
+  info?: ReactNode;
   icon?: ComponentType<{ className?: string }>;
   /** A word for the row's own state, beside the label — not its value. */
   status?: ReactNode;
@@ -667,6 +679,28 @@ export function Row({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium text-foreground">{label}</span>
+            {info && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label="More about this setting"
+                      // The sentence itself, as `data-info`: the tooltip portals
+                      // out of the row on hover, so this is what a test (and
+                      // an assistive query) reads without hovering.
+                      data-info={typeof info === "string" ? info : undefined}
+                      className="flex shrink-0 items-center text-muted-foreground/60 transition-colors hover:text-foreground"
+                    >
+                      <InfoIcon className="size-3.5" />
+                    </button>
+                  }
+                />
+                <TooltipContent side="top" className="max-w-72 text-xs leading-snug">
+                  {info}
+                </TooltipContent>
+              </Tooltip>
+            )}
             {status && <span className="shrink-0">{status}</span>}
             {/* The reserved slot — `size-3` is the arrow's own box, so the row
                 measures the same with it and without it. */}

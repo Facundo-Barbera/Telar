@@ -149,7 +149,7 @@ export function StoreSection() {
         label="Location"
         hint={
           status?.pinnedByEnvironment
-            ? `TELAR_HOME is set for this run, so Telar is using ${status.path} and will not move it.`
+            ? `${status.path} (pinned by TELAR_HOME).`
             : moved
               ? "Moved. Takes effect on the next start; the old store stays on disk."
               : onVolume
@@ -192,7 +192,7 @@ export function StoreSection() {
         hint={
           copied
             ? copied
-            : "Copies history, settings and notes to a new folder, leaving this one untouched. Checkouts, Python environments and toolchains are re-made, not carried."
+            : "History, settings and notes to a new folder. Checkouts and environments are re-made, not carried."
         }
         control={
           <Button size="sm" variant="outline" disabled={busy || copying} onClick={() => void copyStore()}>
@@ -206,8 +206,8 @@ export function StoreSection() {
           label="Previous store"
           hint={
             status.retired.removable
-              ? `${formatBytes(status.retired.bytes)} at ${status.retired.source}. Telar has opened the moved store, so this copy can go.`
-              : `${formatBytes(status.retired.bytes)} at ${status.retired.source}. Restart Telar first — the old store stays until the new one has actually been opened.`
+              ? `${formatBytes(status.retired.bytes)} at ${status.retired.source}. The moved store is open; this copy can go.`
+              : `${formatBytes(status.retired.bytes)} at ${status.retired.source}. Restart Telar first.`
           }
           control={
             <span className="flex items-center gap-2">

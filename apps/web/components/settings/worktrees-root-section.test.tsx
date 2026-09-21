@@ -84,16 +84,16 @@ describe("Settings ▸ Storage ▸ Session checkouts", () => {
     // Otherwise the row reads as a promise that 12 GB just moved.
     answer = { kind: "configured", root: "/Volumes/TelarVR/checkouts", default: DEFAULT_ROOT, label: "TelarVR" };
     const view = await mount();
-    expect(view.host.textContent).toContain("already cut stay where they are");
+    expect(view.host.textContent).toContain("Existing checkouts stay where they are");
     view.unmount();
   });
 
   test("the reproducibility asymmetry is on screen, not only in the commit message", async () => {
     const view = await mount();
     const text = view.host.textContent ?? "";
-    expect(text).toContain("re-cuts");
+    expect(text.toLowerCase()).toContain("re-cut");
     // The sentence that makes this the safe half of #630 to relocate.
-    expect(text).toContain("with the whole store out, it cannot start at all");
+    expect(text).toContain("the store itself cannot live there");
     view.unmount();
   });
 
@@ -176,8 +176,8 @@ describe("moving the checkouts already cut", () => {
     // Under-promising is the point: git refuses a checkout holding
     // uncommitted work and this never forces it, so a person is told that
     // while they are still deciding.
-    expect(text).toContain("uncommitted changes is left where it is");
-    expect(text).toContain("commit it first");
+    expect(text).toContain("uncommitted changes stays put");
+    expect(text).toContain("until committed");
     view.unmount();
   });
 
@@ -234,8 +234,8 @@ describe("moving the checkouts already cut", () => {
 });
 
 describe("the row's sentence, per state", () => {
-  test("the default says these are the one thing that comes back", () => {
-    expect(worktreesRootHint({ kind: "default", root: DEFAULT_ROOT, default: DEFAULT_ROOT })).toContain("comes back");
+  test("the default says where that is, in relation to the store", () => {
+    expect(worktreesRootHint({ kind: "default", root: DEFAULT_ROOT, default: DEFAULT_ROOT })).toContain("beside the store");
   });
 
   test("a drive carries the durability warning #630 already wrote", () => {

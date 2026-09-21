@@ -276,7 +276,7 @@ export function WorktreeListSection() {
     return (
       <SettingsGroup title="Checkouts" description={inventory.blocker}>
         <div className="py-3 text-xs text-muted-foreground">
-          Nothing was read, so nothing is claimed about what is there. Plug the drive back in and this fills itself.
+          Plug the drive back in and this fills itself.
         </div>
       </SettingsGroup>
     );
@@ -290,8 +290,8 @@ export function WorktreeListSection() {
       title="Checkouts"
       description={[
         rows.length === 0 && !busy
-          ? "No checkouts yet. One is cut per worktree session and given back when that session is archived."
-          : `${rows.length} checkout${rows.length === 1 ? "" : "s"}. Telar checks each one — merged, clean, and whether any session still needs it — so you do not have to.`,
+          ? "No checkouts yet."
+          : `${rows.length} checkout${rows.length === 1 ? "" : "s"}, each checked for merged, clean, and still in use.`,
         reclaimable.length > 0 ? `${reclaimable.length} can go, ${formatBytes(total)}.` : undefined,
         // A floor, not a total, and said rather than quietly under-reported —
         // `StorageSection`'s rule, for the same reason.

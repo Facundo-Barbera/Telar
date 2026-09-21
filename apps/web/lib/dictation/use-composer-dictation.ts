@@ -33,9 +33,9 @@ export type ComposerDictation = DictationState & {
    * microphone permission, a browser without `MediaRecorder`.
    *
    * The button draws nothing and the chord does nothing. Not a DISABLED button
-   * and not a beeping key: macOS dictation and Wispr Flow already work in this
-   * box, so a control advertising a job the reader may have given to something
-   * else is worse than no control.
+   * and not a beeping key: macOS dictation and any system-level dictation tool
+   * already work in this box, so a control advertising a job the reader may
+   * have given to something else is worse than no control.
    */
   available: boolean;
   /**

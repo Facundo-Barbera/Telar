@@ -304,7 +304,6 @@ export function StorageSection() {
     <SettingsGroup
       title="What Telar is keeping"
       description={[
-        "Measured when this pane opens, and again when you refresh — never on its own.",
         /**
          * APPARENT SIZE, SAID OUT LOUD — issue #633.
          *
@@ -323,9 +322,9 @@ export function StorageSection() {
          * broken and "broken" when it is fine. Saying what the figure is
          * costs a line; letting it be believed costs a wrong conclusion.
          */
-        "Sizes are apparent, not physical: files that share storage are counted in full.",
+        "Apparent sizes: files that share storage are counted in full.",
         // A floor, not a total, and said rather than quietly under-reported.
-        report?.partial ? "Something under the store could not be read, so these figures are a floor." : undefined,
+        report?.partial ? "Some of the store could not be read, so these figures are a floor." : undefined,
         cannotReveal,
       ]
         .filter(Boolean)
@@ -342,7 +341,7 @@ export function StorageSection() {
       <Row
         icon={HardDriveIcon}
         label="Total"
-        hint={report?.root ?? "Where this engine keeps everything below."}
+        hint={report?.root ?? "Where everything below lives."}
         {...(failure ? { error: failure } : {})}
         control={
           <span className="flex items-center gap-2">
@@ -362,7 +361,7 @@ export function StorageSection() {
                 label={label}
                 hint={
                   isJournal
-                    ? `${hint} Reclaim drops the streaming rows a finished turn has already superseded and compacts the file — no turn, item or answer is removed.${reclaimed ? ` ${reclaimed}` : ""}`
+                    ? `${hint} Reclaim compacts superseded streaming rows; no turn or answer is removed.${reclaimed ? ` ${reclaimed}` : ""}`
                     : entry.category === "worktrees" && cacheNote
                       // UNDER THE FIGURE THAT MADE SOMEBODY ASK (#633), rather
                       // than in a row of its own: "Session checkouts — 7.3 GB"

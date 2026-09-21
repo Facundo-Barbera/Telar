@@ -718,7 +718,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
               "turn on",
               "enable",
               "deepgram",
-              "wispr",
             ],
             icon: MicIcon,
           },

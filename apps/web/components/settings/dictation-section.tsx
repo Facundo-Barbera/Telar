@@ -5,9 +5,9 @@
  *
  * ── THE FIRST ROW IS "WHETHER AT ALL", AND IT ANSWERS OFF ───────────────────
  * Nothing is forced. macOS dictation works on the composer already — it is a
- * plain editable — and so do Wispr Flow and everything like it, so a mic button
- * that appeared on every message box uninvited would be Telar claiming a job
- * somebody may have given elsewhere. `off` is the default, and with it there is
+ * plain editable — and so does any system-level dictation tool, so a mic
+ * button that appeared on every message box uninvited would be Telar claiming
+ * a job somebody may have given elsewhere. `off` is the default, and with it there is
  * no key row and no button on any surface: the web, the desktop shell and the
  * phone all read this one setting.
  *
@@ -112,10 +112,13 @@ const PROVIDERS: { id: DictationProviderId; label: string }[] = [
   { id: "deepgram", label: "Deepgram" },
 ];
 
-const PROVIDER_HINT: Record<DictationProviderId, string> = {
-  off: "No mic button anywhere. macOS dictation and tools like Wispr Flow keep working as they do now.",
-  // THE PRIVACY FACT AND NOTHING ELSE (#643).
-  deepgram: "A mic button on every message box, here and on the phone. Audio goes straight to Deepgram, not through this Mac.",
+/**
+ * THE ONE FACT BEHIND THE ⓘ: where the audio goes. A label reading "Provider"
+ * and a control reading "Deepgram" say everything else. Off has no ⓘ; "no mic
+ * button" is what an Off provider self-evidently means.
+ */
+const PROVIDER_INFO: Partial<Record<DictationProviderId, string>> = {
+  deepgram: "Audio goes from the device straight to Deepgram; it does not pass through this Mac.",
 };
 
 export function DictationSection() {
@@ -162,7 +165,8 @@ export function DictationSection() {
         <Row
           label="Provider"
           icon={provider === "off" ? MicOffIcon : MicIcon}
-          hint={PROVIDER_HINT[provider] ?? "Chosen on this Mac, and not one this cockpit knows how to drive. Update Telar, or pick another."}
+          {...(PROVIDER_INFO[provider] ? { info: PROVIDER_INFO[provider] } : {})}
+          {...(PROVIDERS.some(({ id }) => id === provider) ? {} : { hint: "Not a provider this build can drive. Update Telar, or pick another." })}
           {...(error ? { error } : {})}
           control={
             <Select
@@ -205,11 +209,7 @@ export function DictationSection() {
               // under. What narrowing costs is still said — on the hint for a
               // narrowed language, where it is a live fact about the chosen value
               // rather than a warning about a thing nobody has done.
-              hint={
-                language === DICTATION_AUTOMATIC
-                  ? "Any supported language, switching mid-sentence."
-                  : "Only this language. More accurate within it, wrong for anything else."
-              }
+              {...(language === DICTATION_AUTOMATIC ? {} : { info: "Only this language is transcribed. More accurate within it, wrong for anything else." })}
               control={
                 // `Dropdown` RATHER THAN A SELECT WRITTEN OUT HERE, for the one
                 // thing it fixes in a single place: a bare `<SelectValue />`
@@ -236,11 +236,7 @@ export function DictationSection() {
               // this is the word a reader scanning the pane sees without reading
               // the hint.
               {...(configured ? { status: "set" } : {})}
-              hint={
-                configured
-                  ? "Stays on this Mac. Browsers and phones get a five-minute token instead."
-                  : "Create one at console.deepgram.com with the default permissions."
-              }
+              info="The key stays on this Mac. Browsers and phones get a five-minute token instead."
               control={
                 <div className="flex items-center gap-2">
                   <Input
@@ -277,12 +273,12 @@ export function DictationSection() {
             <Row
               label="Vocabulary"
               icon={BookMarkedIcon}
-              hint="Names and jargon the recogniser would not guess, one per line. Projects, branches and open conversations are already sent. Saves on blur."
+              info="Projects, branches and open conversations are sent automatically. This is for the names only you know."
               control={
                 <Textarea
                   className="h-28 w-64 font-mono text-xs"
                   aria-label="Dictation vocabulary"
-                  placeholder={"Kubernetes\nZarigüeya\nPostgres"}
+                  placeholder={"One word per line"}
                   // THE STORED LIST WHEN NOBODY IS TYPING — see `terms`. Joined
                   // here rather than kept as text anywhere, so what is on screen
                   // is what the engine actually holds.

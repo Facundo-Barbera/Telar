@@ -274,7 +274,7 @@ describe("Settings ▸ Storage ▸ Reclaim", () => {
     // on arrival rather than in a confirmation nobody reads.
     reclaimResponse({ before: 1, after: 1, deltas: 0, starts: 0, sessions: 0 });
     const view = await mount();
-    expect(view.host.textContent).toContain("no turn, item or answer is removed");
+    expect(view.host.textContent).toContain("no turn or answer is removed");
     view.unmount();
   });
 

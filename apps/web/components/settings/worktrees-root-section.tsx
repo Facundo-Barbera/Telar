@@ -55,9 +55,9 @@ export function worktreesRootHint(state: WorktreesRoot): string {
     return state.blocker ?? `${state.root} is on a drive this build cannot check. Make sure it is connected, or choose a location on this machine's own disk.`;
   }
   if (state.kind === "default") {
-    return `${state.root} — beside everything else Telar keeps. Checkouts are re-cut from the commit each session recorded, so they are the one thing here that comes back.`;
+    return `${state.root}, beside the store.`;
   }
-  return `${state.root}${state.label ? ` on ${state.label}` : ""}. New checkouts go here; the ones already cut stay where they are and keep working. ${
+  return `${state.root}${state.label ? ` on ${state.label}` : ""}. Existing checkouts stay where they are. ${
     state.label ? REMOVABLE_DRIVE_WARNING : ""
   }`.trim();
 }
@@ -122,7 +122,7 @@ export function WorktreesRootSection() {
   return (
     <SettingsGroup
       title="Session checkouts"
-      description="Telar re-cuts a checkout from the commit its session recorded, so these are the one thing it keeps that comes back. With only them on an external drive, Telar still starts without it — with the whole store out, it cannot start at all."
+      description="Re-cut from each session's recorded commit, so an external drive can hold them; the store itself cannot live there."
     >
       <Row
         icon={FolderGitIcon}
@@ -163,7 +163,7 @@ export function WorktreesRootSection() {
           label="Move the checkouts already there"
           hint={
             outcome?.summary ??
-            "Re-cuts each checkout from its own branch at the new location. One holding uncommitted changes is left where it is — commit it first, then run this again. Nothing runs while a session is working."
+            "Re-cuts each checkout at the new location. One with uncommitted changes stays put until committed."
           }
           control={
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void move()}>
