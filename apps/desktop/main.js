@@ -739,6 +739,71 @@ function childEnv(home) {
 
 // --- (c0) Boot the engine daemon as a child ---------------------------------
 /**
+ * THE ENGINE'S "A TELAR IS ALREADY RUNNING" EXIT — issue #894.
+ *
+ * THE NUMBER IS DECLARED TWICE ON PURPOSE, AND A TEST HOLDS THE PAIR TOGETHER.
+ * `ENGINE_EXIT_LOCK_HELD` lives in apps/engine/src/state.ts; this file is plain
+ * CommonJS loaded by Electron before anything of that app exists, so it cannot
+ * import it and keeps its own copy. `engine-exit.test.js` reads both files and
+ * fails if they disagree — the same arrangement as the `x-telar-host` header,
+ * which is a contract between two languages for the same reason.
+ *
+ * WHY THERE HAS TO BE A CODE AT ALL: the engine is forked with
+ * `stdio: "inherit"`, so in a packaged app everything it prints goes to a
+ * stdout nobody reads. An exit code is the only thing that survives, and
+ * "another daemon holds the lock" and "the engine died" want opposite
+ * responses from this process.
+ */
+const ENGINE_EXIT_LOCK_HELD = 3;
+
+/**
+ * Whether anything has been put on screen yet — see the engine `exit` handler.
+ *
+ * An engine that dies BEFORE the first paint is indistinguishable from an app
+ * that refuses to open, which is exactly what #894 was reported as. After the
+ * first paint the window itself is the explanation, and the existing blanket
+ * quit stands.
+ */
+let mainWindowShown = false;
+
+/**
+ * Whether a person has already been told why this launch is not happening.
+ *
+ * THE TWO PATHS RACE, AND BOTH ARE CORRECT ON THEIR OWN. An engine that exits
+ * fires the `exit` handler AND, thirty seconds later, rejects the
+ * `waitForEngine` the boot is awaiting — so without this the same failure would
+ * put two dialogs in front of somebody who is already only being told once.
+ * First one to arrive is the one with the specific reason.
+ */
+let startupFailureReported = false;
+
+/** Say it once, on screen, and only while there is no window to say it in. */
+function reportStartupFailure(title, detail) {
+  if (mainWindowShown || startupFailureReported) return;
+  startupFailureReported = true;
+  dialog.showErrorBox(title, detail);
+}
+
+/** The daemon lock as the engine writes it — `{ pid, token, hostname }`, and
+ *  the only place this process can read the owner's pid from. Composed here
+ *  the way `engineDiscoveryFile` composes its sibling (AD-5). */
+function engineLockFile(home) {
+  return path.join(home, "engine", "engine.lock");
+}
+
+/** Who holds the store, for a person who now has to decide whether the Telar
+ *  already running is one they want. `null` when the lock is gone or torn —
+ *  the dialog says less rather than guessing. */
+function engineLockOwnerPid(home) {
+  try {
+    const pid = JSON.parse(fs.readFileSync(engineLockFile(home), "utf8"))?.pid;
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * THE APP HAS A BACK END NOW, and this is it.
  *
  * The cockpit is only an authenticated engine client: every route handler it
@@ -780,10 +845,50 @@ function startEngineChild(home) {
     engineChild = null;
     // The cockpit without the engine is a window full of errors. Quit rather
     // than leave one standing.
-    if (!SMOKE && !app.isQuitting) {
-      console.error(`[telar-desktop] engine exited (code=${code} signal=${signal})`);
+    if (SMOKE || app.isQuitting) return;
+    logShell("error", `engine exited (code=${code} signal=${signal})`);
+    /**
+     * A LIVE LOCK IS AN ORDINARY CONDITION, AND IT GETS A SENTENCE — #894.
+     *
+     * The owner launched the nightly while a previous Telar was still up; the
+     * engine refused the lock, exited, and this handler quit the app with the
+     * only explanation on a stdout a packaged app sends nowhere. From the
+     * outside that is an app that does not open.
+     *
+     * NO ATTACHING TO THE FOREIGN DAEMON. That is a real option and a larger
+     * change — two shells over one store raises questions about which one owns
+     * the windows, the browser profiles and the PTYs — so what ships here is
+     * the sentence, which is what was actually missing.
+     *
+     * ONLY BEFORE THE FIRST PAINT. Once a window is up the engine exiting is a
+     * different event with a window to report it in, and a modal over a live
+     * cockpit would be the wrong shape.
+     */
+    if (code === ENGINE_EXIT_LOCK_HELD && !mainWindowShown && !startupFailureReported) {
+      startupFailureReported = true;
+      const pid = engineLockOwnerPid(home);
+      dialog.showMessageBoxSync({
+        type: "warning",
+        title: "Telar is already running",
+        message: "Another Telar is using this store.",
+        detail:
+          `A Telar daemon${pid === null ? "" : ` (pid ${pid})`} already holds ${home}.\n\n` +
+          "Switch to the Telar that is already open, or quit it before launching this one.",
+        buttons: ["Quit"],
+      });
       app.quit();
+      return;
     }
+    // Every other exit is an engine that DIED, and the blanket quit is right
+    // for it — but a person who never saw a window is owed the reason.
+    // `showErrorBox` rather than the message box above: this is a failure, and
+    // it is the one dialog Electron will show before `ready` resolves.
+    reportStartupFailure(
+      "Telar's engine stopped",
+      `The engine exited (code=${code} signal=${signal}) before Telar could open.\n\n` +
+        `There is more in ${shellLogPath()}.`,
+    );
+    app.quit();
   });
   return engineChild;
 }
@@ -3534,6 +3639,9 @@ if (SMOKE) {
           url = `http://127.0.0.1:${port}/`;
         }
         updaterWindow = createWindow(url);
+        // From here on an engine that exits has a window to be reported in, so
+        // the dialogs in `startEngineChild` stand down — see #894.
+        mainWindowShown = true;
         configureAutoUpdater();
         /**
          * AND WATCH THE MOUNT ROOTS — issue #534. After the window, because it
@@ -3547,7 +3655,18 @@ if (SMOKE) {
           if (BrowserWindow.getAllWindows().length === 0) createWindow(url);
         });
       } catch (err) {
-        console.error("[telar-desktop] failed to start:", err);
+        /**
+         * THE OTHER SILENT QUIT — #894. `waitForEngine` rejects on a 30 s
+         * timeout, and this caught it, logged to a console nobody has, and
+         * quit. A daemon that is up but not answering produces exactly the
+         * same picture as the lock conflict above, and deserves the same
+         * treatment: say so on screen before going.
+         */
+        logShell("error", `failed to start: ${err?.stack || err}`);
+        reportStartupFailure(
+          "Telar could not start",
+          `${err?.message || err}\n\nThere is more in ${shellLogPath()}.`,
+        );
         app.quit();
       }
     });
