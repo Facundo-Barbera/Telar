@@ -39,7 +39,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { DownloadIcon, SearchIcon } from "lucide-react";
+import { SearchIcon } from "lucide-react";
 import type { ClaudeConversation } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { fmtAgo, formatBytes } from "@/lib/format";
@@ -285,23 +285,3 @@ export function ConversationRow({
   );
 }
 
-/**
- * THE LINE THAT OPENS THE PICKER, for the empty composer.
- *
- * SECONDARY ON PURPOSE — reachable but not competing with the greeting above
- * it. Now that `/resume` reaches the same picker from the keyboard (#616),
- * this link is the mouse's way in rather than the only one, so it reads as a
- * quiet alternative rather than a second heading.
- */
-export function ResumePickerTrigger({ onOpen }: { onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="mx-auto flex items-center gap-1 rounded-md px-2 py-0.5 text-xs text-muted-foreground/80 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <DownloadIcon className="size-3 shrink-0" />
-      Pick up a Claude Code conversation
-    </button>
-  );
-}

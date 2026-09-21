@@ -98,7 +98,7 @@ import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { fmtTokens } from "@/lib/format";
 import { createEngineApi } from "@/lib/engine/client";
 import { FreshGreeting } from "./session/fresh-greeting";
-import { ResumePicker, ResumePickerTrigger } from "./session/resume-picker";
+import { ResumePicker } from "./session/resume-picker";
 import { WorkspaceEnvironment } from "./workspace-environment";
 import { cn } from "@/lib/utils";
 
@@ -1159,7 +1159,7 @@ export function Composer({
       // The same press as the usage wheel's button, and the same submission:
       // the cockpit sends one `kind: "compact"` turn either way.
       if (action.type === "compact") onCompact?.();
-      // The same press as the link under the greeting — see `ResumePickerTrigger`.
+      // `/resume` is the one way into the picker; there is no button.
       if (action.type === "resume") setResuming(true);
       if (action.type === "stop") onStop();
     },
@@ -1468,13 +1468,12 @@ export function Composer({
       )}
 
       {/* THE OTHER WAY TO START: bring in a conversation that already exists
-          (#616). Under the greeting rather than beside the Send button, because
-          it is an alternative to typing the first message rather than an action
-          on one — and it disappears the moment there is a session, like the
-          greeting it sits under. */}
+          (#616). Reached by typing `/resume` and nothing else: the link that
+          sat under the greeting went at the owner's request, so the surface
+          carries one way in and the command is it. The picker still only
+          exists while the canvas is fresh, like the greeting it belonged to. */}
       {fresh && onAdopt && (
         <>
-          <ResumePickerTrigger onOpen={() => setResuming(true)} />
           <ResumePicker
             open={resuming}
             onOpenChange={setResuming}

@@ -36,8 +36,8 @@ const COMMAND_GLYPHS: Partial<Record<CompletionGlyph, typeof BotIcon>> = {
   // The glyph the usage wheel's own Compact button wears — same gesture, two
   // places to reach it.
   compact: Minimize2Icon,
-  // The same glyph the composer's own resume link wears — see
-  // `resume-picker.tsx`'s `ResumePickerTrigger`.
+  // `/resume` is the only way into the picker; the link under the greeting
+  // that used to share this glyph is gone.
   resume: DownloadIcon,
   // The same glyph the chip a skill inserts draws (`glyph-paths.ts`), so the
   // row you picked and the chip it produced are recognisably one thing.
