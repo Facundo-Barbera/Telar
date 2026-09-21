@@ -966,6 +966,26 @@ function optionalPatch<K extends string>(
   return { [key]: normalise(raw) } as Partial<Record<K, string>>;
 }
 
+/**
+ * The same three-state rule for a NUMBER.
+ *
+ * Separate from `optionalPatch` rather than generic over it because of the one
+ * line that does not carry over: an empty string is a third way of saying
+ * "clear this", and a number has no such shape. Folding the two together would
+ * mean a `trim` guard that only one caller can reach.
+ */
+function optionalNumberPatch<K extends string>(
+  key: K,
+  submitted: number | null | undefined,
+  existing: number | undefined,
+  normalise: (value: number) => number,
+): Partial<Record<K, number>> {
+  if (submitted === null) return {};
+  const raw = submitted === undefined ? existing : submitted;
+  if (raw === undefined) return {};
+  return { [key]: normalise(raw) } as Partial<Record<K, number>>;
+}
+
 /** A space separates the two halves because neither an instance id nor an
  *  environment variable name may contain one — so the key cannot be ambiguous. */
 const SECRET_KEY_SEPARATOR = " ";
@@ -4009,6 +4029,9 @@ export class EngineStore {
     driver?: unknown;
     displayName?: string | null;
     accentColor?: string | null;
+    /** A whole percentage of the model's window, or `null` to fall back to the
+     *  cockpit's default. Never a token count — see the contract's field. */
+    contextNoticePercent?: number | null;
     enabled?: boolean;
     configDir?: string | null;
     binaryPath?: string | null;
@@ -4055,6 +4078,17 @@ export class EngineStore {
         const colour = value.trim();
         if (!/^#[0-9a-fA-F]{6}$/.test(colour)) throw new EngineStateError("invalid_request", "accent colour must be #rrggbb");
         return colour;
+      }),
+      /**
+       * REFUSES RATHER THAN CLAMPS, the same rule the compaction threshold
+       * follows: a share this cannot express is one the person has to see
+       * refused, because silently moving their number is worse than a 400.
+       */
+      ...optionalNumberPatch("contextNoticePercent", input.contextNoticePercent, existing?.contextNoticePercent, (value) => {
+        if (!Number.isSafeInteger(value) || value < 1 || value > 100) {
+          throw new EngineStateError("invalid_request", "context notice must be a whole percentage from 1 to 100");
+        }
+        return value;
       }),
       ...optionalPatch("configDir", input.configDir, existing?.configDir, (value) => {
         const dir = value.trim();

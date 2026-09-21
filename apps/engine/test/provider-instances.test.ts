@@ -113,6 +113,36 @@ test("null clears a field and an absent key leaves it alone", () => {
   expect(engine.listProviderInstances().find((instance) => instance.id === "claude_work")?.accentColor).toBeUndefined();
 });
 
+test("a login's heavy-context threshold is a whole percentage, or absent", () => {
+  const engine = store();
+  engine.saveProviderInstance({ id: "claude_work", driver: "claude", contextNoticePercent: 55 });
+  const read = () => engine.listProviderInstances().find((instance) => instance.id === "claude_work");
+  expect(read()?.contextNoticePercent).toBe(55);
+
+  // Absent leaves it alone, the same three-state rule every other field follows.
+  engine.saveProviderInstance({ id: "claude_work", displayName: "Work" });
+  expect(read()?.contextNoticePercent).toBe(55);
+
+  // `null` is how a settings field says "back to the cockpit's default", and
+  // the default is ABSENCE rather than a number stored here: the threshold is
+  // the cockpit's to name, and writing 70 into every login would freeze it.
+  engine.saveProviderInstance({ id: "claude_work", contextNoticePercent: null });
+  expect(read()?.contextNoticePercent).toBeUndefined();
+});
+
+test("a threshold outside 1 to 100, or not a whole number, is refused rather than clamped", () => {
+  // REFUSED, NOT MOVED. Silently turning someone's 0 into a 1 is the failure
+  // this control exists to end — a number that does not mean what it says.
+  const engine = store();
+  engine.saveProviderInstance({ id: "claude_work", driver: "claude" });
+  for (const value of [0, 101, 70.5, -10]) {
+    expect(() => engine.saveProviderInstance({ id: "claude_work", contextNoticePercent: value })).toThrow(
+      /whole percentage from 1 to 100/,
+    );
+  }
+  expect(engine.listProviderInstances().find((instance) => instance.id === "claude_work")?.contextNoticePercent).toBeUndefined();
+});
+
 test("an instance cannot change driver, and the built-in slot cannot be deleted", () => {
   const engine = store();
   engine.saveProviderInstance({ id: "claude_work", driver: "claude" });
