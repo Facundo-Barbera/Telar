@@ -894,6 +894,41 @@ export function providerWaitFrom(item: {
  *  outside it is reported as `other` rather than forwarded — see above. */
 const KNOWN_RATE_LIMIT_TYPES = new Set(["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_overage_included", "overage"]);
 
+/** What a warning row has already said, so the next frame repeating it says
+ *  nothing. Held per turn by both pumps — see `takeProviderWait`. */
+export type LimitWarningSeen = { limitType?: ProviderWaitDetail["limitType"]; resetsAt?: number };
+
+/**
+ * THE WARNING IS A HEARTBEAT TOO — #897.
+ *
+ * The CLI sends a `rate_limit_event` on EVERY API request, and a limit sitting
+ * above its warning threshold stays `allowed_warning` with the same
+ * `rateLimitType` and `resetsAt` for hours. Journalled per frame, that is one
+ * "Approaching the rate limit (seven day)" row after nearly every tool call
+ * for the whole life of a session — reported by a user, with a screenshot, on
+ * a seven-day limit. The `allowed` heartbeat is already dropped upstream as
+ * noise; this is the same heartbeat with a different word, so it collapses to
+ * the FIRST frame of each limit state.
+ *
+ * WHAT COUNTS AS A NEW STATE: the limit and its reset time, and nothing else.
+ * `utilization` moves on every single request by design — the meter is not
+ * what the row is for, and re-emitting on it would restore the spam exactly.
+ *
+ * A `rejected` ALWAYS EMITS and clears the memory. It is a blocking wait whose
+ * row is opened and closed around the pause, unchanged by this; and the state
+ * has moved, so the next warning after one is news rather than a repeat. The
+ * other two wait kinds carry no limit state and pass straight through.
+ */
+export function takeProviderWait(
+  detail: ProviderWaitDetail,
+  seen: LimitWarningSeen | undefined,
+): { emit: boolean; seen: LimitWarningSeen | undefined } {
+  if (detail.kind !== "rate_limit") return { emit: true, seen };
+  if (detail.limitStatus === "rejected") return { emit: true, seen: undefined };
+  if (seen !== undefined && seen.limitType === detail.limitType && seen.resetsAt === detail.resetsAt) return { emit: false, seen };
+  return { emit: true, seen: { limitType: detail.limitType, resetsAt: detail.resetsAt } };
+}
+
 /** The collapsed label, derived once by the engine like every other row's. */
 export function titleForProviderWait(detail: ProviderWaitDetail): string {
   /**
@@ -1299,6 +1334,10 @@ export function createClaudeDriver(
       /** The open "Retrying…" / "Rate limit reached" row, while the provider
        *  has the turn standing still. Closed by the next frame of any kind. */
       let waitItemId: string | undefined;
+      /** The last rate-limit WARNING this turn journalled, so the CLI's
+       *  per-request repeat of it is dropped (#897). Turn-scoped like every
+       *  binding here, which is what "reset at turn start" amounts to. */
+      let lastLimitWarning: LimitWarningSeen | undefined;
       const closeProviderWait = (): void => {
         if (!waitItemId) return;
         emit({ kind: "item.completed", itemId: waitItemId, status: "completed" });
@@ -3258,6 +3297,11 @@ export function createClaudeDriver(
            */
           const waited = providerWaitFrom(item);
           if (waited) {
+            const taken = takeProviderWait(waited.detail, lastLimitWarning);
+            lastLimitWarning = taken.seen;
+            // DROPPED BEFORE `closeProviderWait`: a frame that says nothing new
+            // is not an event, so it must not close a standing wait row either.
+            if (!taken.emit) continue;
             closeProviderWait();
             const id = itemId();
             const detail: ItemDetail = { type: "provider_wait", wait: waited.detail };
@@ -3957,6 +4001,9 @@ export function createClaudeDriver(
                 tools: Map<string, { id: string; detail: ItemDetail }>;
                 /** The open provider-wait row, exactly as a human turn keeps one. */
                 waitItemId: string | undefined;
+                /** And its warning memory, for the same reason (#897): this
+                 *  record is the wake-up's turn, so it starts with none. */
+                lastLimitWarning: LimitWarningSeen | undefined;
                 /** The newest main-loop envelope's raw usage, so this turn's
                  *  closing `message_delta` can correct its placeholder output. */
                 lastUsage: unknown;
@@ -4123,6 +4170,7 @@ export function createClaudeDriver(
                   blocks: new Map(),
                   tools: new Map(),
                   waitItemId: undefined,
+                  lastLimitWarning: undefined,
                   lastUsage: undefined,
                 };
                 sink = (observations) => binding.onObservations(observations);
@@ -4161,6 +4209,12 @@ export function createClaudeDriver(
                */
               const idleWaited = providerWaitFrom(item);
               if (idleWaited) {
+                // The repeat warning is dropped here too, and for the same
+                // reason: an autonomous turn makes as many requests as a
+                // human's, so it collects as many identical frames (#897).
+                const idleTaken = takeProviderWait(idleWaited.detail, wake.lastLimitWarning);
+                wake.lastLimitWarning = idleTaken.seen;
+                if (!idleTaken.emit) continue;
                 if (wake.waitItemId) emit({ kind: "item.completed", itemId: wake.waitItemId, status: "completed" });
                 const id = itemId();
                 const detail: ItemDetail = { type: "provider_wait", wait: idleWaited.detail };
