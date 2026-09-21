@@ -25,13 +25,14 @@ import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon, type IImageAddonOptions } from "@xterm/addon-image";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
+import { Button } from "@/components/ui/button";
 import { claimChords } from "@/lib/commands";
 import { createEngineApi } from "@/lib/engine/client";
-import { describeTerminalEnding, terminalBridge, type TerminalBridge, type TerminalEnding } from "@/lib/terminal-bridge";
+import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type TerminalBridge, type TerminalEnding } from "@/lib/terminal-bridge";
 export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
 import { attachTerminal, terminalKeyHandler } from "@/lib/terminal-session";
-import { cssColorReader, cssVariableReader, terminalFont, terminalTheme } from "@/lib/terminal-theme";
+import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
@@ -73,6 +74,14 @@ type Phase =
   | { kind: "starting" }
   | { kind: "live"; id: string; pid?: number }
   | { kind: "ended"; ending: TerminalEnding }
+  /**
+   * THE ONE ENDING WITH A WAY FORWARD (#851's follow-up). The host refused
+   * because the session's checkout is gone, not because anything about the
+   * shell itself is wrong — so unlike `ended`, this phase never had a PTY to
+   * show, and offers the one retry that is honest: the shell's own default
+   * directory, which is what an absent `cwd` already means to the host.
+   */
+  | { kind: "cwd-refused"; ending: TerminalEnding }
   | { kind: "unavailable"; why: string };
 
 /**
@@ -143,20 +152,45 @@ export function TerminalSurface({
     remember.current = onTerminalId;
   });
   const adopt = useRef(terminalId);
+  /** Set by the mount effect once a bridge exists, so the "open a shell in
+   *  your home folder instead" button — rendered outside that effect — can
+   *  retry without reaching into its closure. */
+  const retryInHome = useRef<(() => void) | null>(null);
+
+  /** The rAF that will run the next fit, so a burst of resize signals in one
+   *  frame becomes one fit. */
+  const measureFrame = useRef<number | null>(null);
+  /** The last grid the PTY was told about, so a pixel change that moves no
+   *  cell sends no SIGWINCH. */
+  const lastGrid = useRef<{ cols: number; rows: number } | null>(null);
 
   /** One place that resizes, because two would disagree about the order: fit
    *  first so xterm knows its own grid, then tell the PTY, so SIGWINCH carries
-   *  the size the emulator is actually drawing. */
+   *  the size the emulator is actually drawing.
+   *
+   *  COALESCED TO A FRAME, and only forwarded when the grid moved. A panel drag
+   *  fires the ResizeObserver and the drag's own event several times per frame;
+   *  each used to fit and signal the PTY synchronously, and a shell mid-redraw
+   *  (nvim) got a SIGWINCH storm it could not keep up with — which read as the
+   *  resize "not responding". One fit per painted frame, and a SIGWINCH only
+   *  when cols or rows changed, is what every other emulator does. */
   const measure = useCallback((bridge: TerminalBridge, id: string) => {
-    const term = termRef.current;
-    if (!term) return;
-    try {
-      fitRef.current?.fit();
-    } catch {
-      // A zero-sized box (the panel mid-animation) has no grid to fit to.
-      return;
-    }
-    void bridge.resize(id, term.cols, term.rows);
+    if (measureFrame.current !== null) window.cancelAnimationFrame(measureFrame.current);
+    measureFrame.current = window.requestAnimationFrame(() => {
+      measureFrame.current = null;
+      const term = termRef.current;
+      if (!term) return;
+      try {
+        fitRef.current?.fit();
+      } catch {
+        // A zero-sized box (the panel mid-animation) has no grid to fit to.
+        return;
+      }
+      const grid = { cols: term.cols, rows: term.rows };
+      if (lastGrid.current && lastGrid.current.cols === grid.cols && lastGrid.current.rows === grid.rows) return;
+      lastGrid.current = grid;
+      void bridge.resize(id, grid.cols, grid.rows);
+    });
   }, []);
 
   useEffect(() => {
@@ -175,47 +209,72 @@ export function TerminalSurface({
 
     const read = cssColorReader(element, document.createElement("canvas"));
     const { fontFamily, fontSize } = terminalFont(cssVariableReader(element));
-    const term = new Terminal({
-      allowProposedApi: true,
-      theme: terminalTheme(read),
-      fontFamily,
-      fontSize,
-      scrollback: SCROLLBACK,
-      cursorBlink: true,
-      // macOS's own convention, and the one the owner's muscle memory has: a
-      // word ends at a path separator too, so ⌥← walks a path segment.
-      macOptionIsMeta: false,
-    });
-    termRef.current = term;
-
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    fitRef.current = fit;
-    term.loadAddon(new ImageAddon(TERMINAL_IMAGE_OPTIONS));
-    term.open(element);
     /**
-     * WEBGL IS AN OPTIMISATION, NOT A REQUIREMENT. A machine with no GL context
-     * — or one whose context is lost when the panel is hidden — must still have
-     * a terminal, so this both tries and gives back: `onContextLoss` disposes
-     * the addon and xterm falls through to its DOM renderer on the next frame.
+     * STARTED BEFORE THE TERMINAL EXISTS, AWAITED BEFORE THE FIRST FIT.
+     *
+     * xterm derives cols and rows by measuring one cell, so a grid measured
+     * while a face is still downloading is a grid sized against the fallback —
+     * and when the real face lands every cell is a fraction off, which reads as
+     * a prompt wrapping a column early. Kicking the load off here means the
+     * bundled symbols face is registered before `open()`; awaiting it before
+     * the first `measure()` means the measurement is of what is drawn.
      */
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      // No GL here. The DOM renderer draws the same cells, more slowly.
-    }
+    const fontsReady = loadTerminalFonts(fontFamily, fontSize);
 
-    // The three keys a focused shell must not lose — see lib/terminal-session.ts
-    // for why this writes the byte itself instead of letting xterm encode it.
-    term.attachCustomKeyEventHandler(
-      terminalKeyHandler((bytes) => {
-        if (live !== undefined) void bridge.write(live, bytes);
-      }),
-    );
-    // ...and the other half, for the presses macOS matches against the
-    // application menu before the page is ever asked. See lib/terminal-keys.ts.
+    /**
+     * ONE PER ATTEMPT, NOT ONE PER MOUNT. A cwd the host refuses is disposed
+     * of before it is ever shown (see `openShell` below), and the retry needs
+     * a fresh instance to open into the same `element` — xterm does not
+     * support re-opening a disposed terminal.
+     */
+    const createTerminal = (): Terminal => {
+      const term = new Terminal({
+        allowProposedApi: true,
+        theme: terminalTheme(read),
+        fontFamily,
+        fontSize,
+        scrollback: SCROLLBACK,
+        cursorBlink: true,
+        // macOS's own convention, and the one the owner's muscle memory has: a
+        // word ends at a path separator too, so ⌥← walks a path segment.
+        macOptionIsMeta: false,
+      });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.loadAddon(new ImageAddon(TERMINAL_IMAGE_OPTIONS));
+      term.open(element);
+      /**
+       * WEBGL IS AN OPTIMISATION, NOT A REQUIREMENT. A machine with no GL
+       * context — or one whose context is lost when the panel is hidden —
+       * must still have a terminal, so this both tries and gives back:
+       * `onContextLoss` disposes the addon and xterm falls through to its DOM
+       * renderer on the next frame.
+       */
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+      } catch {
+        // No GL here. The DOM renderer draws the same cells, more slowly.
+      }
+      // The three keys a focused shell must not lose — see
+      // lib/terminal-session.ts for why this writes the byte itself instead
+      // of letting xterm encode it.
+      term.attachCustomKeyEventHandler(
+        terminalKeyHandler((bytes) => {
+          if (live !== undefined) void bridge.write(live, bytes);
+        }),
+      );
+      termRef.current = term;
+      fitRef.current = fit;
+      return term;
+    };
+
+    let term = createTerminal();
+    // The other half of the two keys above, for the presses macOS matches
+    // against the application menu before the page is ever asked. See
+    // lib/terminal-keys.ts. Claimed once — it is a window-level claim, not
+    // something a re-mounted terminal needs a second copy of.
     cleanups.push(claimChords(TERMINAL_CHORD_CLAIMS));
 
     const attach = (id: string, pid?: number) => {
@@ -228,8 +287,57 @@ export function TerminalSurface({
           setPhase({ kind: "ended", ending });
         }),
       );
-      measure(bridge, id);
+      void fontsReady.then(() => {
+        if (!disposed) measure(bridge, id);
+      });
       term.focus();
+    };
+
+    /** Shared by the first attempt and the "open a shell in your home folder
+     *  instead" retry — the only difference between them is whether `cwd` is
+     *  passed at all. */
+    const openShell = async (cwd: string | undefined) => {
+      if (disposed) return;
+      try {
+        const opened = await bridge.open({
+          ...(cwd === undefined ? {} : { cwd }),
+          cols: term.cols,
+          rows: term.rows,
+        });
+        if (disposed) {
+          // The tab was closed while the spawn was in flight. Nobody will ever
+          // read this shell, so it does not get to outlive the request for it.
+          if (opened.pid !== undefined) void bridge.kill(opened.id, "SIGTERM");
+          return;
+        }
+        if (opened.ending) {
+          if (isUnenterableCwd(opened.ending)) {
+            /**
+             * NO XTERM UNDER THE REFUSAL. There was never a process behind
+             * this instance, so it is disposed rather than left as an empty
+             * canvas — see the render below, which hides the host div for
+             * this phase and draws the retry in its place instead.
+             */
+            term.dispose();
+            termRef.current = null;
+            fitRef.current = null;
+            setPhase({ kind: "cwd-refused", ending: opened.ending });
+            return;
+          }
+          setPhase({ kind: "ended", ending: opened.ending });
+          return;
+        }
+        attach(opened.id, opened.pid);
+      } catch (error) {
+        if (disposed) return;
+        setPhase({ kind: "unavailable", why: error instanceof Error ? error.message : String(error) });
+      }
+    };
+
+    retryInHome.current = () => {
+      if (disposed) return;
+      term = createTerminal();
+      void openShell(undefined);
     };
 
     void (async () => {
@@ -261,45 +369,43 @@ export function TerminalSurface({
 
       const cwd = await startingDirectory(sessionId, projectId);
       if (disposed) return;
-      try {
-        const opened = await bridge.open({
-          ...(cwd === undefined ? {} : { cwd }),
-          cols: term.cols,
-          rows: term.rows,
-        });
-        if (disposed) {
-          // The tab was closed while the spawn was in flight. Nobody will ever
-          // read this shell, so it does not get to outlive the request for it.
-          if (opened.pid !== undefined) void bridge.kill(opened.id, "SIGTERM");
-          return;
-        }
-        if (opened.ending) {
-          setPhase({ kind: "ended", ending: opened.ending });
-          return;
-        }
-        attach(opened.id, opened.pid);
-      } catch (error) {
-        if (disposed) return;
-        setPhase({ kind: "unavailable", why: error instanceof Error ? error.message : String(error) });
-      }
+      await openShell(cwd);
     })();
 
     const observer = new ResizeObserver(() => {
       if (live !== undefined) measure(bridge, live);
     });
     observer.observe(element);
+    // The right panel's drag announces itself (right-panel.tsx `paint`), so the
+    // grid follows the handle within the same frame rather than a frame after
+    // the ResizeObserver notices the box changed.
+    const onPanelResized = () => {
+      if (live !== undefined) measure(bridge, live);
+    };
+    window.addEventListener("telar:panel-resized", onPanelResized);
 
     return () => {
       disposed = true;
       observer.disconnect();
+      window.removeEventListener("telar:panel-resized", onPanelResized);
+      if (measureFrame.current !== null) {
+        window.cancelAnimationFrame(measureFrame.current);
+        measureFrame.current = null;
+      }
       for (const off of cleanups.splice(0)) off();
+      retryInHome.current = null;
       /* THE SHELL IS NOT KILLED HERE, deliberately. This unmounts on every tab
          switch, and a `cd` and a half-typed command are not something to throw
          away because somebody looked at the Diff. Closing the TAB is what ends
          it — see `endTerminalForTab`, called from the cockpit that owns tabs. */
-      term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
+      // Already disposed (and refs cleared) by `openShell` when the host
+      // refused the cwd — disposing it twice is not something xterm promises
+      // to tolerate.
+      if (termRef.current === term) {
+        term.dispose();
+        termRef.current = null;
+        fitRef.current = null;
+      }
     };
     // The instance is keyed by its tab id one level up, so a different terminal
     // is a different mount. Re-running this for a changed session id would tear
@@ -340,9 +446,34 @@ export function TerminalSurface({
         </p>
       )}
       {phase.kind === "unavailable" && <p className="shrink-0 border-b px-3 py-1.5 text-xs text-muted-foreground">{phase.why}</p>}
+      {phase.kind === "cwd-refused" && (
+        /**
+         * THE TAB'S WHOLE CONTENT, not a banner over an empty canvas — there
+         * is no xterm behind this (see `openShell`'s disposal above), so
+         * nothing would be under it but white. Same muted/centred shape the
+         * rail's own empty states use (`SidebarEmpty` in app-sidebar.tsx),
+         * with the one action that is actually true: the host's documented
+         * fallback for an absent `cwd` is the shell's own default directory.
+         */
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+          <p className="text-xs text-muted-foreground">{describeTerminalEnding(phase.ending)}</p>
+          <Button size="sm" variant="outline" onClick={() => retryInHome.current?.()}>
+            Open a shell in your home folder instead
+          </Button>
+        </div>
+      )}
       {/* `min-h-0` because the box above is `flex-1` inside a flex column, and
-          without it a grown terminal pushes its own scroller past the bottom. */}
-      <div ref={host} data-testid="terminal-host" className="min-h-0 flex-1 overflow-hidden px-1 py-1" />
+          without it a grown terminal pushes its own scroller past the bottom.
+          `bg-card` UNCONDITIONALLY: xterm's own `theme.background` only paints
+          once the terminal has drawn a cell, so before that (and while this
+          div is hidden for `cwd-refused`, briefly, mid-attempt) the box under
+          it is the page's white, not the panel's. Hidden rather than unmounted
+          for `cwd-refused` so `host` stays a stable ref across phases. */}
+      <div
+        ref={host}
+        data-testid="terminal-host"
+        className={cn("min-h-0 flex-1 overflow-hidden bg-card px-1 py-1", phase.kind === "cwd-refused" && "hidden")}
+      />
     </div>
   );
 }

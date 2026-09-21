@@ -133,6 +133,22 @@ export const TERMINAL_ID_PARAM = "terminal";
  * reports a refusal to start, and one reports that we have lost track of a
  * process that is probably still running.
  */
+/**
+ * WHETHER A `failed` ENDING IS THE HOST REFUSING AN UNENTERABLE CWD (#851),
+ * rather than some other reason `pty.fork` itself threw (a missing shell
+ * binary, a rejected env, ...).
+ *
+ * DETECTED FROM THE SENTENCE'S OWN SHAPE, because there is no dedicated field
+ * for it: the host's `unusableCwd` (apps/desktop/terminal-host.js) writes one
+ * of two fixed openings for every way a cwd can be unusable, and a fork
+ * failure's own message never starts that way — it comes from node-pty, not
+ * from this sentence.
+ */
+export function isUnenterableCwd(ending: TerminalEnding): boolean {
+  if (ending.fate !== "failed" || !ending.error) return false;
+  return ending.error.startsWith("Telar cannot start a terminal in") || ending.error.startsWith("Telar was asked to start a terminal in");
+}
+
 export function describeTerminalEnding(ending: TerminalEnding): string {
   if (ending.fate === "failed") return `This shell never started${ending.error ? `: ${ending.error}` : "."}`;
   if (ending.fate === "unknown") {

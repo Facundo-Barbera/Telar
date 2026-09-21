@@ -1,7 +1,15 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { cssColorReader, terminalFont, terminalTheme, type CssVarReader } from "@/lib/terminal-theme";
+import {
+  cssColorReader,
+  ensureTerminalSymbolsFont,
+  loadTerminalFonts,
+  TERMINAL_SYMBOLS_FONT,
+  terminalFont,
+  terminalTheme,
+  type CssVarReader,
+} from "@/lib/terminal-theme";
 
 // Only `cssColorReader` needs one — everything above it is pure, which is the
 // point of the injected reader. Registered at module scope and handed back in
@@ -45,41 +53,49 @@ describe("terminalTheme", () => {
     expect(terminalTheme(reader({ "--card": "   " })).background).toMatch(/^#[0-9a-f]{6}$/);
   });
 
-  test("all sixteen ANSI colours are present, because a missing one renders as the default fg", () => {
-    const theme = terminalTheme(reader({}));
-    const ansi = [
-      "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-      "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
-    ] as const;
-    for (const name of ansi) expect(theme[name]).toMatch(/^#[0-9a-f]{6}$/);
-    // Sixteen DISTINCT colours: a palette with duplicates is one where `ls
-    // --color` cannot tell a directory from a symlink.
-    expect(new Set(ansi.map((name) => theme[name])).size).toBe(16);
+  const ANSI_KEYS = [
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+    "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+  ] as const;
+
+  test("the theme carries no ANSI keys unless overridden — the sixteen are the emulator's", () => {
+    // Omitting them is the whole point: xterm.js's ThemeService starts from
+    // `DEFAULT_ANSI_COLORS.slice()` and only replaces an entry when the theme
+    // object actually names it, so a table we do not write is a table that
+    // cannot drift from every other terminal's.
+    const theme = terminalTheme(reader({ "--card": "#000", "--foreground": "#fff", "--primary": "#f0f" })) as Record<
+      string,
+      unknown
+    >;
+    for (const name of ANSI_KEYS) expect(name in theme).toBe(false);
   });
 
-  test("the Look does not reach the ANSI sixteen — that cut is deliberate", () => {
-    // No Look in this app carries an ANSI palette (looks.ts, theme-palettes.ts,
-    // appearance.ts), and if one day one appears it must come through
-    // `overrides` rather than by these silently reading a new variable.
-    const withLook = terminalTheme(reader({ "--card": "#000", "--foreground": "#fff", "--primary": "#f0f" }));
-    const without = terminalTheme(reader({}));
-    expect(withLook.red).toBe(without.red);
-    expect(withLook.brightBlue).toBe(without.brightBlue);
-  });
-
-  test("overrides win, which is what `overridable defaults` means", () => {
+  test("overrides win, which is how a Look could one day supply a palette", () => {
     const theme = terminalTheme(reader({}), { red: "#ff0000", background: "#123456" });
     expect(theme.red).toBe("#ff0000");
     expect(theme.background).toBe("#123456");
+    // And only the one asked for: an override is not a reason to materialise
+    // the other fifteen.
+    expect("blue" in (theme as Record<string, unknown>)).toBe(false);
   });
 });
 
 describe("terminalFont", () => {
-  test("the face and size are the cockpit's mono tokens", () => {
+  test("the size is the cockpit's; the face is a chain with the person's Nerd Fonts ahead of the cockpit's mono", () => {
     // `appearance.ts:111` already documents `fontMonoSize` as covering "the
-    // terminal", so this surface reads it rather than inventing its own.
+    // terminal", so the SIZE reads that token. The FACE does not: a terminal is
+    // the person's, so an installed Nerd Font (which is what draws a prompt's and
+    // `eza --icons`'s glyphs) comes before whatever Appearance chose for the
+    // cockpit, and the platform monospace closes the chain. The assertion is on
+    // ORDER, not equality: equality with the app font is the old behaviour.
     const font = terminalFont(reader({ "--app-font-mono": '"Fira Code", monospace', "--app-font-mono-size": "13px" }));
-    expect(font.fontFamily).toBe('"Fira Code", monospace');
+    const at = (needle: string) => font.fontFamily.indexOf(needle);
+    // The bundled symbols face leads: it carries no text glyphs, so it draws
+    // the prompt's icons and hands every letter to whatever follows.
+    expect(at('"Symbols Nerd Font Mono"')).toBe(0);
+    expect(at('"JetBrainsMono Nerd Font"')).toBeGreaterThan(at('"Symbols Nerd Font Mono"'));
+    expect(at('"Fira Code"')).toBeGreaterThan(at('"MesloLGS NF"'));
+    expect(at("ui-monospace")).toBeGreaterThan(at('"Fira Code"'));
     expect(font.fontSize).toBe(13);
   });
 
@@ -93,6 +109,49 @@ describe("terminalFont", () => {
 
   test("no tokens at all still yields a monospace family", () => {
     expect(terminalFont(reader({})).fontFamily).toContain("monospace");
+  });
+});
+
+describe("the bundled symbols face", () => {
+  /**
+   * ONE REGISTRATION PER PAGE, and the module remembers with a module-level
+   * promise — so this whole describe gets exactly one chance to observe the
+   * first call. Both assertions live in one test for that reason.
+   */
+  test("registers once for the whole page, and a failure is silent", async () => {
+    const loaded: string[] = [];
+    const added: unknown[] = [];
+    class FakeFontFace {
+      constructor(
+        readonly family: string,
+        readonly source: string,
+      ) {}
+      async load() {
+        loaded.push(this.source);
+        return this;
+      }
+    }
+    const previousFace = (globalThis as { FontFace?: unknown }).FontFace;
+    (globalThis as { FontFace?: unknown }).FontFace = FakeFontFace;
+    const fonts = {
+      add: (face: unknown) => added.push(face),
+      // A chain this parser cannot take: the swallow is the assertion.
+      load: async () => {
+        throw new Error("no such font shorthand");
+      },
+    };
+    Object.defineProperty(document, "fonts", { value: fonts, configurable: true });
+    try {
+      // The face is asked for by URL, not by name — nothing has to be installed.
+      await loadTerminalFonts('"Symbols Nerd Font Mono", monospace', 13);
+      // Second terminal on the same page: the same download, not another.
+      await ensureTerminalSymbolsFont();
+      expect(loaded).toEqual(["url(/fonts/SymbolsNerdFontMono-Regular.woff2)"]);
+      expect(added).toHaveLength(1);
+      expect((added[0] as FakeFontFace).family).toBe(TERMINAL_SYMBOLS_FONT);
+    } finally {
+      (globalThis as { FontFace?: unknown }).FontFace = previousFace;
+    }
   });
 });
 

@@ -26,9 +26,10 @@ Options:
                         the installed Telar: its own appId, its own
                         ~/Library/Application Support/Telar Dev (ignores an
                         inherited TELAR_HOME / TELAR_DESKTOP_URL), updater off,
-                        never signed. Lands at:
+                        never signed, and wearing the amber dev icon. Lands at:
                           apps/desktop/release/dev/mac-arm64/Telar Dev.app
-                        Open it directly; it cannot be combined with --install.
+                        With --install it goes to <destination>/Telar Dev.app,
+                        beside Telar.app and never over it.
   --install             Install the verified app after packaging
   --destination PATH    Forward the install destination
   --system              Forward installation to /Applications
@@ -74,11 +75,17 @@ done
 command -v bun >/dev/null 2>&1 \
   || { echo "!! Bun is required — install it from https://bun.sh" >&2; exit 1; }
 
-# install-app.sh copies to <destination>/Telar.app by name, so installing a dev
-# build would overwrite the real one — the collision --dev exists to prevent.
+# install-app.sh names the destination after the SOURCE bundle, so a dev build
+# lands at <destination>/Telar Dev.app and cannot overwrite Telar.app. An
+# explicit --destination that names Telar.app is the one way to collide, and
+# it is refused here rather than discovered as a missing app.
 if [ "$DEV" -eq 1 ] && [ "$INSTALL" -eq 1 ]; then
-  echo "!! --dev cannot be combined with --install: open the built 'Telar Dev.app' directly" >&2
-  exit 2
+  for ((i = 0; i < ${#INSTALL_ARGS[@]}; i++)); do
+    if [ "${INSTALL_ARGS[$i]}" = "--destination" ] && [ "$(basename "${INSTALL_ARGS[$((i + 1))]:-}")" = "Telar.app" ]; then
+      echo "!! --dev --install may not target Telar.app; the dev build installs as 'Telar Dev.app'" >&2
+      exit 2
+    fi
+  done
 fi
 
 echo "==> build standalone web app"
@@ -117,9 +124,16 @@ if [ "$DEV" -eq 1 ]; then
   #                    inherited TELAR_HOME/TELAR_DESKTOP_URL and to keep the
   #                    updater off. The hardened runtime is off because nothing
   #                    signs this build and it never needs a notarized shape.
+  #   mac.icon         the amber loom. main.js already prefers icon-dev.png for
+  #                    the WINDOW at runtime; without this the BUNDLE (Finder,
+  #                    Dock at launch, Spotlight) still wore the blue icon and
+  #                    the two apps were indistinguishable at a glance.
+  test -f "$DESKTOP_DIR/build/icon-dev.icns" \
+    || { echo "!! build/icon-dev.icns is missing — regenerate it from build/icon-dev.png with iconutil" >&2; exit 1; }
   CONFIG_OVERRIDES=(
     "-c.productName=Telar Dev"
     "-c.appId=com.telar.desktop.dev"
+    "-c.mac.icon=build/icon-dev.icns"
     "-c.extraMetadata.productName=Telar Dev"
     "-c.extraMetadata.telarDev=true"
     "-c.mac.hardenedRuntime=false"

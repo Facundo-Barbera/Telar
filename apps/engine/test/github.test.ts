@@ -15,6 +15,7 @@ import {
   classifyMergeFailure,
   classifyProjectFailure,
   commentOn,
+  defaultGhRunner,
   listArgv,
   parseCommentUrl,
   MAX_CHECK_LOG_LINES,
@@ -79,6 +80,24 @@ describe("classifyGhFailure", () => {
     expect(classifyGhFailure(failed("gh: To get started with GitHub CLI, please run: gh auth login")).unavailable).toBe("not_authenticated");
     expect(classifyGhFailure(failed("failed to run git: fatal: not a git repository")).unavailable).toBe("no_repository");
     expect(classifyGhFailure(failed("failed to run git: no git remotes found")).unavailable).toBe("no_repository");
+  });
+
+  test("A CHECKOUT THAT DOES NOT EXIST ON THIS MACHINE IS NOT A MISSING `gh`", async () => {
+    /**
+     * Node's `execFile` reports `ENOENT` for two unrelated causes: the binary
+     * missing from PATH, and a `cwd` naming a directory that no longer exists.
+     * A project whose folder was moved or deleted hit the SECOND cause on every
+     * read, and the old code folded it into the first — telling somebody with a
+     * perfectly working `gh` to go install it. `defaultGhRunner` now checks
+     * `cwd` before spawning anything, so this must resolve WITHOUT ever
+     * reaching `gh` — asserted here by using a directory `gh` is never given a
+     * chance to run against.
+     */
+    const missing = "/nonexistent/dir/for/test";
+    const result = await defaultGhRunner(missing, ["--version"]);
+    expect(result.status).toBe(126);
+    expect(result.stderr).toContain(missing);
+    expect(classifyGhFailure(result).unavailable).toBe("no_checkout");
   });
 
   test("A REPOSITORY THAT IS NOT ON GITHUB IS NOT A MISSING REPOSITORY — #670", () => {

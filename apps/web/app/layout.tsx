@@ -55,7 +55,17 @@ const spaceGrotesk = Space_Grotesk({ variable: "--font-space-grotesk", subsets: 
 const lato = Lato({ variable: "--font-lato", subsets: ["latin"], weight: ["300", "400", "700"], preload: false });
 const sourceCodePro = Source_Code_Pro({ variable: "--font-source-code-pro", subsets: ["latin"], preload: false });
 const robotoMono = Roboto_Mono({ variable: "--font-roboto-mono", subsets: ["latin"], preload: false });
-const cascadiaCode = Cascadia_Code({ variable: "--font-cascadia-code", subsets: ["latin"], preload: false });
+// Next has no size-adjust metrics for this family, so it cannot synthesize a
+// fallback face and warns on every compile unless told not to try — the
+// documented `adjustFontFallback: false` — with a real fallback chain of our
+// own so the CSS variable still resolves to something monospace.
+const cascadiaCode = Cascadia_Code({
+  variable: "--font-cascadia-code",
+  subsets: ["latin"],
+  preload: false,
+  adjustFontFallback: false,
+  fallback: ["ui-monospace", "Menlo", "monospace"],
+});
 
 /** Every selectable face's CSS-variable class, in one place — fifteen of them
  *  do not belong inline in the <html> className. */

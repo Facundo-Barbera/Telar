@@ -24,6 +24,7 @@
  * with every absent thing — is how a surface teaches its reader to ignore it.
  */
 import { execFile } from "node:child_process";
+import { statSync } from "node:fs";
 import { parseSessionAttribution, stripSessionMarker, withSessionMarker } from "./github-attribution";
 import type {
   GitHubCheck,
@@ -72,6 +73,23 @@ export const GITHUB_PAGE_SIZE = 50;
 
 export const defaultGhRunner: GhRunner = (cwd, args) =>
   new Promise((resolve) => {
+    /**
+     * `cwd` MUST EXIST BEFORE `gh` IS EVEN ASKED.
+     *
+     * Node's `execFile` reports `ENOENT` for TWO unrelated causes it does not
+     * distinguish: the binary is not on PATH, and the `cwd` option names a
+     * directory that does not exist. A project whose checkout was moved or
+     * deleted hits the second cause on every single call, and folding it into
+     * the first told a reader with a perfectly good `gh` install to go install
+     * `gh` — the premise on screen was simply false. Checked here, up front, so
+     * the ENOENT the block below maps to 127 can only ever be the binary.
+     */
+    try {
+      if (!statSync(cwd).isDirectory()) throw new Error("not a directory");
+    } catch {
+      resolve({ status: 126, stdout: "", stderr: `${cwd} is not a directory on this machine` });
+      return;
+    }
     execFile(
       "gh",
       args,
@@ -82,7 +100,9 @@ export const defaultGhRunner: GhRunner = (cwd, args) =>
       (error, stdout, stderr) => {
         const failure = error as (Error & { code?: number | string; killed?: boolean }) | null;
         if (!failure) return resolve({ status: 0, stdout, stderr });
-        // ENOENT is `gh` missing; a numeric code is `gh` refusing.
+        // ENOENT here can only be `gh` missing — the `cwd` case was ruled out
+        // above — so this mapping to 127 no longer carries the ambiguity it
+        // used to. A numeric code is `gh` refusing.
         const status = typeof failure.code === "number" ? failure.code : failure.code === "ENOENT" ? 127 : 1;
         resolve({ status, stdout, stderr: stderr || failure.message });
       },
@@ -121,6 +141,10 @@ export const defaultGhRunner: GhRunner = (cwd, args) =>
  */
 export function classifyGhFailure(result: GhResult): { unavailable: GitHubUnavailable; message?: string } {
   if (result.status === 127) return { unavailable: "not_installed" };
+  // 126 is "cannot execute" — distinct from 127's "not found" — and is only
+  // ever produced by `defaultGhRunner`'s own cwd check above, before `gh` is
+  // spawned at all.
+  if (result.status === 126) return { unavailable: "no_checkout" };
   const text = `${result.stderr}\n${result.stdout}`.toLowerCase();
   if (text.includes("known github host") || text.includes("none of the git remotes")) {
     return { unavailable: "not_github" };

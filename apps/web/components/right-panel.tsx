@@ -1823,6 +1823,13 @@ export function RightPanelResizeHandle({
       const width = clampSidebarWidth(drag.pendingWidth, RIGHT_PANEL_MIN_WIDTH, maxWidth());
       drag.width = width;
       panelRef.current?.style.setProperty("--right-panel-width", `${width}px`);
+      // THE NATIVE LAYER IS NOT IN THIS LAYOUT. A `WebContentsView` is
+      // composited above the DOM, so the integrated browser's view only moves
+      // when someone publishes new bounds — and a ResizeObserver delivers that
+      // a frame or more after this paint, which reads as the view lagging the
+      // handle. Announcing the paint synchronously lets the host republish in
+      // the SAME frame; the observer stays the self-heal.
+      window.dispatchEvent(new Event("telar:panel-resized"));
     },
     [maxWidth, panelRef],
   );

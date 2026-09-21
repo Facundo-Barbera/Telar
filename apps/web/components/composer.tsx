@@ -31,7 +31,6 @@ import {
   CornerDownLeftIcon,
   EraserIcon,
   FoldVerticalIcon,
-  HardDriveIcon,
   ImageIcon,
   LayersIcon,
   MonitorIcon,
@@ -79,6 +78,7 @@ import {
   availableCommands,
   buildPathIndex,
   compactBlockedReason,
+  isResumeDraft,
   providerCommandCompletions,
   rankCommands,
   rankPaths,
@@ -686,18 +686,34 @@ export function Composer({
     advance.current = advanceOrSubmitQuestion;
   });
 
+  /** The Claude Code conversation picker is open (#616). */
+  const [resuming, setResuming] = useState(false);
+
   const trySubmit = useCallback((): ComposerSubmit => {
     // A QUESTION ON SCREEN CHANGES WHAT SENDING MEANS: the box is that
     // question's custom answer, so Enter advances or answers the form.
     if (questionActive) {
       return advance.current() ? { ok: true } : { ok: false, reason: "The open question has no answer to send yet." };
     }
+    /**
+     * `/resume` TYPED OUT IS THE SAME PRESS AS THE LINK UNDER THE GREETING.
+     *
+     * Picking the row in the slash menu already routes here through
+     * `setResuming(true)`; this catches the other way in — typed in full, menu
+     * dismissed, Enter — so the two gestures cannot disagree. Only where the
+     * link itself would show: a fresh composer with somewhere to send the pick.
+     */
+    if (isResumeDraft(draft) && fresh && onAdopt) {
+      onDraftChange("");
+      setResuming(true);
+      return { ok: true };
+    }
     if (!ready) return { ok: false, reason: "This conversation is not ready yet." };
     if (driveAway) return { ok: false, reason: "The project's files are not reachable right now." };
     if (!draft.trim()) return { ok: false, reason: "There is nothing to send." };
     onSubmit();
     return { ok: true };
-  }, [questionActive, ready, driveAway, draft, onSubmit]);
+  }, [questionActive, ready, driveAway, draft, onSubmit, fresh, onAdopt, onDraftChange]);
 
   /* ---------------------------------------------------------------- *
    * THE PAGE API'S SIDE OF THE COMPOSER (#548) — see lib/page-api.ts.
@@ -843,8 +859,6 @@ export function Composer({
   /** The one thing that went wrong, said in place. There is no toast in this
    *  app and that is deliberate — see file-view-surface.tsx. */
   const [note, setNote] = useState<string>();
-  /** The Claude Code conversation picker is open (#616). */
-  const [resuming, setResuming] = useState(false);
   /**
    * WHAT THE BOX HOLDS RIGHT NOW, readable from inside an await.
    *
@@ -1091,12 +1105,13 @@ export function Composer({
         ...(envMode ? { envMode } : {}),
         models: commandChoices.models,
         efforts: commandChoices.efforts,
+        canResume: Boolean(onAdopt),
       }),
       trigger.query,
       ),
       ...rankCommands(providerCommandCompletions(skills?.commands ?? []), trigger.query),
     ];
-  }, [trigger, dismissed, paths, notes, skills, busy, fresh, runtimeMode, menuDriver, compacting, envMode, commandChoices]);
+  }, [trigger, dismissed, paths, notes, skills, busy, fresh, runtimeMode, menuDriver, compacting, envMode, commandChoices, onAdopt]);
 
   // No completions while a question is active: the editor's text is an ANSWER,
   // and an `@` in "I'd prefer @latest" is punctuation, not a mention.
@@ -1144,6 +1159,8 @@ export function Composer({
       // The same press as the usage wheel's button, and the same submission:
       // the cockpit sends one `kind: "compact"` turn either way.
       if (action.type === "compact") onCompact?.();
+      // The same press as the link under the greeting — see `ResumePickerTrigger`.
+      if (action.type === "resume") setResuming(true);
       if (action.type === "stop") onStop();
     },
     [trigger, onRuntimeMode, onEnvMode, onDriverChange, onModelChange, onCompact, onStop, session, pendingModel],
@@ -1970,20 +1987,13 @@ export function Composer({
         typed and sent. Saying it above the box, and holding the send, is the
         difference between a rule and a surprise.
 
-        IT IS NOT A NEW READ. The strip below already polls `projectGit` for
-        this foot, and the engine stamps its probe on that answer — so this
-        costs no request, and it goes quiet by itself when the drive comes back.
+        THE NOTICE ITSELF LIVES IN THE STRIP, NOT HERE. `EnvironmentStrip`
+        already knows `away` from the same `projectGit` read it polls for the
+        foot — so the sentence renders as the strip's own top row, sharing its
+        one band, rather than as a second card this component would have to
+        keep glued to the first. `driveAway` stays a plain boolean state up
+        here only because the send guard above needs it.
       */}
-      {driveAway && (
-        <p className="mx-3 mt-2 flex items-start gap-2 rounded-xl bg-muted/50 px-3 py-2 text-2xs text-muted-foreground">
-          <HardDriveIcon className="mt-px size-3.5 shrink-0" />
-          <span>
-            {driveAway === "unmounted"
-              ? `The drive holding ${projectName ?? "this project"} is not connected, so nothing can run here yet. Plug it back in — the conversation, its history and its settings are all still here.`
-              : `${projectName ?? "This project"}'s folder is not on this machine any more, so nothing can run here.`}
-          </span>
-        </p>
-      )}
       {projectId && (
       <WorkspaceEnvironment
         projectId={projectId}

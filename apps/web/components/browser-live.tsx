@@ -544,6 +544,14 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => void applyBounds());
     };
+    // THE PANEL DRAG, IN THE SAME FRAME. The resize handle writes its width
+    // and announces it (`right-panel.tsx` paint); that paint already runs
+    // inside its own animation frame, so another rAF here would put the native
+    // view a frame behind the border the human is dragging. The ResizeObserver
+    // below still fires for this — as the self-heal for everything else that
+    // moves the host — and a second publish of the same rect is idempotent.
+    const panelResized = () => void applyBounds();
+    window.addEventListener("telar:panel-resized", panelResized);
     const observer = new ResizeObserver(sync);
     observer.observe(host);
     window.addEventListener("resize", sync);
@@ -559,6 +567,7 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
       window.cancelAnimationFrame(frame);
       window.cancelAnimationFrame(transitionFrame);
       observer.disconnect();
+      window.removeEventListener("telar:panel-resized", panelResized);
       window.removeEventListener("resize", sync);
       window.removeEventListener("scroll", sync, true);
       void bridge.setVisible(scopeKey, false);

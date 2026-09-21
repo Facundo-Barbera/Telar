@@ -114,6 +114,19 @@ function fitViewport(viewport, bounds) {
     },
   };
 }
+
+/**
+ * THE RECORDED EMULATION, AS ONE STRING. `tab.viewportOverride` holds this for
+ * whatever was last sent (or the literal "native" when nothing is emulated),
+ * and both the sender (`syncViewport`) and the geometry fast path's gate
+ * (`emulationSettled`) format it HERE — two spellings of the same target would
+ * let the gate skip a pass the sender still owed, or the sender re-send one the
+ * gate already believed settled.
+ */
+function emulationKey(target) {
+  return `${target.width}x${target.height}@${target.scale}`;
+}
+
 /** How long a capture of a hidden view may take before it is an error rather
  *  than a hang. A frame from a live compositor is milliseconds; anything
  *  approaching this means there is no frame coming. */
@@ -1663,20 +1676,44 @@ class DesktopBrowserManager {
     return tab.viewportMode === "fixed" ? "fixed" : "fit";
   }
 
-  /** In fit mode, adopt the stage size as the viewport. Returns whether it
-   *  changed (the caller bumps the generation / emits). */
-  syncFitViewport(tab) {
-    if (this.viewportModeOf(tab) !== "fit" || !this.isTabVisible(tab)) return false;
+  /**
+   * WOULD THE FIT VIEWPORT MOVE? The size it would become, or `null` for "no
+   * change". Pure — it writes nothing — so the geometry pipeline can ASK
+   * before deciding whether this run owes any work at all, and `syncFitViewport`
+   * stays the one writer.
+   */
+  fitViewportChange(tab) {
+    if (this.viewportModeOf(tab) !== "fit" || !this.isTabVisible(tab)) return null;
     // A panel mid-animation (opening from 0, closing to 0) publishes tiny
     // bounds for a few frames. Those are not a size anyone chose: adopting
     // them would leave a background agent a 200×200 page. Below the
     // viewport minimum the last meaningful size is kept.
-    if (this.bounds.width < VIEWPORT_MIN || this.bounds.height < VIEWPORT_MIN) return false;
+    if (this.bounds.width < VIEWPORT_MIN || this.bounds.height < VIEWPORT_MIN) return null;
     const next = resolveViewport({ width: this.bounds.width, height: this.bounds.height });
     const current = this.viewportOf(tab);
-    if (next.width === current.width && next.height === current.height) return false;
+    if (next.width === current.width && next.height === current.height) return null;
+    return next;
+  }
+
+  /** In fit mode, adopt the stage size as the viewport. Returns whether it
+   *  changed (the caller bumps the generation / emits). */
+  syncFitViewport(tab) {
+    const next = this.fitViewportChange(tab);
+    if (!next) return false;
     tab.viewport = next;
     return true;
+  }
+
+  /**
+   * IS THE EMULATION ALREADY WHAT IT SHOULD BE? Asked WITHOUT binding a
+   * debugger — that is the whole point: `ensureDebuggerOnly` is an await (and,
+   * on a fresh tab, a real attach), so a drag frame that owes no CDP at all
+   * must be able to find that out from the recorded override alone.
+   */
+  emulationSettled(tab) {
+    const target = this.viewportTarget(tab);
+    if (!target.emulate) return tab.viewportOverride === "native" || tab.viewportOverride === undefined;
+    return tab.viewportOverride === emulationKey(target);
   }
 
   viewportInfo(tab) {
@@ -1801,6 +1838,36 @@ class DesktopBrowserManager {
       view.setVisible(shown);
       if (shown) view.setBounds(this.nativeRect(tab));
     };
+    // THE DRAG FAST PATH. A panel resize handle publishes bounds every frame,
+    // and the overwhelming majority of those frames owe the page NOTHING: the
+    // stage is the same size as the last one placed (the panel moved, or the
+    // renderer republished), the fit viewport would not change, the emulation
+    // already says what it should, and no appearance is pending. Such a frame
+    // is one native `setBounds` — no `persist`, no `ensureDebuggerOnly` (an
+    // await, and on a cold tab a real debugger attach), no CDP round trip.
+    //
+    // Placing FIRST is what makes that possible, and costs nothing: `nativeRect`
+    // reads only `bounds`, the viewport and visibility — never anything
+    // `syncFitViewport` writes — so on a run that does go on to sync the fit
+    // viewport, the trailing `place()` re-asserts the rect exactly as before.
+    //
+    // ALL THREE READS ARE LOAD-BEARING. Gating on the stage size alone would
+    // starve `resizeTab`'s preset path, which changes the emulation target
+    // while the stage stands still.
+    place();
+    const placed = tab.lastPlaced;
+    tab.lastPlaced = { width: this.bounds.width, height: this.bounds.height };
+    if (
+      placed &&
+      placed.width === this.bounds.width &&
+      placed.height === this.bounds.height &&
+      this.fitViewportChange(tab) === null &&
+      this.emulationSettled(tab) &&
+      !this.needsColorScheme(tab)
+    ) {
+      this.applyZoom(tab);
+      return;
+    }
     // Fit mode adopts the stage size FIRST, so the bounds and the emulation
     // below describe the same viewport.
     if (this.syncFitViewport(tab)) {
@@ -1808,7 +1875,6 @@ class DesktopBrowserManager {
       tab.staleReason = "the viewport was resized";
       this.persist();
     }
-    place();
     const debug = await this.ensureDebuggerOnly(tab);
     if (tab.view !== view) return;
     await this.syncViewport(tab, debug);
@@ -3509,7 +3575,7 @@ class DesktopBrowserManager {
       tab.viewportOverride = "native";
       return;
     }
-    const wanted = `${target.width}x${target.height}@${target.scale}`;
+    const wanted = emulationKey(target);
     if (tab.viewportOverride === wanted) return;
     await debug.sendCommand("Emulation.setDeviceMetricsOverride", {
       width: target.width,

@@ -184,6 +184,58 @@ describe("opening a shell", () => {
   });
 });
 
+describe("a cwd the host refuses (#851)", () => {
+  /** The exact shape `unusableCwd` writes in apps/desktop/terminal-host.js —
+   *  what makes this refusal, and not some other `failed` reason, detectable
+   *  from the renderer's side of the IPC. */
+  const CWD_REFUSAL = {
+    id: "term_failed",
+    fate: "failed" as const,
+    error: "Telar cannot start a terminal in /private/tmp/exoplanets: ENOENT (no such file or directory). No process was started.",
+  };
+
+  test("the refusal is the tab's whole content — no xterm underneath it", async () => {
+    installBridge({ ending: CWD_REFUSAL });
+    const host = await mount({ sessionId: "session_a" });
+
+    expect(host.textContent).toContain("never started");
+    // The bug this fixes: a blank white xterm canvas under the banner, with
+    // nothing to do. There must be no emulator mounted at all for this fate.
+    expect(host.querySelector(".xterm")).toBeNull();
+    const button = host.querySelector("button");
+    expect(button).not.toBeNull();
+    expect(button?.textContent).toContain("home folder");
+  });
+
+  test("the action retries the same tab with no cwd, so the host falls back to the shell's own default", async () => {
+    const bridge = installBridge({ ending: CWD_REFUSAL });
+    const host = await mount({ sessionId: "session_a" });
+    expect(bridge.opens.length).toBe(1);
+    expect(bridge.opens[0]?.cwd).toBe(CHECKOUT);
+
+    const button = host.querySelector("button") as HTMLButtonElement;
+    await act(async () => {
+      button.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(bridge.opens.length).toBe(2);
+    // Omitted entirely, not sent as `cwd: undefined` — the host's own
+    // fallback is triggered by the key being absent, not by its value.
+    expect("cwd" in (bridge.opens[1] ?? {})).toBe(false);
+  });
+
+  test("a `failed` ending that is not about the cwd keeps today's banner instead", async () => {
+    installBridge({ ending: { id: "term_failed", fate: "failed", error: "spawn /bin/nope ENOENT" } });
+    const host = await mount({ sessionId: "session_a" });
+
+    expect(host.textContent).toContain("never started");
+    // No way forward is offered for a reason that isn't about the directory —
+    // there is nothing this tab can retry that would fix it.
+    expect(host.querySelector("button")).toBeNull();
+  });
+});
+
 describe("re-adopting a running shell", () => {
   test("a terminal the host still lists is adopted, not replaced", async () => {
     const bridge = installBridge({ live: [{ id: "term_old", pid: 99 }] });
@@ -310,5 +362,68 @@ describe("image protocols", () => {
     term.loadAddon(new ImageAddon(TERMINAL_IMAGE_OPTIONS));
     expect(term.options.windowOptions?.getCellSizePixels).toBe(true);
     expect(term.options.windowOptions?.getWinSizePixels).toBe(true);
+  });
+});
+
+describe("resize is one fit per frame, and one SIGWINCH per grid change", () => {
+  /** rAF stubbed to a queue this test drains by hand, so "inside one frame"
+   *  and "the frame paints" are facts the test controls rather than timing. */
+  let queued: Array<FrameRequestCallback> = [];
+  const realRaf = window.requestAnimationFrame;
+  const realCancel = window.cancelAnimationFrame;
+  beforeEach(() => {
+    queued = [];
+    window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      queued.push(cb);
+      return queued.length;
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((handle: number) => {
+      queued[handle - 1] = () => {};
+    }) as typeof window.cancelAnimationFrame;
+  });
+  afterEach(() => {
+    window.requestAnimationFrame = realRaf;
+    window.cancelAnimationFrame = realCancel;
+  });
+  const paint = () => {
+    const frame = queued.splice(0);
+    for (const cb of frame) cb(performance.now());
+  };
+
+  test("five resize signals in one frame fit once and signal the PTY at most once", async () => {
+    const fake = installBridge();
+    await mount({ sessionId: "s1" });
+    await act(async () => {
+      paint();
+    });
+    const before = fake.resizes.length;
+    await act(async () => {
+      for (let i = 0; i < 5; i += 1) window.dispatchEvent(new Event("telar:panel-resized"));
+    });
+    // Nothing has painted yet: the burst is queued, not sent.
+    expect(fake.resizes.length).toBe(before);
+    await act(async () => {
+      paint();
+    });
+    // One frame, at most one SIGWINCH — and zero if the grid did not move,
+    // which in a headless box it does not. The failure state (no coalescing)
+    // produced FIVE here, which is the storm nvim could not keep up with.
+    expect(fake.resizes.length - before).toBeLessThanOrEqual(1);
+  });
+
+  test("a frame that leaves cols and rows unchanged sends no SIGWINCH", async () => {
+    const fake = installBridge();
+    await mount({ sessionId: "s1" });
+    await act(async () => {
+      paint();
+    });
+    const settled = fake.resizes.length;
+    await act(async () => {
+      window.dispatchEvent(new Event("telar:panel-resized"));
+      paint();
+      window.dispatchEvent(new Event("telar:panel-resized"));
+      paint();
+    });
+    expect(fake.resizes.length).toBe(settled);
   });
 });

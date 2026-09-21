@@ -95,6 +95,7 @@ export function readGhState(snapshot: { unavailable?: GitHubUnavailable; message
 const FIX: Record<Exclude<GitHubUnavailable, "no_repository" | "not_github">, string> = {
   not_installed: "Install the GitHub CLI — `brew install gh` on macOS, or your own package manager — then run `gh auth login`.",
   not_authenticated: "Run `gh auth login` in a terminal on this machine. Sign-in lives outside Telar, the same as it does for Claude and Codex.",
+  no_checkout: "Move the project's folder back, or re-register the project pointing at where it lives now.",
   failed: "Run `gh auth status` in a terminal on this machine to see what it says.",
 };
 

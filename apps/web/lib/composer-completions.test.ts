@@ -5,6 +5,7 @@ import {
   buildPathIndex,
   compactBlockedReason,
   isCompactDraft,
+  isResumeDraft,
   PROVIDER_COMMAND_GROUP,
   providerCommandCompletions,
   rankCommands,
@@ -162,6 +163,34 @@ describe("/compact, the wheel's button reached from the keyboard", () => {
     // An argument this composer cannot pass on leaves it an ordinary message.
     expect(isCompactDraft("/compact the API work")).toBe(false);
     expect(isCompactDraft("please run /compact")).toBe(false);
+  });
+});
+
+describe("/resume, the empty composer's own link reached from the keyboard", () => {
+  const freshResumable = { busy: false, fresh: true, canResume: true };
+
+  test("it is offered only where the link itself would show", () => {
+    expect(availableCommands(freshResumable).map((command) => command.id)).toContain("resume");
+    // Once a session exists, or there is nowhere to send the pick, the row is
+    // absent — resuming into an existing session would mean something else.
+    expect(availableCommands({ ...freshResumable, fresh: false }).map((command) => command.id)).not.toContain("resume");
+    expect(availableCommands({ ...freshResumable, canResume: false }).map((command) => command.id)).not.toContain("resume");
+    expect(availableCommands({ busy: false, fresh: true }).map((command) => command.id)).not.toContain("resume");
+  });
+
+  test("picking it matches the link's own row", () => {
+    expect(availableCommands(freshResumable).find((command) => command.id === "resume")).toMatchObject({
+      label: "/resume",
+      action: { type: "resume" },
+      glyph: "resume",
+    });
+  });
+
+  test("the draft that IS the gesture is exactly `/resume`, trimmed", () => {
+    expect(isResumeDraft("/resume")).toBe(true);
+    expect(isResumeDraft("  /resume\n")).toBe(true);
+    expect(isResumeDraft("/resume something")).toBe(false);
+    expect(isResumeDraft("please /resume")).toBe(false);
   });
 });
 

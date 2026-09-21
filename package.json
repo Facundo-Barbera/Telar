@@ -13,6 +13,7 @@
   "scripts": {
     "dev": "bun scripts/dev.mjs",
     "dev:desktop": "bun scripts/dev.mjs --desktop",
+    "dev:on-dev-store": "TELAR_HOME=\"$HOME/Library/Application Support/Telar Dev\" bun scripts/dev.mjs --desktop",
     "test:operations": "bun test --timeout 20000 scripts/dev-lifecycle.test.mjs scripts/tailscale.test.mjs",
     "dev:shell": "bun run --cwd apps/desktop dev",
     "desktop:package": "bun run --cwd apps/desktop package:local",

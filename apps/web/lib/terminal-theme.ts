@@ -1,19 +1,27 @@
 /**
- * WHAT THE LOOK CONTRIBUTES TO A TERMINAL, AND WHAT IT DELIBERATELY DOES NOT
+ * WHAT THE APP CONTRIBUTES TO A TERMINAL, AND WHAT IT DELIBERATELY DOES NOT
  * (#198).
  *
- * Three colours and a font. That is the whole of it, and the cut is measured
- * rather than lazy: `lib/looks.ts`, `lib/theme-palettes.ts` and
- * `lib/appearance.ts` carry no sixteen-colour ANSI set between them, and they
- * are not growing one. The owner's prompt (oh-my-posh catppuccin_frappe) and
- * his syntax highlighting are TRUECOLOR and bypass a palette entirely, so a
- * per-Look ANSI set would be sixteen more values to maintain that his own
- * terminal would never draw with.
+ * FOUR COLOURS AND A FONT: background, foreground, cursor and its accent, plus
+ * the selection wash. THE SIXTEEN ANSI COLOURS ARE NOT OURS. They are the
+ * emulator's, exactly as they are in every desktop terminal where the app
+ * chrome and the terminal palette are separate things — and exactly as they are
+ * in T3 Code, which renders nvim correctly and contributes background,
+ * foreground, cursor and selection and nothing else.
  *
- * SO THE ANSI SIXTEEN ARE CONSTANTS — xterm.js's own defaults, restated here so
- * the theme is one readable object — and `overrides` is how anything changes
- * them. No speculative `--terminal-ansi-*` variables: a hook with no caller is
- * a hook nobody has tested.
+ * WHY THIS IS A CHANGE. This module used to restate xterm.js's sixteen as
+ * constants "so the theme is one readable object". A hand-copied table is a
+ * table that drifts: the owner opened nvim and the palette was wrong, because
+ * the copy is what every ANSI-colouring program (his prompt, `ls`, a
+ * statusline) painted with. Omitting a key is not a gap — xterm.js fills each
+ * of the sixteen from its own `DEFAULT_ANSI_COLORS` when the theme object does
+ * not carry it (`ThemeService._setTheme`: `ansi = DEFAULT_ANSI_COLORS.slice()`,
+ * then `ansi[n] = v(theme.black, DEFAULT_ANSI_COLORS[n])`, where `v` returns
+ * its fallback for `undefined`). So the shortest correct table is no table.
+ *
+ * `overrides` still accepts ANSI keys, so a future Look that genuinely carries
+ * a palette can supply one without this module growing speculative
+ * `--terminal-ansi-*` variables nobody has tested.
  *
  * AND WHAT IT LOOKS LIKE UNDER A LIGHT LOOK IS NOT OURS TO FIX. The owner's
  * `~/.zshrc` hardcodes `ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=#666666"`, which is
@@ -30,47 +38,22 @@ export type TerminalTheme = {
   cursor: string;
   cursorAccent: string;
   selectionBackground: string;
-  black: string;
-  red: string;
-  green: string;
-  yellow: string;
-  blue: string;
-  magenta: string;
-  cyan: string;
-  white: string;
-  brightBlack: string;
-  brightRed: string;
-  brightGreen: string;
-  brightYellow: string;
-  brightBlue: string;
-  brightMagenta: string;
-  brightCyan: string;
-  brightWhite: string;
 };
 
 /**
- * xterm.js's own sixteen, verbatim. A terminal whose palette disagrees with
- * every other terminal renders other people's programs wrongly — `ls --color`'s
- * blue directory is meant to be THE blue.
+ * What a caller may override on top of the five above: the ANSI sixteen, each
+ * optional, and typed here only so a Look that one day carries a palette has a
+ * name for the shape. Nothing in this app supplies them — the emulator's own
+ * defaults stand.
  */
-const ANSI_16 = {
-  black: "#2e3436",
-  red: "#cc0000",
-  green: "#4e9a06",
-  yellow: "#c4a000",
-  blue: "#3465a4",
-  magenta: "#75507b",
-  cyan: "#06989a",
-  white: "#d3d7cf",
-  brightBlack: "#555753",
-  brightRed: "#ef2929",
-  brightGreen: "#8ae234",
-  brightYellow: "#fce94f",
-  brightBlue: "#729fcf",
-  brightMagenta: "#ad7fa8",
-  brightCyan: "#34e2e2",
-  brightWhite: "#eeeeec",
-} as const;
+export type TerminalAnsiOverrides = Partial<
+  Record<
+    | "black" | "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "white"
+    | "brightBlack" | "brightRed" | "brightGreen" | "brightYellow"
+    | "brightBlue" | "brightMagenta" | "brightCyan" | "brightWhite",
+    string
+  >
+>;
 
 /**
  * The three the Look owns, and where each comes from.
@@ -100,8 +83,14 @@ const LOOK_TOKENS = {
  */
 export type CssVarReader = (variable: string) => string | undefined;
 
-/** The Look's three colours and xterm's sixteen, as one theme object. */
-export function terminalTheme(read: CssVarReader, overrides: Partial<TerminalTheme> = {}): TerminalTheme {
+/**
+ * The four colours the app owns (plus the selection wash), as one theme object.
+ * No ANSI keys: leaving them out is what hands the sixteen back to xterm.js.
+ */
+export function terminalTheme(
+  read: CssVarReader,
+  overrides: Partial<TerminalTheme> & TerminalAnsiOverrides = {},
+): TerminalTheme & TerminalAnsiOverrides {
   const look = (token: keyof typeof LOOK_TOKENS): string => {
     const { variable, fallback } = LOOK_TOKENS[token];
     const value = read(variable);
@@ -119,7 +108,6 @@ export function terminalTheme(read: CssVarReader, overrides: Partial<TerminalThe
     // visible over the background AND over whatever truecolour the shell
     // painted, and a solid accent would hide the text it is selecting.
     selectionBackground: "rgba(120, 150, 200, 0.3)",
-    ...ANSI_16,
     ...overrides,
   };
 }
@@ -129,20 +117,120 @@ const MIN_FONT_SIZE = 6;
 const DEFAULT_FONT_SIZE = 12;
 
 /**
- * The mono face and size the rest of the cockpit uses — `appearance.ts:111`
- * already documents `fontMonoSize` as covering "the terminal", so this reads
- * the tokens rather than inventing a terminal-only setting.
+ * THE PERSON'S FONT FIRST, THE COCKPIT'S SECOND.
  *
- * IF THAT FACE IS NOT A NERD FONT, the owner's `eza --icons` draws tofu. That
- * is his choice to make in Settings ▸ Appearance, not a bug for this surface to
- * work around by substituting a font he did not pick.
+ * Nerd Fonts a person is likely to have installed, in the order they are
+ * likely to have installed them. CSS font-family fallback resolves the first
+ * one present at render time, so no detection code and no setting: a machine
+ * with JetBrainsMono Nerd Font draws the prompt's and `eza --icons`'s glyphs
+ * with it; a machine with none of these falls through to the cockpit's mono
+ * face and then the platform's.
+ */
+/**
+ * THE ONE FACE TELAR SHIPS, AND WHY SHIPPING A FONT IS NOT A CONTRADICTION OF
+ * "THE CHAIN ONLY USES WHAT IS ALREADY ON THE MACHINE".
+ *
+ * `SymbolsNerdFontMono-Regular.woff2` (Nerd Fonts, MIT, beside its LICENCE in
+ * `public/fonts/`) carries NO text glyphs — no letters, no digits, no
+ * punctuation. It is the private-use ranges only: powerline separators,
+ * devicons, the symbols a prompt and `eza --icons` draw with. A face with no
+ * text glyphs cannot change a single cell's metrics, because it never wins a
+ * character the text face can draw. So it goes at the FRONT of the chain and
+ * composes with whatever text face follows it.
+ *
+ * That is what makes it not a font choice: nothing about the terminal's
+ * appearance moves, and the person's own Nerd Font — if they have one — still
+ * draws every symbol it covers, since the two agree on the codepoints. What
+ * changes is the machine with none installed, which used to render tofu.
+ *
+ * No setting. A setting here would be asking someone to decide whether they
+ * want squares instead of icons. T3 Code vendors the same file for the same
+ * reason.
+ */
+export const TERMINAL_SYMBOLS_FONT = "Symbols Nerd Font Mono";
+const TERMINAL_SYMBOLS_FONT_URL = "/fonts/SymbolsNerdFontMono-Regular.woff2";
+
+/** One load per page, shared by every terminal. Held as the PROMISE rather than
+ *  a boolean so a second terminal opening mid-download waits for the same
+ *  download instead of starting another. */
+let symbolsFontLoad: Promise<void> | null = null;
+
+/**
+ * Register the bundled symbols face, once, lazily — and never fail.
+ *
+ * FAILURE IS A LOOK, NOT AN ERROR. No network, a 404 from a packaged build, an
+ * engine with no `FontFace`: each of those means the chain falls through to a
+ * locally installed Nerd Font or to tofu, which is exactly where this app was
+ * before. A terminal that refused to open because a decoration did not download
+ * would be the worse outcome by a long way.
+ */
+export function ensureTerminalSymbolsFont(): Promise<void> {
+  if (symbolsFontLoad !== null) return symbolsFontLoad;
+  symbolsFontLoad = (async () => {
+    try {
+      const face = new FontFace(TERMINAL_SYMBOLS_FONT, `url(${TERMINAL_SYMBOLS_FONT_URL})`);
+      document.fonts.add(await face.load());
+    } catch {
+      // Whatever is installed locally still applies.
+    }
+  })();
+  return symbolsFontLoad;
+}
+
+/**
+ * The symbols face, plus the rest of the chain at the size the terminal will
+ * draw at — awaited BEFORE the first `fit()`.
+ *
+ * WHY BEFORE THE FIT. xterm measures one cell to derive cols and rows. Measure
+ * it while a face is still downloading and the grid is sized against the
+ * fallback, then the real face arrives and every cell is a fraction off: a
+ * prompt that wraps one column early, and a `fit()` nobody asked for. Loading
+ * first costs a frame and buys a grid measured against what is actually drawn.
+ *
+ * Swallows everything, for the same reason as above.
+ */
+export async function loadTerminalFonts(fontFamily: string, fontSize: number): Promise<void> {
+  await ensureTerminalSymbolsFont();
+  try {
+    await document.fonts.load(`${fontSize}px ${fontFamily}`);
+  } catch {
+    // A chain this parser dislikes, or no Font Loading API at all (a test DOM).
+    // Locally installed faces need no loading; the rest will arrive when it does.
+  }
+}
+
+const NERD_FONTS = [
+  '"JetBrainsMono Nerd Font"',
+  '"JetBrainsMonoNL Nerd Font"',
+  '"CaskaydiaCove Nerd Font"',
+  '"FiraCode Nerd Font"',
+  '"Hack Nerd Font"',
+  '"MesloLGS NF"',
+] as const;
+
+const PLATFORM_MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+
+/**
+ * The size is the cockpit's — `appearance.ts:111` documents `fontMonoSize` as
+ * covering "the terminal". The FACE is a chain, and the cockpit's mono face is
+ * the middle of it, not the front.
+ *
+ * This used to return the Appearance font alone, with a comment calling the
+ * resulting tofu in `eza --icons` "the owner's choice in Settings ▸ Appearance".
+ * That was backwards. Appearance picks the cockpit's font; a terminal is the
+ * person's, and `docs/terminal-host.md` §1 says we contribute a font *fallback*,
+ * not a font. Nothing here asks anyone to install anything: the chain uses what
+ * is already on the machine, ahead of it the one symbols-only face Telar ships
+ * (`TERMINAL_SYMBOLS_FONT`, which draws no text and therefore displaces no text
+ * face), and behind it the platform's own monospace.
  */
 export function terminalFont(read: CssVarReader): { fontFamily: string; fontSize: number } {
   const family = read("--app-font-mono")?.trim();
   const rawSize = read("--app-font-mono-size")?.trim();
   const parsed = rawSize === undefined ? Number.NaN : Number.parseFloat(rawSize);
+  const appMono = family !== undefined && family !== "" ? family : undefined;
   return {
-    fontFamily: family !== undefined && family !== "" ? family : "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontFamily: [`"${TERMINAL_SYMBOLS_FONT}"`, ...NERD_FONTS, ...(appMono ? [appMono] : []), PLATFORM_MONO].join(", "),
     fontSize: Number.isFinite(parsed) && parsed >= MIN_FONT_SIZE ? parsed : DEFAULT_FONT_SIZE,
   };
 }

@@ -1043,6 +1043,12 @@ async function codeFilesUnder(directory) {
       const next = `${relative}/${entry.name}`;
       if (entry.isDirectory()) {
         if (entry.name === "node_modules" || entry.name === "release" || entry.name === "DerivedData") continue;
+        // `apps/engine/dist/` is the bundled engine build-app.sh writes and git
+        // ignores. On CI it never exists; on a developer's Mac it can be days
+        // stale, and a stale bundle still names whatever the source has since
+        // retired (#877's scan tripped on exactly that). It is not source, and
+        // nothing found in it could be fixed there.
+        if (entry.name === "dist") continue;
         if (entry.name.startsWith(".next")) continue;
         await walk(next);
       } else if (/\.(tsx?|jsx?|mjs|cjs|swift)$/.test(entry.name)) {

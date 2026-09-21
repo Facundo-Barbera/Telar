@@ -7,7 +7,11 @@ DESKTOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DESKTOP_DIR"
 
 APP=release/mac-arm64/Telar.app
-DEST="${HOME:?}/Applications/Telar.app"
+# The destination is named after the SOURCE bundle, not hard-coded, so a
+# "Telar Dev.app" installs beside "Telar.app" instead of over it. DEST_DIR is
+# what --system and the default choose; DEST is resolved once APP is known.
+DEST_DIR="${HOME:?}/Applications"
+DEST=""
 OPEN_AFTER=0
 VERIFIED=0
 
@@ -19,8 +23,8 @@ Install a locally packed, unsigned Telar.app.
 
 Options:
   --app PATH          Source .app (default: release/mac-arm64/Telar.app)
-  --destination PATH  Destination .app path (default: ~/Applications/Telar.app)
-  --system            Install to /Applications/Telar.app
+  --destination PATH  Destination .app path (default: ~/Applications/<source name>.app)
+  --system            Install to /Applications/<source name>.app
   --open              Open Telar after installation
   --verified          Skip smoke because the caller just passed the same gate
   -h, --help          Show this help
@@ -47,7 +51,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --system)
-      DEST="/Applications/Telar.app"
+      DEST_DIR="/Applications"
       shift
       ;;
     --open)
@@ -71,20 +75,25 @@ while [ $# -gt 0 ]; do
 done
 
 APP="$(absolute_path "$APP")"
+# "Telar.app" -> "Telar", "Telar Dev.app" -> "Telar Dev". The executable inside
+# a packed Electron bundle carries the same name as the bundle.
+APP_NAME="$(basename "$APP" .app)"
+BIN="$APP/Contents/MacOS/$APP_NAME"
+[ -n "$DEST" ] || DEST="$DEST_DIR/$APP_NAME.app"
 DEST="$(absolute_path "$DEST")"
 
 test -d "$APP" || {
   echo "!! no packed app at $APP — run: bun run desktop:package" >&2
   exit 1
 }
-test -x "$APP/Contents/MacOS/Telar" || {
-  echo "!! invalid Telar.app: missing Contents/MacOS/Telar" >&2
+test -x "$BIN" || {
+  echo "!! invalid $APP_NAME.app: missing Contents/MacOS/$APP_NAME" >&2
   exit 1
 }
 
 if [ "$VERIFIED" -eq 0 ]; then
   echo "==> smoke the packed app"
-  env -u ELECTRON_RUN_AS_NODE "$APP/Contents/MacOS/Telar" --smoke
+  env -u ELECTRON_RUN_AS_NODE "$BIN" --smoke
 fi
 
 install_atomic() {

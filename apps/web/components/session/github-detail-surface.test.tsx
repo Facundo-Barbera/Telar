@@ -90,12 +90,20 @@ describe("the opening post", () => {
     expect(renderToStaticMarkup(<EntryCard entry={opening} />)).toContain("border-border");
   });
 
-  test("its prose is capped to a measure rather than running the panel's full width", () => {
+  test("the card is capped to a measure and centred, rather than its prose stopping short inside a full-width card", () => {
     // github.com caps its issue body and so does everything else anybody reads prose
     // in. The panel is draggable to half the screen, and the width at which a line
-    // stops reading is a width somebody will choose.
+    // stops reading is a width somebody will choose. The cap is on the CARD: a cap
+    // on the prose alone drew a full-width border with a blank right third inside
+    // it at half-screen, which read as a layout bug rather than a measure.
     const opening = buildForgeTimeline({ body: "Layout over data we already have.", createdAt: NOW, comments: [] })[0]!;
-    expect(renderToStaticMarkup(<EntryCard entry={opening} />)).toContain("max-w-[64ch]");
+    const markup = renderToStaticMarkup(<EntryCard entry={opening} />);
+    const card = /<div class="([^"]*)"/.exec(markup)?.[1] ?? "";
+    expect(card).toContain("max-w-[64ch]");
+    expect(card).toContain("self-center");
+    // And the prose inside carries no cap of its own, or the two would disagree
+    // at exactly the width the card's cap was chosen for.
+    expect(markup.split("max-w-[64ch]").length - 1).toBe(1);
   });
 
   test("the facts line says who and when, once", () => {

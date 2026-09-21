@@ -18,7 +18,7 @@
  */
 
 import { Fragment } from "react";
-import { BotIcon, FolderIcon, GaugeIcon, GitBranchIcon, Minimize2Icon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon, WandSparklesIcon } from "lucide-react";
+import { BotIcon, DownloadIcon, FolderIcon, GaugeIcon, GitBranchIcon, Minimize2Icon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon, WandSparklesIcon } from "lucide-react";
 import type { Completion, CompletionGlyph } from "@/lib/composer-completions";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { cn } from "@/lib/utils";
@@ -36,6 +36,9 @@ const COMMAND_GLYPHS: Partial<Record<CompletionGlyph, typeof BotIcon>> = {
   // The glyph the usage wheel's own Compact button wears — same gesture, two
   // places to reach it.
   compact: Minimize2Icon,
+  // The same glyph the composer's own resume link wears — see
+  // `resume-picker.tsx`'s `ResumePickerTrigger`.
+  resume: DownloadIcon,
   // The same glyph the chip a skill inserts draws (`glyph-paths.ts`), so the
   // row you picked and the chip it produced are recognisably one thing.
   skill: WandSparklesIcon,
