@@ -44,6 +44,19 @@ a user to change their network for our app. A fix that requires it is not a fix.
 **Do not touch the `lintel-nightly` runner.** It belongs to a different project and
 its name differs from ours by four characters.
 
+**A setting explains itself.** The label says what it is and the control shows
+its value; no sentence under the row restating either. The hint slot is for
+state a person needs right now (an input that is not connected). What a person
+cannot infer and would be wrong to guess goes behind the ⓘ on the label
+(`Row`'s `info`), and sparingly: a pane with an ⓘ on every row has the old
+problem one hover further away. Settings that shipped before this rule are
+being brought to it; do not add a hint to a new one.
+
+**No third-party product as an example, anywhere.** A name the owner used to
+illustrate a request ("something like X") is not a product Telar mentions. It
+does not go in a hint, a placeholder, a comment, a search keyword or a test.
+If the sentence needs a category, say the category.
+
 ---
 
 ## 2. How work is done here
