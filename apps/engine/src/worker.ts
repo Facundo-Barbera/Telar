@@ -93,6 +93,10 @@ type WorkerClient = Pick<
   | "restartRun"
   | "releaseRun"
   | "runOutput"
+  // AND WAITING IS THE DAEMON'S TOO (#890). The conditions are facts it holds —
+  // the lines, the readiness verdict, the status — so the worker waits on this
+  // socket rather than re-deriving any of them from a loop of its own.
+  | "runWait"
   | "runBytes"
   | "writeRun"
   | "resizeRun"

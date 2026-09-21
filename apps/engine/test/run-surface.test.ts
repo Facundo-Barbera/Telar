@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, type FetchLike } from "@telar/engine-client";
 import { clientRunCapability } from "../src/run/client-capability";
-import { RunManager } from "../src/run/manager";
+import { RunManager, type RunManagerOptions } from "../src/run/manager";
 import { matchRunRoute } from "../src/run/routes";
 import { RunStore } from "../src/run/store";
 import { storeRunCapability, type RunSessionContext } from "../src/run/store-capability";
@@ -52,8 +52,8 @@ function harness(capability: RunCapability): Map<string, FakeTool> {
 
 const managers: RunManager[] = [];
 
-function surface(context: () => RunSessionContext) {
-  const manager = new RunManager();
+function surface(context: () => RunSessionContext, options: RunManagerOptions = {}) {
+  const manager = new RunManager(options);
   managers.push(manager);
   const store = new RunStore(temp("state"));
   const capability = storeRunCapability({ store, manager, context });
@@ -80,7 +80,7 @@ const route = (method: string, tail: string) => {
 test("every tool on this wall is run_-prefixed, and the read-only list names real tools", () => {
   const tools = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: temp("tree") })).tools;
 
-  expect(tools.size).toBe(9);
+  expect(tools.size).toBe(10);
   for (const name of tools.keys()) {
     expect(name).toMatch(/^run_[a-z_]+$/);
   }
@@ -88,10 +88,15 @@ test("every tool on this wall is run_-prefixed, and the read-only list names rea
   // would either over-expose a mutation or park a harmless read forever.
   for (const name of RUN_READ_ONLY_TOOLS) {
     expect(tools.has(name)).toBe(true);
-    expect(Object.keys(tools.get(name)!.shape).length).toBeLessThanOrEqual(2);
   }
   expect(RUN_READ_ONLY_TOOLS).not.toContain("run_start");
   expect(RUN_READ_ONLY_TOOLS).not.toContain("run_release");
+  expect(RUN_READ_ONLY_TOOLS).not.toContain("run_stop");
+  // `run_wait` BLOCKS AND IS STILL A READ (#890). It signals nothing, starts
+  // nothing and changes nothing; putting it behind an approval prompt would
+  // make the deterministic path the expensive one, and an agent that cannot
+  // wait sleeps and guesses instead — which is the behaviour it replaces.
+  expect(RUN_READ_ONLY_TOOLS).toContain("run_wait");
 });
 
 test("a configuration saved through the route is the one the agent's tool reads back", async () => {
@@ -224,6 +229,167 @@ test("the route table covers the whole capability and nothing else", () => {
   expect(matchRunRoute("POST", "/run/configs/a/b")).toBeUndefined();
 });
 
+// ── what an agent needs from a process that keeps talking (#890) ────────────
+
+/**
+ * A recipe that prints on a schedule, so the four conditions are reachable
+ * without a port. `sh -c` is what an unpinned recipe resolves to anyway.
+ */
+const chatty = (command: string) => ({ name: "server", command });
+
+test("run_wait blocks until a line matches, and says WHICH condition fired", async () => {
+  // The whole point of the tool: "start the dev server then curl it" stops
+  // being `sleep 2 && curl` and becomes a step that either matched or did not.
+  const tree = temp("tree");
+  const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const config = store.create("p", chatty("echo booting; sleep 0.3; echo 'Listening on http://localhost:3000'; sleep 30"));
+  await tools.get("run_start")!.call({ configId: config.id });
+
+  const waited = await tools.get("run_wait")!.call({ pattern: "Listening on", timeoutMs: 10_000 });
+  expect(waited.isError).toBe(false);
+  expect(waited.text).toContain("MATCHED");
+  expect(waited.text).toContain("Listening on http://localhost:3000");
+  // The lines are the ones that arrived WHILE WAITING, and the cursor resumes.
+  expect(waited.text).toMatch(/\[cursor \d+\]/);
+}, 20_000);
+
+test("a wait that times out says so first, rather than burying it under the log", async () => {
+  // An agent that read past `timeout` in a wall of output would curl a port
+  // nothing is listening on and report the refusal as the project's bug.
+  const tree = temp("tree");
+  const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const config = store.create("p", chatty("echo quiet; sleep 30"));
+  await tools.get("run_start")!.call({ configId: config.id });
+
+  const waited = await tools.get("run_wait")!.call({ pattern: "never happens", timeoutMs: 300 });
+  expect(waited.isError).toBe(false);
+  expect(waited.text.startsWith("TIMED OUT")).toBe(true);
+  expect(waited.text).toContain("do not assume it is up");
+}, 20_000);
+
+test("run_wait exit waits a build out, and fires only once the VERDICT is in", async () => {
+  const tree = temp("tree");
+  const { store, tools, manager } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const config = store.create("p", chatty("echo building; sleep 0.2; echo done"));
+  const started = await tools.get("run_start")!.call({ configId: config.id });
+  const runId = /run (run_[0-9a-f]+)/.exec(started.text)![1]!;
+
+  const waited = await tools.get("run_wait")!.call({ exit: true, timeoutMs: 10_000 });
+  expect(waited.text).toContain("EXITED");
+  // SETTLED, not merely "the shell is gone": the group verdict is what decides
+  // between `exited` and an `unknown` that holds the project's slot, and an
+  // agent told "exited" while that was still open would start the next thing.
+  expect(["exited", "failed"]).toContain(manager.run(runId).status);
+}, 20_000);
+
+test("waiting for readiness on a recipe with no readiness URL is refused, not waited out", async () => {
+  // Nothing could ever make it fire, so honouring it would spend a minute of
+  // somebody's turn arriving at `timeout` — which reads as "it did not come up".
+  const tree = temp("tree");
+  const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const config = store.create("p", chatty("sleep 30"));
+  await tools.get("run_start")!.call({ configId: config.id });
+
+  const began = Date.now();
+  const waited = await tools.get("run_wait")!.call({ ready: true, timeoutMs: 60_000 });
+  expect(waited.isError).toBe(true);
+  expect(waited.text).toContain("readinessUrl");
+  expect(Date.now() - began).toBeLessThan(5_000);
+}, 20_000);
+
+test("a wait with nothing to wait FOR is refused, because that is a sleep", async () => {
+  const tree = temp("tree");
+  const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const config = store.create("p", chatty("sleep 30"));
+  await tools.get("run_start")!.call({ configId: config.id });
+
+  const waited = await tools.get("run_wait")!.call({ timeoutMs: 5_000 });
+  expect(waited.isError).toBe(true);
+  expect(waited.text).toMatch(/pattern, ready or exit/);
+}, 20_000);
+
+test("a bad regular expression is the CALLER'S mistake, worded as one", async () => {
+  const tree = temp("tree");
+  const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const config = store.create("p", chatty("sleep 30"));
+  await tools.get("run_start")!.call({ configId: config.id });
+
+  const waited = await tools.get("run_wait")!.call({ pattern: "[unclosed", timeoutMs: 1_000 });
+  expect(waited.isError).toBe(true);
+  expect(waited.text).toContain("not a valid regular expression");
+}, 20_000);
+
+test("run_output narrows with tail, grep and stream WITHOUT moving the cursor", async () => {
+  const tree = temp("tree");
+  const { store, tools, capability } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const config = store.create("p", chatty("echo one; echo two; echo ERROR three; echo four >&2; sleep 30"));
+  await tools.get("run_start")!.call({ configId: config.id });
+  await tools.get("run_wait")!.call({ pattern: "four", timeoutMs: 10_000 });
+
+  const whole = await capability.output({});
+  expect(whole.lines.length).toBeGreaterThanOrEqual(4);
+
+  // THE CURSOR IS THE WINDOW'S, NOT THE FILTER'S. Every one of these narrows
+  // what comes BACK and still reports the position a reader would resume from,
+  // which is what lets a caller grep now and read everything later.
+  const tailed = await capability.output({ tail: 2 });
+  expect(tailed.lines.length).toBe(2);
+  expect(tailed.cursor).toBe(whole.cursor);
+
+  const grepped = await capability.output({ grep: "^ERROR" });
+  expect(grepped.lines.map((line) => line.text)).toEqual(["ERROR three"]);
+  expect(grepped.cursor).toBe(whole.cursor);
+
+  const errs = await capability.output({ stream: "stderr" });
+  expect(errs.lines.map((line) => line.text)).toEqual(["four"]);
+  expect(errs.cursor).toBe(whole.cursor);
+
+  // And through the tool, where an empty ANSWER has to say which empty it is.
+  const none = await tools.get("run_output")!.call({ grep: "nothing matches this" });
+  expect(none.text).toContain("no line in this window matched");
+  expect(none.text).not.toContain("no output yet");
+}, 20_000);
+
+test("run_stop sends the signal it was asked for, and escalates with SIGKILL regardless", async () => {
+  // Ctrl-C semantics matter to a dev server that traps SIGTERM to drain
+  // connections: for that process SIGTERM is a request it declines and SIGINT
+  // is the one it obeys. What must NOT be configurable is the escalation — a
+  // second attempt that can be refused is not a second attempt.
+  const tree = temp("tree");
+  const signalled: Array<{ pid: number; signal: string }> = [];
+  const { store, tools } = surface(
+    () => ({ sessionId: "s", projectId: "p", worktreePath: tree }),
+    {
+      // A group that swallows the polite signal, so the escalation is reached.
+      processGroup: {
+        detached: true,
+        stop: (pid, force, signal) => {
+          signalled.push({ pid, signal: force ? "SIGKILL" : (signal ?? "SIGTERM") });
+        },
+        liveness: () => "gone",
+      },
+      stopGraceMs: 120,
+    },
+  );
+  const config = store.create("p", chatty("sleep 30"));
+  await tools.get("run_start")!.call({ configId: config.id });
+
+  await tools.get("run_stop")!.call({ signal: "SIGINT" });
+  expect(signalled[0]!.signal).toBe("SIGINT");
+  expect(signalled.map((entry) => entry.signal)).toContain("SIGKILL");
+}, 20_000);
+
+test("the wait route exists, refuses a budget past the ceiling, and is a POST", async () => {
+  // The tool schema is the model's contract; the HTTP surface is everyone
+  // else's. A route that trusted the caller could be made to park a worker for
+  // as long as it liked.
+  const { capability } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: temp("tree") }));
+  expect(matchRunRoute("GET", "/run/wait")).toBeUndefined();
+  await expect(
+    route("POST", "/run/wait").route.handle({ params: [], input: { timeoutMs: 600_000, exit: true }, capability }),
+  ).rejects.toThrow(/timeoutMs/);
+});
+
 test("every call the worker's capability makes hits a route that exists", async () => {
   // The two halves are written apart — a REST table here, a client over there —
   // and nothing but this test makes the client's spelling wrong out loud. An
@@ -257,8 +423,13 @@ test("every call the worker's capability makes hits a route that exists", async 
   await capability.restart({});
   await capability.release({ runId: "run_1" });
   await capability.output({});
+  // AND THE TWO #890 VERBS. `wait` is the one that would have been easiest to
+  // spell differently on each side, since it is the only POST among the reads.
+  await capability.output({ tail: 5, grep: "error", stream: "stderr" });
+  await capability.wait({ runId: "run_1", pattern: "up", timeoutMs: 1 });
+  await capability.stop({ signal: "SIGINT" });
 
-  expect(asked).toHaveLength(10);
+  expect(asked).toHaveLength(13);
   for (const { method, path } of asked) {
     expect({ method, path, matched: Boolean(matchRunRoute(method, path)) }).toEqual({ method, path, matched: true });
   }

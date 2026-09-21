@@ -126,6 +126,53 @@ const GROUP_DRAIN_MS = 1000;
 const GROUP_POLL_MS = 25;
 /** Finished runs stay readable — output after exit is most of the value. */
 const KEEP_TERMINAL = 10;
+/**
+ * How often `wait` re-reads state THIS PROCESS ALREADY HOLDS.
+ *
+ * ENGINE-LOCAL, AND THAT IS THE WHOLE POINT. Nothing about this tick crosses a
+ * wire: the lines, the readiness verdict and the status are all in memory here.
+ * A wait that polled the desktop, or that an agent built out of repeated
+ * `run_output` calls, would be the poll this milestone is deleting wearing a
+ * tool's name.
+ */
+const WAIT_TICK_MS = 50;
+
+/**
+ * How much of a run's output a reader wants, and which of it.
+ *
+ * NONE OF THESE MOVE THE CURSOR. `after` is the cursor; these narrow what comes
+ * back within the window it opened. A caller that greps and then resumes from
+ * the returned cursor has still read past everything that did not match, which
+ * is what makes `grep` a filter rather than a second, divergent stream.
+ */
+export type RunOutputFilter = {
+  /** Only the last N lines of the window, after the filters below. */
+  tail?: number;
+  /** A regular expression; only matching lines come back. */
+  grep?: string;
+  /** Only one of the two streams. A PTY-launched run has only `stdout`. */
+  stream?: "stdout" | "stderr";
+};
+
+/** What `run_wait` answers: WHICH condition fired, a cursor to resume from, and
+ *  the lines that arrived while waiting — not the whole scrollback. */
+export type RunWaitOutcome = { fired: "pattern" | "ready" | "exit" | "timeout"; cursor: number; lines: RunOutputLine[] };
+
+/**
+ * A caller's regular expression, refused rather than thrown raw.
+ *
+ * A BAD PATTERN IS THE CALLER'S MISTAKE AND HAS TO READ LIKE ONE. `new RegExp`
+ * throws a `SyntaxError` whose message is about the engine's parser; wrapped in
+ * `RunError("invalid_request")` it arrives at an agent as "your argument was
+ * wrong", which is the only thing that makes it retry differently.
+ */
+function compile(source: string, field: string): RegExp {
+  try {
+    return new RegExp(source);
+  } catch (error) {
+    throw new RunError("invalid_request", `${field} is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 export type StartRunInput = {
   projectId: string;
@@ -439,14 +486,82 @@ export class RunManager {
    * from the front under load, and `dropped` is reported rather than hidden so a
    * client can say "earlier output was discarded" instead of showing a gap.
    */
-  output(runId: string, after = 0): { lines: RunOutputLine[]; cursor: number; dropped: number } {
+  output(runId: string, after = 0, filter: RunOutputFilter = {}): { lines: RunOutputLine[]; cursor: number; dropped: number } {
     const run = this.require(runId);
     const start = Math.max(0, after - run.dropped);
+    let lines = run.lines.slice(start);
+    if (filter.stream) lines = lines.filter((line) => line.stream === filter.stream);
+    if (filter.grep !== undefined) {
+      const pattern = compile(filter.grep, "grep");
+      lines = lines.filter((line) => pattern.test(line.text));
+    }
+    // TAIL LAST, AND THE CURSOR IS NOT TAKEN FROM IT. `tail` narrows what is
+    // SHOWN; the cursor still advances over everything in the window, so a
+    // caller alternating `tail` and `after` reads each line at most once and
+    // never re-reads the ones tail hid.
+    if (filter.tail !== undefined && lines.length > filter.tail) lines = lines.slice(lines.length - filter.tail);
     return {
-      lines: run.lines.slice(start),
+      lines,
       cursor: run.dropped + run.lines.length,
       dropped: run.dropped,
     };
+  }
+
+  /**
+   * BLOCK UNTIL SOMETHING HAPPENS — the tool that replaces `sleep 2 && curl`.
+   *
+   * FOUR CONDITIONS, AND THE ANSWER SAYS WHICH ONE FIRED, because "it came
+   * back" is not the same fact as "the server is up": an agent that could not
+   * tell a timeout from a match would curl a port nothing is listening on and
+   * report the connection refusal as the project's bug.
+   *
+   * OVER STATE THIS PROCESS ALREADY HOLDS — see `WAIT_TICK_MS`.
+   *
+   * CHECKED BEFORE THE FIRST SLEEP. A run that is ALREADY ready, or already
+   * finished, answers at once: an agent that called this after the server came
+   * up would otherwise pay the whole timeout to be told what was true when it
+   * asked.
+   *
+   * `ready` ON A RECIPE WITH NO READINESS URL IS REFUSED rather than waited
+   * out. There is nothing that could ever make it fire, so honouring it would
+   * spend a minute of somebody's turn arriving at `timeout` — which an agent
+   * would then read as "the server did not come up".
+   *
+   * `lines` IS WHAT ARRIVED WHILE WAITING, from the cursor this call opened at
+   * — not the whole scrollback — so the answer is about the wait rather than
+   * about the run's history, which `output` is for.
+   */
+  async wait(runId: string, options: { pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitOutcome> {
+    const run = this.require(runId);
+    const pattern = options.pattern === undefined ? undefined : compile(options.pattern, "pattern");
+    if (options.ready && !run.config.readinessUrl) {
+      throw new RunError(
+        "invalid_request",
+        `"${run.configName}" has no readiness URL, so waiting for it to be ready could only ever time out. Wait for a pattern in its output instead, or give the configuration a readinessUrl.`,
+      );
+    }
+    const from = run.dropped + run.lines.length;
+    const since = () => this.output(runId, from).lines;
+    const answer = (fired: RunWaitOutcome["fired"], lines: RunOutputLine[]): RunWaitOutcome => ({ fired, cursor: from + lines.length, lines });
+    // WALL CLOCK, NOT THE INJECTED ONE. `this.now` stamps lines and a test is
+    // entitled to freeze it; the budget below is what `setTimeout` is measured
+    // against, and a frozen deadline against a real timer never expires.
+    const deadline = Date.now() + options.timeoutMs;
+
+    for (;;) {
+      const seen = since();
+      if (options.ready && run.readiness.kind === "ready") return answer("ready", seen);
+      // SETTLED, NOT MERELY TERMINAL. The window between a shell's exit and the
+      // verdict on its group is exactly when `exit` must NOT fire: the run may
+      // still become `unknown` with the slot held, which is a different answer
+      // for the agent than a clean exit.
+      if (options.exit && run.settled) return answer("exit", seen);
+      if (pattern && seen.some((line) => pattern.test(line.text))) return answer("pattern", seen);
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_TICK_MS, left)));
+    }
+    return answer("timeout", since());
   }
 
   /**
@@ -1112,11 +1227,17 @@ export class RunManager {
 
   // ── stopping ─────────────────────────────────────────────────────────────
 
-  async stop(runId: string): Promise<RunView> {
-    return this.view(await this.stopRun(this.require(runId)));
+  /**
+   * `signal` IS THE POLITE ATTEMPT'S, AND ONLY ITS. A dev server that traps
+   * SIGTERM to drain connections needs SIGINT to stop the way Ctrl-C stops it;
+   * the escalation below stays SIGKILL, because the second attempt exists
+   * precisely to be the one that cannot be argued with.
+   */
+  async stop(runId: string, signal?: NodeJS.Signals): Promise<RunView> {
+    return this.view(await this.stopRun(this.require(runId), signal));
   }
 
-  private async stopRun(run: LiveRun): Promise<LiveRun> {
+  private async stopRun(run: LiveRun, signal?: NodeJS.Signals): Promise<LiveRun> {
     if (isTerminal(run.status)) return run;
     if (run.status === "unknown") throw this.unknownConflict(run);
     if (run.status === "starting" || !run.handle) {
@@ -1130,7 +1251,7 @@ export class RunManager {
       throw this.unknownConflict(run);
     }
 
-    if (!this.stopGroup(run, false)) throw this.unknownConflict(run);
+    if (!this.stopGroup(run, false, signal)) throw this.unknownConflict(run);
     if (await this.waitForExit(run, this.stopGraceMs)) return this.settled(run);
 
     if (!run.handleClosed && !this.stopGroup(run, true)) throw this.unknownConflict(run);
@@ -1156,11 +1277,11 @@ export class RunManager {
    * the run is on a terminal. Which one applies is the HANDLE's business, and
    * that is the point: this file never gets to aim at a number by itself.
    */
-  private stopGroup(run: LiveRun, force: boolean): boolean {
+  private stopGroup(run: LiveRun, force: boolean, signal?: NodeJS.Signals): boolean {
     if (run.handleClosed) return true;
     if (!run.handle) return true;
     try {
-      run.handle.stop(force);
+      run.handle.stop(force, signal);
       return true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;

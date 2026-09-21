@@ -73,7 +73,13 @@ export type RunHandle = {
    * an id is not. Absent for the pipe launcher, which has no terminal at all.
    */
   readonly terminalId?: string;
-  stop(force: boolean): void;
+  /**
+   * `signal` REPLACES THE POLITE ATTEMPT AND NEVER THE FORCEFUL ONE. Ctrl-C
+   * semantics matter to a dev server that traps TERM to drain connections
+   * (#890), so a caller may ask for SIGINT — but a `force` stop stays SIGKILL,
+   * because a stop that can be refused is not what a second attempt is for.
+   */
+  stop(force: boolean, signal?: NodeJS.Signals): void;
   /**
    * KEYSTROKES, AND THEY ARE OPTIONAL BECAUSE ONE LAUNCHER GENUINELY HAS NO
    * KEYBOARD.
@@ -165,9 +171,9 @@ export function pipeLauncher(group: RunProcessGroup): RunLauncher {
         get pid() {
           return child.pid;
         },
-        stop(force: boolean) {
+        stop(force: boolean, signal?: NodeJS.Signals) {
           if (child.pid === undefined) return;
-          group.stop(child.pid, force);
+          group.stop(child.pid, force, signal);
         },
       });
     },
@@ -225,13 +231,13 @@ export function terminalLauncher(client: RunTerminalClient, defaults: { cols?: n
           // scrollback the chip re-reads on its next attach is the recovery.
           void client.mirror(opened.id, data, cursor).catch(() => {});
         },
-        stop(force: boolean) {
+        stop(force: boolean, signal?: NodeJS.Signals) {
           // BY ID, AND FIRE-AND-FORGET IS NOT AN OPTION. A kill whose request
           // never lands must not read as a kill that did, so a rejection is
           // re-raised into the manager's `stopGroup`, which turns it into
           // `unknown` — the slot stays held rather than being freed on a
           // request nobody answered.
-          void client.kill(opened.id, force ? "SIGKILL" : "SIGTERM").catch((error: unknown) => {
+          void client.kill(opened.id, force ? "SIGKILL" : (signal ?? "SIGTERM")).catch((error: unknown) => {
             events.lost(
               `Telar could not ask its terminal host to stop this run: ${error instanceof Error ? error.message : String(error)}`,
             );

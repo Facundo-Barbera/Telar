@@ -28,6 +28,7 @@ export type RunClient = Pick<
   | "restartRun"
   | "releaseRun"
   | "runOutput"
+  | "runWait"
   | "runBytes"
   | "writeRun"
   | "resizeRun"
@@ -43,10 +44,18 @@ export function clientRunCapability(client: RunClient, sessionId: string): RunCa
     },
     status: () => client.runStatus(sessionId),
     start: (input) => client.startRun(sessionId, input),
-    stop: (input) => client.stopRun(sessionId, input?.runId),
+    stop: (input) => client.stopRun(sessionId, input?.runId, input?.signal),
     restart: (input) => client.restartRun(sessionId, input?.runId),
     release: (input) => client.releaseRun(sessionId, input.runId),
     output: (input) => client.runOutput(sessionId, input ?? {}),
+    /**
+     * OVER HTTP LIKE EVERY OTHER VERB, and the worker waits on the SOCKET
+     * rather than on a loop of its own. The four conditions are facts the
+     * DAEMON holds — the lines, the readiness verdict, the status — so a worker
+     * that re-implemented this would be polling the daemon for state it could
+     * have been told about once, which is the shape #890 exists to remove.
+     */
+    wait: (input) => client.runWait(sessionId, input),
     bytes: (input) => client.runBytes(sessionId, input ?? {}),
     // Present so the two implementations cannot disagree about the shape. The
     // toolkit does not expose either — typing into a project's one deployment

@@ -140,6 +140,9 @@ import {
   type RunConfigurationView,
   type RunConfigurationsAnswer,
   type RunOutputAnswer,
+  type RunOutputFilter,
+  type RunWaitAnswer,
+  type RunStopSignal,
   type RunBytesAnswer,
   type RunWriteAnswer,
   type RunResizeAnswer,
@@ -1004,10 +1007,15 @@ function runBase(sessionId: string): string {
 /** `?runId=&after=` for the two windows that share a cursor contract, written
  *  once so the line view and the byte view cannot drift apart in their
  *  spelling of it. */
-function runCursor(input: { runId?: string; after?: number }): string {
+function runCursor(input: { runId?: string; after?: number } & RunOutputFilter): string {
   const query = new URLSearchParams();
   if (input.runId !== undefined) query.set("runId", input.runId);
   if (input.after !== undefined) query.set("after", String(input.after));
+  // THE THREE NARROWINGS (#890). None of them moves the cursor — see
+  // `RunOutputFilter` — so a caller may alternate them with `after` freely.
+  if (input.tail !== undefined) query.set("tail", String(input.tail));
+  if (input.grep !== undefined) query.set("grep", input.grep);
+  if (input.stream !== undefined) query.set("stream", input.stream);
   return query.size === 0 ? "" : `?${query.toString()}`;
 }
 
@@ -3054,8 +3062,13 @@ export class EngineClient {
     return this.request("POST", `${runBase(sessionId)}/start`, input);
   }
 
-  stopRun(sessionId: string, runId?: string): Promise<RunView> {
-    return this.request("POST", `${runBase(sessionId)}/stop`, runId === undefined ? {} : { runId });
+  /** `signal` replaces the POLITE attempt only; the escalation stays SIGKILL
+   *  (#890). A dev server that traps SIGTERM needs SIGINT to stop at all. */
+  stopRun(sessionId: string, runId?: string, signal?: RunStopSignal): Promise<RunView> {
+    return this.request("POST", `${runBase(sessionId)}/stop`, {
+      ...(runId === undefined ? {} : { runId }),
+      ...(signal === undefined ? {} : { signal }),
+    });
   }
 
   restartRun(sessionId: string, runId?: string): Promise<RunView> {
@@ -3073,8 +3086,22 @@ export class EngineClient {
 
   /** Captured output from `after`. A cursor that goes BACKWARDS means a
    *  different run, not lost lines — see `RunOutputAnswer`. */
-  runOutput(sessionId: string, input: { runId?: string; after?: number } = {}): Promise<RunOutputAnswer> {
+  runOutput(sessionId: string, input: { runId?: string; after?: number } & RunOutputFilter = {}): Promise<RunOutputAnswer> {
     return this.request("GET", `${runBase(sessionId)}/output${runCursor(input)}`);
+  }
+
+  /**
+   * BLOCK UNTIL ONE OF FOUR THINGS HAPPENS — issue #890.
+   *
+   * A POST RATHER THAN A GET, and not for the body's sake: this one HOLDS THE
+   * CONNECTION for up to `timeoutMs`, which is a thing to do deliberately
+   * rather than to a route that reads like a cheap read. The engine decides it
+   * over state it already holds, so nothing about waiting reaches the desktop —
+   * a wait that polled the host would be the poll this milestone deleted,
+   * renamed.
+   */
+  runWait(sessionId: string, input: { runId?: string; pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitAnswer> {
+    return this.request("POST", `${runBase(sessionId)}/wait`, input);
   }
 
   /**
