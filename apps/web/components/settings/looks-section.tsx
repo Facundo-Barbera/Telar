@@ -74,6 +74,7 @@ import { MONO_LABEL, SANS_LABEL } from "./studio/tools";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import { LookThumb } from "./look-thumb";
 import { Row, SettingsGroup } from "./settings-shell";
 
@@ -154,6 +155,7 @@ function LookRow({
   look,
   summary,
   worn,
+  lastSaved,
   onWear,
   onRename,
   onExport,
@@ -165,6 +167,9 @@ function LookRow({
   summary: string;
   /** The window has this look on. */
   worn: boolean;
+  /** The last card you saved, with the built-ins beginning underneath — the one
+   *  row that draws a stronger hairline. See the `<tr>`. */
+  lastSaved?: boolean;
   onWear: () => void;
   /** Absent for a default: it is a table this build rebuilds every load, not a
    *  card, so there is nothing of yours to rename. */
@@ -182,7 +187,22 @@ function LookRow({
   };
 
   return (
-    <tr className="group border-b border-border/60 align-middle last:border-0">
+    /**
+     * ONE WEIGHT FOR "NEXT ROW", ANOTHER FOR "DIFFERENT KIND OF ROW".
+     *
+     * Every row drawing the same hairline is what made this card read as a
+     * wireframe in the dark half: the group already carries `border border-border`
+     * and `divide-y divide-border/60` around it, the header draws one more, and
+     * ten rows at the same weight say nothing about where the shelf ends. At /40
+     * a divider still separates two rows and stops competing with the card edge.
+     *
+     * The boundary that MEANS something gets the stronger line, and it is drawn
+     * as a `border-b` on the last saved card rather than a `border-t` on the
+     * first built-in: under `border-collapse` two rows' adjacent borders resolve
+     * to one, and at equal width and style the higher row wins — a `border-t`
+     * below would have been swallowed by the /40 above it.
+     */
+    <tr className={cn("group border-b align-middle last:border-0", lastSaved ? "border-border/70" : "border-border/40")}>
       <td className="py-1.5 pr-3 pl-4">
         <span className="flex items-center gap-2.5">
           <span className="w-10 shrink-0">
@@ -558,7 +578,10 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
             three below are the whole story and no summary can vote again. */}
         <table className="w-full table-fixed border-collapse text-left text-xs">
           <thead>
-            <tr className="border-b border-border/60 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
+            {/* The header's hairline goes with the rows' — it is the same
+                wireframe complaint, and a heading row that outweighs the card's
+                own edge is the loudest line in the group. */}
+            <tr className="border-b border-border/40 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
               {/* The thumbnail, its `pl-4`/`pr-3` and the gap beside it account
                   for most of this; the rest is the name, which truncates like
                   any other cell here. */}
@@ -584,12 +607,13 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
             </tr>
           </thead>
           <tbody>
-            {looks.map((look) => (
+            {looks.map((look, index) => (
               <LookRow
                 key={look.id}
                 look={look}
                 summary={lookSummary(look)}
                 worn={worn(look)}
+                lastSaved={index === looks.length - 1}
                 onWear={() => onWear(look)}
                 onRename={(label) => {
                   const next = upsertLook(looks, { ...look, label });

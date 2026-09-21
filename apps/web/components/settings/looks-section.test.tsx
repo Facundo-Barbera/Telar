@@ -50,6 +50,42 @@ test("the summary truncates rather than widening its column", () => {
   expect(html).toContain("Tide, under a dusk gradient");
 });
 
+/**
+ * THE HAIRLINES, AFTER #904.
+ *
+ * The shelf became a table inside a `SettingsGroup` that already draws `border
+ * border-border` and `divide-y divide-border/60` around its children — so a
+ * header and ten rows all at /60 stacked into something the owner read as a
+ * wireframe on a mid-lightness dark canvas. The weights below are the fix: /40
+ * for "here is the next row", /70 once for "here is where your cards end and the
+ * built-ins begin". The --border token itself is untouched, and so is Depth.
+ */
+test("no row or header hairline is heavier than /40", () => {
+  expect(html).not.toContain("border-border/60");
+  // The rows that ARE in this markup — the built-ins, which need no storage.
+  const rows = html.split("<tr").filter((chunk: string) => chunk.includes("group border-b"));
+  expect(rows.length).toBe(BUILT_IN_LOOKS.length);
+  for (const row of rows) expect(row).toContain("border-border/40");
+});
+
+test("the header's hairline matches its rows", () => {
+  expect(html).toContain('<tr class="border-b border-border/40 text-2xs');
+});
+
+test("one stronger divider marks where the built-ins begin", () => {
+  // Read as source: `useLooks` answers with a frozen empty list on the server,
+  // so a static render has no saved cards and cannot reach the branch. What is
+  // worth pinning is that the boundary is drawn ONCE, on the last saved row —
+  // and as a `border-b`, because two rows' adjacent borders collapse to one and
+  // the higher row wins, which would have swallowed a `border-t` below it.
+  const source = readFileSync(new URL("./looks-section.tsx", import.meta.url), "utf8");
+  expect(source).toContain('lastSaved ? "border-border/70" : "border-border/40"');
+  expect(source).toContain("lastSaved={index === looks.length - 1}");
+  // The built-ins are rendered without it: they are the group it separates FROM,
+  // and a second stronger line would be two claims about one boundary.
+  expect(source).not.toMatch(/BUILT_IN_LOOKS\.map[\s\S]{0,200}lastSaved/);
+});
+
 test("the rename field fits its column instead of claiming 160px", () => {
   // Read as source: the field only renders once somebody has pressed Rename, so
   // it is not in the markup above. `w-40` was wider than the name ever gets in a
