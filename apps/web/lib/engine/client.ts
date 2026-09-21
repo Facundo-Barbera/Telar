@@ -1541,6 +1541,9 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       driver?: ProviderDriverKind;
       displayName?: string | null;
       accentColor?: string | null;
+      /** A whole percentage of the model's window; `null` returns this login to
+       *  the cockpit's default. */
+      contextNoticePercent?: number | null;
       configDir?: string | null;
       binaryPath?: string | null;
       enabled?: boolean;
