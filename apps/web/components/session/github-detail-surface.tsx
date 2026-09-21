@@ -272,12 +272,19 @@ const PANEL_IMAGE = {
  * repository's issues are long prose, and the panel is draggable to half the
  * screen — the width where it stops reading is a width somebody will choose. At
  * 320px the cap never binds and nothing changes.
+ *
+ * THE CAP IS ON THE CARD, NOT ON THE PROSE INSIDE IT. It started on the prose,
+ * and at half-screen that drew a full-width card with its text stopped at 64ch
+ * and a blank right third inside the border — a column that read as a layout
+ * bug rather than as a measure. The card carries the cap and centres itself, so
+ * the border is the measure's edge and the space beside it is margin, which is
+ * what a capped column looks like everywhere else prose is read.
  */
 const READING_MEASURE = "max-w-[64ch]";
 
 function Markdown({ children, className }: { children: string; className?: string }) {
   return (
-    <MessageResponse className={cn("text-xs", READING_MEASURE, PANEL_MARKDOWN, className)} components={PANEL_IMAGE}>
+    <MessageResponse className={cn("text-xs", PANEL_MARKDOWN, className)} components={PANEL_IMAGE}>
       {children}
     </MessageResponse>
   );
@@ -336,7 +343,7 @@ export function EntryCard({ entry }: { entry: ForgeEntry }) {
   const verdict = entry.state ? (REVIEW_TONE[entry.state.toUpperCase()] ?? "text-muted-foreground") : undefined;
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-md border border-border bg-card">
+    <div className={cn("w-full min-w-0 self-center overflow-hidden rounded-md border border-border bg-card", READING_MEASURE)}>
       {entry.kind !== "body" && (
         /* `items-center` RATHER THAN `items-baseline` NOW THERE IS A FACE IN IT
            (#790): a circle has no baseline, so on the baseline it sat a pixel low
@@ -1249,7 +1256,7 @@ export function ForgeDetailSurface({
          * one card with no author bar, because the line directly above it already
          * named the author and the hour.
          */}
-        <div className="border-t border-border px-3 py-2.5">
+        <div className="flex flex-col border-t border-border px-3 py-2.5">
           <EntryCard entry={timeline[0]!} />
         </div>
 
