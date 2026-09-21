@@ -25,7 +25,10 @@ const handlers = main.slice(
 describe("a panel request is answered by its own window's host", () => {
   test("this test is reading the handlers", () => {
     expect(handlers.length).toBeGreaterThan(0);
-    expect(handlers).toContain('ipcMain.handle("telar:browser:set-bounds"');
+    // `on`, not `handle`: bounds are fire-and-forget so a panel drag does not
+    // wait on a main-process round trip per frame. The sender check is the
+    // same; only the verb changed.
+    expect(handlers).toContain('ipcMain.on("telar:browser:set-bounds"');
   });
 
   test("not one of them resolves the host without a sender", () => {

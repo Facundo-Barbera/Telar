@@ -1682,8 +1682,21 @@ ipcMain.handle("telar:browser:capture", (event, input) => {
 ipcMain.handle("telar:browser:tool", (event, input) =>
   requireBrowserManager(event).callTool(input?.scopeKey, input?.name, input?.args || {}),
 );
-ipcMain.handle("telar:browser:set-bounds", (event, input) => {
-  requireBrowserManager(event).setBounds(input?.scopeKey, input?.bounds);
+/**
+ * BOUNDS ARE SENT, NOT INVOKED. The renderer publishes a rect from the panel
+ * drag's own animation frame; making it await this round trip cost the native
+ * view a frame per pointer move, which is exactly the lag a person sees as the
+ * page trailing the panel edge. Same sender guard as before — a send is no
+ * less guarded than an invoke — but nothing is returned, so a failure here is
+ * swallowed rather than rejecting a promise nobody holds: bounds are
+ * self-healing (the next publish re-sends the latest rect).
+ */
+ipcMain.on("telar:browser:set-bounds", (event, input) => {
+  try {
+    requireBrowserManager(event).setBounds(input?.scopeKey, input?.bounds);
+  } catch {
+    /* an unready host, or a scope this sender does not own */
+  }
 });
 ipcMain.handle("telar:browser:set-visible", (event, input) =>
   requireBrowserManager(event).setVisible(input?.scopeKey, input?.visible),

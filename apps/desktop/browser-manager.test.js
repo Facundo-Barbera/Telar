@@ -2044,6 +2044,66 @@ describe("the geometry pipeline — bounds and emulation are serialized per tab,
     await manager.activeTab("s").geometry.queue;
     expect(view.bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
   });
+
+  test("a MOVE at the same stage size is one native setBounds and nothing else — no emulation pass, no CDP", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    const tab = manager.activeTab("s");
+    await tab.geometry.queue;
+
+    const view = views[0];
+    const debug = view.webContents.debugger;
+    let placements = 0;
+    const place = view.setBounds.bind(view);
+    view.setBounds = (bounds) => { placements += 1; place(bounds); };
+    let syncs = 0;
+    const sync = manager.syncFitViewport.bind(manager);
+    manager.syncFitViewport = (t) => { syncs += 1; return sync(t); };
+    const commandsBefore = debug.commands.length;
+
+    // The drag: the panel's left edge moves, the stage keeps its size.
+    manager.setBounds("s", { x: 20, y: 0, width: 640, height: 400 });
+    await tab.geometry.queue;
+    manager.setBounds("s", { x: 40, y: 0, width: 640, height: 400 });
+    await tab.geometry.queue;
+
+    // TWO frames placed, one `setBounds` each — the run returns before the
+    // trailing re-assert, because there is no emulation in flight to wait for.
+    expect(placements).toBe(2);
+    expect(view.bounds).toEqual({ x: 40, y: 0, width: 640, height: 400 });
+    // Nothing downstream ran: no fit-viewport write, no CDP at all.
+    expect(syncs).toBe(0);
+    expect(debug.commands.length).toBe(commandsBefore);
+  });
+
+  test("a stage that changed SIZE still runs the whole pass", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    await manager.resizeTab(tab, { preset: "phone" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+
+    const debug = views[0].webContents.debugger;
+    let syncs = 0;
+    const sync = manager.syncFitViewport.bind(manager);
+    manager.syncFitViewport = (t) => { syncs += 1; return sync(t); };
+    const overrides = () => debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").length;
+    const before = overrides();
+
+    // A SHORTER stage: a fixed tab's presentation scale changes with it (this
+    // tall phone is height-bound), so the emulation target moved and the pass
+    // is owed.
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 300 });
+    await tab.geometry.queue;
+
+    expect(syncs).toBe(1);
+    expect(overrides()).toBe(before + 1);
+    expect(debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1).params).toMatchObject({ width: 390, height: 844 });
+  });
 });
 
 describe("fit-to-panel viewport mode", () => {

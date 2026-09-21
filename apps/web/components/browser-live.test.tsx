@@ -619,3 +619,25 @@ describe("annotate mode", () => {
     expect(nativeViewOverlayHidden()).toBe(false);
   });
 });
+
+describe("the panel drag", () => {
+  test("republishes bounds SYNCHRONOUSLY on telar:panel-resized — the native view must not trail the handle by a frame", async () => {
+    let bounds = 0;
+    await mount(panelState(), { setBounds: async () => { bounds += 1; } });
+    // Whatever the mount itself published (the transition follow, the
+    // observer, the republish effect) is the baseline; the drag is what is
+    // being measured.
+    const before = bounds;
+
+    // The resize handle's paint runs inside ITS OWN animation frame and
+    // announces the new width there. No `act`, no timer, no frame: if the
+    // listener deferred to a rAF, this count would still read `before`.
+    window.dispatchEvent(new Event("telar:panel-resized"));
+    expect(bounds).toBe(before + 1);
+
+    // Every frame of the drag, not just the first.
+    window.dispatchEvent(new Event("telar:panel-resized"));
+    window.dispatchEvent(new Event("telar:panel-resized"));
+    expect(bounds).toBe(before + 3);
+  });
+});

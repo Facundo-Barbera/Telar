@@ -63,7 +63,17 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // the panel's fit scale. Cockpit-only, refused in the main process.
     capture: (scopeKey, options) => ipcRenderer.invoke("telar:browser:capture", { scopeKey, ...(options || {}) }),
     callTool: (scopeKey, name, args) => ipcRenderer.invoke("telar:browser:tool", { scopeKey, name, args }),
-    setBounds: (scopeKey, bounds) => ipcRenderer.invoke("telar:browser:set-bounds", { scopeKey, bounds }),
+    // FIRE-AND-FORGET, alone among these calls. Bounds are published from a
+    // drag's animation frame, and the renderer awaiting a main-process round
+    // trip per frame is what made the native view trail the panel's edge.
+    // Nothing reads an answer — the next frame's rect supersedes this one —
+    // so the send returns an already-settled promise and the caller's `await`
+    // costs a microtask instead of an IPC hop. Every other browser call stays
+    // `invoke`, because every other one answers something.
+    setBounds: (scopeKey, bounds) => {
+      ipcRenderer.send("telar:browser:set-bounds", { scopeKey, bounds });
+      return Promise.resolve();
+    },
     setVisible: (scopeKey, visible) => ipcRenderer.invoke("telar:browser:set-visible", { scopeKey, visible }),
     // A menu is opening over the panel (#475): take the page's last frame,
     // THEN put the view down, so the panel can keep showing the page while
