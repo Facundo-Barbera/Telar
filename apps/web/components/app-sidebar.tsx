@@ -55,7 +55,7 @@
 // decommissioned (#501); nothing replaced them here, because the list this rail
 // already drew was what people opened Telar for.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -1463,22 +1463,33 @@ function SidebarBody() {
           THE RAIL IS WHAT FEEDS IT. The projects and the conversations it
           searches are the ones already in hand — so the palette costs no read of
           its own, and can never offer a row the rail does not have. */}
-      {palette.asked && <CommandPalette
-        open={palette.open}
-        page={palette.page}
-        query={palette.query}
-        onOpenChange={(open) => setPalette((current) => ({ ...current, open, asked: current.asked || open }))}
-        targets={pickerTargets}
-        sessions={sessions}
-        railOpen={railOpen}
-        onRun={run}
-        onChooseProject={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
-        onOpenSession={(session) => {
-          onNavigate();
-          router.push(sessionHref(session));
-        }}
-        onRegistered={() => void loadAll()}
-      />}
+      {/* A BOUNDARY OF ITS OWN, because the latch above means the first ⌘K in a
+          page's life is also the first fetch of this chunk — and `dynamic()`
+          with neither `ssr: false` nor `loading` brings no Suspense with it, so
+          that fetch would suspend up to the ROUTE and take the whole cockpit
+          with it (#896; components/right-panel.tsx carries the long version).
+          Empty fallback: there is nothing to draw while a dialog nobody has
+          seen yet arrives. */}
+      {palette.asked && (
+        <Suspense fallback={null}>
+          <CommandPalette
+            open={palette.open}
+            page={palette.page}
+            query={palette.query}
+            onOpenChange={(open) => setPalette((current) => ({ ...current, open, asked: current.asked || open }))}
+            targets={pickerTargets}
+            sessions={sessions}
+            railOpen={railOpen}
+            onRun={run}
+            onChooseProject={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
+            onOpenSession={(session) => {
+              onNavigate();
+              router.push(sessionHref(session));
+            }}
+            onRegistered={() => void loadAll()}
+          />
+        </Suspense>
+      )}
       <TelarSidebarHeader />
       {/* The "Settings session" entry was removed from the product UI: it did
           not work reliably and duplicated the real Settings (in the footer). */}

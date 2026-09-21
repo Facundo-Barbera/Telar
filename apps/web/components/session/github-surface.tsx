@@ -56,7 +56,7 @@
  * one session still keep an issue each.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -1248,15 +1248,24 @@ export function GitHubSurface({
         ) : (
           /* KEYED BY THE NUMBER, so switching chips remounts rather than leaving
              the previous issue's thread on screen under the new chip's label
-             while `gh` answers. */
-          <ForgeDetailSurface
-            key={detail}
-            kind={one}
-            number={detail}
-            {...(projectId ? { projectId } : {})}
-            {...(one === "pull" && branch ? { branch } : {})}
-            {...(onOpenForge ? { onOpenForge } : {})}
-          />
+             while `gh` answers.
+
+             AND WRAPPED, because the chunk above brings no boundary with it:
+             `dynamic()` with neither `ssr: false` nor `loading` renders its
+             lazy in a Fragment, so the first row anyone opens would suspend to
+             whatever boundary is nearest — the panel's, and before #896 the
+             route's. Empty fallback: the detail draws its own spinner the
+             moment it is here. */
+          <Suspense fallback={null}>
+            <ForgeDetailSurface
+              key={detail}
+              kind={one}
+              number={detail}
+              {...(projectId ? { projectId } : {})}
+              {...(one === "pull" && branch ? { branch } : {})}
+              {...(onOpenForge ? { onOpenForge } : {})}
+            />
+          </Suspense>
         )}
       </div>
     </div>
