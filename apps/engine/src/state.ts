@@ -671,6 +671,27 @@ export class EngineStateError extends Error {
 }
 
 /**
+ * A SECOND TELAR MEETING A LIVE LOCK IS NOT A CRASH — issue #894.
+ *
+ * `main.ts` exits with this instead of 1 when `acquireDaemonLock` refuses,
+ * because the desktop shell has to tell those two apart and an exit code is the
+ * only channel it has: the engine is forked with `stdio: "inherit"`, so a
+ * packaged app's stderr goes somewhere nobody reads. On 1 the shell quits — an
+ * engine that died is a cockpit full of errors. On this it puts a dialog up
+ * first, which is the difference between "Telar refuses to open" and "a Telar
+ * is already running".
+ *
+ * 3 RATHER THAN 2: node exits 1 on an uncaught throw and reserves 2 for a
+ * shell's own misuse, so the lowest number that cannot be produced by either is
+ * the first one that means something.
+ *
+ * THE SHELL KEEPS ITS OWN COPY of this number, because `apps/desktop/main.js`
+ * is plain CommonJS that imports nothing from this app. `engine-exit.test.js`
+ * reads both files and fails if they disagree.
+ */
+export const ENGINE_EXIT_LOCK_HELD = 3;
+
+/**
  * THE TWO WAYS `turnAnswer` MISSES — declared in `turn-summary.ts` and
  * re-exported here, where they are thrown (#592, then #516's wall).
  *
@@ -15629,7 +15650,18 @@ export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
       if (lockHeldElsewhere(owner)) {
         throw new EngineStateError("conflict", `engine state root is locked by ${owner.hostname}`);
       }
-      if (processExists(owner.pid ?? -1)) throw new EngineStateError("conflict", "engine state root is already locked");
+      /**
+       * THE PID IS IN THE MESSAGE — issue #894, and it is the only copy anyone
+       * downstream gets. `main.ts` prints this line beside the lock's path, and
+       * the shell puts the pid in front of a person who now has to decide
+       * whether the Telar already running is one they want.
+       *
+       * `(pid N)` rather than `by pid N`: `state.test.ts` distinguishes this
+       * refusal from the cross-host one above by matching `/locked by/`, and a
+       * message satisfying both regexes would make that assertion vacuous.
+       */
+      if (processExists(owner.pid ?? -1))
+        throw new EngineStateError("conflict", `engine state root is already locked (pid ${owner.pid})`);
       const breakerToken = crypto.randomUUID();
       try {
         const descriptor = fs.openSync(breaker, "wx", 0o600);

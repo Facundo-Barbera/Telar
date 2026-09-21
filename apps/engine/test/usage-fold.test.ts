@@ -334,3 +334,108 @@ test("Reclaim folds the rows the daily sweep has not reached yet", () => {
     });
   } finally { store.close(); }
 });
+
+/* ------------------------------------------------------------------ *
+ * The bound both sweeps open with — issue #894.
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE FOLD TAKES ITS BOUND FROM THE ROW, NOT FROM THE JOURNAL.
+ *
+ * `foldUsage` and `compactSession` both used to ask the same question of
+ * `events` — `MAX(id) WHERE json_extract(value,'$.type') IN (…)` — which is a
+ * JSON parse of the session's entire range, per session, per sweep, and the
+ * reason a fully swept store still cost six minutes of CPU after every open.
+ * The id is now written by `append` and read from `metadata`.
+ *
+ * PROVED BY MOVING THE ROW, WHICH IS THE ONLY NON-VACUOUS WAY TO DO IT. A test
+ * that folded a normal fixture and passed would pass just as well against the
+ * old query — the two agree on every store where nobody has lied to one of
+ * them. So the bound is planted BELOW the second turn's ending: a fold reading
+ * the row leaves that turn alone, and a fold re-parsing the journal folds it.
+ * Then the row is corrected and the same turn folds, so the low value is shown
+ * to have been the cause rather than some other refusal.
+ */
+const TERMINAL_HIGH = "journal-terminal-high/";
+
+function terminalHighRow(root: string, sessionId: string): string | null {
+  const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+  const db = new Database(path.join(root, "execution.sqlite"), { readonly: true });
+  try {
+    const row = db.query("SELECT value FROM metadata WHERE key=?").get(`${TERMINAL_HIGH}${sessionId}`) as { value?: string } | null;
+    return row?.value === undefined ? null : String(row.value);
+  } finally { db.close(); }
+}
+
+function setTerminalHigh(root: string, sessionId: string, id: number): void {
+  const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+  const db = new Database(path.join(root, "execution.sqlite"));
+  try {
+    db.query("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(`${TERMINAL_HIGH}${sessionId}`, String(id));
+  } finally { db.close(); }
+}
+
+test("the fold bounds on the recorded terminal id, not on a re-parse of the journal", () => {
+  const { root, store } = open("telar-usage-bound-");
+  try {
+    const write = journal(root, store, "session_one");
+    write.usage("run_one", { input: 10, output: 1 });
+    write.usage("run_one", { input: 20, output: 2 });
+    write.endTurn("run_one");
+    const firstEnding = write.lastId;
+    summarise(store, "session_one", "run_one", 1);
+    write.usage("run_two", { input: 30, output: 3 });
+    write.usage("run_two", { input: 40, output: 4 });
+    write.endTurn("run_two");
+    summarise(store, "session_one", "run_two", 2);
+
+    // `append` recorded the SECOND ending, which is where the journal's own
+    // MAX would land too — the two agree until one is moved.
+    expect(terminalHighRow(root, "session_one")).toBe(String(write.lastId));
+
+    // Move it back to the first turn's ending. Nothing about `events` changed.
+    setTerminalHigh(root, "session_one", firstEnding);
+    expect(store.foldJournalUsage()).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
+    expect(store.turnUsage("session_one", "run_one")).toEqual({
+      tokens: { input: 30, output: 3, cacheRead: 0, cacheCreate: 0, reasoning: 0 }, rows: 2,
+    });
+    // The second turn is settled and summarised — a fold that had computed its
+    // own bound would have taken it. It is untouched, so the row is the bound.
+    expect(store.turnUsage("session_one", "run_two")).toBeUndefined();
+    expect(usageRows(store, "session_one").filter((event) => event.runId === "run_two")).toHaveLength(2);
+
+    // AND THE OTHER DIRECTION: correct the row and the same turn folds, which
+    // is what says the low value was the cause and not some unrelated refusal.
+    setTerminalHigh(root, "session_one", write.lastId);
+    expect(store.foldJournalUsage()).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
+    expect(store.turnUsage("session_one", "run_two")).toEqual({
+      tokens: { input: 70, output: 7, cacheRead: 0, cacheCreate: 0, reasoning: 0 }, rows: 2,
+    });
+  } finally { store.close(); }
+});
+
+test("a store with no recorded bound folds correctly and has one afterwards", () => {
+  const { root, store } = open("telar-usage-bound-legacy-");
+  try {
+    const write = journal(root, store, "session_one");
+    write.usage("run_one", { input: 100, output: 1200 });
+    write.usage("run_one", { input: 200, output: 400 });
+    write.endTurn("run_one");
+    summarise(store, "session_one", "run_one");
+
+    // A journal exactly as a binary from before #894 left it: every event, no
+    // bound. `terminalHigh` has to read that as "unknown", not as "zero".
+    const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+    const raw = new Database(path.join(root, "execution.sqlite"));
+    try { raw.query("DELETE FROM metadata WHERE key=?").run(`${TERMINAL_HIGH}session_one`); } finally { raw.close(); }
+    expect(terminalHighRow(root, "session_one")).toBeNull();
+
+    expect(store.foldJournalUsage()).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
+    expect(store.turnUsage("session_one", "run_one")).toEqual({
+      tokens: { input: 300, output: 1600, cacheRead: 0, cacheCreate: 0, reasoning: 0 }, rows: 2,
+    });
+    // The parse happened once and its answer was kept.
+    expect(terminalHighRow(root, "session_one")).toBe(String(write.lastId));
+  } finally { store.close(); }
+});

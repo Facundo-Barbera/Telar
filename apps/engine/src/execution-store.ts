@@ -116,6 +116,40 @@ const COMPACT_WATERMARK_PREFIX = "journal-compacted/";
 const USAGE_WATERMARK_PREFIX = "journal-usage-folded/";
 
 /**
+ * THE SESSION'S LAST TERMINAL TURN EVENT, WRITTEN WHEN IT ARRIVES — issue #894,
+ * and the reason it exists is that THE BOUND WAS THE COST, NOT THE DELETES.
+ *
+ * Both sweeps open with the same question — how far up this session is
+ * settled — and both used to ask it of the journal:
+ *
+ *     SELECT COALESCE(MAX(id),0) FROM events
+ *      WHERE session_id=? AND json_extract(value,'$.type') IN (…)
+ *
+ * `events` is `PRIMARY KEY(session_id,id)` and carries no index on the
+ * extracted type, so that is a range seek followed by a JSON parse of EVERY row
+ * the session has — twice per sweep, every sweep, on a session the watermark
+ * already proves has nothing to do. The watermarks made the DELETEs nearly
+ * free and left this in front of them: measured on the owner's store, 605
+ * sessions of a 1.26 GB journal took about six minutes at 100% CPU, and the
+ * `sample(1)` was 1,437 samples inside `StatementSync::Run` and 1,074 in
+ * `pread`. A swept store does not get cheaper, because the parse is not the
+ * backlog — it is the question.
+ *
+ * SO THE ANSWER IS WRITTEN DOWN WHERE IT IS ALREADY KNOWN. `append` tests
+ * every event against `TERMINAL_TURN_TYPES` anyway, for the durability barrier;
+ * on that branch it now also upserts this row, inside the same write scope, so
+ * the id is recorded by the one code path that cannot miss one.
+ *
+ * ABSENT MEANS "A STORE FROM BEFORE THIS", NOT "NO TERMINAL EVENTS" — see
+ * `terminalHigh`, which falls back to the query above once and writes the
+ * answer here. Each session pays the parse one last time and never again.
+ *
+ * Deleted with the session beside the two watermarks, and when `retireSession`
+ * empties a journal, for their reason: a bound describing rows that are gone.
+ */
+const TERMINAL_HIGH_PREFIX = "journal-terminal-high/";
+
+/**
  * WHICH SESSIONS HOLD THEIR ITEMS AS ROWS — issue #658, `metadata`, one row per
  * session, and the reason a half-migrated store is a CORRECT store rather than
  * one to be recovered from.
@@ -542,6 +576,22 @@ export type ExecutionStoreOptions = {
    * machine and a loaded one.
    */
   compactAfterOpenMs?: number;
+  /**
+   * HOW THE SWEEP GETS FROM ONE SESSION TO THE NEXT — issue #894.
+   *
+   * Defaults to an unref'd macrotask, which is the whole fix: the walk hands
+   * the event loop back between sessions so `/v2/health` and a Stop are
+   * serviced while housekeeping runs. Before this the sweep was one timer
+   * callback across every session — measured at six minutes of 100% CPU on the
+   * owner's 605, during which the daemon answered nothing and a running turn
+   * could not be stopped.
+   *
+   * IT IS INJECTABLE FOR THE REASON `compactAfterOpenMs` IS (#706): a test that
+   * drives the yield itself asserts the walk's ORDER — this session finished
+   * before that one started — deterministically, instead of sleeping and
+   * hoping. Nothing in production passes it.
+   */
+  sweepYield?: (next: () => void) => void;
 };
 
 /** One authoritative execution database; legacy files become a migration backup.
@@ -607,6 +657,20 @@ export class ExecutionStore {
   private readonly legacyBackupRetentionMs: number;
   private pruneTimer?: ReturnType<typeof setInterval>;
   private compactTimer?: ReturnType<typeof setTimeout>;
+  /** See `ExecutionStoreOptions.sweepYield`. An unref'd macrotask by default:
+   *  housekeeping is never the reason a process stays up, and a yield that
+   *  held the loop open would make the sweep exactly that. */
+  private readonly sweepYield: (next: () => void) => void;
+  /**
+   * THE COOPERATIVE SWEEP IN FLIGHT — issue #894, and the object is the handle.
+   *
+   * A flag on the instance would not be enough: `close()` has to cancel a walk
+   * whose next step is already queued in an injected yield this store has no
+   * handle on, so each step reads `cancelled` off the walk it belongs to. Its
+   * presence is also what keeps the daily `pruneTimer` from starting a second
+   * walk over a store the first one is still working through.
+   */
+  private walk?: { cancelled: boolean };
   /** Said out loud by the daemon when the background sweep finds something.
    *  A callback rather than a return because the sweep no longer happens while
    *  anybody is waiting on the open — see the constructor. */
@@ -652,6 +716,7 @@ export class ExecutionStore {
     if (options.onJournalCompacted) this.onJournalCompacted = options.onJournalCompacted;
     if (options.onDurabilityBarrier) this.onDurabilityBarrier = options.onDurabilityBarrier;
     if (options.onRetentionSweep) this.onRetentionSweep = options.onRetentionSweep;
+    this.sweepYield = options.sweepYield ?? ((next) => { setImmediate(next).unref?.(); });
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
     this.db = process.versions.bun ? new native.Database(file) : new native.DatabaseSync(file);
@@ -992,30 +1057,104 @@ export class ExecutionStore {
     this.compactTimer.unref?.();
   }
 
-  /** The sweep as housekeeping runs it: never throwing, and saying what went
-   *  once it has actually gone rather than promising it at open. */
+  /**
+   * THE SWEEP AS HOUSEKEEPING RUNS IT — ONE SESSION PER MACROTASK (issue #894).
+   *
+   * It used to be three synchronous calls in a timer callback, and that is the
+   * defect: `sweepJournal` → `compactJournal` + `foldJournalUsage` walked every
+   * session without ever returning to the event loop. On the owner's store —
+   * 605 sessions, a 1.26 GB journal — that measured at ABOUT SIX MINUTES AT
+   * 100% CPU after every open, and for those six minutes the daemon answered
+   * nothing: not `/v2/health`, and not a Stop. The turn the owner could not
+   * stop was not stuck; the request was never serviced, because there was no
+   * event loop to service it. Restarting made it worse, because the timer
+   * re-arms five seconds after each open and puts the same backlog back.
+   *
+   * So the walk yields between sessions. Each session keeps its own
+   * transaction exactly as before — the per-session `alone` is what already
+   * kept a turn arriving mid-sweep waiting on one DELETE rather than on the
+   * backlog — and the yield is what keeps the gaps BETWEEN those transactions
+   * available to everything else.
+   *
+   * ══ WHAT IS DELIBERATELY UNCHANGED ══
+   *
+   * THE TOTALS AND THE ONE LINE. `onJournalCompacted` and `housekeeping` still
+   * describe the whole walk, and still only when something went, so the daemon
+   * prints the same single line it always did — at the end of the walk rather
+   * than at the end of the loop.
+   *
+   * THE THREE INDEPENDENT `try`s (#697), now per session for the two that are
+   * per session: a compaction that threw must not be the reason that session's
+   * fold never ran, nor the reason the NEXT session is never reached — which
+   * the old store-wide `try` could not promise. Retention stays one call after
+   * the walk; it is one call, and it is the only one of the three that deletes
+   * something a reader would miss.
+   */
   private sweepJournal(): void {
-    if (this.closed) return;
-    try {
-      const swept = this.compactJournal();
+    // A WALK ALREADY RUNNING IS NOT RESTARTED. The daily `pruneTimer` fires on
+    // its own schedule, and a second walk over the same sessions would double
+    // the work and the totals while the first one is still mid-store.
+    if (this.closed || this.walk) return;
+    let sessions: string[];
+    try { sessions = this.sessionIds(); } catch { return; }
+    const walk: { cancelled: boolean } = { cancelled: false };
+    this.walk = walk;
+    const swept = { deltas: 0, starts: 0, sessions: 0 };
+    const folded = { rows: 0, turns: 0, sessions: 0, refused: 0 };
+    let index = 0;
+    const done = (): void => {
+      this.walk = undefined;
+      // A cancelled walk announces nothing: `close()` took it mid-store, so
+      // the totals describe a fraction of the sessions and reporting them
+      // would be a claim about a sweep that did not finish.
+      if (walk.cancelled || this.closed) return;
       if (swept.deltas > 0 || swept.starts > 0) {
         this.housekeeping.journal = swept;
         this.onJournalCompacted?.(swept);
       }
-    } catch { /* the next sweep covers whatever this one missed */ }
-    // A SECOND `try`, NOT A SECOND STATEMENT IN THE FIRST — issue #697. The two
-    // sweeps are independent (own watermark, own rows, own guard), and a
-    // compaction that threw must not be the reason the fold never ran.
-    try {
-      const folded = this.foldJournalUsage();
       if (folded.turns > 0 || folded.refused > 0) this.housekeeping.usage = folded;
-    } catch { /* as above */ }
-    // AND A THIRD, for the same independence. Retention is the only one of the
-    // three that can DELETE something a reader would miss, and it is the only
-    // one that does nothing at all unless somebody configured it — so it must
-    // not be the reason the two lossless sweeps stop running, and they must not
-    // be the reason it never does.
-    try { this.onRetentionSweep?.(); } catch { /* as above */ }
+      try { this.onRetentionSweep?.(); } catch { /* the next sweep covers whatever this one missed */ }
+    };
+    const step = (): void => {
+      if (walk.cancelled || this.closed) { if (this.walk === walk) this.walk = undefined; return; }
+      if (index >= sessions.length) return done();
+      const sessionId = sessions[index]!;
+      index += 1;
+      try { this.compactInto(sessionId, swept); } catch { /* as above */ }
+      try { this.foldInto(sessionId, folded); } catch { /* as above */ }
+      this.sweepYield(step);
+    };
+    this.sweepYield(step);
+  }
+
+  /** One session's compaction, added to a running total. The accounting the
+   *  synchronous `compactJournal` and the cooperative walk SHARE, so the two
+   *  cannot come to different opinions about what a swept session counts as. */
+  private compactInto(sessionId: string, total: { deltas: number; starts: number; sessions: number }): void {
+    const swept = this.compactSession(sessionId);
+    if (swept.deltas === 0 && swept.starts === 0) return;
+    total.deltas += swept.deltas;
+    total.starts += swept.starts;
+    total.sessions += 1;
+  }
+
+  /** One session's fold, added to a running total — and its conservation check
+   *  counted as a refusal rather than allowed to stop the sessions after it. */
+  private foldInto(sessionId: string, total: { rows: number; turns: number; sessions: number; refused: number }): void {
+    let folded: { rows: number; turns: number; refused: number };
+    try {
+      folded = this.foldUsage(sessionId);
+    } catch {
+      // The conservation check rolled this session back. One session's
+      // refusal must not stop the rest from folding; it is counted instead.
+      total.refused += 1;
+      return;
+    }
+    total.refused += folded.refused;
+    if (folded.turns === 0) return;
+    total.rows += folded.rows;
+    total.turns += folded.turns;
+    total.sessions += 1;
   }
 
   /**
@@ -1092,14 +1231,37 @@ export class ExecutionStore {
    */
   compactJournal(): { deltas: number; starts: number; sessions: number } {
     const total = { deltas: 0, starts: 0, sessions: 0 };
-    for (const sessionId of this.sessionIds()) {
-      const swept = this.compactSession(sessionId);
-      if (swept.deltas === 0 && swept.starts === 0) continue;
-      total.deltas += swept.deltas;
-      total.starts += swept.starts;
-      total.sessions += 1;
-    }
+    // SYNCHRONOUS AND STAYING THAT WAY: `reclaim()` is a button somebody
+    // pressed and waits in front of, and the tests call it directly. The
+    // cooperative walk (#894) is the background sweep, and it shares this
+    // method's per-session body rather than reimplementing it.
+    for (const sessionId of this.sessionIds()) this.compactInto(sessionId, total);
     return total;
+  }
+
+  /**
+   * HOW FAR UP THIS SESSION IS SETTLED — the bound both sweeps open with, read
+   * from the row `append` keeps rather than parsed out of the journal (#894).
+   *
+   * See `TERMINAL_HIGH_PREFIX` for what that cost. The fallback is what makes a
+   * store written by an older binary correct rather than merely cheap: an
+   * ABSENT row means nobody was recording the id, not that no turn ever ended,
+   * so it asks the journal exactly once and writes the answer down. Callers
+   * hold `alone`, so the row commits with whatever that sweep did.
+   */
+  private terminalHigh(sessionId: string): number {
+    const key = `${TERMINAL_HIGH_PREFIX}${sessionId}`;
+    const stored = this.statement("SELECT value FROM metadata WHERE key=?").get(key)?.value;
+    if (stored !== undefined && stored !== null && Number.isFinite(Number(stored))) return Number(stored);
+    const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
+    const high = Number(
+      this.statement(
+        `SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=? AND json_extract(value,'$.type') IN (${placeholders})`,
+      ).get(sessionId, ...TERMINAL_TURN_TYPES)?.id ?? 0,
+    );
+    this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(key, String(high));
+    return high;
   }
 
   /** One session's share of `compactJournal`, in a transaction of its own. */
@@ -1113,12 +1275,7 @@ export class ExecutionStore {
       const key = `${COMPACT_WATERMARK_PREFIX}${sessionId}`;
       const stored = this.statement("SELECT value FROM metadata WHERE key=?").get(key);
       const low = Number(stored?.value ?? 0);
-      const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
-      const high = Number(
-        this.statement(
-          `SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=? AND json_extract(value,'$.type') IN (${placeholders})`,
-        ).get(sessionId, ...TERMINAL_TURN_TYPES)?.id ?? 0,
-      );
+      const high = this.terminalHigh(sessionId);
       // No turn has ended here since the last sweep. Nothing below `low` can
       // have become compactable, so there is nothing to look at.
       if (high <= low) return;
@@ -1209,22 +1366,9 @@ export class ExecutionStore {
    */
   foldJournalUsage(): { rows: number; turns: number; sessions: number; refused: number } {
     const total = { rows: 0, turns: 0, sessions: 0, refused: 0 };
-    for (const sessionId of this.sessionIds()) {
-      let folded: { rows: number; turns: number; refused: number };
-      try {
-        folded = this.foldUsage(sessionId);
-      } catch {
-        // The conservation check rolled this session back. One session's
-        // refusal must not stop the rest from folding; it is counted instead.
-        total.refused += 1;
-        continue;
-      }
-      total.refused += folded.refused;
-      if (folded.turns === 0) continue;
-      total.rows += folded.rows;
-      total.turns += folded.turns;
-      total.sessions += 1;
-    }
+    // Synchronous for `reclaim`'s reason, and sharing its per-session body with
+    // the cooperative walk — see `compactJournal` above.
+    for (const sessionId of this.sessionIds()) this.foldInto(sessionId, total);
     return total;
   }
 
@@ -1239,12 +1383,14 @@ export class ExecutionStore {
       this.drain(this.depth > 0);
       const key = `${USAGE_WATERMARK_PREFIX}${sessionId}`;
       const low = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(key)?.value ?? 0);
+      // The same bound `compactSession` takes, from the same row — see
+      // `TERMINAL_HIGH_PREFIX`. This was the second of the two whole-journal
+      // parses a sweep paid per session (#894).
+      const high = this.terminalHigh(sessionId);
+      // `placeholders` is still needed below: whether a given RUN ended is a
+      // different question from where the session is settled to, and only the
+      // second one has an answer written down.
       const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
-      const high = Number(
-        this.statement(
-          `SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=? AND json_extract(value,'$.type') IN (${placeholders})`,
-        ).get(sessionId, ...TERMINAL_TURN_TYPES)?.id ?? 0,
-      );
       if (high <= low) return;
       /**
        * SQLITE'S OWN SUM over the range, per run — one half of the guard. The
@@ -1622,6 +1768,12 @@ export class ExecutionStore {
       // because this delete always empties it.
       this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .run(`${JOURNAL_FLOOR_PREFIX}${sessionId}`, String(Math.max(high, this.cursors.get(sessionId) ?? 0)));
+      // THE SWEEPS' BOUND GOES WITH THE EVENTS IT BOUNDS (#894). The floor
+      // above is kept because ids must not restart; this one is dropped because
+      // it names a terminal event that is no longer there, and the next sweep
+      // would otherwise compare a watermark against a row it cannot see. Absent
+      // is the honest answer, and `terminalHigh` recomputes it as 0.
+      this.statement("DELETE FROM metadata WHERE key=?").run(`${TERMINAL_HIGH_PREFIX}${sessionId}`);
       outcome = { retired: true, events: rows };
     });
     return outcome;
@@ -1986,13 +2138,24 @@ export class ExecutionStore {
     // `barrier`. The last terminal event of the scope wins, because one barrier
     // persists everything committed before it on the same device; a scope that
     // ends two turns pays once, not twice.
-    if ((TERMINAL_TURN_TYPES as readonly string[]).includes(event.type))
-      this.barrierDue = { sessionId: event.sessionId, eventId: event.id };
+    const terminal = (TERMINAL_TURN_TYPES as readonly string[]).includes(event.type);
+    if (terminal) this.barrierDue = { sessionId: event.sessionId, eventId: event.id };
     if (event.type !== "content.delta") {
       // Nothing may reach the disk ahead of a buffered delta; see `buffered`.
       // Outside a transaction that has to be ONE of them, or the batch this
       // event just settled would go to the disk a row and an fsync at a time.
-      this.alone(() => { this.drain(this.depth > 0); this.insert(event); });
+      this.alone(() => {
+        this.drain(this.depth > 0);
+        this.insert(event);
+        // THE SWEEPS' BOUND, RECORDED BY THE WRITE THAT CREATES IT (#894) —
+        // see `TERMINAL_HIGH_PREFIX`. In the same scope as the row it
+        // describes: a bound that committed without its event would send the
+        // next sweep past rows that are still there. A terminal turn event is
+        // never a `content.delta`, so this branch is the only one it reaches.
+        if (terminal)
+          this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            .run(`${TERMINAL_HIGH_PREFIX}${event.sessionId}`, String(event.id));
+      });
       return;
     }
     (this.depth > 0 ? this.pending : this.buffered).push(event);
@@ -2426,6 +2589,9 @@ export class ExecutionStore {
       // somehow came back, would skip the whole journal below it.
       this.statement("DELETE FROM metadata WHERE key=?").run(`${COMPACT_WATERMARK_PREFIX}${sessionId}`);
       this.statement("DELETE FROM metadata WHERE key=?").run(`${USAGE_WATERMARK_PREFIX}${sessionId}`);
+      // And the bound those two are compared against (#894), for their reason:
+      // a row describing a journal that no longer exists.
+      this.statement("DELETE FROM metadata WHERE key=?").run(`${TERMINAL_HIGH_PREFIX}${sessionId}`);
       // The items and the marker that says where to look for them, together and
       // here — a marker left behind would tell a reused id its items are rows
       // when the rows went with the session, and that reads as an empty
@@ -2684,6 +2850,11 @@ export class ExecutionStore {
     this.disarm();
     if (this.pruneTimer) { clearInterval(this.pruneTimer); this.pruneTimer = undefined; }
     if (this.compactTimer) { clearTimeout(this.compactTimer); this.compactTimer = undefined; }
+    // A WALK IN FLIGHT IS CANCELLED, NOT WAITED FOR (#894). Its next step is
+    // queued in a macrotask this object holds no handle on, so the only way to
+    // stop it is a flag the step itself reads — and it must be stopped, or it
+    // runs a transaction against a database that has been closed underneath it.
+    if (this.walk) { this.walk.cancelled = true; this.walk = undefined; }
     // An orderly shutdown stores the tail. Only a crash may lose it.
     try { this.flush(); } finally { this.statements.clear(); this.cursors.clear(); this.db.close(); this.closed = true; }
   }

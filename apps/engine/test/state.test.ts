@@ -1351,6 +1351,53 @@ test("stale lock recovery uses exclusive replacement and never removes a newly h
 });
 
 /**
+ * ISSUE #894. The pid is the only thing a person can act on, and until this it
+ * was nowhere: the engine threw "engine state root is already locked", the
+ * desktop turned any engine exit into a silent `app.quit()`, and the owner got
+ * a Telar that opened and closed again with nothing on screen. `main.ts` prints
+ * this message beside the lock's path and the shell puts the pid in the dialog,
+ * so it has to be IN the message rather than only in the file.
+ */
+test("a live owner's refusal names the pid holding the lock", () => {
+  const stateRoot = root();
+  const paths = statePaths(stateRoot);
+  fs.mkdirSync(paths.root, { recursive: true });
+  // This process: alive by construction, so `processExists` is true for the
+  // one pid this test can be certain about.
+  fs.writeFileSync(paths.lock, JSON.stringify({ pid: process.pid, token: "live", hostname: os.hostname() }));
+  expect(() => acquireDaemonLock(paths)).toThrow(new RegExp(`already locked \\(pid ${process.pid}\\)`));
+  // The lock is still whole: refusing must not have broken what it named.
+  expect(JSON.parse(fs.readFileSync(paths.lock, "utf8")).token).toBe("live");
+  fs.unlinkSync(paths.lock);
+});
+
+test("the live-owner refusal and the other-machine one stay distinguishable", () => {
+  /**
+   * `/locked by/` is how the #630 test below tells the cross-host refusal from
+   * every other one. A live-owner message spelled "already locked by pid N"
+   * would satisfy that regex too and quietly make it vacuous — a marker both
+   * states emit is not a marker. The spelling is `(pid N)` for that reason,
+   * and this is the assertion that keeps it so.
+   */
+  const stateRoot = root();
+  const paths = statePaths(stateRoot);
+  fs.mkdirSync(paths.root, { recursive: true });
+  fs.writeFileSync(paths.lock, JSON.stringify({ pid: process.pid, token: "live", hostname: os.hostname() }));
+  let live = "";
+  try { acquireDaemonLock(paths); } catch (error) { live = (error as Error).message; }
+  fs.unlinkSync(paths.lock);
+
+  fs.writeFileSync(paths.lock, JSON.stringify({ pid: -1, token: "elsewhere", hostname: `${os.hostname()}-other` }));
+  let elsewhere = "";
+  try { acquireDaemonLock(paths); } catch (error) { elsewhere = (error as Error).message; }
+
+  expect(live).toMatch(/already locked/);
+  expect(live).not.toMatch(/locked by/);
+  expect(elsewhere).toMatch(/locked by/);
+  expect(elsewhere).not.toMatch(/already locked/);
+});
+
+/**
  * ISSUE #630. A store on a removable volume can be carried to a second Mac, so
  * "is that pid alive?" stops being a sound staleness test: pids are small
  * integers every machine hands out from the same range, and the one recorded by

@@ -1,6 +1,7 @@
 import { startEngine } from "./daemon";
 import { hydrateHostPath } from "./host-path";
 import { providerSkillRoots } from "./provider-skills";
+import { ENGINE_EXIT_LOCK_HELD, EngineStateError, engineRootFromEnv, statePaths } from "./state";
 
 /**
  * BEFORE ANYTHING RESOLVES A BINARY, and therefore the first statement here.
@@ -40,8 +41,30 @@ const embeddedWorker = process.env.TELAR_EMBEDDED_WORKER?.trim() !== "0";
 // defaulted inside `startEngine` for the reason the two decisions above are:
 // writing into `~/.claude/skills` is a thing a process does, not a thing every
 // test's daemon should do to the developer's home directory.
-const daemon = await startEngine({ embeddedWorker, warmUsageCacheAfterMs: 5_000, skillRoots: providerSkillRoots(),
-  executionStorage: process.env.TELAR_EXECUTION_STORE === "json" ? "json" : "sqlite" });
+/**
+ * A LIVE LOCK IS AN ORDINARY CONDITION AND EXITS SAYING SO — issue #894.
+ *
+ * Without this, a second Telar meeting a daemon that is already up died on an
+ * unhandled rejection: exit code 1, a stack trace on a stdout a packaged app
+ * sends nowhere, and a shell that read the 1 as "the engine died" and quit with
+ * nothing on screen. The condition is not a failure — the store has an owner
+ * and it is alive — so it gets a code of its own and one readable line.
+ *
+ * THE LINE NAMES THE LOCK AND ITS OWNER, because those are the two things a
+ * person needs to act: the pid is already in the error's message (see
+ * `acquireDaemonLock`) and the path is what `rm` would take if that pid turns
+ * out to be gone. Every OTHER startup failure keeps exiting 1 — the shell's
+ * blanket quit is right for an engine that really died.
+ */
+let daemon: Awaited<ReturnType<typeof startEngine>>;
+try {
+  daemon = await startEngine({ embeddedWorker, warmUsageCacheAfterMs: 5_000, skillRoots: providerSkillRoots(),
+    executionStorage: process.env.TELAR_EXECUTION_STORE === "json" ? "json" : "sqlite" });
+} catch (error) {
+  if (!(error instanceof EngineStateError) || error.code !== "conflict") throw error;
+  process.stderr.write(`Telar engine: ${error.message} — ${statePaths(engineRootFromEnv()).lock}\n`);
+  process.exit(ENGINE_EXIT_LOCK_HELD);
+}
 process.stdout.write(
   `Telar engine listening on ${daemon.discovery.host}:${daemon.discovery.port}` +
     `${daemon.worker ? ` with embedded worker ${daemon.worker.workerId}` : " (no embedded worker)"}\n`,
