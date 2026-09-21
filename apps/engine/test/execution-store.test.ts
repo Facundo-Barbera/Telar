@@ -881,3 +881,232 @@ test("opening the store does not sweep; the sweep follows and says what it took"
     expect(seen).toEqual([{ deltas: 1, starts: 1, sessions: 1 }]);
   } finally { announced.close(); }
 });
+
+/* ══════════════════════════════════════════════════════════════════════════ *
+ * ISSUE #894 — the sweep yields, and the bound it opens with is written down.
+ *
+ * Both halves of one incident. The sweep walked 605 sessions inside a single
+ * timer callback and parked the event loop for about six minutes at 100% CPU,
+ * during which the daemon answered neither `/v2/health` nor a Stop; and the
+ * reason a swept store never got cheaper was the per-session bound, which
+ * JSON-parsed the session's whole journal twice per sweep to find the id of
+ * its last terminal turn event.
+ *
+ * THE ASSERTIONS ARE ORDER AND COUNTS, NEVER A MARKER. "It yielded" is proved
+ * by state that only one ordering can produce — session one swept while
+ * session two still holds every row it had — and the totals are compared
+ * against a synchronous sweep over an identical fixture rather than against a
+ * number typed here.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/** The metadata row as it really is on disk, read through a second connection
+ *  rather than through a method added for the test. `null` when absent, which
+ *  is the state a store written before #894 is in. */
+function metadataValue(root: string, key: string): string | null {
+  const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+  const db = new Database(path.join(root, "execution.sqlite"), { readonly: true });
+  try {
+    const row = db.query("SELECT value FROM metadata WHERE key=?").get(key) as { value?: string } | null;
+    return row?.value === undefined ? null : String(row.value);
+  } finally { db.close(); }
+}
+
+const TERMINAL_HIGH = "journal-terminal-high/";
+
+/**
+ * Three sessions, each one settled turn of two deltas — the smallest fixture
+ * in which "one session per macrotask" is distinguishable from "all of them".
+ *
+ * NAMED a/b/c BECAUSE THE ORDER IS PART OF THE ASSERTION. The walk snapshots
+ * `sessionIds()`, which reads `documents` keys `ORDER BY key`, so the sweep
+ * follows lexical order — `session_one, session_two, session_three` would be
+ * walked one, three, two and every index below would be about nothing.
+ */
+function threeSessions(root: string, store: ExecutionStore): string[] {
+  const ids = ["session_a", "session_b", "session_c"];
+  for (const id of ids) {
+    const write = journal(root, id, store);
+    write.start("item_one");
+    write.delta("item_one", "Once upon ");
+    write.delta("item_one", "a time");
+    write.complete("item_one", "Once upon a time");
+    write.endTurn();
+  }
+  return ids;
+}
+
+const deltasIn = (store: ExecutionStore, sessionId: string) =>
+  store.events(sessionId).filter((event) => event.type === "content.delta").length;
+
+test("the background sweep hands the event loop back between sessions, one at a time", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-sweep-walk-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  let ids: string[] = [];
+  let seeded = new ExecutionStore(root);
+  try { ids = threeSessions(root, seeded); } finally { seeded.close(); }
+
+  // THE SAME FIXTURE, SWEPT SYNCHRONOUSLY, is what the walk's totals are held
+  // against — a number typed here would drift the moment the fixture does.
+  const reference = fs.mkdtempSync(path.join(os.tmpdir(), "telar-sweep-sync-")); homes.push(reference);
+  fs.mkdirSync(path.join(reference, "sessions"), { recursive: true });
+  const sync = new ExecutionStore(reference);
+  let expected: { deltas: number; starts: number; sessions: number };
+  try {
+    threeSessions(reference, sync);
+    expected = sync.compactJournal();
+  } finally { sync.close(); }
+  expect(expected).toEqual({ deltas: 6, starts: 3, sessions: 3 });
+
+  // THE YIELD IS THE TEST'S OWN, so the walk advances only when this test says
+  // so. Nothing here sleeps through a real timer except the 1 ms arming above.
+  const queued: (() => void)[] = [];
+  const told: { deltas: number; starts: number; sessions: number }[] = [];
+  const store = new ExecutionStore(root, {
+    compactAfterOpenMs: 1,
+    sweepYield: (next) => { queued.push(next); },
+    onJournalCompacted: (swept) => { told.push(swept); },
+  });
+  try {
+    const deadline = Date.now() + 4_000;
+    while (queued.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    // The timer fired and the walk asked for a macrotask instead of taking the
+    // whole store in the callback it was already in.
+    expect(queued).toHaveLength(1);
+    expect(ids.map((id) => deltasIn(store, id))).toEqual([2, 2, 2]);
+
+    // ONE STEP. The first session is compacted; the second is untouched and
+    // its turn is queued behind a yield that has not run. This exact state is
+    // what the old one-shot sweep could never be observed in.
+    queued.shift()!();
+    expect(ids.map((id) => deltasIn(store, id))).toEqual([0, 2, 2]);
+    expect(queued).toHaveLength(1);
+    expect(told).toEqual([]);
+
+    queued.shift()!();
+    expect(ids.map((id) => deltasIn(store, id))).toEqual([0, 0, 2]);
+    queued.shift()!();
+    expect(ids.map((id) => deltasIn(store, id))).toEqual([0, 0, 0]);
+
+    // One more step to find the end of the list and report. The daemon still
+    // gets exactly one line, and it says what the synchronous sweep would.
+    expect(told).toEqual([]);
+    queued.shift()!();
+    expect(queued).toHaveLength(0);
+    expect(told).toEqual([expected]);
+    expect(store.housekeeping.journal).toEqual(expected);
+  } finally { store.close(); }
+});
+
+test("retention runs after the walk, and a close mid-walk stops it without reporting", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-sweep-cancel-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  let ids: string[] = [];
+  const seeded = new ExecutionStore(root);
+  try { ids = threeSessions(root, seeded); } finally { seeded.close(); }
+
+  const queued: (() => void)[] = [];
+  const told: { deltas: number; starts: number; sessions: number }[] = [];
+  let retentionSweeps = 0;
+  const store = new ExecutionStore(root, {
+    compactAfterOpenMs: 1,
+    sweepYield: (next) => { queued.push(next); },
+    onJournalCompacted: (swept) => { told.push(swept); },
+    onRetentionSweep: () => { retentionSweeps += 1; },
+  });
+  const deadline = Date.now() + 4_000;
+  while (queued.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  queued.shift()!();
+  // One session in: the walk is real, and retention has NOT run — it is one
+  // call and it waits for the end rather than firing per session.
+  expect(deltasIn(store, ids[0]!)).toBe(0);
+  expect(retentionSweeps).toBe(0);
+
+  store.close();
+  // The step still queued must not run a transaction against a closed
+  // database; it returns, and a partial walk announces nothing.
+  expect(queued).toHaveLength(1);
+  expect(() => queued.shift()!()).not.toThrow();
+  expect(told).toEqual([]);
+  expect(retentionSweeps).toBe(0);
+
+  // And the two sessions the walk did not reach still hold every row, which is
+  // the half that says the cancel stopped work rather than only silenced it.
+  const after = new ExecutionStore(root);
+  try { expect(ids.map((id) => deltasIn(after, id))).toEqual([0, 2, 2]); } finally { after.close(); }
+});
+
+test("the terminal-turn bound is written by the append that creates it, and read by the sweep", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-terminal-high-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  const store = new ExecutionStore(root);
+  try {
+    const write = journal(root, "session_one", store);
+    write.start("item_one");
+    write.delta("item_one", "Once upon ");
+    write.delta("item_one", "a time");
+    write.complete("item_one", "Once upon a time");
+    // No turn has ended, so there is no bound to record yet — and the absence
+    // is what the fallback in `terminalHigh` is allowed to read as "unknown".
+    expect(metadataValue(root, `${TERMINAL_HIGH}session_one`)).toBeNull();
+
+    write.endTurn();
+    // The terminal event's own id, committed with the row it describes.
+    const terminal = store.events("session_one").at(-1)!;
+    expect(terminal.type).toBe("turn.completed");
+    expect(metadataValue(root, `${TERMINAL_HIGH}session_one`)).toBe(String(terminal.id));
+
+    // …and the sweep bounded by it removes exactly what it always did.
+    expect(store.compactJournal()).toEqual({ deltas: 2, starts: 1, sessions: 1 });
+    expect(types(store, "session_one")).toEqual(["item.completed", "turn.completed"]);
+
+    // A SECOND TURN MOVES IT, so a settled store does not go permanently blind
+    // to everything appended after the first one ended.
+    write.start("item_two");
+    write.delta("item_two", "and then");
+    write.complete("item_two", "and then");
+    write.endTurn();
+    const second = store.events("session_one").at(-1)!;
+    expect(Number(metadataValue(root, `${TERMINAL_HIGH}session_one`))).toBe(second.id);
+    expect(store.compactJournal()).toEqual({ deltas: 1, starts: 1, sessions: 1 });
+
+    // And it goes with the session, like the two watermarks beside it: a bound
+    // outliving its journal would send a reused id past its whole history.
+    store.deleteSession("session_one");
+    expect(metadataValue(root, `${TERMINAL_HIGH}session_one`)).toBeNull();
+  } finally { store.close(); }
+});
+
+test("a journal written before the bound existed still sweeps, and pays the parse once", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-terminal-high-legacy-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  const store = new ExecutionStore(root);
+  try {
+    const write = journal(root, "session_one", store);
+    write.start("item_one");
+    write.delta("item_one", "Once upon ");
+    write.delta("item_one", "a time");
+    write.complete("item_one", "Once upon a time");
+    write.endTurn();
+    const terminal = store.events("session_one").at(-1)!;
+
+    /**
+     * A STORE FROM BEFORE THIS CHANGE, EXACTLY. Every row a previous binary
+     * would have written is there and the bound is not, because nothing was
+     * recording it — so the key is removed rather than the fixture being
+     * written some other way. The fallback has to be able to tell that from
+     * "this session has never had a turn end", and it can, because absent and
+     * zero are different rows.
+     */
+    const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+    const raw = new Database(path.join(root, "execution.sqlite"));
+    try { raw.query("DELETE FROM metadata WHERE key=?").run(`${TERMINAL_HIGH}session_one`); } finally { raw.close(); }
+    expect(metadataValue(root, `${TERMINAL_HIGH}session_one`)).toBeNull();
+
+    // The sweep takes what it would have taken with the key present…
+    expect(store.compactJournal()).toEqual({ deltas: 2, starts: 1, sessions: 1 });
+    expect(types(store, "session_one")).toEqual(["item.completed", "turn.completed"]);
+    // …and the answer is written down, so the parse is paid once more and
+    // never again. This is the whole claim of #894's part 4.
+    expect(metadataValue(root, `${TERMINAL_HIGH}session_one`)).toBe(String(terminal.id));
+  } finally { store.close(); }
+});
