@@ -117,6 +117,53 @@ describe("bytes from the PTY reach the emulator's buffer", () => {
     detach();
   });
 
+  test("Neovim's short colon truecolour lands as the colour Neovim meant", async () => {
+    // Neovim 0.12 writes `38:2:R:G:B` — ISO 8613-6 with the colour-space slot
+    // omitted. xterm.js 6.0.0 reads that as `38:2:CS:R:G` + a missing B, so
+    // every colour in an nvim window lost its red and went olive. Measured
+    // against the real emulator: this is the exact sequence captured from the
+    // owner's nvim (tokyonight-moon's comment grey on its background).
+    const term = new Terminal({ cols: 40, rows: 6, allowProposedApi: true });
+    const bridge = fakeBridge();
+    const detach = attachTerminal(term, bridge, "t1");
+
+    bridge.push({ id: "t1", data: "[38:2:120:126:147m[48:2:20:21:32mA[0m" });
+    // And the SAME colour in the two forms xterm already handles, so the test
+    // is about equality with the emulator's own reading, not about our numbers.
+    bridge.push({ id: "t1", data: "[38;2;120;126;147mB[0m[38:2::120:126:147mC[0m" });
+    await settled(term, "");
+
+    const line = term.buffer.active.getLine(0);
+    const a = line?.getCell(0);
+    expect(a?.isFgRGB()).toBeTruthy();
+    expect(a?.getFgColor()).toBe((120 << 16) | (126 << 8) | 147);
+    expect(a?.getBgColor()).toBe((20 << 16) | (21 << 8) | 32);
+    expect(line?.getCell(1)?.getFgColor()).toBe(a?.getFgColor());
+    expect(line?.getCell(2)?.getFgColor()).toBe(a?.getFgColor());
+
+    detach();
+  });
+
+  test("a truecolour sequence split across two PTY chunks is still read whole", async () => {
+    // node-pty hands over whatever the kernel had, so `ESC[38:2:120:` can end
+    // one chunk and `126:147m` start the next. A rewrite that only saw the
+    // first half would leave that one colour wrong — and nvim repaints a
+    // screen in many chunks.
+    const term = new Terminal({ cols: 40, rows: 6, allowProposedApi: true });
+    const bridge = fakeBridge();
+    const detach = attachTerminal(term, bridge, "t1");
+
+    bridge.push({ id: "t1", data: "x[38:2:120:" });
+    bridge.push({ id: "t1", data: "126:147mA[0m" });
+    await settled(term, "");
+
+    const line = term.buffer.active.getLine(0);
+    expect(line?.translateToString(true)).toBe("xA");
+    expect(line?.getCell(1)?.getFgColor()).toBe((120 << 16) | (126 << 8) | 147);
+
+    detach();
+  });
+
   test("a cursor-position sequence moves the cursor — the buffer is a screen, not a log", async () => {
     const term = new Terminal({ cols: 40, rows: 6, allowProposedApi: true });
     const bridge = fakeBridge();

@@ -26,6 +26,48 @@ export type TerminalLike = {
 };
 
 /**
+ * THE ONE SEQUENCE XTERM.JS 6 GETS WRONG, AND WHAT NEOVIM 0.12 EMITS.
+ *
+ * ISO 8613-6 spells a truecolour SGR as `38:2::R:G:B` — the empty slot is the
+ * colour-space id. Neovim (from 0.10, on any `TERM` whose terminfo it trusts)
+ * writes the SHORT form `38:2:R:G:B` with no slot. xterm.js reads the short
+ * form as if the slot were there, so `38:2:120:126:147` lands as R=126,
+ * G=147, B=(missing → 0): every colour loses its red and gains a green cast,
+ * which is exactly the all-olive Neovim the owner photographed. Measured on
+ * @xterm/xterm 6.0.0 by writing the three forms into a buffer and reading the
+ * cell back: semicolons and the five-subparam colon form both give `787e93`;
+ * the four-subparam form gives `7e9300`.
+ *
+ * Rewritten here, at the byte level, before the parser sees it — because this
+ * function is the ONLY place PTY bytes enter the emulator, and a CSI handler
+ * registered on top of xterm's own would have to re-implement the whole of
+ * SGR to be able to say "handled". Only SGR 38/48/58 with a `:2:` selector
+ * and exactly three following subparams is touched; the five-subparam form,
+ * semicolons, and every other sequence pass through untouched.
+ */
+const SHORT_COLON_TRUECOLOUR = /\[([0-9;:]*?)([345]8):2:(\d+):(\d+):(\d+)(?=[;m])/g;
+
+export function normaliseTruecolourSgr(data: string): string {
+  if (!data.includes(":2:")) return data;
+  return data.replace(SHORT_COLON_TRUECOLOUR, (_all, before: string, kind: string, r: string, g: string, b: string) => `[${before}${kind}:2::${r}:${g}:${b}`);
+}
+
+/**
+ * A CSI sequence can straddle two PTY chunks, and a rewrite that only sees
+ * half of one would leave that colour wrong. This holds back a trailing CSI
+ * that has no final byte yet and prepends it to the next chunk. Anything that
+ * is not an unfinished `ESC [` goes through as it arrived.
+ */
+export function splitTrailingCsi(data: string): { ready: string; pending: string } {
+  const esc = data.lastIndexOf("");
+  if (esc === -1) return { ready: data, pending: "" };
+  const tail = data.slice(esc);
+  // `ESC` alone, or `ESC [` followed only by parameter/intermediate bytes.
+  if (tail === "" || /^\[[0-9;:?<=>!]*$/.test(tail)) return { ready: data.slice(0, esc), pending: tail };
+  return { ready: data, pending: "" };
+}
+
+/**
  * Connect an emulator to a terminal the host has already opened. Answers the
  * detach, which every caller must hold: the bridge's `onData` is a single
  * channel for EVERY terminal in the window, so a listener that outlives its
@@ -41,8 +83,12 @@ export function attachTerminal(
   offs.push(term.onData((data) => void bridge.write(id, data)).dispose);
   // FILTERED BY ID, both ways. Two terminal tabs share one IPC channel, and an
   // unfiltered listener is how one tab's `ls` ends up drawn in the other's.
+  let pending = "";
   const offData = bridge.onData((chunk) => {
-    if (chunk.id === id) term.write(chunk.data);
+    if (chunk.id !== id) return;
+    const split = splitTrailingCsi(pending + chunk.data);
+    pending = split.pending;
+    if (split.ready !== "") term.write(normaliseTruecolourSgr(split.ready));
   });
   if (offData) offs.push(offData);
   const offExit = bridge.onExit((ending) => {
