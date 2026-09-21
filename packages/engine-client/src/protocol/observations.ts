@@ -363,7 +363,7 @@ export const ProviderTurnOpenInput = z.object({
   workerId: Id,
   /** The provider's own notification text — what the model was woken with. */
   input: z.string(),
-  reason: z.object({ kind: z.enum(["task_notification", "unknown"]), taskId: Id.optional() }),
+  reason: z.object({ kind: z.enum(["task_notification", "background_task", "unknown"]), taskId: Id.optional() }),
 });
 export type ProviderTurnOpenInput = z.infer<typeof ProviderTurnOpenInput>;
 

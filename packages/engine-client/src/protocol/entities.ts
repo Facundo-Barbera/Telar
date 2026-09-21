@@ -2284,8 +2284,16 @@ export const Turn = z.object({
   assignmentDetachedAt: Timestamp.optional(),
   providerReason: z
     .object({
-      kind: z.enum(["task_notification", "unknown"]),
-      /** The row (`task_<tool_use_id>`) whose ending woke the model, when known. */
+      /**
+       * `task_notification` — a background task ENDED and the CLI woke the
+       * model on it. `background_task` — a task the engine deliberately keeps
+       * alive past its turn needed a tool DECISION and there was no turn to
+       * make it under, so the driver opened one (#891); the model was not
+       * woken and this turn carries no prose of its own.
+       */
+      kind: z.enum(["task_notification", "background_task", "unknown"]),
+      /** The row (`task_<tool_use_id>`) whose ending woke the model, or whose
+       *  request this turn exists to decide, when known. */
       taskId: Id.optional(),
     })
     .optional(),
