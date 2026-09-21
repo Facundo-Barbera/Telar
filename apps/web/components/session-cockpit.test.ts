@@ -201,17 +201,18 @@ describe("what a live turn says it is doing", () => {
     expect(transcriptTasks([shell])).toEqual([]);
   });
 
-  test("a warp run survives the filter that drops its background siblings", () => {
+  test("`kind` is the whole filter — no background row survives it", () => {
     /**
-     * A run's own row is `background` because it outlives its turn, but it is
-     * the row that says a fan-out happened at all — dropping it would leave its
-     * agents as loose chips under no heading. Same rule as `splitRoster`: the
-     * kind split happens AFTER the warp fold, never before.
+     * IT USED TO HAVE ONE EXCEPTION, and #877 removed it. A Warp run's own row
+     * was `background` because it outlived its turn, and it survived this filter
+     * because it was the row that said a fan-out had happened at all. Warp is
+     * retired; a background row is now always a process, and the pin is that
+     * EVERY one of them is dropped rather than all but one shape.
      */
-    const run = task({ id: "run", kind: "background", title: "find-flaky-tests", warp: { warpRunId: "run", warpName: "find-flaky-tests" } });
-    const child = task({ id: "child", warp: { warpRunId: "run", warpName: "find-flaky-tests" } });
+    const run = task({ id: "run", kind: "background", title: "find-flaky-tests" });
+    const child = task({ id: "child" });
     const shell = task({ id: "tail", kind: "background", title: "tail -f dev.log" });
-    expect(transcriptTasks([run, child, shell]).map((t) => t.id)).toEqual(["run", "child"]);
+    expect(transcriptTasks([run, child, shell]).map((t) => t.id)).toEqual(["child"]);
   });
 
   test("an unrecognised kind stays a chip, matching the contract's denylist", () => {

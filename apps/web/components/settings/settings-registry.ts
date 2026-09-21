@@ -858,7 +858,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           },
           {
             title: "Install the telar skill",
-            hint: "A SKILL.md in each provider's skills directory with the detail: the panel, Warps, assignment and settling, browser tabs.",
+            hint: "A SKILL.md in each provider's skills directory with the detail: the panel, assignment and settling, browser tabs.",
             keywords: ["skill", "SKILL.md", "claude", "codex", "opencode", "docs", "reference", "telar"],
             icon: SparklesIcon,
           },

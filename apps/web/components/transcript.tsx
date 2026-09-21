@@ -896,7 +896,7 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, 
     const taskId = item.detail.taskId;
     const task = tasks?.find((candidate) => candidate.id === taskId);
     // A backgrounded SHELL spawned as a task is the `Ran command` row already
-    // beside it; only a delegate (or a warp run) earns an agent row.
+    // beside it; only a delegate earns an agent row.
     if (task && !transcriptTasks([task]).length) return null;
     return <AgentRow item={item} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} {...(onInsert ? { onInsert } : {})} />;
   }
@@ -1022,14 +1022,14 @@ export function cutAroundLiveAgents(items: JournalItem[], tasks: readonly Journa
  * transcript had already said, and the live process belongs on the Processes
  * tab, where it can be watched and stopped.
  *
- * A WARP RUN SURVIVES THE FILTER. Its own row is `background` — it outlives its
- * turn — but it carries warp linkage, and it is the row that says a fan-out
- * happened at all. Dropping it would leave its agents as loose chips under no
- * heading. This is the same "kind split happens AFTER the warp fold" rule
- * `splitRoster` states in right-panel.tsx, applied to a flat list.
+ * THE FILTER HAS NO EXCEPTION ANY MORE. A Warp run's own row was `background`
+ * and used to survive this, because it was the row that said a fan-out had
+ * happened at all and dropping it left its agents as loose chips under no
+ * heading. #877 retired Warp; `kind` is now the whole rule, here and in
+ * `splitRoster`.
  */
 export function transcriptTasks(tasks: readonly JournalTask[]): JournalTask[] {
-  return tasks.filter((task) => task.kind !== "background" || Boolean(task.warp));
+  return tasks.filter((task) => task.kind !== "background");
 }
 
 /**

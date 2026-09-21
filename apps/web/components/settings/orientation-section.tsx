@@ -128,7 +128,7 @@ export function OrientationSection() {
       </Row>
       <Row
         label="Install the telar skill"
-        hint="A SKILL.md in each provider's skills directory, with the detail: the panel's tabs, Warps, how sessions are assigned and settled, the browser's tab rules. Turning this off deletes it."
+        hint="A SKILL.md in each provider's skills directory, with the detail: the panel's tabs, how sessions are assigned and settled, the browser's tab rules. Turning this off deletes it."
         {...(policy.skill === DEFAULT_AGENT_ORIENTATION.skill
           ? {}
           : { onRevert: () => void save({ skill: DEFAULT_AGENT_ORIENTATION.skill }) })}
