@@ -2270,7 +2270,10 @@ export function createClaudeDriver(
         };
         const before = boundToATurn();
         if (before) return before(toolName, input, options);
-        const claim = await acquireBackgroundClaim();
+        // NEVER THROWS OUT OF HERE. A permission callback that rejects blocks
+        // the tool indefinitely with nothing to report it — `gateFor`'s own
+        // rule, and the reason every failure below becomes a deny instead.
+        const claim = await acquireBackgroundClaim().catch(() => undefined);
         if (!claim) {
           // The engine refused because a turn opened while we were asking —
           // it can decide this, and it is the right one to.
@@ -4013,7 +4016,7 @@ export function createClaudeDriver(
                 reportLostBackgroundWork();
                 // The work the claim was held for died with the process; a
                 // claim left open would be a turn nothing will ever settle.
-                await closeBackgroundClaim();
+                await closeBackgroundClaim().catch(() => undefined);
                 await flush();
                 return;
               }
@@ -4089,9 +4092,12 @@ export function createClaudeDriver(
                  * losing the wake-up outright. Given up here, and the wake's
                  * own gate then serves the children too; `endWake` puts the
                  * background gate back. Waits for decisions already in flight,
-                 * so nothing is cut short.
+                 * so nothing is cut short — which means a card a person has not
+                 * answered holds the wake-up here. That is the honest order:
+                 * the session cannot proceed until they answer, the frame is
+                 * held rather than lost, and the wake opens the moment it does.
                  */
-                await closeBackgroundClaim();
+                await closeBackgroundClaim().catch(() => undefined);
                 const binding = await hooks.onProviderTurn({
                   input: text ?? "",
                   reason: wokenTask ? { kind: "task_notification", taskId: wokenTask } : { kind: "unknown" },
