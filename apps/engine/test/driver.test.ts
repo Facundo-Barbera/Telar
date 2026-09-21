@@ -1591,8 +1591,10 @@ test("the browser socket registers as its own http server, ALONGSIDE the in-proc
       yield { type: "result", subtype: "success" };
     },
   });
+  const sessions = { list: async () => ({ sessions: [], projects: [] }) };
   await run(createClaudeDriver(sdk), {
     browserSocket: { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_abc" },
+    sessions,
   }).result;
   // Both Telar registrations present; the http entry carries the lease.
   expect(Object.keys(servers ?? {})).toEqual(["telar-browser", "telar"]);
@@ -1601,10 +1603,16 @@ test("the browser socket registers as its own http server, ALONGSIDE the in-proc
     url: "http://127.0.0.1:1234/v2/browser/mcp",
     headers: { Authorization: "Bearer tok_abc" },
   });
-  // …and the in-process server holds NO browser tools any more: `warp` only,
-  // on a turn carrying nothing else. One tool surface per capability, not two.
+  // …and the in-process server holds NO browser tools: the sessions wall is
+  // what puts it there, and every name on it is a sessions verb. One tool
+  // surface per capability, not two.
   const telar = servers?.telar as { tools?: { name?: string }[] } | undefined;
-  expect((telar?.tools ?? []).map((tool) => tool.name)).toEqual(["warp"]);
+  const inProcess = (telar?.tools ?? []).map((tool) => tool.name);
+  expect(inProcess.length).toBe(21);
+  expect(inProcess.every((name) => name!.startsWith("sessions_"))).toBe(true);
+  // #877: `warp` was the one name here that was not a sessions verb, and it was
+  // registered UNCONDITIONALLY. Pinned as an absence so a re-add fails here.
+  expect(inProcess).not.toContain("warp");
 });
 
 test("a turn with no browser socket registers no telar-browser server", async () => {
@@ -1619,7 +1627,8 @@ test("a turn with no browser socket registers no telar-browser server", async ()
       yield { type: "result", subtype: "success" };
     },
   });
-  await run(createClaudeDriver(sdk)).result;
+  const sessions = { list: async () => ({ sessions: [], projects: [] }) };
+  await run(createClaudeDriver(sdk), { sessions }).result;
   expect(Object.keys(servers ?? {})).toEqual(["telar"]);
 });
 
@@ -1703,16 +1712,19 @@ test("a toolkit registers under the SAME one server, and only when the turn carr
     // #543, appended at the END so the wall GROWS rather than reorders — a
     // reordered list is a diff nobody can read against the one before it.
     "sessions_schedule",
-    "warp",
   ]);
+  // #877: `warp` sat after these, registered whether or not the turn carried a
+  // capability. Pinned as an absence so a re-add fails here.
+  expect(names).not.toContain("warp");
 
-  // …and without one, those tools are GONE while `warp` stays — it is
-  // unconditional by design, which is also what keeps this from passing for the
-  // trivial reason that nothing registers at all.
+  // …and without one, those tools are GONE — and so is the server, because
+  // #877 removed the one tool that used to be registered unconditionally.
+  // A server with no tools is not a fallback; it is a wall the model can see
+  // and cannot use.
   names.length = 0;
   await run(createClaudeDriver(sdk)).result;
-  expect(names).toEqual(["warp"]);
-  expect(seen.serverKeys).toEqual(["telar"]);
+  expect(names).toEqual([]);
+  expect(seen.serverKeys).toEqual([]);
 });
 
 // ── AskUserQuestion ──────────────────────────────────────────────────────────

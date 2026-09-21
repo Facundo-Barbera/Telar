@@ -355,13 +355,12 @@ func turnRenderOrder(_ items: [JournalItem]) -> [TurnRenderEntry] {
 ///
 /// A BACKGROUNDED SHELL IS NOT A DELEGATE. The tool call that backgrounded it
 /// is ALREADY an ordinary row in this same turn, so a chip would be a second,
-/// worse telling of something the transcript had said. A WARP RUN SURVIVES:
-/// its own row is `background` because it outlives its turn, but it carries
-/// warp linkage and it is the row that says a fan-out happened at all. Same
-/// rule as the web's `transcriptTasks` — the kind split happens AFTER the
-/// warp fold.
+/// worse telling of something the transcript had said. THERE IS NO EXCEPTION:
+/// a Warp run's own row was `background` and used to survive this, because it
+/// was the row that said a fan-out had happened at all. #877 retired Warp, so
+/// `kind` is the whole rule — the same rule as the web's `transcriptTasks`.
 func transcriptTasks(_ tasks: [JournalTask]) -> [JournalTask] {
-    tasks.filter { $0.task.kind != .background || $0.task.warp != nil }
+    tasks.filter { $0.task.kind != .background }
 }
 
 /// Rows that will actually PAINT.

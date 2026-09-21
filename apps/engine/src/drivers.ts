@@ -72,10 +72,11 @@ export function createBrowserToolSocket(browser: EngineBrowser): BrowserToolSock
  * it. Claude deliberately KEEPS its in-process registration under `telar` —
  * one wall, two transports, and the wall itself is the shared piece.
  *
- * WARP remains an in-process Claude SDK server, so a Codex session cannot fan
- * out. It is not silently wrong — the model simply has no such tool and says
- * so — and it is deliberately not faked here: a Codex session with a `warp`
- * tool that did nothing would be worse than one without.
+ * SO THE GAP IS NOW EMPTY. The last entry here was the fan-out tool, which only
+ * ever existed as an in-process Claude SDK server; #877 retired it, and no tool
+ * on the wall is provider-specific any more. The rule it was listed under
+ * survives it: a capability one provider cannot run is left ABSENT there rather
+ * than faked, because a tool that does nothing is worse than one that is missing.
  */
 
 export function createDefaultDrivers(): DriverSelector {

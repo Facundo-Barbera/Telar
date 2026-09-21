@@ -27,19 +27,6 @@ enum TaskState: String, Codable {
     }
 }
 
-/// Warp-specific linkage, present only on tasks belonging to a warp run.
-///
-/// DECODED FOR ONE REASON: a warp run's own row is `background` — it outlives
-/// the turn that started it — so any rule that filters background work out of
-/// the conversation would take the run with it and leave its agents as loose
-/// chips under no heading. The linkage is what tells a background job apart
-/// from a fan-out. The phone draws no progress tree, so only the fields that
-/// answer "is this a warp, and whose" are mirrored.
-struct WarpLinkage: Codable, Equatable {
-    var warpRunId: EngineID
-    var warpName: String
-}
-
 struct AgentTask: Codable, Identifiable, Equatable {
     var id: EngineID
     var sessionId: EngineID
@@ -53,12 +40,11 @@ struct AgentTask: Codable, Identifiable, Equatable {
     var updatedAt: Timestamp
     var completedAt: Timestamp?
     var parentTaskId: EngineID?
-    var warp: WarpLinkage?
     var resultText: String?
     var failure: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, sessionId, runId, kind, state, title, role
-        case startedAt, updatedAt, completedAt, parentTaskId, warp, resultText, failure
+        case startedAt, updatedAt, completedAt, parentTaskId, resultText, failure
     }
 }

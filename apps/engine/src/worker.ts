@@ -1696,8 +1696,8 @@ export class EngineWorker {
         // describing an executable no turn ever runs.
         ...(claim.providerInstance?.binaryPath ? { binaryPath: claim.providerInstance.binaryPath } : {}),
         // WHICH LOGIN, by id. Not spent on spawning anything — it is what lets a
-        // warp agent's task row name whose account ran it, which the contract
-        // requires of any row that names a model at all.
+        // task row name whose account ran it, which the contract requires of any
+        // row that names a model at all.
         providerInstanceId: claim.providerInstanceId,
         providerSessionId,
         // Send-now deliveries land here; how the driver injects them is its

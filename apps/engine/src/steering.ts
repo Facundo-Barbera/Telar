@@ -1,12 +1,14 @@
 /**
- * STEERING PRIMITIVES — shared by the warp spawn and the session drivers.
+ * STEERING PRIMITIVES — how "send now" reaches a turn that is already running.
  *
- * Extracted from `warp/spawn.ts`, where steering was first built for warp
- * children, because "send now" gives the SESSION turn the same shape: a
- * mailbox that text can be pushed into mid-turn, and a boundary the prompt
- * generator waits on. A third home rather than `driver.ts`, because `warp/`
- * deliberately imports nothing from the driver (see `spawn.ts`'s seam note)
- * and the driver must not import from `warp/`.
+ * A mailbox that text can be pushed into mid-turn, and a boundary the prompt
+ * generator waits on. Imported by `worker.ts`, `driver.ts` and
+ * `provider-contract.ts`: this is the ordinary session path, not a corner of
+ * one, and `send` on every session goes through it.
+ *
+ * A FILE OF ITS OWN rather than a section of `driver.ts`, because the contract
+ * imports it too and a contract that imported the driver would be the wrong way
+ * round.
  */
 
 import type { NotificationDetail, TurnAttachment, WakeReason } from "@telar/engine-client";
@@ -97,7 +99,7 @@ export class SteerMailbox {
 
   /** True when the message was accepted; false after close, when the engine's
    *  requeue sweep is the delivery path instead. A bare string is the
-   *  text-only form the tests and the warp runner still use. */
+   *  text-only form the tests still use. */
   push(message: string | SteerMessage): boolean {
     if (this.closed) return false;
     this.queue.push(typeof message === "string" ? { text: message } : message);

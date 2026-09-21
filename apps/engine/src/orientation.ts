@@ -19,7 +19,8 @@
  *     buys the vocabulary and nothing else.
  *   - `TELAR_SKILL` — the depth, written to disk ONCE and read only when the
  *     model decides it needs it. A skill is the right shape for "the panel has
- *     these tabs, a Warp is this, a peer session settles like that": nobody
+ *     these tabs, a peer session settles like that, the browser shares its tabs
+ *     with you": nobody
  *     pays for it until somebody asks.
  *
  * BOTH ARE BEHIND A TOGGLE (`AgentOrientation`), because this is Telar putting
@@ -64,7 +65,7 @@ export const TELAR_ORIENTATION =
   '"The browser" is Telar\'s own integrated browser, driven by the `telar-browser` tools and sharing its tabs with them — not this Mac\'s Chrome or Safari, unless they say so outright. ' +
   'A "session" or "conversation" is a Telar session, reached through the `mcp__telar` tools, not this CLI\'s own history. ' +
   'The "panel" is the cockpit\'s right pane, the "rail" its list of sessions, and a "surface" one thing drawn in either; ' +
-  '"Looks" are the cockpit\'s themes, and a "Warp" a fan-out of sub-agents. ' +
+  '"Looks" are the cockpit\'s themes. ' +
   `The \`${TELAR_SKILL_NAME}\` skill has the detail. When one of these words could mean two things here, ask which.`;
 
 /**
@@ -82,7 +83,7 @@ export const TELAR_ORIENTATION =
  */
 export const TELAR_SKILL = `---
 name: ${TELAR_SKILL_NAME}
-description: What Telar is and what its words mean — the cockpit's panel, rail and surfaces, sessions and how they are assigned and settled, Warps, the integrated browser's tab rules, and the project notebook. Read this when a request uses a word like "the browser", "the panel", "a session" or "a Look" and you are not certain it means what you would assume outside Telar.
+description: What Telar is and what its words mean — the cockpit's panel, rail and surfaces, sessions and how they are assigned and settled, the integrated browser's tab rules, and the project notebook. Read this when a request uses a word like "the browser", "the panel", "a session" or "a Look" and you are not certain it means what you would assume outside Telar.
 telar: generated v${ORIENTATION_VERSION}
 ---
 
@@ -258,63 +259,6 @@ CANNOT: merge, land or approve anybody's work; archive or delete a session;
 answer a secret-access request; or do — through a peer — anything that was
 refused here. A tool call you were denied is still denied when another session
 makes it for you. Take the refusal back to the person instead.
-
-## Warps
-
-A Warp is a fan-out: a JavaScript script that spawns sub-agents and combines
-their results. The structure lives in the script — loops, conditionals, the
-plain code between stages — so it runs deterministically rather than being
-decided turn by turn. Reach for it when work is wide (many files, many angles)
-or when confidence matters more than speed (independent attempts, adversarial
-verification). It spawns a real process per concurrent child, so a single
-straight line of work should stay a single straight line of work. Tool: \`warp\`.
-
-### Writing the script
-
-The script must begin with a pure object literal — no variables, no calls, no
-interpolation:
-
-    export const meta = { name: 'find-flaky-tests', description: 'Find flaky tests and propose fixes', phases: [{ title: 'Scan' }, { title: 'Fix' }] }
-
-Then write statements at the top level. Top-level \`await\` and top-level
-\`return\` both work; whatever you return becomes the tool's result.
-Available as globals:
-
-- \`agent(prompt, opts?)\` -> Promise<any>. One sub-agent. Resolves to its
-  final text, or — with \`opts.schema\` (a JSON Schema) — to a validated
-  object, which is what makes the code between stages ordinary code instead of
-  another agent hired to read the last one's paragraphs. Resolves to
-  \`null\` if the child died, so \`.filter(Boolean)\` before using
-  results. \`opts\`: { model, effort, schema, label, phase, maxTurns,
-  agentType }. Omit \`model\` to inherit the session's.
-- \`parallel(thunks)\` -> Promise<any[]>. Concurrent, WITH A BARRIER:
-  everything settles before it resolves. Correct only when the next step
-  genuinely needs all of the previous one at once — a dedupe across the whole
-  set, an early exit on a total, a prompt that compares one finding against the
-  others.
-- \`pipeline(items, ...stages)\` -> Promise<any[]>. Each item through every
-  stage independently, NO barrier. This is the default for multi-stage work:
-  item A can be in stage 3 while item B is still in stage 1, so the run costs
-  the slowest single chain rather than the sum of the slowest-per-stage. Every
-  stage receives \`(previousResult, originalItem, index)\`. A stage that
-  throws drops that item to \`null\` and keeps the others flowing.
-- \`phase(title)\` opens a progress group; \`log(message)\` narrates to
-  the human; \`args\` is the JSON value passed alongside the script.
-
-### What a script cannot do
-
-\`Date.now()\`, \`new Date()\` and \`Math.random()\` THROW — a
-script that branched on the clock could not be replayed. \`require\`,
-\`import\`, \`process\` and \`fs\` are absent; a script orchestrates
-agents and does not touch the host. A script that cannot parse, is missing its
-\`meta\`, or reaches for a banned name is refused before anything is spent,
-with the line number.
-
-A Warp child may not create work that outlives the run or escapes the script:
-fan-out (Agent, Task, Workflow), scheduling (cron, wake-ups), messaging other
-sessions, and switching worktrees are all withheld from it. So the script is the
-only place parallelism is expressed. Children run in the same checkout as this
-session and inherit its permissions.
 
 ## The browser
 

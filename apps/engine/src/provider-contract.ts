@@ -216,10 +216,6 @@ export type DriverRun = {
    * would be a second place either lives. ABSENT MEANS INJECT NOTHING — the
    * person turned it off, or the worker is older than this field, or it is a
    * test. Never a default paragraph invented here.
-   *
-   * A WARP CHILD DOES NOT GET ONE: it is spawned outside this contract with a
-   * prompt that already states what it is and what it may do. Orienting it a
-   * second time would be a paragraph about a cockpit it is not sitting in.
    */
   orientation?: string;
   /**
@@ -268,12 +264,13 @@ export type DriverRun = {
   /**
    * WHICH CONFIGURED LOGIN this turn runs as, by id.
    *
-   * The driver does not spend it — `env` and `binaryPath` are what actually
-   * shape the child process. It is here because a WARP agent's task row carries
-   * a `ModelSelection`, and the contract defines that as "which login, and which
-   * model on it": a row that named a model without naming whose account ran it
-   * would be unattributable. Absent means no selection is recorded, which is
-   * what every task did before warps existed.
+   * The driver does not SPEND it — `env` and `binaryPath` are what actually
+   * shape the child process. It is here because the contract defines a
+   * `ModelSelection` as "which login, and which model on it": a row that named a
+   * model without naming whose account ran it would be unattributable. It is
+   * also part of a session runtime's identity, so a turn that switched login
+   * does not reuse the query the previous one left open. Absent means no
+   * selection is recorded.
    */
   providerInstanceId?: string;
   /**

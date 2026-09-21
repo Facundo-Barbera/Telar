@@ -47,9 +47,11 @@
  *     See `NOT_A_BYPASS` below: it is stated in the prose of every tool that
  *     could be used for it, because that text is the only voice the wall has
  *     on a question no check here can settle.
- *   · NO WAY TO REACH A FAN-OUT CHILD'S HANDS. `sessions_create` is fan-out by
- *     another name, and `warp/spawn.ts` already denies a warp child the ability
- *     to fan out; these tools join the list it already keeps.
+ *   · `sessions_create` IS FAN-OUT BY ANOTHER NAME, and it is on this wall
+ *     because a coordinating session is exactly who should have it. What is not
+ *     here is a way to hand it to something that cannot be seen: a child
+ *     process spawned inside a turn is not a session, has no row in the rail,
+ *     and there is no seam on this wall for one to reach through.
  *
  * ── NO CAP ON CREATION, AND WHY ─────────────────────────────────────────────
  * There used to be a live-session budget in `EngineStore.createSession`, and
@@ -2022,9 +2024,16 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
      * #199 spent a milestone refusing. `self` is the only session this can aim
      * at.
      *
-     * AND A WARP CHILD MAY NOT CALL IT AT ALL — `WARP_CHILD_DISALLOWED_TOOLS`.
-     * That list's rule is "a child may not create work that outlives the run",
-     * and a schedule is the purest instance of it.
+     * THE RULE THAT USED TO NAME A DENY-LIST HERE still holds, and now holds by
+     * construction. #543 landed against a `WARP_CHILD_DISALLOWED_TOOLS` whose
+     * rule was "a child may not create work that outlives the run" — a schedule
+     * being the purest instance of it — and recorded a known gap: a fan-out
+     * child inherited the parent's own telar server, so its capability carried
+     * the parent's `self` and this call would have succeeded against the parent
+     * session. #877 retired the fan-out entirely, so there is no such child to
+     * deny. What guards the rule now is one step earlier and does not depend on
+     * a list: a caller with no `self` is refused outright, and the Agent — a
+     * LangGraph thread rather than a session — is never handed the tool.
      */
     tool(
       "sessions_schedule",

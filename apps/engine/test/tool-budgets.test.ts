@@ -31,7 +31,6 @@ import type { EngineEvent, EngineRequest, ProjectNote, Session, Subscription, Tu
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
 import { notesTools, type NotesCapability } from "../src/notes-tools/tools";
 import { displayTools } from "../src/display/tools";
-import { WARP_DESCRIPTION } from "../src/driver";
 import { TELAR_SKILL } from "../src/orientation";
 import { MAX_ANSWER_CHARS } from "../src/tool-kit";
 import { GREP_CONTEXT_CHARS, WHY_CHARS } from "../src/turn-summary";
@@ -488,45 +487,67 @@ describe("every tool description is short enough to carry", () => {
     expect(total).toBeLessThanOrEqual(6_000);
   });
 
+  /**
+   * THE WALL, PINNED WITHOUT `warp` — #877.
+   *
+   * It was the single largest description in the tree at 2,988 characters, and
+   * unlike everything counted above it was registered UNCONDITIONALLY: a turn
+   * with no capability at all still paid for it. The count and the absence are
+   * asserted together so a re-add cannot pass by replacing something else.
+   */
+  test("`warp` is not on the wall, and the wall is twenty-six tools", () => {
+    const names = wall().registered.map((entry) => entry.name);
+    expect(names.length).toBe(26);
+    expect(names).not.toContain("warp");
+    expect(names.every((name) => name.startsWith("sessions_") || name.startsWith("notes_"))).toBe(true);
+  });
+
   test("and every tool still says something — a cap is not an excuse for a blank", () => {
     for (const entry of wall().registered) expect(entry.description.length).toBeGreaterThan(80);
   });
 
   /**
-   * THE OTHER TWO SURFACES #515 NAMED, which the wall above cannot reach.
+   * THE OTHER SURFACE #515 NAMED, which the wall above cannot reach.
    *
-   * Item 5 of that issue caps "notes, display, warp, browser tools". Notes ride
-   * on `wall()`; browser has its own `BROWSER_DESCRIPTION_MAX_BYTES` test. These
-   * two had no guard at all and had drifted furthest — `display_open` to 655
-   * characters and `warp` to 2,988, which is ~3.3 KB carried in every turn of
-   * every session whether or not either tool is ever called.
+   * Item 5 of that issue capped "notes, display, warp, browser tools". Notes
+   * ride on `wall()`; browser has its own `BROWSER_DESCRIPTION_MAX_BYTES` test.
+   * `display_open` had no guard at all and had drifted to 655 characters —
+   * carried in every turn of every session whether or not it is ever called.
    *
-   * `warp` is asserted against its exported constant rather than a registered
-   * tool because it is Claude-only and has no toolkit to enumerate — the same
-   * reason `orientation.test.ts` names it explicitly.
+   * `warp` was the other half of this test and was the worse offender at 2,988
+   * characters. #877 retired the tool outright, so there is nothing left to cap:
+   * the pin that replaced it is the ABSENCE asserted in `wall()` above and in
+   * `tool-names.test.ts`.
    */
-  test("display and warp are capped too — the two that had no guard", () => {
+  test("display is capped too — the one that had no guard", () => {
     const { registered, factory } = register();
     displayTools(factory, { open: async ({ path }) => ({ path }) });
     const display = registered.find((entry) => entry.name === "display_open");
     expect(display).toBeDefined();
     expect(display!.description.length).toBeLessThanOrEqual(MAX_DESCRIPTION);
     expect(display!.description.length).toBeGreaterThan(80);
-
-    expect(WARP_DESCRIPTION.length).toBeLessThanOrEqual(MAX_DESCRIPTION);
-    expect(WARP_DESCRIPTION.length).toBeGreaterThan(80);
   });
 
   /**
-   * The cap is only honest if what was cut is still readable somewhere. Both
-   * descriptions now point at the `telar` skill, which is written to disk once
-   * and costs nothing until a model asks for it — so the reference has to
-   * actually be there, or the cap traded 3.3 KB of context for a dead end.
+   * The cap is only honest if what was cut is still readable somewhere. The
+   * description points at the `telar` skill, which is written to disk once and
+   * costs nothing until a model asks for it — so the reference has to actually
+   * be there, or the cap traded context for a dead end.
+   *
+   * THE SCRIPT API IS NO LONGER OWED. It was the bulk of what the `warp` cap
+   * displaced into the skill; #877 retired the tool, so the skill must not carry
+   * a reference to a tool nobody can call — asserted, because a stale page that
+   * teaches a dead tool is worse than no page.
    */
   test("what the cap displaced is in the skill, not deleted", () => {
-    expect(WARP_DESCRIPTION).toContain("telar");
-    for (const owed of ["export const meta", "pipeline(items, ...stages)", "parallel(thunks)", "agent(prompt, opts?)", "Math.random()"]) {
+    for (const owed of ["sessions_send", "browser_list_tabs", "notes_write"]) {
       expect(TELAR_SKILL).toContain(owed);
+    }
+    for (const retired of ["warp", "export const meta", "pipeline(items, ...stages)", "parallel(thunks)", "agent(prompt, opts?)"]) {
+      // Case-folded on the skill, not the needle: the feature was `warp` as a
+      // tool name and "Warp" in every sentence about it, and one spelling
+      // asserted is the other spelling allowed back in.
+      expect(TELAR_SKILL.toLowerCase()).not.toContain(retired.toLowerCase());
     }
   });
 });

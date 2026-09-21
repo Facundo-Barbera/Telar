@@ -920,6 +920,81 @@ const PUSH_ARGV_SAMPLES = [
   { flags: false, why: "a branch whose NAME contains the letters", code: `git(cwd, ["push", "--set-upstream", "origin", "telar/force-refresh"]);` },
 ];
 
+/**
+ * WARP IS RETIRED AND MAY NOT COME BACK — #877.
+ *
+ * The owner's words were "quiero que se vaya completamente, no quiero que quede
+ * rastro o chance de usarlo de nuevo", and a deletion alone does not deliver the
+ * second half: the modules are gone, but nothing stops the next person reaching
+ * for the names again, and the four `warp-*.test.ts` files that would have
+ * caught it are gone too. The unit tests pin the tool WALLS — no `warp` tool,
+ * no `warp` capability, no `warp` on any registered toolkit. This is the
+ * complement: no file anywhere may reach for the CODE.
+ *
+ * TWO SHAPES, because the feature had two ways of being referenced and they
+ * fail differently. A path containing `/warp/` is the import that broke the
+ * build when the folder went (#877's trap 2: `driver.ts` imported
+ * `compileWarpScript` straight from `./warp/sandbox`, which is the one import
+ * that did not look like a Warp import from outside the folder). An identifier
+ * is the shape that would NOT break anything — a re-declared `createWarpSpawn`
+ * or `WarpRunner` compiles perfectly well, which is exactly why a compiler
+ * cannot be the guard here.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT MATCH IS A BARE `warp`, and that is the whole
+ * care in the pattern. Telar is a loom; `warp` and `weft` are its threads, and
+ * `apps/ios/Shared/TelarMark.swift` draws the app icon with a `warp` path
+ * variable while `apps/desktop/icon-candidates/` describes warp strands in
+ * prose. Those are the BRAND. A grep-and-delete by name would have stripped
+ * them, so one of five suffixes is REQUIRED: `…warpScript`, `…warpRunner`,
+ * `…warpSpawn`, `…warpSandbox`, `…warpSurface`, in any case.
+ *
+ * THERE IS NO WORD BOUNDARY ON THE LEFT, and that is a deliberate widening of
+ * the rule as #877 wrote it. The three names actually deleted were
+ * `compileWarpScript`, `createWarpRunner` and `createWarpSpawn` — every one of
+ * them a verb prefix followed by the noun, so a left-anchored `\bwarp…` would
+ * have missed all three and matched only the types beside them. The right
+ * boundary stays, which is what keeps `warped` and `warping` out.
+ */
+const RETIRED_WARP_PATH = /["'`][^"'`]*\/warp\/[^"'`]*["'`]/g;
+const RETIRED_WARP_IDENTIFIER = /warp(Script|Runner|Spawn|Sandbox|Surface)\b/gi;
+
+/** Every reference to the retired feature in one source text, with its line. */
+function retiredWarpReferences(source) {
+  const hits = [];
+  const at = (index) => source.slice(0, index).split("\n").length;
+  for (const match of source.matchAll(RETIRED_WARP_PATH)) {
+    hits.push({ line: at(match.index), what: `a path through \`/warp/\` — ${match[0]}` });
+  }
+  for (const match of source.matchAll(RETIRED_WARP_IDENTIFIER)) {
+    hits.push({ line: at(match.index), what: `the identifier \`${match[0]}\`` });
+  }
+  return hits;
+}
+
+/**
+ * The shapes that matter, held to the standard every scan in this file is held
+ * to: a rule never shown to fire has demonstrated nothing. The silent rows are
+ * the ones that carry the weight — each is the loom metaphor or a word that
+ * merely starts the same way, and a guard that fired on the app icon would be
+ * deleted by the next person rather than argued with.
+ */
+const RETIRED_WARP_SAMPLES = [
+  { flags: true, why: "the call site that broke the build", code: `import { compileWarpScript } from "./warp/sandbox";` },
+  { flags: true, why: "the runner, imported from anywhere", code: `import { createWarpRunner } from "../../engine/src/warp/runner";` },
+  { flags: true, why: "an identifier with no import at all — the shape a compiler cannot catch", code: `const spawn = createWarpSpawn({ cwd });` },
+  { flags: true, why: "the verb-prefixed spellings, which a left-anchored \\b would miss", code: `const compiled = compileWarpScript(code);\nconst start = createWarpRunner(deps);` },
+  { flags: true, why: "a type reference", code: `let surface: WarpSurface | undefined;` },
+  { flags: true, why: "any case, since a re-add would not copy the old spelling", code: `const WARPRUNNER = 1;` },
+  { flags: true, why: "a binding declared rather than imported", code: `type Bindings = { warpSpawn: unknown };` },
+
+  { flags: false, why: "THE APP ICON — TelarMark's loom threads", code: `var warp = Path()\nwarp.move(to: CGPoint(x: 0, y: 0))` },
+  { flags: false, why: "the icon's gradient id", code: `<linearGradient id="warp" x1="0" y1="0">` },
+  { flags: false, why: "the weaving term in prose", code: `// Three bold warp strands and three bold weft strands interlock.` },
+  { flags: false, why: "a dated record naming the retired feature", code: `// Measured on main: \`warp\` is 2,988 characters.` },
+  { flags: false, why: "a directory that merely starts the same way", code: `import { x } from "./warping/thing";` },
+  { flags: false, why: "a longer word containing the letters", code: `const warped = transform(image);` },
+];
+
 /** Every non-test source file under a directory. */
 async function sourceFilesUnder(directory) {
   const found = [];
@@ -936,6 +1011,41 @@ async function sourceFilesUnder(directory) {
         if (entry.name === "node_modules" || entry.name === "release" || entry.name.startsWith(".next")) continue;
         await walk(next);
       } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+        found.push(next);
+      }
+    }
+  };
+  await walk(directory);
+  return found;
+}
+
+/**
+ * EVERY CODE FILE under a directory, tests included, repo-relative.
+ *
+ * TESTS ARE IN, unlike `sourceFilesUnder`: the check this feeds is about a name
+ * not coming back anywhere, and a helper resurrected in a test fixture is
+ * exactly how a retired module finds its way back into product code.
+ *
+ * `DerivedData/` joins the usual build-output exclusions — it holds vendored
+ * checkouts and Xcode's own copies of source, so a hit there names a file
+ * nobody can fix in place.
+ */
+async function codeFilesUnder(directory) {
+  const found = [];
+  const walk = async (relative) => {
+    let entries;
+    try {
+      entries = await readdir(join(ROOT, relative), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const next = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "release" || entry.name === "DerivedData") continue;
+        if (entry.name.startsWith(".next")) continue;
+        await walk(next);
+      } else if (/\.(tsx?|jsx?|mjs|cjs|swift)$/.test(entry.name)) {
         found.push(next);
       }
     }
@@ -1926,6 +2036,60 @@ const CHECKS = [
               "a new feature; it retires that argument. If this is genuinely wanted, the header is what has to change first.",
           );
         }
+      }
+      return failures;
+    },
+  },
+
+  {
+    name: "warp-stays-retired-self-test",
+    protects: "#877: the scan still catches both shapes of a Warp reference, and stays silent on the app icon's loom threads",
+    async run() {
+      const failures = [];
+      for (const { flags, why, code } of RETIRED_WARP_SAMPLES) {
+        const hits = retiredWarpReferences(code);
+        const shown = JSON.stringify(code);
+        if (flags && hits.length === 0) {
+          failures.push(`the scan MISSED a sample it must catch (${why}): ${shown}. warp-stays-retired below is now green for a shape it no longer sees.`);
+        }
+        if (!flags && hits.length > 0) {
+          failures.push(
+            `the scan FIRED on a sample it must ignore (${why}): ${shown}. ` +
+              "Telar is a loom and `warp` is one of its threads — a guard that flags the app icon is one the next person deletes rather than argues with.",
+          );
+        }
+      }
+      return failures;
+    },
+  },
+  {
+    name: "warp-stays-retired",
+    protects: "#877: no file under apps/, packages/ or workers/ imports through `/warp/` or names a warpScript/Runner/Spawn/Sandbox/Surface",
+    async run() {
+      const failures = [];
+      let scanned = 0;
+      for (const group of ["apps", "packages", "workers"]) {
+        for (const file of (await codeFilesUnder(group)).sort()) {
+          scanned += 1;
+          for (const hit of retiredWarpReferences(await read(file))) {
+            failures.push(
+              `${file}:${hit.line}: ${hit.what} — Warp was retired in #877 and may not come back.\n` +
+                "        The owner asked for it to go completely, with no chance of using it again: the tool, the four " +
+                "`src/warp/` modules, the protocol linkage and the surfaces that rendered it are all gone, and the tool " +
+                "walls are pinned WITHOUT it in `tool-names.test.ts` and `tool-budgets.test.ts`. If a fan-out is genuinely " +
+                "wanted again, that is a decision for the owner and a new name, not a resurrection of this one.\n" +
+                "        If you are reading this because of the LOOM — Telar's warp-and-weft mark — you have hit a bug in " +
+                "this check rather than the rule: a bare `warp` is deliberately allowed, and only the five suffixed " +
+                "identifiers and a path through `/warp/` are not.",
+            );
+          }
+        }
+      }
+      // An empty result from a scan is a claim about the scan. If the walker
+      // stopped finding files, this check would pass by reading nothing — the
+      // failure mode that looks exactly like success.
+      if (scanned === 0) {
+        failures.push("no code file was found under apps/, packages/ or workers/, which cannot be right — codeFilesUnder() has stopped walking, so this check is green because it read nothing.");
       }
       return failures;
     },

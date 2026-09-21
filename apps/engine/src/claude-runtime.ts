@@ -124,7 +124,7 @@ export type RuntimeQuery = AsyncIterable<unknown> & {
  * The per-turn half of the runtime, swapped whole at the top of every turn.
  *
  * The query is created ONCE with stable wrappers (`(...a) => bindings.current.x(...a)`)
- * because `canUseTool`, the Telar MCP tools and the warp spawn all close over
+ * because `canUseTool` and the Telar MCP tools all close over
  * per-turn state — the worker's request gate is bound to a claim token that
  * dies with the turn. The wrapper is what lets a session-lived process talk to
  * a turn-lived gate.

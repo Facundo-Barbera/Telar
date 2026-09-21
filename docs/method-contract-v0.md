@@ -17,7 +17,9 @@ Telar is the **machine**: environments, isolation, verification, acceptance,
 scheduling. A **method** — how an intention becomes finished work — is
 content, supplied per project and per person, the way an env contract is.
 Every dissatisfaction so far ("adapted per project", "warp with a bigger UI",
-"what about bmad") traces to method-content baked into the machine.
+"what about bmad") traces to method-content baked into the machine. (Warp itself
+was retired on 2026-09-20, in #877; the dissatisfaction it is quoted for here is
+the point, and it outlived the feature.)
 
 ## What the machine imposes regardless of method
 

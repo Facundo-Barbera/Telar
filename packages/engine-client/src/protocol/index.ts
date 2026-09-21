@@ -11,7 +11,7 @@
  *             now decides it on the way out of `GET /v2/sessions/live` (#457)
  *   items     timeline rows; the data protocol v1 discarded
  *   requests  approvals and questions, plus the auto-resolution policy
- *   tasks     sub-agents, background work, Warp linkage
+ *   tasks     sub-agents and background work
  *   tools     Telar's own MCP namespace: one server, capability-prefixed names
  *   notes     the project notebook — quick notes per project, and its socket
  *   prompts   prepared prompts: unsent messages kept by name, either hand's

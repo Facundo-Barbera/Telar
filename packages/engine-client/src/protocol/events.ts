@@ -171,7 +171,7 @@ const RequestResolved = event("request.resolved", {
   reason: z.string().optional(),
 });
 
-// ── tasks: sub-agents, background work, Warp ───────────────────────────────
+// ── tasks: sub-agents and background work ──────────────────────────────────
 const TaskStarted = event("task.started", { task: Task });
 const TaskProgress = event("task.progress", { task: Task, message: z.string().optional() });
 const TaskCompleted = event("task.completed", { task: Task });

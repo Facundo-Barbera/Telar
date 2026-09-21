@@ -1,26 +1,24 @@
 /**
- * engine protocol v2 — tasks: sub-agents, background work, and Warp.
+ * engine protocol v2 — tasks: sub-agents and background work.
  *
  * THE STRUCTURAL DECISION THIS FILE EXISTS TO ENCODE: aggregation is a
  * PROJECTION over the session's one event stream, not a parallel universe
  * beside it.
  *
- * Telar's Ultras (renamed Warp — the set of parallel threads held under tension
- * on a loom) own their own storage, journal, event bus, wake loop, sandbox and
- * surface: ten modules in the retired Ultra package. None of it is on the
- * session stream, which is exactly why the frozen cockpit needed a whole second
- * rail to display it, plus a third for ordinary sub-agents.
+ * The frozen cockpit's fan-out feature owned its own storage, journal, event
+ * bus, wake loop, sandbox and surface — which is exactly why it needed a whole
+ * second rail to display, plus a third for ordinary sub-agents. t3 code does
+ * the opposite and it is the best structural idea in its contract: there is no
+ * fleet or workflow entity at all. Everything rides the same stream as `task.*`
+ * events, and every surface (the roster, the "still working" pill) is a fold
+ * over that one stream. One timeline component renders sub-agents and
+ * background shells alike.
  *
- * t3 code does the opposite and it is the best structural idea in its contract:
- * there is no fleet or workflow entity at all. Fan-out rides the same stream as
- * `task.*` events carrying agent linkage — `agentId`, `parentAgentId`,
- * `workflowName`, `phaseIndex`. Every surface (the roster, the progress tree,
- * the "still working" pill) is a fold over that one stream. One timeline
- * component renders sub-agents, warp agents and background shells alike.
- *
- * The Warp SCRIPT-AUTHORING surface — `agent()`, `parallel()`, `pipeline()`,
- * `phase()` — is genuinely good and does not change. What changes is where its
- * observations go.
+ * THAT DECISION OUTLIVED THE FEATURE THAT MOTIVATED IT. #877 retired Warp, and
+ * the linkage block it added here — `WarpLinkage`, `WarpPhase`, and an optional
+ * `warp` on every `Task` — went with it. Nothing here has to shrink to notice:
+ * the linkage was optional AS A BLOCK precisely so an ordinary sub-agent
+ * carried none of it, so removing it removes a field and no structure.
  */
 import { z } from "zod";
 import { Id, Effort, ModelSelection, Timestamp, UsageSnapshot } from "./common";
@@ -57,44 +55,10 @@ export const TaskState = z.enum([
 export type TaskState = z.infer<typeof TaskState>;
 
 /**
- * A phase in a Warp run. Declared up front by the script's `meta.phases` so a
- * client can draw the whole progress tree before any agent has finished,
- * instead of growing it row by row and reflowing.
- */
-export const WarpPhase = z.object({
-  title: z.string().min(1),
-  detail: z.string().optional(),
-});
-export type WarpPhase = z.infer<typeof WarpPhase>;
-
-/**
- * Warp-specific linkage, present only on tasks that belong to a warp run.
- *
- * OPTIONAL AS A BLOCK, and that is the whole point of the design: an ordinary
- * sub-agent carries none of it and is still the same `Task`. Nothing has to
- * know about warps to render one.
- */
-export const WarpLinkage = z.object({
-  /** The run this task belongs to. Distinct from the script's name so two
-   *  concurrent runs of one script do not merge. */
-  warpRunId: Id,
-  warpName: z.string().min(1),
-  /** Position in the declared phase list, and its title repeated so a fold can
-   *  label a row without holding the whole run. */
-  phaseIndex: z.number().int().nonnegative().optional(),
-  phaseTitle: z.string().min(1).optional(),
-  /** Ordinal within its phase — the "agent 3 of 8" a progress tree shows. */
-  agentIndex: z.number().int().nonnegative().optional(),
-  /** Which attempt this is, when the script retries. */
-  attempt: z.number().int().nonnegative().optional(),
-});
-export type WarpLinkage = z.infer<typeof WarpLinkage>;
-
-/**
  * One sub-agent or background job.
  *
- * `kind`, `title`, `model` AND the linkage fields REPEAT ON EVERY task event,
- * not just on `task.started`. That is deliberate and copied from t3 code, whose
+ * `kind`, `title` and `model` REPEAT ON EVERY task event, not just on
+ * `task.started`. That is deliberate and copied from t3 code, whose
  * comment explains the failure it prevents: a client that joined a late
  * progress row to its start row could not do so once the start row had aged out
  * of retention, and the agent silently vanished from the roster. Repetition is
@@ -142,8 +106,6 @@ export const Task = z.object({
 
   /** The provider's own task/tool-use handle, for correlation. */
   providerTaskId: z.string().min(1).optional(),
-
-  warp: WarpLinkage.optional(),
 
   /** Per-task usage, so a fan-out's cost can be attributed rather than only
    *  summed at the turn. */

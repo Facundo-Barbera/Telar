@@ -250,6 +250,12 @@ reachable and keeps it reachable for the next toolkit.
 
 ## 7. Warp — the aggregation mode formerly called Ultras
 
+> **Retired on 2026-09-20 (#877).** Warp was barely used and the owner decided
+> to remove it entirely: the tool, the four `src/warp/` modules, the protocol
+> linkage and the surfaces that rendered it are all gone, and this section is
+> kept as the record of what was decided rather than as a description of
+> anything that exists.
+
 **Decided: Ultras becomes Warp.** In weaving, the warp is the set of parallel
 threads held under tension on a loom, through which the weft passes. It is
 semantically exact for a parallel fan-out and native to Telar's vocabulary.

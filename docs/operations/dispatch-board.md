@@ -503,6 +503,31 @@ obvious reading — too many workers — was *also* true and separately correcte
 but acting on it alone would have throttled real work while the leak continued.
 Filed as #807.
 
+### What Warp's child-tool denylist knew
+
+*2026-09-20, written as Warp was retired (#877).* `WARP_CHILD_DISALLOWED_TOOLS`
+was the only place in the tree that enumerated every way a child process could
+escape the harness that spawned it, and it was measured against a real child's
+`system/init` rather than guessed. It covered five categories: **fan-out**, both
+the sub-agent verbs and the provider's own workflow harness, on the grounds that
+a child running one nests a fleet inside a fleet that neither the gate nor the
+roster can see; **scheduling**, because a cron entry or a wake-up outlives the
+run by design and fires later with nothing left that started it; **cross-session
+messaging and notification**, because reaching another agent is parallelism
+expressed outside the script — fan-out wearing a different hat; **worktree
+moves**, because where a fan-out's writes land is the session's decision and a
+child that switched checkouts mid-run would scatter them; and **the whole
+`sessions_*` wall under both of its server keys**, the in-process one and the
+HTTP one, every verb rather than only the create verb, because creating a
+session spends the engine's live-session budget from inside a concurrency gate
+that counts processes and knows nothing about sessions, and because reading or
+steering a session from inside a script is the same rule again. It was
+explicitly the *brace*, not the load-bearing arm: withholding Telar's MCP server
+from the child was what actually closed the door, and a name-level denial only
+survives a user who adds the sessions socket to their own config — it cannot
+survive one who names that server something else. The list died with the file
+and is recorded here as history, not as a list anyone can wire back.
+
 ### Needs Facundo
 
 - **#541** — Agent v2. Held at his word on 2026-09-20: *"mejor dejamos este issue

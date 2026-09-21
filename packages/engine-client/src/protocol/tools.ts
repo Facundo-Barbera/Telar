@@ -39,7 +39,7 @@ export const TELAR_MCP_SERVER = "telar";
  * reachable by Codex, and the Codex app-server takes MCP servers as CONFIG (a
  * url), not as an in-process handle — so the browser is served over HTTP by the
  * worker that owns it, and an HTTP server cannot share the `telar` key with the
- * in-process server that still carries warp. Both keys are
+ * in-process server that Claude turns still register. Both keys are
  * Telar's: `isTelarMcpServer` is what the capability mapping and the approval
  * posture read, so a `browser_*` call is a `browser_action` row on either
  * provider.

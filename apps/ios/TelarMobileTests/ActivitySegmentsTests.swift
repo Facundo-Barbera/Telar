@@ -178,11 +178,10 @@ import Testing
         return JournalItem(item: item, streamedText: "", openedBy: 0)
     }
 
-    private func task(_ id: String, state: String = "completed", kind: String = "agent", warp: Bool = false) -> JournalTask {
-        let warpField = warp ? #","warp":{"warpRunId":"w1","warpName":"fan-out"}"# : ""
+    private func task(_ id: String, state: String = "completed", kind: String = "agent", extra: String = "") -> JournalTask {
         let agent = try! JSONDecoder().decode(AgentTask.self, from: Data("""
         {"id":"\(id)","sessionId":"s","runId":"run_1","kind":"\(kind)","state":"\(state)",
-         "startedAt":5,"updatedAt":5\(warpField)}
+         "startedAt":5,"updatedAt":5\(extra)}
         """.utf8))
         return JournalTask(task: agent, items: [])
     }
@@ -192,11 +191,16 @@ import Testing
         #expect(renderable(items, tasks: [task("t1")]).map(\.id) == ["a", "s1", "b"])
     }
 
-    @Test func aBackgroundedShellIsNotADelegateButAWarpRunIs() {
+    @Test func aBackgroundedShellIsNotADelegate() {
         // The tool call that backgrounded the shell is already a row in this
         // same turn; the chip would be a second, worse telling of it.
         #expect(renderable([spawn("s1", "t1")], tasks: [task("t1", kind: "background")]).isEmpty)
-        #expect(renderable([spawn("s1", "t1")], tasks: [task("t1", kind: "background", warp: true)]).map(\.id) == ["s1"])
+        // #877: a Warp run's own row used to be the ONE background task that
+        // survived this, on the strength of its linkage. The linkage is gone
+        // from the protocol, and an unknown field decodes to nothing, so a
+        // background row is dropped whatever else rides along with it.
+        let stale = #","warp":{"warpRunId":"w1","warpName":"fan-out"}"#
+        #expect(renderable([spawn("s1", "t1")], tasks: [task("t1", kind: "background", extra: stale)]).isEmpty)
     }
 
     @Test func aSpawnWhoseTaskIsMissingIsStillARow() {
@@ -238,8 +242,11 @@ import Testing
         #expect(spawnlessTasks(items, tasks: tasks).map(\.id) == ["t2"])
     }
 
-    @Test func transcriptTasksKeepsAgentsAndWarpRunsOnly() {
-        let kept = transcriptTasks([task("a"), task("b", kind: "background"), task("c", kind: "background", warp: true)])
-        #expect(kept.map(\.id) == ["a", "c"])
+    @Test func transcriptTasksKeepsAgentsOnly() {
+        // #877 removed the one exception: `kind` is the whole rule, so EVERY
+        // background row is dropped rather than all but a fan-out's own.
+        let stale = #","warp":{"warpRunId":"w1","warpName":"fan-out"}"#
+        let kept = transcriptTasks([task("a"), task("b", kind: "background"), task("c", kind: "background", extra: stale)])
+        #expect(kept.map(\.id) == ["a"])
     }
 }
