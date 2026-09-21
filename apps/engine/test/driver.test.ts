@@ -1727,6 +1727,43 @@ test("a toolkit registers under the SAME one server, and only when the turn carr
   expect(seen.serverKeys).toEqual([]);
 });
 
+test("a turn that carries the run capability registers run_* on the in-process telar server", async () => {
+  // The packaged app has no telar socket, so Claude reads the wall through the
+  // in-process SDK server. `RUN_BRIEFING` has told every agent about
+  // run_save_config since #198 W4, and this path never registered it: the
+  // socket wall had `run`, the SDK list did not. Pinned as the smoke test
+  // that found it — Sonnet read the briefing, looked for the tool, and
+  // launched the dev server from Bash instead.
+  const names: string[] = [];
+  const sdk = async () => ({
+    tool: (name: string, _d: string, _s: unknown, handler: (a: Record<string, unknown>) => Promise<{ content: unknown[] }>) => {
+      names.push(name);
+      return { name, handler };
+    },
+    createSdkMcpServer: (input: { tools: { name: string }[] }) => input,
+    async *query() {
+      yield { type: "result", subtype: "success" };
+    },
+  });
+  const run_ = {
+    configurations: async () => [],
+    createConfiguration: async () => ({}) as never,
+    updateConfiguration: async () => ({}) as never,
+    removeConfiguration: async () => {},
+    status: async () => ({ history: [] }) as never,
+    start: async () => ({}) as never,
+    stop: async () => ({}) as never,
+    restart: async () => ({}) as never,
+    release: async () => {},
+    output: async () => ({}) as never,
+    bytes: async () => ({}) as never,
+    write: async () => {},
+    resize: async () => {},
+  };
+  await run(createClaudeDriver(sdk), { run: run_ as never }).result;
+  expect(names).toEqual(expect.arrayContaining(["run_configs", "run_save_config", "run_start", "run_status", "run_output", "run_stop"]));
+});
+
 // ── AskUserQuestion ──────────────────────────────────────────────────────────
 
 const COLOR_QUESTION = {

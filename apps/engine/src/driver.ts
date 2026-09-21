@@ -2396,6 +2396,17 @@ export function createClaudeDriver(
         if (display && sdk.tool) telarTools.push(...displayTools(sdk.tool, delegatingCapability(() => bindings.current.display)));
 
         /**
+         * THE RUN TOOLKIT, WHEN THE TURN CARRIES A PROJECT AND A DIRECTORY. No
+         * approval gate here either: every verb is an HTTP call to the daemon,
+         * which owns the process group and applies its own gates. This is the
+         * path the packaged app takes (no socket, in-process SDK server), and
+         * it was the one place `runTools` was not registered — the socket wall
+         * above had it, so `RUN_BRIEFING` promised tools that only Codex and
+         * OpenCode could see.
+         */
+        if (run && sdk.tool) telarTools.push(...runTools(sdk.tool, delegatingCapability(() => bindings.current.run)));
+
+        /**
          * ONE `telar` REGISTRATION, FROM WHICHEVER TRANSPORT THIS DEPLOYMENT HAS.
          *
          * With a lease the key is the worker-hosted http entry and the
