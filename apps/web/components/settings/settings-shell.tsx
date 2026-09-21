@@ -374,6 +374,10 @@ export function SettingsShell({
           </div>
         )}
       </nav>
+      {/* NO LINE — issue #905, and the same ruling as the cockpit rail. This
+          button used to paint a hairline down the gap PERMANENTLY, not even
+          only on hover. The `col-resize` cursor is the affordance; the strip
+          is a hit area that draws nothing but its keyboard focus ring. */}
       <button
         type="button"
         aria-label="Resize settings sidebar"
@@ -384,10 +388,8 @@ export function SettingsShell({
           document.body.style.cursor = "col-resize";
           document.body.style.userSelect = "none";
         }}
-        className="app-no-drag -mx-2 hidden w-4 shrink-0 cursor-col-resize items-stretch justify-center md:flex"
-      >
-        <span className="my-3 w-px rounded bg-sidebar-border/40" />
-      </button>
+        className="app-no-drag -mx-2 hidden w-4 shrink-0 cursor-col-resize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:block"
+      />
 
       {/* Content pane — sticky header + internal scroll. On `md` it is the
           second island: the conversation card's recipe from the cockpit

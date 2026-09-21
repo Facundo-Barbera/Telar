@@ -297,3 +297,40 @@ test("a toggle row is a destination too", () => {
   );
   expect(html).toContain('id="settings-row-generated-text-name-sessions"');
 });
+
+/**
+ * THE RESIZE HANDLE PAINTS NO SEAM — issue #905.
+ *
+ * This one was worse than the cockpit rail's: the hairline down the gap was
+ * PERMANENT, a child `<span>` the button always rendered rather than something
+ * that arrived on hover. The ruling covers both shells — the `col-resize`
+ * cursor is the affordance, and the gap between two floating islands is a gap,
+ * not an edge. Rendered, because the claim is about what reaches the DOM.
+ */
+const resizeHandle = () => {
+  const html = shell();
+  const at = html.indexOf('aria-label="Resize settings sidebar"');
+  expect(at).toBeGreaterThan(-1);
+  const start = html.lastIndexOf("<button", at);
+  return html.slice(start, html.indexOf("</button>", at) + "</button>".length);
+};
+
+test("the settings resize handle renders no child element", () => {
+  expect(resizeHandle()).toMatch(/<button\b[^>]*><\/button>/);
+});
+
+test("and draws nothing of its own — no hairline, no after:bg-*", () => {
+  const html = resizeHandle();
+  expect(html).not.toContain("w-px");
+  expect(html).not.toContain("bg-sidebar-border");
+  expect(html).not.toContain("after:bg-");
+});
+
+test("but it is still a handle, and still reachable by keyboard", () => {
+  const html = resizeHandle();
+  expect(html).toContain("w-4");
+  expect(html).toContain("cursor-col-resize");
+  // The paint is gone; the focus state cannot go with it, or the button is
+  // reachable and invisible.
+  expect(html).toContain("focus-visible:ring-ring");
+});
