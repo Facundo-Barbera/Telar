@@ -847,6 +847,19 @@ class DesktopBrowserManager {
      */
     this.tabStore = dependencies.tabStore || null;
     this.restoreInventory(this.tabStore ? this.tabStore.load() : null);
+    /**
+     * THE COCKPIT ZOOMED, SO THE VIEW MOVES NOW (#895) — not on whatever the
+     * renderer happens to publish next. A wheel zoom is the only one Electron
+     * announces (`zoom-changed` is documented for exactly that); a View-menu
+     * ⌘+/⌘− reaches us the other way, as the republished rect the renderer
+     * sends when its own CSS viewport changes size. Both land on the same
+     * placement, which reads the factor fresh, so neither path needs the
+     * other to have fired.
+     */
+    this.window?.webContents?.on?.("zoom-changed", () => {
+      if (this._disposed) return;
+      this.applyVisibility();
+    });
   }
 
   /** Seed remembered tabs as hibernated records. Nothing loads here. */
@@ -1688,8 +1701,12 @@ class DesktopBrowserManager {
     // bounds for a few frames. Those are not a size anyone chose: adopting
     // them would leave a background agent a 200×200 page. Below the
     // viewport minimum the last meaningful size is kept.
-    if (this.bounds.width < VIEWPORT_MIN || this.bounds.height < VIEWPORT_MIN) return null;
-    const next = resolveViewport({ width: this.bounds.width, height: this.bounds.height });
+    // The stage, not the published rect: what the page lays out for is the
+    // view's own pixels, so the cockpit's zoom is part of the size it adopts
+    // (#895). At zoom 1 the two are the same number.
+    const stage = this.stageBounds();
+    if (stage.width < VIEWPORT_MIN || stage.height < VIEWPORT_MIN) return null;
+    const next = resolveViewport({ width: stage.width, height: stage.height });
     const current = this.viewportOf(tab);
     if (next.width === current.width && next.height === current.height) return null;
     return next;
@@ -1727,12 +1744,61 @@ class DesktopBrowserManager {
     return this.viewportModeOf(tab) === "fit" && this.isTabVisible(tab);
   }
 
-  /** The viewport the page is ACTUALLY laid out for right now. */
-  effectiveViewport(tab) {
-    return this.isNativeFit(tab) ? { width: this.bounds.width, height: this.bounds.height } : this.viewportOf(tab);
+  /**
+   * THE COCKPIT'S OWN ZOOM (#895), and the one factor between two units that
+   * look alike and are not.
+   *
+   * The View menu carries Electron's zoom roles, which zoom THIS window's
+   * webContents, and Chromium remembers that per origin — one ⌘− is a 0.9×
+   * cockpit across relaunches. Everything the renderer publishes (the panel's
+   * rect, the host's size) is in CSS pixels of that zoomed page, while
+   * `WebContentsView.setBounds` and the page inside the view speak the
+   * window's device-independent pixels, which are `css × zoom`. Nothing used
+   * to multiply, so at any zoom but 1 the view landed at `rect / zoom` from
+   * the box the panel had drawn for it.
+   *
+   * READ FRESH, never cached: a zoom change is then a fact the next placement
+   * picks up on its own, with no copy anywhere to go stale. NOT the per-tab
+   * page zoom (`applyZoom`) — that is the page's own, a different quantity.
+   */
+  cockpitZoom() {
+    const factor = this.window?.webContents?.getZoomFactor?.();
+    return Number.isFinite(factor) && factor > 0 ? factor : 1;
   }
 
-  /** The native rect the tab's view occupies inside the current bounds. */
+  /** A rect the renderer published (CSS px of the cockpit), in the window's
+   *  own pixels — what `setBounds` takes. */
+  windowRect(rect) {
+    const zoom = this.cockpitZoom();
+    return {
+      x: Math.round(rect.x * zoom),
+      y: Math.round(rect.y * zoom),
+      width: Math.max(1, Math.round(rect.width * zoom)),
+      height: Math.max(1, Math.round(rect.height * zoom)),
+    };
+  }
+
+  /** The panel's rect in the window's own pixels: the stage the page is
+   *  ACTUALLY laid out into, which is what a fit tab adopts as its viewport
+   *  and what a capture clips to. */
+  stageBounds() {
+    return this.windowRect(this.bounds);
+  }
+
+  /** The viewport the page is ACTUALLY laid out for right now. */
+  effectiveViewport(tab) {
+    if (!this.isNativeFit(tab)) return this.viewportOf(tab);
+    const stage = this.stageBounds();
+    return { width: stage.width, height: stage.height };
+  }
+
+  /**
+   * The rect the tab's view occupies inside the current bounds, IN THE
+   * PANEL'S OWN CSS PIXELS — the units the renderer published and the units
+   * it reads this back in (`presentation.rect`, the frozen frame's rect, both
+   * of which subtract the host's own `getBoundingClientRect`). `windowRect`
+   * is where it becomes something `setBounds` can take.
+   */
   nativeRect(tab) {
     if (this.isNativeFit(tab)) return { ...this.bounds };
     return fitViewport(this.viewportOf(tab), this.bounds).rect;
@@ -1821,6 +1887,9 @@ class DesktopBrowserManager {
       this.applyBorderRadius(tab, view);
       // PREVIEWED: the view fills its own window and the panel's visibility
       // rules do not apply to it (#473).
+      // A PREVIEWED TAB IS NOT THIS WINDOW'S, so the cockpit's zoom is not
+      // its: `previewRect` reads its own window's content size, which is
+      // already in that window's pixels (#895).
       if (this.previewing(tab)) {
         view.setVisible(true);
         view.setBounds(this.previewRect(tab));
@@ -1836,7 +1905,8 @@ class DesktopBrowserManager {
       // applyVisibility) reveals it.
       const shown = this.isTabShown(tab) && !this.isBlank(tab);
       view.setVisible(shown);
-      if (shown) view.setBounds(this.nativeRect(tab));
+      // THE ONE SEAM where the panel's CSS pixels become the window's (#895).
+      if (shown) view.setBounds(this.windowRect(this.nativeRect(tab)));
     };
     // THE DRAG FAST PATH. A panel resize handle publishes bounds every frame,
     // and the overwhelming majority of those frames owe the page NOTHING: the
@@ -3627,9 +3697,18 @@ class DesktopBrowserManager {
 
   /** What the emulation for this tab should be right now. */
   viewportTarget(tab) {
-    if (this.isNativeFit(tab)) return { emulate: false, width: this.bounds.width, height: this.bounds.height, scale: 1 };
+    if (this.isNativeFit(tab)) {
+      const stage = this.stageBounds();
+      return { emulate: false, width: stage.width, height: stage.height, scale: 1 };
+    }
     const viewport = this.viewportOf(tab);
-    const scale = this.isTabVisible(tab) ? fitViewport(viewport, this.bounds).scale : 1;
+    // THE PRESENTATION SCALE IS NATIVE. The page renders into the view's own
+    // pixels, and the view is the fitted rect scaled by the cockpit's zoom
+    // (`place`), so the same zoom rides the scale or the page is rendered at
+    // a size the view does not have — clipped at 0.9×, letterboxed at 1.1×
+    // (#895). The CSS-space scale the renderer draws its frame with stays
+    // unzoomed, which is why `state()` computes that one itself.
+    const scale = this.isTabVisible(tab) ? fitViewport(viewport, this.bounds).scale * this.cockpitZoom() : 1;
     return { emulate: true, width: viewport.width, height: viewport.height, scale };
   }
 
