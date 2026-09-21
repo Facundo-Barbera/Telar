@@ -727,11 +727,12 @@ function TerminalPane({
       data-active={active ? "true" : "false"}
       // MOUNTED BUT HIDDEN when it is not the shell on screen — see the strip's
       // comment above for why unmounting is not an option.
+      // `hidden` is `display: none`, which is also what takes this pane's
+      // emulator out of the tab order and out of the accessibility tree —
+      // nine live textareas reachable by Tab would make the strip's own keys
+      // the slow way round. No `inert` beside it: that would be the same
+      // statement twice, and the two could drift.
       className={cn("absolute inset-0 flex flex-col", !active && "hidden")}
-      // A hidden pane is not in the tab order and is not read out: its emulator
-      // is a live control, and leaving nine of them reachable by Tab would make
-      // the strip's own keys the slow way round.
-      {...(active ? {} : { "aria-hidden": true, inert: true })}
     >
       {phase.kind === "ended" && (
         /**
