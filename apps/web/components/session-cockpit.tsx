@@ -3899,8 +3899,11 @@ export function SessionCockpit({
             {...(headerMenu ? { menu: headerMenu } : {})}
             onRename={(next) => void rename(next)}
             // The masthead's Run control hands monitoring back to the panel
-            // through the same opener every other surface uses.
-            onWatchRun={() => showPanelTab("run")}
+            // through the same opener every other surface uses — and since
+            // #890 that is the TERMINAL, where a run is a chip beside the
+            // session's shells rather than a second surface drawing the same
+            // kind of bytes.
+            onWatchRun={() => showPanelTab("terminal")}
             panel={
               <>
                 {/* THE CHECKOUT INSPECTOR NEEDS A CHECKOUT. Absent rather than

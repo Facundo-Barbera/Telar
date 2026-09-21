@@ -108,23 +108,23 @@ describe("file tabs", () => {
   });
 });
 
-describe("the Run surface", () => {
-  test("is a real tab: it validates, it survives a restore, and it is not file-shaped", () => {
-    // The panel restores tab ids from storage, so a surface that does not
-    // validate here is one that silently disappears on the next reload.
-    expect(isPanelTab("run")).toBe(true);
-    expect(migratePanelTab("run")).toBe("run");
-    // Not file-shaped: it must not be collapsed into the Editor.
-    expect(isFilePanelTab("run")).toBe(false);
+describe("the Run surface, which is now the Terminal's strip (#890)", () => {
+  test("`run` is no longer a tab kind at all", () => {
+    // Run and Terminal were two surfaces for one idea, each with its own
+    // emulator drawing the same kind of bytes. A run is a CHIP now; leaving the
+    // kind valid would let a saved layout restore a pane nothing renders.
+    expect(isPanelTab("run")).toBe(false);
   });
 
-  test("describes itself without needing the network or a session", () => {
-    // A restored tab has to be drawable before anything is fetched — the run
-    // status is a poll, and a tab that could not label itself until it answered
-    // would render blank on every cold open.
-    const { label, blurb } = describePanelTab("run");
-    expect(label).toBe("Run");
-    expect(blurb.length).toBeGreaterThan(0);
+  test("a saved Run tab opens the Terminal rather than nothing", () => {
+    // The whole migration: the rename is what stops it restoring as a blank
+    // pane, and `collapseTerminalTabs` (#889) is what folds it into the
+    // Terminal somebody also had open, params and all, so their shells are not
+    // orphaned. The CHIP comes from the surface's own status read on mount.
+    expect(migratePanelTab("run")).toBe("terminal");
+    expect(isPanelTab(migratePanelTab("run"))).toBe(true);
+    // Not file-shaped: it must not be collapsed into the Editor instead.
+    expect(isFilePanelTab("run")).toBe(false);
   });
 });
 
@@ -155,7 +155,6 @@ describe("the Terminal surface", () => {
     expect(isMultiInstancePanelTab("terminal")).toBe(false);
     expect(isMultiInstancePanelTab("editor")).toBe(true);
     expect(isMultiInstancePanelTab("diff")).toBe(true);
-    expect(isMultiInstancePanelTab("run")).toBe(false);
     expect(isMultiInstancePanelTab("processes")).toBe(false);
   });
 

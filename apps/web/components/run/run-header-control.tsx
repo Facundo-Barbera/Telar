@@ -1,15 +1,23 @@
 "use client";
 
 /**
- * The masthead's run control: SETUP and start/stop live here, monitoring
- * lives in the right panel's Run tab. The same `RunConfigEditor` the panel
- * uses is rendered inline, so there is one configuration form, not two.
+ * The masthead's run control: SETUP and start/stop live here, monitoring lives
+ * in the right panel's Terminal tab, where a run is a chip beside the session's
+ * shells (#890). The same `RunConfigEditor` that tab's editor uses is rendered
+ * inline, so there is one configuration form, not two.
  *
- * Host and session together are this control's identity — the client is
- * pinned with `hostFetcher(hostId)` exactly as `RunPanel` pins it, because a
- * pathname-following singleton would ask whichever host the URL happens to
- * name. Two hosts can hold the same session id; an answer is dropped unless
- * the identity that asked for it is still the one mounted.
+ * THIS PILL DOES NOT POLL ANY MORE, and that is the second half of #890. It
+ * asked `/run/status` every four seconds while something was live and every
+ * twelve while nothing was — for ever, in every window with the cockpit open,
+ * whether or not anybody was looking at it. It now reads status ONCE per mount
+ * and follows the engine's `run.status` frames (`lib/run/status-stream.ts`),
+ * which carry the whole view: a run started from another session, or by an
+ * agent, still reaches this pill, and it reaches it sooner.
+ *
+ * Host and session together are still this control's identity — the client is
+ * pinned with `hostFetcher(hostId)`, because a pathname-following singleton
+ * would ask whichever host the URL happens to name and two hosts can hold the
+ * same session id.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDownIcon, CircleStopIcon, Loader2Icon, PlusIcon, RotateCwIcon, SlidersHorizontalIcon } from "lucide-react";
@@ -17,16 +25,12 @@ import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { createRunApi, type RunApi } from "@/lib/run/api";
 import { RunGlyph } from "@/lib/run/icons";
 import { runAction, statusLabel, statusTone, worktreeLabel, type RunTone } from "@/lib/run/presentation";
-import type { RunConfigurationDraft, RunConfigurationView, RunStatusAnswer, RunView } from "@/lib/run/types";
+import { useRunStatusFeed } from "@/lib/run/status-stream";
+import type { RunConfigurationDraft, RunConfigurationView, RunView } from "@/lib/run/types";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RunConfigEditor } from "./run-config-editor";
 import { cn } from "@/lib/utils";
-
-/** Idle polls too: a run started from the panel or another session must reach
- *  this pill, or the masthead and the panel disagree about what is running. */
-const POLL_ACTIVE_MS = 4000;
-const POLL_IDLE_MS = 12_000;
 
 const TONE_DOT: Record<RunTone, string> = {
   idle: "bg-muted-foreground/40",
@@ -36,7 +40,7 @@ const TONE_DOT: Record<RunTone, string> = {
   lost: "bg-muted-foreground/60",
 };
 
-type Channel = "status" | "configs";
+type Channel = "configs";
 /** What a read carries: the generation it opened under, and its place in its
  *  own channel's sequence. */
 export type ReadToken = { channel: Channel; generation: number; seq: number };
@@ -47,38 +51,29 @@ export type ReadToken = { channel: Channel; generation: number; seq: number };
  * An answer is stale if a mutation or unmount bumped the generation, or if a
  * newer read on the same channel has since opened — two configs reads with no
  * mutation between them still order, so the earlier one cannot overwrite the
- * later one's list. The status latch is owned by its token: only the read
- * holding it may release it, or an old read's `finally` would free the latch
- * a newer read is holding and let polls overlap.
+ * later one's list.
+ *
+ * THE STATUS CHANNEL AND ITS LATCH ARE GONE (#890). They existed to keep two
+ * overlapping status POLLS from landing out of order, and there is no status
+ * poll any more: `useRunStatusFeed` reads once and then follows a stream, whose
+ * frames are ordered by the connection they arrive on. What is left is the
+ * configurations list, which is still read on mount and on every open.
  *
  * Exported because this is the rule worth testing directly; the component
  * below is its only caller.
  */
 export function createReadGuard() {
   let generation = 0;
-  const newest: Record<Channel, number> = { status: 0, configs: 0 };
-  let holder: ReadToken | undefined;
+  const newest: Record<Channel, number> = { configs: 0 };
 
   const open = (channel: Channel): ReadToken => ({ channel, generation, seq: (newest[channel] += 1) });
 
   return {
     open,
     stale: (token: ReadToken) => token.generation !== generation || token.seq !== newest[token.channel],
-    /** A mutation or unmount: every read in flight is now stale, and the
-     *  latch is freed so the re-read a start or stop needs can run. */
+    /** A mutation or unmount: every read in flight is now stale. */
     invalidate: () => {
       generation += 1;
-      holder = undefined;
-    },
-    /** The token to carry, or null when a status read is already in flight. */
-    takeStatus: (): ReadToken | null => {
-      if (holder) return null;
-      holder = open("status");
-      return holder;
-    },
-    /** Only the holder may release. */
-    releaseStatus: (token: ReadToken) => {
-      if (holder === token) holder = undefined;
     },
   };
 }
@@ -124,7 +119,6 @@ export function RunHeaderControl({
 
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<RunStatusAnswer>();
   const [configs, setConfigs] = useState<RunConfigurationView[]>();
   const [editing, setEditing] = useState<{ config?: RunConfigurationView } | undefined>();
   const [error, setError] = useState<string>();
@@ -135,29 +129,18 @@ export function RunHeaderControl({
   // Unmount discards whatever is still in flight.
   useEffect(() => () => guard.invalidate(), [guard]);
 
-  const refresh = useCallback(() => {
-    const token = guard.takeStatus();
-    if (!token) return;
-    api
-      .status(sessionId)
-      .then((answer) => {
-        if (!guard.stale(token)) setStatus(answer);
-      })
-      .catch((cause: unknown) => {
-        if (!guard.stale(token)) setError(cause instanceof Error ? cause.message : "Could not read the run status.");
-      })
-      .finally(() => guard.releaseStatus(token));
-  }, [api, sessionId, guard]);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
+  /**
+   * ONE READ, THEN EVENTS — and `refresh` is NOT a poll (#890).
+   *
+   * The feed asks `/run/status` once per mount and then follows the engine's
+   * frames. `refresh` re-reads and re-opens, and is called only after a
+   * MUTATION THIS CONTROL PERFORMED, so a pressed button does not look
+   * unpressed while its own round trip finishes. Nothing calls it on a timer.
+   */
+  const feed = useRunStatusFeed({ sessionId, ...(hostId ? { hostId } : {}), api });
+  const status = feed.status;
+  const refresh = feed.refresh;
   const active = status?.active;
-  useEffect(() => {
-    const timer = window.setInterval(refresh, active ? POLL_ACTIVE_MS : POLL_IDLE_MS);
-    return () => window.clearInterval(timer);
-  }, [active, refresh]);
 
   /** Read on every open: a configuration added or renamed in the panel must
    *  not be invisible here until the page reloads. */
