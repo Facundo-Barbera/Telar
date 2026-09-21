@@ -3445,7 +3445,20 @@ describe("subscriptions", () => {
     expect(() => store.subscribe("session_one", { targetSessionId: "session_one" })).toThrow(/cannot subscribe to itself/);
     store.archiveSession("session_two");
     expect(() => store.subscribe("session_one", { targetSessionId: "session_two" })).toThrow(/archived/);
-    expect(() => store.submitTurn("session_one", { runId: "run_x", input: "x", origin: "session" })).toThrow(/wake reason/);
+    /**
+     * THE GUARD IS EXACTLY-ONE-COMPANION, and #543 widened it from two
+     * companions to three rather than dropping it to let a clock through. Both
+     * directions are pinned here, because the half that refuses a bare origin
+     * is satisfied by a guard that refuses everything.
+     */
+    expect(() => store.submitTurn("session_one", { runId: "run_x", input: "x", origin: "session" })).toThrow(/exactly one companion/);
+    // A schedule origin with no `scheduleOrigin` is the same refusal…
+    expect(() => store.submitTurn("session_one", { runId: "run_y", input: "y", origin: "schedule" })).toThrow(/exactly one companion/);
+    // …and a companion with NO origin is refused from the other side, which is
+    // what keeps `scheduleOrigin` from being smuggled onto an ordinary turn.
+    expect(() =>
+      store.submitTurn("session_one", { runId: "run_z", input: "z", scheduleOrigin: { scheduleId: "sched_1", dueAt: 1 } }),
+    ).toThrow(/exactly one companion/);
     expect(() => store.unsubscribe("sub_nope")).not.toThrow();
     expect(store.unsubscribe("sub_nope")).toBe(false);
   });

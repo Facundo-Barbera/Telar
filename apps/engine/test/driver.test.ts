@@ -1700,6 +1700,9 @@ test("a toolkit registers under the SAME one server, and only when the turn carr
     "sessions_steps",
     "sessions_step",
     "sessions_grep",
+    // #543, appended at the END so the wall GROWS rather than reorders — a
+    // reordered list is a diff nobody can read against the one before it.
+    "sessions_schedule",
     "warp",
   ]);
 

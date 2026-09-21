@@ -226,6 +226,31 @@ test("the bound tool array stays well under what it was, with every tool still o
   expect(JSON.stringify(agentToolSpecs(whole)).length).toBeLessThan(16_200);
 });
 
+test("THE AGENT IS NOT HANDED THE TWO TOOLS THAT NEED A SESSION (#723, #543)", () => {
+  /**
+   * THE COUNT ABOVE PINS THIS ALREADY, but only by arithmetic — this names the
+   * two and says why, so somebody who raises that number has to decide rather
+   * than discover.
+   *
+   * The Agent is a LangGraph THREAD, not a session: no queue, no run, no claim
+   * token. `sessions_report_window` holds peer reports in a session's mailbox
+   * and the Agent has none. `sessions_schedule` fails on the same fact one step
+   * later — a row names the session its prompt is submitted INTO, so one made
+   * here would aim a clock at a thread id, and the first sweep would find no
+   * such session and disable it. WORK THAT OUTLIVES ITS CALLER and belongs to
+   * nobody is exactly what must not be creatable, and the failure arriving
+   * hours later is what makes withholding better than refusing.
+   */
+  const names = wholeWall().map((tool) => tool.name);
+  expect(names).not.toContain("sessions_report_window");
+  expect(names).not.toContain("sessions_schedule");
+  // AND THE REST OF THE SESSIONS WALL IS THERE, so this is not passing because
+  // the Agent was handed nothing.
+  for (const given of ["sessions_list", "sessions_send", "sessions_read", "sessions_create"]) {
+    expect(names).toContain(given);
+  }
+});
+
 /* ------------------------------------------------------------------ *
  * What the wall costs A SPOKEN TURN — #603 lever 2.
  * ------------------------------------------------------------------ */

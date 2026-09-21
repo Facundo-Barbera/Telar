@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { EngineEvent, idleSince, isShelved, settlingActivityOf } from "@telar/engine-client";
+import type { ScheduleRule } from "./schedules";
 import { atomicWrite } from "./atomic";
 import { statePaths } from "./state-paths";
 import type { TurnSummary } from "./turn-summary";
@@ -254,6 +255,62 @@ export type SessionIndexRow = {
 
 /** A stored row is columns; `undefined` and `null` are the same absence here. */
 type StoredSessionRow = Record<string, unknown>;
+
+/**
+ * ONE SCHEDULED PROMPT — issue #543.
+ *
+ * `lastRunStatus` IS DERIVED, NOT A STATE MACHINE. T3's source keeps a
+ * `running` state and has to release rows stuck in it on restart; this has no
+ * such state, because the thing that could get stuck is the TURN, whose
+ * lifecycle is already supervised by the worker lease and `retireWorker`.
+ * A fired row records `lastRunId` and the reader asks the turn. There is no
+ * second stuck-state to release because there is no second state.
+ */
+export type ScheduleRow = {
+  id: string;
+  sessionId: string;
+  prompt: string;
+  rule: ScheduleRule;
+  /** The IANA zone name, never an offset and never the machine's zone at fire
+   *  time — a row made in Madrid keeps firing at 09:00 Madrid from Tokyo. */
+  zone: string;
+  enabled: boolean;
+  createdAt: number;
+  nextRunAt: number;
+  lastRunAt?: number;
+  lastRunId?: string;
+  /** `skipped` is the one a reader must be shown as a sentence: without it the
+   *  boundary "Telar was not running" is invisible, and an invisible boundary
+   *  is indistinguishable from a broken scheduler. */
+  lastRunStatus?: "fired" | "skipped";
+  lastSkippedAt?: number;
+};
+
+function scheduleFromColumns(columns: unknown): ScheduleRow {
+  const row = columns as Record<string, unknown>;
+  let rule: ScheduleRule;
+  try {
+    rule = JSON.parse(String(row.rule)) as ScheduleRule;
+  } catch {
+    // A row whose rule cannot be read is not a reason to fail the sweep; it is
+    // given an interval so far out that it never fires, and stays visible.
+    rule = { kind: "interval", everyMs: Number.MAX_SAFE_INTEGER };
+  }
+  return {
+    id: String(row.id),
+    sessionId: String(row.session_id),
+    prompt: String(row.prompt),
+    rule,
+    zone: String(row.zone),
+    enabled: Number(row.enabled) === 1,
+    createdAt: Number(row.created_at ?? 0),
+    nextRunAt: Number(row.next_run_at ?? 0),
+    ...(row.last_run_at === null || row.last_run_at === undefined ? {} : { lastRunAt: Number(row.last_run_at) }),
+    ...(row.last_run_id ? { lastRunId: String(row.last_run_id) } : {}),
+    ...(row.last_run_status ? { lastRunStatus: String(row.last_run_status) as ScheduleRow["lastRunStatus"] } : {}),
+    ...(row.last_skipped_at === null || row.last_skipped_at === undefined ? {} : { lastSkippedAt: Number(row.last_skipped_at) }),
+  };
+}
 
 function rowFromColumns(columns: StoredSessionRow): SessionIndexRow {
   const state = String(columns.state) === "archived" ? "archived" : "active";
@@ -678,6 +735,40 @@ export class ExecutionStore {
      * is in. `(project_id, updated_at)` is `listSessions`'s, which is the same
      * shape one project at a time.
      */
+    /**
+     * SCHEDULES — issue #543.
+     *
+     * ADDITIVE, AND `user_version` STAYS AT 1, for the reason written above the
+     * sessions table: an older binary neither reads nor writes this table, so a
+     * store it has touched is one whose schedules simply did not fire while it
+     * ran — recoverable, and visible on the row as a skipped run.
+     *
+     * INDEXED ON `next_run_at` SO THE DUE QUERY SEEKS, exactly as
+     * `dueSnoozeWakes` does. "Which rows are due" must never become a walk over
+     * every schedule on the machine; that is the cost argument this whole
+     * sweeper shape is built on.
+     *
+     * NOT CALLED `tasks`. `tasks.json` and `reportSessionTasks` already mean a
+     * session's live to-do observations, and a second noun spelled the same way
+     * is how two features come to share a word and then a bug.
+     */
+    this.db.exec(`CREATE TABLE IF NOT EXISTS schedules (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        rule TEXT NOT NULL,
+        zone TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        next_run_at INTEGER NOT NULL,
+        last_run_at INTEGER,
+        last_run_id TEXT,
+        last_run_status TEXT,
+        last_skipped_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS schedules_due ON schedules (enabled, next_run_at);
+      CREATE INDEX IF NOT EXISTS schedules_session ON schedules (session_id);`);
+
     this.db.exec(`CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
         project_id TEXT,
@@ -1982,6 +2073,64 @@ export class ExecutionStore {
    * outranks a snooze, so a wake announced on one is a notification about a
    * conversation the reader cannot see.
    */
+  /* ── schedules (#543) ─────────────────────────────────────────────────── */
+
+  /**
+   * Every enabled row whose appointment has passed.
+   *
+   * A SEEK, NOT A WALK, on `schedules_due`. The alternative — read every
+   * schedule and filter in JS — is what the two older sweeps do, and they do it
+   * only because their predicates live in JSON documents SQL cannot see. This
+   * one has columns, so it uses them.
+   */
+  dueSchedules(now: number): ScheduleRow[] {
+    return this.statement("SELECT * FROM schedules WHERE enabled = 1 AND next_run_at <= ? ORDER BY next_run_at")
+      .all(now)
+      .map(scheduleFromColumns);
+  }
+
+  listSchedules(sessionId?: string): ScheduleRow[] {
+    return (
+      sessionId === undefined
+        ? this.statement("SELECT * FROM schedules ORDER BY next_run_at").all()
+        : this.statement("SELECT * FROM schedules WHERE session_id = ? ORDER BY next_run_at").all(sessionId)
+    ).map(scheduleFromColumns);
+  }
+
+  readSchedule(id: string): ScheduleRow | undefined {
+    const found = this.statement("SELECT * FROM schedules WHERE id = ?").all(id);
+    return found.length > 0 ? scheduleFromColumns(found[0]) : undefined;
+  }
+
+  writeSchedule(row: ScheduleRow): void {
+    this.statement(
+      `INSERT INTO schedules (id, session_id, prompt, rule, zone, enabled, created_at, next_run_at, last_run_at, last_run_id, last_run_status, last_skipped_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET session_id=excluded.session_id, prompt=excluded.prompt, rule=excluded.rule, zone=excluded.zone,
+         enabled=excluded.enabled, next_run_at=excluded.next_run_at, last_run_at=excluded.last_run_at, last_run_id=excluded.last_run_id,
+         last_run_status=excluded.last_run_status, last_skipped_at=excluded.last_skipped_at`,
+    ).run(
+      row.id,
+      row.sessionId,
+      row.prompt,
+      JSON.stringify(row.rule),
+      row.zone,
+      row.enabled ? 1 : 0,
+      row.createdAt,
+      row.nextRunAt,
+      row.lastRunAt ?? null,
+      row.lastRunId ?? null,
+      row.lastRunStatus ?? null,
+      row.lastSkippedAt ?? null,
+    );
+  }
+
+  deleteSchedule(id: string): boolean {
+    const before = this.statement("SELECT id FROM schedules WHERE id = ?").all(id).length;
+    this.statement("DELETE FROM schedules WHERE id = ?").run(id);
+    return before > 0;
+  }
+
   dueSnoozeWakes(): SessionIndexRow[] {
     return this.statement("SELECT * FROM sessions WHERE snoozed_until IS NOT NULL AND woke_at IS NULL AND archived = 0")
       .all()

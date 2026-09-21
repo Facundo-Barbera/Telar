@@ -754,19 +754,27 @@ export type AgentWalls = {
  * which is exactly the choice #570 is about.
  */
 /**
- * THE ONE SESSIONS TOOL THE AGENT IS NOT GIVEN — `sessions_report_window` (#723).
+ * THE TWO SESSIONS TOOLS THE AGENT IS NOT GIVEN, for one reason.
  *
- * NOT A BUDGET DECISION, though it saves the bytes. The window holds routine
- * peer reports in a SESSION'S MAILBOX until its cadence comes round, and the
- * Agent has neither: it is a LangGraph thread, not a session — no queue, no
- * run, no claim token, which is the same reason `submitAgentTurn` knows it by
- * name rather than by proof. There is no box to hold anything in and no id
- * `updateSession` would find, so the tool could only ever fail here.
+ * `sessions_report_window` (#723) is NOT A BUDGET DECISION, though it saves the
+ * bytes. The window holds routine peer reports in a SESSION'S MAILBOX until its
+ * cadence comes round, and the Agent has neither: it is a LangGraph thread, not
+ * a session — no queue, no run, no claim token, which is the same reason
+ * `submitAgentTurn` knows it by name rather than by proof. There is no box to
+ * hold anything in and no id `updateSession` would find, so the tool could only
+ * ever fail here.
+ *
+ * `sessions_schedule` (#543) fails on the identical fact one step later. A row
+ * names the session its prompt is submitted to, and a session is what the Agent
+ * is not — so the row would be written against a thread id, and the first sweep
+ * to reach it would find no such session and disable it. A tool whose every use
+ * ends in a disabled row is worse than no tool, because the failure arrives
+ * hours after the call.
  *
  * WITHHELD BY ABSENCE, which is the rule the wall already follows: a model with
  * no such tool says it has none, rather than calling one that refuses.
  */
-const NOT_ON_THE_AGENTS_WALL = new Set(["sessions_report_window"]);
+const NOT_ON_THE_AGENTS_WALL = new Set(["sessions_report_window", "sessions_schedule"]);
 
 export function collectAgentTools(walls: AgentWalls): SocketTool[] {
   return [

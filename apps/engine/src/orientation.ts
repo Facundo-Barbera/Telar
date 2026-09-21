@@ -38,7 +38,7 @@ import path from "node:path";
 
 /** Bumped whenever the words below change. The skill's front matter carries it,
  *  so a file on disk says which release wrote it. */
-export const ORIENTATION_VERSION = 3;
+export const ORIENTATION_VERSION = 4;
 
 /** The skill's name, which is also its directory and the `$telar` a person or a
  *  model types. One constant so the writer, the remover and the preamble that
@@ -147,7 +147,7 @@ Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_rea
 \`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,
 \`sessions_subscribe\`, \`sessions_unsubscribe\`, \`sessions_subscriptions\`,
 \`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_report_window\`,
-and the six reads below.
+\`sessions_schedule\`, and the six reads below.
 
 ### Reading a peer without spending your context on it
 
@@ -208,6 +208,26 @@ back to being told as each arrives.
   and delivers nothing.
 - Set it when you are about to dispatch several peers, not after they start
   talking.
+
+### Being woken on a clock, days from now
+
+\`sessions_schedule\` gives THIS session a standing instruction: a prompt, a rule
+— every N minutes, or a time of day on chosen weekdays — and an IANA zone. When
+it comes due the engine submits that prompt here as an ordinary turn. There is
+no session argument: a session schedules itself and nothing else.
+
+- **TELAR HAS TO BE OPEN FOR ONE TO FIRE.** The engine goes when the app does,
+  so a schedule is not a cron job on the machine. Say so when somebody asks for
+  one overnight.
+- A run missed while Telar was closed is SKIPPED AND RE-AIMED, not run late — a
+  09:00 digest arriving at 16:00 is not a late digest, it is a wrong one. A
+  five-minute grace covers a lid closed for a moment. An "every N minutes" rule
+  has no appointment to be late for, so it simply advances to the next one:
+  three days away is one turn, never seventy-two.
+- The zone is the ROW'S, not the machine's. A schedule made in Madrid keeps
+  firing at 09:00 Madrid from anywhere.
+- There is no "run now", deliberately: it would start a turn carrying none of
+  the re-aiming. Send the prompt yourself instead.
 
 ### A question you leave open can freeze a fan-out until morning
 

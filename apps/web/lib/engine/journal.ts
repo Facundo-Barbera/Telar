@@ -41,7 +41,9 @@ export type JournalTurn = {
    *  task's ending woke the model. `session` when the ENGINE queued it because
    *  a session this one subscribed to did something. Both are drawn as a
    *  wake-up line, not a bubble: no human typed `prompt`. */
-  origin?: "user" | "provider" | "session";
+  /** `schedule` since #543 — a turn a CLOCK started, drawn as what it is
+   *  rather than as something a person typed. */
+  origin?: "user" | "provider" | "session" | "schedule";
   /** For a provider turn: the row whose ending woke it, when known. */
   wokenBy?: string;
   /** For a session turn: what the other session did, and which one. */

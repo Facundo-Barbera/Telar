@@ -169,7 +169,8 @@ describe("the protocol surface", () => {
     // so a tool added to the toolkit appears here in the same change or this
     // fails.
     expect(result.tools.map((tool) => tool.name)).toEqual(wallNames);
-    expect(result.tools.length).toBe(20);
+    // 21 since #543 added `sessions_schedule`.
+    expect(result.tools.length).toBe(21);
     for (const tool of result.tools) {
       expect(tool.name).not.toMatch(/accept|approve|merge|land|archive|delete|promote|finish|complete/);
       expect(tool.description.length).toBeGreaterThan(0);
@@ -237,6 +238,34 @@ describe("the protocol surface", () => {
     const requests = await callTool(daemon, mcp.secret, "sessions_requests", { sessionId: session.id });
     expect(requests.isError).toBe(false);
     expect(requests.text).toContain("not waiting on anything");
+  });
+
+  test("A CALLER THAT IS NOT A SESSION CANNOT LEAVE A CLOCK BEHIND (#543)", async () => {
+    /**
+     * THE GUARD THAT REPLACES A DENY-LIST. `sessions_schedule` creates work
+     * that outlives the call, and a row names the session its prompt is
+     * submitted INTO — so a caller with no `self` has nothing to put there.
+     * Writing one anyway would aim a clock at an id that is not a session,
+     * which the first sweep disables hours later, long after anybody could
+     * connect the dead row to the call that made it.
+     *
+     * The socket's capability carries no `self` — a chat client is not a
+     * session — which makes this door the one place the refusal can be driven
+     * end to end.
+     */
+    const daemon = await engine();
+    const { mcp } = await new EngineClient(daemon.discovery).sessionsMcpInfo();
+
+    const refused = await callTool(daemon, mcp.secret, "sessions_schedule", { prompt: "every morning", everyMinutes: 60 });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("no session to schedule");
+    // ITS OWN SENTENCE, not the subscription one: a reader told to "poll with
+    // sessions_status instead" has been answered a different question.
+    expect(refused.text).not.toContain("no session to wake");
+
+    // AND NOTHING WAS WRITTEN. The refusal is the whole of it — a row left
+    // behind by a refused call is exactly the outliving work this guards.
+    expect(daemon.store.listSchedules()).toEqual([]);
   });
 
   test("an argument the wall's schema refuses never reaches a handler", async () => {
