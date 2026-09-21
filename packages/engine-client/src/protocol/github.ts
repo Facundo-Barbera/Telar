@@ -41,6 +41,14 @@ export const GitHubUnavailable = z.enum([
   /** There is no git repository here — or one with no remotes at all. */
   "no_repository",
   /**
+   * The project's own checkout directory does not exist on this machine —
+   * moved, deleted, or never mounted. `gh` was never asked: `execFile`'s
+   * `cwd` failed to resolve before the process could even spawn, so this is
+   * not a claim about whether `gh` is installed or signed in, either of
+   * which may be perfectly true.
+   */
+  "no_checkout",
+  /**
    * There IS a repository and it is not on a GitHub host `gh` knows: GitLab,
    * Gitea, a bare remote on a NAS, an unconfigured enterprise host. Nothing to
    * fix — plenty of projects are like this, and everything that is not

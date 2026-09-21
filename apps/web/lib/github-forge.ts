@@ -95,6 +95,10 @@ export const UNAVAILABLE: Record<GitHubDetailUnavailable, { title: string; detai
     title: "Not in this repository",
     detail: "GitHub has no such number here. It may live in another repository, or the tab may be older than the project it was opened in.",
   },
+  no_checkout: {
+    title: "Project folder not found",
+    detail: "The project's folder is not on this machine, so GitHub cannot be asked about it.",
+  },
   failed: { title: "gh could not answer", detail: "" },
 };
 
