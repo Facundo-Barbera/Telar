@@ -1,25 +1,38 @@
 "use client";
 
 /**
- * THE TERMINAL TAB — xterm.js in the cockpit's own DOM, on a real PTY (#198).
+ * THE TERMINAL TAB — xterm.js in the cockpit's own DOM, on real PTYs (#198).
  *
- * NOT SHAPED LIKE THE BROWSER SURFACE, and the issue's instruction to mirror it
- * is the one thing to ignore here. `browser-manager.js` is 4,545 lines because a
- * page renders in ANOTHER PROCESS and a `WebContentsView` has to be positioned,
- * zoomed, clipped and profile-bound over our window. An emulator renders in this
- * document: there is no native view to host, nothing to keep in register with a
- * scroll position, and no second process to authenticate. What that surface has
- * that this one needs is one call — `claimChords` — and it is four lines.
+ * ONE OUTER TAB, A STRIP OF SHELLS INSIDE IT. A shell used to be its own outer
+ * panel tab, which wrote "Terminal", "Terminal", "Terminal" across the strip
+ * and pushed Diff and Issues off the edge — so opening a second shell cost you
+ * the surfaces you were working with. The Browser and the Editor already
+ * answered this: the surface is ONE, its contents are many. This is the same
+ * shape, the same idioms (`+`, a close per chip, ⌘T / ⌘W / ⌘1–9, middle-click
+ * closes) and the same persistence approach, so there is no second dialect of
+ * "tab" to learn one level down.
  *
- * THREE THINGS THIS OWNS and nothing else:
- *   - the emulator, its addons and its size;
- *   - the bytes, in both directions, between it and W1's host;
+ * NOT SHAPED LIKE THE BROWSER SURFACE INSIDE, and the issue's instruction to
+ * mirror it is the one thing to ignore here. `browser-manager.js` is 4,545
+ * lines because a page renders in ANOTHER PROCESS and a `WebContentsView` has
+ * to be positioned, zoomed, clipped and profile-bound over our window. An
+ * emulator renders in this document: there is no native view to host, nothing
+ * to keep in register with a scroll position, and no second process to
+ * authenticate. What that surface has that this one needs is one call —
+ * `claimChords` — and the strip's markup, which is copied so the two read as
+ * the same control.
+ *
+ * WHAT THIS OWNS and nothing else:
+ *   - the strip of shells, over `lib/terminal-workspace.ts`'s pure model;
+ *   - one emulator per shell, its addons and its size;
+ *   - the bytes, in both directions, between each one and W1's host;
  *   - the three keys a focused shell must not lose (lib/terminal-keys.ts).
  *
  * Everything past that is the user's dotfiles' business. Telar is a terminal
  * emulator, not a shell configurator — docs/terminal-host.md §1.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PlusIcon, XIcon } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon, type IImageAddonOptions } from "@xterm/addon-image";
@@ -32,6 +45,18 @@ import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type Terminal
 export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
 import { attachTerminal, terminalKeyHandler } from "@/lib/terminal-session";
+import {
+  activateShell,
+  addShell,
+  closeShell,
+  emptyWorkspace,
+  readWorkspace,
+  setShellTerminal,
+  setShellTitle,
+  shellLabel,
+  workspaceParams,
+  type TerminalWorkspace,
+} from "@/lib/terminal-workspace";
 import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
 import { cn } from "@/lib/utils";
 
@@ -70,6 +95,22 @@ export const TERMINAL_IMAGE_OPTIONS: IImageAddonOptions = {
  *  that twenty tabs are not a memory problem. xterm's default is 1000. */
 const SCROLLBACK = 5000;
 
+/**
+ * THE CHORDS THE STRIP TAKES BACK, AND ONLY WHILE IT HAS FOCUS.
+ *
+ * ⌘T and ⌘1..⌘9 carry a `menu` in the shared keymap table, so macOS matches
+ * them against the application menu before the page is ever asked — without a
+ * claim, the handler below would not be losing a race, it would never run.
+ *
+ * KEYED TO FOCUS, NOT TO MOUNT, which is `browser-live.tsx`'s rule and for its
+ * reason: this surface is mounted for as long as the panel shows a Terminal, so
+ * claiming on mount would suppress the rail's own ⌘1..⌘9 that entire time — a
+ * worse bug than the one it fixes. ⌘W needs no entry here: a mounted terminal
+ * already claims `CommandOrControl+W` for the shell (lib/terminal-keys.ts), so
+ * the press reaches this document either way.
+ */
+const STRIP_CHORD_CLAIMS: readonly string[] = ["CommandOrControl+T", ...Array.from({ length: 9 }, (_, index) => `CommandOrControl+${index + 1}`)];
+
 type Phase =
   | { kind: "starting" }
   | { kind: "live"; id: string; pid?: number }
@@ -106,22 +147,270 @@ async function startingDirectory(sessionId?: string, projectId?: string): Promis
   return undefined;
 }
 
+/**
+ * THE SURFACE: the strip, and one pane per shell.
+ *
+ * `params` and `onParams` ARE THE WHOLE OF ITS PERSISTENCE. The workspace is
+ * JSON under one key on this tab's own params — the same round trip the Diff's
+ * filter and the Editor's open file make — which is what lets a remounted
+ * panel re-adopt every running shell instead of stranding them and opening a
+ * fresh set.
+ */
 export function TerminalSurface({
   sessionId,
   projectId,
-  terminalId,
-  onTerminalId,
+  params = {},
+  onParams,
+  onCloseSelf,
   visible = true,
 }: {
   sessionId?: string;
   projectId?: string;
-  /** The PTY this tab was last attached to, out of the tab's own params. */
-  terminalId?: string;
-  /** Remember the PTY on the tab, so the next mount re-adopts rather than
-   *  opening a second shell and leaving the first one running with nobody
-   *  reading it. */
-  onTerminalId?: (id: string) => void;
+  /** This tab's params, carrying the shells it had when it was last written. */
+  params?: Readonly<Record<string, string>>;
+  /** Rewrite them. A REPLACE, like every other surface's — see
+   *  `setPanelTabParams`. */
+  onParams?: (params: Record<string, string>) => void;
+  /** Close the OUTER tab. Closing the last shell is the gesture that means it,
+   *  exactly as closing a browser's last tab closes its window. */
+  onCloseSelf?: () => void;
   visible?: boolean;
+}) {
+  /**
+   * SEEDED ONCE, FROM THE TAB, AND NEVER RESEEDED. The params come back
+   * through this component on every write, and re-reading them would fight the
+   * state that produced them. A remount is what re-reads — which is exactly
+   * when re-adoption should happen.
+   *
+   * A TERMINAL WITH NO SHELLS IS NOT A TERMINAL, so an empty restore opens one
+   * here rather than in an effect: a synchronous `setState` in an effect body
+   * cascades a render, and the strip would flash empty first.
+   */
+  const [workspace, setWorkspace] = useState<TerminalWorkspace>(() => {
+    const restored = readWorkspace(params);
+    return restored.shells.length > 0 ? restored : addShell(emptyWorkspace());
+  });
+
+  /** Read through refs: re-running the effects below because a parent
+   *  re-rendered with a new callback identity would be noise. */
+  const write = useRef(onParams);
+  const dismiss = useRef(onCloseSelf);
+  useEffect(() => {
+    write.current = onParams;
+    dismiss.current = onCloseSelf;
+  });
+  useEffect(() => {
+    write.current?.(workspaceParams(workspace));
+  }, [workspace]);
+
+  /**
+   * THE WINDOW-LEVEL CLAIM, ONCE FOR THE WHOLE STRIP. Every pane used to take
+   * its own copy of this, which is a claim per shell for a fact about the
+   * window. See lib/terminal-keys.ts for what it buys.
+   */
+  useEffect(() => claimChords(TERMINAL_CHORD_CLAIMS), []);
+
+  /** ⌘T and ⌘1..⌘9, only while focus is inside this surface — see
+   *  `STRIP_CHORD_CLAIMS`. */
+  const [hasKeys, setHasKeys] = useState(false);
+  useEffect(() => {
+    if (!hasKeys) return undefined;
+    return claimChords(STRIP_CHORD_CLAIMS);
+  }, [hasKeys]);
+
+  /**
+   * CLOSING A SHELL ENDS IT. Outside any reducer on purpose: a reducer runs
+   * twice under StrictMode, and killing a shell is not something to do twice —
+   * the cockpit's own `onCloseTab` keeps the kill outside `updatePanel` for
+   * exactly this reason.
+   */
+  const closeOne = (id: string) => {
+    const shell = workspace.shells.find((entry) => entry.id === id);
+    if (shell?.terminalId) {
+      void Promise.resolve(terminalBridge()?.kill(shell.terminalId, "SIGTERM")).catch(() => {
+        // A shell that already exited is the normal case, not an error.
+      });
+    }
+    const next = closeShell(workspace, id);
+    setWorkspace(next);
+    // AN EMPTY TERMINAL CLOSES. Its outer tab is the thing that was holding
+    // shells, and one holding none is a blank pane with a `+` in it.
+    if (next.shells.length === 0) dismiss.current?.();
+  };
+
+  /**
+   * THE STRIP'S KEYS, CONSUMED BEFORE ANYTHING ELSE SEES THEM.
+   *
+   * ON THE CAPTURE PHASE, and `stopImmediatePropagation` on the NATIVE event,
+   * because there are two other listeners that would otherwise answer first or
+   * as well: xterm attaches its own handler to the textarea (the target, below
+   * this box), and the cockpit's dispatcher listens on `window` at the end of
+   * the bubble chain and does not consult `defaultPrevented` —
+   * `terminalKeyHandler` stops that same listener the same way.
+   */
+  const onKeys = (event: React.KeyboardEvent) => {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const shells = workspace.shells;
+    const take = () => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.nativeEvent.stopImmediatePropagation();
+    };
+    // ⌘⇧[ / ⌘⇧] — by `code`, because with Shift held the `key` of those two is
+    // "{" and "}" on a US layout and something else again on others.
+    if (event.shiftKey && (event.code === "BracketLeft" || event.code === "BracketRight")) {
+      if (shells.length < 2) return;
+      take();
+      const at = shells.findIndex((shell) => shell.id === workspace.active);
+      const step = event.code === "BracketRight" ? 1 : shells.length - 1;
+      setWorkspace(activateShell(workspace, shells[(Math.max(at, 0) + step) % shells.length]!.id));
+      return;
+    }
+    const letter = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    if (letter === "t") {
+      take();
+      setWorkspace(addShell(workspace));
+      return;
+    }
+    if (letter === "w") {
+      take();
+      // Closing the LAST shell closes the outer tab — `closeOne` says so.
+      if (workspace.active) closeOne(workspace.active);
+      return;
+    }
+    if (/^[1-9]$/.test(letter)) {
+      const target = shells[Number(letter) - 1];
+      if (!target) return;
+      take();
+      setWorkspace(activateShell(workspace, target.id));
+    }
+  };
+
+  return (
+    <div
+      className="flex h-full min-h-0 flex-col"
+      onKeyDownCapture={onKeys}
+      // React's onFocus/onBlur are focusin/focusout, so they fire for anything
+      // inside — the strip, a chip, the emulator. The `contains` check is what
+      // keeps a move BETWEEN two of them from reading as a release.
+      onFocus={() => setHasKeys(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHasKeys(false);
+      }}
+    >
+      {/* ── the strip ──────────────────────────────────────────────────────
+          THE BROWSER'S MARKUP AND CLASSES, deliberately identical: same
+          rounded chips, same close-on-the-right, same `+` at the end, so the
+          two strips are one control a person learns once. */}
+      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-2 py-1" role="tablist" aria-label="Terminal tabs">
+        {workspace.shells.map((shell) => {
+          const on = shell.id === workspace.active;
+          const label = shellLabel(workspace, shell.id);
+          return (
+            <div
+              key={shell.id}
+              data-testid="terminal-tab"
+              className={cn(
+                "flex min-w-0 max-w-44 shrink-0 items-center gap-1 rounded-md px-2 py-1",
+                on ? "bg-muted" : "hover:bg-muted/50",
+              )}
+              // Middle-click closes, the way every strip in this app does.
+              onAuxClick={(event) => {
+                if (event.button !== 1) return;
+                event.preventDefault();
+                closeOne(shell.id);
+              }}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={on}
+                className="min-w-0 flex-1 truncate text-left text-xs"
+                title={label}
+                onClick={() => setWorkspace(activateShell(workspace, shell.id))}
+              >
+                {label}
+              </button>
+              <button
+                type="button"
+                aria-label={`Close ${label}`}
+                className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeOne(shell.id);
+                }}
+              >
+                <XIcon className="size-3" />
+              </button>
+            </div>
+          );
+        })}
+        <button
+          type="button"
+          aria-label="New shell"
+          title="New shell"
+          className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={() => setWorkspace(addShell(workspace))}
+        >
+          <PlusIcon className="size-3.5" />
+        </button>
+      </div>
+
+      {/**
+       * EVERY PANE STAYS MOUNTED, hidden when it is not the one you are
+       * looking at — the browser's rule, for a harder reason. Unmounting is
+       * what drops SCROLLBACK: the host forwards bytes, it does not record
+       * them, so a pane that came back would arrive with an empty screen over
+       * a live shell. `hidden` rather than zero-width because a hidden pane
+       * must not be measured either; only the active one fits and focuses.
+       */}
+      <div className="relative min-h-0 flex-1">
+        {workspace.shells.map((shell) => (
+          <TerminalPane
+            key={shell.id}
+            {...(sessionId ? { sessionId } : {})}
+            {...(projectId ? { projectId } : {})}
+            {...(shell.terminalId ? { terminalId: shell.terminalId } : {})}
+            onTerminalId={(id) => setWorkspace((current) => setShellTerminal(current, shell.id, id))}
+            onTitle={(title) => setWorkspace((current) => setShellTitle(current, shell.id, title))}
+            active={shell.id === workspace.active}
+            visible={visible}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * ONE SHELL: one emulator, one PTY, and the size of the box between them.
+ *
+ * `terminalId` / `onTerminalId` remember the PTY on the shell so a remount
+ * re-adopts instead of opening a second one and leaving the first running with
+ * nobody reading it.
+ */
+function TerminalPane({
+  sessionId,
+  projectId,
+  terminalId,
+  onTerminalId,
+  onTitle,
+  active,
+  visible,
+}: {
+  sessionId?: string;
+  projectId?: string;
+  /** The PTY this shell was last attached to, out of the tab's own params. */
+  terminalId?: string;
+  onTerminalId: (id: string) => void;
+  /** What the shell called itself through OSC 0/2 — the chip's label. */
+  onTitle: (title: string) => void;
+  /** The shell the strip is showing. Only this one fits, and only this one
+   *  takes the keyboard. */
+  active: boolean;
+  /** The panel is on screen. It keeps a closing surface mounted at zero width
+   *  through its animation, which is not a box worth measuring. */
+  visible: boolean;
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -145,11 +434,15 @@ export function TerminalSurface({
           why: "A terminal needs Telar's desktop shell — and one on this Mac. A session on another host would otherwise get a shell on this computer while claiming to be that one.",
         },
   );
-  /** Read through a ref: re-running the mount effect because the callback
+  /** Read through refs: re-running the mount effect because a callback
    *  identity changed would tear the emulator down and open a second shell. */
   const remember = useRef(onTerminalId);
+  const rename = useRef(onTitle);
+  const focused = useRef(active);
   useEffect(() => {
     remember.current = onTerminalId;
+    rename.current = onTitle;
+    focused.current = active;
   });
   const adopt = useRef(terminalId);
   /** Set by the mount effect once a bridge exists, so the "open a shell in
@@ -183,7 +476,8 @@ export function TerminalSurface({
       try {
         fitRef.current?.fit();
       } catch {
-        // A zero-sized box (the panel mid-animation) has no grid to fit to.
+        // A zero-sized box (a hidden pane, the panel mid-animation) has no grid
+        // to fit to.
         return;
       }
       const grid = { cols: term.cols, rows: term.rows };
@@ -257,6 +551,8 @@ export function TerminalSurface({
       } catch {
         // No GL here. The DOM renderer draws the same cells, more slowly.
       }
+      // OSC 0/2 — what the shell calls itself, which is what the chip says.
+      cleanups.push(term.onTitleChange((title) => rename.current(title)).dispose);
       // The three keys a focused shell must not lose — see
       // lib/terminal-session.ts for why this writes the byte itself instead
       // of letting xterm encode it.
@@ -271,16 +567,11 @@ export function TerminalSurface({
     };
 
     let term = createTerminal();
-    // The other half of the two keys above, for the presses macOS matches
-    // against the application menu before the page is ever asked. See
-    // lib/terminal-keys.ts. Claimed once — it is a window-level claim, not
-    // something a re-mounted terminal needs a second copy of.
-    cleanups.push(claimChords(TERMINAL_CHORD_CLAIMS));
 
     const attach = (id: string, pid?: number) => {
       live = id;
       setPhase({ kind: "live", id, ...(pid === undefined ? {} : { pid }) });
-      remember.current?.(id);
+      remember.current(id);
       cleanups.push(
         attachTerminal(term, bridge, id, (ending) => {
           live = undefined;
@@ -290,7 +581,10 @@ export function TerminalSurface({
       void fontsReady.then(() => {
         if (!disposed) measure(bridge, id);
       });
-      term.focus();
+      // ONLY THE SHELL YOU ARE LOOKING AT takes the keyboard. A background
+      // pane opening one — which is what `+` on a busy strip would do — would
+      // pull focus out from under whatever you were typing into.
+      if (focused.current) term.focus();
     };
 
     /** Shared by the first attempt and the "open a shell in your home folder
@@ -305,8 +599,8 @@ export function TerminalSurface({
           rows: term.rows,
         });
         if (disposed) {
-          // The tab was closed while the spawn was in flight. Nobody will ever
-          // read this shell, so it does not get to outlive the request for it.
+          // The shell was closed while the spawn was in flight. Nobody will
+          // ever read it, so it does not get to outlive the request for it.
           if (opened.pid !== undefined) void bridge.kill(opened.id, "SIGTERM");
           return;
         }
@@ -394,10 +688,11 @@ export function TerminalSurface({
       }
       for (const off of cleanups.splice(0)) off();
       retryInHome.current = null;
-      /* THE SHELL IS NOT KILLED HERE, deliberately. This unmounts on every tab
-         switch, and a `cd` and a half-typed command are not something to throw
-         away because somebody looked at the Diff. Closing the TAB is what ends
-         it — see `endTerminalForTab`, called from the cockpit that owns tabs. */
+      /* THE SHELL IS NOT KILLED HERE, deliberately. This unmounts on every
+         outer tab switch, and a `cd` and a half-typed command are not something
+         to throw away because somebody looked at the Diff. Closing the CHIP is
+         what ends one shell (`closeOne` above); closing the outer tab ends them
+         all — see `endTerminalForTab`, called from the cockpit that owns tabs. */
       // Already disposed (and refs cleared) by `openShell` when the host
       // refused the cwd — disposing it twice is not something xterm promises
       // to tolerate.
@@ -407,23 +702,37 @@ export function TerminalSurface({
         fitRef.current = null;
       }
     };
-    // The instance is keyed by its tab id one level up, so a different terminal
+    // The instance is keyed by its shell id one level up, so a different shell
     // is a different mount. Re-running this for a changed session id would tear
     // a live shell down mid-command.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** The panel keeps a closing surface mounted at zero width through its
-   *  animation; coming back needs a fit the ResizeObserver may already have
-   *  fired for an unusable box. */
+  /**
+   * COMING BACK INTO VIEW IS A FIT AND A FOCUS. A hidden pane is a zero-sized
+   * box the ResizeObserver may already have fired for, and the panel keeps a
+   * closing surface mounted at zero width through its animation — neither is a
+   * grid, so the measurement has to be retaken when it becomes one.
+   */
   useEffect(() => {
-    if (!visible || phase.kind !== "live") return;
+    if (!active || !visible || phase.kind !== "live") return;
     const bridge = terminalBridge();
     if (bridge) measure(bridge, phase.id);
-  }, [visible, phase, measure]);
+    termRef.current?.focus();
+  }, [active, visible, phase, measure]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      data-testid="terminal-pane"
+      data-active={active ? "true" : "false"}
+      // MOUNTED BUT HIDDEN when it is not the shell on screen — see the strip's
+      // comment above for why unmounting is not an option.
+      className={cn("absolute inset-0 flex flex-col", !active && "hidden")}
+      // A hidden pane is not in the tab order and is not read out: its emulator
+      // is a live control, and leaving nine of them reachable by Tab would make
+      // the strip's own keys the slow way round.
+      {...(active ? {} : { "aria-hidden": true, inert: true })}
+    >
       {phase.kind === "ended" && (
         /**
          * `unknown` IS NOT "FINISHED" and this line must never read as if it
@@ -448,7 +757,7 @@ export function TerminalSurface({
       {phase.kind === "unavailable" && <p className="shrink-0 border-b px-3 py-1.5 text-xs text-muted-foreground">{phase.why}</p>}
       {phase.kind === "cwd-refused" && (
         /**
-         * THE TAB'S WHOLE CONTENT, not a banner over an empty canvas — there
+         * THE PANE'S WHOLE CONTENT, not a banner over an empty canvas — there
          * is no xterm behind this (see `openShell`'s disposal above), so
          * nothing would be under it but white. Same muted/centred shape the
          * rail's own empty states use (`SidebarEmpty` in app-sidebar.tsx),

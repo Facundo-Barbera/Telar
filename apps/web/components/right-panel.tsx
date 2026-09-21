@@ -71,7 +71,6 @@ import { ReportCadence } from "@/components/session/report-cadence";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
-import { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspace";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { cn } from "@/lib/utils";
@@ -397,12 +396,16 @@ export type PanelTabItem = PanelTabInstance<PanelTab>;
  * carries its subject in the kind, so two of them are two kinds; a file and an
  * issue are not kinds at all any more, but content inside a surface.
  *
- * AND A TERMINAL IS THE FOURTH (#198), on exactly the Editor's argument: it
- * holds the shell you started, where you left it, with your history. Two of
- * them are two shells — which is what a person means when they ask for a second
- * terminal, and is the reason every terminal emulator ever written has tabs.
+ * A TERMINAL WAS THE FOURTH AND IS NOT ANY MORE (#198). It was added on the
+ * Editor's argument — two of them are two shells — and that was the right want
+ * with the wrong home: three shells wrote "Terminal", "Terminal", "Terminal"
+ * across this strip and pushed Diff and Issues off the edge. The Editor's OTHER
+ * half is the answer, the one Issues and Pull requests already take: the surface
+ * is one, its contents are many. A Terminal now carries its own strip of shells
+ * (lib/terminal-workspace.ts), which is what every terminal emulator ever
+ * written does, and what the Browser does one level down from here.
  */
-const MULTI_INSTANCE: ReadonlySet<string> = new Set<string>(["editor", "diff", "terminal"]);
+const MULTI_INSTANCE: ReadonlySet<string> = new Set<string>(["editor", "diff"]);
 
 export function isMultiInstancePanelTab(kind: PanelTab): boolean {
   return MULTI_INSTANCE.has(kind) || kind === LIVE_BROWSER_TAB;
@@ -1489,13 +1492,13 @@ export function PanelSurface({
     return sessionId ? <RunPanel key={`${hostId ?? "local"}:${sessionId}`} sessionId={sessionId} {...(hostId ? { hostId } : {})} visible={visible} /> : null;
   /**
    * KEYED BY THE INSTANCE AND THE CHECKOUT, like the Editor above and for a
-   * harder reason: what this holds is not scroll position but a LIVE SHELL. A
-   * shared key would have React reuse one tab's emulator for another's PTY, so
-   * the bytes of one terminal would arrive in the other's screen.
+   * harder reason: what this holds is not scroll position but LIVE SHELLS. A
+   * shared key would have React reuse one tab's emulators for another's PTYs,
+   * so the bytes of one terminal would arrive in the other's screen.
    *
-   * The PTY's id round-trips through the tab's own params — the same trip the
-   * Diff's filter and the Editor's open file make — which is what lets a
-   * remounted panel re-adopt a running shell instead of stranding it.
+   * THE WHOLE INNER STRIP round-trips through the tab's own params — the same
+   * trip the Diff's filter and the Editor's open file make — which is what lets
+   * a remounted panel re-adopt every running shell instead of stranding them.
    */
   if (kind === "terminal")
     return (
@@ -1503,8 +1506,9 @@ export function PanelSurface({
         key={`${hostId ?? "local"}:${sessionId ?? projectId ?? "none"}:${tab.id}`}
         {...(sessionId ? { sessionId } : {})}
         {...(projectId ? { projectId } : {})}
-        {...(tab.params[TERMINAL_ID_PARAM] ? { terminalId: tab.params[TERMINAL_ID_PARAM] } : {})}
-        {...(onTabParams ? { onTerminalId: (id: string) => onTabParams({ [TERMINAL_ID_PARAM]: id }) } : {})}
+        params={tab.params}
+        {...(onTabParams ? { onParams: onTabParams } : {})}
+        {...(onCloseSelf ? { onCloseSelf } : {})}
         visible={visible}
       />
     );

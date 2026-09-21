@@ -77,6 +77,7 @@ import {
   canvasPanelKey,
   closePanelTab,
   collapseBrowserTabs,
+  collapseTerminalTabs,
   emptyPanelTabs,
   findPanelTab,
   movePanelTab,
@@ -92,6 +93,7 @@ import {
   type PanelTabState,
 } from "@/lib/right-panel-tabs";
 import { endTerminalForTab } from "@/lib/terminal-bridge";
+import { foldTerminalParams } from "@/lib/terminal-workspace";
 import {
   editorFileForPath,
   editorFromLegacyTabs,
@@ -1922,7 +1924,21 @@ export function SessionCockpit({
       // On desktop the native strip owns the pages: collapse any per-page
       // browser tabs persisted before this change into one "Browser" tab, so
       // an upgraded session does not still show the old per-page outer tabs.
-      const collapsed = desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
+      const browsers = desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
+      /**
+       * THE SHELLS SOMEBODY LEFT RUNNING SURVIVE THE UPGRADE. A shell used to
+       * be its own outer tab, so a session saved before the Terminal grew an
+       * inner strip has several of them, each carrying a LIVE PTY id. Folding
+       * them into one Terminal has to carry every id into the new workspace, or
+       * the upgrade leaves those shells running in the Electron host with
+       * nothing on screen attached to them.
+       *
+       * NOT GATED ON THE DESKTOP BRIDGE, unlike the browser collapse above: the
+       * old outer tabs are in localStorage whether or not there is a shell here
+       * to answer for them, and a strip that still showed three Terminals in a
+       * browser tab would be wrong about this build either way.
+       */
+      const collapsed = collapseTerminalTabs(browsers, (tab) => tab === "terminal", "terminal", foldTerminalParams);
       /**
        * THE ISSUES SOMEBODY LEFT OPEN SURVIVE THE UPGRADE (#693) — the same
        * two-step the Editor's files take above, for the same reason.
@@ -4114,7 +4130,7 @@ export function SessionCockpit({
           onOpenFileInNewTab={openFileInNewPanelTab}
           onInsertReference={insertIntoComposer}
           onAttach={attachFromPanel}
-          /* CLOSING A TERMINAL TAB ENDS ITS SHELL, and this is the only place
+          /* CLOSING A TERMINAL TAB ENDS EVERY SHELL IN IT, and this is the only place
              that can say so: the surface unmounts on every tab switch, so it
              cannot tell "you looked at the Diff" from "you are done with this
              shell". Anything that is not a terminal answers undefined and this
