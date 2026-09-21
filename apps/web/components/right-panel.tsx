@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import dynamic from "next/dynamic";
 import {
   BotIcon,
@@ -93,6 +93,16 @@ import { cn } from "@/lib/utils";
  * tests proved it by going red on exactly that. The client chunk splits either
  * way — `ssr` decides where the component may render, not whether it is bundled
  * separately — so the testable spelling is simply the better one.
+ *
+ * A `Suspense` OF OUR OWN AROUND THE LADDER, because `dynamic()` with neither
+ * `ssr: false` nor `loading` wraps its `React.lazy` in a Fragment and nothing
+ * else (next/dist/shared/lib/lazy-dynamic/loadable.js). The first render of a
+ * chunk not yet fetched then suspends up to the NEAREST boundary — which, for
+ * this panel, was the route's `loading.tsx`. Opening the Editor for the first
+ * time swapped the whole conversation for its skeleton and drew it again when
+ * the chunk landed: what the owner saw as "a reload, only the first time" —
+ * the second open finds the module cached and never suspends. The boundary
+ * below keeps that wait inside the panel's body.
  *
  * THE BROWSER IS THE ONE THAT NEEDED MORE THAN THIS. Its module was reachable
  * by a second road — `desktopBrowserBridge()`, a `typeof window` check three
@@ -2530,7 +2540,11 @@ export function RightPanel({
         className="min-h-0 flex-1 overflow-y-auto md:rounded-b-xl"
       >
         {activeTab && (sessionId || browserTabId(activeTab.kind) === undefined) ? (
-          <>
+          /* The boundary the first chunk fetch stops at — see the `dynamic`
+             block at the top of this file. An empty fallback: the chunk comes
+             off the same origin the page did, and a spinner that resolves in
+             the next frame is a flash, not feedback. */
+          <Suspense fallback={null}>
             {/* The active turn's state, in the machine's register: one word
                 saying what the RECORD below is currently doing. A page, a file,
                 the file tree and one issue or pull request are not the record —
@@ -2577,7 +2591,7 @@ export function RightPanel({
               visible={open}
             />
             {sessionId && <ImageLightbox sessionId={sessionId} {...(lightbox ? { attachmentId: lightbox } : {})} onClose={() => setLightbox(undefined)} />}
-          </>
+          </Suspense>
         ) : (
           <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} dataScience={dataScience} latex={latex} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
         )}

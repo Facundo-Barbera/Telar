@@ -18,7 +18,7 @@
  * visibility asserted then was spent on nothing) and the 360 ms transition
  * follow (ResizeObserver does not report an ancestor's flex animation).
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -2599,15 +2599,20 @@ export function DesktopBrowserSurface({
             so marking a second page starts a second annotation rather than
             inheriting the first one's marks. */}
         {annotating && onAttach ? (
-          <BrowserAnnotateOverlay
-            key={`${annotating.url}:${annotating.width}x${annotating.height}`}
-            capture={annotating}
-            onCancel={() => setAnnotating(undefined)}
-            onSend={({ file, text }) => {
-              onAttach([file], text);
-              setAnnotating(undefined);
-            }}
-          />
+          /* Its own boundary: the overlay is a chunk of its own, and the first
+             fetch must suspend HERE, not up at the route (right-panel.tsx says
+             why — the panel went to the page skeleton for one chunk). */
+          <Suspense fallback={null}>
+            <BrowserAnnotateOverlay
+              key={`${annotating.url}:${annotating.width}x${annotating.height}`}
+              capture={annotating}
+              onCancel={() => setAnnotating(undefined)}
+              onSend={({ file, text }) => {
+                onAttach([file], text);
+                setAnnotating(undefined);
+              }}
+            />
+          </Suspense>
         ) : null}
         {/* THE START PAGE — no tabs, or a blank active tab. DOM, under
             nothing: the shell hides the native view of a blank tab so this

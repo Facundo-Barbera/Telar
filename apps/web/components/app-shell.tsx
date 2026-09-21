@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { Suspense, useEffect, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -123,7 +123,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     // opaque window, transparent under the translucent shell so the body's
     // single wash shows through (globals.css). The islands paint on top of it.
     <SidebarProvider storageKey={APP_SIDEBAR_STORAGE_KEY} className="app-ground bg-sidebar">
-      {!railless && <AppSidebar />}
+      {/* A boundary of its own, so the one route that arrives without the
+          rail's chunk (Settings → a conversation) suspends the rail and not
+          the shell around it; right-panel.tsx has the long version. */}
+      {!railless && (
+        <Suspense fallback={null}>
+          <AppSidebar />
+        </Suspense>
+      )}
       <SidebarInset
         className={cn(
           "flex h-dvh min-w-0 flex-col",
