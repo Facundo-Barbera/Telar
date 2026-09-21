@@ -70,7 +70,7 @@ describe("the composer's foot", () => {
     const markup = render({ projectId: "p1", session });
     expect(markup).toContain("-mt-px");
     expect(markup).toContain("border-t-0");
-    expect(markup).toContain("rounded-b-xl");
+    expect(markup).toContain("rounded-b-2xl");
   });
 });
 

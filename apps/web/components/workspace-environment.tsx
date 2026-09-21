@@ -492,10 +492,34 @@ export function EnvironmentStrip({
           hangs from. Was a hand-written arbitrary value in --shadow-tint;
           right ink, private numbers.
 
-          `bg-muted/25` lands at 25% of the theme's muted: the wash used to
-          hand this element a token already at 72% alpha, which multiplied the
-          strip down to 18% and dissolved it over a backdrop. */}
-      <div className="flex min-h-8 w-full items-center gap-1 rounded-b-xl border border-t-0 border-border/60 bg-muted/25 px-2 text-2xs text-muted-foreground shadow-1">
+          ONE BAND, THE COMPOSER'S OWN SURFACE. `bg-card/95` and
+          `border-border/80` are the same tokens the composer's card is built
+          from (composer.tsx's `InputGroup`), and `rounded-b-2xl` continues
+          its `rounded-2xl` around the two corners this band owns — so the
+          strip reads as the card's bottom edge, not a second, separately
+          tinted block hung beneath it. */}
+      <div className="overflow-hidden rounded-b-2xl border border-t-0 border-border/80 bg-card/95 shadow-1 backdrop-blur-xl">
+        {/* THE DISK NOTICE, WHEN THERE IS ONE — issue #534. A row of this same
+            band rather than a floating banner above it, divided from the
+            controls below by a hairline rather than a second fill: the same
+            `border-border/40` the composer's own footer row uses to split
+            itself from the editor above it (composer.tsx's `InputGroupAddon`). */}
+        {away && (
+          <p className="flex items-start gap-2 border-b border-border/40 px-3 py-2 text-2xs text-muted-foreground">
+            <HardDriveIcon className="mt-px size-3.5 shrink-0" />
+            <span>
+              {away === "unmounted" ? (
+                `The drive holding ${projectName ?? "this project"} is not connected, so nothing can run here yet. Plug it back in — the conversation, its history and its settings are all still here.`
+              ) : (
+                <>
+                  The folder for <strong className="font-medium text-foreground">{projectName ?? "this project"}</strong> is not
+                  on this machine any more, so nothing can run here.
+                </>
+              )}
+            </span>
+          </p>
+        )}
+        <div className="flex min-h-8 w-full items-center gap-1 px-2 text-2xs text-muted-foreground">
         {choosing && onEnvMode ? (
           <WhereThisLands
             projectId={projectId}
@@ -627,6 +651,7 @@ export function EnvironmentStrip({
         {dirty > 0 && (
           <span className="ml-auto shrink-0 rounded-full bg-warning/10 px-1.5 py-0.5 text-3xs font-medium text-warning">{dirty} changed</span>
         )}
+        </div>
       </div>
     </div>
   );
