@@ -451,6 +451,14 @@ So the rule is now mechanical, and smaller:
   once, at the end.** That sentence goes in every brief.
 - If `uptime`'s one-minute load is above 8, nothing new is dispatched until it is
   under 6, whatever the count says.
+- **A builder lost to a dead permission gate still costs its tokens.** On 21
+  September five builders were dispatched and four came back having written
+  nothing — roughly 500k tokens — because a backgrounded sub-agent's tool calls
+  were refused the moment the parent turn settled (#891). The cap counts
+  builders, not builders that are *working*, so a systematic loss like this
+  spends the whole wave's budget and returns nothing to show for it. The
+  engine-contract invariant is what prevents it: a task the engine keeps alive
+  past turn end always has a claim its permission requests are honoured under.
 
 ---
 

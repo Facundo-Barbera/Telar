@@ -126,6 +126,25 @@ is a fold over it; there is no second source of truth. Cursor-based replay
 
 Every event carries `{ id, at, sessionId, turnId?, itemId?, requestId?, taskId?, providerRefs?, raw? }`.
 
+**A task the engine keeps alive past turn end always has a claim its permission
+requests are honoured under.** Background work — a monitor, a backgrounded
+shell, an agent launched detached — outlives the turn that started it, which is
+why `completeTurn` sweeps orphaned tasks with `includeBackground: false` and
+leaves those rows running. That decision obliges the other half: a request is
+authorised by a *running claim*, and settling the parent turn destroys the only
+one those rows had. So whatever keeps such a task alive must also keep it a
+claim — the driver opens a provider turn for it (`providerReason.kind:
+"background_task"`), on demand and for as long as a decision is being made,
+because one live turn per session is the invariant every sweep relies on and a
+claim held for the task's whole life would be a turn that never settles. Where
+no claim can be had, the tool result the child receives says so in those terms:
+nothing ran, and *nobody declined it*. A refusal a model reads as a person's
+"no" ends the work instead of retrying it. Violating this looks like
+`turn has already settled (completed); this report arrived after the turn
+ended` reaching a sub-agent as a tool failure — #891, and #21/#28/#297/#378
+before it, each of which closed one route to that sentence without asking how
+long a gate may point at one turn.
+
 **`raw` is optional and load-bearing.** t3 code keeps the untranslated provider
 payload on every normalized event. It is how you debug a normalization bug
 without re-running the session, and how a client can render something the
