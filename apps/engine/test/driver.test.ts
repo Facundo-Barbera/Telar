@@ -950,6 +950,64 @@ describe("a provider wait is a row, not silence", () => {
     expect(completedIds).toContain(waits[1]!.id);
   });
 
+  /**
+   * THE ROW A USER SENT A SCREENSHOT OF — #897.
+   *
+   * The CLI sends a `rate_limit_event` on every API request, so a seven-day
+   * limit sitting above its warning threshold repeated "Approaching the rate
+   * limit (seven day)" as its own transcript row after nearly every tool call,
+   * for hours. The state had not changed; only the request count had.
+   */
+  test("the warning the provider repeats on every request is one row per limit state", async () => {
+    const warning = (extra: Record<string, unknown> = {}) => ({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day", resetsAt: 1_800_000_000, utilization: 0.91, ...extra },
+    });
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        // Five requests under ONE standing limit, each announcing it, with a
+        // utilization that drifts as the window fills. The meter is not what
+        // the row is for, so the drift alone must not speak again.
+        yield warning();
+        yield { type: "assistant", message: { content: [{ type: "text", text: "one " }] } };
+        yield warning({ utilization: 0.92 });
+        yield { type: "assistant", message: { content: [{ type: "text", text: "two " }] } };
+        yield warning({ utilization: 0.94 });
+        yield warning();
+        yield { type: "assistant", message: { content: [{ type: "text", text: "three " }] } };
+        yield warning({ utilization: 0.99 });
+        // A DIFFERENT reset time is a different limit state: news, and a row.
+        yield warning({ resetsAt: 1_800_600_000 });
+        // A rejection is a wait of its own and moves the state…
+        yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "seven_day", resetsAt: 1_800_600_000 } };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "four" }] } };
+        // …so the first limit state is news again rather than a repeat.
+        yield warning();
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const waits = sink.observations.flatMap((o) => (o.kind === "item.started" && o.item.detail.type === "provider_wait" ? [o.item] : []));
+    // Twelve limit frames, four rows: the two warning states before the
+    // rejection, the rejection, and the warning that follows it.
+    expect(waits.map((item) => item.title)).toEqual([
+      "Approaching the rate limit (seven day)",
+      "Approaching the rate limit (seven day)",
+      "Rate limit reached (seven day)",
+      "Approaching the rate limit (seven day)",
+    ]);
+    const waited = waits.flatMap((item) => (item.detail.type === "provider_wait" ? [item.detail.wait] : []));
+    expect(waited.map((wait) => wait.resetsAt)).toEqual([1_800_000_000, 1_800_600_000, 1_800_600_000, 1_800_000_000]);
+    // The row kept the FIRST frame's meter; the three repeats behind it did not
+    // reopen it to report 0.99, which is the whole point of dropping them.
+    expect(waited[0]?.utilization).toBe(0.91);
+    // Each warning is still a finished row, and the rejection still the one
+    // that stays open until the stream speaks again.
+    const completedIds = sink.observations.flatMap((o) => (o.kind === "item.completed" ? [o.itemId] : []));
+    for (const item of waits) expect(completedIds).toContain(item.id);
+  });
+
   test("no prompt, header or provider error text reaches the journal", async () => {
     const driver = createClaudeDriver(async () => ({
       async *query() {
@@ -4214,6 +4272,48 @@ describe("a turn the CLI started by itself is not this turn", () => {
     expect(usages.map((usage) => usage.tokens.output)).toEqual([1, 640, 640]);
     expect(usages[1]?.contextUsed).toBe(739);
     expect(usages[1]?.tokens).toMatchObject({ input: 7, cacheRead: 90, cacheCreate: 2 });
+  });
+
+  test("a wake-up collapses the repeat warning the same way a human turn does (#897)", async () => {
+    /**
+     * PARITY AGAIN, and it matters more here: an autonomous turn makes as many
+     * requests as a human's and nobody is watching it, so the row it repeats
+     * is the whole record of what happened while they were away.
+     */
+    const warning = (extra: Record<string, unknown> = {}) => ({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", resetsAt: 1_800_000_000, utilization: 0.88, ...extra },
+    });
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "sleep 5", task_type: "local_bash", is_backgrounded: true };
+        yield* reply(first.value!.uuid!, "started");
+        await woke;
+        yield { type: "system", subtype: "task_notification", task_id: "bg1", summary: "DONE" };
+        yield { type: "user", message: { role: "user", content: "Background task completed (DONE)." } };
+        yield { type: "stream_event", event: { type: "message_start" } };
+        yield warning();
+        yield { type: "assistant", message: { content: [{ type: "text", text: "back" }] } };
+        yield warning({ utilization: 0.9 });
+        yield warning();
+        // A new reset time still speaks.
+        yield warning({ resetsAt: 1_800_600_000 });
+        yield { type: "result", subtype: "success", stop_reason: "end_turn", origin: { kind: "task-notification" } };
+        await input.next();
+      },
+    }) as never);
+    const door = sessionDoor();
+    await run(driver, { sessionId: "session_wake_limit_warning", session: door.hooks }).result;
+    releaseWake!();
+    await settle(() => door.turns[0]?.closed !== undefined);
+    const waits = door.turns[0]!.observations.flatMap((o) => (o.kind === "item.started" && o.item.detail.type === "provider_wait" ? [o.item] : []));
+    expect(waits.map((item) => item.title)).toEqual(["Approaching the rate limit (five hour)", "Approaching the rate limit (five hour)"]);
+    const waited = waits.flatMap((item) => (item.detail.type === "provider_wait" ? [item.detail.wait] : []));
+    expect(waited.map((wait) => wait.resetsAt)).toEqual([1_800_000_000, 1_800_600_000]);
   });
 
   test("THE REQUEST OPENS THE WAKE-UP'S TURN, so the gap before the first token is not silence (#71)", async () => {
