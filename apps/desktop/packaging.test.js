@@ -191,7 +191,9 @@ describe("a --dev package is a separate app that cannot collide with the install
    * a destination directory that cannot be written, so the script fails at
    * mkdir AFTER printing the resolved path in its own error.
    */
-  test("install-app.sh installs a dev bundle beside Telar.app, named after the source", () => {
+  // The script copies with `ditto`, which only macOS has; the ubuntu unit job
+  // skips it the same way dev-update.test.js skips the swap helper.
+  test.skipIf(process.platform !== "darwin")("install-app.sh installs a dev bundle beside Telar.app, named after the source", () => {
     const os = require("node:os");
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "telar-install-name-"));
     try {

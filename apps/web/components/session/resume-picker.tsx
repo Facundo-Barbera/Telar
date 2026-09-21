@@ -200,7 +200,7 @@ function ConversationList({
         )}
 
         {conversations !== undefined && conversations.length > 0 && filtered?.length === 0 && (
-          <p className="px-1 py-6 text-sm text-muted-foreground">No conversation matches "{query.trim()}".</p>
+          <p className="px-1 py-6 text-sm text-muted-foreground">No conversation matches &ldquo;{query.trim()}&rdquo;.</p>
         )}
 
         {filtered !== undefined && filtered.length > 0 && (
