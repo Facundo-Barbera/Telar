@@ -1880,12 +1880,15 @@ export function RightPanelResizeHandle({
     [],
   );
 
+  // NO GRIP — issue #905, so all three resize handles agree. The cockpit rail
+  // and the Settings one draw nothing; a pill here would be the only seam left
+  // on screen, and it sits in the same kind of gap between two islands.
   return (
     <button
       type="button"
       aria-label="Resize right panel"
       title="Drag to resize right panel"
-      className="group/resize absolute inset-y-0 -left-2 z-20 flex w-4 cursor-col-resize touch-none items-center justify-center"
+      className="absolute inset-y-0 -left-2 z-20 block w-4 cursor-col-resize touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onPointerDown={(event) => {
         if (event.button !== 0 || !panelRef.current) return;
         event.preventDefault();
@@ -1918,9 +1921,7 @@ export function RightPanelResizeHandle({
         panelRef.current.style.setProperty("--right-panel-width", `${width}px`);
         setSidebarWidth(storageKey, width);
       }}
-    >
-      <span className="h-10 w-px rounded-full bg-border/60 transition-colors group-hover/resize:bg-foreground/40 group-focus-visible/resize:bg-ring" />
-    </button>
+    />
   );
 }
 
