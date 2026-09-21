@@ -82,7 +82,7 @@ test("the dialog says the conversation is copied rather than continued", () => {
    * a person should be told rather than left to discover.
    */
   const source = readFileSync(new URL("./resume-picker.tsx", import.meta.url), "utf8");
-  expect(source).toContain("copies the conversation");
+  expect(source).toContain("forks the conversation");
   expect(source).toContain("Claude Code history is left");
   // "No conversations" and "the store could not be read" must not look the same.
   expect(source).toContain("Reading your conversations…");

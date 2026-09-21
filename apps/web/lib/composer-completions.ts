@@ -29,7 +29,7 @@ import type { ProviderDriverKind, ProviderSkill, ProviderSkillSource, RuntimeMod
 import { fileReference, directoryReference, skillReference } from "./drag-reference";
 import { insertRankedSearchResult, normalizeSearchQuery, scoreQueryMatch, type RankedSearchResult } from "./search-ranking";
 
-export type CompletionGlyph = "file" | "directory" | "note" | "access" | "model" | "effort" | "driver" | "env" | "stop" | "compact" | "skill";
+export type CompletionGlyph = "file" | "directory" | "note" | "access" | "model" | "effort" | "driver" | "env" | "stop" | "compact" | "resume" | "skill";
 
 export type CompletionAction =
   /** Replace the trigger with this text. The ONLY action that touches the draft. */
@@ -40,6 +40,7 @@ export type CompletionAction =
   | { type: "model"; model: string }
   | { type: "effort"; effort: string }
   | { type: "compact" }
+  | { type: "resume" }
   | { type: "stop" };
 
 export type Completion = {
@@ -197,6 +198,11 @@ export type CommandContext = {
   /** Effort levels the SELECTED model actually publishes. Empty when it
    *  publishes none, and then no `/effort` row is offered at all. */
   efforts?: readonly string[];
+  /** The composer actually has somewhere to send a pick — `onAdopt` is set
+   *  and the session does not exist yet. Mirrors the picker link's own
+   *  `fresh && onAdopt` gate, so the menu row and the link agree about when
+   *  `/resume` means anything. */
+  canResume?: boolean;
 };
 
 /**
@@ -209,6 +215,16 @@ export type CommandContext = {
  */
 export function isCompactDraft(draft: string): boolean {
   return draft.trim() === "/compact";
+}
+
+/**
+ * THE DRAFT THAT IS "OPEN THE RESUME PICKER" — the same shape as
+ * `isCompactDraft`, and for the same reason: picking the menu row and typing
+ * the whole command out are one gesture, and only one of them should have to
+ * be taught to the other.
+ */
+export function isResumeDraft(draft: string): boolean {
+  return draft.trim() === "/resume";
 }
 
 /**
@@ -318,6 +334,23 @@ export function availableCommands(context: CommandContext): Completion[] {
       glyph: "compact",
       action: { type: "compact" },
       ...(blocked ? { disabled: true } : {}),
+    });
+  }
+
+  /**
+   * `/resume` — THE EMPTY COMPOSER'S OWN LINK, REACHED FROM THE KEYBOARD.
+   *
+   * Only where the link itself shows: a fresh composer with somewhere to put
+   * the pick. Once a session exists, resuming into it would mean something
+   * else entirely, so the row is absent rather than disabled.
+   */
+  if (context.fresh && context.canResume) {
+    commands.push({
+      id: "resume",
+      label: "/resume",
+      detail: "Pick up a Claude Code conversation.",
+      glyph: "resume",
+      action: { type: "resume" },
     });
   }
 

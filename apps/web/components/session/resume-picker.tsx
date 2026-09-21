@@ -38,14 +38,23 @@
  * be told rather than discover.
  */
 
-import { useEffect, useState } from "react";
-import { DownloadIcon, FolderGit2Icon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { DownloadIcon, SearchIcon } from "lucide-react";
 import type { ClaudeConversation } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { fmtAgo, formatBytes } from "@/lib/format";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+
+/** The bold half of a row — what the person actually reads it as. Same
+ *  fallback order everywhere it is needed, so the row, its `title=` attribute
+ *  and the search below it cannot disagree about what a conversation is
+ *  called. */
+function titleOf(conversation: ClaudeConversation): string {
+  return conversation.firstPrompt?.trim() || conversation.customTitle || conversation.title || conversation.sessionId;
+}
 
 export function ResumePicker({
   open,
@@ -96,6 +105,7 @@ function ConversationList({
   const [conversations, setConversations] = useState<ClaudeConversation[]>();
   const [error, setError] = useState<string>();
   const [picking, setPicking] = useState<string>();
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -128,14 +138,31 @@ function ConversationList({
     }
   };
 
+  /**
+   * TITLE AND PATH, CLIENT-SIDE — the whole list is already loaded (#616), so
+   * a second round trip to filter it would be a network request standing in
+   * for a string comparison. Six identically-titled rows is exactly the case
+   * a title-only search would fail on too, so the path is searched as well:
+   * it is the other fact that tells two "PINEAPPLE-7742"s apart.
+   */
+  const filtered = useMemo(() => {
+    if (!conversations) return conversations;
+    const needle = query.trim().toLowerCase();
+    if (!needle) return conversations;
+    return conversations.filter(
+      (conversation) => titleOf(conversation).toLowerCase().includes(needle) || (conversation.cwd?.toLowerCase().includes(needle) ?? false),
+    );
+  }, [conversations, query]);
+
   return (
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Pick up a Claude Code conversation</DialogTitle>
-          <DialogDescription>
-            Telar copies the conversation and continues the copy, so the one in your own Claude Code history is left
-            exactly as it is.
-          </DialogDescription>
+          {/* ONE SENTENCE FOR ONE FACT — what picking a row does. Everything
+              else a person might want to know (why a row looks the way it
+              does) lives in this file's own header comment, not in front of
+              them every time the dialog opens. */}
+          <DialogDescription>Telar forks the conversation; your Claude Code history is left as it is.</DialogDescription>
         </DialogHeader>
 
         {error && (
@@ -156,9 +183,29 @@ function ConversationList({
           </p>
         )}
 
+        {/* SEARCH ONLY WHEN THERE IS SOMETHING TO NARROW. An empty list has
+            nothing for it to filter, and a one-row list has nothing worth
+            typing for. */}
         {conversations !== undefined && conversations.length > 0 && (
+          <div className="relative">
+            <SearchIcon aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search by title or path"
+              aria-label="Search conversations"
+              className="pl-8"
+            />
+          </div>
+        )}
+
+        {conversations !== undefined && conversations.length > 0 && filtered?.length === 0 && (
+          <p className="px-1 py-6 text-sm text-muted-foreground">No conversation matches "{query.trim()}".</p>
+        )}
+
+        {filtered !== undefined && filtered.length > 0 && (
           <ul className="-mx-1 max-h-[24rem] overflow-y-auto">
-            {conversations.map((conversation) => (
+            {filtered.map((conversation) => (
               <li key={conversation.sessionId}>
                 <ConversationRow
                   conversation={conversation}
@@ -191,6 +238,14 @@ export function ConversationRow({
   busy?: boolean;
   onPick: () => void;
 }) {
+  const title = titleOf(conversation);
+  // Age, branch, size — the three facts on one muted line, joined only where
+  // each one actually exists. A conversation from `main` with no branch
+  // recorded must not read as a stray dot.
+  const meta = [fmtAgo(conversation.lastActivityAt), conversation.gitBranch, conversation.bytes !== undefined ? formatBytes(conversation.bytes) : undefined].filter(
+    (part): part is string => Boolean(part),
+  );
+
   return (
     <button
       type="button"
@@ -201,44 +256,51 @@ export function ConversationRow({
         "hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
       )}
     >
-      {/* THE PERSON'S OWN OPENING WORDS FIRST, because that is what a
-          conversation IS to them. A name they CHOSE is second; a generated one
-          repeated across six rows is the thing this picker exists to survive. */}
+      {/* THE PERSON'S OWN OPENING WORDS, because that is what a conversation IS
+          to them — a name they chose or the CLI generated is the fallback, in
+          `titleOf`. TRUNCATED MID-WORD IS THE BUG THIS FIXES: `truncate` cuts
+          wherever the box ends, and the FULL title lives in `title=` so
+          hovering (or a screen reader) still gets the whole sentence. */}
       <span className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm">
-          {conversation.firstPrompt?.trim() || conversation.customTitle || conversation.title || conversation.sessionId}
+        <span className="min-w-0 flex-1 truncate text-sm" title={title}>
+          {title}
         </span>
         {busy && <Spinner className="shrink-0" />}
       </span>
-      {conversation.customTitle && conversation.firstPrompt?.trim() && (
-        <span className="min-w-0 truncate text-xs text-muted-foreground">{conversation.customTitle}</span>
+      {/* AGE · BRANCH · SIZE — one muted line, not three facts run together
+          with no separator. */}
+      {meta.length > 0 && <span className="truncate text-3xs text-muted-foreground tabular-nums">{meta.join(" · ")}</span>}
+      {/* THE PATH, TRUNCATED FROM THE LEFT — the project it belongs to is the
+          TAIL of the path (`…/Telar/dev-build-fixed-place`), not the drive
+          root every checkout shares. `dir="rtl"` with `text-align: left` is
+          what makes the browser's own ellipsis eat the front of the string
+          instead of the back; ordinary `truncate` would show the least useful
+          half of every row. */}
+      {conversation.cwd && (
+        <span dir="rtl" title={conversation.cwd} className="block min-w-0 truncate text-left font-mono text-3xs text-muted-foreground/70">
+          {conversation.cwd}
+        </span>
       )}
-      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-3xs text-muted-foreground">
-        <span className="tabular-nums">{fmtAgo(conversation.lastActivityAt)}</span>
-        {conversation.cwd && (
-          <span className="flex min-w-0 items-center gap-1">
-            <FolderGit2Icon className="size-3 shrink-0" />
-            <span className="min-w-0 truncate font-mono">{conversation.cwd}</span>
-          </span>
-        )}
-        {conversation.gitBranch && <span className="font-mono">{conversation.gitBranch}</span>}
-        {conversation.bytes !== undefined && (
-          <span className="font-mono tabular-nums">{formatBytes(conversation.bytes)}</span>
-        )}
-      </span>
     </button>
   );
 }
 
-/** The line that opens the picker, for the empty composer. */
+/**
+ * THE LINE THAT OPENS THE PICKER, for the empty composer.
+ *
+ * SECONDARY ON PURPOSE — reachable but not competing with the greeting above
+ * it. Now that `/resume` reaches the same picker from the keyboard (#616),
+ * this link is the mouse's way in rather than the only one, so it reads as a
+ * quiet alternative rather than a second heading.
+ */
 export function ResumePickerTrigger({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="mx-auto flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+      className="mx-auto flex items-center gap-1 rounded-md px-2 py-0.5 text-xs text-muted-foreground/80 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <DownloadIcon className="size-3.5 shrink-0" />
+      <DownloadIcon className="size-3 shrink-0" />
       Pick up a Claude Code conversation
     </button>
   );
