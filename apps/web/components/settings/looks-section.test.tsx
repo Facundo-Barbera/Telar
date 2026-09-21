@@ -86,6 +86,15 @@ test("one stronger divider marks where the built-ins begin", () => {
   expect(source).not.toMatch(/BUILT_IN_LOOKS\.map[\s\S]{0,200}lastSaved/);
 });
 
+test("the row's thumbnail is wide enough to be a picture of something", () => {
+  // 56px, not the 40 it shipped at (#904): at 40 the tile was 40×22 and the
+  // mini panel inside it left the two canvases as slivers inside the corner
+  // radius, so every row drew the same grey tile with one dark bar. The host
+  // row's strip was already 56.
+  expect(html).toContain('<span class="w-14 shrink-0">');
+  expect(html).not.toContain('class="w-10 shrink-0"');
+});
+
 test("the rename field fits its column instead of claiming 160px", () => {
   // Read as source: the field only renders once somebody has pressed Rename, so
   // it is not in the markup above. `w-40` was wider than the name ever gets in a

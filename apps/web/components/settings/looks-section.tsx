@@ -136,10 +136,16 @@ function LookStrip({ look }: { look: Look }) {
 /**
  * ONE LOOK, AS A TABLE ROW.
  *
- * The thumbnail is small on purpose — 40px wide, an aspect-video sliver — which
- * is what lets ten of these fit a short window. It is still the real compiled
- * tile (look-thumb.tsx), not a swatch: at that size it says "dark, with a
- * gradient" and that is the whole job.
+ * The thumbnail is small on purpose — an aspect-video sliver — which is what
+ * lets ten of these fit a short window. It is still the real compiled tile
+ * (look-thumb.tsx), not a swatch: at that size it says "dark, with a gradient"
+ * and that is the whole job.
+ *
+ * 56px, NOT THE 40px IT SHIPPED AT (#904). At 40 the tile was 40×22, and the
+ * mini panel inside it covered enough of that to leave the two canvases as
+ * slivers inside the corner radius — every row drew the same grey tile with one
+ * dark bar, which is a picture of nothing. 56 is the width the host row's strip
+ * already used, and it costs the Look column 16px it has to spare.
  *
  * THE NAME IS THE WEAR BUTTON. It reads as a name and behaves as the row's
  * action, which is the one thing every reader wants from this list. When the
@@ -205,7 +211,7 @@ function LookRow({
     <tr className={cn("group border-b align-middle last:border-0", lastSaved ? "border-border/70" : "border-border/40")}>
       <td className="py-1.5 pr-3 pl-4">
         <span className="flex items-center gap-2.5">
-          <span className="w-10 shrink-0">
+          <span className="w-14 shrink-0">
             <LookThumb look={look} />
           </span>
           {renaming ? (
