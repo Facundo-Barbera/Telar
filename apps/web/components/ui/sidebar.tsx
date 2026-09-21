@@ -765,7 +765,14 @@ function SidebarRail({
       onPointerUp={handlePointerUp}
       title={canResize ? "Drag to resize sidebar" : "Toggle Sidebar"}
       className={cn(
-        "absolute inset-y-0 z-20 hidden w-4 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:start-1/2 after:w-[2px] after:bg-sidebar-border/25 after:transition-colors hover:after:bg-sidebar-border focus-visible:outline-none focus-visible:after:bg-ring sm:flex ltr:-translate-x-1/2 rtl:-translate-x-1/2",
+        // NO LINE, AT REST OR ON HOVER — issue #905. The rail used to paint a
+        // 2px `after:` bar down the gap between the two islands, and because the
+        // 16px strip is `-right-4` and then translated back by half, that bar's
+        // midline never landed on the visual seam: it read as a stray off-centre
+        // stroke. The cursor IS the affordance here. The strip keeps its hit
+        // area and draws nothing; keyboard focus still shows, as a ring on the
+        // strip itself rather than a seam nobody asked for.
+        "absolute inset-y-0 z-20 hidden w-4 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex ltr:-translate-x-1/2 rtl:-translate-x-1/2",
         // Without this the browser's own pan gesture claims a pen or touch drag
         // on a touchscreen laptop, fires pointercancel, and the rail appears
         // simply not to work — while endDrag still persists whatever partial
@@ -774,7 +781,7 @@ function SidebarRail({
         canResize && "touch-none",
         "in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize",
         "[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize",
-        "group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full hover:group-data-[collapsible=offcanvas]:bg-sidebar",
+        "group-data-[collapsible=offcanvas]:translate-x-0 hover:group-data-[collapsible=offcanvas]:bg-sidebar",
         "[[data-side=left][data-collapsible=offcanvas]_&]:-right-2",
         "[[data-side=right][data-collapsible=offcanvas]_&]:-left-2",
         className
