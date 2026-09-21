@@ -74,6 +74,7 @@ import { MONO_LABEL, SANS_LABEL } from "./studio/tools";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import { LookThumb } from "./look-thumb";
 import { Row, SettingsGroup } from "./settings-shell";
 
@@ -135,10 +136,16 @@ function LookStrip({ look }: { look: Look }) {
 /**
  * ONE LOOK, AS A TABLE ROW.
  *
- * The thumbnail is small on purpose — 40px wide, an aspect-video sliver — which
- * is what lets ten of these fit a short window. It is still the real compiled
- * tile (look-thumb.tsx), not a swatch: at that size it says "dark, with a
- * gradient" and that is the whole job.
+ * The thumbnail is small on purpose — an aspect-video sliver — which is what
+ * lets ten of these fit a short window. It is still the real compiled tile
+ * (look-thumb.tsx), not a swatch: at that size it says "dark, with a gradient"
+ * and that is the whole job.
+ *
+ * 56px, NOT THE 40px IT SHIPPED AT (#904). At 40 the tile was 40×22, and the
+ * mini panel inside it covered enough of that to leave the two canvases as
+ * slivers inside the corner radius — every row drew the same grey tile with one
+ * dark bar, which is a picture of nothing. 56 is the width the host row's strip
+ * already used, and it costs the Look column 16px it has to spare.
  *
  * THE NAME IS THE WEAR BUTTON. It reads as a name and behaves as the row's
  * action, which is the one thing every reader wants from this list. When the
@@ -154,6 +161,7 @@ function LookRow({
   look,
   summary,
   worn,
+  lastSaved,
   onWear,
   onRename,
   onExport,
@@ -165,6 +173,9 @@ function LookRow({
   summary: string;
   /** The window has this look on. */
   worn: boolean;
+  /** The last card you saved, with the built-ins beginning underneath — the one
+   *  row that draws a stronger hairline. See the `<tr>`. */
+  lastSaved?: boolean;
   onWear: () => void;
   /** Absent for a default: it is a table this build rebuilds every load, not a
    *  card, so there is nothing of yours to rename. */
@@ -182,10 +193,25 @@ function LookRow({
   };
 
   return (
-    <tr className="group border-b border-border/60 align-middle last:border-0">
+    /**
+     * ONE WEIGHT FOR "NEXT ROW", ANOTHER FOR "DIFFERENT KIND OF ROW".
+     *
+     * Every row drawing the same hairline is what made this card read as a
+     * wireframe in the dark half: the group already carries `border border-border`
+     * and `divide-y divide-border/60` around it, the header draws one more, and
+     * ten rows at the same weight say nothing about where the shelf ends. At /40
+     * a divider still separates two rows and stops competing with the card edge.
+     *
+     * The boundary that MEANS something gets the stronger line, and it is drawn
+     * as a `border-b` on the last saved card rather than a `border-t` on the
+     * first built-in: under `border-collapse` two rows' adjacent borders resolve
+     * to one, and at equal width and style the higher row wins — a `border-t`
+     * below would have been swallowed by the /40 above it.
+     */
+    <tr className={cn("group border-b align-middle last:border-0", lastSaved ? "border-border/70" : "border-border/40")}>
       <td className="py-1.5 pr-3 pl-4">
         <span className="flex items-center gap-2.5">
-          <span className="w-10 shrink-0">
+          <span className="w-14 shrink-0">
             <LookThumb look={look} />
           </span>
           {renaming ? (
@@ -193,7 +219,10 @@ function LookRow({
               autoFocus
               value={draftName}
               aria-label={`Rename ${look.label}`}
-              className="h-6 w-40 px-1.5 text-xs"
+              // `flex-1 min-w-0`, not the `w-40` it carried: 160px is wider
+              // than the name has in a fixed Look column, and a field that
+              // overflows its cell is the same defect the table just fixed.
+              className="h-6 min-w-0 flex-1 px-1.5 text-xs"
               onChange={(event) => setDraftName(event.target.value)}
               onBlur={commitRename}
               onKeyDown={(event) => {
@@ -544,30 +573,53 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
           scrolling, and a scroll box inside a scrolling pane would put that
           back. */}
       <div className="-mx-4">
-        <table className="w-full border-collapse text-left text-xs">
+        {/* `table-fixed` IS WHAT KEEPS THE SHELF INSIDE ITS CARD.
+            Under auto layout a cell's content is a VOTE on how wide its column
+            should be, and `truncate` never gets to cast one: the span shrinks
+            to an ellipsis only once something upstream has capped it, so an
+            uncapped `<td>` widened to fit "Tide, under a dusk gradient · violet
+            · Geist / Geist Mono" in full and took the table — every row's
+            hairline with it — about 110px past the card's right edge.
+            Fixed layout reads the widths off THIS row and nothing else, so the
+            three below are the whole story and no summary can vote again. */}
+        <table className="w-full table-fixed border-collapse text-left text-xs">
           <thead>
-            <tr className="border-b border-border/60 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
-              <th scope="col" className="py-1.5 pr-3 pl-4 font-normal">
+            {/* The header's hairline goes with the rows' — it is the same
+                wireframe complaint, and a heading row that outweighs the card's
+                own edge is the loudest line in the group. */}
+            <tr className="border-b border-border/40 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
+              {/* The thumbnail, its `pl-4`/`pr-3` and the gap beside it account
+                  for most of this; the rest is the name, which truncates like
+                  any other cell here. */}
+              <th scope="col" className="w-[40%] py-1.5 pr-3 pl-4 font-normal">
                 Look
               </th>
+              {/* No width: the one unsized column takes whatever the other two
+                  leave, which is the column that should absorb a narrow panel. */}
               <th scope="col" className="py-1.5 pr-3 font-normal">
                 Carries
               </th>
               {/* The actions column is headed by nothing: its contents are
                   invisible until reached for, and a heading over empty space
-                  would be the one thing on the row that never goes away. */}
-              <th scope="col" className="py-1.5 pr-4 font-normal">
+                  would be the one thing on the row that never goes away.
+                  ITS WIDTH IS ITS BUTTONS, measured rather than guessed: Wear
+                  (`sm`, ~50px) + three `icon-sm` at 28px + three 2px gaps +
+                  `pr-4` = 156px. Reserved on every row, because a column that
+                  fitted only the rows without rename/export/delete would let
+                  the hover set overflow leftwards over the summary. */}
+              <th scope="col" className="w-[156px] py-1.5 pr-4 font-normal">
                 <span className="sr-only">Actions</span>
               </th>
             </tr>
           </thead>
           <tbody>
-            {looks.map((look) => (
+            {looks.map((look, index) => (
               <LookRow
                 key={look.id}
                 look={look}
                 summary={lookSummary(look)}
                 worn={worn(look)}
+                lastSaved={index === looks.length - 1}
                 onWear={() => onWear(look)}
                 onRename={(label) => {
                   const next = upsertLook(looks, { ...look, label });

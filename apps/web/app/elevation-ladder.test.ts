@@ -120,6 +120,38 @@ describe("the ladder the call sites are reaching for", () => {
   });
 
   /**
+   * DEPTH MOVES THE SURFACE, NOT ITS EDGE — and #904 is why that is pinned.
+   *
+   * The dark half spends almost all of its ink on the contact ring (38%, against
+   * light's 11%), so if Depth multiplied the ring the way it multiplies the
+   * ambient layer, "deep" would thicken every card edge in the app — and on a
+   * mid-lightness dark canvas a settings card full of hairlines would read as a
+   * wireframe. It does not: --shadow-ring is mixed from --shadow-ring-ink alone,
+   * and the ring layer's own geometry (0 1px 1px -1px) is the one part of each
+   * rung not scaled by --shadow-float. This test is that measurement, kept.
+   */
+  test("neither Depth multiplier reaches the contact ring", () => {
+    // Anchored to the start of a line, because the block comment above these
+    // declarations quotes `--shadow-ring:` while explaining the transparent-first
+    // mix — and an unanchored match reads the prose instead of the value.
+    const declaration = (name: string) => new RegExp(`^\\s*--${name}:([^;]*);`, "m").exec(GLOBALS)?.[1] ?? "";
+    const ring = declaration("shadow-ring");
+    expect(ring).toContain("var(--shadow-ring-ink)");
+    expect(ring).not.toContain("--depth-ink");
+    expect(ring).not.toContain("--depth-lift");
+    // The ambient layer is where the multipliers live, and the contrast is the
+    // point: one of these two carries Depth and the other must not.
+    expect(declaration("shadow-ambient")).toContain("var(--depth-ink)");
+    // The rung geometry says the same thing: the ring's offsets are literals,
+    // and only the ambient layer's are scaled by --shadow-float.
+    for (const rung of ["--shadow-1", "--shadow-2", "--shadow-3"]) {
+      const value = new RegExp(`${rung}:([^;]*);`).exec(GLOBALS)?.[1] ?? "";
+      const ringLayer = value.split("var(--shadow-ring)")[0] ?? "";
+      expect(ringLayer).not.toContain("--shadow-float");
+    }
+  });
+
+  /**
    * AND IT MUST NOT OVERFLOW EITHER HALF'S INK. --shadow-ambient mixes
    * `transparent calc(100% - var(--shadow-ink) * var(--depth-ink))`, so a
    * multiplier that pushes a half's ink past 100% makes that complement

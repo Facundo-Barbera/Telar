@@ -601,7 +601,12 @@ export function RemoteSection() {
               {/* STICKY, because a scrolled list whose headings have gone is
                   four columns of values with nothing saying which is which. */}
               <thead className="sticky top-0 z-10 bg-card">
-                <tr className="border-b border-border/60 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
+                {/* /40 rather than /60, matching the Looks shelf: inside a card
+                    that already draws `border border-border` and divides its own
+                    children, a table where every row and the header carry the
+                    same weight reads as a wireframe in the dark half. The two
+                    tables in this pane have to agree about it. */}
+                <tr className="border-b border-border/40 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
                   <th scope="col" className="py-1.5 pr-3 pl-4 font-normal">Device</th>
                   <th scope="col" className="py-1.5 pr-3 font-normal">Kind</th>
                   <th scope="col" className="py-1.5 pr-3 font-normal">Last seen</th>
@@ -690,7 +695,7 @@ function DeviceRow({
   };
 
   return (
-    <tr className="border-b border-border/60 align-middle last:border-0">
+    <tr className="border-b border-border/40 align-middle last:border-0">
       <td className="py-2 pr-3 pl-4">
         {editing ? (
           <Input
