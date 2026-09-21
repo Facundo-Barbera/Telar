@@ -1506,6 +1506,10 @@ export function PanelSurface({
         key={`${hostId ?? "local"}:${sessionId ?? projectId ?? "none"}:${tab.id}`}
         {...(sessionId ? { sessionId } : {})}
         {...(projectId ? { projectId } : {})}
+        // The run chips in the strip read a HOST-SCOPED door (#890), and
+        // session ids are per-host: an unpinned client could come back
+        // describing another Mac's deployment rather than failing.
+        {...(hostId ? { hostId } : {})}
         params={tab.params}
         {...(onTabParams ? { onParams: onTabParams } : {})}
         {...(onCloseSelf ? { onCloseSelf } : {})}

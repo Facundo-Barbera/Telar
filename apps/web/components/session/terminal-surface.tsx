@@ -31,8 +31,8 @@
  * Everything past that is the user's dotfiles' business. Telar is a terminal
  * emulator, not a shell configurator — docs/terminal-host.md §1.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { PlusIcon, XIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CircleStopIcon, PlusIcon, RotateCwIcon, XIcon } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon, type IImageAddonOptions } from "@xterm/addon-image";
@@ -41,6 +41,12 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
 import { claimChords } from "@/lib/commands";
 import { createEngineApi } from "@/lib/engine/client";
+import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { createRunApi } from "@/lib/run/api";
+import { RunGlyph } from "@/lib/run/icons";
+import { statusLabel, statusTone, type RunTone } from "@/lib/run/presentation";
+import { useRunStatusFeed } from "@/lib/run/status-stream";
+import type { RunConfigurationView, RunView } from "@/lib/run/types";
 import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type TerminalBridge, type TerminalEnding } from "@/lib/terminal-bridge";
 export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
@@ -51,12 +57,15 @@ import {
   closeShell,
   emptyWorkspace,
   readWorkspace,
+  runShells,
   setShellTerminal,
   setShellTitle,
   shellLabel,
+  upsertRunShell,
   workspaceParams,
   type TerminalWorkspace,
 } from "@/lib/terminal-workspace";
+import { RunPane } from "./run-pane";
 import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
 import { cn } from "@/lib/utils";
 
@@ -111,6 +120,44 @@ const SCROLLBACK = 5000;
  */
 const STRIP_CHORD_CLAIMS: readonly string[] = ["CommandOrControl+T", ...Array.from({ length: 9 }, (_, index) => `CommandOrControl+${index + 1}`)];
 
+/**
+ * A RUN CHIP'S STATE DOT, on the same five-tone vocabulary the masthead's pill
+ * uses (`lib/run/presentation.ts`). Copied from `run-header-control.tsx` rather
+ * than invented: two controls describing one deployment must not disagree about
+ * what green means, and the palette's own note refuses a sixth colour.
+ */
+const RUN_TONE_DOT: Record<RunTone, string> = {
+  idle: "bg-muted-foreground/40",
+  working: "bg-warning",
+  good: "bg-success",
+  bad: "bg-destructive",
+  lost: "bg-muted-foreground/60",
+};
+
+/** A run, in the strip's own vocabulary. The chip's LABEL is the name the run
+ *  copied at launch, so renaming or deleting the recipe does not rewrite a
+ *  chip that is already open. */
+function viewAsShell(run: RunView): { runId: string; configId: string; terminalId?: string; title?: string } {
+  return {
+    runId: run.runId,
+    configId: run.configId,
+    ...(run.terminalId ? { terminalId: run.terminalId } : {}),
+    ...(run.configName ? { title: run.configName } : {}),
+  };
+}
+
+/**
+ * Can this run still say anything?
+ *
+ * `unknown` COUNTS AS LIVE, and that is not a rounding. Telar lost contact with
+ * the process; it very likely still exists and may still be writing. A pane
+ * that stopped reading would show a screen that quietly stopped being true.
+ */
+function isLiveRun(run: RunView | undefined): boolean {
+  if (!run) return false;
+  return run.status === "starting" || run.status === "running" || run.status === "ready" || run.status === "unknown";
+}
+
 type Phase =
   | { kind: "starting" }
   | { kind: "live"; id: string; pid?: number }
@@ -159,6 +206,7 @@ async function startingDirectory(sessionId?: string, projectId?: string): Promis
 export function TerminalSurface({
   sessionId,
   projectId,
+  hostId,
   params = {},
   onParams,
   onCloseSelf,
@@ -166,6 +214,10 @@ export function TerminalSurface({
 }: {
   sessionId?: string;
   projectId?: string;
+  /** Which Mac this session lives on. Absent means this cockpit's own. The run
+   *  door is host-scoped and session ids are per-host, so a chip built against
+   *  the wrong one would describe a stranger's deployment rather than fail. */
+  hostId?: string;
   /** This tab's params, carrying the shells it had when it was last written. */
   params?: Readonly<Record<string, string>>;
   /** Rewrite them. A REPLACE, like every other surface's — see
@@ -204,6 +256,109 @@ export function TerminalSurface({
   }, [workspace]);
 
   /**
+   * THE PROJECT'S DEPLOYMENT, IN THIS STRIP (#890).
+   *
+   * ONE READ AND THEN EVENTS — never a poll. `useRunStatusFeed` asks
+   * `/run/status` once per mount (which is also how a live run with no chip
+   * gets one back) and then follows the engine's `run.status` frames, each
+   * carrying the whole view. The old Run tab asked every four seconds in every
+   * window, for ever, and its emulator asked for bytes twice a second on top.
+   *
+   * PINNED TO ONE MAC. The default run client resolves the host from the
+   * address bar per call, and session ids are per-host and can collide — so a
+   * two-leg read could come back describing another machine's deployment
+   * rather than failing.
+   */
+  const runApi = useMemo(() => createRunApi(hostFetcher(hostId ?? LOCAL_HOST_ID)), [hostId]);
+  const runs = useRunStatusFeed({ sessionId: sessionId ?? "", ...(hostId ? { hostId } : {}), api: runApi });
+  const [configs, setConfigs] = useState<RunConfigurationView[]>();
+
+  /** The recipes, for a chip's glyph. Read once: a configuration's icon is not
+   *  a thing that changes while you watch, and the chip's LABEL comes off the
+   *  run itself (which copied the name at launch) rather than from this. */
+  useEffect(() => {
+    if (!sessionId) return;
+    let alive = true;
+    void runApi
+      .configurations(sessionId)
+      .then((answer) => {
+        if (alive) setConfigs(answer.configurations);
+      })
+      .catch(() => {
+        // A recipe deleted mid-run simply has no glyph; the chip still draws.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [runApi, sessionId]);
+
+  /**
+   * FOLD THE RUN STATE ONTO THE STRIP.
+   *
+   * TWO RULES, AND THEY ARE NOT THE SAME RULE TWICE. The ACTIVE run — the one
+   * holding the project's slot — always has a chip, which is what re-opens it
+   * on the next visit after somebody closed it and what puts one there for a
+   * run an agent started. Every chip already in the strip is kept CURRENT from
+   * history, whether or not its run is still active, because a run that just
+   * exited has to stop naming a terminal (its handle is gone) and show its exit
+   * rather than sit for ever on the last state anyone saw.
+   *
+   * A CHIP IS NEVER REMOVED FROM HERE. Closing one is a person's gesture and an
+   * exited run's last screen is most of the value of keeping it.
+   *
+   * `upsertRunShell` IS IDENTITY-STABLE, so a frame that changed nothing does
+   * not rewrite the tab's params or re-render the strip.
+   */
+  useEffect(() => {
+    const status = runs.status;
+    if (!status) return;
+    // DEFERRED TO A TASK rather than called in the effect body: a synchronous
+    // `setState` there is a cascading render, and this is the rule the cockpit's
+    // own panel restore follows (`session-cockpit.tsx`) for the same reason.
+    const task = window.setTimeout(() => {
+      setWorkspace((current) => {
+        let next = current;
+        for (const shell of runShells(next)) {
+          const view = status.history.find((run) => run.runId === shell.run!.runId);
+          if (view) next = upsertRunShell(next, viewAsShell(view));
+        }
+        if (status.active) next = upsertRunShell(next, viewAsShell(status.active));
+        return next;
+      });
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, [runs.status]);
+
+  /**
+   * A CHIP'S STOP OR RESTART, AND THE ONE READ THAT FOLLOWS IT.
+   *
+   * `refresh` re-reads status and re-opens the feed. The frame for this change
+   * is already on its way and in the ordinary case the two agree; what it buys
+   * is that a pressed button does not look unpressed while the round trip
+   * finishes. IT IS NOT A POLL — nothing calls it on a timer.
+   *
+   * A REFUSAL IS THE FEED'S TO REPORT. `runs.error` is already on screen for
+   * the case where the engine is away, and a chip is not a place to grow a
+   * second error surface.
+   */
+  const actOnRun = (work: () => Promise<unknown>) => {
+    void work()
+      .catch(() => {
+        // The status the feed re-reads below is the truth either way: a stop
+        // that was refused leaves the run exactly as the next frame describes.
+      })
+      .finally(() => runs.refresh());
+  };
+
+  /** Every run this strip knows about, by id — the chips' status dots. */
+  const runsById = useMemo(() => {
+    const map = new Map<string, RunView>();
+    for (const run of runs.status?.history ?? []) map.set(run.runId, run);
+    if (runs.status?.active) map.set(runs.status.active.runId, runs.status.active);
+    return map;
+  }, [runs.status]);
+
+  /**
    * THE WINDOW-LEVEL CLAIM, ONCE FOR THE WHOLE STRIP. Every pane used to take
    * its own copy of this, which is a claim per shell for a fact about the
    * window. See lib/terminal-keys.ts for what it buys.
@@ -226,7 +381,16 @@ export function TerminalSurface({
    */
   const closeOne = (id: string) => {
     const shell = workspace.shells.find((entry) => entry.id === id);
-    if (shell?.terminalId) {
+    /**
+     * CLOSING A RUN'S CHIP STOPS NOTHING (#890), and this is the one branch
+     * where that is enforced rather than stated. A run belongs to the project:
+     * it outlives the conversation that started it and another session may be
+     * watching it. The chip has its own stop button for when stopping is what
+     * you meant — and the host would refuse this kill anyway, since a renderer
+     * may not address a terminal the engine owns, so the guard is here to keep
+     * the INTENT legible rather than to prevent a 403.
+     */
+    if (shell?.terminalId && !shell.run) {
       void Promise.resolve(terminalBridge()?.kill(shell.terminalId, "SIGTERM")).catch(() => {
         // A shell that already exited is the normal case, not an error.
       });
@@ -306,34 +470,93 @@ export function TerminalSurface({
         {workspace.shells.map((shell) => {
           const on = shell.id === workspace.active;
           const label = shellLabel(workspace, shell.id);
+          const run = shell.run ? runsById.get(shell.run.runId) : undefined;
+          const icon = shell.run ? configs?.find((config) => config.id === shell.run!.configId)?.icon : undefined;
           return (
             <div
               key={shell.id}
-              data-testid="terminal-tab"
+              data-testid={shell.run ? "run-tab" : "terminal-tab"}
               className={cn(
                 "flex min-w-0 max-w-44 shrink-0 items-center gap-1 rounded-md px-2 py-1",
                 on ? "bg-muted" : "hover:bg-muted/50",
               )}
-              // Middle-click closes, the way every strip in this app does.
+              // Middle-click closes, the way every strip in this app does. On a
+              // run that is CLOSING THE CHIP and not stopping anything.
               onAuxClick={(event) => {
                 if (event.button !== 1) return;
                 event.preventDefault();
                 closeOne(shell.id);
               }}
             >
+              {shell.run && (
+                /**
+                 * THE RECIPE'S GLYPH AND A STATE DOT — what tells a run apart
+                 * from a shell at a glance, and the two facts that are actually
+                 * different about it. `statusTone` is the palette's own
+                 * vocabulary (the masthead's pill uses the same one), so the
+                 * chip and the pill cannot disagree about what green means.
+                 */
+                <>
+                  <span
+                    aria-hidden
+                    className={cn("size-1.5 shrink-0 rounded-full", RUN_TONE_DOT[run ? statusTone(run.status) : "idle"])}
+                  />
+                  <RunGlyph icon={icon} className="size-3 shrink-0 opacity-80" />
+                </>
+              )}
               <button
                 type="button"
                 role="tab"
                 aria-selected={on}
                 className="min-w-0 flex-1 truncate text-left text-xs"
-                title={label}
+                // The status is in the TITLE rather than in the chip, which has
+                // room for a name or for a state and not for both.
+                title={run ? `${label} — ${statusLabel(run)}` : label}
                 onClick={() => setWorkspace(activateShell(workspace, shell.id))}
               >
                 {label}
               </button>
+              {shell.run && (
+                /**
+                 * STOP AND RESTART, ON THE CHIP. The header menu keeps its own
+                 * — it is the launcher — but a person looking at a run's output
+                 * should not have to go back up to the masthead to stop it.
+                 * Both go through the engine, where the project's singleton is.
+                 */
+                <>
+                  <button
+                    type="button"
+                    aria-label={`Restart ${label}`}
+                    title="Restart"
+                    className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      actOnRun(() => runApi.restart(sessionId!, shell.run!.runId));
+                    }}
+                  >
+                    <RotateCwIcon className="size-3" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Stop ${label}`}
+                    title="Stop"
+                    className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      actOnRun(() => runApi.stop(sessionId!, shell.run!.runId));
+                    }}
+                  >
+                    <CircleStopIcon className="size-3" />
+                  </button>
+                </>
+              )}
               <button
                 type="button"
-                aria-label={`Close ${label}`}
+                // NAMED FOR WHAT IT DOES, and on a run that is not "stop". A
+                // close that read as a stop is the exact misunderstanding this
+                // chip's whole arrangement is built to avoid.
+                aria-label={shell.run ? `Close ${label} (the run keeps going)` : `Close ${label}`}
+                title={shell.run ? "Close this chip — the run keeps going" : "Close"}
                 className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                 onClick={(event) => {
                   event.stopPropagation();
@@ -365,18 +588,38 @@ export function TerminalSurface({
        * must not be measured either; only the active one fits and focuses.
        */}
       <div className="relative min-h-0 flex-1">
-        {workspace.shells.map((shell) => (
-          <TerminalPane
-            key={shell.id}
-            {...(sessionId ? { sessionId } : {})}
-            {...(projectId ? { projectId } : {})}
-            {...(shell.terminalId ? { terminalId: shell.terminalId } : {})}
-            onTerminalId={(id) => setWorkspace((current) => setShellTerminal(current, shell.id, id))}
-            onTitle={(title) => setWorkspace((current) => setShellTitle(current, shell.id, title))}
-            active={shell.id === workspace.active}
-            visible={visible}
-          />
-        ))}
+        {workspace.shells.map((shell) =>
+          shell.run && sessionId ? (
+            /**
+             * KEYED BY THE RUN, not by the chip. A different run is a different
+             * terminal: reusing the emulator across them would append one
+             * process's bytes to another's screen, which does not look wrong —
+             * it looks like the first process printed something it never did.
+             * `restart` is exactly that case, and it is one click away here.
+             */
+            <RunPane
+              key={`${shell.id}:${shell.run.runId}`}
+              api={runApi}
+              sessionId={sessionId}
+              runId={shell.run.runId}
+              {...(shell.terminalId ? { terminalId: shell.terminalId } : {})}
+              live={isLiveRun(runsById.get(shell.run.runId))}
+              active={shell.id === workspace.active}
+              visible={visible}
+            />
+          ) : (
+            <TerminalPane
+              key={shell.id}
+              {...(sessionId ? { sessionId } : {})}
+              {...(projectId ? { projectId } : {})}
+              {...(shell.terminalId ? { terminalId: shell.terminalId } : {})}
+              onTerminalId={(id) => setWorkspace((current) => setShellTerminal(current, shell.id, id))}
+              onTitle={(title) => setWorkspace((current) => setShellTitle(current, shell.id, title))}
+              active={shell.id === workspace.active}
+              visible={visible}
+            />
+          ),
+        )}
       </div>
     </div>
   );

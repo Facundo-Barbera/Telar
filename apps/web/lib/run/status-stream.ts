@@ -26,7 +26,7 @@
  * is only recoverable from the state read. The backoff is for the engine that
  * is DOWN - without one a refused port is a tight spin.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { hostFetcher, LOCAL_HOST_ID, rewriteApiPath } from "@/lib/hosts/client";
 import { createRunApi, runPath, type RunApi } from "./api";
 import type { RunStatusAnswer, RunStatusEvent } from "./types";
@@ -84,12 +84,22 @@ export function useRunStatusFeed({
   const [error, setError] = useState<string>();
   /** Bumped by `refresh`; the effect below re-reads and re-follows on it. */
   const [generation, setGeneration] = useState(0);
-  const apiRef = useRef<RunApi | undefined>(undefined);
-  apiRef.current = injected ?? createRunApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
+  /** ONE CLIENT PER HOST, not one per render — and not a ref written during
+   *  render either, which is a value the effect below could read after the
+   *  host changed and before it re-ran. Pinned exactly as the masthead pins
+   *  its own: session ids are per-host and can collide, so an unpinned client
+   *  could come back describing another Mac's deployment rather than failing. */
+  const api = useMemo(() => injected ?? createRunApi(hostFetcher(hostId ?? LOCAL_HOST_ID)), [injected, hostId]);
 
   const refresh = useCallback(() => setGeneration((value) => value + 1), []);
 
   useEffect(() => {
+    // NO SESSION, NO RUN DOOR. Every run route is session-scoped — the project
+    // and the worktree are things the daemon knows about the session, not
+    // things a client names — so a surface mounted before there is one (a new
+    // conversation's canvas) has nothing to read and must not open a feed
+    // against a path with an empty id in it.
+    if (!sessionId) return;
     const controller = new AbortController();
     let stopped = false;
     let delay = 1_000;
@@ -100,7 +110,7 @@ export function useRunStatusFeed({
           // THE STATE READ COMES FIRST, EVERY TIME ROUND. The feed is live-only
           // - see the engine route - so a reconnect that skipped this would
           // silently miss whatever happened while the socket was down.
-          const answer = await apiRef.current!.status(sessionId);
+          const answer = await api.status(sessionId);
           if (stopped) return;
           setStatus(answer);
           setError(undefined);
@@ -125,7 +135,7 @@ export function useRunStatusFeed({
       stopped = true;
       controller.abort();
     };
-  }, [sessionId, hostId, generation]);
+  }, [api, sessionId, hostId, generation]);
 
   return { status, error, refresh };
 }

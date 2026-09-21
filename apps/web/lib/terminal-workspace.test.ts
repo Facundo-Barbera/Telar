@@ -19,11 +19,14 @@ import {
   moveShell,
   nextShellId,
   readWorkspace,
+  runShells,
   setShellTerminal,
   setShellTitle,
+  shellForRun,
   shellLabel,
   terminalIds,
   terminalIdsInParams,
+  upsertRunShell,
   workspaceParams,
   TERMINAL_ID_PARAM,
   TERMINAL_WORKSPACE_PARAM,
@@ -233,5 +236,96 @@ describe("folding several outer tabs into one", () => {
   test("folding nothing, or tabs that never attached, writes no key", () => {
     expect(foldTerminalParams([])).toEqual({});
     expect(foldTerminalParams([{}, {}])).toEqual({});
+  });
+});
+
+/**
+ * A RUN IS A CHIP IN THIS STRIP (#890), and every assertion here is about the
+ * one way it differs from a shell: WHO OWNS THE PROCESS. A shell belongs to the
+ * tab that opened it and dies with it; a run belongs to the project, outlives
+ * the conversation that started it, and may be what another session is watching
+ * right now.
+ */
+describe("a run in the strip", () => {
+  const dev = { runId: "run_1", configId: "cfg_1", terminalId: "term_run", title: "web dev" };
+
+  test("a run takes a chip of its own, without stealing focus", () => {
+    // A run can start from an agent's tool call or another session's button, so
+    // the strip must not jump to it under somebody's hands.
+    const state = upsertRunShell(three(), dev);
+    expect(ids(state)).toEqual(["shell", "shell#2", "shell#3", "run"]);
+    // Whatever had focus keeps it — `three()` leaves the last shell opened.
+    expect(state.active).toBe("shell#3");
+    expect(shellForRun(state, "run_1")?.terminalId).toBe("term_run");
+    expect(runShells(state).map((shell) => shell.id)).toEqual(["run"]);
+  });
+
+  test("pressing play yourself focuses the chip", () => {
+    expect(upsertRunShell(three(), dev, { focus: true }).active).toBe("run");
+  });
+
+  test("the same run arriving twice is one chip, and an unchanged frame is not a new state", () => {
+    // This is fed by a status stream and by the mount that adopts what is
+    // already running, so the same run arrives repeatedly by construction.
+    const once = upsertRunShell(three(), dev);
+    expect(upsertRunShell(once, dev)).toBe(once);
+    expect(runShells(upsertRunShell(once, dev)).length).toBe(1);
+  });
+
+  test("a terminal id that arrives late, and one that goes, are both written", () => {
+    // `starting` has no PTY yet; a run whose handle is gone stops naming one.
+    const starting = upsertRunShell(emptyWorkspace(), { runId: "run_1", configId: "cfg_1", title: "web dev" });
+    expect(shellForRun(starting, "run_1")?.terminalId).toBeUndefined();
+    const running = upsertRunShell(starting, dev);
+    expect(shellForRun(running, "run_1")?.terminalId).toBe("term_run");
+    const ended = upsertRunShell(running, { runId: "run_1", configId: "cfg_1", title: "web dev" });
+    expect(shellForRun(ended, "run_1")?.terminalId).toBeUndefined();
+  });
+
+  test("CLOSING THE TERMINAL TAB DOES NOT REAP A RUN", () => {
+    // The sharpest rule in the file: `terminalIds` is what the reaper kills, and
+    // a run's id on it would stop somebody else's dev server because a person
+    // here closed a tab.
+    const state = upsertRunShell(three(), dev);
+    expect(terminalIds(state)).toEqual(["term_a", "term_b", "term_c"]);
+    expect(terminalIds(state)).not.toContain("term_run");
+    // And through the params, which is the shape the reaper actually reads.
+    expect(terminalIdsInParams(workspaceParams(state))).toEqual(["term_a", "term_b", "term_c"]);
+  });
+
+  test("a run's chip says its configuration's name, and does not renumber the shells", () => {
+    const state = upsertRunShell(emptyWorkspace(), dev);
+    const withShells = addShell(addShell(state));
+    expect(shellLabel(withShells, "run")).toBe("web dev");
+    // "Shell 2" must mean the second shell you can see, whatever else is in the
+    // strip — the run chip sits first here and still does not take the number.
+    expect(shellLabel(withShells, "shell")).toBe("Shell 1");
+    expect(shellLabel(withShells, "shell#2")).toBe("Shell 2");
+  });
+
+  test("a run survives the params round trip, chip and all", () => {
+    const state = upsertRunShell(three(), dev);
+    const restored = readWorkspace(workspaceParams(state));
+    expect(shellForRun(restored, "run_1")).toEqual({ id: "run", terminalId: "term_run", title: "web dev", run: { runId: "run_1", configId: "cfg_1" } });
+  });
+
+  test("a half-written run restores as an ordinary shell rather than an unaddressable chip", () => {
+    // With no runId there is nothing to stop and no status to follow, so the
+    // chip would draw for ever as a blank run nobody can act on.
+    const raw = JSON.stringify({ shells: [{ id: "run", run: { configId: "cfg_1" } }, { id: "shell" }], active: "shell" });
+    const restored = readWorkspace({ [TERMINAL_WORKSPACE_PARAM]: raw });
+    expect(runShells(restored)).toEqual([]);
+    expect(ids(restored)).toEqual(["run", "shell"]);
+  });
+
+  test("a second run gets its own chip beside the first", () => {
+    const state = upsertRunShell(upsertRunShell(emptyWorkspace(), dev), { runId: "run_2", configId: "cfg_2", title: "api" });
+    expect(runShells(state).map((shell) => shell.id)).toEqual(["run", "run#2"]);
+  });
+
+  test("closing a run's chip removes it and leaves the others alone", () => {
+    const state = closeShell(upsertRunShell(three(), dev), "run");
+    expect(shellForRun(state, "run_1")).toBeUndefined();
+    expect(ids(state)).toEqual(["shell", "shell#2", "shell#3"]);
   });
 });
