@@ -1,8 +1,11 @@
-# Run on a terminal — what shipped for #198 W4
+# Run on a terminal — #198 W4, and #890
 
 Run is not a button with a log pane. It is a detached session on a real
 pseudo-terminal, and the terminal is a first-class cockpit surface that Run is
-one client of.
+one client of. **Since #890 it is not merely a client of that surface — it is IN
+it**: a run is a chip in the Terminal tab's strip, beside the person's own
+shells. §1–§6 are W4's; §7 is that merge, the transport it changed, and the
+tools it added.
 
 This file records the decisions a future reader will otherwise re-litigate, and
 **one product limit that is easy to break by accident** — §5, which is the part
@@ -149,14 +152,14 @@ paid on every line — or refusing to echo, which is refusing to be a terminal.
 Both are product decisions rather than bugs, which is why this is a paragraph
 and not a TODO.
 
-### The Run tab is writable, and read-only would not have narrowed this
+### A run's terminal is writable, and read-only would not have narrowed this
 
 **Decided by the owner, 2026-09-20.** A person can type into a run's terminal.
 
-The question read as *"is there a shell in the Run tab"*, and there is not:
+The question read as *"is there a shell behind a run"*, and there is not:
 `resolveShell` spawns `/bin/sh -c "<command>"` — non-login, non-interactive, no
 dotfiles, no prompt, no history. Keystrokes reach **the program the recipe
-named**. But that does not make a Run tab non-interactive, for two reasons:
+named**. But that does not make a run non-interactive, for two reasons:
 
 - **A recipe can pin its shell.** `resolveShell` takes `config.shell` literally,
   so `{ program: "/bin/zsh", args: ["-lc"] }` is a legitimate saved recipe — and
@@ -176,13 +179,18 @@ writes* and never covered what a person types. Read-only narrows who can reach
 the keyboard; it does not close this section.
 
 **The cost that is not about secrets, and it is the sharper one: a run is a
-project singleton that every session sees.** Two sessions with the Run tab open
+project singleton that every session sees.** Two sessions with that chip open
 are two keyboards on one process, with no ownership model and no indication to
 either that the other is there. The panel already says the run belongs to the
 project and already warns when it came from another worktree; nothing pretends
 the second keyboard is not there.
 
 ### What the cockpit reads, and why not the obvious channel
+
+> **Superseded in part by §7.** The cockpit does now read a run's terminal over
+> `telar:terminal:data` — but it is still never given the frames this section is
+> about. The renderer gets the engine's **redacted mirror** of them, so the
+> reasoning below is what §7 had to satisfy rather than what it overturned.
 
 The Run panel's emulator is fed by **`GET /run/bytes`, over the engine's HTTP
 surface** — never by `telar:terminal:data`. Two independent reasons, one answer:
@@ -250,3 +258,146 @@ wrong: the token, the closed route set, the body cap, that the stream
 **heartbeats** (a frame count, which an idle stream cannot produce), and that
 frames emitted before anyone attached are still delivered — without which a
 command that dies instantly leaves a run `starting` forever, holding its project.
+
+## 7. A run is a shell in the Terminal strip — #890
+
+W4 shipped a Run **tab**: its own panel surface, its own xterm, its own poll.
+#889 gave the Terminal tab a strip of shells. That left the cockpit with two
+surfaces for one idea — a person looking for *the thing that is running* had two
+places to look — and with two emulators drawing the same kind of bytes through
+the same `ptyByteWriter`.
+
+**A run is a terminal the desktop holds, exactly as a person's shell is.** What
+is different about it is not its bytes: it is that the process belongs to the
+**project** rather than to whoever opened it. That is a property of one chip, not
+a reason for a second surface. So the Run tab, `run-panel.tsx`, `run-terminal.tsx`
+and `run-control.tsx` are gone, and a run is a chip in the Terminal strip with
+its configuration's glyph and a state dot.
+
+Everything that follows is that one difference, made enforceable:
+
+- **`terminalIds` does not list a run's terminal.** That list is what
+  `endTerminalForTab` kills when a Terminal tab closes. A run's id on it would
+  stop another session's dev server because somebody here closed a tab.
+- **Closing the chip stops nothing**, and its label says so
+  (*"Close this chip — the run keeps going"*). The chip has its own stop and
+  restart; the header menu keeps its own.
+- **The active run always has a chip.** That is how a run an agent started
+  appears, and how a live one you closed comes back on the next visit. An exited
+  one stays closable and gone.
+- **A renderer may read a run's terminal and may not address one.**
+  `telar:terminal:adopt` grants being sent frames; `write`, `resize` and `kill`
+  still refuse a renderer an engine id, so typing into a run and stopping it stay
+  on the engine's routes, where the singleton and the journal are.
+
+### The redaction decision
+
+§5 said the cockpit must not read `telar:terminal:data` for a run, because
+`main.js` fans **raw node-pty bytes** and redaction is engine-side with one call
+site. Drawing a run in the strip is exactly the change that would have broken
+that, and there were two ways out:
+
+1. run the redactor **on the desktop side** for run terminals — the config's
+   secret values already cross to the host at launch; or
+2. keep ONE redactor in the engine and **mirror its output back** to the desktop
+   for the renderer.
+
+**Telar does (2).** A second copy of `pty-stream.ts` is a second place for the
+promise in §5 to be broken, and it would be broken quietly: the desktop has no
+run journal to compare against, so a drift between the two redactors would show
+up as a screen that differs from the record, which nobody reads twice. With the
+mirror there is exactly one redactor, and the renderer sees **byte-for-byte what
+the journal holds** — which is a property a test can state, and
+`run-terminal-channel.test.ts` does.
+
+Concretely: `main.js` sends a run's raw frames only to the engine (it asks the
+host `ownerOf(id)`, so this is a property of the terminal rather than of who
+happened to register as a reader); the engine's `manager.ts` mirrors each
+redacted slice back over `POST /mirror` on `run-terminal-server.js`; `main.js`
+delivers those to whichever renderer adopted that id. `telar:terminal:adopt` is
+gated on the host's own list of `TerminalOwner.ENGINE` terminals, so it cannot be
+turned into a way to reach a person's shell.
+
+**The frame carries the ring's cursor**, and that is what makes the join exact. A
+chip attaching to a run that has been going for ten minutes needs the scrollback
+the engine kept *and* the frames arriving while it reads it: it subscribes first
+(buffering, drawing nothing), reads `/run/bytes` from the top, draws that, then
+draws only the buffered frames the read did not already contain. Reading first
+loses whatever lands in between; drawing the buffer first puts it above the
+history it belongs after.
+
+### Stream, not poll
+
+- **Bytes.** With a bridge, the chip draws frames as the engine produces them.
+  Nothing is on a timer. The poll survives for the one case with no IPC — a
+  session whose Mac is not this one — at the cadence it had; making the iPad
+  stream is out of scope. A settled run is read once and never again.
+- **Status.** `RunManager.watch()` emits `run.status` on every transition,
+  `GET /v2/sessions/:id/run/stream` carries them, and `useRunStatusFeed` reads
+  `/run/status` **once per mount** and then follows. The masthead's pill used to
+  ask every 4 s live / 12 s idle, for ever, in every open window; the Run tab's
+  emulator asked for bytes every 500 ms on top. There is no `setInterval` and no
+  poll cadence left anywhere under `components/run/`.
+- **The frames carry the whole `RunView`**, unlike the session and agent feeds,
+  because there is nothing to page back to: a run's status lives in the engine's
+  memory and the only read of it is the poll this feed replaced. A reader that
+  missed a frame is corrected by the next one rather than having to reconcile.
+  `active` rides on the event rather than on the view, because no client can
+  derive it — `release()` frees the slot while the run stays `unknown` for ever.
+
+### How a persisted Run tab migrates
+
+`migratePanelTab` maps `run` to `terminal`, which is what stops a saved Run tab
+restoring as a pane nothing renders. Folding it into the Terminal somebody also
+had open is **`collapseTerminalTabs`** — #889's reducer, unchanged: it collapses
+every terminal-kind tab into one at the first one's position, folds their params
+together so no running shell is orphaned, moves the active selection if it was on
+a folded tab, and returns the **same object** when nothing changed, so a session
+migrated once is not rewritten on every mount.
+
+The chip is deliberately **not** seeded into the params. The surface reads
+`/run/status` once on mount and gives the project's live run a chip — the same
+path a run started by an agent or by another session takes — so there is one rule
+rather than a migration that has to agree with it.
+
+### The tools
+
+`run_output` gains `tail`, `grep` and `stream`. **None of them moves the
+cursor**: they narrow what comes back within the window `after` opened, so a
+caller that greps has still read past what did not match and can resume over
+everything later. An empty answer says *which* empty it is, because "no output
+yet" told to a model whose filter simply matched nothing is how it concludes the
+process is silent.
+
+```
+run_output  { runId?, after?, tail?: 1..1000, grep?: string, stream?: "stdout"|"stderr" }
+run_wait    { runId?, pattern?: string, ready?: boolean, exit?: boolean, timeoutMs: 0..60000 }
+            → { fired: "pattern"|"ready"|"exit"|"timeout", cursor, lines }
+run_stop    { runId?, signal?: "SIGTERM"|"SIGINT"|"SIGKILL" }
+run_status  → … terminalId, so an agent can say where in the cockpit the output is
+run_start   → the same
+```
+
+**`run_wait` is the one that changes what an agent can do.** Every agent given
+this feature did the same thing: started a server, slept a guess, curled, and
+reported the connection refusal as the project's bug. The answer says WHICH
+condition fired because *"it came back"* and *"the server is up"* are not the
+same fact. It is decided **engine-side over state the daemon already holds** —
+the lines, the readiness verdict, the status — so nothing about waiting reaches
+the desktop; a wait that polled the host would be the poll this milestone deleted
+wearing a tool's name. `ready` on a recipe with no `readinessUrl` is **refused**
+rather than waited out, since it could only ever arrive at a `timeout` an agent
+would read as "it did not come up". `exit` fires on the run being **settled**,
+not on its shell being gone: the window between those two is where a run can
+still become `unknown` with the slot held.
+
+It is on `RUN_READ_ONLY_TOOLS`. It blocks, which is not what "read" usually
+suggests — but it signals nothing, starts nothing and changes nothing, and behind
+an approval prompt the deterministic path would be the expensive one.
+
+**`run_stop`'s `signal` is the polite attempt's only.** A dev server that traps
+SIGTERM to drain connections stops the way Ctrl-C stops it and no other way; the
+escalation stays SIGKILL whatever was asked for, because a second attempt that
+can be refused is not a second attempt. A closed set of three, not a free field.
+On Windows a requested signal is ignored and `platform.ts` says so, rather than
+pretending `taskkill` has one.
