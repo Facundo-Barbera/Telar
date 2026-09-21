@@ -62,6 +62,17 @@ export type RunLaunchEvents = {
  */
 export type RunHandle = {
   readonly pid: number | undefined;
+  /**
+   * THE HOST'S NAME FOR THIS PTY, when the run is on one — and the reason it is
+   * published rather than kept private is that the cockpit needs to point at it.
+   *
+   * A run and a person's shell are the same kind of thing now (#890): both are
+   * terminals the desktop holds, and the strip draws them side by side. To draw
+   * a run the renderer has to be able to say WHICH terminal, and the only name
+   * that survives the trip is the host's id — a pid is reused by the kernel and
+   * an id is not. Absent for the pipe launcher, which has no terminal at all.
+   */
+  readonly terminalId?: string;
   stop(force: boolean): void;
   /**
    * KEYSTROKES, AND THEY ARE OPTIONAL BECAUSE ONE LAUNCHER GENUINELY HAS NO
@@ -191,6 +202,7 @@ export function terminalLauncher(client: RunTerminalClient, defaults: { cols?: n
       }
       return {
         pid: opened.pid,
+        terminalId: opened.id,
         write: (data: string) => client.write(opened.id, data),
         resize: (cols: number, rows: number) => client.resize(opened.id, cols, rows),
         stop(force: boolean) {

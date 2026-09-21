@@ -32,7 +32,11 @@ function describe(run: RunView): string {
           ? ` — readiness cannot be attributed to this process (${run.readiness.reason})`
           : "";
   const ended = run.endedAt ? ` exit ${run.exitCode ?? run.signal ?? "?"}.` : "";
-  return `"${run.configName}" is ${run.status} (run ${run.runId}) from ${where}, cwd ${run.cwd}.${readiness}${ended}${run.error ? ` ${run.error}` : ""}`;
+  // WHERE IT ALREADY IS, so an answer can point rather than describe: since
+  // #890 a live run is a shell in the cockpit's Terminal strip, and the id is
+  // the only name for it that both halves agree on.
+  const surface = run.terminalId ? ` Its terminal is ${run.terminalId} — the human sees it as a chip in the Terminal tab.` : "";
+  return `"${run.configName}" is ${run.status} (run ${run.runId}) from ${where}, cwd ${run.cwd}.${readiness}${ended}${run.error ? ` ${run.error}` : ""}${surface}`;
 }
 
 export function runTools(tool: ToolFactory, capability: RunCapability): unknown[] {

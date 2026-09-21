@@ -230,6 +230,25 @@ test("a channel that dies leaves the run unknown and the project's slot still he
   expect(manager.activeRun("proj_1")?.runId).toBe(started.runId);
 });
 
+test("a live run names the terminal it is on, and stops naming it once the handle is gone", async () => {
+  /**
+   * #890: the cockpit draws a run as a shell in the Terminal strip, so the view
+   * has to carry a name the renderer can attach to. It is the HOST's id rather
+   * than a pid for the same reason every other verb uses one — an id is not
+   * reused — and it follows `pid`'s rule about when it may be published: while
+   * the handle is still ours, and not a moment after.
+   */
+  const { host, manager, dir } = await harness();
+  const started = await manager.start(input(dir));
+  const id = [...host.terminals.keys()][0]!;
+  expect(started.terminalId).toBe(id);
+  expect(manager.activeRun("proj_1")?.terminalId).toBe(id);
+
+  host.exit(id, 0);
+  expect(await until(() => manager.run(started.runId).status === "exited")).toBe(true);
+  expect(manager.run(started.runId).terminalId).toBeUndefined();
+});
+
 test("a healthy channel settles the same run exited and frees the slot", async () => {
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));

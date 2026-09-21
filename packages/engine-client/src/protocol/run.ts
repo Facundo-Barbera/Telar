@@ -167,6 +167,13 @@ export const RunView = z.object({
   readinessUrl: z.string().optional(),
   /** Present only while the engine still holds the process handle. */
   pid: z.number().optional(),
+  /**
+   * The desktop host's id for the pseudo-terminal this run is on, while it is
+   * on one — what the cockpit's Terminal strip attaches to (#890), and what an
+   * agent quotes to say where the output already is. Absent for a run with no
+   * terminal (no Electron) and for one whose handle is gone.
+   */
+  terminalId: z.string().optional(),
   startedAt: z.number(),
   endedAt: z.number().optional(),
   exitCode: z.number().optional(),

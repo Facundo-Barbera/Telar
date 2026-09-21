@@ -1225,6 +1225,7 @@ export class RunManager {
       readiness: run.readiness,
       ...(run.config.readinessUrl ? { readinessUrl: redactText(run.config.readinessUrl, run.secrets) } : {}),
       ...(run.handle?.pid !== undefined && !run.handleClosed ? { pid: run.handle.pid } : {}),
+      ...(run.handle?.terminalId !== undefined && !run.handleClosed ? { terminalId: run.handle.terminalId } : {}),
       startedAt: run.startedAt,
       ...(run.endedAt ? { endedAt: run.endedAt } : {}),
       ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
