@@ -468,10 +468,17 @@ describe("livenessOf — one definition of 'still working'", () => {
   });
 });
 
-describe("Warp linkage", () => {
-  test("an ordinary sub-agent carries no warp block", () => {
-    // The structural claim of the design: aggregation is a projection, so
-    // nothing has to know about warps to represent an agent.
+describe("a task carries no fan-out linkage", () => {
+  /**
+   * WHAT THIS BLOCK USED TO SAY, and why the inversion is the point.
+   *
+   * It asserted that an ordinary sub-agent carried no `warp` block and that a
+   * Warp agent was the SAME `Task` with linkage attached — the structural claim
+   * that aggregation is a projection, so nothing had to know about warps to
+   * represent an agent. #877 retired Warp. The projection claim survives; the
+   * block does not, and these tests now pin its absence.
+   */
+  test("an ordinary sub-agent is a whole task on its own", () => {
     const parsed = Item.safeParse({
       id: "i1",
       runId: "r1",
@@ -483,7 +490,14 @@ describe("Warp linkage", () => {
     expect(parsed.success).toBe(true);
   });
 
-  test("a warp agent is the same Task with linkage attached", () => {
+  test("a `warp` block sent by an older engine is DROPPED, not carried", () => {
+    /**
+     * ASSERTED ON THE OUTPUT, not on `success`. Zod strips unknown keys rather
+     * than rejecting them, so a schema that merely no longer declares `warp`
+     * would still parse this happily — and a test reading `success` alone would
+     * pass identically whether the field was removed or still declared. What
+     * matters to a client is that nothing downstream can read it back.
+     */
     const parsed = TaskSchema.safeParse({
       id: "t1",
       sessionId: "s1",
@@ -492,15 +506,11 @@ describe("Warp linkage", () => {
       state: "running",
       startedAt: at,
       updatedAt: at,
-      warp: {
-        warpRunId: "w1",
-        warpName: "review-changes",
-        phaseIndex: 0,
-        phaseTitle: "Review",
-        agentIndex: 2,
-      },
+      warp: { warpRunId: "w1", warpName: "review-changes", phaseIndex: 0, phaseTitle: "Review", agentIndex: 2 },
     });
     expect(parsed.success).toBe(true);
+    expect(parsed.success && Object.keys(parsed.data)).not.toContain("warp");
+    expect(parsed.success && (parsed.data as Record<string, unknown>).warp).toBeUndefined();
   });
 });
 
