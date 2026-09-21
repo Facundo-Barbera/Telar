@@ -37,7 +37,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { Segmented } from "@/components/settings/settings-shell";
 import { UsageChart, type ChartSeries } from "@/components/usage/usage-chart";
 import { UsageLimitsSection } from "@/components/usage/usage-limits";
-import { ProcessMetricsSection } from "@/components/usage/process-metrics";
 import {
   DRIVER_LABEL,
   foldUsage,
@@ -150,7 +149,6 @@ export function UsagePage() {
     <div className="flex h-full min-h-0 flex-col overflow-hidden md:rounded-xl md:ring-1 md:ring-sidebar-border">
       <PageHeader
         title="Usage"
-        description={error ?? (unpricedProvider && metric === "cost" ? "Some models have no known rate; their cost is not counted." : undefined)}
         actions={
           <div className="flex items-center gap-2">
             <Segmented<Metric>
@@ -189,15 +187,14 @@ export function UsagePage() {
               `fold && !empty` gate deliberately: a machine that ran nothing
               locally can still be pooling accounts that are nearly out. */}
           <UsageLimitsSection />
-          {/* THE PRESENT TENSE, ABOVE THE HISTORY — issue #488. What this
-              machine is burning RIGHT NOW decides whether to go looking for a
-              runaway; what it spent last week does not, and a person who came
-              here because the fans are loud should not have to scroll past
-              ninety days of token charts to find out why. Outside the
-              `fold && !empty` gate for the same reason Limits is: an install
-              that has run nothing locally can still have a renderer pinned.
-              Draws nothing at all outside the desktop app. */}
-          <ProcessMetricsSection />
+          {/* These two used to ride in the header's subtitle. The subtitle is
+              gone (it crowded the title), but an engine that could not answer
+              and a model with no known rate are both things a person reading
+              a cost figure needs to be told, so they moved into the flow. */}
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+          {!error && unpricedProvider && metric === "cost" && (
+            <p className="text-sm text-muted-foreground">Some models have no known rate; their cost is not counted.</p>
+          )}
           {!report && loading && <p role="status" className="text-sm text-muted-foreground">Loading usage history…</p>}
           {empty && <p className="text-sm text-muted-foreground">No activity in this window.</p>}
 
