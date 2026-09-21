@@ -162,18 +162,65 @@ describe("a --dev package is a separate app that cannot collide with the install
 
   /**
    * BEHAVIOUR, NOT SOURCE. The script is actually spawned: the refusal has to
-   * happen before any build step runs, because `install-app.sh` copies to the
-   * fixed name Telar.app and the dev build would land on the installed one.
+   * happen before any build step runs. `install-app.sh` now names the
+   * destination after the SOURCE bundle, so `--dev --install` lands at
+   * "Telar Dev.app" beside the installed Telar; the one remaining way to
+   * collide is an explicit --destination that names Telar.app, and that is
+   * what must be refused up front.
    */
-  test("--dev --install is refused before anything is built", () => {
+  test("--dev --install may not be aimed at Telar.app, and is refused before anything is built", () => {
     // 15 s, the bound the engine suite's wait helpers carry, under the 20 s
     // bunfig ceiling. The refusal is immediate on a healthy machine; the budget
     // only bites when the CI Mac mini is loaded, and killing the script then
     // reads as a failed assertion about argument handling (#458).
-    const result = spawnSync("bash", [script, "--dev", "--install"], { encoding: "utf8", timeout: 15_000 });
+    const result = spawnSync(
+      "bash",
+      [script, "--dev", "--install", "--destination", "/Applications/Telar.app"],
+      { encoding: "utf8", timeout: 15_000 },
+    );
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("--dev cannot be combined with --install");
+    expect(result.stderr).toContain("may not target Telar.app");
     expect(result.stdout).not.toContain("==> build standalone web app");
+  });
+
+  /**
+   * THE INSTALLER'S HALF OF THE SAME RULE, without a build: install-app.sh
+   * derives the destination from the source bundle's name. A fake "Telar
+   * Dev.app" with the right executable must resolve to "<dir>/Telar Dev.app",
+   * never "<dir>/Telar.app". Spawned with --verified so no smoke runs, against
+   * a destination directory that cannot be written, so the script fails at
+   * mkdir AFTER printing the resolved path in its own error.
+   */
+  test("install-app.sh installs a dev bundle beside Telar.app, named after the source", () => {
+    const os = require("node:os");
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "telar-install-name-"));
+    try {
+      const fake = path.join(scratch, "Telar Dev.app");
+      fs.mkdirSync(path.join(fake, "Contents", "MacOS"), { recursive: true });
+      fs.writeFileSync(path.join(fake, "Contents", "MacOS", "Telar Dev"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const dest = path.join(scratch, "dest");
+      const result = spawnSync(
+        "bash",
+        [path.join(__dirname, "install-app.sh"), "--app", fake, "--verified", "--destination", path.join(dest, "Telar Dev.app")],
+        { encoding: "utf8", timeout: 15_000 },
+      );
+      expect(result.status).toBe(0);
+      expect(fs.existsSync(path.join(dest, "Telar Dev.app", "Contents", "MacOS", "Telar Dev"))).toBe(true);
+      expect(fs.existsSync(path.join(dest, "Telar.app"))).toBe(false);
+      // And with no --destination at all, the default is named after the source.
+      const home = path.join(scratch, "home");
+      fs.mkdirSync(home, { recursive: true });
+      const byDefault = spawnSync(
+        "bash",
+        [path.join(__dirname, "install-app.sh"), "--app", fake, "--verified"],
+        { encoding: "utf8", timeout: 15_000, env: { ...process.env, HOME: home } },
+      );
+      expect(byDefault.status).toBe(0);
+      expect(fs.existsSync(path.join(home, "Applications", "Telar Dev.app"))).toBe(true);
+      expect(fs.existsSync(path.join(home, "Applications", "Telar.app"))).toBe(false);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   test("the shipping identity in package.json is untouched by the dev option", () => {
