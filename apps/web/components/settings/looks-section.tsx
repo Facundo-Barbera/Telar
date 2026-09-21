@@ -193,7 +193,10 @@ function LookRow({
               autoFocus
               value={draftName}
               aria-label={`Rename ${look.label}`}
-              className="h-6 w-40 px-1.5 text-xs"
+              // `flex-1 min-w-0`, not the `w-40` it carried: 160px is wider
+              // than the name has in a fixed Look column, and a field that
+              // overflows its cell is the same defect the table just fixed.
+              className="h-6 min-w-0 flex-1 px-1.5 text-xs"
               onChange={(event) => setDraftName(event.target.value)}
               onBlur={commitRename}
               onKeyDown={(event) => {
@@ -544,19 +547,38 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
           scrolling, and a scroll box inside a scrolling pane would put that
           back. */}
       <div className="-mx-4">
-        <table className="w-full border-collapse text-left text-xs">
+        {/* `table-fixed` IS WHAT KEEPS THE SHELF INSIDE ITS CARD.
+            Under auto layout a cell's content is a VOTE on how wide its column
+            should be, and `truncate` never gets to cast one: the span shrinks
+            to an ellipsis only once something upstream has capped it, so an
+            uncapped `<td>` widened to fit "Tide, under a dusk gradient · violet
+            · Geist / Geist Mono" in full and took the table — every row's
+            hairline with it — about 110px past the card's right edge.
+            Fixed layout reads the widths off THIS row and nothing else, so the
+            three below are the whole story and no summary can vote again. */}
+        <table className="w-full table-fixed border-collapse text-left text-xs">
           <thead>
             <tr className="border-b border-border/60 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
-              <th scope="col" className="py-1.5 pr-3 pl-4 font-normal">
+              {/* The thumbnail, its `pl-4`/`pr-3` and the gap beside it account
+                  for most of this; the rest is the name, which truncates like
+                  any other cell here. */}
+              <th scope="col" className="w-[40%] py-1.5 pr-3 pl-4 font-normal">
                 Look
               </th>
+              {/* No width: the one unsized column takes whatever the other two
+                  leave, which is the column that should absorb a narrow panel. */}
               <th scope="col" className="py-1.5 pr-3 font-normal">
                 Carries
               </th>
               {/* The actions column is headed by nothing: its contents are
                   invisible until reached for, and a heading over empty space
-                  would be the one thing on the row that never goes away. */}
-              <th scope="col" className="py-1.5 pr-4 font-normal">
+                  would be the one thing on the row that never goes away.
+                  ITS WIDTH IS ITS BUTTONS, measured rather than guessed: Wear
+                  (`sm`, ~50px) + three `icon-sm` at 28px + three 2px gaps +
+                  `pr-4` = 156px. Reserved on every row, because a column that
+                  fitted only the rows without rename/export/delete would let
+                  the hover set overflow leftwards over the summary. */}
+              <th scope="col" className="w-[156px] py-1.5 pr-4 font-normal">
                 <span className="sr-only">Actions</span>
               </th>
             </tr>
