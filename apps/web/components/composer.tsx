@@ -70,6 +70,7 @@ import {
 import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { markComposerActive, registerComposer, type ComposerKind, type ComposerSubmit } from "@/lib/composer-registry";
 import { contextNoticeDue } from "@/lib/context-notice";
+import { contextNoticeDismissal, writeContextNoticeDismissed } from "@/lib/context-notice-dismissal";
 import { ComposerMenu } from "./composer-menu";
 import { DictationButton } from "./dictation-button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -447,6 +448,7 @@ export function Composer({
   onOpenChanges,
   onCompact,
   compacting,
+  contextNoticePercent,
   question,
   onAnswerQuestion,
   onCancelQuestion,
@@ -564,6 +566,13 @@ export function Composer({
   /** The provider is squeezing its context RIGHT NOW — an open
    *  context_compaction row on the live turn. Gates the compact button. */
   compacting?: boolean;
+  /**
+   * The share of the window that counts as heavy for THIS session's login, as
+   * a whole percentage. Resolved by the cockpit from the provider instance —
+   * the composer reads no settings of its own — and absent falls back to
+   * `contextNoticeDue`'s default.
+   */
+  contextNoticePercent?: number;
   onDraftChange: (draft: string) => void;
   onSubmit: () => void;
   onStop: () => void;
@@ -610,24 +619,34 @@ export function Composer({
    * THE BANNER STACK — the notices tucked behind the composer's top edge.
    * ---------------------------------------------------------------- */
 
-  /** Dismissal is per SESSION, not a boolean: keyed on the id, it survives
-   *  nothing and resets by construction when the composer shows another
-   *  conversation — no effect clearing state behind the render. */
-  const [contextNoticeDismissedFor, setContextNoticeDismissedFor] = useState<string>();
-  /** Three quarters full is when compaction stops being trivia and starts
-   *  being the next thing worth doing — late enough to never nag a short
-   *  conversation, early enough that the squeeze still has room to run.
+  /** Heavy enough to say so, and somewhere to say it. `contextNoticePercent`
+   *  is this login's own threshold, resolved by the cockpit; absent takes the
+   *  default. The rule is in lib/context-notice.ts. */
+  const heavyContext = Boolean(!fresh && session && onCompact && !compacting && contextNoticeDue(usage, contextNoticePercent));
+  /**
+   * THE DISMISS THAT WAS NOT KEPT. This was a `useState` holding the session
+   * id, which survived nothing: a reload or a switch away and back put the
+   * banner in front of someone who had already answered it.
    *
-   *  AND AN ABSOLUTE BAND AS WELL (#587). A proportion alone was right until
-   *  `contextMax` went from 200,000 to 1,000,000 and silently moved this nudge
-   *  from ~150k to 750,000 — with no edit to this file, and with the measured
-   *  sawtooth peaking at 700–740k just underneath it. `contextNoticeDue` fires
-   *  on whichever arm comes first; on a 200k window that is still 75%, so
-   *  nothing changes for a short conversation or an account without a 1M
-   *  window. The reasoning and the number live in lib/context-notice.ts. */
-  const contextNotice = Boolean(
-    !fresh && session && onCompact && !compacting && contextNoticeDue(usage) && contextNoticeDismissedFor !== session.id,
+   * The flag now lives in localStorage; this state is the click that storage
+   * has not been re-read for yet, and it is an INPUT to the memo rather than a
+   * second opinion beside it — which is what keeps the banner's disappearance
+   * synchronous with the press without an effect chasing the render.
+   *
+   * IT IS DELIBERATELY NOT THE RE-ARM'S BUSINESS. `contextNoticeDismissal`
+   * clears the key on the way back under the threshold, and this id survives
+   * that within one mount — so a session that compacted and climbed all the way
+   * back without the composer ever remounting stays quiet until a reload. The
+   * failure is one banner not shown, in a change whose whole point is fewer of
+   * them; the alternative shapes all put a second source of truth beside the
+   * key, which is what this replaced.
+   */
+  const [dismissedNow, setDismissedNow] = useState<string>();
+  const contextDismissed = useMemo(
+    () => contextNoticeDismissal({ sessionId: session?.id, heavy: heavyContext, ...(dismissedNow ? { justDismissed: dismissedNow } : {}) }),
+    [session?.id, heavyContext, dismissedNow],
   );
+  const contextNotice = heavyContext && !contextDismissed;
   const settledNotice = Boolean(!fresh && session && settled);
   /** A LIVE SNOOZE ONLY. `snoozeWakeIn` is absent once it has expired — the
    *  cockpit asks `isSnoozed`, not "is there a timestamp" — so this banner
@@ -1546,7 +1565,12 @@ export function Composer({
           detail={`${fmtTokens(usage?.contextUsed ?? 0)} of ${fmtTokens(usage?.contextMax ?? 0)} tokens in the provider's window.`}
           action={onCompact}
           actionLabel="Compact"
-          onDismiss={() => setContextNoticeDismissedFor(session.id)}
+          // Written first, then announced to the memo above. The write is what
+          // survives the reload; the state is what makes the banner go now.
+          onDismiss={() => {
+            writeContextNoticeDismissed(session.id);
+            setDismissedNow(session.id);
+          }}
         />
       )}
       {/* The question drawer fuses onto the composer's TOP edge — same width
