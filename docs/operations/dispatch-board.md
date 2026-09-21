@@ -460,8 +460,14 @@ So the rule is now mechanical, and smaller:
   the count.
 - **The orchestrator never runs a suite itself**, and never asks a builder to run
   one "just to check".
-- **A builder runs only the test files it touched, and the full suite at most
-  once, at the end.** That sentence goes in every brief.
+- **A builder runs only the test files it touched, plus `check:source` and
+  `typecheck`. Never the full suite.** That sentence goes in every brief. The
+  full suite is CI's job: on GitHub it runs as a twelve-job matrix in about
+  two minutes wall; on a builder's external volume `test:engine` alone took
+  over seven minutes on 21 September, with nobody waiting for the answer and
+  the machine at load 5. An earlier version of this rule allowed "once, at the
+  end", and the owner had already said no to that; the allowance is what the
+  builders were following. It is gone.
 - If `uptime`'s one-minute load is above 8, nothing new is dispatched until it is
   under 6, whatever the count says.
 - **A builder lost to a dead permission gate still costs its tokens.** On 21
