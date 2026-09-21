@@ -46,6 +46,8 @@ import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { isCompactDraft } from "@/lib/composer-completions";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
+import { normaliseContextNoticePercent } from "@/lib/context-notice";
+import { useProviderInstance } from "@/lib/provider-instance-cache";
 import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
 import { insertReference } from "@/lib/drag-reference";
 import { sessionModelSelection, type ModelChoice } from "@/lib/models";
@@ -3832,6 +3834,17 @@ export function SessionCockpit({
    * exactly when a person most wants to know how much room is left.
    */
   const newestUsage = [...transcript].reverse().find((turn) => turn.usage)?.usage;
+  /**
+   * WHEN THIS SESSION'S LOGIN CALLS THE CONTEXT HEAVY.
+   *
+   * Resolved HERE rather than in the composer, which knows the instance id and
+   * nothing behind it: a message box that fetched settings would fetch them
+   * once per open conversation. `normaliseContextNoticePercent` covers the
+   * common case — a login that has never set one — and the first paint, before
+   * the cached list has arrived.
+   */
+  const providerInstance = useProviderInstance(session?.providerInstanceId, session?.driver);
+  const contextNoticePercent = normaliseContextNoticePercent(providerInstance?.contextNoticePercent);
   /** Background work outlives the turn that started it, so it is counted over
    *  every task rather than over the active turn's. */
   const backgroundTasks = tasks.filter((task) => isBackgroundWork(task) && (task.state === "running" || task.state === "pending")).length;
@@ -4093,6 +4106,7 @@ export function SessionCockpit({
           onWake={() => void snoozeFromMenu(null)}
           {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
           compacting={compacting}
+          contextNoticePercent={contextNoticePercent}
           {...(composerQuestion
             ? {
                 question: composerQuestion,

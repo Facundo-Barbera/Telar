@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { ProviderIcon } from "@/components/session/provider-icon";
 import { ProviderInstanceCard, type InstancePatch } from "@/components/settings/provider-instance-card";
+import { announceProviderInstancesChanged } from "@/lib/provider-instance-cache";
 import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
@@ -274,6 +275,11 @@ export function ProvidersSection() {
       }));
     }
     await load();
+    // ANNOUNCED EVEN AFTER A REFUSAL, for the same reason `writeDraft` is: the
+    // listeners re-read from the engine rather than trusting a payload, so a
+    // spurious event costs one GET — and staying quiet after a failed write is
+    // how a cockpit goes on using a threshold that is no longer stored.
+    announceProviderInstancesChanged();
   };
 
   /**
@@ -297,6 +303,7 @@ export function ProvidersSection() {
       }));
     }
     await load();
+    announceProviderInstancesChanged();
   };
 
   const remove = async (instance: ProviderInstance) => {
@@ -320,6 +327,7 @@ export function ProvidersSection() {
       }));
     }
     await load();
+    announceProviderInstancesChanged();
   };
 
   const recheck = async () => {
@@ -475,6 +483,7 @@ export function ProvidersSection() {
             setExpanded((current) => ({ ...current, [added.id]: true }));
           }
           void load();
+          announceProviderInstancesChanged();
         }}
       />
     </>
