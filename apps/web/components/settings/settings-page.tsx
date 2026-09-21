@@ -22,7 +22,7 @@
  * components/settings/providers-section.tsx.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
@@ -50,7 +50,11 @@ import { useSectionFromUrl } from "./use-section-from-url";
  *
  * NO `loading`, because these swap on a click within one app: the chunk comes
  * off the same origin the page came from, and a spinner that resolves in the
- * same frame is a flash, not feedback.
+ * same frame is a flash, not feedback. BUT A `Suspense` OF OUR OWN around the
+ * panes, with an empty fallback: without `loading`, `dynamic()` adds no
+ * boundary of its own, and the first open of a pane suspended to the route's
+ * — the whole page, nav included, swapped out and back for one chunk. See the
+ * same note on components/right-panel.tsx, where the owner saw it as a reload.
  *
  * WHY EIGHTEEN LINES RATHER THAN A MAP over ids: `import()` must take a literal
  * path for the bundler to see it at all (next/dist/docs/01-app/02-guides/
@@ -372,116 +376,117 @@ export function SettingsPage() {
       // General alone stacks six sections. See settings-registry.ts.
       search={SETTINGS_SEARCH_INDEX}
     >
-      {active === "appearance" && <AppearanceSection />}
+      <Suspense fallback={null}>
+        {active === "appearance" && <AppearanceSection />}
 
-      {/* WORKSPACE FIRST: it is the only row here that decides what gets BUILT,
-          and it is read before the session exists. Settling and naming both
-          describe a session that is already running. */}
-      {active === "general" && (
-        <>
-          <WorkspaceSection />
-          <LinksSection />
-          <InboxSection />
-          <TextGenSection />
-          {/* Merged in from the retired Application pane. */}
-          <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
-          <UpdatesSection />
-        </>
-      )}
+        {/* WORKSPACE FIRST: it is the only row here that decides what gets BUILT,
+            and it is read before the session exists. Settling and naming both
+            describe a session that is already running. */}
+        {active === "general" && (
+          <>
+            <WorkspaceSection />
+            <LinksSection />
+            <InboxSection />
+            <TextGenSection />
+            {/* Merged in from the retired Application pane. */}
+            <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
+            <UpdatesSection />
+          </>
+        )}
 
-      {/* WHAT IS ON THIS MACHINE'S DISK, then where it lives (#642). The
-          figures come first deliberately: "move the store" is a decision, and
-          a decision is easier to make after reading what it would move than
-          before. */}
-      {active === "storage" && (
-        <>
-          <StorageSection />
-          {/* AND THEN HOW LONG ANY OF IT IS KEPT (#542). It reads directly
-              under the figures for the same reason the checkout list does:
-              somebody reads "Turn journal — 695 MB", and the next question is
-              whether all of it has to be. The flow deliberately ends back at
-              the Reclaim button above — a retention sweep frees pages inside
-              the database and returns no bytes to the disk, and a person who
-              deleted their history and then saw the same number would have been
-              given the worst possible outcome. */}
-          <RetentionSection />
-          {/* THE REPRODUCIBLE HALF BEFORE THE WHOLE (#642 part 2). Moving only
-              the checkouts leaves Telar able to start without the drive;
-              moving the store does not. The cheaper, safer choice should be
-              the one a reader meets first. */}
-          <WorktreesRootSection />
-          {/* AND THEN WHICH ONES CAN GO (#671). It reads directly under the
-              row that says where checkouts live and the figure that says what
-              they cost, because that is the order the question arrives in:
-              somebody reads "Session checkouts — 7.3 GB", and the next thing
-              they want is the list of them and which are finished. Before
-              this there was no such screen anywhere — the only mention of a
-              worktree in the whole cockpit was a count. */}
-          <WorktreeListSection />
-          <StoreSection />
-        </>
-      )}
+        {/* WHAT IS ON THIS MACHINE'S DISK, then where it lives (#642). The
+            figures come first deliberately: "move the store" is a decision, and
+            a decision is easier to make after reading what it would move than
+            before. */}
+        {active === "storage" && (
+          <>
+            <StorageSection />
+            {/* AND THEN HOW LONG ANY OF IT IS KEPT (#542). It reads directly
+                under the figures for the same reason the checkout list does:
+                somebody reads "Turn journal — 695 MB", and the next question is
+                whether all of it has to be. The flow deliberately ends back at
+                the Reclaim button above — a retention sweep frees pages inside
+                the database and returns no bytes to the disk, and a person who
+                deleted their history and then saw the same number would have been
+                given the worst possible outcome. */}
+            <RetentionSection />
+            {/* THE REPRODUCIBLE HALF BEFORE THE WHOLE (#642 part 2). Moving only
+                the checkouts leaves Telar able to start without the drive;
+                moving the store does not. The cheaper, safer choice should be
+                the one a reader meets first. */}
+            <WorktreesRootSection />
+            {/* AND THEN WHICH ONES CAN GO (#671). It reads directly under the
+                row that says where checkouts live and the figure that says what
+                they cost, because that is the order the question arrives in:
+                somebody reads "Session checkouts — 7.3 GB", and the next thing
+                they want is the list of them and which are finished. Before
+                this there was no such screen anywhere — the only mention of a
+                worktree in the whole cockpit was a count. */}
+            <WorktreeListSection />
+            <StoreSection />
+          </>
+        )}
 
-      {/* THE AGENT, AND THE ONE OTHER THING THAT STARTS IT (#543).
-          This pane held a single group on purpose — "nothing else in Settings
-          is about the Agent, and a tab that held the Agent plus something
-          adjacent would be General again, one size down". Scheduled work is
-          the exception that proves it rather than an erosion of it: a schedule
-          is an agent turn with a clock in front of it, so it belongs beside
-          the Agent and nowhere else. It reads SECOND because the Agent is the
-          thing that runs and this is only when. */}
-      {active === "agent" && (
-        <>
-          <AgentSection />
-          <SchedulesSection />
-        </>
-      )}
+        {/* THE AGENT, AND THE ONE OTHER THING THAT STARTS IT (#543).
+            This pane held a single group on purpose — "nothing else in Settings
+            is about the Agent, and a tab that held the Agent plus something
+            adjacent would be General again, one size down". Scheduled work is
+            the exception that proves it rather than an erosion of it: a schedule
+            is an agent turn with a clock in front of it, so it belongs beside
+            the Agent and nowhere else. It reads SECOND because the Agent is the
+            thing that runs and this is only when. */}
+        {active === "agent" && (
+          <>
+            <AgentSection />
+            <SchedulesSection />
+          </>
+        )}
 
-      {/* AND THE SAME FOR DICTATION (#544), which left General by the same
-          door and for a sharper reason: it ships OFF, so the row a reader
-          wants is the switch that turns it on. */}
-      {active === "dictation" && <DictationSection />}
+        {/* AND THE SAME FOR DICTATION (#544), which left General by the same
+            door and for a sharper reason: it ships OFF, so the row a reader
+            wants is the switch that turns it on. */}
+        {active === "dictation" && <DictationSection />}
 
-      {active === "projects" && <ProjectsPage />}
+        {active === "projects" && <ProjectsPage />}
 
-      {active === "keybindings" && <KeybindingsPage />}
+        {active === "keybindings" && <KeybindingsPage />}
 
-      {active === "plugins" && <PluginsPage />}
+        {active === "plugins" && <PluginsPage />}
 
-      {active === "remote" && (
-        <>
-          <RemoteSection />
-          <OtherMacsSection />
-        </>
-      )}
+        {active === "remote" && (
+          <>
+            <RemoteSection />
+            <OtherMacsSection />
+          </>
+        )}
 
-      {/* Usage providers sit UNDER the logins and on the same pane: a login is
-          an account this machine runs turns as, a hub is a service that runs
-          them on accounts it never signs in as, and both answer "where does my
-          capacity come from". */}
-      {active === "providers" && (
-        <>
-          <ProvidersSection />
-          <UsageProvidersSection />
-        </>
-      )}
+        {/* Usage providers sit UNDER the logins and on the same pane: a login is
+            an account this machine runs turns as, a hub is a service that runs
+            them on accounts it never signs in as, and both answer "where does my
+            capacity come from". */}
+        {active === "providers" && (
+          <>
+            <ProvidersSection />
+            <UsageProvidersSection />
+          </>
+        )}
 
-      {active === "source-control" && <SourceControlPage />}
+        {active === "source-control" && <SourceControlPage />}
 
-      {active === "integrations" && <IntegrationsPage />}
+        {active === "integrations" && <IntegrationsPage />}
 
-      {/* ORIENTATION LEADS THE PANE. The two groups under it decide what an
-          agent may REACH; this decides what it is TOLD before anyone has said
-          anything, which is the first thing a person auditing "what does Telar
-          do to my agent" is looking for. */}
-      {active === "tools" && (
-        <>
-          <OrientationSection />
-          <McpSection />
-          <PermissionsSection />
-        </>
-      )}
-
+        {/* ORIENTATION LEADS THE PANE. The two groups under it decide what an
+            agent may REACH; this decides what it is TOLD before anyone has said
+            anything, which is the first thing a person auditing "what does Telar
+            do to my agent" is looking for. */}
+        {active === "tools" && (
+          <>
+            <OrientationSection />
+            <McpSection />
+            <PermissionsSection />
+          </>
+        )}
+      </Suspense>
     </SettingsShell>
   );
 }
