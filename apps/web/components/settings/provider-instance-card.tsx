@@ -50,6 +50,7 @@ import {
   type ProviderProbe,
 } from "@telar/engine-client";
 import { cn } from "@/lib/utils";
+import { normaliseContextNoticePercent } from "@/lib/context-notice";
 import { displayNameOf, DRIVER_LABEL, isDefaultInstance, providerSummary, STATUS_DOT, STATUS_LABEL, updateAdvisory, versionLabel } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -68,6 +69,7 @@ type ProviderTab = "configuration" | "models";
 export type InstancePatch = {
   displayName?: string | null;
   accentColor?: string | null;
+  contextNoticePercent?: number | null;
   configDir?: string | null;
   binaryPath?: string | null;
   enabled?: boolean;
@@ -736,6 +738,45 @@ export function ProviderInstanceCard({
               </div>
               <span className="mt-1 block text-2xs text-muted-foreground">Tells this login apart from another on the same provider.</span>
             </div>
+
+            {/* A SHARE OF THE WINDOW, NEVER A TOKEN COUNT. The same number has
+                to mean the same thing to every model this login can run, and a
+                count would move every time the window does — which is the bug
+                this control exists to end. Re-keyed on the stored value like
+                every other field here, so a refused entry snaps back to what
+                was actually kept. Emptying the field sends `null` and returns
+                this login to the cockpit's default. */}
+            <label className="block">
+              <span className="text-xs font-medium text-foreground">Heavy context notice</span>
+              <span className="mt-1.5 flex items-center gap-1.5">
+                <BlurInput
+                  key={normaliseContextNoticePercent(instance.contextNoticePercent)}
+                  value={String(normaliseContextNoticePercent(instance.contextNoticePercent))}
+                  onCommit={(next) => {
+                    const typed = next.trim();
+                    if (!typed) {
+                      onPatch({ contextNoticePercent: null });
+                      return;
+                    }
+                    const wanted = Number(typed);
+                    // NaN would serialise as `null` and quietly return this
+                    // login to the default — the one outcome worse than a
+                    // refusal. An out-of-range number still goes: "a whole
+                    // percentage from 1 to 100" is the sentence to show.
+                    if (Number.isFinite(wanted)) onPatch({ contextNoticePercent: wanted });
+                  }}
+                  type="number"
+                  min={1}
+                  max={100}
+                  step={1}
+                  aria-label="Heavy context notice"
+                  className="h-8 w-20 text-right font-mono text-xs"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                <span className="text-2xs text-muted-foreground">% of the model&rsquo;s context window</span>
+              </span>
+            </label>
 
             <label className="block">
               <span className="text-xs font-medium text-foreground">
