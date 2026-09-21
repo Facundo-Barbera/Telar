@@ -2024,9 +2024,16 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
      * #199 spent a milestone refusing. `self` is the only session this can aim
      * at.
      *
-     * AND A WARP CHILD MAY NOT CALL IT AT ALL — `WARP_CHILD_DISALLOWED_TOOLS`.
-     * That list's rule is "a child may not create work that outlives the run",
-     * and a schedule is the purest instance of it.
+     * THE RULE THAT USED TO NAME A DENY-LIST HERE still holds, and now holds by
+     * construction. #543 landed against a `WARP_CHILD_DISALLOWED_TOOLS` whose
+     * rule was "a child may not create work that outlives the run" — a schedule
+     * being the purest instance of it — and recorded a known gap: a fan-out
+     * child inherited the parent's own telar server, so its capability carried
+     * the parent's `self` and this call would have succeeded against the parent
+     * session. #877 retired the fan-out entirely, so there is no such child to
+     * deny. What guards the rule now is one step earlier and does not depend on
+     * a list: a caller with no `self` is refused outright, and the Agent — a
+     * LangGraph thread rather than a session — is never handed the tool.
      */
     tool(
       "sessions_schedule",
