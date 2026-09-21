@@ -359,15 +359,30 @@ function makeHarness(options = {}) {
       }
     },
   });
+  /**
+   * THE COCKPIT'S OWN ZOOM (#895) — the View menu's, not a page's. The rect
+   * the renderer publishes is in CSS pixels of this zoomed window, so it is
+   * the factor `setBounds` is scaled by. `setCockpitZoom` moves it and fires
+   * the `zoom-changed` Electron emits for a wheel zoom.
+   */
+  const cockpitZoom = { factor: options.cockpitZoom || 1, listeners: [] };
   const window = {
     isDestroyed: () => false,
     webContents: {
       send: (channel, payload) => messages.push({ channel, payload }),
+      getZoomFactor: () => cockpitZoom.factor,
+      on: (event, listener) => {
+        if (event === "zoom-changed") cockpitZoom.listeners.push(listener);
+      },
     },
     contentView: {
       addChildView: (view) => children.add(view),
       removeChildView: (view) => children.delete(view),
     },
+  };
+  const setCockpitZoom = (factor) => {
+    cockpitZoom.factor = factor;
+    for (const listener of cockpitZoom.listeners) listener();
   };
   const manager = new DesktopBrowserManager(window, {
     electron,
@@ -399,7 +414,7 @@ function makeHarness(options = {}) {
     if (scopeKey && !manager.profileOf(scopeKey)) manager.declareProfile(scopeKey, "none");
     return origCreate(scopeKey, ...rest);
   };
-  return { children, clipboard, manager, menus, messages, previewWindows, sessions, views, waits };
+  return { children, clipboard, manager, menus, messages, previewWindows, sessions, setCockpitZoom, views, waits };
 }
 
 /** Fire a real right-click on a tab's page and return the rows Chromium's menu
@@ -2103,6 +2118,75 @@ describe("the geometry pipeline — bounds and emulation are serialized per tab,
     expect(syncs).toBe(1);
     expect(overrides()).toBe(before + 1);
     expect(debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1).params).toMatchObject({ width: 390, height: 844 });
+  });
+});
+
+describe("the cockpit's own zoom — the panel publishes CSS pixels, the view takes window pixels (#895)", () => {
+  test("a published rect is placed scaled by the cockpit's zoom, and unscaled at zoom 1", async () => {
+    const { manager, setCockpitZoom, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    setCockpitZoom(0.9);
+    manager.setBounds("s", { x: 100, y: 50, width: 400, height: 300 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expect(views[0].bounds).toEqual({ x: 90, y: 45, width: 360, height: 270 });
+    // THE RENDERER'S UNITS DO NOT MOVE: `bounds` and the rect the panel reads
+    // back stay the CSS pixels it published, or the device frame and the
+    // frozen frame would be drawn at the zoomed numbers.
+    expect(manager.bounds).toEqual({ x: 100, y: 50, width: 400, height: 300 });
+    expect(manager.state("s").presentation).toMatchObject({ rect: { x: 100, y: 50, width: 400, height: 300 } });
+
+    setCockpitZoom(1);
+    manager.setBounds("s", { x: 100, y: 50, width: 400, height: 300 });
+    await tab.geometry.queue;
+    expect(views[0].bounds).toEqual({ x: 100, y: 50, width: 400, height: 300 });
+  });
+
+  test("a zoom change re-places the view on its own — no new bounds publish", async () => {
+    const { manager, setCockpitZoom, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    manager.setBounds("s", { x: 100, y: 50, width: 400, height: 300 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expect(views[0].bounds).toEqual({ x: 100, y: 50, width: 400, height: 300 });
+
+    // ⌘− with the panel open: the factor moved, the rect did not.
+    setCockpitZoom(0.9);
+    await tab.geometry.queue;
+    expect(views[0].bounds).toEqual({ x: 90, y: 45, width: 360, height: 270 });
+    expect(manager.bounds).toEqual({ x: 100, y: 50, width: 400, height: 300 });
+  });
+
+  test("a fit tab adopts the stage in WINDOW pixels — the size the page is really laid out for", async () => {
+    const { manager, setCockpitZoom } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    setCockpitZoom(0.9);
+    manager.setBounds("s", { x: 0, y: 0, width: 400, height: 300 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expect(manager.viewportOf(tab)).toEqual({ width: 360, height: 270 });
+  });
+
+  test("a fixed tab's emulation scale carries the zoom, so the page fills the view it is given", async () => {
+    const { manager, setCockpitZoom, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    setCockpitZoom(0.9);
+    await manager.resizeTab(tab, { preset: "phone" });
+    await tab.geometry.queue;
+    // 390×844 fitted into 640×400 is scale 400/844 → a 185×400 rect, centred
+    // at x=227 in the panel's own pixels; the window's are those × 0.9.
+    expect(views[0].bounds).toEqual({ x: 204, y: 0, width: 167, height: 360 });
+    const last = views[0].webContents.debugger.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1);
+    expect(last.params).toMatchObject({ width: 390, height: 844 });
+    // Without the zoom in the scale the page would render 185 wide into a
+    // 167-wide view and lose its right edge.
+    expect(Math.abs(last.params.scale - (400 / 844) * 0.9)).toBeLessThan(0.001);
   });
 });
 

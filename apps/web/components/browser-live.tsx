@@ -167,8 +167,8 @@ export type DesktopBrowserProfile = {
 };
 
 /** How the active tab is presented inside the panel's bounds: its intrinsic
- *  size, the presentation scale, and the native rect (window coordinates)
- *  the view occupies — what the device frame is drawn around. */
+ *  size, the presentation scale, and the rect the view occupies in THIS
+ *  PAGE'S CSS PIXELS — what the device frame is drawn around. */
 export type DesktopBrowserPresentation = {
   width: number;
   height: number;
@@ -1135,9 +1135,10 @@ export function DesktopBrowserSurface({
   const overlayRef = useRef(false);
   /**
    * AND THE PAGE STAYS PUT WHILE IT IS DOWN (#475) — the shell's last frame of
-   * it, painted into the host at the view's own rect. `rect` arrives in WINDOW
-   * coordinates (what `setBounds` was given), so the host's own rect comes off
-   * it, the way `DeviceFrame` does.
+   * it, painted into the host at the view's own rect. `rect` arrives in THIS
+   * PAGE'S CSS PIXELS — the rect the panel published, not the window pixels
+   * `setBounds` is finally given (those carry the cockpit's zoom, #895) — so
+   * the host's own rect comes off it, the way `DeviceFrame` does.
    */
   const [frozenFrame, setFrozenFrame] = useState<{ src: string; left: number; top: number; width: number; height: number }>();
   useEffect(() => {
