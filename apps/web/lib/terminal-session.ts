@@ -68,6 +68,71 @@ export function splitTrailingCsi(data: string): { ready: string; pending: string
 }
 
 /**
+ * THE KEY ITERM2 TREATS AS OPTIONAL AND @xterm/addon-image TREATS AS REQUIRED.
+ *
+ * An iTerm inline image is `OSC 1337 ; File = k=v;k=v : <base64> BEL`. iTerm2
+ * documents `size=` as the payload's byte count and draws the image without it;
+ * fastfetch (`--logo-type iterm`) never sends it. addon-image 0.9.0 aborts the
+ * whole sequence when `size` is absent — its decoder is sized from the header —
+ * so the logo's cells are reserved (fastfetch moves the cursor past them) and
+ * nothing is drawn in them. Measured on the live terminal: the identical bytes
+ * with `size=` inserted store and place the image.
+ *
+ * The size is not known until the payload has all arrived, so an image header
+ * without it holds the sequence back until its terminator and then lets it
+ * through with the count filled in. A header that already carries `size=` is
+ * not touched. A sequence that grows past the addon's own limit is released
+ * as it came, because at that point the addon would refuse it anyway.
+ */
+const IIP_HEADER = "]1337;File=";
+const IIP_HOLD_LIMIT = 20_000_000 * 1.4; // addon's iipSizeLimit, as base64
+
+function base64ByteLength(payload: string): number {
+  const clean = payload.replace(/[\s=]/g, "");
+  return Math.floor((clean.length * 3) / 4);
+}
+
+function iipTerminator(text: string, from: number): { at: number; length: number } | undefined {
+  const bel = text.indexOf("", from);
+  const st = text.indexOf("\\", from);
+  if (bel === -1 && st === -1) return undefined;
+  if (st === -1 || (bel !== -1 && bel < st)) return { at: bel, length: 1 };
+  return { at: st, length: 2 };
+}
+
+export function iipSizeFiller(): (data: string) => string {
+  let held = "";
+  const complete = (sequence: string, end: { at: number; length: number }): string => {
+    const colon = sequence.indexOf(":");
+    const header = colon === -1 ? sequence.slice(0, end.at) : sequence.slice(0, colon);
+    if (colon === -1 || /(^|;)size=/.test(header.slice(IIP_HEADER.length))) return sequence;
+    const size = base64ByteLength(sequence.slice(colon + 1, end.at));
+    return `${IIP_HEADER}size=${size};${sequence.slice(IIP_HEADER.length)}`;
+  };
+  return function fill(data: string): string {
+    if (held !== "") {
+      held += data;
+      const end = iipTerminator(held, IIP_HEADER.length);
+      if (end === undefined) {
+        if (held.length <= IIP_HOLD_LIMIT) return "";
+        const out = held;
+        held = "";
+        return out;
+      }
+      const stop = end.at + end.length;
+      const done = complete(held.slice(0, stop), end);
+      const rest = held.slice(stop);
+      held = "";
+      return done + fill(rest);
+    }
+    const start = data.indexOf(IIP_HEADER);
+    if (start === -1) return data;
+    held = data.slice(start);
+    return data.slice(0, start) + fill("");
+  };
+}
+
+/**
  * Connect an emulator to a terminal the host has already opened. Answers the
  * detach, which every caller must hold: the bridge's `onData` is a single
  * channel for EVERY terminal in the window, so a listener that outlives its
@@ -84,9 +149,10 @@ export function attachTerminal(
   // FILTERED BY ID, both ways. Two terminal tabs share one IPC channel, and an
   // unfiltered listener is how one tab's `ls` ends up drawn in the other's.
   let pending = "";
+  const fillImageSize = iipSizeFiller();
   const offData = bridge.onData((chunk) => {
     if (chunk.id !== id) return;
-    const split = splitTrailingCsi(pending + chunk.data);
+    const split = splitTrailingCsi(pending + fillImageSize(chunk.data));
     pending = split.pending;
     if (split.ready !== "") term.write(normaliseTruecolourSgr(split.ready));
   });

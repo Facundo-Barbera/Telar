@@ -164,6 +164,38 @@ describe("bytes from the PTY reach the emulator's buffer", () => {
     detach();
   });
 
+  test("an iTerm inline image without `size=` reaches the emulator with it filled in", async () => {
+    // fastfetch's `--logo-type iterm` sends `File=inline=1;width=45;...` and no
+    // `size`; @xterm/addon-image aborts on that header, so the owner's logo
+    // reserved fourteen rows and drew nothing. Asserted on the bytes handed to
+    // the emulator, split across chunks the way a PTY delivers a 100 KB
+    // payload: a one-pixel PNG, base64, as three pieces.
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const seq = `]1337;File=inline=1;width=45;height=14;preserveAspectRatio=0:${png}`;
+    const written: string[] = [];
+    const term = { write: (data: string) => written.push(data), onData: () => ({ dispose: () => {} }) };
+    const bridge = fakeBridge();
+    const detach = attachTerminal(term, bridge, "t1");
+
+    bridge.push({ id: "t1", data: `before ${seq.slice(0, 40)}` });
+    bridge.push({ id: "t1", data: seq.slice(40, 90) });
+    bridge.push({ id: "t1", data: `${seq.slice(90)} after` });
+
+    const all = written.join("");
+    const pngBytes = Buffer.from(png, "base64").length;
+    expect(all).toBe(`before ]1337;File=size=${pngBytes};inline=1;width=45;height=14;preserveAspectRatio=0:${png} after`);
+    // Nothing was written before the terminator arrived: a half image is not a
+    // thing the emulator can be handed.
+    expect(written[0]).toBe("before ");
+
+    // A header that already says its size is left exactly as it was.
+    written.length = 0;
+    bridge.push({ id: "t1", data: `]1337;File=size=${pngBytes};inline=1:${png}` });
+    expect(written.join("")).toBe(`]1337;File=size=${pngBytes};inline=1:${png}`);
+
+    detach();
+  });
+
   test("a cursor-position sequence moves the cursor — the buffer is a screen, not a log", async () => {
     const term = new Terminal({ cols: 40, rows: 6, allowProposedApi: true });
     const bridge = fakeBridge();
