@@ -75,11 +75,18 @@ describe("terminalTheme", () => {
 });
 
 describe("terminalFont", () => {
-  test("the face and size are the cockpit's mono tokens", () => {
+  test("the size is the cockpit's; the face is a chain with the person's Nerd Fonts ahead of the cockpit's mono", () => {
     // `appearance.ts:111` already documents `fontMonoSize` as covering "the
-    // terminal", so this surface reads it rather than inventing its own.
+    // terminal", so the SIZE reads that token. The FACE does not: a terminal is
+    // the person's, so an installed Nerd Font (which is what draws a prompt's and
+    // `eza --icons`'s glyphs) comes before whatever Appearance chose for the
+    // cockpit, and the platform monospace closes the chain. The assertion is on
+    // ORDER, not equality: equality with the app font is the old behaviour.
     const font = terminalFont(reader({ "--app-font-mono": '"Fira Code", monospace', "--app-font-mono-size": "13px" }));
-    expect(font.fontFamily).toBe('"Fira Code", monospace');
+    const at = (needle: string) => font.fontFamily.indexOf(needle);
+    expect(at('"JetBrainsMono Nerd Font"')).toBe(0);
+    expect(at('"Fira Code"')).toBeGreaterThan(at('"MesloLGS NF"'));
+    expect(at("ui-monospace")).toBeGreaterThan(at('"Fira Code"'));
     expect(font.fontSize).toBe(13);
   });
 

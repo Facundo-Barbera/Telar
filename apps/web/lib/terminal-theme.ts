@@ -129,20 +129,45 @@ const MIN_FONT_SIZE = 6;
 const DEFAULT_FONT_SIZE = 12;
 
 /**
- * The mono face and size the rest of the cockpit uses — `appearance.ts:111`
- * already documents `fontMonoSize` as covering "the terminal", so this reads
- * the tokens rather than inventing a terminal-only setting.
+ * THE PERSON'S FONT FIRST, THE COCKPIT'S SECOND.
  *
- * IF THAT FACE IS NOT A NERD FONT, the owner's `eza --icons` draws tofu. That
- * is his choice to make in Settings ▸ Appearance, not a bug for this surface to
- * work around by substituting a font he did not pick.
+ * Nerd Fonts a person is likely to have installed, in the order they are
+ * likely to have installed them. CSS font-family fallback resolves the first
+ * one present at render time, so no detection code and no setting: a machine
+ * with JetBrainsMono Nerd Font draws the prompt's and `eza --icons`'s glyphs
+ * with it; a machine with none of these falls through to the cockpit's mono
+ * face and then the platform's.
+ */
+const NERD_FONTS = [
+  '"JetBrainsMono Nerd Font"',
+  '"JetBrainsMonoNL Nerd Font"',
+  '"CaskaydiaCove Nerd Font"',
+  '"FiraCode Nerd Font"',
+  '"Hack Nerd Font"',
+  '"MesloLGS NF"',
+] as const;
+
+const PLATFORM_MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+
+/**
+ * The size is the cockpit's — `appearance.ts:111` documents `fontMonoSize` as
+ * covering "the terminal". The FACE is a chain, and the cockpit's mono face is
+ * the middle of it, not the front.
+ *
+ * This used to return the Appearance font alone, with a comment calling the
+ * resulting tofu in `eza --icons` "the owner's choice in Settings ▸ Appearance".
+ * That was backwards. Appearance picks the cockpit's font; a terminal is the
+ * person's, and `docs/terminal-host.md` §1 says we contribute a font *fallback*,
+ * not a font. Nothing here asks anyone to install anything: the chain only ever
+ * uses what is already on the machine.
  */
 export function terminalFont(read: CssVarReader): { fontFamily: string; fontSize: number } {
   const family = read("--app-font-mono")?.trim();
   const rawSize = read("--app-font-mono-size")?.trim();
   const parsed = rawSize === undefined ? Number.NaN : Number.parseFloat(rawSize);
+  const appMono = family !== undefined && family !== "" ? family : undefined;
   return {
-    fontFamily: family !== undefined && family !== "" ? family : "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontFamily: [...NERD_FONTS, ...(appMono ? [appMono] : []), PLATFORM_MONO].join(", "),
     fontSize: Number.isFinite(parsed) && parsed >= MIN_FONT_SIZE ? parsed : DEFAULT_FONT_SIZE,
   };
 }

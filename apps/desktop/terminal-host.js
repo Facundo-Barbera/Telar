@@ -96,6 +96,8 @@ function terminalOwner(value) {
 
 /** The terminal type we claim to be, and the one xterm.js is configured for. */
 const TERM = "xterm-256color";
+/** What the emulator can paint. See `terminalEnv` for why this overwrites. */
+const COLORTERM = "truecolor";
 
 /**
  * THIS STRING IS PUBLIC API.
@@ -114,8 +116,13 @@ const KILL_OBSERVE_MS = 5_000;
 /**
  * THE ENVIRONMENT A TELAR TERMINAL STARTS IN.
  *
- * Three variables added and one REMOVED, and the removal is the interesting
- * half. `ELECTRON_RUN_AS_NODE=1` is something Telar puts in its own children's
+ * Four variables added and one REMOVED, and the removal is the interesting
+ * half. `COLORTERM=truecolor` is set UNCONDITIONALLY, overwriting whatever the
+ * parent shell carried: it describes what the emulator can paint, and xterm.js
+ * paints 24-bit colour. Without it Neovim's `termguicolors` and every other
+ * truecolour-aware program fall back to a 256-colour approximation, which on
+ * the owner's colourscheme painted the whole buffer green. `xterm-256color` as
+ * `TERM` cannot say this on its own; `COLORTERM` is the variable that does. `ELECTRON_RUN_AS_NODE=1` is something Telar puts in its own children's
  * environment (main.js `childEnv`), so a shell opened from inside Telar
  * inherits it — and then every `electron` the user runs in that shell silently
  * becomes a bare node. package-desktop.sh carries a paragraph about being bitten
@@ -131,6 +138,7 @@ function terminalEnv(baseEnv, version) {
   }
   delete env.ELECTRON_RUN_AS_NODE;
   env.TERM = TERM;
+  env.COLORTERM = COLORTERM;
   env.TERM_PROGRAM = TERM_PROGRAM;
   if (version) env.TERM_PROGRAM_VERSION = String(version);
   return env;

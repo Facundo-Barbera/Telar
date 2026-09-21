@@ -91,6 +91,10 @@ describe("the environment a Telar terminal starts in", () => {
     expect(env.TERM).toBe("xterm-256color");
     expect(env.TERM_PROGRAM).toBe("Telar");
     expect(env.TERM_PROGRAM_VERSION).toBe("1.2.3");
+    // Neovim with `termguicolors`, delta, bat, oh-my-posh — every truecolour
+    // program keys on COLORTERM and falls back to a 256-colour approximation
+    // without it. xterm.js paints 24-bit natively, so the fallback was a lie.
+    expect(env.COLORTERM).toBe("truecolor");
     expect(env.PATH).toBe("/usr/bin");
     // The exported constants are what everything else keys off; if either ever
     // changes, it changes here and in a release note, not by accident.
@@ -116,6 +120,15 @@ describe("the environment a Telar terminal starts in", () => {
     // only a value not to pass on.
     expect("NOPE" in env).toBe(false);
     expect("ALSO" in env).toBe(false);
+  });
+
+  test("an inherited COLORTERM of another value is overwritten, not honoured", () => {
+    // Unlike PS1 or ZDOTDIR, COLORTERM is not a preference: it is a statement
+    // about what the EMULATOR can paint, and the emulator here is xterm.js.
+    // A `COLORTERM=8bit` inherited from whatever launched Telar would describe
+    // some other terminal's abilities to programs running inside ours.
+    const env = terminalEnv({ COLORTERM: "8bit" }, "1.0.0");
+    expect(env.COLORTERM).toBe("truecolor");
   });
 
   test("omits TERM_PROGRAM_VERSION rather than claiming a fake one", () => {

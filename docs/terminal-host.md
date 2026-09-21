@@ -10,16 +10,24 @@ and the two packaging facts that are not written down anywhere else.
 
 ## 1. Telar is a terminal emulator, not a shell configurator
 
-We contribute the window, the tabs, the background, the font, and an honest
-identity. The user's dotfiles own everything else — **including when the result
-looks wrong under our theme**. No colour fixes, no injected shell config, no
-prompt wrapper.
+We contribute the window, the tabs, the background, a font fallback chain, and
+an honest identity. The user's dotfiles own everything else — **including when
+the result looks wrong under our theme**. No colour fixes, no injected shell
+config, no prompt wrapper.
+
+The font is a chain, not a choice: the terminal prefers a Nerd Font the person
+has installed (JetBrainsMono, CaskaydiaCove, FiraCode, Hack, Meslo, in that
+order), then the cockpit's own mono face, then the platform monospace. A prompt
+or `eza --icons` draws its glyphs with whatever the person already put on the
+machine; the cockpit's Appearance font is what the terminal falls back to, not
+what it imposes.
 
 The whole of what Telar puts in a terminal's environment:
 
 | Variable | Value | Why |
 |---|---|---|
 | `TERM` | `xterm-256color` | What the emulator (xterm.js) actually is |
+| `COLORTERM` | `truecolor` | xterm.js paints 24-bit; `xterm-256color` cannot say so. Overwrites an inherited value: the emulator decides this, not the parent shell |
 | `TERM_PROGRAM` | `Telar` | **Public API — see below** |
 | `TERM_PROGRAM_VERSION` | the shell's `app.getVersion()` | The same number electron-builder stamps into the bundle |
 
