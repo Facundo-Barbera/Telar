@@ -1296,6 +1296,10 @@ export const ProviderInstance = z.object({
   displayName: z.string().min(1).optional(),
   /** `#rrggbb`, used to tell two logins of the same provider apart. */
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  /** When the composer says the context is heavy, as a whole percentage of the
+   *  model's window. Absent means the default (70). A share rather than a token
+   *  count, so it stays right across windows of different sizes. */
+  contextNoticePercent: z.number().int().min(1).max(100).optional(),
   /** Off is a state, not deletion — same rule as an MCP server. */
   enabled: z.boolean(),
   /**

@@ -40,6 +40,7 @@ export async function PUT(request: Request) {
       ...(body.driver === undefined ? {} : { driver: body.driver as never }),
       ...(body.displayName === undefined ? {} : { displayName: body.displayName as string | null }),
       ...(body.accentColor === undefined ? {} : { accentColor: body.accentColor as string | null }),
+      ...(body.contextNoticePercent === undefined ? {} : { contextNoticePercent: body.contextNoticePercent as number | null }),
       ...(body.configDir === undefined ? {} : { configDir: body.configDir as string | null }),
       ...(body.binaryPath === undefined ? {} : { binaryPath: body.binaryPath as string | null }),
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),

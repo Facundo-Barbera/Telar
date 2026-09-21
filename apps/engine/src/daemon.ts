@@ -4116,6 +4116,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           ...(input.driver === undefined ? {} : { driver: input.driver }),
           ...(input.displayName === undefined ? {} : { displayName: input.displayName as string | null }),
           ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor as string | null }),
+          ...(input.contextNoticePercent === undefined ? {} : { contextNoticePercent: input.contextNoticePercent as number | null }),
           ...(input.configDir === undefined ? {} : { configDir: input.configDir as string | null }),
           ...(input.binaryPath === undefined ? {} : { binaryPath: input.binaryPath as string | null }),
           ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),

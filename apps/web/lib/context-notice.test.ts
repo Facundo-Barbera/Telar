@@ -1,84 +1,64 @@
 /**
- * BOTH WINDOWS, BOTH DIRECTIONS — issue #587, step 1.
+ * THE SAME PERCENTAGE ON TWO DIFFERENT WINDOWS.
  *
- * The bug this fixes is invisible to a test that only checks one window: the
- * old `contextShare >= 0.75` was right on 200k and silently wrong on 1M, and
- * the line never changed. So every assertion here names the window it is about,
- * and the 200k cases exist to prove the fix changed NOTHING there — a notice
- * that started nagging short conversations would be a worse bug than the one
- * being fixed.
+ * The bug this rule exists to end was a threshold that meant one thing on a
+ * 200,000-token account and another on a 1,000,000-token one, so every
+ * assertion here names the window it is about and the 256k cases exist to prove
+ * that 70% is 70% there too — not 250,000 tokens wearing a percentage.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 
 import {
-  CONTEXT_NOTICE_SHARE,
-  CONTEXT_NOTICE_TOKENS,
+  CONTEXT_NOTICE_DEFAULT_PERCENT,
   contextNoticeDue,
-  contextNoticeReason,
   contextShareOf,
+  normaliseContextNoticePercent,
 } from "./context-notice";
 
-const SMALL = 200_000;
+const SMALL = 256_000;
 const LARGE = 1_000_000;
 
-describe("a 200k window is untouched", () => {
-  test("75% still fires, and it fires before the band could", () => {
-    // 150,000 — below the 250k band, so the proportion is the only arm that
-    // can fire here. This is the case that must not regress.
-    expect(contextNoticeDue({ contextUsed: SMALL * CONTEXT_NOTICE_SHARE, contextMax: SMALL })).toBe(true);
-    expect(contextNoticeReason({ contextUsed: SMALL * CONTEXT_NOTICE_SHARE, contextMax: SMALL })).toBe("share");
-    expect(SMALL * CONTEXT_NOTICE_SHARE).toBeLessThan(CONTEXT_NOTICE_TOKENS);
+describe("a 1M window fires at 70%, and not a token earlier", () => {
+  test("700,000 is due; 699,999 is not", () => {
+    expect(contextNoticeDue({ contextUsed: 700_000, contextMax: LARGE })).toBe(true);
+    expect(contextNoticeDue({ contextUsed: 699_999, contextMax: LARGE })).toBe(false);
   });
 
-  test("under 75% stays quiet", () => {
-    expect(contextNoticeDue({ contextUsed: 149_000, contextMax: SMALL })).toBe(false);
-    expect(contextNoticeDue({ contextUsed: 100_000, contextMax: SMALL })).toBe(false);
-  });
-
-  test("the band can never fire first on a small window", () => {
-    /**
-     * 250,000 is above the whole window, so on a 200k session the band is
-     * unreachable and the behaviour is exactly what it was. An account with no
-     * 1M entitlement compacts near 167k on its own, well before either arm.
-     */
-    expect(CONTEXT_NOTICE_TOKENS).toBeGreaterThan(SMALL);
+  test("250,000 is ordinary use here, which is the whole complaint", () => {
+    // The old absolute band fired exactly here, a quarter of the way into the
+    // window, in the middle of every working session.
+    expect(contextNoticeDue({ contextUsed: 250_000, contextMax: LARGE })).toBe(false);
+    expect(contextNoticeDue({ contextUsed: 12_000, contextMax: LARGE })).toBe(false);
   });
 });
 
-describe("a 1M window is the case this exists for", () => {
-  test("the band fires at 250k, where the proportion would have waited for 750k", () => {
-    const at250k = { contextUsed: CONTEXT_NOTICE_TOKENS, contextMax: LARGE };
-    expect(contextNoticeDue(at250k)).toBe(true);
-    expect(contextNoticeReason(at250k)).toBe("band");
-    // The old rule, stated as an assertion rather than as a comment: at 250k of
-    // a million, the share arm alone says nothing.
-    expect(contextShareOf(at250k)).toBeLessThan(CONTEXT_NOTICE_SHARE);
+describe("a 256k window gets the same rule, not a different one", () => {
+  test("70% of 256,000 is 179,200", () => {
+    expect(contextNoticeDue({ contextUsed: 179_200, contextMax: SMALL })).toBe(true);
+    expect(contextNoticeDue({ contextUsed: 179_199, contextMax: SMALL })).toBe(false);
   });
 
-  test("#587's measured sawtooth peak would have fired under the old rule — barely", () => {
-    /**
-     * 700–740k is where the issue's sessions actually peaked, and the old
-     * notice sat at 750,000. That is the whole finding: the only compaction
-     * pressure in the product was just above the band the problem lived in.
-     */
-    for (const peak of [700_000, 740_000]) {
-      expect(peak / LARGE).toBeLessThan(CONTEXT_NOTICE_SHARE);
-      // Silent before; told now, half a million tokens earlier.
-      expect(contextNoticeDue({ contextUsed: peak, contextMax: LARGE })).toBe(true);
-      expect(contextNoticeReason({ contextUsed: peak, contextMax: LARGE })).toBe("band");
-    }
+  test("250,000 is due here BECAUSE it is 97% of the window, not because it is 250,000", () => {
+    // Same number, opposite answer from the 1M case above. That is the property
+    // a token count could not have.
+    expect(contextNoticeDue({ contextUsed: 250_000, contextMax: SMALL })).toBe(true);
+    expect(contextShareOf({ contextUsed: 250_000, contextMax: SMALL })).toBeGreaterThan(0.9);
+  });
+});
+
+describe("a login can move it", () => {
+  test("50% on a 256k window is 128,000", () => {
+    expect(contextNoticeDue({ contextUsed: 128_000, contextMax: SMALL }, 50)).toBe(true);
+    expect(contextNoticeDue({ contextUsed: 127_999, contextMax: SMALL }, 50)).toBe(false);
+    // And the default would have said nothing at that point.
+    expect(contextNoticeDue({ contextUsed: 128_000, contextMax: SMALL })).toBe(false);
   });
 
-  test("a short conversation on a big window is still left alone", () => {
-    expect(contextNoticeDue({ contextUsed: 12_000, contextMax: LARGE })).toBe(false);
-    expect(contextNoticeDue({ contextUsed: 249_999, contextMax: LARGE })).toBe(false);
-  });
-
-  test("past 75% the share is the reason named, because running out is the worse fact", () => {
-    const at800k = { contextUsed: 800_000, contextMax: LARGE };
-    expect(contextNoticeDue(at800k)).toBe(true);
-    expect(contextNoticeReason(at800k)).toBe("share");
+  test("an omitted percentage is the default, spelled once", () => {
+    expect(CONTEXT_NOTICE_DEFAULT_PERCENT).toBe(70);
+    const at70 = { contextUsed: LARGE * 0.7, contextMax: LARGE };
+    expect(contextNoticeDue(at70)).toBe(contextNoticeDue(at70, CONTEXT_NOTICE_DEFAULT_PERCENT));
   });
 });
 
@@ -86,19 +66,16 @@ describe("an unknown reading is not a full one, and not an empty one", () => {
   test("no usage at all fires nothing", () => {
     expect(contextNoticeDue(undefined)).toBe(false);
     expect(contextNoticeDue({})).toBe(false);
-    expect(contextNoticeReason({})).toBeUndefined();
+    expect(contextNoticeDue({ contextUsed: null, contextMax: null })).toBe(false);
   });
 
-  test("a used count with no window still reaches the band", () => {
-    /**
-     * THE ARM THAT SURVIVES A MISSING `contextMax`, and the reason the band is
-     * worth having beyond the 1M case: a session whose Mac reports usage but no
-     * window used to fire NOTHING, because the only rule was a fraction and the
-     * denominator was absent. An absolute count needs no denominator.
-     */
+  test("a used count with NO WINDOW cannot fire, at any percentage", () => {
+    // The arm that is deliberately gone. A share needs a denominator, and a
+    // session whose Mac reports usage but no window has none — so it is
+    // unknown rather than heavy, at 400,000 tokens as at 4.
     expect(contextShareOf({ contextUsed: 400_000 })).toBe(0);
-    expect(contextNoticeDue({ contextUsed: 400_000 })).toBe(true);
-    expect(contextNoticeReason({ contextUsed: 400_000 })).toBe("band");
+    expect(contextNoticeDue({ contextUsed: 400_000 })).toBe(false);
+    expect(contextNoticeDue({ contextUsed: 400_000 }, 1)).toBe(false);
   });
 
   test("a zero or negative window is not a division", () => {
@@ -107,16 +84,31 @@ describe("an unknown reading is not a full one, and not an empty one", () => {
     expect(Number.isFinite(contextShareOf({ contextUsed: 10, contextMax: 0 }))).toBe(true);
     expect(contextNoticeDue({ contextUsed: 10, contextMax: 0 })).toBe(false);
   });
-
-  test("null readings behave as absent rather than as zero", () => {
-    expect(contextNoticeDue({ contextUsed: null, contextMax: null })).toBe(false);
-    expect(contextNoticeDue({ contextUsed: 0, contextMax: LARGE })).toBe(false);
-  });
 });
 
-test("the band is where the file says it is", () => {
-  // Pinned so that moving it is a deliberate edit with a red test in between,
-  // not a number somebody tunes. #587's argument for 250k is in the header.
-  expect(CONTEXT_NOTICE_TOKENS).toBe(250_000);
-  expect(CONTEXT_NOTICE_SHARE).toBe(0.75);
+describe("normalising what a login stored", () => {
+  test("absent or unusable is the default", () => {
+    for (const value of [undefined, null, "70", NaN, Infinity, {}]) {
+      expect(normaliseContextNoticePercent(value)).toBe(CONTEXT_NOTICE_DEFAULT_PERCENT);
+    }
+  });
+
+  test("out of range clamps rather than disabling the notice", () => {
+    // Both ends matter: 0 would make the banner permanent and anything over 100
+    // would make it unreachable, and neither is a state a stored value should
+    // be able to put the composer in.
+    expect(normaliseContextNoticePercent(0)).toBe(1);
+    expect(normaliseContextNoticePercent(-40)).toBe(1);
+    expect(normaliseContextNoticePercent(101)).toBe(100);
+    expect(normaliseContextNoticePercent(1_000)).toBe(100);
+  });
+
+  test("a whole percentage passes through, and a fraction rounds", () => {
+    expect(normaliseContextNoticePercent(70)).toBe(70);
+    expect(normaliseContextNoticePercent(1)).toBe(1);
+    expect(normaliseContextNoticePercent(100)).toBe(100);
+    // The engine refuses 70.5 on the way in; this is the cockpit deciding what
+    // to do with one that reached it anyway, and rounding keeps the notice on.
+    expect(normaliseContextNoticePercent(70.5)).toBe(71);
+  });
 });
