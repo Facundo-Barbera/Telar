@@ -225,6 +225,54 @@ export function collapseBrowserTabs<Kind extends string>(
   return { tabs, ...(activeTab ? { activeTab } : {}), open: state.open };
 }
 
+/**
+ * Collapse every outer TERMINAL tab into ONE — `collapseBrowserTabs`'s shape,
+ * for the change that turned a shell from a panel tab into an inner tab of one
+ * Terminal (lib/terminal-workspace.ts).
+ *
+ * `fold` IS WHAT KEEPS SOMEBODY'S SHELLS ALIVE. Each old tab carries its PTY's
+ * id in its own params, and a collapse that only kept the FIRST tab's params
+ * would orphan every shell but one — still running in the Electron host, with
+ * nothing on screen attached to it, until the app quits. So the folded tabs'
+ * params are handed over together and the caller says what one tab's params
+ * are that means all of them.
+ *
+ * A CALLBACK RATHER THAN AN IMPORT because this module knows about panel tabs
+ * and nothing else: a terminal's params are the terminal's vocabulary, and
+ * teaching the strip to read them would put a surface's private format in the
+ * one place every surface shares.
+ */
+export function collapseTerminalTabs<Kind extends string>(
+  state: PanelTabState<Kind>,
+  isTerminal: (kind: Kind) => boolean,
+  single: Kind,
+  fold: (each: readonly PanelTabParams[]) => PanelTabParams,
+): PanelTabState<Kind> {
+  const folded = state.tabs.filter((tab) => isTerminal(tab.kind));
+  if (folded.length === 0) return state;
+  const collapsed: PanelTabInstance<Kind> = { id: single, kind: single, params: fold(folded.map((tab) => tab.params)) };
+  const tabs: PanelTabInstance<Kind>[] = [];
+  for (const tab of state.tabs) {
+    if (isTerminal(tab.kind)) {
+      if (!tabs.some((entry) => entry.id === collapsed.id)) tabs.push(collapsed);
+    } else {
+      tabs.push(tab);
+    }
+  }
+  const previous = activePanelTab(state);
+  const activeTab = previous && isTerminal(previous.kind) ? collapsed.id : state.activeTab;
+  const next = { tabs, ...(activeTab ? { activeTab } : {}), open: state.open };
+  /* IDEMPOTENT BY IDENTITY, because this runs on every restore and not only on
+     the one after the upgrade: a session already migrated must not be handed a
+     new object on every mount, which would write its panel back to storage for
+     no reason. */
+  return sameTabs(state.tabs, next.tabs) && next.activeTab === state.activeTab ? state : next;
+}
+
+function sameTabs<Kind extends string>(a: readonly PanelTabInstance<Kind>[], b: readonly PanelTabInstance<Kind>[]): boolean {
+  return a.length === b.length && a.every((tab, index) => tab.id === b[index]!.id && tab.kind === b[index]!.kind && sameParams(tab.params, b[index]!.params));
+}
+
 type StoredInstance = { id: string; kind: string; params?: Record<string, string> };
 /** A tab as some build wrote it: a bare kind (before #322) or an instance. */
 type StoredTab = string | StoredInstance;

@@ -11,6 +11,7 @@
  * lies about which computer it is on is worse than no terminal.
  */
 import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { terminalIdsInParams } from "@/lib/terminal-workspace";
 
 /**
  * WHY A TERMINAL ENDED — and `unknown` is not a rounding of `exited`.
@@ -95,7 +96,7 @@ export function terminalBridge(): TerminalBridge | undefined {
 }
 
 /**
- * CLOSING A TERMINAL TAB ENDS ITS SHELL.
+ * CLOSING A TERMINAL TAB ENDS EVERY SHELL IN IT.
  *
  * WHY HERE AND NOT IN THE SURFACE: the surface unmounts every time another tab
  * is looked at, so "the component went away" is not "the person is done with
@@ -103,26 +104,40 @@ export function terminalBridge(): TerminalBridge | undefined {
  * somebody glanced at the Diff. The COCKPIT owns the strip, so it is the only
  * place that can tell a tab switch from a tab closing.
  *
- * Without this, every closed tab leaves a shell running until the app quits,
- * where W1's host reports it as `unknown`.
+ * EVERY SHELL, NOT THE FIRST ONE. A Terminal tab now carries a strip of them
+ * (lib/terminal-workspace.ts), and a reaper that read a single id would leave
+ * the others running in the host with nothing on screen attached to them,
+ * where W1's host reports them as `unknown`. The list is asked for in the
+ * terminal's own vocabulary, which also understands a tab written by the build
+ * before the strip existed.
+ *
+ * ANSWERS WHAT IT KILLED, in strip order — a list rather than one id, so a
+ * caller can say how many shells one close ended.
  *
  * `bridge` is injected so this is testable without a shell; the default is the
  * real one, so the call site stays one line.
  */
-export function endTerminalForTab(params: Readonly<Record<string, string>>, bridge = terminalBridge()): string | undefined {
-  const id = params[TERMINAL_ID_PARAM];
-  if (!id || !bridge) return undefined;
-  void Promise.resolve(bridge.kill(id, "SIGTERM")).catch(() => {
-    // A terminal that already ended is not an error — the renderer learns of an
-    // exit asynchronously, so a close racing one is the normal case.
-  });
-  return id;
+export function endTerminalForTab(params: Readonly<Record<string, string>>, bridge = terminalBridge()): string[] {
+  const ids = terminalIdsInParams(params);
+  if (ids.length === 0 || !bridge) return [];
+  for (const id of ids) {
+    void Promise.resolve(bridge.kill(id, "SIGTERM")).catch(() => {
+      // A terminal that already ended is not an error — the renderer learns of
+      // an exit asynchronously, so a close racing one is the normal case.
+    });
+  }
+  return ids;
 }
 
-/** The params key a terminal tab carries its PTY's id in. Declared beside the
- *  bridge rather than in the surface, so the reaper above does not have to
- *  import the emulator to know what to look for. */
-export const TERMINAL_ID_PARAM = "terminal";
+/**
+ * The params key a terminal tab carries its PTY's id in.
+ *
+ * RE-EXPORTED, NOT DECLARED HERE ANY MORE. It moved to `terminal-workspace.ts`
+ * when a Terminal grew a strip of shells, because the reaper above now asks
+ * that module for the whole list and the dependency has to point one way.
+ * Every existing importer keeps the name it had.
+ */
+export { TERMINAL_ID_PARAM } from "@/lib/terminal-workspace";
 
 /**
  * WHAT A PERSON SHOULD READ WHEN A TERMINAL ENDS.
