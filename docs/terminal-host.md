@@ -27,7 +27,7 @@ The whole of what Telar puts in a terminal's environment:
 | Variable | Value | Why |
 |---|---|---|
 | `TERM` | `xterm-256color` | What the emulator (xterm.js) actually is |
-| `COLORTERM` | `truecolor` | xterm.js paints 24-bit; `xterm-256color` cannot say so. Overwrites an inherited value: the emulator decides this, not the parent shell |
+| `COLORTERM` | `truecolor`, **only when the parent did not already say** | xterm.js paints 24-bit; `xterm-256color` cannot say so. An inherited value (non-empty) is left alone — we fill a silence rather than argue with the shell that launched us |
 | `TERM_PROGRAM` | `Telar` | **Public API — see below** |
 | `TERM_PROGRAM_VERSION` | the shell's `app.getVersion()` | The same number electron-builder stamps into the bundle |
 

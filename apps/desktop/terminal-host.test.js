@@ -94,6 +94,7 @@ describe("the environment a Telar terminal starts in", () => {
     // Neovim with `termguicolors`, delta, bat, oh-my-posh — every truecolour
     // program keys on COLORTERM and falls back to a 256-colour approximation
     // without it. xterm.js paints 24-bit natively, so the fallback was a lie.
+    // Nothing said it here, so we say it.
     expect(env.COLORTERM).toBe("truecolor");
     expect(env.PATH).toBe("/usr/bin");
     // The exported constants are what everything else keys off; if either ever
@@ -122,13 +123,22 @@ describe("the environment a Telar terminal starts in", () => {
     expect("ALSO" in env).toBe(false);
   });
 
-  test("an inherited COLORTERM of another value is overwritten, not honoured", () => {
-    // Unlike PS1 or ZDOTDIR, COLORTERM is not a preference: it is a statement
-    // about what the EMULATOR can paint, and the emulator here is xterm.js.
-    // A `COLORTERM=8bit` inherited from whatever launched Telar would describe
-    // some other terminal's abilities to programs running inside ours.
-    const env = terminalEnv({ COLORTERM: "8bit" }, "1.0.0");
-    expect(env.COLORTERM).toBe("truecolor");
+  test("an inherited COLORTERM is left alone — we fill a silence, we do not argue", () => {
+    // The other direction of the same rule. An inherited value is a statement
+    // somebody already made about this environment, and a terminal that
+    // overwrites it is a terminal arguing with the shell that launched it.
+    // T3 Code sets COLORTERM only when the inherited one is absent or empty
+    // (Manager.ts:1300); this matches.
+    expect(terminalEnv({ COLORTERM: "8bit" }, "1.0.0").COLORTERM).toBe("8bit");
+    expect(terminalEnv({ COLORTERM: "truecolor" }, "1.0.0").COLORTERM).toBe("truecolor");
+  });
+
+  test("an EMPTY inherited COLORTERM is a silence, not an answer", () => {
+    // `COLORTERM=` in a parent's environment says nothing about what anything
+    // can paint, and passing it through would leave every truecolour program
+    // guessing 256 colours.
+    expect(terminalEnv({ COLORTERM: "" }, "1.0.0").COLORTERM).toBe("truecolor");
+    expect(terminalEnv({ COLORTERM: "   " }, "1.0.0").COLORTERM).toBe("truecolor");
   });
 
   test("omits TERM_PROGRAM_VERSION rather than claiming a fake one", () => {

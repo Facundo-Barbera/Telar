@@ -32,7 +32,7 @@ import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type Terminal
 export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
 import { attachTerminal, terminalKeyHandler } from "@/lib/terminal-session";
-import { cssColorReader, cssVariableReader, terminalFont, terminalTheme } from "@/lib/terminal-theme";
+import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
@@ -209,6 +209,17 @@ export function TerminalSurface({
 
     const read = cssColorReader(element, document.createElement("canvas"));
     const { fontFamily, fontSize } = terminalFont(cssVariableReader(element));
+    /**
+     * STARTED BEFORE THE TERMINAL EXISTS, AWAITED BEFORE THE FIRST FIT.
+     *
+     * xterm derives cols and rows by measuring one cell, so a grid measured
+     * while a face is still downloading is a grid sized against the fallback —
+     * and when the real face lands every cell is a fraction off, which reads as
+     * a prompt wrapping a column early. Kicking the load off here means the
+     * bundled symbols face is registered before `open()`; awaiting it before
+     * the first `measure()` means the measurement is of what is drawn.
+     */
+    const fontsReady = loadTerminalFonts(fontFamily, fontSize);
 
     /**
      * ONE PER ATTEMPT, NOT ONE PER MOUNT. A cwd the host refuses is disposed
@@ -276,7 +287,9 @@ export function TerminalSurface({
           setPhase({ kind: "ended", ending });
         }),
       );
-      measure(bridge, id);
+      void fontsReady.then(() => {
+        if (!disposed) measure(bridge, id);
+      });
       term.focus();
     };
 
