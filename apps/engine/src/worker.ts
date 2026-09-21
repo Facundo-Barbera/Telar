@@ -2035,9 +2035,27 @@ export class EngineWorker {
         ...(deadlineMs !== undefined ? { deadlineMs } : {}),
         ...(fallback !== undefined ? { default: fallback } : {}),
       }).catch((error: unknown) => {
-        if (!lateRefusalLogged && error instanceof EngineClientError && error.code === "conflict") {
-          lateRefusalLogged = true;
-          console.error(`[worker] tool request refused for ${runId}: ${error.message}`);
+        if (error instanceof EngineClientError && error.code === "conflict") {
+          if (!lateRefusalLogged) {
+            lateRefusalLogged = true;
+            console.error(`[worker] tool request refused for ${runId}: ${error.message}`);
+          }
+          /**
+           * AND THE CALLER IS TOLD WHAT ACTUALLY HAPPENED (#891 floor, #835
+           * remedy 2). The driver turns a throw here into a `deny` carrying its
+           * message, and the engine's own sentence — "turn has already settled
+           * (completed); this report arrived after the turn ended" — is written
+           * for a daemon log, not for the agent reading the tool result. A
+           * model that cannot tell an engine refusal from a person's declines
+           * and reports back that the human said no: #28's lesson, measured
+           * again on sixteen sub-agent transcripts. Named as plumbing, with
+           * what to do about it.
+           */
+          throw new Error(
+            "Telar could not decide this tool call: the turn it was made under has ended, so there was no live claim to open a permission request against. " +
+              "Nothing ran, and nobody declined it. Report what you have; the call can be made again from a live turn. " +
+              `(engine: ${error.message})`,
+          );
         }
         throw error;
       });
