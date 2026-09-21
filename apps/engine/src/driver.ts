@@ -3911,7 +3911,10 @@ export function createClaudeDriver(
            * `backgroundGate`, which opens a claim of its own — and, when there
            * is nothing alive to open one for, says so honestly instead.
            */
-          runtime.bindings.current = { ...runtime.bindings.current, canUseTool: backgroundGate };
+          // A turn that ran with NO gate (the `full-access` shape) leaves none:
+          // opening a claim to decide what nobody was going to be asked about
+          // would write a turn per tool call for nothing.
+          runtime.bindings.current = { ...runtime.bindings.current, canUseTool: canUseTool ? backgroundGate : undefined };
           // The turn is over; the process is not. Keep reading it.
           if (sessionHooks && !runtime.streamEnded) startIdlePump(runtime, sessionHooks);
         } else runtime.destroy();
@@ -3975,8 +3978,9 @@ export function createClaudeDriver(
             await flush();
             sink = idleSink;
             // BACK TO THE BACKGROUND GATE, not to nothing (#891): the wake-up's
-            // claim is gone, and the work it leaves behind still needs one.
-            idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: backgroundGate };
+            // claim is gone, and the work it leaves behind still needs one. A
+            // session running with no gate at all keeps none, as above.
+            idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: canUseTool ? backgroundGate : undefined };
             await current.binding.close("failure" in result ? result : { text: result.text, ...(current.usage ? { usage: current.usage } : {}) }).catch(() => undefined);
           };
           try {
