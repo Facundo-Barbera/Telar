@@ -169,12 +169,17 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_grep",
     // #543, appended at the END so the wall GROWS rather than reorders.
     "sessions_schedule",
-    "warp",
   ]);
+  // #877 retired `warp`, which was the one name on this wall that was not a
+  // sessions verb and the one registered whether or not the turn carried a
+  // capability. Pinned as an absence so a re-add fails here.
+  expect(names).not.toContain("warp");
 
-  // …and without one the sessions tools are GONE while `warp` stays — it is
-  // unconditional by design, which is also what keeps this from passing for the
-  // trivial reason that nothing registers at all.
+  // …and without one the sessions tools are GONE, and nothing is left to
+  // register: the server itself does not appear. Anti-vacuity for the list
+  // above is the COUNT — twenty-one names, not zero — rather than a tool that
+  // happened to be unconditional.
+  expect(names.length).toBe(21);
   names.length = 0;
   await claudeDriver(sdk).run({
     prompt: "prompt",
@@ -182,7 +187,8 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     signal: new AbortController().signal,
     onObservations: async () => undefined,
   });
-  expect(names).toEqual(["warp"]);
+  expect(names).toEqual([]);
+  expect(seen.serverKeys).toEqual([]);
 });
 
 // ── 2. the worker seam ──────────────────────────────────────────────────────

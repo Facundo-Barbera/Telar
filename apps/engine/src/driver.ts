@@ -15,7 +15,6 @@ import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "./browser/briefing";
 import { RUN_BRIEFING } from "./run/briefing";
 import fs from "node:fs";
-import { z } from "zod";
 import type {
   ItemDetail,
   ItemSeed,
@@ -71,9 +70,6 @@ import {
   taskMemoryFrom,
 } from "./claude-runtime";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
-import { createWarpRunner, type WarpSpawn } from "./warp/runner";
-import { compileWarpScript } from "./warp/sandbox";
-import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { displayTools, type DisplayCapability } from "./display/tools";
 import type { SteerMailbox, SteerMessage } from "./steering";
 import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
@@ -125,7 +121,7 @@ type SdkUserMessage = {
    * driver builds one — and the SDK's `SDKUserMessage.message` is a
    * `MessageParam`, whose content is `string | ContentBlockParam[]`. Narrowing a
    * borrowed type to the arm you happen to use makes every OTHER caller look
-   * wrong: a warp child steers with plain prose and had to be cast past this
+   * wrong: a caller steering with plain prose had to be cast past this
    * declaration to say so. The type now describes the SDK rather than one use
    * of it.
    */
@@ -262,9 +258,8 @@ async function* singleUserMessage(content: string | Array<Record<string, unknown
  * The per-turn half of a session runtime — everything the once-created query
  * reaches through `bindings.current`, swapped whole at the top of every run.
  * The query outlives the turn (see ./claude-runtime.ts); these do not: the
- * permission gate is bound to a claim token that dies with the turn, the
- * sessions capability to the worker client that assembled it, and the warp
- * spawn to this turn's model and login.
+ * permission gate is bound to a claim token that dies with the turn, and the
+ * sessions capability to the worker client that assembled it.
  */
 type ClaudeTurnBindings = {
   signal: AbortSignal;
@@ -280,8 +275,6 @@ type ClaudeTurnBindings = {
   /** The project's runs, when the turn carries them. See `run/capability.ts`. */
   run: RunCapability | undefined;
   plugins: Record<string, unknown> | undefined;
-  warpSpawn: WarpSpawn;
-  onWarpTask: (seed: TaskSeed) => void;
 };
 
 /**
@@ -458,149 +451,6 @@ type ClaudeSdk = {
     handler: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>,
   ): unknown;
 };
-
-/**
- * WHAT THE DIRECTING AGENT READS WHEN IT IS DECIDING.
- *
- * Written as instructions for choosing, not as a description of parameters: the
- * failure this guards against is not a malformed call, it is a warp launched for
- * work that one agent should have done in a straight line. A fan-out costs a
- * real process per child on the user's own machine.
- *
- * THE SCRIPT API IS NOT HERE, AND THAT IS THE POINT (#515). This string is in
- * every turn of every session whether or not a Warp is ever run — it was 2,988
- * characters of script reference that nobody reads until the moment they write
- * a script, and at that moment they can read the `telar` skill, which is on disk
- * and costs nothing until something asks for it. What stays here is only what a
- * model needs to CHOOSE: what a Warp is, when it is the right shape, what it
- * costs, and where the reference lives. Keep it under the 350-character cap
- * `tool-budgets.test.ts` enforces; anything longer belongs in the skill.
- */
-export const WARP_DESCRIPTION = `Run a Warp: a JavaScript script that fans work across sub-agents and returns their combined result. Reach for it when the work is wide — many files, angles or candidates — or when confidence beats speed. Each concurrent child is a real process, so a straight line of work is not one. Begins with \`export const meta\`; script API in the \`telar\` skill.`;
-
-/**
- * `warp`, as an MCP tool.
- *
- * IT BLOCKS UNTIL THE RUN SETTLES, and that is a decision worth stating rather
- * than a limitation to apologise for. The harness this borrows its surface from
- * returns a handle immediately and re-invokes the model when the run finishes —
- * it can, because it owns the loop. Telar's worker does not: a turn ends when
- * the driver returns, `onObservations` is documented as never called after that,
- * and a run still emitting rows would have nowhere to send them. So the tool
- * call IS the run's lifetime, exactly as the Agent tool's call is a sub-agent's,
- * and the directing agent gets the result rather than a receipt.
- *
- * INLINE SCRIPT ONLY — no `name`, no `scriptPath`. Resolving a path here would
- * put a file read inside a tool handler, outside the store boundary every other
- * engine read is fenced at. The agent has a Read tool; a script it has read is a
- * string it can pass.
- */
-function warpTool(
-  /**
-   * THE FACTORY, NOT THE SDK. Warp used to take the whole `ClaudeSdk` and reach
-   * for `sdk.tool`, which quietly made it the one core tool that could only be
-   * registered in-process. It needs a way to declare a tool and nothing else.
-   */
-  tool: ToolFactory | undefined,
-  deps: {
-    spawn: WarpSpawn;
-    /** Every row the run produces, in order. The driver decides which event
-     *  kind each is — it is the party that knows what it has already announced. */
-    onTask: (seed: TaskSeed) => void;
-    instanceId?: string;
-    /** The turn's own signal, READ AT INVOCATION TIME. A getter rather than a
-     *  signal because the tool is registered once per session runtime while
-     *  turns come and go — a captured signal would be the first turn's
-     *  forever. A human pressing Stop stops the fan-out; without this the
-     *  turn would settle while four children kept spending. */
-    signal: () => AbortSignal;
-    concurrency?: number;
-  },
-): unknown | undefined {
-  if (!tool) return undefined;
-  const start = createWarpRunner({
-    spawn: deps.spawn,
-    emit: deps.onTask,
-    newId: (prefix) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`,
-    ...(deps.concurrency === undefined ? {} : { concurrency: deps.concurrency }),
-  });
-
-  return tool(
-    "warp",
-    WARP_DESCRIPTION,
-    { script: z.string().min(1), args: z.unknown().optional() },
-    async (input) => {
-      const compiled = compileWarpScript(String(input.script ?? ""));
-      if (!compiled.ok) {
-        /**
-         * REFUSED BEFORE A runId EXISTS and before one token is spent, and the
-         * refusal is addressed to the AUTHOR: the kind so it can branch, the
-         * line so it can fix the right one without re-reading the whole script.
-         * `isError` rather than a throw, so the model treats it as "that script
-         * is wrong" and rewrites, instead of "the tool is broken" and retries.
-         */
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ error: compiled.error, kind: compiled.kind, detail: compiled.detail, line: compiled.line }, null, 2),
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      const run = start(compiled, {
-        ...(deps.instanceId ? { instanceId: deps.instanceId } : {}),
-        ...(input.args === undefined ? {} : { args: input.args }),
-      });
-      const signal = deps.signal();
-      const stop = () => run.stop("the turn was stopped");
-      if (signal.aborted) stop();
-      else signal.addEventListener("abort", stop, { once: true });
-
-      let snapshot;
-      try {
-        snapshot = await run.done;
-      } finally {
-        signal.removeEventListener("abort", stop);
-      }
-
-      const failed = snapshot.agents.filter((agent) => agent.state === "failed");
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                runId: snapshot.runId,
-                name: snapshot.name,
-                state: snapshot.state,
-                agents: { total: snapshot.agents.length, failed: failed.length },
-                // NAMED, NOT COUNTED. "2 agents failed" tells the author nothing
-                // it can act on; which ones, and why, is what decides whether to
-                // re-run, narrow the prompt, or accept a partial answer.
-                ...(failed.length > 0
-                  ? { failures: failed.map((agent) => ({ label: agent.label, failure: agent.failure })) }
-                  : {}),
-                ...(snapshot.logs.length > 0 ? { logs: snapshot.logs } : {}),
-                ...(snapshot.failure ? { failure: snapshot.failure } : {}),
-                ...(snapshot.result === undefined ? {} : { result: snapshot.result }),
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-        // A run that was stopped or threw is an error to the CALLER even though
-        // the rows are all correctly recorded: it did not produce what it was
-        // asked for, and a model reading `state: "failed"` inside a success
-        // result routinely carries on as though it had.
-        ...(snapshot.state === "completed" ? {} : { isError: true }),
-      };
-    },
-  );
-}
 
 /**
  * Which REQUEST kind a tool call belongs to.
@@ -1540,8 +1390,8 @@ export function createClaudeDriver(
 
       /**
        * THE PROCESS'S TASK MEMORY, NOT THE TURN'S. Assigned once the runtime
-       * is claimed or built below; declared here because `emitTask` and the
-       * warp sink close over it. Held on the runtime because a task launched
+       * is claimed or built below; declared here because `emitTask` closes over
+       * it. Held on the runtime because a task launched
        * in one turn reports in a later one under its SDK id alone — see
        * `TaskMemory` in ./claude-runtime.ts for the measured ghost rows.
        */
@@ -1834,9 +1684,6 @@ export function createClaudeDriver(
               ...(item.is_backgrounded === true ? { backgrounded: true } : {}),
               ...(str(item.description) ? { title: oneLine(item.description!) } : {}),
               ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
-              ...(str(item.workflow_name)
-                ? { warp: { warpRunId: str(item.task_id) ?? "warp", warpName: item.workflow_name! } }
-                : {}),
             },
             str(item.tool_use_id),
           );
@@ -1952,8 +1799,7 @@ export function createClaudeDriver(
            * ONLY background, and ONLY tasks whose SDK id THIS process minted
            * or was seeded with (`taskIdsBySdkId`): an agent missing from a
            * background-membership list means nothing — closing agents is the
-           * turn-end sweep's job — and a warp's ids never appear in this
-           * payload at all. The SDK says the level is per-process ("reset to
+           * turn-end sweep's job. The SDK says the level is per-process ("reset to
            * the empty set whenever the session's CLI process (re)starts"),
            * which is exactly the memory's lifetime.
            *
@@ -2001,14 +1847,14 @@ export function createClaudeDriver(
 
       const pending: TurnObservation[] = [];
       /**
-       * FLUSHES ARE SERIALISED, and that became load-bearing the moment a warp
-       * could report.
+       * FLUSHES ARE SERIALISED, and that is load-bearing the moment anything
+       * flushes off the main loop.
        *
        * The main loop only ever ran `emit(); await flush();` in sequence, so
-       * nothing overlapped and a plain async function was enough. A fan-out is
-       * different in kind: four children settle whenever they settle, and none
-       * of them can await the batch — the turn would be serialised behind its own
-       * agents. Left unchained, two in-flight `onObservations` calls can resolve
+       * nothing overlapped and a plain async function was enough. A deferred
+       * flush is different in kind: `flushSoon` runs from a timer, so a batch can
+       * be in flight when the loop starts the next one. Left unchained, two
+       * in-flight `onObservations` calls can resolve
        * in the opposite order to the one they were spliced in, and the engine
        * folds a `running` over a `completed` it has already stored. The task then
        * reads as live for ever, with nothing left in the stream to correct it.
@@ -2231,37 +2077,6 @@ export function createClaudeDriver(
        * not catch it — the mapping was right and the input to it was wrong.
        */
       /**
-       * A warp row, announced as the right KIND of event.
-       *
-       * The runner emits whole seeds and knows nothing about the three event
-       * kinds; this is the only party that knows what it has already told the
-       * engine, so it is the one that can tell a start from a progress. Folded
-       * into `knownTasks` as well, which buys the end-of-turn sweep below for
-       * free: an agent somehow left running when the turn ends gets closed
-       * rather than claiming the session is still working forever.
-       */
-      const announced = new Set<string>();
-      const onWarpTask = (seed: TaskSeed): void => {
-        const settled = isTerminalTaskState(seed.state);
-        const kind = !announced.has(seed.id) ? "task.started" : settled ? "task.completed" : "task.progress";
-        announced.add(seed.id);
-        knownTasks.set(seed.id, seed);
-        emit({ kind, task: seed });
-        /**
-         * NOT AWAITED — a child cannot wait for the engine to acknowledge its
-         * row without serialising the whole fan-out behind one HTTP round trip
-         * each. Order is still guaranteed: `flush` chains, so these arrive in
-         * the sequence they were emitted whatever order they settle in.
-         *
-         * The rejection is swallowed HERE rather than left unhandled. A batch of
-         * task rows that could not be reported is a connectivity failure, and the
-         * main loop's own next flush surfaces it as the turn's failure — which
-         * is the right place for it, since that one can still stop the turn.
-         */
-        void flush().catch(() => undefined);
-      };
-
-      /**
        * TELAR'S IN-PROCESS TOOLS, IN ONE SERVER.
        *
        * THE BROWSER IS NOT HERE ANY MORE: it is served by the worker's own
@@ -2309,32 +2124,10 @@ export function createClaudeDriver(
         emit({ kind: "item.completed", itemId: id, status: "completed" });
       };
 
-      /**
-       * A WARP CHILD IS A REAL `claude` PROCESS, spawned with this turn's own
-       * checkout, login and binary — so a warp inherits everything the session
-       * was configured with rather than a default the driver invents.
-       *
-       * `mcpServers` is the USER's only: Telar's own server is withheld, or a
-       * child could call `warp` and recurse without bound, and four children
-       * would fight over one browser scope. `canUseTool` is passed, because a
-       * session that asks before editing asks for a child's edits too.
-       *
-       * BUILT PER TURN, REACHED THROUGH THE BINDINGS: the `warp` tool itself
-       * is registered once per session runtime, but a spawn must carry THIS
-       * turn's model and permission gate, not the first turn's.
-       */
+      /** The `claude` binary this turn runs on, resolved once: the query below
+       *  takes it as `pathToClaudeCodeExecutable`, and the fingerprint records
+       *  it so a turn on a different binary does not reuse the query. */
       const executable = resolveExecutable(binaryPath);
-      const warpSpawn = createWarpSpawn({
-        sdk,
-        cwd,
-        ...(model ? { model } : {}),
-        ...(sdkEffort ? { effort: sdkEffort } : {}),
-        ...(fastMode === undefined ? {} : { fastMode }),
-        ...(env ? { env } : {}),
-        ...(userServers ? { mcpServers: userServers } : {}),
-        ...(canUseTool ? { canUseTool } : {}),
-        ...(executable ? { executable } : {}),
-      });
 
       /** This turn's half of the runtime, swapped in whole below whether the
        *  runtime is fresh or reused — see `ClaudeTurnBindings`. */
@@ -2349,8 +2142,6 @@ export function createClaudeDriver(
         latex,
         run,
         plugins,
-        warpSpawn,
-        onWarpTask,
       };
 
       const streaming = claudeStreamingInputEnabled();
@@ -2546,11 +2337,6 @@ export function createClaudeDriver(
          * are read-and-brake, and there is deliberately no merge, no accept and
          * no archive for a gate to guard. The guard that matters here is
          * structural — the store's live-session budget — not interactive.
-         *
-         * THE ONE GATE THAT IS NOT HERE AT ALL is a warp child's. `warp/spawn.ts`
-         * withholds Telar's whole MCP server from a child and names these tools
-         * in `WARP_CHILD_DISALLOWED_TOOLS` on top of that, because
-         * `sessions_create` is fan-out wearing another hat.
          */
         if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, delegatingCapability(() => bindings.current.sessions)));
 
@@ -2608,16 +2394,6 @@ export function createClaudeDriver(
          * checkout.
          */
         if (display && sdk.tool) telarTools.push(...displayTools(sdk.tool, delegatingCapability(() => bindings.current.display)));
-
-        const warp = warpTool(sdk.tool, {
-          // Both delegate through the bindings — the tool is registered once
-          // per session runtime, the spawn and the task sink change per turn.
-          spawn: (input) => bindings.current.warpSpawn(input),
-          onTask: (seed) => bindings.current.onWarpTask(seed),
-          ...(providerInstanceId ? { instanceId: providerInstanceId } : {}),
-          signal: () => bindings.current.signal,
-        });
-        if (warp) telarTools.push(warp);
 
         /**
          * ONE `telar` REGISTRATION, FROM WHICHEVER TRANSPORT THIS DEPLOYMENT HAS.

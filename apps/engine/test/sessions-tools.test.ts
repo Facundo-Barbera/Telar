@@ -19,8 +19,7 @@
  *   · nothing accept-shaped, and nothing that archives or deletes (INV-1);
  *   · nothing that records WHO created a session — no parent, no child, no
  *     link, which is the design under test rather than a gap in it;
- *   · NO cap on creation — asserted, not assumed, because the prose says so;
- *   · every one of these tools denied to a warp child.
+ *   · NO cap on creation — asserted, not assumed, because the prose says so.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { worktreeReady } from "./worktree-ready";
@@ -36,7 +35,6 @@ import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessi
 import { TELAR_SKILL } from "../src/orientation";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
 import { toolInputSchema } from "../src/mcp-socket";
-import { WARP_CHILD_DISALLOWED_TOOLS } from "../src/warp/spawn";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -1723,45 +1721,45 @@ describe("the six query tools", () => {
   });
 });
 
-// ── the fan-out guard ───────────────────────────────────────────────────────
+// ── what the wall is, exactly ───────────────────────────────────────────────
 
-describe("a warp child may not reach these tools", () => {
-  test("every tool on the wall is denied to a warp child, by name", () => {
-    // STRUCTURAL, not a copied list: the names come from the wall itself, so a
-    // twenty-first tool fails this until it is denied too. `sessions_create` is
-    // fan-out wearing another hat, and the rest are steering — or now READING —
-    // a session from inside a script that cannot see it.
+describe("the shape of the wall", () => {
+  /**
+   * THE COUNT AND THE NAMES, pinned off the wall itself rather than copied.
+   *
+   * THIS USED TO BE THE FAN-OUT GUARD: every name here had to appear in
+   * `WARP_CHILD_DISALLOWED_TOOLS`, so a new tool failed this test until it was
+   * denied to a Warp child too. #877 retired Warp and that list died with
+   * `warp/spawn.ts`. The half of the assertion worth keeping is the half that
+   * was never about Warp — what is on this wall, and how many.
+   *
+   * ── AND IT CLOSES #543's KNOWN GAP RATHER THAN INHERITING IT ──────────────
+   *
+   * `sessions_schedule` was landed with an exemption from the old loop and a
+   * paragraph saying why: it is the purest case of a child creating work that
+   * outlives the run, it belonged on the deny-list by every word of the rule,
+   * and it was left off because this branch owned the file and that one was
+   * told not to touch it. The paragraph ended "until #877 lands, a warp child
+   * can leave a schedule behind."
+   *
+   * #877 has landed, and the gap closes by SUBTRACTION rather than by a new
+   * entry: there is no warp child. The two guards that branch put in place —
+   * a caller with no `self` is refused outright, and the Agent is never handed
+   * the tool — are now the whole of the protection, and they are enough,
+   * because nothing else in the tree spawns a process that inherits a
+   * session's own telar server.
+   */
+  test("twenty-one tools, every one of them a `sessions_` verb", () => {
     const names = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
     // 21 since #543 added `sessions_schedule`.
     expect(names.length).toBe(21);
-    /**
-     * ── ONE TOOL IS OUT OF THIS LOOP, AND IT IS A KNOWN GAP ────────────────
-     *
-     * `sessions_schedule` (#543) BELONGS on this list by every word of the
-     * rule above — it is the purest case of a child creating work that
-     * outlives the run. It is not on it because #877 retires Warp entirely and
-     * deletes `src/warp/` including `WARP_CHILD_DISALLOWED_TOOLS`; a separate
-     * branch owns that file and this one was told to leave it alone.
-     *
-     * WHAT COVERS IT INSTEAD, and what does not. A caller that is not a session
-     * is refused outright (`NO_SESSION_TO_SCHEDULE`, driven end to end over the
-     * outward socket in `sessions-socket.test.ts`), and the Agent is never
-     * handed the tool at all (`agent-tools.test.ts`). NEITHER REACHES A WARP
-     * CHILD: a child inherits `environment.mcpServers`, which is the parent
-     * session's own telar server, so its capability carries the parent's `self`
-     * and the call would succeed against the parent session. Until #877 lands,
-     * a warp child can leave a schedule behind.
-     *
-     * The exemption is a single name rather than a relaxed loop, so the other
-     * twenty stay pinned and a twenty-second tool still fails this.
-     */
-    const EXEMPT_PENDING_877 = new Set(["sessions_schedule"]);
     for (const name of names) {
-      if (EXEMPT_PENDING_877.has(name)) continue;
-      expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(qualifyTelarTool(name));
+      expect(name.startsWith("sessions_")).toBe(true);
+      expect(qualifyTelarTool(name)).toBe(`mcp__telar__${name}`);
     }
-    expect(names.filter((name) => EXEMPT_PENDING_877.has(name))).toEqual(["sessions_schedule"]);
-    // ANTI-VACUITY: the list is not simply "everything".
-    expect(WARP_CHILD_DISALLOWED_TOOLS).not.toContain(qualifyTelarTool("display_open"));
+    // ANTI-VACUITY: the wall is not simply "every Telar tool".
+    expect(names).not.toContain("display_open");
+    // …and #877's absence, at the one place that enumerates the wall.
+    expect(names).not.toContain("warp");
   });
 });

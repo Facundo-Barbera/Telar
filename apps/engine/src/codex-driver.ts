@@ -746,11 +746,11 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                  * `display_*` exist on Codex at all; before it, no in-process
                  * `telar` server reached a Codex turn and none of them did.
                  *
-                 * WARP IS ABSENT FROM THIS WALL, deliberately. It fans work out
-                 * through the Claude driver's own `warpSpawn` binding, which is
-                 * Claude-runtime state a Codex turn does not have. Advertising
-                 * it here would offer a tool that cannot run; missing is the
-                 * honest reading of what Telar does on this provider today.
+                 * THE WALL IS THE SAME ON BOTH PROVIDERS now that #877 retired
+                 * the one Claude-only tool. If a provider-specific tool is ever
+                 * added back, the rule this paragraph used to record still
+                 * applies: advertise it only where it can actually run, because
+                 * a tool that cannot run is worse than one that is missing.
                  */
                 ...(telarSocketLease
                   ? { [TELAR_MCP_SERVER]: { url: telarSocketLease.url, http_headers: { Authorization: `Bearer ${telarSocketLease.token}` } } }

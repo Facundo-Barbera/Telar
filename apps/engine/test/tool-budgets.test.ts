@@ -487,6 +487,21 @@ describe("every tool description is short enough to carry", () => {
     expect(total).toBeLessThanOrEqual(6_000);
   });
 
+  /**
+   * THE WALL, PINNED WITHOUT `warp` — #877.
+   *
+   * It was the single largest description in the tree at 2,988 characters, and
+   * unlike everything counted above it was registered UNCONDITIONALLY: a turn
+   * with no capability at all still paid for it. The count and the absence are
+   * asserted together so a re-add cannot pass by replacing something else.
+   */
+  test("`warp` is not on the wall, and the wall is twenty-six tools", () => {
+    const names = wall().registered.map((entry) => entry.name);
+    expect(names.length).toBe(26);
+    expect(names).not.toContain("warp");
+    expect(names.every((name) => name.startsWith("sessions_") || name.startsWith("notes_"))).toBe(true);
+  });
+
   test("and every tool still says something — a cap is not an excuse for a blank", () => {
     for (const entry of wall().registered) expect(entry.description.length).toBeGreaterThan(80);
   });

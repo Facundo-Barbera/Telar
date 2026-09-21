@@ -11,6 +11,8 @@
 import { expect, test } from "bun:test";
 import { BROWSER_TOOLS } from "../src/browser";
 import { itemDetailForToolCall, titleForToolCall } from "../src/driver";
+import { collectSessionsWallTools } from "../src/sessions-tools/socket";
+import type { SessionsCapability } from "../src/sessions-tools/tools";
 import {
   assertTelarToolNames,
   displayToolName,
@@ -29,6 +31,32 @@ test("every tool Telar exposes declares its capability in its name", () => {
   expect(() => assertTelarToolNames(BROWSER_TOOLS.map((tool) => tool.name))).not.toThrow();
   expect(() => assertTelarToolNames(["navigate"])).toThrow(/must be prefixed/);
   expect(() => assertTelarToolNames(["warp_open"])).toThrow(/must be prefixed/);
+});
+
+/**
+ * THE WALL, PINNED WITHOUT `warp` — #877.
+ *
+ * Warp was the one tool Telar registered that declared no capability in its
+ * name: a bare `warp`, registered unconditionally on every Claude turn, which
+ * is why it needed its own paragraph everywhere the wall is described. It is
+ * retired, and this is the pin that makes bringing it back a red test rather
+ * than a quiet re-addition.
+ *
+ * ASSERTED THREE WAYS, because one of them alone is easy to work around:
+ * `warp` is not a capability, so `warp` cannot pass the name check at all; the
+ * sessions wall — the only in-process toolkit that used to sit beside it — does
+ * not name it; and the browser wall does not either.
+ */
+test("`warp` is not a tool, not a capability, and not on any wall", () => {
+  expect(TELAR_CAPABILITIES as readonly string[]).not.toContain("warp");
+  // A bare `warp` declares no capability, so it cannot be registered under the
+  // standard the test above enforces — the name itself is now illegal.
+  expect(() => assertTelarToolNames(["warp"])).toThrow(/must be prefixed/);
+
+  const sessions = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
+  expect(sessions.length).toBe(21);
+  expect(sessions).not.toContain("warp");
+  expect(BROWSER_TOOLS.map((tool) => tool.name)).not.toContain("warp");
 });
 
 test("one NAMESPACE holds every capability — two registrations, because one must cross a wire", () => {

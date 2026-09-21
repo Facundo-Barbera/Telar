@@ -47,9 +47,11 @@
  *     See `NOT_A_BYPASS` below: it is stated in the prose of every tool that
  *     could be used for it, because that text is the only voice the wall has
  *     on a question no check here can settle.
- *   · NO WAY TO REACH A FAN-OUT CHILD'S HANDS. `sessions_create` is fan-out by
- *     another name, and `warp/spawn.ts` already denies a warp child the ability
- *     to fan out; these tools join the list it already keeps.
+ *   · `sessions_create` IS FAN-OUT BY ANOTHER NAME, and it is on this wall
+ *     because a coordinating session is exactly who should have it. What is not
+ *     here is a way to hand it to something that cannot be seen: a child
+ *     process spawned inside a turn is not a session, has no row in the rail,
+ *     and there is no seam on this wall for one to reach through.
  *
  * ── NO CAP ON CREATION, AND WHY ─────────────────────────────────────────────
  * There used to be a live-session budget in `EngineStore.createSession`, and
