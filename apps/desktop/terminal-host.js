@@ -96,7 +96,8 @@ function terminalOwner(value) {
 
 /** The terminal type we claim to be, and the one xterm.js is configured for. */
 const TERM = "xterm-256color";
-/** What the emulator can paint. See `terminalEnv` for why this overwrites. */
+/** What the emulator can paint, for a parent that did not already say. See
+ *  `terminalEnv` for why this defers rather than overwrites. */
 const COLORTERM = "truecolor";
 
 /**
@@ -117,12 +118,16 @@ const KILL_OBSERVE_MS = 5_000;
  * THE ENVIRONMENT A TELAR TERMINAL STARTS IN.
  *
  * Four variables added and one REMOVED, and the removal is the interesting
- * half. `COLORTERM=truecolor` is set UNCONDITIONALLY, overwriting whatever the
- * parent shell carried: it describes what the emulator can paint, and xterm.js
- * paints 24-bit colour. Without it Neovim's `termguicolors` and every other
- * truecolour-aware program fall back to a 256-colour approximation, which on
- * the owner's colourscheme painted the whole buffer green. `xterm-256color` as
- * `TERM` cannot say this on its own; `COLORTERM` is the variable that does. `ELECTRON_RUN_AS_NODE=1` is something Telar puts in its own children's
+ * half. `COLORTERM=truecolor` is set ONLY WHEN THE PARENT DID NOT ALREADY SAY —
+ * absent, or present and empty. Without any value Neovim's `termguicolors` and
+ * every other truecolour-aware program fall back to a 256-colour approximation,
+ * which on the owner's colourscheme painted the whole buffer green;
+ * `xterm-256color` as `TERM` cannot say 24-bit on its own, and `COLORTERM` is
+ * the variable that does. But an inherited value is a statement someone already
+ * made about this environment, and overwriting it is how a terminal ends up
+ * arguing with the shell that launched it. T3 Code defers here (Manager.ts:1300)
+ * and so do we: fill the silence, do not talk over the answer.
+ * `ELECTRON_RUN_AS_NODE=1` is something Telar puts in its own children's
  * environment (main.js `childEnv`), so a shell opened from inside Telar
  * inherits it — and then every `electron` the user runs in that shell silently
  * becomes a bare node. package-desktop.sh carries a paragraph about being bitten
@@ -138,7 +143,7 @@ function terminalEnv(baseEnv, version) {
   }
   delete env.ELECTRON_RUN_AS_NODE;
   env.TERM = TERM;
-  env.COLORTERM = COLORTERM;
+  if (typeof env.COLORTERM !== "string" || env.COLORTERM.trim() === "") env.COLORTERM = COLORTERM;
   env.TERM_PROGRAM = TERM_PROGRAM;
   if (version) env.TERM_PROGRAM_VERSION = String(version);
   return env;
