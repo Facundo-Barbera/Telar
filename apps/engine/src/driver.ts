@@ -971,6 +971,36 @@ const PROVIDER_SILENCE_MS = 30_000;
  */
 const END_TURN_GRACE_MS = 2_000;
 
+/**
+ * WHAT A CHILD IS TOLD WHEN THERE IS NO CLAIM LEFT TO DECIDE ITS CALL UNDER
+ * — #891's floor, and #835's "a crash is not a refusal" once more.
+ *
+ * A model that reads a refusal as the person's stops asking and reports back
+ * that it was declined: that is #28's whole lesson, measured again here as
+ * sub-agents that gave up 18 seconds in. Nobody declined anything, so the
+ * sentence says so, names the cause, and says what to do instead. Reached only
+ * when there is genuinely nothing alive to open a claim for — with live
+ * background work, `backgroundGate` opens one rather than saying this.
+ */
+const NO_CLAIM_FOR_BACKGROUND_WORK =
+  "The turn that started this agent has ended, and this session has no live turn to decide the call under, so nothing ran. " +
+  "Nobody declined it — there was nobody to ask. Report what you have; the call can be made again from a new turn.";
+
+/** The result text the background claim's own turn settles with. It carries no
+ *  prose — no model spoke in it — so it says what it was for. */
+const BACKGROUND_CLAIM_RESULT = "Decided a tool call for background work still running after its turn ended.";
+
+/**
+ * HOW LONG A BACKGROUND TASK'S CLAIM IS KEPT AFTER ITS LAST DECISION.
+ *
+ * A working sub-agent asks again within seconds, and a turn per tool call would
+ * write a row per decision into a transcript a person reads. Long enough that a
+ * burst collapses into one turn; short enough that the person's next message —
+ * which cannot be claimed while any turn is live — waits no longer than the
+ * pause they just watched.
+ */
+const BACKGROUND_CLAIM_LINGER_MS = 5_000;
+
 /** Milliseconds as a person would say them. Sub-second stays in ms; anything
  *  longer reads in seconds to one decimal, because "1085ms" is a measurement
  *  and "1.1s" is a duration. */
@@ -1132,11 +1162,16 @@ export function createClaudeDriver(
      * does not have to wait half an hour for the real ceiling.
      */
     unattendedBackgroundWorkMs?: number;
+    /** How long a background task's claim is kept after its last decision —
+     *  see `BACKGROUND_CLAIM_LINGER_MS`. Injected so a test does not sleep for
+     *  the real window. */
+    backgroundClaimLingerMs?: number;
   } = {},
 ): TurnDriver {
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
   const providerSilenceMs = options.providerSilenceMs ?? PROVIDER_SILENCE_MS;
   const endTurnGraceMs = options.endTurnGraceMs ?? END_TURN_GRACE_MS;
+  const backgroundClaimLingerMs = options.backgroundClaimLingerMs ?? BACKGROUND_CLAIM_LINGER_MS;
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
   /**
@@ -2065,6 +2100,192 @@ export function createClaudeDriver(
             }
           };
       const canUseTool: SdkCanUseTool | undefined = onRequest ? gateFor(onRequest) : undefined;
+
+      /**
+       * ── THE CLAIM BACKGROUND WORK ASKS UNDER (#891) ───────────────────────
+       *
+       * THE INVARIANT, and the one sentence this block exists to make true:
+       * A TASK THE ENGINE KEEPS ALIVE PAST TURN END ALWAYS HAS A CLAIM ITS
+       * PERMISSION REQUESTS ARE HONOURED UNDER.
+       *
+       * Two deliberate decisions used to contradict each other. `completeTurn`
+       * keeps `isBackgroundWork` rows alive on purpose (`closeOrphanedTasks`
+       * with `includeBackground: false`) because outliving its turn is what
+       * backgrounding MEANS — and the same call settles the only claim those
+       * rows' permission requests could be made under. Nothing reassigned the
+       * gate the query holds, so a backgrounded child's next decision was asked
+       * of a dead claim and came back `turn has already settled (completed)`.
+       * Sixteen sub-agent transcripts, roughly 500k tokens of builders that
+       * reported back empty-handed.
+       *
+       * THIS IS THE SIXTH VISIT TO THAT SENTENCE and the first at the gate's
+       * LIFETIME. #21 fixed its ROUTING (the SDK's `agentID` was dropped, so a
+       * child's request could not be attributed); #28 fixed what a LOST channel
+       * was reported as; #297 fixed a RESTART reading a live turn as settled;
+       * #378 fixed when a delegated conversation SETTLES. Each closed one route
+       * to the sentence. None of them asked how long the gate may point at one
+       * turn, which is the thing that was wrong.
+       *
+       * SO THE WORK GETS A TURN OF ITS OWN, through the very hook a wake-up
+       * uses (`onProviderTurn`) — the machinery was already there, and #21's
+       * routing is what lets the engine attribute the request to the child.
+       *
+       * OPENED ON DEMAND, NOT HELD FOR THE TASK'S WHOLE LIFE. One live turn per
+       * session is an invariant every sweep relies on, so a claim held for an
+       * hour of background work is the rejected "the turn never settles"
+       * alternative wearing a different coat: the person's reply would read as
+       * still running and their next message would queue behind a sub-agent.
+       * It opens when a child actually needs a decision, lingers briefly so a
+       * burst of calls shares one turn rather than writing a row per tool call,
+       * and is given up the moment it goes idle — or on demand, when the idle
+       * pump needs the session for a real wake-up.
+       */
+      type BackgroundClaim = {
+        binding: ProviderTurnBinding;
+        gate: SdkCanUseTool | undefined;
+        /** Decisions being made under it right now. */
+        inFlight: number;
+        /** Resolves the next time `inFlight` reaches zero. */
+        idle: Promise<void>;
+        goneIdle: () => void;
+        /** Armed once it goes idle; cancelled by the next request. */
+        linger: ReturnType<typeof setTimeout> | undefined;
+      };
+      let backgroundClaim: BackgroundClaim | undefined;
+      /**
+       * OPENS AND CLOSES ARE SERIALISED. Two of these racing would ask the
+       * engine for a second live turn — the invariant above — and a close
+       * racing an open would hand a child a claim that is being given up. A
+       * request in flight does NOT hold this chain: a parked approval waits for
+       * a human, and holding it would make one child's card block another
+       * child's question.
+       */
+      let backgroundClaimChain: Promise<unknown> = Promise.resolve();
+      const onClaimChain = <T>(step: () => Promise<T>): Promise<T> => {
+        const next = backgroundClaimChain.then(step, step);
+        backgroundClaimChain = next.then(() => undefined, () => undefined);
+        return next;
+      };
+
+      /**
+       * The claim to decide ONE background request under, with that request
+       * already counted against it. `undefined` when there is none to be had —
+       * either nothing is alive to claim for, or a turn took the session first.
+       */
+      const acquireBackgroundClaim = (): Promise<BackgroundClaim | undefined> =>
+        onClaimChain(async () => {
+          let claim = backgroundClaim;
+          if (!claim) {
+            /**
+             * NOTHING ALIVE, NOTHING TO CLAIM FOR. A request from a child the
+             * turn-end sweep already failed is a genuinely dead one, and it
+             * gets the honest refusal below rather than a turn opened for a
+             * ghost. This is the same `isBackgroundWork` read `completeTurn`
+             * makes when it decides to keep the row — the two answers are now
+             * the same answer, which is the whole repair.
+             */
+            const live = liveBackgroundTasks();
+            if (!sessionHooks || live.length === 0) return undefined;
+            const binding = await sessionHooks
+              .onProviderTurn({
+                input: "",
+                // Named when it can only be one task; a session with several
+                // live children has no honest single answer.
+                reason: { kind: "background_task", ...(live.length === 1 ? { taskId: live[0]!.id } : {}) },
+              })
+              .catch(() => undefined);
+            // A human turn or a wake-up took the session first: it owns the
+            // decision, and the gate below reads ITS binding instead.
+            if (!binding) return undefined;
+            // LIVE WORK, so the pool stops treating this process as spare —
+            // the same reason the wake path sets it.
+            runtimes.setWakeActive(sessionId, true);
+            claim = {
+              binding,
+              gate: binding.onRequest ? gateFor(binding.onRequest) : undefined,
+              inFlight: 0,
+              idle: Promise.resolve(),
+              goneIdle: () => undefined,
+              linger: undefined,
+            };
+            backgroundClaim = claim;
+          }
+          if (claim.linger !== undefined) {
+            clearTimeout(claim.linger);
+            claim.linger = undefined;
+          }
+          const acquired = claim;
+          if (acquired.inFlight === 0) acquired.idle = new Promise<void>((resolve) => { acquired.goneIdle = resolve; });
+          acquired.inFlight += 1;
+          return acquired;
+        });
+
+      /**
+       * Give the claim up. WAITS FOR THE DECISIONS ALREADY BEING MADE UNDER IT:
+       * completing the turn out from under a parked request would leave the
+       * child that is waiting on it blocked with nothing to report it, which is
+       * the hang `gateFor`'s own comment refuses to allow.
+       */
+      const closeBackgroundClaim = (): Promise<void> =>
+        onClaimChain(async () => {
+          const claim = backgroundClaim;
+          if (!claim) return;
+          if (claim.linger !== undefined) {
+            clearTimeout(claim.linger);
+            claim.linger = undefined;
+          }
+          if (claim.inFlight > 0) await claim.idle;
+          backgroundClaim = undefined;
+          runtimes.setWakeActive(sessionId, false);
+          await claim.binding.close({ text: BACKGROUND_CLAIM_RESULT }).catch(() => undefined);
+        });
+
+      const releaseBackgroundClaim = (claim: BackgroundClaim): void => {
+        claim.inFlight -= 1;
+        if (claim.inFlight > 0) return;
+        claim.goneIdle();
+        if (claim !== backgroundClaim) return;
+        /**
+         * THE LINGER. A working sub-agent asks again seconds later, and a turn
+         * per tool call would write a row per decision into a transcript a
+         * person reads. One idle window collapses a burst into one turn; a
+         * quiet child costs a turn only when it actually needs something.
+         * Unref'd: a pending linger must not hold the worker process open.
+         */
+        claim.linger = setTimeout(() => { void closeBackgroundClaim(); }, backgroundClaimLingerMs);
+        claim.linger.unref?.();
+      };
+
+      /**
+       * THE GATE THE QUERY HOLDS ONCE THE TURN THAT STARTED THE WORK HAS ENDED
+       * — installed over the settled turn's `askEngine` in `run`'s `finally`,
+       * and restored after every wake-up (see `endWake`).
+       */
+      const backgroundGate: SdkCanUseTool = async (toolName, input, options) => {
+        /** A turn of some kind has rebound the query's gate since it read the
+         *  binding: that turn owns the session, and its claim is the live one. */
+        const boundToATurn = (): SdkCanUseTool | undefined => {
+          const bound = runtimeRef?.bindings.current.canUseTool;
+          return bound && bound !== backgroundGate ? bound : undefined;
+        };
+        const before = boundToATurn();
+        if (before) return before(toolName, input, options);
+        const claim = await acquireBackgroundClaim();
+        if (!claim) {
+          // The engine refused because a turn opened while we were asking —
+          // it can decide this, and it is the right one to.
+          const after = boundToATurn();
+          if (after) return after(toolName, input, options);
+          return { behavior: "deny", message: NO_CLAIM_FOR_BACKGROUND_WORK };
+        }
+        try {
+          // A binding with no `onRequest` is the `full-access` shape, the same
+          // answer the query's own gate gives a turn that carries none.
+          return claim.gate ? await claim.gate(toolName, input, options) : { behavior: "allow" as const };
+        } finally {
+          releaseBackgroundClaim(claim);
+        }
+      };
 
       /**
        * THE KEY IS WHAT NAMES THE SERVER, not `createSdkMcpServer`'s `name`.
@@ -3683,6 +3904,14 @@ export function createClaudeDriver(
           // the model — measured: two monitor ticks both attributed to a
           // shell that had merely been launched in the same turn.
           runtime.tasks.lastWokenTaskId = undefined;
+          /**
+           * AND THE GATE STOPS POINTING AT THIS TURN (#891). Nothing used to
+           * clear it, so the work this turn deliberately left alive kept asking
+           * a claim that had just settled. From here it asks through
+           * `backgroundGate`, which opens a claim of its own — and, when there
+           * is nothing alive to open one for, says so honestly instead.
+           */
+          runtime.bindings.current = { ...runtime.bindings.current, canUseTool: backgroundGate };
           // The turn is over; the process is not. Keep reading it.
           if (sessionHooks && !runtime.streamEnded) startIdlePump(runtime, sessionHooks);
         } else runtime.destroy();
@@ -3745,7 +3974,9 @@ export function createClaudeDriver(
             for (const [, open] of current.blocks) emit(closeBlock(open));
             await flush();
             sink = idleSink;
-            idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: undefined };
+            // BACK TO THE BACKGROUND GATE, not to nothing (#891): the wake-up's
+            // claim is gone, and the work it leaves behind still needs one.
+            idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: backgroundGate };
             await current.binding.close("failure" in result ? result : { text: result.text, ...(current.usage ? { usage: current.usage } : {}) }).catch(() => undefined);
           };
           try {
@@ -3776,6 +4007,9 @@ export function createClaudeDriver(
                 await endWake({ failure: "the provider process ended" });
                 sink = idleSink;
                 reportLostBackgroundWork();
+                // The work the claim was held for died with the process; a
+                // claim left open would be a turn nothing will ever settle.
+                await closeBackgroundClaim();
                 await flush();
                 return;
               }
@@ -3843,6 +4077,17 @@ export function createClaudeDriver(
                   continue;
                 }
                 const text = item.type === "user" ? userText(item.message?.content) : undefined;
+                /**
+                 * THE BACKGROUND CLAIM YIELDS TO A REAL WAKE-UP (#891). One
+                 * live turn per session, so a claim held for a child's
+                 * decisions would refuse this one — and a refused wake parks
+                 * every frame after it for a human turn that may never come,
+                 * losing the wake-up outright. Given up here, and the wake's
+                 * own gate then serves the children too; `endWake` puts the
+                 * background gate back. Waits for decisions already in flight,
+                 * so nothing is cut short.
+                 */
+                await closeBackgroundClaim();
                 const binding = await hooks.onProviderTurn({
                   input: text ?? "",
                   reason: wokenTask ? { kind: "task_notification", taskId: wokenTask } : { kind: "unknown" },
@@ -3984,10 +4229,16 @@ export function createClaudeDriver(
             // same consequence for its shells — see `reportLostBackgroundWork`.
             sink = idleSink;
             reportLostBackgroundWork();
+            await closeBackgroundClaim().catch(() => undefined);
             await flush().catch(() => undefined);
             runtimes.destroy(idleRuntime.sessionId);
           } finally {
             if (idleRuntime.idlePump?.stop === undefined || stopped) idleRuntime.idlePump = undefined;
+            // A pump that stops for any other reason (eviction, dispose, a turn
+            // claiming the runtime) must not leave a claim's turn running with
+            // nothing left to settle it. A no-op when none is open, which is
+            // the ordinary case.
+            void closeBackgroundClaim().catch(() => undefined);
           }
         })();
       }

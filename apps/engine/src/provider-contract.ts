@@ -387,7 +387,16 @@ export type DriverSessionHooks = {
    * pumps that turn through, or `undefined` if the engine refused (a human
    * turn claimed the session first — the frames are then that turn's).
    */
-  onProviderTurn(input: { input: string; reason: { kind: "task_notification" | "unknown"; taskId?: string } }): Promise<ProviderTurnBinding | undefined>;
+  onProviderTurn(input: {
+    input: string;
+    /**
+     * `task_notification` — the CLI woke the model because a task ended.
+     * `background_task` — a task the engine keeps alive past its turn needs a
+     * tool decision and has no claim to make it under (#891); the turn exists
+     * for the claim, not for prose.
+     */
+    reason: { kind: "task_notification" | "background_task" | "unknown"; taskId?: string };
+  }): Promise<ProviderTurnBinding | undefined>;
 };
 
 export type TurnDriver = {

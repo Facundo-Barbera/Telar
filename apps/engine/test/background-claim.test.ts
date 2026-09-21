@@ -23,7 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import type { DriverRun, DriverSessionHooks, TurnDriver } from "../src/driver";
+import type { DriverRun, DriverSessionHooks, ProviderTurnBinding, TurnDriver } from "../src/driver";
 import { EngineWorker } from "../src/worker";
 import { stubModels } from "./stub-models";
 import { until } from "./wait";
@@ -132,4 +132,82 @@ test("the engine keeps the row alive and settles its claim — and the turn's ow
   expect(refusal!.message).toContain("the turn it was made under has ended");
   expect(refusal!.message).toContain("nobody declined it");
   expect(refusal!.message).toContain("turn has already settled");
+});
+
+test("a claim opened for the live task honours its request, under a turn of its own", async () => {
+  /**
+   * THE FIX. The driver asks the session door for a turn — the same
+   * `onProviderTurn` a wake-up uses — and the request rides the routes every
+   * other request rides: a real claim, a real `request.opened` on the journal,
+   * a real decision.
+   */
+  const { client, dispatched } = await turnThatDispatches();
+  const { session } = await dispatched;
+
+  const binding = (await session.onProviderTurn({
+    input: "",
+    reason: { kind: "background_task", taskId: "task_toolu_agent" },
+  })) as ProviderTurnBinding;
+  expect(binding).toBeDefined();
+  expect(binding.runId).not.toBe("run_parent");
+
+  const outcome = await binding.onRequest!({
+    kind: "tool_call",
+    detail: { kind: "command_execution", command: { command: "bun test" } },
+    toolUseId: "toolu_child",
+  });
+  expect(outcome).toEqual({ decision: "accept" });
+
+  // It is the session's own state, not a side channel: the request is filed
+  // under the new turn, and the turn says why it exists.
+  const during = await client.session("session_one");
+  const opened = during.requests.find((request) => request.id === "req_toolu_child");
+  expect(opened?.runId).toBe(binding.runId);
+  expect(opened?.state).toBe("resolved");
+  expect(during.turns.find((turn) => turn.runId === binding.runId)).toMatchObject({
+    origin: "provider",
+    state: "running",
+    providerReason: { kind: "background_task", taskId: "task_toolu_agent" },
+  });
+
+  await binding.close({ text: "Decided a tool call for background work still running after its turn ended." });
+  await until("the background claim's turn to settle", async () => {
+    const turns = (await client.session("session_one")).turns;
+    return turns.find((turn) => turn.runId === binding.runId)?.state === "completed";
+  });
+  // And the task it was opened for is still running — deciding for it did not
+  // end it.
+  expect((await client.session("session_one")).tasks[0]?.state).toBe("running");
+});
+
+test("the person's next message runs once the claim lets go, rather than being lost behind it", async () => {
+  /**
+   * WHY THE CLAIM IS OPENED ON DEMAND AND NOT HELD FOR THE TASK'S WHOLE LIFE.
+   * One live turn per session is the invariant every sweep relies on, so a
+   * claim held for an hour of background work is the rejected "the turn never
+   * settles" alternative in a different coat: the person's reply would read as
+   * still running and their next message would sit behind a sub-agent. Held
+   * only while a decision is being made, a message queues for that long and
+   * runs the moment it is over — which is what this proves.
+   */
+  const { client, dispatched } = await turnThatDispatches();
+  const { session } = await dispatched;
+  const binding = (await session.onProviderTurn({ input: "", reason: { kind: "background_task" } })) as ProviderTurnBinding;
+
+  await client.submitTurn("session_one", { runId: "run_person", input: "how is it going?" });
+  /**
+   * NOT REFUSED, AND NOT DISPATCHED OVER THE LIVE CLAIM. A message sent while
+   * any turn is live becomes a STEER on it — and this particular live turn has
+   * no model reading its mailbox, so the steer is never delivered and
+   * `completeTurn`'s `requeueUndeliveredSteers` puts it back in the queue. The
+   * person waits out the claim, which is why the claim is measured in seconds.
+   */
+  const waiting = (await client.session("session_one")).turns.find((turn) => turn.runId === "run_person");
+  expect(waiting?.state).toBe("steering");
+
+  await binding.close({ text: "done" });
+  await until("the person's message to run once the claim is given up", async () => {
+    const turn = (await client.session("session_one")).turns.find((candidate) => candidate.runId === "run_person");
+    return turn?.state === "completed";
+  });
 });

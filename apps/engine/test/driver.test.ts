@@ -4820,3 +4820,210 @@ test("a steer that cuts a tool call does not wedge the turn — the cut row clos
   expect(closed?.kind === "item.completed" && closed.status).toBe("failed");
   expect(JSON.stringify(closed?.kind === "item.completed" ? closed.detail : undefined)).toContain("cut by a steer");
 });
+
+describe("a task kept alive past turn end keeps a claim to ask under (#891)", () => {
+  /**
+   * THE INVARIANT THESE PIN: a task the engine keeps alive past turn end always
+   * has a claim its permission requests are honoured under.
+   *
+   * The bug, six times over under six names: `completeTurn` deliberately keeps
+   * `isBackgroundWork` rows alive AND deliberately settles the only claim their
+   * requests could be made under, and nothing reassigned the gate the query
+   * holds — so a backgrounded agent's next decision reached a dead claim and
+   * came back "turn has already settled (completed)". Reproduced in #891 by two
+   * Bash calls in the same millisecond: the allowlisted one ran, the one that
+   * needed a decision was refused.
+   */
+  const reply = (uuid: string, prose: string) => [
+    { type: "stream_event", event: { type: "message_start" }, user_message_uuid: uuid },
+    { type: "assistant", message: { content: [{ type: "text", text: prose }] } },
+    { type: "result", subtype: "success", stop_reason: "end_turn", user_message_uuid: uuid },
+  ];
+
+  type Gate = (name: string, args: Record<string, unknown>, options: { signal: AbortSignal; toolUseID: string }) => Promise<unknown>;
+  const asChild = (toolUseID: string) => ({ signal: new AbortController().signal, toolUseID });
+
+  /** The engine's door, recording every turn the driver asked it to open. */
+  const claimDoor = (options: { decide?: () => Promise<"accept" | "decline"> } = {}) => {
+    const tasks: TurnObservation[] = [];
+    const turns: Array<{ input: string; reason: unknown; requests: unknown[]; closed?: unknown }> = [];
+    let seq = 0;
+    return {
+      tasks,
+      turns,
+      hooks: {
+        onTasks: async (batch: TurnObservation[]) => void tasks.push(...batch),
+        onProviderTurn: async ({ input, reason }: { input: string; reason: unknown }) => {
+          const record = { input, reason, requests: [] as unknown[] } as (typeof turns)[number];
+          turns.push(record);
+          return {
+            runId: `run_891_${(seq += 1)}`,
+            onObservations: async () => undefined,
+            onRequest: async (request: unknown) => {
+              record.requests.push(request);
+              return options.decide ? await options.decide() : ("accept" as const);
+            },
+            close: async (result: unknown) => { record.closed = result; },
+          };
+        },
+      },
+    };
+  };
+
+  /**
+   * A turn that dispatches a BACKGROUNDED agent and answers, leaving the query
+   * alive afterwards exactly as the real process does. The gate it hands back
+   * is the query's own — created once, outliving every turn, which is the whole
+   * reason the binding underneath it has to stay live.
+   */
+  const dispatcher = (lingerMs = 20) => {
+    const held: { gate?: Gate } = {};
+    const driver = createClaudeDriver(
+      (async () => ({
+        async *query({ prompt, options }: { prompt: AsyncIterable<{ uuid?: string }>; options: { canUseTool?: Gate } }) {
+          const input = prompt[Symbol.asyncIterator]();
+          const first = await input.next();
+          held.gate = options.canUseTool;
+          yield {
+            type: "system",
+            subtype: "task_started",
+            task_id: "ag1",
+            tool_use_id: "toolu_agent",
+            description: "build the thing",
+            task_type: "local_agent",
+            is_backgrounded: true,
+          };
+          yield* reply(first.value!.uuid!, "dispatched; it will report back");
+          // Alive between turns, like the CLI.
+          await input.next();
+        },
+      })) as never,
+      { backgroundClaimLingerMs: lingerMs },
+    );
+    return { driver, held };
+  };
+
+  test("a backgrounded agent's tool call after its turn settles is decided under a claim of its own", async () => {
+    const door = claimDoor();
+    const { driver, held } = dispatcher();
+    const { result } = run(driver, { sessionId: "session_891_claimed", session: door.hooks, onRequest: async () => "accept" });
+    await expect(result).resolves.toMatchObject({ text: "dispatched; it will report back" });
+    // The row is NOT swept: outliving its turn is what backgrounding means.
+    expect(door.tasks.some((o) => o.kind === "task.completed")).toBe(false);
+
+    // THE MOMENT THE BUG LIVED IN. The parent's turn has settled; the agent is
+    // still working and needs a decision.
+    await expect(held.gate!("Bash", { command: "rm -rf build" }, asChild("toolu_child"))).resolves.toEqual({ behavior: "allow" });
+
+    // Decided under a turn opened FOR THE TASK, not against the dead one.
+    expect(door.turns).toHaveLength(1);
+    expect(door.turns[0]!.reason).toEqual({ kind: "background_task", taskId: "task_toolu_agent" });
+    expect(door.turns[0]!.requests).toHaveLength(1);
+    // A second call within the linger shares that one turn rather than writing
+    // a row per decision into a transcript a person reads.
+    await expect(held.gate!("Bash", { command: "ls" }, asChild("toolu_child2"))).resolves.toEqual({ behavior: "allow" });
+    expect(door.turns).toHaveLength(1);
+    expect(door.turns[0]!.requests).toHaveLength(2);
+    // And it is GIVEN UP once the burst is over: one live turn per session is
+    // the engine's invariant, and the person's next message waits behind it.
+    await until("the background claim to be given up", () => door.turns[0]!.closed !== undefined);
+    expect(JSON.stringify(door.turns[0]!.closed)).toContain("background work");
+  });
+
+  test("a decision the human declines reaches the child as the human's, not as plumbing", async () => {
+    // The anti-vacuity for the test above: a claim that answered `allow` to
+    // everything would pass it while deciding nothing.
+    const door = claimDoor({ decide: async () => "decline" });
+    const { driver, held } = dispatcher();
+    await run(driver, { sessionId: "session_891_declined", session: door.hooks, onRequest: async () => "accept" }).result;
+    await expect(held.gate!("Bash", { command: "rm -rf /" }, asChild("toolu_child"))).resolves.toMatchObject({
+      behavior: "deny",
+      message: "The human declined this tool call.",
+    });
+  });
+
+  test("with nothing alive to claim for, the child is told what happened rather than reaching a dead claim", async () => {
+    /**
+     * THE FLOOR (#891 fix 1, #835 remedy 2). A turn opened for a task that no
+     * longer exists would be a turn for a ghost, so the refusal is honest
+     * instead — and it says nobody declined anything, because a model that
+     * reads plumbing as a person's "no" reports back that the human refused
+     * (#28, measured again as sub-agents giving up 18 seconds in).
+     */
+    const door = claimDoor();
+    const held: { gate?: Gate } = {};
+    const driver = createClaudeDriver((async () => ({
+      async *query({ prompt, options }: { prompt: AsyncIterable<{ uuid?: string }>; options: { canUseTool?: Gate } }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        held.gate = options.canUseTool;
+        // A sub-agent that is NOT backgrounded: the turn-end sweep fails it, so
+        // there is nothing left for a claim to be opened for.
+        yield { type: "system", subtype: "task_started", task_id: "ag1", tool_use_id: "toolu_agent", description: "quick look", task_type: "local_agent" };
+        yield* reply(first.value!.uuid!, "answered");
+        await input.next();
+      },
+    })) as never);
+    await run(driver, { sessionId: "session_891_floor", session: door.hooks, onRequest: async () => "accept" }).result;
+    const answer = (await held.gate!("Bash", { command: "ls" }, asChild("toolu_child"))) as { behavior: string; message: string };
+    expect(answer.behavior).toBe("deny");
+    expect(answer.message).toContain("has ended");
+    expect(answer.message).toContain("Nobody declined it");
+    // No turn was opened for work that is not there.
+    expect(door.turns).toHaveLength(0);
+  });
+
+  test("the claim yields to a real wake-up, and the gate comes back after it", async () => {
+    /**
+     * ONE LIVE TURN PER SESSION. A claim held for a child's decisions would
+     * refuse the wake-up the CLI starts when a task ends — and a refused wake
+     * parks every frame after it for a human turn that may never come, losing
+     * the wake outright. So the claim is given up before the wake is asked for,
+     * and `endWake` puts the background gate back rather than leaving nothing.
+     */
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    const held: { gate?: Gate } = {};
+    const driver = createClaudeDriver(
+      (async () => ({
+        async *query({ prompt, options }: { prompt: AsyncIterable<{ uuid?: string }>; options: { canUseTool?: Gate } }) {
+          const input = prompt[Symbol.asyncIterator]();
+          const first = await input.next();
+          held.gate = options.canUseTool;
+          yield { type: "system", subtype: "task_started", task_id: "ag1", tool_use_id: "toolu_agent", description: "build", task_type: "local_agent", is_backgrounded: true };
+          yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "watch", task_type: "local_bash", is_backgrounded: true };
+          yield* reply(first.value!.uuid!, "dispatched");
+          await woke;
+          yield { type: "system", subtype: "task_notification", task_id: "bg1", status: "completed", summary: "DONE" };
+          yield { type: "user", message: { role: "user", content: "Background task completed (DONE)." } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "noted" }] } };
+          yield { type: "result", subtype: "success", stop_reason: "end_turn", origin: { kind: "task-notification" } };
+          await input.next();
+        },
+      })) as never,
+      // Long enough that the claim is still open when the wake arrives.
+      { backgroundClaimLingerMs: 60_000 },
+    );
+    const door = claimDoor();
+    await run(driver, { sessionId: "session_891_yield", session: door.hooks, onRequest: async () => "accept" }).result;
+    await held.gate!("Bash", { command: "ls" }, asChild("toolu_child"));
+    expect(door.turns).toHaveLength(1);
+    // Two live tasks, so no single one can honestly be named.
+    expect(door.turns[0]!.reason).toEqual({ kind: "background_task" });
+    // Still open — the linger is a minute.
+    expect(door.turns[0]!.closed).toBeUndefined();
+
+    releaseWake!();
+    // The wake got a turn of its own, which is only possible because the claim
+    // let go of the session first.
+    await until("the wake-up to open its own turn", () => door.turns.length === 2);
+    expect(door.turns[0]!.closed).toBeDefined();
+    expect(door.turns[1]!.reason).toEqual({ kind: "task_notification", taskId: "task_toolu_bg" });
+    await until("the wake-up to settle", () => door.turns[1]!.closed !== undefined);
+    // …and the agent, still alive, can ask again afterwards: `endWake` put the
+    // background gate back rather than clearing it.
+    await expect(held.gate!("Bash", { command: "ls" }, asChild("toolu_child3"))).resolves.toEqual({ behavior: "allow" });
+    expect(door.turns).toHaveLength(3);
+    expect(door.turns[2]!.reason).toEqual({ kind: "background_task", taskId: "task_toolu_agent" });
+  });
+});
