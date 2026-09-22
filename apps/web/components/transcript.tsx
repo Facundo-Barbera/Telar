@@ -574,8 +574,13 @@ export function isAgentItem(item: JournalItem): boolean {
  * the Claude driver dropped the message entirely and the seam was invisible.
  */
 function CompactionRow({ item }: { item: JournalItem }) {
+  // WHILE IT RUNS, THE WORKING LINE SAYS IT — "Compacting context" with its
+  // clock (`turnActivity`). A second, clockless row above it was the same fact
+  // twice. The row appears once there is something the line cannot say: that
+  // it finished, and what it reclaimed.
+  if (running(item)) return null;
   const detail = item.detail.type === "context_compaction" ? item.detail : undefined;
-  const label = running(item) ? "Compacting context…" : item.status === "failed" ? "Compaction failed" : "Compacted context";
+  const label = item.status === "failed" ? "Compaction failed" : "Compacted context";
   const reclaimed =
     detail?.preTokens !== undefined && detail?.postTokens !== undefined
       ? `${fmtTokens(detail.preTokens)} → ${fmtTokens(detail.postTokens)}`
@@ -583,13 +588,7 @@ function CompactionRow({ item }: { item: JournalItem }) {
   return (
     <p className={cn(ROW, item.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
       <Minimize2Icon className="size-3.5 shrink-0" />
-      {running(item) ? (
-        <Shimmer as="span" className="min-w-0 flex-1 truncate">
-          {label}
-        </Shimmer>
-      ) : (
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-      )}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
       {detail?.reason === "auto" && <span className="shrink-0 text-3xs opacity-70">automatic</span>}
       {reclaimed && <span className="shrink-0 font-mono text-3xs tabular-nums">{reclaimed}</span>}
     </p>
