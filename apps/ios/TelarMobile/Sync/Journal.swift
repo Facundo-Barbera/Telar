@@ -174,6 +174,12 @@ struct JournalTurn: Identifiable, Equatable {
     /// message produced an empty right-aligned bubble.
     var isProviderStarted: Bool { origin == "provider" }
 
+    /// A turn the engine opened only so a sub-agent that outlived its turn has
+    /// somewhere to have a tool call decided (#891). Nobody spoke in it, and it
+    /// is not a transcript row (#912) — its approval, if any, is an open
+    /// request, drawn from `openRequests` like every other.
+    var isBackgroundClaim: Bool { providerReason?.kind == "background_task" }
+
     /// A peer HANDING WORK OVER rather than talking. A fact about the turn, not
     /// a switch on how it draws: every peer message is the collapsed notice row
     /// now, and the intent is its label — a task rendered in full let a peer
@@ -186,6 +192,18 @@ struct JournalTurn: Identifiable, Equatable {
             if case .contextCompaction = item.detail { return item.status == .inProgress }
             return false
         }
+    }
+}
+
+/// The turns the transcript draws. Queued and steering messages live in the
+/// strip under the composer; a STEERED one's content already appears inside
+/// the host turn as a user_message item — rendering the turn too is the double
+/// bubble. A background claim is not a row either: one per burst of a
+/// sub-agent's calls read as a column of "The provider resumed on its own."
+/// between the person's messages (#912). (Web rule, 1:1 — `transcriptRows`.)
+func transcriptTurns(_ turns: [JournalTurn]) -> [JournalTurn] {
+    turns.filter {
+        $0.state != .queued && $0.state != .steering && $0.state != .steered && !$0.isBackgroundClaim
     }
 }
 
