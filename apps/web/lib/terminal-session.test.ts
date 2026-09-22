@@ -19,7 +19,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { TerminalBridge, TerminalChunk, TerminalEnding } from "@/lib/terminal-bridge";
-import { attachTerminal, terminalKeyHandler } from "@/lib/terminal-session";
+import { attachTerminal, gridMeasurer, terminalKeyHandler } from "@/lib/terminal-session";
 
 /**
  * A DOM for this file only, registered at module scope and handed back in
@@ -317,5 +317,169 @@ describe("keys the shell must not lose", () => {
     const handle = terminalKeyHandler((bytes) => void bridge.write("t1", bytes));
     expect(handle({ type: "keyup", key: "w", ctrlKey: true })).toBe(true);
     expect(bridge.writes).toEqual([]);
+  });
+});
+
+/**
+ * ONE FIT PER FRAME, FOR BOTH PANES — issues #825 and #909.
+ *
+ * WHAT IS BEING COUNTED AND WHY IT IS COUNTED RATHER THAN OBSERVED. A fit
+ * reflows the whole scrollback (3000 lines) on the main thread and a resize
+ * SIGWINCHes a live process, so "it ended up the right size" is true of the
+ * version that froze the cockpit as well as of this one. The number of fits
+ * and the number of signals ARE the behaviour.
+ *
+ * THE FRAME QUEUE IS DRIVEN BY HAND. "Three notifications in one frame" is
+ * only a statable claim when the test owns the frame — and nothing here waits
+ * on a real clock, which a test of a coalescer must not do: a sleep long
+ * enough to be reliable is long enough to hide the coalescing it is checking.
+ */
+describe("the measurer both terminal panes share", () => {
+  /** rAF, owned by this file. `paint()` is the browser deciding to draw. */
+  function frames() {
+    const queued = new Map<number, () => void>();
+    let next = 1;
+    const real = { request: window.requestAnimationFrame, cancel: window.cancelAnimationFrame };
+    window.requestAnimationFrame = ((callback: (time: number) => void) => {
+      const id = next++;
+      queued.set(id, () => callback(0));
+      return id;
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((id: number) => {
+      queued.delete(id);
+    }) as typeof window.cancelAnimationFrame;
+    return {
+      paint: () => {
+        const due = [...queued.values()];
+        queued.clear();
+        for (const run of due) run();
+      },
+      restore: () => {
+        window.requestAnimationFrame = real.request;
+        window.cancelAnimationFrame = real.cancel;
+      },
+    };
+  }
+
+  /** An emulator and a fit addon, in the only two facts that matter here: how
+   *  many times it was fitted, and what grid the box gave it. */
+  function emulator(box = { cols: 80, rows: 24 }) {
+    const term = { cols: 0, rows: 0 };
+    const state = { fits: 0, refuse: false, box };
+    return {
+      state,
+      term,
+      fittable: {
+        term,
+        fit: {
+          fit: () => {
+            state.fits += 1;
+            // What FitAddon does on a hidden pane or a panel mid-animation.
+            if (state.refuse) throw new Error("no grid in a zero-sized box");
+            term.cols = state.box.cols;
+            term.rows = state.box.rows;
+          },
+        },
+      },
+    };
+  }
+
+  function measurerOn(pane: ReturnType<typeof emulator>) {
+    const signalled: Array<{ cols: number; rows: number }> = [];
+    return { signalled, ...gridMeasurer(() => pane.fittable, (grid) => signalled.push(grid)) };
+  }
+
+  test("three notifications in one frame are ONE fit and ONE resize", () => {
+    const clock = frames();
+    const pane = emulator();
+    const { measure, signalled } = measurerOn(pane);
+
+    // The burst a chip leaving `display:none` produces, or a panel drag: the
+    // ResizeObserver fires, the drag announces itself, the reveal re-measures.
+    measure();
+    measure();
+    measure();
+    // Nothing has happened yet — that is the coalescing, not a missing call.
+    expect(pane.state.fits).toBe(0);
+
+    clock.paint();
+    expect(pane.state.fits).toBe(1);
+    expect(signalled).toEqual([{ cols: 80, rows: 24 }]);
+    clock.restore();
+  });
+
+  test("a notification that leaves the grid where it was sends no resize", () => {
+    const clock = frames();
+    const pane = emulator();
+    const { measure, signalled } = measurerOn(pane);
+
+    measure();
+    clock.paint();
+    expect(signalled).toHaveLength(1);
+
+    // A drag that moved the box by four pixels. The emulator is re-fitted —
+    // that is what tells us the grid did not move — and the PTY is left alone.
+    measure();
+    clock.paint();
+    expect(pane.state.fits).toBe(2);
+    expect(signalled).toHaveLength(1);
+
+    // ...and a box that really did change a cell is still signalled, so the
+    // guard above is a guard rather than a resize that stopped happening.
+    pane.state.box = { cols: 100, rows: 24 };
+    measure();
+    clock.paint();
+    expect(signalled).toEqual([
+      { cols: 80, rows: 24 },
+      { cols: 100, rows: 24 },
+    ]);
+    clock.restore();
+  });
+
+  test("a box with no grid in it signals nothing, and does not poison the next measurement", () => {
+    const clock = frames();
+    const pane = emulator();
+    const { measure, signalled } = measurerOn(pane);
+
+    pane.state.refuse = true;
+    measure();
+    clock.paint();
+    expect(signalled).toEqual([]);
+
+    // Revealed. Nothing was remembered from the refusal, so the first real
+    // grid is news — a hidden pane that came back silent is the bug this half
+    // guards against.
+    pane.state.refuse = false;
+    measure();
+    clock.paint();
+    expect(signalled).toEqual([{ cols: 80, rows: 24 }]);
+    clock.restore();
+  });
+
+  test("an unmount cancels the frame it queued, so a disposed emulator is never fitted", () => {
+    const clock = frames();
+    const pane = emulator();
+    const { measure, cancel, signalled } = measurerOn(pane);
+
+    measure();
+    cancel();
+    clock.paint();
+
+    expect(pane.state.fits).toBe(0);
+    expect(signalled).toEqual([]);
+    clock.restore();
+  });
+
+  test("a pane whose refs are gone is read, not assumed", () => {
+    const clock = frames();
+    const signalled: Array<{ cols: number; rows: number }> = [];
+    // What `termRef.current && fitRef.current` answers between the dispose and
+    // the frame that was already queued.
+    const { measure } = gridMeasurer(() => undefined, (grid) => signalled.push(grid));
+
+    measure();
+    clock.paint();
+    expect(signalled).toEqual([]);
+    clock.restore();
   });
 });

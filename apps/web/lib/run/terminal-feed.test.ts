@@ -44,11 +44,12 @@ function settled(term: InstanceType<typeof Terminal>, bytes: string): Promise<vo
   return new Promise((resolve) => term.write(bytes, () => resolve()));
 }
 
-/** One poll, applied the way `RunTerminal` applies it. */
+/** One poll, applied the way `RunPane` applies it — including the ONE AT A
+ *  TIME, which is the part #909 turned into a rule rather than a detail. */
 async function feed(term: InstanceType<typeof Terminal>, previous: number, answer: { chunks: string[]; cursor: number; dropped: number }) {
   const next = byteFeed(previous, answer);
   if (next.reset) term.reset();
-  if (next.text) await settled(term, next.text);
+  for (const chunk of next.chunks) await settled(term, chunk);
   return next.cursor;
 }
 
@@ -129,7 +130,34 @@ describe("whether this is the same stream we were drawing", () => {
     // Most polls against a settled run look exactly like this, and a feed that
     // reset or re-drew on them would flicker the screen every few seconds.
     const idle = byteFeed(7, { chunks: [], cursor: 7, dropped: 0 });
-    expect(idle).toEqual({ reset: false, text: "", cursor: 7 });
+    expect(idle).toEqual({ reset: false, chunks: [], cursor: 7 });
+  });
+});
+
+/**
+ * THE WINDOW IS HANDED OVER AS CHUNKS — issue #909.
+ *
+ * A joined string is the same characters and a different cost: xterm checks
+ * its yield budget between write ITEMS, so all 256 KB of a run's window parse
+ * and reflow in one go while every queued click waits. This is the unit half
+ * of that fix; `components/session/run-pane.test.tsx` is the half that says
+ * the pane really does write them one at a time.
+ */
+describe("the shape of what a poll hands the emulator", () => {
+  test("the answer's chunks come back as chunks, in order, never joined", () => {
+    const answer = { chunks: ["one", "two", "three"], cursor: 3, dropped: 0 };
+    const next = byteFeed(0, answer);
+    expect(next.chunks).toEqual(["one", "two", "three"]);
+    // The defect stated directly: one item carrying the whole window.
+    expect(next.chunks).not.toEqual(["onetwothree"]);
+  });
+
+  test("a reset answer still hands its chunks over separately", () => {
+    // The restart case is the WORST one for this — the cursor went backwards,
+    // so what follows the reset is the run read from the top: the full window.
+    const next = byteFeed(9, { chunks: ["a", "b"], cursor: 2, dropped: 0 });
+    expect(next.reset).toBe(true);
+    expect(next.chunks).toHaveLength(2);
   });
 });
 

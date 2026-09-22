@@ -31,7 +31,7 @@
  * Everything past that is the user's dotfiles' business. Telar is a terminal
  * emulator, not a shell configurator — docs/terminal-host.md §1.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CircleStopIcon, PlusIcon, RotateCwIcon, XIcon } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -47,10 +47,10 @@ import { RunGlyph } from "@/lib/run/icons";
 import { statusLabel, statusTone, type RunTone } from "@/lib/run/presentation";
 import { useRunStatusFeed } from "@/lib/run/status-stream";
 import type { RunConfigurationView, RunView } from "@/lib/run/types";
-import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type TerminalBridge, type TerminalEnding } from "@/lib/terminal-bridge";
+import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type TerminalEnding } from "@/lib/terminal-bridge";
 export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
-import { attachTerminal, terminalKeyHandler } from "@/lib/terminal-session";
+import { attachTerminal, gridMeasurer, terminalKeyHandler } from "@/lib/terminal-session";
 import {
   activateShell,
   addShell,
@@ -693,42 +693,22 @@ function TerminalPane({
    *  retry without reaching into its closure. */
   const retryInHome = useRef<(() => void) | null>(null);
 
-  /** The rAF that will run the next fit, so a burst of resize signals in one
-   *  frame becomes one fit. */
-  const measureFrame = useRef<number | null>(null);
-  /** The last grid the PTY was told about, so a pixel change that moves no
-   *  cell sends no SIGWINCH. */
-  const lastGrid = useRef<{ cols: number; rows: number } | null>(null);
-
-  /** One place that resizes, because two would disagree about the order: fit
-   *  first so xterm knows its own grid, then tell the PTY, so SIGWINCH carries
-   *  the size the emulator is actually drawing.
+  /**
+   * One place that resizes, because two would disagree about the order: fit
+   * first so xterm knows its own grid, then tell the PTY, so SIGWINCH carries
+   * the size the emulator is actually drawing.
    *
-   *  COALESCED TO A FRAME, and only forwarded when the grid moved. A panel drag
-   *  fires the ResizeObserver and the drag's own event several times per frame;
-   *  each used to fit and signal the PTY synchronously, and a shell mid-redraw
-   *  (nvim) got a SIGWINCH storm it could not keep up with — which read as the
-   *  resize "not responding". One fit per painted frame, and a SIGWINCH only
-   *  when cols or rows changed, is what every other emulator does. */
-  const measure = useCallback((bridge: TerminalBridge, id: string) => {
-    if (measureFrame.current !== null) window.cancelAnimationFrame(measureFrame.current);
-    measureFrame.current = window.requestAnimationFrame(() => {
-      measureFrame.current = null;
-      const term = termRef.current;
-      if (!term) return;
-      try {
-        fitRef.current?.fit();
-      } catch {
-        // A zero-sized box (a hidden pane, the panel mid-animation) has no grid
-        // to fit to.
-        return;
-      }
-      const grid = { cols: term.cols, rows: term.rows };
-      if (lastGrid.current && lastGrid.current.cols === grid.cols && lastGrid.current.rows === grid.rows) return;
-      lastGrid.current = grid;
-      void bridge.resize(id, grid.cols, grid.rows);
-    });
-  }, []);
+   * COALESCED TO A FRAME, and only forwarded when the grid moved — the rule
+   * lives in `gridMeasurer` now (#909). It was written here for #825 and
+   * `RunPane` was then built without it, so a run's chip fitted and SIGWINCHed
+   * synchronously per notification; one copy is what stops that happening a
+   * third time.
+   *
+   * BUILT BY THE MOUNT EFFECT, which is the scope that has the bridge and the
+   * PTY's id. Held here so the reveal below can ask for a measurement without
+   * reaching into that closure.
+   */
+  const measurer = useRef<ReturnType<typeof gridMeasurer> | null>(null);
 
   useEffect(() => {
     const element = host.current;
@@ -743,6 +723,24 @@ function TerminalPane({
      *  component unmounted while `open` was still in flight. */
     let live: string | undefined;
     const cleanups: Array<() => void> = [];
+
+    /** The refs are read fresh on every frame rather than closed over here:
+     *  `createTerminal` can replace the emulator (the cwd retry), and a frame
+     *  queued before this effect's cleanup runs after it. */
+    const measurement = gridMeasurer(
+      () => {
+        const current = termRef.current;
+        const addon = fitRef.current;
+        return current && addon ? { term: current, fit: addon } : undefined;
+      },
+      (grid) => {
+        // A shell that ended between the notification and the frame has no
+        // process to signal — the same guard its callers make.
+        if (live !== undefined) void bridge.resize(live, grid.cols, grid.rows);
+      },
+    );
+    measurer.current = measurement;
+    const measure = () => measurement.measure();
 
     const read = cssColorReader(element, document.createElement("canvas"));
     const { fontFamily, fontSize } = terminalFont(cssVariableReader(element));
@@ -822,7 +820,7 @@ function TerminalPane({
         }),
       );
       void fontsReady.then(() => {
-        if (!disposed) measure(bridge, id);
+        if (!disposed) measure();
       });
       // ONLY THE SHELL YOU ARE LOOKING AT takes the keyboard. A background
       // pane opening one — which is what `+` on a busy strip would do — would
@@ -910,14 +908,14 @@ function TerminalPane({
     })();
 
     const observer = new ResizeObserver(() => {
-      if (live !== undefined) measure(bridge, live);
+      if (live !== undefined) measure();
     });
     observer.observe(element);
     // The right panel's drag announces itself (right-panel.tsx `paint`), so the
     // grid follows the handle within the same frame rather than a frame after
     // the ResizeObserver notices the box changed.
     const onPanelResized = () => {
-      if (live !== undefined) measure(bridge, live);
+      if (live !== undefined) measure();
     };
     window.addEventListener("telar:panel-resized", onPanelResized);
 
@@ -925,10 +923,8 @@ function TerminalPane({
       disposed = true;
       observer.disconnect();
       window.removeEventListener("telar:panel-resized", onPanelResized);
-      if (measureFrame.current !== null) {
-        window.cancelAnimationFrame(measureFrame.current);
-        measureFrame.current = null;
-      }
+      measurement.cancel();
+      measurer.current = null;
       for (const off of cleanups.splice(0)) off();
       retryInHome.current = null;
       /* THE SHELL IS NOT KILLED HERE, deliberately. This unmounts on every
@@ -959,10 +955,9 @@ function TerminalPane({
    */
   useEffect(() => {
     if (!active || !visible || phase.kind !== "live") return;
-    const bridge = terminalBridge();
-    if (bridge) measure(bridge, phase.id);
+    measurer.current?.measure();
     termRef.current?.focus();
-  }, [active, visible, phase, measure]);
+  }, [active, visible, phase]);
 
   return (
     <div

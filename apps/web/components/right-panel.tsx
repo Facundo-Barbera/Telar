@@ -2137,6 +2137,32 @@ export function RightPanel({
   const canStartBrowser = Boolean(onOpenBrowser) && (browser?.tabs.length ?? 0) === 0;
   /** A plot opened large, from any surface that shows one. */
   const [lightbox, setLightbox] = useState<string>();
+  /**
+   * THE TERMINAL TABS THAT HAVE BEEN LOOKED AT, in the order they first were
+   * (#909). Mounted from then on, hidden when they are not the tab on screen —
+   * the body below says why.
+   *
+   * "HAVE BEEN LOOKED AT" AND NOT "EXIST". A restored layout can carry a
+   * Terminal tab nobody has opened in this window, and mounting that one would
+   * adopt — or, when the host no longer holds those PTYs, SPAWN — a shell per
+   * tab on every page load, for a surface nobody asked to see.
+   *
+   * ADJUSTED DURING RENDER rather than in an effect, which is React's own
+   * answer for state derived from props, and the only one available here: a
+   * newly-opened Terminal has to be in this list on the FIRST render that shows
+   * it, or it would render from the branch below and then move into this one —
+   * and moving between two positions in the tree is an unmount and a remount,
+   * which is the exact thing being fixed. (A ref would be read during render;
+   * a `setState` in an effect cascades a render. Both are refused here.)
+   */
+  const [keptTerminals, setKeptTerminals] = useState<readonly string[]>([]);
+  const liveTerminals = keptTerminals.filter((id) => tabs.some((entry) => entry.id === id && entry.kind === "terminal"));
+  const wantedTerminals =
+    activeTab?.kind === "terminal" && !liveTerminals.includes(activeTab.id) ? [...liveTerminals, activeTab.id] : liveTerminals;
+  // Compared by value: a closed tab dropped and a new one added in one update
+  // are the same LENGTH and a different list, and a panel that missed that
+  // would keep a dead id and forget a live one.
+  if (wantedTerminals.length !== keptTerminals.length || wantedTerminals.some((id, at) => keptTerminals[at] !== id)) setKeptTerminals(wantedTerminals);
   const agentSide = roster.agents;
   const running = agentSide.filter(isLiveTask).length;
   const failed = agentSide.filter((task) => task.state === "failed").length;
@@ -2187,6 +2213,58 @@ export function RightPanel({
           .filter((page) => !holdsKind(browserPanelTab(page.id)))
           .map((page) => ({ id: browserPanelTab(page.id), label: browserTabLabel(page), icon: GlobeIcon, another: false }))),
   ];
+
+  /**
+   * ONE INSTANCE'S SURFACE, WITH EVERY CALLBACK BOUND TO THAT INSTANCE.
+   *
+   * WHY IT IS A FUNCTION AND NOT TWO COPIES OF THE JSX. A kept Terminal renders
+   * from one place in the body below and everything else from another, and the
+   * bindings are the part that must not drift between them: `onTabParams` and
+   * `onCloseSelf` name a tab, and a hidden Terminal writing the ACTIVE tab's
+   * params — which is what a copy that kept saying `activeTab.id` would do —
+   * would move another surface's shells onto it.
+   *
+   * `showing` is whether this is the tab on screen, which is a different fact
+   * from the panel being open. A mounted-but-hidden Terminal is neither
+   * measured, focused, nor polled: `visible` is what every pane inside it
+   * consults to decide that.
+   */
+  const panelSurface = (entry: PanelTabItem, showing: boolean) => (
+    <PanelSurface
+      tab={entry}
+      writes={writes}
+      diffTurnList={diffTurnList}
+      tasks={tasks}
+      {...(focusedTask ? { focusedTask } : {})}
+      onOpenTab={onOpenTab}
+      {...(onOpenNewTab ? { onOpenNewTab } : {})}
+      {...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {})}
+      {...(onInsertReference ? { onInsertReference } : {})}
+      {...(onAttach ? { onAttach } : {})}
+      // Bound to THIS instance, exactly as `onEditorChange` below is — a
+      // surface changes its own tab's params and no other's.
+      {...(onTabParams ? { onTabParams: (params: PanelTabParams) => onTabParams(entry.id, params) } : {})}
+      // Same binding-to-this-instance rule: the surface ends its OWN tab. It is
+      // the strip's own × callback, so the focus move and the persistence are
+      // the ones every other close already gets.
+      onCloseSelf={() => onCloseTab(entry.id)}
+      {...(browser ? { browser } : {})}
+      events={events}
+      {...(sessionId ? { sessionId } : {})}
+      {...(sessionTitle ? { sessionTitle } : {})}
+      {...(projectId ? { projectId } : {})}
+      {...(branch ? { branch } : {})}
+      {...(active ? { active } : {})}
+      dataScience={dataScience}
+      onOpenImage={setLightbox}
+      // THIS instance's files, and a change handler bound to it — two Editors
+      // must not write into one state.
+      {...(editors?.[entry.id] ? { editor: editors[entry.id] } : {})}
+      {...(onEditorChange ? { onEditorChange: (next: (current: EditorState) => EditorState) => onEditorChange(entry.id, next) } : {})}
+      {...(hostId ? { hostId } : {})}
+      visible={open && showing}
+    />
+  );
 
   return (
     /**
@@ -2540,7 +2618,44 @@ export function RightPanel({
         {...(tab ? { id: `right-panel-${tab}`, role: "tabpanel" } : {})}
         className="min-h-0 flex-1 overflow-y-auto md:rounded-b-xl"
       >
-        {activeTab && (sessionId || browserTabId(activeTab.kind) === undefined) ? (
+        {/**
+         * A TERMINAL YOU HAVE OPENED STAYS MOUNTED BEHIND WHATEVER YOU LOOK AT
+         * NEXT — issue #909, and the multiplier that turned its other two
+         * causes into a freeze on every glance.
+         *
+         * Only the active tab used to render here, so a switch away UNMOUNTED
+         * the whole Terminal surface and coming back built it again from
+         * nothing: a fresh `Terminal` per shell, each with a new WebGL context
+         * and glyph atlas, the bridge re-adopted, and the run's whole byte
+         * window replayed into an empty buffer. The strip inside already keeps
+         * its own panes mounted-and-hidden for exactly this reason (see
+         * terminal-surface.tsx) — that rule just stopped at the surface's own
+         * boundary.
+         *
+         * `display:none` KEEPS THE GL CONTEXT. Only `visibility` and a detach
+         * from the document lose one, and the addon survives even that
+         * (`onContextLoss` falls back to the DOM renderer). What a reveal does
+         * produce is one ResizeObserver notification, which is now coalesced to
+         * a frame rather than fitting per signal.
+         *
+         * ONLY THE TERMINAL. Every other surface keeps the lifecycle it has:
+         * what justifies the memory here is a LIVE PROCESS on the other end and
+         * a buffer nothing else can rebuild.
+         */}
+        {wantedTerminals.map((id) => {
+          const entry = tabs.find((candidate) => candidate.id === id);
+          if (!entry) return null;
+          const showing = entry.id === activeTab?.id;
+          return (
+            /* `hidden` is `display:none`, the same statement the panes inside
+               make — and the same reason: a hidden emulator must be out of the
+               tab order, not merely invisible. */
+            <div key={entry.id} className={cn("h-full", !showing && "hidden")}>
+              <Suspense fallback={null}>{panelSurface(entry, showing)}</Suspense>
+            </div>
+          );
+        })}
+        {activeTab && wantedTerminals.includes(activeTab.id) ? null : activeTab && (sessionId || browserTabId(activeTab.kind) === undefined) ? (
           /* The boundary the first chunk fetch stops at — see the `dynamic`
              block at the top of this file. An empty fallback: the chunk comes
              off the same origin the page did, and a spinner that resolves in
@@ -2557,44 +2672,19 @@ export function RightPanel({
             {active && OWNS_ITS_HEIGHT.every((holds) => !holds(activeTab.kind)) && (
               <p className="px-4 pt-2 font-mono text-3xs uppercase tracking-[0.08em] text-muted-foreground/60">{active}</p>
             )}
-            <PanelSurface
-              tab={activeTab}
-              writes={writes}
-              diffTurnList={diffTurnList}
-              tasks={tasks}
-              {...(focusedTask ? { focusedTask } : {})}
-              onOpenTab={onOpenTab}
-              {...(onOpenNewTab ? { onOpenNewTab } : {})}
-              {...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {})}
-              {...(onInsertReference ? { onInsertReference } : {})}
-              {...(onAttach ? { onAttach } : {})}
-              // Bound to THIS instance, exactly as `onEditorChange` below is —
-              // a surface changes its own tab's params and no other's.
-              {...(onTabParams ? { onTabParams: (params: PanelTabParams) => onTabParams(activeTab.id, params) } : {})}
-              // Same binding-to-this-instance rule: the surface ends its OWN
-              // tab. It is the strip's own × callback, so the focus move and
-              // the persistence are the ones every other close already gets.
-              onCloseSelf={() => onCloseTab(activeTab.id)}
-              {...(browser ? { browser } : {})}
-              events={events}
-              {...(sessionId ? { sessionId } : {})}
-              {...(sessionTitle ? { sessionTitle } : {})}
-              {...(projectId ? { projectId } : {})}
-              {...(branch ? { branch } : {})}
-              {...(active ? { active } : {})}
-              dataScience={dataScience}
-              onOpenImage={setLightbox}
-              // THIS instance's files, and a change handler bound to it — two
-              // Editors must not write into one state.
-              {...(editors?.[activeTab.id] ? { editor: editors[activeTab.id] } : {})}
-              {...(onEditorChange ? { onEditorChange: (next: (current: EditorState) => EditorState) => onEditorChange(activeTab.id, next) } : {})}
-              {...(hostId ? { hostId } : {})}
-              visible={open}
-            />
-            {sessionId && <ImageLightbox sessionId={sessionId} {...(lightbox ? { attachmentId: lightbox } : {})} onClose={() => setLightbox(undefined)} />}
+            {panelSurface(activeTab, true)}
           </Suspense>
         ) : (
           <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} dataScience={dataScience} latex={latex} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
+        )}
+        {/* OUTSIDE THE BRANCHES ABOVE, because a kept Terminal renders in one
+            of them and the lightbox belongs to neither surface — it is the
+            panel's own overlay, on the same condition it always had: a session,
+            and something open to have opened an image from. */}
+        {activeTab && sessionId && (
+          <Suspense fallback={null}>
+            <ImageLightbox sessionId={sessionId} {...(lightbox ? { attachmentId: lightbox } : {})} onClose={() => setLightbox(undefined)} />
+          </Suspense>
         )}
       </div>
     </aside>

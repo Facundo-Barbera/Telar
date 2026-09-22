@@ -34,7 +34,7 @@
  * refuse it over IPC by design, and typing into a project's one deployment
  * belongs on the route where the singleton and the journal are.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -44,7 +44,7 @@ import type { RunApi } from "@/lib/run/api";
 import { byteDroppedNotice, byteFeed } from "@/lib/run/terminal-feed";
 import { terminalBridge } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
-import { ptyByteWriter, terminalKeyHandler } from "@/lib/terminal-session";
+import { gridMeasurer, ptyByteWriter, terminalKeyHandler } from "@/lib/terminal-session";
 import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
 import { cn } from "@/lib/utils";
 
@@ -121,24 +121,23 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
     latest.current = { api, sessionId, runId, live };
   });
 
-  /** Fit first so xterm knows its own grid, then tell the PTY — so SIGWINCH
-   *  carries the size the emulator is actually drawing. Over the engine in both
-   *  feeds: a renderer may not resize a terminal it does not own. */
-  const measure = useCallback(() => {
-    const term = termRef.current;
-    if (!term) return;
-    try {
-      fitRef.current?.fit();
-    } catch {
-      // A zero-sized box (a hidden chip, the panel mid-animation) has no grid.
-      return;
-    }
-    const { api: current, sessionId: session, runId: run } = latest.current;
-    void current.resize(session, { runId: run, cols: term.cols, rows: term.rows }).catch(() => {
-      // A run that ended between the fit and the request is the ordinary race.
-      // The size is the emulator's either way.
-    });
-  }, []);
+  /**
+   * Fit first so xterm knows its own grid, then tell the PTY — so SIGWINCH
+   * carries the size the emulator is actually drawing. Over the engine in both
+   * feeds: a renderer may not resize a terminal it does not own.
+   *
+   * THE SHELL'S OWN MEASURE, NOT A SECOND ONE (#909). This pane used to fit and
+   * signal synchronously on every ResizeObserver notification, which a chip
+   * leaving `display:none` fires several of in one frame: each fit reflowed the
+   * 3000-line buffer and each resize SIGWINCHed a live dev server, which
+   * redraws, which is more bytes to parse. `gridMeasurer` is the rule
+   * `TerminalPane` has had since #825, in one place so the two cannot drift
+   * apart again.
+   *
+   * BUILT BY THE MOUNT EFFECT, WHERE THE EMULATOR IS, and held here so the
+   * effects below can ask for a measurement. Nothing reads this during render.
+   */
+  const measurer = useRef<ReturnType<typeof gridMeasurer> | null>(null);
 
   useEffect(() => {
     const element = host.current;
@@ -169,6 +168,25 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
     term.loadAddon(fit);
     fitRef.current = fit;
     term.open(element);
+
+    /** The refs are read fresh on every frame rather than closed over here: a
+     *  frame queued before this effect's cleanup runs after it. */
+    const measurement = gridMeasurer(
+      () => {
+        const current = termRef.current;
+        const addon = fitRef.current;
+        return current && addon ? { term: current, fit: addon } : undefined;
+      },
+      (grid) => {
+        const { api: current, sessionId: session, runId: run } = latest.current;
+        void current.resize(session, { runId: run, cols: grid.cols, rows: grid.rows }).catch(() => {
+          // A run that ended between the fit and the request is the ordinary
+          // race. The size is the emulator's either way.
+        });
+      },
+    );
+    measurer.current = measurement;
+    const measure = () => measurement.measure();
 
     /**
      * THE KEYBOARD. `onData` is every ordinary key, a paste included; the
@@ -208,6 +226,10 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
     return () => {
       disposed = true;
       observer.disconnect();
+      // A frame that has not run would fit an emulator this line is about to
+      // dispose.
+      measurement.cancel();
+      measurer.current = null;
       offKeys.dispose();
       /* THE RUN IS NOT STOPPED HERE. This unmounts on every tab switch, and a
          deployment is a project singleton that outlives whoever is looking at
@@ -217,8 +239,8 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
       fitRef.current = null;
     };
     // Keyed by `runId` at the call site, so a different run is a different
-    // mount and this never has to re-run for one.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // mount and this never has to re-run for one. Everything above is read
+    // through a ref, which is why this no longer needs a deps exemption.
   }, []);
 
   const feed = runFeedKind(terminalId, terminalBridge());
@@ -286,7 +308,21 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
           // what is about to be, and redrawing over it would double it.
           term.reset();
           writeRef.current = ptyByteWriter(term);
-          writeRef.current(answer.chunks.join(""));
+          /**
+           * ONE WRITE PER CHUNK, NEVER THE JOINED WINDOW (#909).
+           *
+           * This is the read that froze the cockpit. The engine keeps up to
+           * 4000 chunks / 256 KB per run, and a single `write` of all of it is
+           * a single item in xterm's `WriteBuffer` — which checks its 12 ms
+           * yield budget BETWEEN items and never inside one. So the whole
+           * window parsed, and then reflowed 3000 lines, without giving the
+           * main thread back: the click that opened this chip was serviced
+           * seconds later. The chunks arrive already cut the way the PTY
+           * produced them and each left the redactor whole, so writing them
+           * one by one draws exactly the same screen — with 3999 chances to
+           * paint in between.
+           */
+          for (const chunk of answer.chunks) writeRef.current(chunk);
         }
         setDropped(answer.dropped);
         cursor.current = answer.cursor;
@@ -337,7 +373,11 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
             term.reset();
             writeRef.current = ptyByteWriter(term);
           }
-          if (next.text) (writeRef.current ?? ptyByteWriter(term))(next.text);
+          // CHUNK BY CHUNK, for the reason the attach above states: the first
+          // tick of this poll reads the run from the top, so it carries the
+          // same 256 KB window and would block the thread the same way.
+          const write = writeRef.current ?? ptyByteWriter(term);
+          for (const chunk of next.chunks) write(chunk);
         }
       } catch {
         // A refusal here is the strip's to report — the status feed is already
@@ -354,13 +394,14 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
     };
   }, [feed, visible, active, runId, sessionId, live]);
 
-  /** The strip keeps a hidden chip mounted; coming back needs a fit the
-   *  ResizeObserver may already have fired for an unusable box. */
+  /** The strip keeps a hidden chip mounted — and so does the PANEL now, one
+   *  level up (#909) — so coming back needs a fit the ResizeObserver may
+   *  already have fired for an unusable box. */
   useEffect(() => {
     if (!active || !visible) return;
-    measure();
+    measurer.current?.measure();
     termRef.current?.focus();
-  }, [active, visible, measure]);
+  }, [active, visible]);
 
   /**
    * THE CHORDS, CLAIMED ONLY WHILE THIS CHIP IS ON SCREEN.
