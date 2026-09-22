@@ -152,6 +152,79 @@ export function ptyByteWriter(term: Pick<TerminalLike, "write">): (data: string)
   };
 }
 
+/** What a fit produces and what a PTY is told: cells, not pixels. */
+export type TerminalGrid = { cols: number; rows: number };
+
+/** The two objects a measurement needs, read fresh each frame — a pane's refs
+ *  are null before its mount effect has run and after its cleanup. */
+export type Fittable = {
+  /** The emulator, for the grid it has AFTER the fit. */
+  term: TerminalGrid;
+  /** Its fit addon. Throws on a box with no grid in it, which is what a hidden
+   *  pane and a panel mid-animation both are. */
+  fit: { fit: () => void };
+};
+
+/**
+ * ONE FIT PER PAINTED FRAME, AND A SIGWINCH ONLY WHEN THE GRID MOVED (#909).
+ *
+ * WHY IT IS HERE RATHER THAN IN A PANE. It was written in `TerminalPane` for
+ * #825: a panel drag fires the ResizeObserver and the drag's own event several
+ * times per frame, each of those used to fit and signal the PTY synchronously,
+ * and a shell mid-redraw (nvim) got a SIGWINCH storm it could not keep up with
+ * — which read as the resize "not responding". Shown red at the time: five
+ * signals in a frame produced seven resizes.
+ *
+ * `RunPane` was written afterwards, from the file that predated that fix, and
+ * so carried the synchronous version — which is worse on a run than on a shell,
+ * because the thing being SIGWINCHed is a dev server that redraws, which
+ * produces more bytes to parse, on a buffer the chip has just filled with the
+ * engine's whole window. Two copies of one rule is how the two drifted, so
+ * there is now one copy and both panes take it.
+ *
+ * THE FIT IS WHAT COSTS, and that is why the coalescing is around it rather
+ * than around the request: fitting reflows the emulator's entire scrollback
+ * (3000 lines here) on the main thread. The `lastGrid` guard is the second
+ * half — a drag that moves the box by four pixels changes no cell, and a PTY
+ * told its size did not change is a redraw nobody asked for.
+ */
+export function gridMeasurer(
+  read: () => Fittable | undefined,
+  /** Tell the PTY. Called only on a frame where cols or rows actually moved. */
+  resize: (grid: TerminalGrid) => void,
+): { measure: () => void; cancel: () => void } {
+  let frame: number | null = null;
+  let last: TerminalGrid | null = null;
+  return {
+    measure: () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        const current = read();
+        if (!current) return;
+        try {
+          current.fit.fit();
+        } catch {
+          // A zero-sized box has no grid to fit to. Nothing is remembered, so
+          // the measurement is retaken when it becomes a box again.
+          return;
+        }
+        const grid = { cols: current.term.cols, rows: current.term.rows };
+        if (last && last.cols === grid.cols && last.rows === grid.rows) return;
+        last = grid;
+        resize(grid);
+      });
+    },
+    /** Drop a frame that has not run. A pane unmounting owes this: the callback
+     *  would otherwise fit a disposed emulator one frame later. */
+    cancel: () => {
+      if (frame === null) return;
+      window.cancelAnimationFrame(frame);
+      frame = null;
+    },
+  };
+}
+
 /**
  * Connect an emulator to a terminal the host has already opened. Answers the
  * detach, which every caller must hold: the bridge's `onData` is a single

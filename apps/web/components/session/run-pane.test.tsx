@@ -77,14 +77,19 @@ afterEach(() => {
 });
 
 /** The engine's run door, answering the one question a pane asks on attach.
- *  `write` and `resize` are here because a mounted pane fits itself and may
- *  report a keystroke; neither is what this file is about. */
-function runDoor(answer: RunBytesAnswer): RunApi {
+ *  Every resize it is told about is kept: a run's SIGWINCH goes over the hop
+ *  like everything else a renderer may not do itself. */
+function runDoor(answer: RunBytesAnswer): RunApi & { resizes: Array<{ cols: number; rows: number }> } {
+  const resizes: Array<{ cols: number; rows: number }> = [];
   return {
+    resizes,
     bytes: async () => answer,
     write: async () => ({ delivered: true }),
-    resize: async () => ({ resized: true }),
-  } as unknown as RunApi;
+    resize: async (_session: string, options: { cols: number; rows: number }) => {
+      resizes.push({ cols: options.cols, rows: options.rows });
+      return { resized: true };
+    },
+  } as unknown as RunApi & { resizes: Array<{ cols: number; rows: number }> };
 }
 
 /** The desktop shell, holding a run's terminal open for adoption. Installed
@@ -148,6 +153,52 @@ describe("the scrollback a chip attaches to", () => {
 
     expect(written).toEqual(WINDOW);
     expect(written).not.toContain(WINDOW.join(""));
+  });
+
+  test("nothing is fitted or SIGWINCHed before a frame — the pane is on the shared measurer", async () => {
+    /**
+     * THE SECOND CAUSE, FROM THE PANE'S SIDE (#909). `RunPane` was written from
+     * the file that predated #825's coalescing, so it fitted and resized
+     * synchronously on every ResizeObserver notification — and a chip leaving
+     * `display:none` fires several in one frame, each reflowing 3000 lines and
+     * each SIGWINCHing a live dev server. `lib/terminal-session.test.ts` states
+     * the rule; this says this pane really is the thing obeying it.
+     *
+     * The frames are the test's, so "before a frame" is a state to sit in
+     * rather than a race to win — and nothing here sleeps.
+     */
+    const queued: Array<() => void> = [];
+    const real = { request: window.requestAnimationFrame, cancel: window.cancelAnimationFrame };
+    window.requestAnimationFrame = ((callback: (time: number) => void) => queued.push(() => callback(0))) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = (() => {}) as typeof window.cancelAnimationFrame;
+    try {
+      const api = runDoor({ chunks: WINDOW, cursor: 3, dropped: 0 });
+      await mount({ api, terminalId: "term_run" });
+      // Mounting measures — on reveal, and again when the fonts land — and not
+      // one of those has reached the engine.
+      expect(api.resizes).toEqual([]);
+
+      // THE OTHER HALF, or the assertion above would hold just as well for a
+      // pane that never measured at all: when the frame comes, exactly one
+      // grid is reported for the several notifications behind it.
+      await act(async () => {
+        for (const run of queued.splice(0)) {
+          try {
+            run();
+          } catch {
+            // xterm queues frames of its own and there is no canvas here to
+            // draw into. Only the measurer's frame is this file's business.
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(api.resizes).toHaveLength(1);
+      expect(api.resizes[0]?.cols).toBeGreaterThan(0);
+      expect(api.resizes[0]?.rows).toBeGreaterThan(0);
+    } finally {
+      window.requestAnimationFrame = real.request;
+      window.cancelAnimationFrame = real.cancel;
+    }
   });
 
   test("a frame that arrives after the join is its own write too", async () => {
