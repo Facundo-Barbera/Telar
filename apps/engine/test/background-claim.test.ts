@@ -180,30 +180,31 @@ test("a claim opened for the live task honours its request, under a turn of its 
   expect((await client.session("session_one")).tasks[0]?.state).toBe("running");
 });
 
-test("the person's next message runs once the claim lets go, rather than being lost behind it", async () => {
+test("the person's next message tells the claim it is wanted, and runs once the claim lets go", async () => {
   /**
-   * WHY THE CLAIM IS OPENED ON DEMAND AND NOT HELD FOR THE TASK'S WHOLE LIFE.
-   * One live turn per session is the invariant every sweep relies on, so a
-   * claim held for an hour of background work is the rejected "the turn never
-   * settles" alternative in a different coat: the person's reply would read as
-   * still running and their next message would sit behind a sub-agent. Held
-   * only while a decision is being made, a message queues for that long and
-   * runs the moment it is over — which is what this proves.
+   * WHY A CLAIM HELD FOR THE TASK'S WHOLE LIFE IS NOT A TURN THAT NEVER
+   * SETTLES (#912). The driver holds one claim while any background task is
+   * alive, so one stretch of work is one turn rather than a row per burst. One
+   * live turn per session is still the invariant every sweep relies on, so the
+   * person's message must not sit behind a sub-agent for an hour: it reaches
+   * the claim as a steer, the worker aborts the binding's `wanted` signal, and
+   * the driver gives the session up — which is what this proves.
    */
   const { client, dispatched } = await turnThatDispatches();
   const { session } = await dispatched;
   const binding = (await session.onProviderTurn({ input: "", reason: { kind: "background_task" } })) as ProviderTurnBinding;
+  expect(binding.wanted?.aborted).toBe(false);
 
   await client.submitTurn("session_one", { runId: "run_person", input: "how is it going?" });
   /**
    * NOT REFUSED, AND NOT DISPATCHED OVER THE LIVE CLAIM. A message sent while
    * any turn is live becomes a STEER on it — and this particular live turn has
    * no model reading its mailbox, so the steer is never delivered and
-   * `completeTurn`'s `requeueUndeliveredSteers` puts it back in the queue. The
-   * person waits out the claim, which is why the claim is measured in seconds.
+   * `completeTurn`'s `requeueUndeliveredSteers` puts it back in the queue.
    */
   const waiting = (await client.session("session_one")).turns.find((turn) => turn.runId === "run_person");
   expect(waiting?.state).toBe("steering");
+  await until("the worker to tell the claim it is wanted", () => binding.wanted?.aborted === true);
 
   await binding.close({ text: "done" });
   await until("the person's message to run once the claim is given up", async () => {

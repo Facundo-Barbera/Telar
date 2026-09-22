@@ -482,6 +482,8 @@ export class EngineWorker {
    * turn of its own; dropped with the worker in `stop()`.
    */
   private readonly liveClaims = new Map<string, { runId: string; claimToken: string }>();
+  /** Each live provider turn's `wanted` signal, by claim token — see `ProviderTurnBinding.wanted`. */
+  private readonly providerTurnsWanted = new Map<string, AbortController>();
   /** One `telar` wall lease per session, keyed by the enabled set it serves. */
   private readonly telarLeases = new Map<
     string,
@@ -748,6 +750,7 @@ export class EngineWorker {
     for (const lease of this.sessionsLeases.values()) lease.release();
     this.sessionsLeases.clear();
     this.liveClaims.clear();
+    this.providerTurnsWanted.clear();
     for (const entry of this.telarLeases.values()) entry.lease?.release();
     this.telarLeases.clear();
     if (typeof this.options.driver !== "function") this.usedDrivers.add(this.options.driver);
@@ -1059,6 +1062,11 @@ export class EngineWorker {
       // ack fires later, from the mailbox's drain hook — see `steering`.
       for (const delivery of status.steer ?? []) {
         if (this.pushedSteers.has(delivery.steerRunId)) continue;
+        // A message sent into a PROVIDER turn has no mailbox to land in; it
+        // tells that turn somebody wants the session (#912). A background
+        // claim settles on it, and the settlement sweep requeues the message
+        // as the next turn.
+        this.providerTurnsWanted.get(delivery.claimToken)?.abort();
         const entry = this.steering.get(delivery.claimToken);
         // No mailbox (or closed): this worker cannot deliver — leave the
         // turn `steering`; the engine's settlement sweep requeues it.
@@ -1828,6 +1836,8 @@ export class EngineWorker {
             const providerToken = opened.turn.claim!.token;
             const providerController = new AbortController();
             this.active.set(providerToken, providerController);
+            const wanted = new AbortController();
+            this.providerTurnsWanted.set(providerToken, wanted);
             const bound = this.bindTurn(sessionId, providerRunId, providerToken, providerController);
             // And so does `sessions_send`: a turn the CLI started on its own is
             // a real turn under a real claim, and a message it sends is sent
@@ -1843,6 +1853,7 @@ export class EngineWorker {
             }
             return {
               runId: providerRunId,
+              wanted: wanted.signal,
               onRequest: bound.askEngine,
               onObservations: async (observations) => {
                 if (providerController.signal.aborted) return;
@@ -1850,6 +1861,7 @@ export class EngineWorker {
               },
               close: async (result) => {
                 this.active.delete(providerToken);
+                this.providerTurnsWanted.delete(providerToken);
                 if (providerController.signal.aborted) return;
                 try {
                   if ("failure" in result) {

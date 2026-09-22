@@ -377,6 +377,13 @@ export type ProviderTurnBinding = {
   onRequest?(request: DriverRequest): Promise<RequestDecision | DriverRequestOutcome>;
   /** Settle the turn. `text` is the model's final prose; a failure ends it failed. */
   close(result: DriverResult | { failure: string }): Promise<void>;
+  /**
+   * Aborted when somebody else wants the session — a person's message sent
+   * into this turn as a steer. A turn that exists only to hold a claim for
+   * background work (#912) gives the session up on it; a turn the model is
+   * speaking in has nothing to give up and may ignore it.
+   */
+  wanted?: AbortSignal;
 };
 
 export type DriverSessionHooks = {
