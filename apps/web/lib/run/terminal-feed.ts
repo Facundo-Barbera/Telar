@@ -28,8 +28,9 @@ import type { RunBytesAnswer } from "./types";
 export type RunByteFeed = {
   /** Clear the emulator before writing — a different stream, or a gap. */
   reset: boolean;
-  /** What to write, in order. Empty when the answer carried nothing new. */
-  text: string;
+  /** What to write, in order and ONE AT A TIME. Empty when the answer carried
+   *  nothing new. */
+  chunks: readonly string[];
   /** Where the next poll resumes from. */
   cursor: number;
 };
@@ -39,10 +40,19 @@ export function byteFeed(previous: number, answer: RunBytesAnswer): RunByteFeed 
   const reset = answer.cursor < previous || answer.dropped > previous;
   return {
     reset,
-    // CONCATENATED, NOT WRITTEN ONE BY ONE BY THE CALLER. Every chunk left the
-    // engine's redactor whole, so no sequence straddles a boundary and joining
-    // them is exactly what writing them in order would have produced.
-    text: answer.chunks.join(""),
+    /**
+     * HANDED OVER AS CHUNKS, AND THAT IS THE WHOLE POINT OF THIS FIELD (#909).
+     *
+     * They used to be joined here, on the true observation that every chunk
+     * left the redactor whole — so the concatenation IS what writing them in
+     * order produces, character for character. What it is not is what writing
+     * them in order COSTS. xterm's `WriteBuffer` checks its 12 ms budget
+     * between write ITEMS and never inside one, so a joined window is one
+     * uninterrupted parse on the main thread: the engine keeps up to 4000
+     * chunks / 256 KB, and the click queued behind that string waits for all
+     * of it. The same bytes as 4000 items yield to the browser 3999 times.
+     */
+    chunks: answer.chunks,
     cursor: answer.cursor,
   };
 }

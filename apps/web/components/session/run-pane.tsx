@@ -286,7 +286,21 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
           // what is about to be, and redrawing over it would double it.
           term.reset();
           writeRef.current = ptyByteWriter(term);
-          writeRef.current(answer.chunks.join(""));
+          /**
+           * ONE WRITE PER CHUNK, NEVER THE JOINED WINDOW (#909).
+           *
+           * This is the read that froze the cockpit. The engine keeps up to
+           * 4000 chunks / 256 KB per run, and a single `write` of all of it is
+           * a single item in xterm's `WriteBuffer` — which checks its 12 ms
+           * yield budget BETWEEN items and never inside one. So the whole
+           * window parsed, and then reflowed 3000 lines, without giving the
+           * main thread back: the click that opened this chip was serviced
+           * seconds later. The chunks arrive already cut the way the PTY
+           * produced them and each left the redactor whole, so writing them
+           * one by one draws exactly the same screen — with 3999 chances to
+           * paint in between.
+           */
+          for (const chunk of answer.chunks) writeRef.current(chunk);
         }
         setDropped(answer.dropped);
         cursor.current = answer.cursor;
@@ -337,7 +351,11 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
             term.reset();
             writeRef.current = ptyByteWriter(term);
           }
-          if (next.text) (writeRef.current ?? ptyByteWriter(term))(next.text);
+          // CHUNK BY CHUNK, for the reason the attach above states: the first
+          // tick of this poll reads the run from the top, so it carries the
+          // same 256 KB window and would block the thread the same way.
+          const write = writeRef.current ?? ptyByteWriter(term);
+          for (const chunk of next.chunks) write(chunk);
         }
       } catch {
         // A refusal here is the strip's to report — the status feed is already
