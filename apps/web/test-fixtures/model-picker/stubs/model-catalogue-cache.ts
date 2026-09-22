@@ -28,6 +28,7 @@ const row = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => (
   isDefault: false,
   hidden: false,
   hiddenByUser: false,
+  legacy: false,
   source: "provider",
   efforts: [],
   fastMode: false,

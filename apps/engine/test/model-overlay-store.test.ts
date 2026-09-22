@@ -139,33 +139,36 @@ test("an edit reaches the next catalogue with no refresh and no second CLI spawn
   })();
 });
 
-test("a manifest declaration pre-empts a hand-typed custom row for the same id — one row, the declared one", () => {
+test("a manifest model pre-empts a hand-typed custom row for the same id, or an alias of it — one row, the manifest's", () => {
   /**
    * THE COLLISION THE BUNDLED MANIFEST CREATES. Someone typed `claude-fable-5-1`
-   * into the Models tab back when the CLI did not list it; now the manifest
-   * declares its 1M row. The overlay's own `published` check treats the
-   * declared row as published, so the custom entry goes quiet — exactly as it
-   * would if the CLI itself had started listing the id — and the reader gets
-   * the declared row's real label and efforts rather than the bare id.
+   * (or T3 Code's `claude-fable-5.1`) into the Models tab back when the CLI did
+   * not list it; now the manifest lists its 1M row. The overlay's own
+   * `published` check treats that row as published, so the custom entry goes
+   * quiet — exactly as it would if the CLI itself had started listing the id —
+   * and the reader gets the manifest row's real label and efforts.
    */
   const catalogue = async (driver: "claude" | "codex", now: () => number): Promise<ModelCatalogue> => ({
     driver,
     source: "provider",
     readAt: now(),
-    models: [{ id: "sonnet", label: "Sonnet", isDefault: true, hidden: false, hiddenByUser: false, efforts: [], fastMode: false, source: "provider" }],
+    models: [{ id: "sonnet", label: "Sonnet", isDefault: true, hidden: false, hiddenByUser: false, legacy: false, efforts: [], fastMode: false, source: "provider" }],
   });
   const engine = new EngineStore(root(), () => 100, {
     models: catalogue,
     manifest: {
-      version: 1,
-      claude: { profiles: { f: { longWindow: true } }, models: { "claude-fable-5-1": "f" }, declare: [{ id: "claude-fable-5-1", label: "Fable 5.1", efforts: ["high"] }] },
+      version: 2,
+      claude: {
+        profiles: { f: { windows: ["200k", "1m"], defaultWindow: "1m", efforts: ["high"], fastMode: false } },
+        models: [{ slug: "claude-fable-5-1", name: "Claude Fable 5.1", status: "current", profile: "f", aliases: ["claude-fable-5.1"] }],
+      },
     },
   });
-  engine.setModelOverlay("claude", { hidden: [], order: [], custom: [{ id: "claude-fable-5-1" }] });
+  engine.setModelOverlay("claude", { hidden: [], order: [], custom: [{ id: "claude-fable-5-1" }, { id: "claude-fable-5.1" }] });
   return (async () => {
     const { models } = await engine.modelCatalogue("claude");
-    const rows = models.filter((model) => model.id === "claude-fable-5-1[1m]");
-    expect(rows).toHaveLength(1);
+    const rows = models.filter((model) => /fable/.test(model.id));
+    expect(rows.map((model) => model.id)).toEqual(["claude-fable-5-1[1m]"]);
     expect(rows[0]).toMatchObject({ label: "Fable 5.1", source: "provider", efforts: ["high"] });
   })();
 });

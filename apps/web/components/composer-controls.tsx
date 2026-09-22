@@ -469,6 +469,7 @@ function FamilyRow({
             <span className="truncate">{origin}</span>
           </span>
         </span>
+        {family.badge === "new" && <span className="shrink-0 rounded-sm border px-1 text-3xs text-muted-foreground">New</span>}
         {family.isDefault && <span className="shrink-0 text-3xs text-muted-foreground">Default</span>}
         <span className="flex size-3.5 shrink-0 items-center justify-center">
           {selected && <CheckIcon className="size-3.5 text-primary" />}
@@ -904,11 +905,11 @@ export function AgentControl({
             {/**
              * OLDER GENERATIONS, FOLDED. A provider's list grows and never
              * shrinks — Codex reports seven models and four of them are
-             * previous families kept for people who pinned them. The rule is
-             * "older than the provider's own default" rather than a list of ids
-             * this repository would have to keep editing: see
-             * lib/model-generations.ts. A STARRED model is never in here, whoever
-             * it is older than.
+             * previous families kept for people who pinned them. Claude's rows
+             * say which are legacy (the model manifest); for a provider whose
+             * rows say nothing the rule is "older than the provider's own
+             * default": see lib/model-generations.ts. A STARRED model is never
+             * in here, whoever it is older than.
              */}
             {view !== "favorites" && !searching && legacy.length > 0 && !showLegacy && (
               <button

@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ModelCatalogue, ProviderModel } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
+import { BUNDLED_MANIFEST, type ModelManifest } from "../src/model-manifest";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { allowCliInThisFile } from "./allow-cli";
 import { EngineClient } from "@telar/engine-client";
@@ -41,17 +42,21 @@ const model = (id: string, isDefault = false): ProviderModel => ({
   isDefault,
   hidden: false,
   hiddenByUser: false,
+  legacy: false,
   efforts: [],
   fastMode: false,
   source: "provider",
 });
 
-/** The CLI's own answer. `claude-opus-5` is the default family here; the
- *  manifest is what turns it into the `[1m]` row Telar publishes. */
-function engineWith(models: ProviderModel[], driver: "claude" | "codex" = "claude") {
+/** The CLI's own answer, put through the manifest. The bundled one names
+ *  Fable 5.1 as default whatever the CLI says, as T3 Code's does. */
+function engineWith(models: ProviderModel[], driver: "claude" | "codex" = "claude", manifest: ModelManifest = BUNDLED_MANIFEST) {
   const catalogue = async (): Promise<ModelCatalogue> => ({ driver, instanceId: driver, readAt: 100, models });
-  return new EngineStore(root(), () => 100, { models: catalogue });
+  return new EngineStore(root(), () => 100, { models: catalogue, manifest });
 }
+
+/** The bundled manifest with no default of its own, so the CLI's decides. */
+const NO_MANIFEST_DEFAULT: ModelManifest = { ...BUNDLED_MANIFEST, claude: { ...BUNDLED_MANIFEST.claude!, defaults: {} } };
 
 /** Claim one turn and report the model the worker would be handed. */
 async function claimedModel(
@@ -70,16 +75,17 @@ async function claimedModel(
 
 test("a session with NO model claims the catalogue's default at its long window", async () => {
   const engine = engineWith([model("claude-opus-5", true), model("claude-sonnet-5")]);
-  // The manifest publishes `claude-opus-5[1m]` and carries `isDefault` onto it,
-  // so this is the row the picker itself would have shown as default.
-  expect(await claimedModel(engine)).toBe("claude-opus-5[1m]");
+  // The manifest's default is Fable 5.1 on 1M, so this is the row the picker
+  // itself shows as default.
+  expect(await claimedModel(engine)).toBe("claude-fable-5-1[1m]");
 });
 
-test("the family is the CLI's own — this changes the WINDOW, never which model runs", async () => {
-  // A different default family produces a different answer: nothing here picks
-  // a favourite, it spells whatever the provider already chose.
-  const engine = engineWith([model("claude-opus-5"), model("claude-sonnet-5", true)]);
-  expect(await claimedModel(engine)).toBe("claude-sonnet-5[1m]");
+test("without a manifest default the CLI's family runs, on its default window", async () => {
+  const opus = engineWith([model("claude-opus-5", true), model("claude-sonnet-5")], "claude", NO_MANIFEST_DEFAULT);
+  expect(await claimedModel(opus)).toBe("claude-opus-5[1m]");
+  // Sonnet's default window is 200k, and a short default is refused.
+  const sonnet = engineWith([model("claude-opus-5"), model("claude-sonnet-5", true)], "claude", NO_MANIFEST_DEFAULT);
+  expect(await claimedModel(sonnet)).toBeUndefined();
 });
 
 test("an OLD session saved with no model is covered at claim, with its history untouched", async () => {
@@ -91,7 +97,7 @@ test("an OLD session saved with no model is covered at claim, with its history u
 
   engine.submitTurn("session_old", { runId: "run_one", input: "hello" });
   const claim = engine.claimNextTurn("worker_one");
-  expect(claim?.model?.model).toBe("claude-opus-5[1m]");
+  expect(claim?.model?.model).toBe("claude-fable-5-1[1m]");
   // The stored record is NOT rewritten: the claim decides what runs, it does
   // not edit what happened.
   expect(engine.getSession("session_old").model).toBeUndefined();
@@ -99,8 +105,11 @@ test("an OLD session saved with no model is covered at claim, with its history u
 
 test("an EXPLICIT model keeps its exact semantics — known normalised, unknown untouched", async () => {
   const engine = engineWith([model("claude-opus-5", true)]);
-  // A known bare id still gains the suffix, exactly as before.
-  expect(await claimedModel(engine, { sessionModel: { instanceId: "claude", model: "claude-sonnet-5" } })).toBe("claude-sonnet-5[1m]");
+  // A known bare id gains its default window: 1M for Opus, and Sonnet's 200k
+  // is the bare id already.
+  expect(await claimedModel(engine, { sessionModel: { instanceId: "claude", model: "claude-opus-5" } })).toBe("claude-opus-5[1m]");
+  const sonnet = engineWith([model("claude-opus-5", true)]);
+  expect(await claimedModel(sonnet, { sessionModel: { instanceId: "claude", model: "claude-sonnet-5" } })).toBe("claude-sonnet-5");
 
   // An unknown id is left alone: no suffix invented, and the default never
   // overrides a choice somebody made.
@@ -119,7 +128,7 @@ test("an EFFORT-ONLY selection keeps its effort and gains the model", async () =
   engine.updateSession("session_one", { model: { instanceId: "claude", effort: "max" } });
   engine.submitTurn("session_one", { runId: "run_one", input: "hello" });
   const claim = engine.claimNextTurn("worker_one");
-  expect(claim?.model).toEqual({ instanceId: "claude", effort: "max", model: "claude-opus-5[1m]" });
+  expect(claim?.model).toEqual({ instanceId: "claude", effort: "max", model: "claude-fable-5-1[1m]" });
 });
 
 test("a COLD catalogue changes nothing — no guess is ever made", async () => {
@@ -130,9 +139,9 @@ test("a COLD catalogue changes nothing — no guess is ever made", async () => {
 });
 
 test("a default row that is NOT long is refused rather than pinned", async () => {
-  // Haiku is `longWindow: false` in the manifest, so it publishes no `[1m]`
-  // row. Filling it in would pin the 200k window this exists to avoid.
-  const engine = engineWith([model("claude-haiku-4-5", true)]);
+  // Haiku has only a 200k window, so it publishes no `[1m]` row. Filling it in
+  // would pin the 200k window this exists to avoid.
+  const engine = engineWith([model("claude-haiku-4-5", true)], "claude", NO_MANIFEST_DEFAULT);
   expect(await claimedModel(engine)).toBeUndefined();
 });
 
@@ -187,7 +196,7 @@ test("a machine that has read the list ONCE covers its next daemon's very first 
   await f.client.createSession({ id: "session_one", projectId: "project_one", driver: "claude" });
   await f.client.submitTurn("session_one", { runId: "run_one", input: "hello" });
   const claim = await f.client.claimTurn("worker_one", 1);
-  expect(claim.claim?.model?.model).toBe("claude-opus-5[1m]");
+  expect(claim.claim?.model?.model).toBe("claude-fable-5-1[1m]");
   expect(claim.claim?.model?.instanceId).toBe("claude");
 });
 
@@ -220,7 +229,7 @@ test("REGRESSION: a fresh empty home NEVER hands the driver a short or absent mo
   release(await claudeList());
   await new Promise((resolve) => setTimeout(resolve, 20));
   const claim = await f.client.claimTurn("worker_one", 4);
-  expect(claim.claim?.model?.model).toBe("claude-opus-5[1m]");
+  expect(claim.claim?.model?.model).toBe("claude-fable-5-1[1m]");
 });
 
 test("a probe that FAILS fails the turn with something actionable — no provider, no 200k, no hang", async () => {
@@ -290,14 +299,14 @@ test("a probe that NEVER answers becomes an actionable failure, not a turn pendi
   expect(state).toBe("failed");
 });
 
-test("a list that READS but publishes no long row terminates the turn — Haiku-only, and empty", async () => {
+test("a list that READS but publishes no long row terminates the turn — empty", async () => {
   /**
    * The other unusable answer, and the one that used to deadlock: the cache is
    * populated, so nothing retried, and no failure was ever recorded — the turn
-   * simply waited for ever. Haiku is `longWindow: false` in the manifest, so it
-   * publishes no `[1m]` row at all.
+   * simply waited for ever. (A Haiku-only list no longer qualifies: the
+   * manifest lists its own models beside whatever the CLI does.)
    */
-  for (const models of [[model("claude-haiku-4-5", true)], [] as ProviderModel[]]) {
+  for (const models of [[] as ProviderModel[]]) {
     const f = await freshDaemon(async () => ({ driver: "claude", instanceId: "claude", readAt: 100, models }));
     await f.client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
     await f.client.registerWorker("worker_one");
@@ -366,13 +375,13 @@ test("the probe happens ONCE, not per claim — and never for a Codex-only queue
   await f.client.createSession({ id: "session_one", projectId: "project_one", driver: "claude" });
   await f.client.submitTurn("session_one", { runId: "run_one", input: "hello" });
   const first = await f.client.claimTurn("worker_one", 2);
-  expect(first.claim?.model?.model).toBe("claude-opus-5[1m]");
+  expect(first.claim?.model?.model).toBe("claude-fable-5-1[1m]");
   expect(f.reads()).toBe(1);
   await f.client.stopTurn("session_one", "run_one");
 
   await f.client.submitTurn("session_one", { runId: "run_two", input: "again" });
   const second = await f.client.claimTurn("worker_one", 3);
-  expect(second.claim?.model?.model).toBe("claude-opus-5[1m]");
+  expect(second.claim?.model?.model).toBe("claude-fable-5-1[1m]");
   expect(f.reads()).toBe(1);
 });
 
@@ -385,7 +394,7 @@ test("a RESTART re-reads the list, so the second daemon's first turn is covered 
   await first.client.submitTurn("session_one", { runId: "run_one", input: "hello" });
 
   const before = await first.client.claimTurn("worker_one", 1);
-  expect(before.claim?.model?.model).toBe("claude-opus-5[1m]");
+  expect(before.claim?.model?.model).toBe("claude-fable-5-1[1m]");
   await first.client.stopTurn("session_one");
   await daemons.pop()!.close();
 
@@ -396,7 +405,7 @@ test("a RESTART re-reads the list, so the second daemon's first turn is covered 
   await second.client.submitTurn("session_one", { runId: "run_two", input: "again" });
 
   const after = await second.client.claimTurn("worker_two", 1);
-  expect(after.claim?.model?.model).toBe("claude-opus-5[1m]");
+  expect(after.claim?.model?.model).toBe("claude-fable-5-1[1m]");
   // Remembered on disk, so the restart costs no provider subprocess at all.
   expect(second.reads()).toBe(0);
 });

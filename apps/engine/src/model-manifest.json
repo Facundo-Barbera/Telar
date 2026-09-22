@@ -1,36 +1,32 @@
 {
-  "$comment": "Facts about models the installed CLI does not publish. See model-manifest.ts for the rules; bundled, no network. Update by shipping a build.",
-  "version": 1,
+  "$comment": "T3 Code's Claude model list (pingdotgg/t3code f25a8e4b, apps/server/src/provider/model-manifest.json), copied. See model-manifest.ts for the rules; bundled, no network. Update by shipping a build.",
+  "version": 2,
   "claude": {
+    "defaults": { "chat": "claude-fable-5-1" },
     "profiles": {
-      "fable-5-1": { "longWindow": true, "defaultLong": true },
-      "fable-5": { "longWindow": true, "defaultLong": true, "retired": true },
-      "opus-5-5": { "longWindow": true, "defaultLong": true },
-      "opus-5": { "longWindow": true },
-      "sonnet-5": { "longWindow": true },
-      "haiku-4-5": { "longWindow": false }
+      "fable-5": { "windows": ["200k", "1m"], "defaultWindow": "1m", "efforts": ["low", "medium", "high", "xhigh", "max"], "fastMode": false },
+      "opus-5-5": { "windows": ["200k", "1m"], "defaultWindow": "1m", "efforts": ["low", "medium", "high", "xhigh", "max"], "fastMode": true },
+      "opus-5": { "windows": ["200k", "1m"], "defaultWindow": "1m", "efforts": ["low", "medium", "high", "xhigh", "max"], "fastMode": true },
+      "opus-4-8": { "windows": ["1m"], "efforts": ["low", "medium", "high", "xhigh", "max"], "fastMode": true },
+      "opus-4-7": { "windows": ["1m"], "efforts": ["low", "medium", "high", "xhigh", "max"], "effortMap": { "xhigh": "max" }, "fastMode": true },
+      "opus-4-6": { "windows": ["200k", "1m"], "defaultWindow": "1m", "efforts": ["low", "medium", "high", "max"], "fastMode": true },
+      "opus-4-5": { "windows": ["200k"], "efforts": ["low", "medium", "high", "max"], "fastMode": true },
+      "sonnet-5": { "windows": ["200k", "1m"], "defaultWindow": "200k", "efforts": ["low", "medium", "high", "xhigh", "max"], "fastMode": false },
+      "sonnet-4-6": { "windows": ["200k", "1m"], "defaultWindow": "200k", "efforts": ["low", "medium", "high", "max"], "effortMap": { "max": "high" }, "fastMode": false },
+      "haiku-4-5": { "windows": ["200k"], "efforts": [], "fastMode": false }
     },
-    "aliases": {
-      "opus": "opus-5-5",
-      "sonnet": "sonnet-5",
-      "fable": "fable-5-1",
-      "haiku": "haiku-4-5"
-    },
-    "models": {
-      "claude-fable-5-1": "fable-5-1",
-      "claude-fable-5": "fable-5",
-      "claude-opus-5-5": "opus-5-5",
-      "claude-opus-5": "opus-5",
-      "claude-sonnet-5": "sonnet-5",
-      "claude-haiku-4-5": "haiku-4-5"
-    },
-    "declare": [
-      {
-        "id": "claude-fable-5-1",
-        "label": "Fable 5.1",
-        "description": "Fable 5.1 · Most capable for your hardest and longest-running tasks",
-        "efforts": ["low", "medium", "high", "xhigh", "max"]
-      }
+    "models": [
+      { "slug": "claude-fable-5-1", "name": "Claude Fable 5.1", "status": "current", "profile": "fable-5", "aliases": ["fable", "fable-5.1", "claude-fable-5.1"], "minVersion": "2.1.257" },
+      { "slug": "claude-opus-5-5", "name": "Claude Opus 5.5", "status": "current", "profile": "opus-5-5", "aliases": ["opus-5.5", "claude-opus-5.5"], "minVersion": "2.1.280", "badge": "new" },
+      { "slug": "claude-opus-5", "name": "Claude Opus 5", "status": "current", "profile": "opus-5", "aliases": ["opus", "opus-5", "claude-opus-5.0", "claude-opus-5-0"], "minVersion": "2.1.219" },
+      { "slug": "claude-sonnet-5", "name": "Claude Sonnet 5", "status": "current", "profile": "sonnet-5", "aliases": ["sonnet", "sonnet-5", "claude-sonnet-5.0", "claude-sonnet-5-0"] },
+      { "slug": "claude-fable-5", "name": "Claude Fable 5", "status": "legacy", "profile": "fable-5", "minVersion": "2.1.169" },
+      { "slug": "claude-opus-4-8", "name": "Claude Opus 4.8", "status": "legacy", "profile": "opus-4-8", "aliases": ["opus-4.8", "claude-opus-4.8"], "minVersion": "2.1.154" },
+      { "slug": "claude-opus-4-7", "name": "Claude Opus 4.7", "status": "legacy", "profile": "opus-4-7", "aliases": ["opus-4.7", "claude-opus-4.7"], "minVersion": "2.1.111" },
+      { "slug": "claude-opus-4-6", "name": "Claude Opus 4.6", "status": "legacy", "profile": "opus-4-6", "aliases": ["opus-4.6", "claude-opus-4.6", "claude-opus-4-6-20251117"] },
+      { "slug": "claude-opus-4-5", "name": "Claude Opus 4.5", "status": "legacy", "profile": "opus-4-5" },
+      { "slug": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "status": "legacy", "profile": "sonnet-4-6", "aliases": ["sonnet-4.6", "claude-sonnet-4.6", "claude-sonnet-4-6-20251117"] },
+      { "slug": "claude-haiku-4-5", "name": "Claude Haiku 4.5", "status": "legacy", "profile": "haiku-4-5", "aliases": ["haiku", "haiku-4.5", "claude-haiku-4.5", "claude-haiku-4-5-20251001"] }
     ]
   }
 }

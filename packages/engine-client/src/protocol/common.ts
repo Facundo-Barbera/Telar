@@ -1477,6 +1477,18 @@ export const ProviderModel = z.object({
    */
   defaultWindow: z.boolean().optional(),
   /**
+   * The manifest says this generation is history; the picker folds it, a
+   * session on it still runs. Stated per model by the model manifest (Claude
+   * today), so the picker need not guess a generation from the id.
+   *
+   * NOT `hidden` (the provider withdrew the row) and NOT `hiddenByUser` (a
+   * reader curated it away): a legacy row is still offered, one fold down.
+   */
+  legacy: z.boolean().default(false),
+  /** A short mark the manifest puts beside a row — `new` on a model that just
+   *  shipped. Display only. */
+  badge: z.enum(["new"]).optional(),
+  /**
    * Whether THIS model offers fast mode. Per model, not per provider: of the six
    * rows the installed Claude Code reports, two support it. A toggle offered on
    * a model that does not is a control that silently does nothing.
@@ -1622,6 +1634,10 @@ export const ModelCatalogue = z.object({
    * Optional so a catalogue stored or replayed from before this still parses.
    */
   instanceId: ProviderInstanceId.optional(),
+  /** The CLI's own `--version` at read time, when it answered — what the
+   *  model manifest's `minVersion` is checked against. Cached with the list
+   *  it describes. */
+  cliVersion: z.string().min(1).optional(),
 });
 export type ModelCatalogue = z.infer<typeof ModelCatalogue>;
 

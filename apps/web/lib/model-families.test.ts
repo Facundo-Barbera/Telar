@@ -35,6 +35,7 @@ const model = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel =>
   // The reader's own hide, which is a different question from the provider's
   // `hidden` above — see `ProviderModel` in the contract.
   hiddenByUser: false,
+  legacy: false,
   source: "provider",
   efforts: [],
   fastMode: false,

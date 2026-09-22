@@ -1,183 +1,233 @@
 /**
- * THE MODEL MANIFEST — facts about models the installed CLI does not publish.
+ * THE MODEL MANIFEST — Telar's Claude model list, which is T3 Code's, copied.
  *
- * WHY IT EXISTS, measured on this app: Claude Code 2.1.259 lists
- * `claude-fable-5[1m]` and `claude-fable-5-1` but no `claude-fable-5-1[1m]`,
- * even though that id is accepted and reports a 1M window. The cockpit's window
- * toggle is derived purely from the `[1m]` rows the provider lists (see
- * apps/web/lib/model-families.ts, "AND NOTHING ELSE COUNTS"), so Fable 5.1
- * offered no 1M at all and a session on it read 444k / 200k. T3 Code carries
- * the same fact in its own manifest (a `contextWindow` option on the `fable-5`
- * profile); this is Telar's, shaped for the one gap it fills today.
+ * The list is the owner's decision: T3 Code's `model-manifest.json`
+ * (pingdotgg/t3code at f25a8e4b), verbatim in ids, names, aliases, status and
+ * windows. It replaced two guesses that were visibly wrong in the cockpit:
+ * Sonnet 5 filed under "Legacy models" because the picker inferred generations
+ * from version numbers, and Fable 5 dropped outright when Fable 5.1 arrived.
+ * The manifest STATES which models are current and which are legacy; nothing
+ * here infers it.
  *
- * WHAT IT DOES, in order:
+ * WHAT `applyModelManifest` DOES:
  *
- *  1. DECLARE models the CLI does not list. Measured on this app: the same
- *     2.1.259 binary listed `claude-fable-5-1` in the morning and not in the
- *     afternoon — the list is served from an entitlement lookup, not baked in —
- *     while a session on that id kept running fine. A declared model is a real
- *     row (`source: "provider"`, since the provider does run it) with the
- *     efforts the manifest states; a listed row of the same canonical id
- *     always wins, so a declaration goes quiet the moment the CLI catches up.
+ *  1. EVERY MANIFEST MODEL IS A ROW, listed by the CLI or not. Measured on this
+ *     app: the same Claude Code binary listed `claude-fable-5-1` in the morning
+ *     and not in the afternoon — the list is served from an entitlement
+ *     lookup — while a session on it kept running. A row the CLI does list, for
+ *     the same canonical id, wins its label, description, efforts and
+ *     `resolves`; the manifest supplies only what the CLI omits.
  *
- *  2. SYNTHESIZE the missing `<id>[1m]` row for a model (listed or declared)
- *     whose profile has a long window, then publish only long-window Claude
- *     rows. This app no longer offers the 200k variants or Haiku.
+ *  2. `legacy` and `badge` come from the manifest's `status` and `badge`.
  *
- *  3. RETIRE a superseded model. Claude Code 2.1.280 still lists
- *     `claude-fable-5[1m]` beside nothing for Fable 5.1; the `retired` profile
- *     flag drops its rows from the picker while a session saved on it keeps
- *     its window and keeps running.
+ *  3. WINDOWS. A profile with a choice of window gets a `[1m]` row (the CLI's,
+ *     or synthesized), and `defaultWindow` marks the row of its default window.
+ *     Only the DEFAULT window's rows are published besides `[1m]`: Fable and
+ *     Opus default to 1M, so they publish only `[1m]` (the earlier decision
+ *     stands); Sonnet defaults to 200k, so it publishes both.
  *
- * No new protocol field: a selected row is still the provider's own model id,
- * with the context window encoded in Claude Code's `[1m]` suffix.
+ *  4. `isDefault` is the manifest's `defaults.chat` on its default window,
+ *     over whatever the CLI calls default.
  *
- * BUNDLED, NO NETWORK. The engine makes no outbound fetches today and this does
- * not start; updating the manifest is shipping a build, which for this app is a
- * nightly. A remote refresh (T3 Code's shape: fetch the same file from a public
- * URL, cache to disk, bundled copy as fallback) is a follow-up on top of this,
- * not a prerequisite — the update feed's bucket is the natural origin.
+ *  5. `minVersion`: a model the installed Claude Code is too old for is
+ *     `hidden`, the provider's own "do not offer this" — but only when the
+ *     version is known.
  *
- * PRECEDENCE: the CLI wins. A `[1m]` row the provider DOES list is never
- * duplicated or overwritten; the manifest only fills in what is absent.
+ * An EMPTY list passes through empty: it means the CLI could not be asked, and
+ * its own error is a better answer than eleven rows it may not run.
+ *
+ * BUNDLED, NO NETWORK. Updating the list is shipping a build. A remote refresh
+ * (T3 Code's shape: fetch the same file from a public URL, bundled copy as
+ * fallback) is a follow-up on top of this, not a prerequisite.
  */
 import type { Effort, ProviderModel } from "@telar/engine-client";
 import bundled from "./model-manifest.json" with { type: "json" };
 
+type ContextWindow = "200k" | "1m";
+
+export type ManifestProfile = {
+  /** More than one entry is a choice; a single `1m` is a fixed 1M window
+   *  that takes no `[1m]` suffix. */
+  windows: ContextWindow[];
+  defaultWindow?: ContextWindow;
+  efforts: Effort[];
+  fastMode: boolean;
+  /** An effort the picker offers but the provider runs as another. */
+  effortMap?: Partial<Record<Effort, Effort>>;
+};
+
+export type ManifestModel = {
+  slug: string;
+  name: string;
+  aliases?: string[];
+  status: "current" | "legacy";
+  profile: string;
+  badge?: "new";
+  minVersion?: string;
+};
+
 export type ModelManifest = {
   version: number;
   claude?: {
-    /** `defaultLong`: the provider ships this profile 1M by default, so the
-     *  synthesized `[1m]` row is marked as the model's default window.
-     *  `retired`: a newer model supersedes it, so no row of this profile is
-     *  published even when the CLI still lists one — Fable 5 under Fable 5.1.
-     *  Saved sessions on it keep running; `normalizeClaudeModel` still knows
-     *  its window, only the picker stops offering it. */
-    profiles: Record<string, { longWindow: boolean; defaultLong?: boolean; retired?: boolean }>;
-    /** Canonical wire id (no `[1m]`, no dated build) → profile key. */
-    models: Record<string, string>;
-    /** Claude Code's bare family aliases (`opus`, `sonnet`…) → profile key.
-     *  What a saved `opus` means when there is no live catalogue to ask. */
-    aliases?: Record<string, string>;
-    /** Models to list even when the CLI does not. Keyed on the canonical id;
-     *  a listed row with the same canonical id suppresses the declaration. */
-    declare?: Array<{ id: string; label: string; description?: string; efforts: Effort[] }>;
+    defaults?: { chat?: string };
+    profiles: Record<string, ManifestProfile>;
+    /** In picker order. */
+    models: ManifestModel[];
   };
 };
 
 export const BUNDLED_MANIFEST: ModelManifest = bundled as ModelManifest;
 
+const LONG = /\[1m\]$/i;
+
 /** The id a row resolves to, without the window suffix or a dated build —
- *  the same fold the cockpit's `familyKey` applies, so the manifest keys on
- *  exactly what the picker groups by. */
+ *  the same fold the cockpit's `familyKey` applies. */
 function canonicalId(model: Pick<ProviderModel, "id" | "resolves">): string {
-  return (model.resolves ?? model.id).replace(/\[1m\]$/i, "").replace(/-\d{8}$/, "");
+  return (model.resolves ?? model.id).replace(LONG, "").replace(/-\d{8}$/, "");
 }
 
-const isLong = (model: Pick<ProviderModel, "id" | "resolves">): boolean =>
-  /\[1m\]$/i.test(model.id) || /\[1m\]$/i.test(model.resolves ?? "");
+const isLong = (model: Pick<ProviderModel, "id" | "resolves">): boolean => LONG.test(model.id) || LONG.test(model.resolves ?? "");
+
+/** The manifest model an id names — its slug, or one of its aliases (a dated
+ *  build is an alias where T3 Code lists it). */
+function modelOf(id: string, manifest: ModelManifest): ManifestModel | undefined {
+  const key = id.replace(LONG, "").toLowerCase();
+  const models = manifest.claude?.models ?? [];
+  const find = (candidate: string) => models.find((model) => model.slug === candidate || model.aliases?.includes(candidate));
+  return find(key) ?? find(key.replace(/-\d{8}$/, ""));
+}
+
+/** The manifest slug a Claude id or alias names — `claude-fable-5.1` and
+ *  `fable` are both `claude-fable-5-1`. Undefined for an id it does not know. */
+export function claudeSlugOf(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): string | undefined {
+  return modelOf(id, manifest)?.slug;
+}
+
+/** The profile behind a Claude id — a session on a legacy model keeps one. */
+export function claudeProfileOf(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): ManifestProfile | undefined {
+  const model = modelOf(id, manifest);
+  return model ? manifest.claude?.profiles[model.profile] : undefined;
+}
+
+/** The effort to hand the provider for a picked one — `xhigh` runs as `max` on
+ *  Opus 4.7, per the profile. Unknown models and unmapped efforts pass through. */
+export function claudeEffortFor(model: string | undefined, effort: string | undefined, manifest: ModelManifest = BUNDLED_MANIFEST): string | undefined {
+  if (!model || !effort) return effort;
+  return claudeProfileOf(model, manifest)?.effortMap?.[effort as Effort] ?? effort;
+}
 
 /**
- * THE LONG-WINDOW SPELLING OF A SAVED CLAUDE MODEL, or the id untouched.
+ * THE DEFAULT-WINDOW SPELLING OF A SAVED CLAUDE MODEL, or the id untouched.
  *
- * Telar publishes only the `[1m]` rows of a long-window family (see
- * `publishClaudeModel`), yet a session could still be SAVED as bare `opus` or
- * `claude-opus-5` — an older record, a hand-typed id, a client written before
- * the window became a control. Measured on the dogfood app: a bare `opus`
- * session ran the provider's 200k window and auto-compacted at ~170k while
- * every surface assumed 1M. The spelling is normalised at the store's three
- * doors (session patch, per-turn choice, claim) so what runs is what the
- * picker would have offered.
+ * A session can be SAVED as bare `opus` or `claude-opus-5` — an older record,
+ * a hand-typed id, a client written before the window became a control.
+ * Measured on the dogfood app: a bare `opus` session ran the provider's 200k
+ * window while every surface assumed 1M. So an id whose profile defaults to 1M
+ * gains `[1m]`; one that defaults to 200k (Sonnet) is already its default and
+ * is left alone. Normalised at the store's three doors (session patch,
+ * per-turn choice, claim).
  *
- * NEVER INVENTS AN ID. Only a canonical id or alias the manifest maps to a
- * `longWindow` profile gets the suffix — the same rows the catalogue
- * synthesizes and the provider lists (`opus[1m]` → `claude-opus-5[1m]`). A
- * dated build, a custom id, Haiku, and anything unknown are returned as they
- * came.
+ * NEVER INVENTS AN ID. A dated build, a custom id, a fixed-window model and
+ * anything unknown are returned as they came.
  */
 export function normalizeClaudeModel(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): string {
-  const claude = manifest.claude;
-  if (!claude || /\[1m\]$/i.test(id)) return id;
-  // A dated build pins a specific release; the window suffix is not known to
-  // be accepted on it, so it is left exactly as typed.
-  if (/-\d{8}$/.test(id)) return id;
-  const profileKey = claude.models[id] ?? claude.aliases?.[id.toLowerCase()];
-  const profile = claude.profiles[profileKey ?? ""];
-  return profile?.longWindow ? `${id}[1m]` : id;
+  if (LONG.test(id) || /-\d{8}$/.test(id)) return id;
+  const profile = claudeProfileOf(id, manifest);
+  return profile && profile.windows.length > 1 && profile.defaultWindow === "1m" ? `${id}[1m]` : id;
 }
 
-function publishClaudeModel(model: ProviderModel, manifest: NonNullable<ModelManifest["claude"]>): boolean {
-  const profile = manifest.profiles[manifest.models[canonicalId(model)] ?? ""];
-  if (!profile) return true;
-  if (profile.retired) return false;
-  return profile.longWindow === true && isLong(model);
+/** Dotted versions compared numerically; missing parts are zero. */
+function compareVersions(a: string, b: string): number {
+  const left = a.split(".").map(Number);
+  const right = b.split(".").map(Number);
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+function inWindow(model: ProviderModel, long: boolean): ProviderModel {
+  if (long) return { ...model, id: `${model.id}[1m]`, resolves: `${model.resolves ?? model.id}[1m]` };
+  return { ...model, id: model.id.replace(LONG, ""), resolves: (model.resolves ?? model.id).replace(LONG, "") };
+}
+
+/** One manifest model's published rows, the default window's marked. */
+function rowsOf(entry: ManifestModel, profile: ManifestProfile, listed: readonly ProviderModel[]): ProviderModel[] {
+  const fill = (model: ProviderModel): ProviderModel => ({ ...model, efforts: model.efforts.length > 0 ? model.efforts : profile.efforts });
+  const long = listed.find(isLong);
+  const standard = listed.find((model) => !isLong(model));
+  const declared: ProviderModel = {
+    id: entry.slug,
+    label: entry.name.replace(/^Claude /, ""),
+    isDefault: false,
+    hidden: false,
+    hiddenByUser: false,
+    legacy: false,
+    // The provider runs it — that is why the manifest lists it — so the
+    // surfaces may trust its efforts the way they trust a listed row's.
+    source: "provider",
+    efforts: profile.efforts,
+    resolves: entry.slug,
+    fastMode: profile.fastMode,
+  };
+  if (profile.windows.length < 2) return [fill(standard ?? long ?? declared)];
+  const short = standard ?? (long ? inWindow(long, false) : declared);
+  const longRow = long ?? inWindow(short, true);
+  const defaultLong = profile.defaultWindow === "1m";
+  return (defaultLong ? [longRow] : [short, longRow]).map((model) =>
+    isLong(model) === defaultLong ? { ...fill(model), defaultWindow: true } : fill(model),
+  );
 }
 
 /**
- * Add the `[1m]` rows the provider left out, per the manifest. Pure; returns a
- * new array with each synthesized row placed right after its standard sibling
- * so the catalogue's own order is kept.
+ * The CLI's rows put through the manifest — see the header. Pure; manifest
+ * models first in manifest order, then any row the manifest does not know, as
+ * listed.
  */
-export function applyModelManifest(models: readonly ProviderModel[], manifest: ModelManifest = BUNDLED_MANIFEST): ProviderModel[] {
+export function applyModelManifest(
+  models: readonly ProviderModel[],
+  manifest: ModelManifest = BUNDLED_MANIFEST,
+  cliVersion?: string,
+): ProviderModel[] {
   const claude = manifest.claude;
-  if (!claude) return [...models];
-  // Step 1: declared models the CLI left out, appended after the listed rows.
-  const listedCanonical = new Set(models.map(canonicalId));
-  const declared: ProviderModel[] = (claude.declare ?? [])
-    .filter((entry) => !listedCanonical.has(canonicalId({ id: entry.id })))
-    .map((entry) => ({
-      id: entry.id,
-      label: entry.label,
-      ...(entry.description ? { description: entry.description } : {}),
-      isDefault: false,
-      hidden: false,
-      hiddenByUser: false,
-      // The provider runs it — that is the whole reason to declare it — so it
-      // is a provider row, not a hand-typed `user` one: the surfaces may trust
-      // its efforts the way they trust a listed row's.
-      source: "provider",
-      efforts: entry.efforts,
-      resolves: entry.id,
-      fastMode: false,
-    }));
-  const withDeclared = [...models, ...declared];
-  const defaultCanonical = new Set(withDeclared.filter((model) => model.isDefault).map(canonicalId));
-  // Step 2: every canonical id that already has a long row, listed by the provider.
-  const alreadyLong = new Set(withDeclared.filter(isLong).map(canonicalId));
-  const out: ProviderModel[] = [];
-  for (const model of withDeclared) {
-    out.push(model);
-    if (isLong(model)) continue;
-    const canonical = canonicalId(model);
-    if (alreadyLong.has(canonical)) continue;
-    const profile = claude.profiles[claude.models[canonical] ?? ""];
-    if (!profile?.longWindow) continue;
-    alreadyLong.add(canonical);
-    out.push({
-      ...model,
-      id: `${model.id}[1m]`,
-      // Resolves to the long form of what the standard row resolves to, so the
-      // cockpit's family fold puts both rows under one name.
-      resolves: `${model.resolves ?? model.id}[1m]`,
-      // If the provider named the filtered-out 200k row as default, carry that
-      // default to the only row Telar now publishes for this family.
-      isDefault: model.isDefault,
-      // A fact for the picker to show, not a choice made on anyone's behalf.
-      ...(profile.defaultLong ? { defaultWindow: true } : {}),
-    });
-  }
-  return out
-    .filter((model) => publishClaudeModel(model, claude))
-    .map((model) =>
-      isLong(model) && defaultCanonical.has(canonicalId(model))
-        ? { ...model, isDefault: true }
-        : model,
+  if (!claude || models.length === 0) return [...models];
+  const claimed = new Set<ProviderModel>();
+  const bySlug = new Map<string, ProviderModel[]>();
+  for (const entry of claude.models) {
+    const profile = claude.profiles[entry.profile];
+    if (!profile) continue;
+    const listed = models.filter((model) => !claimed.has(model) && modelOf(canonicalId(model), manifest)?.slug === entry.slug);
+    for (const model of listed) claimed.add(model);
+    const tooOld = cliVersion !== undefined && entry.minVersion !== undefined && compareVersions(cliVersion, entry.minVersion) < 0;
+    bySlug.set(
+      entry.slug,
+      rowsOf(entry, profile, listed).map((model) => ({
+        ...model,
+        legacy: entry.status === "legacy",
+        ...(entry.badge ? { badge: entry.badge } : {}),
+        ...(tooOld ? { hidden: true } : {}),
+      })),
     );
+  }
+  const rest = models.filter((model) => !claimed.has(model));
+  // The manifest's default when it is offered, else the model the CLI calls
+  // default, else whatever unknown row the CLI marked.
+  const offered = (slug: string | undefined) => (slug && bySlug.get(slug)?.some((model) => !model.hidden) ? slug : undefined);
+  const cliDefault = models.find((model) => model.isDefault);
+  const defaultSlug = offered(claude.defaults?.chat) ?? offered(cliDefault && modelOf(canonicalId(cliDefault), manifest)?.slug);
+  const out: ProviderModel[] = [];
+  for (const [slug, rows] of bySlug) {
+    const single = rows.length === 1;
+    for (const model of rows) out.push({ ...model, isDefault: slug === defaultSlug && (single || model.defaultWindow === true) });
+  }
+  for (const model of rest) out.push(defaultSlug ? { ...model, isDefault: false } : model);
+  return out;
 }
 
 /** The default row's id when it is a long one, else nothing — the single rule
  *  behind both the picker's default and the claim's fallback. */
 export function longDefaultOf(models: readonly Pick<ProviderModel, "id" | "isDefault">[]): string | undefined {
   const fallback = models.find((model) => model.isDefault);
-  return fallback && /\[1m\]$/i.test(fallback.id) ? fallback.id : undefined;
+  return fallback && LONG.test(fallback.id) ? fallback.id : undefined;
 }

@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { ProviderModel } from "@telar/engine-client";
-import { applyModelManifest, BUNDLED_MANIFEST, normalizeClaudeModel, type ModelManifest } from "../src/model-manifest";
-
-/** The bundled manifest without its declarations — for tests about the
- *  window-synthesis half alone, where an appended Fable 5.1 would be noise. */
-const WINDOWS_ONLY: ModelManifest = { version: 1, claude: { profiles: BUNDLED_MANIFEST.claude!.profiles, models: BUNDLED_MANIFEST.claude!.models } };
+import {
+  applyModelManifest,
+  BUNDLED_MANIFEST,
+  claudeEffortFor,
+  claudeProfileOf,
+  longDefaultOf,
+  normalizeClaudeModel,
+  type ModelManifest,
+} from "../src/model-manifest";
 
 const row = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => ({
   id,
@@ -12,145 +16,166 @@ const row = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => (
   isDefault: false,
   hidden: false,
   hiddenByUser: false,
+  legacy: false,
   source: "provider",
   efforts: ["high"],
   fastMode: false,
   ...extra,
 });
 
-describe("the model manifest", () => {
-  test("synthesizes the [1m] row the CLI leaves out — the Fable 5.1 gap, measured", () => {
-    /**
-     * Claude Code 2.1.259 lists `claude-fable-5[1m]` and `claude-fable-5-1`
-     * but no `claude-fable-5-1[1m]`, even though the id is accepted and
-     * reports a 1M window. The cockpit's window toggle exists only where a
-     * `[1m]` row does, so Fable 5.1 offered no 1M at all.
-     */
-    const listed = [row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" }), row("claude-fable-5-1", { resolves: "claude-fable-5-1", isDefault: true })];
-    const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["sonnet[1m]", "claude-fable-5-1[1m]"]);
-    const synthesized = out[1]!;
-    expect(synthesized.resolves).toBe("claude-fable-5-1[1m]");
-    // The 200k default row is filtered away, so the surviving 1M row carries it.
-    expect(synthesized.isDefault).toBe(true);
-    // Everything else — efforts, fast mode, label — copied from the sibling.
-    expect(synthesized.efforts).toEqual(["high"]);
+/** Claude Code 2.1.280's catalogue as `parseClaudeModels` hands it over: the
+ *  `default` row already folded into the `opus[1m]` it resolves to. */
+const CATALOGUE_2_1_280 = [
+  row("opus[1m]", { resolves: "claude-opus-5-5[1m]", label: "Opus (1M context)", isDefault: true }),
+  row("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]", label: "Fable" }),
+  row("sonnet", { resolves: "claude-sonnet-5", label: "Sonnet" }),
+  row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]", label: "Sonnet 5 (1M context)" }),
+  row("haiku", { resolves: "claude-haiku-4-5-20251001", label: "Haiku", efforts: [] }),
+];
+
+const canonical = (model: ProviderModel) => (model.resolves ?? model.id).replace(/\[1m\]$/i, "").replace(/-\d{8}$/, "");
+
+describe("T3 Code's list, applied to the 2.1.280 catalogue", () => {
+  const out = applyModelManifest(CATALOGUE_2_1_280, BUNDLED_MANIFEST, "2.1.280");
+  const bySlug = (slug: string) => out.filter((model) => canonical(model) === slug);
+
+  test("current and legacy come from the manifest's status, in its order", () => {
+    const families = (legacy: boolean) => [...new Set(out.filter((model) => model.legacy === legacy).map(canonical))];
+    expect(families(false)).toEqual(["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5"]);
+    expect(families(true)).toEqual([
+      "claude-fable-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-opus-4-5",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-5",
+    ]);
   });
 
-  test("the CLI wins: a listed [1m] row is never duplicated", () => {
-    const listed = [row("sonnet", { resolves: "claude-sonnet-5" }), row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" })];
-    expect(applyModelManifest(listed, WINDOWS_ONLY).map((m) => m.id)).toEqual(["sonnet[1m]"]);
+  test("the manifest's default wins over the CLI's: Fable 5.1 on 1M", () => {
+    expect(out.filter((model) => model.isDefault).map((model) => model.id)).toEqual(["claude-fable-5-1[1m]"]);
+    expect(longDefaultOf(out)).toBe("claude-fable-5-1[1m]");
   });
 
-  test("a profile without a long window is dropped, and a model the manifest does not know is left alone", () => {
-    const listed = [row("haiku", { resolves: "claude-haiku-4-5-20251001" }), row("claude-mystery-9", { resolves: "claude-mystery-9" })];
-    expect(applyModelManifest(listed, WINDOWS_ONLY).map((m) => m.id)).toEqual(["claude-mystery-9"]);
+  test("Opus 5.5 carries the CLI's row and label, and the `new` badge", () => {
+    expect(bySlug("claude-opus-5-5")).toMatchObject([{ id: "opus[1m]", label: "Opus (1M context)", badge: "new", defaultWindow: true, isDefault: false }]);
+    expect(out.filter((model) => model.badge).map(canonical)).toEqual(["claude-opus-5-5"]);
   });
 
-  test("keys on the canonical id: a dated build and an alias both find their profile", () => {
-    const manifest: ModelManifest = { version: 1, claude: { profiles: { p: { longWindow: true } }, models: { "claude-x-1": "p" } } };
-    const listed = [row("x", { resolves: "claude-x-1-20260101" })];
-    const out = applyModelManifest(listed, manifest);
-    expect(out.map((m) => m.id)).toEqual(["x[1m]"]);
-    expect(out[0]!.resolves).toBe("claude-x-1-20260101[1m]");
+  test("Sonnet 5 publishes BOTH windows, 200k marked as its default", () => {
+    expect(bySlug("claude-sonnet-5").map((model) => [model.id, model.defaultWindow ?? false])).toEqual([
+      ["sonnet", true],
+      ["sonnet[1m]", false],
+    ]);
   });
 
-  test("the bundled manifest is well-formed: every model points at a profile that exists", () => {
-    const claude = BUNDLED_MANIFEST.claude!;
-    for (const [id, profile] of Object.entries(claude.models)) {
-      expect(claude.profiles[profile], `${id} → ${profile}`).toBeDefined();
-    }
-  });
-});
-
-describe("declared models", () => {
-  test("a model the CLI does not list is declared, with its [1m] variant — Fable 5.1, measured", () => {
-    /**
-     * The same 2.1.259 binary listed `claude-fable-5-1` in the morning and not
-     * in the afternoon; a session on it kept running. The list is served from
-     * an entitlement lookup, so a model the provider runs can be absent from
-     * it — and the person running it still needs a row to pick.
-     */
-    const listed = [row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" })];
-    const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["sonnet[1m]", "claude-fable-5-1[1m]"]);
-    const declared = out[1]!;
-    expect(declared).toMatchObject({ label: "Fable 5.1", source: "provider", isDefault: false, resolves: "claude-fable-5-1[1m]" });
-    expect(declared.efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  test("a model the CLI does not list is still a row, named from the manifest, on its default window", () => {
+    expect(bySlug("claude-opus-5")).toMatchObject([
+      { id: "claude-opus-5[1m]", label: "Opus 5", resolves: "claude-opus-5[1m]", source: "provider", fastMode: true },
+    ]);
+    expect(bySlug("claude-opus-5")[0]!.efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    // A fixed-1M profile takes no suffix; a 200k-only one has one row.
+    expect(bySlug("claude-opus-4-8").map((model) => model.id)).toEqual(["claude-opus-4-8"]);
+    expect(bySlug("claude-opus-4-5").map((model) => model.id)).toEqual(["claude-opus-4-5"]);
   });
 
-  test("the CLI wins: a listed row suppresses its declaration, including under an alias", () => {
-    // Listed by alias, resolving to the canonical id the manifest declares.
-    const listed = [row("fable", { resolves: "claude-fable-5-1", label: "Fable (live)" })];
-    const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["fable[1m]"]);
-    expect(out[0]!.label).toBe("Fable (live)");
-  });
-});
-
-describe("retired models", () => {
-  test("Fable 5 is superseded by Fable 5.1: its listed row is dropped, the declaration still stands", () => {
-    // Claude Code 2.1.280 lists `claude-fable-5[1m]` and no Fable 5.1 at all.
-    const listed = [row("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]", label: "Fable" }), row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" })];
-    const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["sonnet[1m]", "claude-fable-5-1[1m]"]);
+  test("Fable 5 is kept, under Legacy, rather than dropped", () => {
+    expect(bySlug("claude-fable-5")).toMatchObject([{ id: "claude-fable-5[1m]", label: "Fable", legacy: true }]);
   });
 
-  test("a session saved on a retired model keeps its window — retirement is the picker's, not the store's", () => {
-    expect(normalizeClaudeModel("claude-fable-5")).toBe("claude-fable-5[1m]");
+  test("a listed row keeps its own efforts; an empty list is filled from the profile", () => {
+    expect(bySlug("claude-sonnet-5")[0]!.efforts).toEqual(["high"]);
+    expect(bySlug("claude-haiku-4-5")).toMatchObject([{ id: "haiku", efforts: [], legacy: true }]);
   });
 
-  test("Opus 5.5 is the provider's default and rides through as listed — the 2.1.280 catalogue, measured", () => {
-    // As `parseClaudeModels` hands them over: the `default` row already folded
-    // into the `opus[1m]` it resolves to.
-    const listed = [
-      row("opus[1m]", { resolves: "claude-opus-5-5[1m]", label: "Opus (1M context)", isDefault: true }),
-      row("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]", label: "Fable" }),
-      row("sonnet", { resolves: "claude-sonnet-5" }),
-      row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" }),
-      row("haiku", { resolves: "claude-haiku-4-5-20251001" }),
-    ];
-    const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["opus[1m]", "sonnet[1m]", "claude-fable-5-1[1m]"]);
-    expect(out[0]!.isDefault).toBe(true);
-    expect(normalizeClaudeModel("opus")).toBe("opus[1m]");
-    expect(normalizeClaudeModel("claude-opus-5-5")).toBe("claude-opus-5-5[1m]");
+  test("nothing is hidden when the installed CLI is new enough", () => {
+    expect(out.filter((model) => model.hidden)).toEqual([]);
   });
 });
 
-test("a profile shipped 1M by default marks its synthesized [1m] row as the default WINDOW — a fact, not a choice", () => {
-  // The picker shows `Default` beside 1M for Fable 5.1 (per Claude Code's own
-  // changelog) and still sends whichever row you pick; `isDefault` — which
-  // decides what runs when no model is named — stays on the standard row.
-  const listed = [row("claude-fable-5-1", { resolves: "claude-fable-5-1", isDefault: true })];
-  const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-  const long = out.find((m) => m.id === "claude-fable-5-1[1m]")!;
-  expect(long.defaultWindow).toBe(true);
-  expect(long.isDefault).toBe(true);
-  expect(out.find((m) => m.id === "claude-fable-5-1")).toBeUndefined();
-  // A long-window profile NOT shipped 1M by default gets no mark.
-  const sonnet = applyModelManifest([row("sonnet", { resolves: "claude-sonnet-5" })], BUNDLED_MANIFEST).find((m) => m.id === "sonnet[1m]")!;
-  expect(sonnet.defaultWindow).toBeUndefined();
+describe("minVersion", () => {
+  test("hides Opus 5.5 under 2.1.279, and the default stays Fable 5.1", () => {
+    const out = applyModelManifest(CATALOGUE_2_1_280, BUNDLED_MANIFEST, "2.1.279");
+    expect(out.filter((model) => model.hidden).map(canonical)).toEqual(["claude-opus-5-5"]);
+    expect(longDefaultOf(out)).toBe("claude-fable-5-1[1m]");
+  });
+
+  test("an unknown version hides nothing", () => {
+    expect(applyModelManifest(CATALOGUE_2_1_280, BUNDLED_MANIFEST).some((model) => model.hidden)).toBe(false);
+  });
+
+  test("a hidden manifest default falls back to the CLI's own", () => {
+    const out = applyModelManifest(CATALOGUE_2_1_280, BUNDLED_MANIFEST, "2.1.200");
+    // Fable 5.1 needs 2.1.257, Opus 5.5 2.1.280: the CLI's default model is
+    // hidden too, so nothing listed is default.
+    expect(out.some((model) => model.isDefault)).toBe(false);
+    const manifest: ModelManifest = { ...BUNDLED_MANIFEST, claude: { ...BUNDLED_MANIFEST.claude!, defaults: {} } };
+    expect(longDefaultOf(applyModelManifest(CATALOGUE_2_1_280, manifest, "2.1.280"))).toBe("opus[1m]");
+  });
+});
+
+describe("the CLI wins what it states", () => {
+  test("a listed Fable 5.1 row — even under an alias — replaces the manifest's", () => {
+    const out = applyModelManifest([row("fable", { label: "Fable (live)" })], BUNDLED_MANIFEST);
+    const fable = out.filter((model) => model.label === "Fable (live)");
+    expect(fable.map((model) => model.id)).toEqual(["fable[1m]"]);
+    expect(out.some((model) => model.id === "claude-fable-5-1[1m]")).toBe(false);
+  });
+
+  test("a model the manifest does not know rides through after the manifest's", () => {
+    const out = applyModelManifest([row("claude-mystery-9")], BUNDLED_MANIFEST);
+    expect(out.at(-1)).toMatchObject({ id: "claude-mystery-9", legacy: false });
+  });
+
+  test("an empty list stays empty — the CLI could not be asked", () => {
+    expect(applyModelManifest([], BUNDLED_MANIFEST)).toEqual([]);
+  });
 });
 
 describe("normalizeClaudeModel", () => {
-  test("maps a canonical id or a bare alias to its [1m] row, and only when the profile has a long window", () => {
-    expect(normalizeClaudeModel("claude-opus-5")).toBe("claude-opus-5[1m]");
+  test("gives an id its profile's default window", () => {
     expect(normalizeClaudeModel("opus")).toBe("opus[1m]");
+    expect(normalizeClaudeModel("claude-opus-5-5")).toBe("claude-opus-5-5[1m]");
     expect(normalizeClaudeModel("Fable")).toBe("Fable[1m]");
     expect(normalizeClaudeModel("claude-fable-5-1")).toBe("claude-fable-5-1[1m]");
-    expect(normalizeClaudeModel("claude-haiku-4-5")).toBe("claude-haiku-4-5");
+    // Sonnet's default window is 200k: the bare id already is it.
+    expect(normalizeClaudeModel("sonnet")).toBe("sonnet");
+    expect(normalizeClaudeModel("claude-sonnet-5")).toBe("claude-sonnet-5");
     expect(normalizeClaudeModel("haiku")).toBe("haiku");
+    expect(normalizeClaudeModel("claude-opus-4-8")).toBe("claude-opus-4-8");
   });
+
   test("never invents: already-long, dated, custom and unknown ids come back as they went in", () => {
     expect(normalizeClaudeModel("opus[1m]")).toBe("opus[1m]");
     expect(normalizeClaudeModel("claude-opus-5[1M]")).toBe("claude-opus-5[1M]");
     expect(normalizeClaudeModel("claude-opus-5-20260101")).toBe("claude-opus-5-20260101");
     expect(normalizeClaudeModel("claude-mystery-9")).toBe("claude-mystery-9");
-    expect(normalizeClaudeModel("opus", { version: 1 })).toBe("opus");
+    expect(normalizeClaudeModel("opus", { version: 2 })).toBe("opus");
   });
-  test("the bundled aliases all point at a profile that exists", () => {
-    const claude = BUNDLED_MANIFEST.claude!;
-    for (const [alias, profile] of Object.entries(claude.aliases ?? {})) expect(claude.profiles[profile], alias).toBeDefined();
+
+  test("a session on legacy Fable 5 still resolves its profile and keeps its window", () => {
+    expect(claudeProfileOf("claude-fable-5")?.defaultWindow).toBe("1m");
+    expect(normalizeClaudeModel("claude-fable-5")).toBe("claude-fable-5[1m]");
   });
+});
+
+test("an effort a model runs under another name is mapped for the provider", () => {
+  expect(claudeEffortFor("claude-opus-4-7", "xhigh")).toBe("max");
+  expect(claudeEffortFor("claude-sonnet-4-6[1m]", "max")).toBe("high");
+  expect(claudeEffortFor("claude-opus-5-5[1m]", "xhigh")).toBe("xhigh");
+  expect(claudeEffortFor("claude-mystery-9", "max")).toBe("max");
+});
+
+test("the bundled manifest is well-formed: every model has a profile, the default is a model, no alias is claimed twice", () => {
+  const claude = BUNDLED_MANIFEST.claude!;
+  const seen = new Set<string>();
+  for (const model of claude.models) {
+    expect(claude.profiles[model.profile], model.slug).toBeDefined();
+    for (const alias of [model.slug, ...(model.aliases ?? [])]) {
+      expect(seen.has(alias), alias).toBe(false);
+      seen.add(alias);
+    }
+  }
+  expect(claude.models.some((model) => model.slug === claude.defaults?.chat)).toBe(true);
 });
