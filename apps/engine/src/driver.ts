@@ -1382,7 +1382,9 @@ export function createClaudeDriver(
           // A retry or a rejected limit is already holding a row open about
           // this same silence, and it has the provider's own account of it.
           // Two rows for one wait would be the engine arguing with the SDK.
-          if (waitItemId) return;
+          // A compaction is a silence the provider ANNOUNCED: minutes of it are
+          // the work, not a stall, and its own row already says what it is.
+          if (waitItemId || compactionItemId) return;
           const id = itemId();
           const wait: ProviderWaitDetail = { kind: "no_response", waitedMs: Date.now() - sentAt };
           const detail: ItemDetail = { type: "provider_wait", wait };
@@ -3423,6 +3425,8 @@ export function createClaudeDriver(
              * forgetting things.
              */
             if (str(item.status) === "compacting" && !compactionItemId) {
+              // The silence watch belongs to a request; a compaction is not one.
+              disarmProviderSilence();
               compactionItemId = itemId();
               compactionSucceeded = false;
               compactionMeasured = false;

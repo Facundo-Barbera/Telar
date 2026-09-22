@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Item, Turn } from "@telar/engine-client";
 import { isCompacting, projectJournal, type JournalTurn } from "@/lib/engine/journal";
-import { turnActivity, WorkingIndicator } from "./transcript";
+import { TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 
 const STARTED = 1_000_000;
 /** Three times the twenty-second threshold: unambiguously quiet. */
@@ -82,6 +82,14 @@ describe("the working indicator on a turn quiet for a minute", () => {
     expect(html).toContain("no output");
     expect(html).toContain("1m 00s");
     expect(html).toContain("bg-warning");
+  });
+
+  test("a running compaction is said once, by this line, and not also by a row above it", () => {
+    const compaction = quietTurn("inProgress").items.find((item) => item.detail.type === "context_compaction")!;
+    expect(renderToStaticMarkup(<TranscriptItem item={compaction} />)).toBe("");
+    // Once it has closed, the row is the only place its outcome is written.
+    const closed = quietTurn("completed").items.find((item) => item.detail.type === "context_compaction")!;
+    expect(renderToStaticMarkup(<TranscriptItem item={closed} />)).toContain("Compacted context");
   });
 
   test("suppression is the compacting flag itself, not the turn's shape", () => {
