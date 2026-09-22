@@ -16,6 +16,7 @@ const row = (id: string): ProviderModel => ({
   isDefault: false,
   hidden: false,
   hiddenByUser: false,
+  legacy: false,
   source: "provider",
   efforts: [],
   fastMode: false,

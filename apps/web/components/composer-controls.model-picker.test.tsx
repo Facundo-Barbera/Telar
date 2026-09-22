@@ -71,7 +71,7 @@ afterAll(async () => {
 });
 
 function model(id: string, label: string, over: Partial<ProviderModel> = {}): ProviderModel {
-  return { id, label, isDefault: false, hidden: false, efforts: [], fastMode: false, hiddenByUser: false, source: "provider", ...over } as ProviderModel;
+  return { id, label, isDefault: false, hidden: false, efforts: [], fastMode: false, hiddenByUser: false, legacy: false, source: "provider", ...over } as ProviderModel;
 }
 
 /**
@@ -83,8 +83,9 @@ function model(id: string, label: string, over: Partial<ProviderModel> = {}): Pr
  * Nothing is marked `isDefault`, so `splitGenerations` files everything as
  * current and no Legacy fold stands between these tests and the rows.
  */
+const CLAUDE_BASE = [model("claude-opus-5", "Opus 5"), model("claude-haiku-4-5", "Haiku 4.5")];
 const CATALOGUES: Record<ProviderDriverKind, ProviderModel[]> = {
-  claude: [model("claude-opus-5", "Opus 5"), model("claude-haiku-4-5", "Haiku 4.5")],
+  claude: CLAUDE_BASE,
   codex: [model("gpt-6-astra", "GPT-6 Astra")],
   opencode: [model("opencode-go/gpt-5.6-luna", "gpt-5.6-luna"), model("openai/gpt-5.6-luna", "gpt-5.6-luna")],
 };
@@ -200,6 +201,51 @@ async function open(props: Partial<React.ComponentProps<typeof AgentControl>> = 
   await mount(<AgentControl driver="opencode" choice={{}} onChange={() => undefined} onDriverChange={() => undefined} {...props} />);
   await press(trigger());
 }
+
+/**
+ * THE CLAUDE LIST AS THE ENGINE NOW PUBLISHES IT — T3 Code's, with `legacy`
+ * stated per row (apps/engine/src/model-manifest.ts). The two misfilings it
+ * replaced: Sonnet 5 under "Legacy models" beside an Opus 5.5 default, and
+ * Fable 5 gone altogether.
+ */
+const T3_CLAUDE: ProviderModel[] = [
+  model("claude-fable-5-1[1m]", "Fable 5.1", { resolves: "claude-fable-5-1[1m]", isDefault: true, defaultWindow: true }),
+  model("opus[1m]", "Opus (1M context)", { resolves: "claude-opus-5-5[1m]", badge: "new", defaultWindow: true }),
+  model("claude-opus-5[1m]", "Opus 5", { resolves: "claude-opus-5[1m]", defaultWindow: true }),
+  model("sonnet", "Sonnet", { resolves: "claude-sonnet-5", defaultWindow: true }),
+  model("sonnet[1m]", "Sonnet 5 (1M context)", { resolves: "claude-sonnet-5[1m]" }),
+  model("claude-fable-5[1m]", "Fable", { resolves: "claude-fable-5[1m]", legacy: true, defaultWindow: true }),
+  model("haiku", "Haiku", { resolves: "claude-haiku-4-5-20251001", legacy: true }),
+];
+
+describe("the Claude list files what the manifest says", () => {
+  const firstLines = () => rowText().map((text) => text.split(" | ")[0]);
+  const legacyFold = () => [...document.body.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.startsWith("Legacy models"));
+
+  test("Sonnet 5 is current beside Opus 5.5, and Fable 5 waits under Legacy", async () => {
+    CATALOGUES.claude = T3_CLAUDE;
+    try {
+      await open({ driver: "claude" });
+      expect(firstLines()).toEqual(["Fable 5.1", "Opus 5.5", "Opus 5", "Sonnet 5"]);
+      expect(legacyFold()?.textContent).toContain("2");
+      await press(legacyFold()!);
+      expect(firstLines()).toEqual(["Fable 5.1", "Opus 5.5", "Opus 5", "Sonnet 5", "Fable 5", "Haiku 4.5"]);
+    } finally {
+      CATALOGUES.claude = CLAUDE_BASE;
+    }
+  });
+
+  test("the `new` chip sits on Opus 5.5's row and no other", async () => {
+    CATALOGUES.claude = T3_CLAUDE;
+    try {
+      await open({ driver: "claude" });
+      const marked = rows().filter((row) => [...row.querySelectorAll(":scope > span")].some((span) => span.textContent === "New"));
+      expect(marked.map((row) => row.textContent)).toEqual([expect.stringContaining("Opus 5.5")]);
+    } finally {
+      CATALOGUES.claude = CLAUDE_BASE;
+    }
+  });
+});
 
 describe("the row says who serves the model", () => {
   test("a second line carries the harness and the connection, under the name", async () => {

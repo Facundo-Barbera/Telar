@@ -82,6 +82,10 @@ export type ModelFamily = {
   label: string;
   isDefault: boolean;
   hidden: boolean;
+  /** The manifest filed every row of it as history — see `splitGenerations`. */
+  legacy: boolean;
+  /** The manifest's mark for it, `new` on a model that just shipped. */
+  badge?: "new";
   /** The provider's own rows, in catalogue order. Never empty. */
   rows: ProviderModel[];
 };
@@ -126,6 +130,8 @@ export function groupFamilies(models: readonly ProviderModel[]): ModelFamily[] {
       label: versionedLabel(stripWindow(named.label) || named.label, id),
       isDefault: rows.some((row) => row.isDefault),
       hidden: rows.every((row) => row.hidden),
+      legacy: rows.every((row) => row.legacy),
+      ...(rows.some((row) => row.badge === "new") ? { badge: "new" as const } : {}),
       rows,
     };
   });

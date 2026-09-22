@@ -63,11 +63,21 @@ export type ModelGenerations<T> = {
  * "Legacy models" next to nothing else. Its family id is `claude-sonnet-5`,
  * which reports 5, which is what it is.
  */
-type Generational = { id: string; isDefault: boolean; hidden: boolean };
+type Generational = { id: string; isDefault: boolean; hidden: boolean; legacy?: boolean };
 
 export function splitGenerations<T extends Generational>(models: readonly T[]): ModelGenerations<T> {
   const visible = models.filter((model) => !model.hidden);
   const hidden = models.filter((model) => model.hidden);
+
+  /**
+   * A STATED `legacy` BEATS THE HEURISTIC BELOW. Claude's rows carry it from
+   * the model manifest (T3 Code's list), which knows that Sonnet 5 is current
+   * beside Opus 5.5 — something no version rule can read off the ids. The
+   * heuristic stays for a driver whose rows state nothing (Codex).
+   */
+  if (models.some((model) => model.legacy)) {
+    return { current: visible.filter((model) => !model.legacy), legacy: [...hidden, ...visible.filter((model) => model.legacy)] };
+  }
   const defaultModel = visible.find((model) => model.isDefault);
   const line = defaultModel ? modelVersion(defaultModel.id) : undefined;
 

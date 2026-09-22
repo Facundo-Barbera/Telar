@@ -16,6 +16,7 @@ const model = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel =>
   isDefault: false,
   hidden: false,
   hiddenByUser: false,
+  legacy: false,
   source: "provider",
   efforts: [],
   fastMode: false,
@@ -116,6 +117,33 @@ describe("splitGenerations", () => {
 
   test("an empty catalogue is empty, not a crash", () => {
     expect(splitGenerations([])).toEqual({ current: [], legacy: [] });
+  });
+});
+
+describe("a stated `legacy` beats the version heuristic", () => {
+  const ids = (models: readonly ProviderModel[]) => models.map((m) => m.id);
+
+  test("Sonnet 5 stays current beside an Opus 5.5 default, and Fable 5 is legacy — the manifest's filing", () => {
+    // By version alone, Sonnet 5 sits two lines below the default and folds.
+    const models = [
+      model("claude-fable-5-1", { isDefault: true }),
+      model("claude-opus-5-5"),
+      model("claude-opus-5"),
+      model("claude-sonnet-5"),
+      model("claude-fable-5", { legacy: true }),
+      model("claude-haiku-4-5", { legacy: true }),
+      model("claude-opus-4-8", { legacy: true, hidden: true }),
+    ];
+    const { current, legacy } = splitGenerations(models);
+    expect(ids(current)).toEqual(["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5"]);
+    expect(ids(legacy)).toEqual(["claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"]);
+  });
+
+  test("Codex rows, which state nothing, still split by version", () => {
+    const models = [model("gpt-6-astra", { isDefault: true }), model("gpt-5.6-sol"), model("gpt-5.4-mini")];
+    const { current, legacy } = splitGenerations(models);
+    expect(ids(current)).toEqual(["gpt-6-astra", "gpt-5.6-sol"]);
+    expect(ids(legacy)).toEqual(["gpt-5.4-mini"]);
   });
 });
 
