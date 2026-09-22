@@ -45,6 +45,7 @@ import {
   TELAR_MCP_SERVER,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
+import { claudeEffortFor } from "./model-manifest";
 import { collectTelarWall, type TelarSocketLease, type TelarWallPart } from "./telar-socket";
 import { runTools } from "./run/tools";
 import { pluginToolModules } from "./plugins/bundled";
@@ -349,9 +350,10 @@ function isClaudeLongContextFamily(model: string): boolean {
 }
 
 /**
- * Telar no longer offers Claude's 200k variants. Keep 1M enabled for the
- * provider default too, because an absent model means "run Claude Code's
- * default", not "run a short-context row". Explicit unsupported custom ids are
+ * Keep 1M enabled for every long-context family — it only PERMITS the long
+ * window; the id's `[1m]` selects it — and for the provider default too,
+ * because an absent model means "run Claude Code's default", not "run a
+ * short-context row". Explicit unsupported custom ids are
  * left alone rather than given a fabricated meter.
  */
 function claudeContextEnvForModel(model: string | undefined): Record<string, string> | undefined {
@@ -1302,7 +1304,8 @@ export function createClaudeDriver(
       // The Claude SDK spawns its CLI in a directory; a session with none is a
       // routing mistake and says so before anything starts. See `requireCwd`.
       const cwd = requireCwd(claimedCwd, "Claude Code");
-      const sdkEffort = claudeEffort(effort);
+      // The manifest maps an effort a model runs under another name (Opus 4.7: xhigh → max).
+      const sdkEffort = claudeEffort(claudeEffortFor(model, effort));
       const userServers = claudeMcpServers(userMcpServers);
       const contextEnv = claudeContextEnvForModel(model);
 

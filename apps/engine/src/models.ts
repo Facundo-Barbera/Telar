@@ -29,7 +29,7 @@ import { promisify } from "node:util";
  * and the cache is what makes them acceptable to call from a popover.
  */
 import type { AgentModelCatalogue, Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
-import { refuseCliSpawnUnderTest, requireCli } from "./cli-resolution";
+import { refuseCliSpawnUnderTest, requireCli, resolveCliAsync } from "./cli-resolution";
 import { CodexAppServer, resolveCodexBinary } from "./codex/app-server";
 import { defaultAgentModel, readAgentCatalogue } from "./agent/catalogue";
 
@@ -123,6 +123,7 @@ export function parseClaudeModels(payload: unknown): ProviderModel[] {
         // A row straight off the provider carries no reader's opinion yet — the
         // overlay is what sets this, downstream of here (./model-overlay.ts).
         hiddenByUser: false,
+        legacy: false,
         source: "provider",
         efforts,
         ...(typeof row.resolvedModel === "string" && row.resolvedModel ? { resolves: row.resolvedModel } : {}),
@@ -164,11 +165,24 @@ export async function loadClaudeModelSdk(): Promise<ClaudeModelSdk> {
   return (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeModelSdk;
 }
 
+/** The installed Claude Code's `--version`, which the model manifest's
+ *  `minVersion` is checked against. Soft, and refused under test like every
+ *  other spawn: no version means no row is hidden for being too new. */
+async function installedClaudeVersion(): Promise<string | undefined> {
+  try {
+    refuseCliSpawnUnderTest("claude --version");
+    return (await resolveCliAsync("claude")).version;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function readClaudeModels(
   loadSdk: () => Promise<ClaudeModelSdk> = loadClaudeModelSdk,
   timeoutMs = MODEL_LIST_TIMEOUT_MS,
   resolveExecutable: () => string | undefined = defaultModelListExecutable,
-): Promise<{ models: ProviderModel[]; message?: string }> {
+  readVersion: () => Promise<string | undefined> = installedClaudeVersion,
+): Promise<{ models: ProviderModel[]; message?: string; cliVersion?: string }> {
   let sdk: ClaudeModelSdk;
   try {
     sdk = await loadSdk();
@@ -219,7 +233,9 @@ export async function readClaudeModels(
         timer = setTimeout(() => reject(new Error("claude did not answer with its models in time")), timeoutMs);
       }),
     ]);
-    return { models: parseClaudeModels(models) };
+    // Cached by `cli-resolution` per binary, so this is one spawn per update.
+    const cliVersion = await readVersion();
+    return { models: parseClaudeModels(models), ...(cliVersion ? { cliVersion } : {}) };
   } catch (error) {
     return { models: [], message: error instanceof Error ? error.message : "claude did not answer with its models" };
   } finally {
@@ -259,6 +275,7 @@ export function parseCodexModels(payload: unknown): ProviderModel[] {
         // As in the Claude parser: the reader's own hide arrives later, from the
         // overlay, and must never be confused with the provider's `hidden`.
         hiddenByUser: false,
+        legacy: false,
         source: "provider",
         efforts,
         ...(typeof row.defaultReasoningEffort === "string" && row.defaultReasoningEffort
@@ -311,7 +328,7 @@ export async function readOpenCodeModels(): Promise<{ models: ProviderModel[]; m
     const executable = requireCli("opencode");
     const { stdout } = await promisify(execFile)(executable, ["models"], { timeout: MODEL_LIST_TIMEOUT_MS, maxBuffer: 2_000_000 });
     const ids = [...new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[A-Za-z0-9_.-]+\/\S+$/.test(line)))];
-    return { models: ids.map((id) => ({ id, label: id, efforts: [], isDefault: false, hidden: false, fastMode: false, hiddenByUser: false, source: "provider" as const })) };
+    return { models: ids.map((id) => ({ id, label: id, efforts: [], isDefault: false, hidden: false, fastMode: false, hiddenByUser: false, legacy: false, source: "provider" as const })) };
   } catch (error) { return { models: [], message: error instanceof Error ? error.message : "OpenCode did not answer models" }; }
 }
 
@@ -346,6 +363,7 @@ export async function readAgentModels(agentDir?: string): Promise<AgentModelCata
       hidden: false,
       fastMode: false,
       hiddenByUser: false,
+      legacy: false,
       source: "provider" as const,
     })),
   };
@@ -357,7 +375,7 @@ export async function readModelCatalogue(
   readCodex: typeof readCodexModels = readCodexModels,
   readClaude: typeof readClaudeModels = readClaudeModels,
 ): Promise<ModelCatalogue> {
-  const answer =
+  const answer: { models: ProviderModel[]; message?: string; cliVersion?: string } =
     driver === "claude"
       ? await readClaude()
       : driver === "opencode"
@@ -376,6 +394,7 @@ export async function readModelCatalogue(
     models: answer.models,
     source: answer.models.length > 0 ? "provider" : "builtin",
     ...(answer.message ? { message: answer.message } : {}),
+    ...(answer.cliVersion ? { cliVersion: answer.cliVersion } : {}),
     readAt: now(),
   };
 }

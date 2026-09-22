@@ -3928,7 +3928,7 @@ describe("an agent's message is attributed, never the person's", () => {
 });
 
 describe("a Claude model is stored and claimed in the spelling Telar offers", () => {
-  test("a bare family id or alias becomes its [1m] row at every door; a custom, dated or short-window id is left alone", () => {
+  test("a bare family id or alias becomes its default-window row at every door; a custom, dated or short-window id is left alone", () => {
     const { store } = readyStore();
     const session = store.getSession("session_one");
     const instanceId = session.providerInstanceId;
@@ -3941,10 +3941,12 @@ describe("a Claude model is stored and claimed in the spelling Telar offers", ()
     expect(store.updateSession("session_one", { model: { instanceId, model: "claude-mystery-9" } }).model?.model).toBe("claude-mystery-9");
     expect(store.updateSession("session_one", { model: { instanceId, model: "claude-opus-5-20260101" } }).model?.model).toBe("claude-opus-5-20260101");
     expect(store.updateSession("session_one", { model: { instanceId, model: "haiku" } }).model?.model).toBe("haiku");
+    // Sonnet's default window is 200k, so its bare alias already is it.
+    expect(store.updateSession("session_one", { model: { instanceId, model: "sonnet" } }).model?.model).toBe("sonnet");
     // The per-turn choice.
-    const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "Hi", model: { model: "sonnet" } });
-    expect(turn.model?.model).toBe("sonnet[1m]");
-    expect(store.claimNextTurn("worker_one")?.model?.model).toBe("sonnet[1m]");
+    const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "Hi", model: { model: "fable" } });
+    expect(turn.model?.model).toBe("fable[1m]");
+    expect(store.claimNextTurn("worker_one")?.model?.model).toBe("fable[1m]");
   });
 
   test("a record saved before the window was a control is corrected at the claim, without a patch", () => {

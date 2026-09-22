@@ -16,6 +16,7 @@
  * same curated list without each learning the rules.
  */
 import type { CustomProviderModel, ModelOverlay, ProviderModel } from "@telar/engine-client";
+import { claudeSlugOf } from "./model-manifest";
 
 /** The overlay fields that change a LIST. `favorites` is not here: it reorders a
  *  menu in the cockpit and never changes which rows exist. */
@@ -35,11 +36,17 @@ function withoutWindowSuffix(id: string): string {
   return id.replace(/\[1m\]$/i, "");
 }
 
+/** The manifest's aliases fold too: a typed `claude-fable-5.1` is the
+ *  published `claude-fable-5-1`. */
+function canonical(id: string): string {
+  return claudeSlugOf(id) ?? withoutWindowSuffix(id);
+}
+
 function published(models: readonly ProviderModel[], id: string): boolean {
-  const requested = withoutWindowSuffix(id);
+  const requested = canonical(id);
   return models.some((model) => {
-    const modelId = withoutWindowSuffix(model.id);
-    const resolves = model.resolves ? withoutWindowSuffix(model.resolves) : undefined;
+    const modelId = canonical(model.id);
+    const resolves = model.resolves ? canonical(model.resolves) : undefined;
     return modelId === requested || resolves === requested;
   });
 }
@@ -61,6 +68,7 @@ function customRow(entry: CustomProviderModel, models: readonly ProviderModel[])
     /** The provider withdrew nothing — it has never heard of this row. */
     hidden: false,
     hiddenByUser: false,
+    legacy: false,
     /**
      * THE UNION OF WHAT THIS DRIVER PUBLISHES, NOT THE EMPTY LIST.
      *

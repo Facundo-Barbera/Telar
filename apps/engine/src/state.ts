@@ -6569,10 +6569,10 @@ export class EngineStore {
      * is: the cache holds what the provider said, and `source` promises that.
      * Claude-only today; Codex publishes no windows to fill in.
      */
-    const listed = driver === "claude" ? applyModelManifest(raw.models, this.manifest) : raw.models;
+    const listed = driver === "claude" ? applyModelManifest(raw.models, this.manifest, raw.cliVersion) : raw.models;
     // Remembered from the PROVIDER's list, before the reader's overlay: hiding
     // a row in the picker is curation, not a statement about what the CLI runs.
-    if (driver === "claude") this.rememberClaudeDefault(raw.models);
+    if (driver === "claude") this.rememberClaudeDefault(raw.models, raw.cliVersion);
     return { ...raw, instanceId, models: applyModelOverlay(listed, overlay) };
   }
 
@@ -10709,9 +10709,10 @@ export class EngineStore {
   /**
    * The default Claude row Telar publishes, read synchronously or not at all.
    *
-   * The CLI's own default put through the manifest the picker uses, so it is
-   * the `[1m]` spelling of the family the provider would have chosen anyway.
-   * WINDOW ONLY: never a different family, never an invented id.
+   * The catalogue put through the manifest the picker uses, so it is the row
+   * the picker opens on: the manifest's `defaults.chat` (Fable 5.1 today) on
+   * its long window, or the CLI's own default where the manifest's is not
+   * offered. Only a long row qualifies; never an invented id.
    *
    * `claimNextTurn` is synchronous on purpose (see `refreshProviderToken`), so
    * this reads the in-memory catalogue and nothing else. Cold yields
@@ -10719,7 +10720,7 @@ export class EngineStore {
    */
   private defaultClaudeModelId(): string | undefined {
     const cached = this.modelCache.get("claude");
-    if (cached) return longDefaultOf(applyModelManifest(cached.models, this.manifest));
+    if (cached) return longDefaultOf(applyModelManifest(cached.models, this.manifest, cached.cliVersion));
     // COLD MEMORY, WARM DISK. Reading the list spawns the provider's CLI, which
     // a synchronous claim cannot do and a user's first message must not wait
     // for. The last list this machine actually read is remembered instead, so a
@@ -10745,8 +10746,8 @@ export class EngineStore {
 
   /** Remember what the provider just said its default was, when it is a row
    *  Telar would publish. Written only on change. */
-  private rememberClaudeDefault(models: ModelCatalogue["models"]): void {
-    const model = longDefaultOf(applyModelManifest(models, this.manifest));
+  private rememberClaudeDefault(models: ModelCatalogue["models"], cliVersion: string | undefined): void {
+    const model = longDefaultOf(applyModelManifest(models, this.manifest, cliVersion));
     if (!model || model === this.rememberedClaudeDefault()) return;
     this.claudeDefaultMemo = model;
     try {
