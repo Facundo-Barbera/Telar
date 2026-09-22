@@ -153,14 +153,9 @@ struct SessionView: View {
         }
     }
 
-    /// Queued and steering messages live in the strip under the composer; a
-    /// STEERED one's content already appears inside the host turn as a
-    /// user_message item — rendering the turn too is the double bubble.
-    /// (Web rule, 1:1.)
+    /// See `transcriptTurns`.
     private var visibleTurns: [JournalTurn] {
-        store.sync.turns.filter {
-            $0.state != .queued && $0.state != .steering && $0.state != .steered
-        }
+        transcriptTurns(store.sync.turns)
     }
 
     /// Which session speech is about, when this one is asked to read a reply

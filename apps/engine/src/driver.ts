@@ -1028,13 +1028,12 @@ const NO_CLAIM_FOR_BACKGROUND_WORK =
 const BACKGROUND_CLAIM_RESULT = "Decided a tool call for background work still running after its turn ended.";
 
 /**
- * HOW LONG A BACKGROUND TASK'S CLAIM IS KEPT AFTER ITS LAST DECISION.
+ * HOW LONG A BACKGROUND CLAIM IS KEPT AFTER THE LAST BACKGROUND TASK ENDS.
  *
- * A working sub-agent asks again within seconds, and a turn per tool call would
- * write a row per decision into a transcript a person reads. Long enough that a
- * burst collapses into one turn; short enough that the person's next message —
- * which cannot be claimed while any turn is live — waits no longer than the
- * pause they just watched.
+ * While any task lives the claim is held outright (#912); this is only the
+ * tail, so a task that hands off to a sibling within seconds shares the turn
+ * rather than opening another. A person's message does not wait it out: it
+ * takes the session through the binding's `wanted` signal.
  */
 const BACKGROUND_CLAIM_LINGER_MS = 5_000;
 
@@ -2172,15 +2171,20 @@ export function createClaudeDriver(
        * uses (`onProviderTurn`) — the machinery was already there, and #21's
        * routing is what lets the engine attribute the request to the child.
        *
-       * OPENED ON DEMAND, NOT HELD FOR THE TASK'S WHOLE LIFE. One live turn per
-       * session is an invariant every sweep relies on, so a claim held for an
-       * hour of background work is the rejected "the turn never settles"
-       * alternative wearing a different coat: the person's reply would read as
-       * still running and their next message would queue behind a sub-agent.
-       * It opens when a child actually needs a decision, lingers briefly so a
-       * burst of calls shares one turn rather than writing a row per tool call,
-       * and is given up the moment it goes idle — or on demand, when the idle
-       * pump needs the session for a real wake-up.
+       * OPENED ON DEMAND, THEN HELD WHILE THE WORK LIVES — #912. It opens when
+       * a child first needs a decision and stays open for as long as any
+       * background task is alive, closing `BACKGROUND_CLAIM_LINGER_MS` after
+       * the last one ends. The earlier rule gave it up after every burst, and a
+       * research sub-agent calling a tool every 10-20 s opened a fresh turn per
+       * burst: five one-line rows in a row, each saying nothing a person could
+       * use. One stretch of background work is one turn.
+       *
+       * NOT A TURN THAT NEVER SETTLES, because it yields to anything that wants
+       * the session: a real wake-up (the idle pump gives it up first), and a
+       * person's message, which arrives as a steer into this turn and aborts
+       * the binding's `wanted` signal. Either way it waits for decisions
+       * already being made, then settles, and the turn that wanted the session
+       * decides the children's calls from there.
        */
       type BackgroundClaim = {
         binding: ProviderTurnBinding;
@@ -2190,7 +2194,8 @@ export function createClaudeDriver(
         /** Resolves the next time `inFlight` reaches zero. */
         idle: Promise<void>;
         goneIdle: () => void;
-        /** Armed once it goes idle; cancelled by the next request. */
+        /** Armed once it is idle AND no background task is alive; cancelled by
+         *  the next request. */
         linger: ReturnType<typeof setTimeout> | undefined;
       };
       let backgroundClaim: BackgroundClaim | undefined;
@@ -2242,7 +2247,7 @@ export function createClaudeDriver(
             // LIVE WORK, so the pool stops treating this process as spare —
             // the same reason the wake path sets it.
             runtimes.setWakeActive(sessionId, true);
-            claim = {
+            const opened: BackgroundClaim = {
               binding,
               gate: binding.onRequest ? gateFor(binding.onRequest) : undefined,
               inFlight: 0,
@@ -2250,7 +2255,10 @@ export function createClaudeDriver(
               goneIdle: () => undefined,
               linger: undefined,
             };
-            backgroundClaim = claim;
+            // Somebody else wants the session — a person's message sent into
+            // this turn. It is theirs once the decisions in flight are made.
+            binding.wanted?.addEventListener("abort", () => void closeBackgroundClaim(opened).catch(() => undefined), { once: true });
+            claim = backgroundClaim = opened;
           }
           if (claim.linger !== undefined) {
             clearTimeout(claim.linger);
@@ -2266,12 +2274,14 @@ export function createClaudeDriver(
        * Give the claim up. WAITS FOR THE DECISIONS ALREADY BEING MADE UNDER IT:
        * completing the turn out from under a parked request would leave the
        * child that is waiting on it blocked with nothing to report it, which is
-       * the hang `gateFor`'s own comment refuses to allow.
+       * the hang `gateFor`'s own comment refuses to allow. `only` names the
+       * claim a timer or signal was armed for, so a late one cannot close its
+       * successor.
        */
-      const closeBackgroundClaim = (): Promise<void> =>
+      const closeBackgroundClaim = (only?: BackgroundClaim): Promise<void> =>
         onClaimChain(async () => {
           const claim = backgroundClaim;
-          if (!claim) return;
+          if (!claim || (only && claim !== only)) return;
           if (claim.linger !== undefined) {
             clearTimeout(claim.linger);
             claim.linger = undefined;
@@ -2282,20 +2292,27 @@ export function createClaudeDriver(
           await claim.binding.close({ text: BACKGROUND_CLAIM_RESULT }).catch(() => undefined);
         });
 
+      /**
+       * THE LINGER, armed only once the claim has nothing left to be held for:
+       * no decision in flight and no background task alive (#912). While a
+       * task lives its next call is coming, and giving the claim up between
+       * calls is what wrote a row per burst. The tail after the last task ends
+       * keeps a task that spawns a sibling within seconds from reopening.
+       * Called on every release and on every task frame the idle pump reads.
+       * Unref'd: a pending linger must not hold the worker process open.
+       */
+      const lingerOnceQuiet = (claim: BackgroundClaim): void => {
+        if (claim !== backgroundClaim || claim.inFlight > 0 || claim.linger !== undefined) return;
+        if (liveBackgroundTasks().length > 0) return;
+        claim.linger = setTimeout(() => { void closeBackgroundClaim(claim); }, backgroundClaimLingerMs);
+        claim.linger.unref?.();
+      };
+
       const releaseBackgroundClaim = (claim: BackgroundClaim): void => {
         claim.inFlight -= 1;
         if (claim.inFlight > 0) return;
         claim.goneIdle();
-        if (claim !== backgroundClaim) return;
-        /**
-         * THE LINGER. A working sub-agent asks again seconds later, and a turn
-         * per tool call would write a row per decision into a transcript a
-         * person reads. One idle window collapses a burst into one turn; a
-         * quiet child costs a turn only when it actually needs something.
-         * Unref'd: a pending linger must not hold the worker process open.
-         */
-        claim.linger = setTimeout(() => { void closeBackgroundClaim(); }, backgroundClaimLingerMs);
-        claim.linger.unref?.();
+        lingerOnceQuiet(claim);
       };
 
       /**
@@ -4079,6 +4096,9 @@ export function createClaudeDriver(
               if (str(item.session_id)) reportedSessionId = item.session_id;
 
               if (await handleTaskFrame(item)) {
+                // The last task may just have ended, which is what a held
+                // background claim was waiting for.
+                if (backgroundClaim) lingerOnceQuiet(backgroundClaim);
                 await flush();
                 continue;
               }

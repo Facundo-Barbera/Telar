@@ -203,4 +203,23 @@ func makeEvent(_ json: String) -> EngineEvent {
         let result = projectJournal(turns: snapshot.turns, items: snapshot.items, events: [overlap, next])
         #expect(result[0].items[0].text == "Hello world")
     }
+
+    /// #912: the engine opens a `background_task` turn so a sub-agent that
+    /// outlived its turn can have a call decided. It is not a transcript row —
+    /// two person's turns with a claim between them draw two rows, not three.
+    @Test func aBackgroundClaimIsNotATranscriptRow() throws {
+        let claim = try JSONDecoder().decode(Turn.self, from: Data("""
+        {"runId":"run_claim","sessionId":"s","sequence":2,"state":"completed","input":"",
+         "origin":"provider","providerReason":{"kind":"background_task","taskId":"task_toolu_agent"},
+         "acceptedAt":100,"updatedAt":100}
+        """.utf8))
+        let turns = projectJournal(
+            turns: [makeTurn("run_ask", state: "completed", sequence: 1), claim, makeTurn("run_next", state: "completed", sequence: 3)],
+            items: [],
+            events: []
+        )
+        #expect(turns.map(\.runId) == ["run_ask", "run_claim", "run_next"])
+        #expect(turns[1].isBackgroundClaim)
+        #expect(transcriptTurns(turns).map(\.runId) == ["run_ask", "run_next"])
+    }
 }

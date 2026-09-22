@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "./transcript";
-import { cockpitPlugins, describeTurnState, pinToggleOverride, retryInputForJournalTurn } from "./session-cockpit";
+import { cockpitPlugins, describeTurnState, pinToggleOverride, retryInputForJournalTurn, transcriptRows } from "./session-cockpit";
 
 describe("session workspace presentation", () => {
   test("names every durable turn state without relying on colour", () => {
@@ -480,6 +480,61 @@ describe("a held message is not a running one", () => {
     );
     expect(released!.held).toBe(false);
     expect(released!.heldReason).toBeUndefined();
+  });
+});
+
+describe("a sub-agent's background claim is not a row in the main chat (#912)", () => {
+  /** Two person's turns with a claim the engine opened between them, the first
+   *  having spawned the agent the claim decides for. */
+  const withClaim = async (claim: { taskId?: string }) => {
+    const { projectJournal } = await import("@/lib/engine/journal");
+    return projectJournal(
+      [
+        { runId: "run_ask", sessionId: "s1", sequence: 1, input: "research this", state: "completed", acceptedAt: 1, updatedAt: 1 },
+        {
+          runId: "run_claim",
+          sessionId: "s1",
+          sequence: 2,
+          input: "",
+          origin: "provider",
+          providerReason: { kind: "background_task", ...claim },
+          state: "running",
+          acceptedAt: 2,
+          updatedAt: 2,
+        },
+        { runId: "run_next", sessionId: "s1", sequence: 3, input: "how is it going?", state: "completed", acceptedAt: 3, updatedAt: 3 },
+      ] as never,
+      [],
+      [],
+      [{ id: "task_toolu_agent", sessionId: "s1", runId: "run_ask", kind: "agent", backgrounded: true, state: "running", title: "research" }] as never,
+    );
+  };
+
+  test("a claim between two person's turns leaves two rows, not three", async () => {
+    const { shown } = transcriptRows(await withClaim({ taskId: "task_toolu_agent" }));
+    expect(shown.map((turn) => turn.runId)).toEqual(["run_ask", "run_next"]);
+  });
+
+  test("a card parked under the claim renders on the turn that spawned the asking agent", async () => {
+    const { hostOf } = transcriptRows(await withClaim({ taskId: "task_toolu_agent" }));
+    expect(hostOf.get("run_claim")).toBe("run_ask");
+    // And the cockpit reads that mapping when it hands a row its requests, so
+    // the card is not filtered out with the claim it was opened under.
+    const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
+    expect(source).toContain("requests={openRequests.filter((request) => (hostOf.get(request.runId) ?? request.runId) === turn.runId");
+  });
+
+  test("a claim that cannot name one agent hosts its card on the row before it", async () => {
+    const { hostOf } = transcriptRows(await withClaim({}));
+    expect(hostOf.get("run_claim")).toBe("run_ask");
+  });
+
+  test("a claim with no row to host its card stays a row, so the card still has somewhere to render", () => {
+    const { shown, hostOf } = transcriptRows([
+      { runId: "run_claim", state: "running", decidedForBackgroundWork: true, tasks: [] },
+    ]);
+    expect(shown.map((turn) => turn.runId)).toEqual(["run_claim"]);
+    expect(hostOf.size).toBe(0);
   });
 });
 

@@ -134,9 +134,12 @@ leaves those rows running. That decision obliges the other half: a request is
 authorised by a *running claim*, and settling the parent turn destroys the only
 one those rows had. So whatever keeps such a task alive must also keep it a
 claim — the driver opens a provider turn for it (`providerReason.kind:
-"background_task"`), on demand and for as long as a decision is being made,
-because one live turn per session is the invariant every sweep relies on and a
-claim held for the task's whole life would be a turn that never settles. Where
+"background_task"`) on demand and holds it while any background task is
+alive, settling a short linger after the last one ends — one turn per stretch
+of background work, not one per burst of calls (#912). It is not a turn that
+never settles: one live turn per session is the invariant every sweep relies
+on, so the claim yields to a wake-up and to a person's message (a steer into
+it aborts the binding's `wanted` signal), after the decisions in flight. Where
 no claim can be had, the tool result the child receives says so in those terms:
 nothing ran, and *nobody declined it*. A refusal a model reads as a person's
 "no" ends the work instead of retrying it. Violating this looks like

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -4946,7 +4946,7 @@ describe("a task kept alive past turn end keeps a claim to ask under (#891)", ()
   /** The engine's door, recording every turn the driver asked it to open. */
   const claimDoor = (options: { decide?: () => Promise<"accept" | "decline"> } = {}) => {
     const tasks: TurnObservation[] = [];
-    const turns: Array<{ input: string; reason: unknown; requests: unknown[]; closed?: unknown }> = [];
+    const turns: Array<{ input: string; reason: unknown; requests: unknown[]; closed?: unknown; want: AbortController }> = [];
     let seq = 0;
     return {
       tasks,
@@ -4954,10 +4954,11 @@ describe("a task kept alive past turn end keeps a claim to ask under (#891)", ()
       hooks: {
         onTasks: async (batch: TurnObservation[]) => void tasks.push(...batch),
         onProviderTurn: async ({ input, reason }: { input: string; reason: unknown }) => {
-          const record = { input, reason, requests: [] as unknown[] } as (typeof turns)[number];
+          const record = { input, reason, requests: [] as unknown[], want: new AbortController() } as (typeof turns)[number];
           turns.push(record);
           return {
             runId: `run_891_${(seq += 1)}`,
+            wanted: record.want.signal,
             onObservations: async () => undefined,
             onRequest: async (request: unknown) => {
               record.requests.push(request);
@@ -5019,15 +5020,13 @@ describe("a task kept alive past turn end keeps a claim to ask under (#891)", ()
     expect(door.turns).toHaveLength(1);
     expect(door.turns[0]!.reason).toEqual({ kind: "background_task", taskId: "task_toolu_agent" });
     expect(door.turns[0]!.requests).toHaveLength(1);
-    // A second call within the linger shares that one turn rather than writing
-    // a row per decision into a transcript a person reads.
+    // A second call shares that one turn rather than writing a row per
+    // decision into a transcript a person reads.
     await expect(held.gate!("Bash", { command: "ls" }, asChild("toolu_child2"))).resolves.toEqual({ behavior: "allow" });
     expect(door.turns).toHaveLength(1);
     expect(door.turns[0]!.requests).toHaveLength(2);
-    // And it is GIVEN UP once the burst is over: one live turn per session is
-    // the engine's invariant, and the person's next message waits behind it.
-    await until("the background claim to be given up", () => door.turns[0]!.closed !== undefined);
-    expect(JSON.stringify(door.turns[0]!.closed)).toContain("background work");
+    // The agent is still alive, so the claim is too (#912).
+    expect(door.turns[0]!.closed).toBeUndefined();
   });
 
   test("a decision the human declines reaches the child as the human's, not as plumbing", async () => {
@@ -5125,5 +5124,121 @@ describe("a task kept alive past turn end keeps a claim to ask under (#891)", ()
     await expect(held.gate!("Bash", { command: "ls" }, asChild("toolu_child3"))).resolves.toEqual({ behavior: "allow" });
     expect(door.turns).toHaveLength(3);
     expect(door.turns[2]!.reason).toEqual({ kind: "background_task", taskId: "task_toolu_agent" });
+  });
+
+  describe("one claim per stretch of background work, not per burst (#912)", () => {
+    /**
+     * A research sub-agent calls a tool every 10-20 s. Under the per-burst
+     * linger every call fell outside the window and opened a fresh turn, and
+     * the transcript read as five one-line "Decided a tool call…" rows in a
+     * row. FAKE TIMERS: the gaps are the point, and a real 8 s sleep is not a
+     * test anybody would keep.
+     */
+    /** Every promise the pump and the claim chain queue, run to rest. */
+    const drain = async () => {
+      for (let i = 0; i < 50; i += 1) await Promise.resolve();
+    };
+
+    /** The dispatcher, plus a handle to end the agent and a second turn that
+     *  decides a child's call itself while it runs. */
+    const researcher = () => {
+      const held: { gate?: Gate; decidedInTurn?: unknown } = {};
+      let finish: (() => void) | undefined;
+      const finished = new Promise<void>((resolve) => { finish = resolve; });
+      const driver = createClaudeDriver(
+        (async () => ({
+          async *query({ prompt, options }: { prompt: AsyncIterable<{ uuid?: string }>; options: { canUseTool?: Gate } }) {
+            const input = prompt[Symbol.asyncIterator]();
+            const first = await input.next();
+            held.gate = options.canUseTool;
+            yield { type: "system", subtype: "task_started", task_id: "ag1", tool_use_id: "toolu_agent", description: "research", task_type: "local_agent", is_backgrounded: true };
+            yield* reply(first.value!.uuid!, "dispatched");
+            const next = await Promise.race([input.next(), finished.then(() => undefined)]);
+            if (next === undefined) {
+              yield { type: "system", subtype: "task_notification", task_id: "ag1", tool_use_id: "toolu_agent", status: "completed", summary: "found it" };
+              await input.next();
+              return;
+            }
+            // A person's turn: the child asks while it runs.
+            yield { type: "stream_event", event: { type: "message_start" }, user_message_uuid: next.value!.uuid };
+            held.decidedInTurn = await options.canUseTool!("Bash", { command: "ls" }, asChild("toolu_child_in_turn"));
+            yield { type: "assistant", message: { content: [{ type: "text", text: "yours" }] } };
+            yield { type: "result", subtype: "success", stop_reason: "end_turn", user_message_uuid: next.value!.uuid };
+            await input.next();
+          },
+        })) as never,
+        { backgroundClaimLingerMs: 5_000 },
+      );
+      return { driver, held, finish: () => finish!() };
+    };
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    test("calls 8 s apart under one live agent share one claim, which closes 5 s after the agent ends", async () => {
+      const door = claimDoor();
+      const { driver, held, finish } = researcher();
+      await run(driver, { sessionId: "session_912_stretch", session: door.hooks, onRequest: async () => "accept" }).result;
+      jest.useFakeTimers();
+
+      await held.gate!("Bash", { command: "curl a" }, asChild("toolu_c1"));
+      jest.advanceTimersByTime(8_000);
+      await drain();
+      // Past the old 5 s linger, and the agent is still working: still open.
+      expect(door.turns[0]!.closed).toBeUndefined();
+      await held.gate!("Bash", { command: "curl b" }, asChild("toolu_c2"));
+      expect(door.turns).toHaveLength(1);
+      expect(door.turns[0]!.requests).toHaveLength(2);
+
+      // The agent reports back. The tail starts from HERE, not from the call.
+      finish();
+      await drain();
+      jest.advanceTimersByTime(4_999);
+      await drain();
+      expect(door.turns[0]!.closed).toBeUndefined();
+      jest.advanceTimersByTime(1);
+      await drain();
+      expect(JSON.stringify(door.turns[0]!.closed)).toContain("background work");
+      expect(door.turns).toHaveLength(1);
+    });
+
+    test("a person's message mid-claim closes it after the decision in flight, and their turn owns the next one", async () => {
+      let answer: ((decision: "accept") => void) | undefined;
+      const door = claimDoor({ decide: () => new Promise((resolve) => { answer = resolve; }) });
+      const { driver, held } = researcher();
+      await run(driver, { sessionId: "session_912_person", session: door.hooks, onRequest: async () => "accept" }).result;
+      jest.useFakeTimers();
+
+      // A card is parked under the claim when the person writes.
+      const parked = held.gate!("Bash", { command: "rm -rf build" }, asChild("toolu_c1"));
+      await drain();
+      expect(door.turns[0]!.requests).toHaveLength(1);
+      door.turns[0]!.want.abort();
+      await drain();
+      // The card is not cut out from under the child waiting on it.
+      expect(door.turns[0]!.closed).toBeUndefined();
+      answer!("accept");
+      await expect(parked).resolves.toEqual({ behavior: "allow" });
+      await drain();
+      // No linger: the session is somebody else's now.
+      expect(door.turns[0]!.closed).toBeDefined();
+
+      jest.useRealTimers();
+      const inTurn: unknown[] = [];
+      const second = run(driver, {
+        sessionId: "session_912_person",
+        session: door.hooks,
+        onRequest: async (request: unknown) => {
+          inTurn.push(request);
+          return "accept";
+        },
+      });
+      await expect(second.result).resolves.toMatchObject({ text: "yours" });
+      expect(held.decidedInTurn).toEqual({ behavior: "allow" });
+      expect(inTurn).toHaveLength(1);
+      // Decided under the person's turn, not under a claim reopened beside it.
+      expect(door.turns).toHaveLength(1);
+    });
   });
 });
