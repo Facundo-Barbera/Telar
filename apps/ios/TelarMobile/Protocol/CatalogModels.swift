@@ -19,6 +19,9 @@ struct ProviderModel: Decodable, Identifiable, Equatable {
     /// never a choice made for you. Optional: absent on every row written
     /// before the model manifest existed.
     var defaultWindow: Bool?
+    /// The manifest says this generation is history. Decoded only — this
+    /// picker does not fold generations. Optional: older engines omit it.
+    var legacy: Bool?
 }
 
 struct ModelCatalogue: Decodable {

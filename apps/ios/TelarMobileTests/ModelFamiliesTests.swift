@@ -29,6 +29,13 @@ import Testing
         #expect(ModelFamilies.windows(of: families[1]) == [.long])
     }
 
+    @Test func legacyDecodesAndIsOptional() throws {
+        let row = #"{"id":"claude-fable-5[1m]","label":"Fable","isDefault":false,"hidden":false,"efforts":[],"fastMode":false,"legacy":true}"#
+        #expect(try JSONDecoder().decode(ProviderModel.self, from: Data(row.utf8)).legacy == true)
+        let older = #"{"id":"sonnet","label":"Sonnet","isDefault":true,"hidden":false,"efforts":[],"fastMode":false}"#
+        #expect(try JSONDecoder().decode(ProviderModel.self, from: Data(older.utf8)).legacy == nil)
+    }
+
     @Test func datedBuildsFoldToo() {
         let models = [model("haiku", label: "Haiku", resolves: "claude-haiku-4-5-20251001")]
         #expect(ModelFamilies.group(models)[0].label == "Haiku 4.5")
