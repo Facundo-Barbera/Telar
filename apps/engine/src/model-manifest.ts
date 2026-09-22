@@ -24,6 +24,11 @@
  *     whose profile has a long window, then publish only long-window Claude
  *     rows. This app no longer offers the 200k variants or Haiku.
  *
+ *  3. RETIRE a superseded model. Claude Code 2.1.280 still lists
+ *     `claude-fable-5[1m]` beside nothing for Fable 5.1; the `retired` profile
+ *     flag drops its rows from the picker while a session saved on it keeps
+ *     its window and keeps running.
+ *
  * No new protocol field: a selected row is still the provider's own model id,
  * with the context window encoded in Claude Code's `[1m]` suffix.
  *
@@ -43,8 +48,12 @@ export type ModelManifest = {
   version: number;
   claude?: {
     /** `defaultLong`: the provider ships this profile 1M by default, so the
-     *  synthesized `[1m]` row is marked as the model's default window. */
-    profiles: Record<string, { longWindow: boolean; defaultLong?: boolean }>;
+     *  synthesized `[1m]` row is marked as the model's default window.
+     *  `retired`: a newer model supersedes it, so no row of this profile is
+     *  published even when the CLI still lists one — Fable 5 under Fable 5.1.
+     *  Saved sessions on it keep running; `normalizeClaudeModel` still knows
+     *  its window, only the picker stops offering it. */
+    profiles: Record<string, { longWindow: boolean; defaultLong?: boolean; retired?: boolean }>;
     /** Canonical wire id (no `[1m]`, no dated build) → profile key. */
     models: Record<string, string>;
     /** Claude Code's bare family aliases (`opus`, `sonnet`…) → profile key.
@@ -100,6 +109,7 @@ export function normalizeClaudeModel(id: string, manifest: ModelManifest = BUNDL
 function publishClaudeModel(model: ProviderModel, manifest: NonNullable<ModelManifest["claude"]>): boolean {
   const profile = manifest.profiles[manifest.models[canonicalId(model)] ?? ""];
   if (!profile) return true;
+  if (profile.retired) return false;
   return profile.longWindow === true && isLong(model);
 }
 

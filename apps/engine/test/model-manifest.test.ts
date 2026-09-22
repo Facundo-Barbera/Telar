@@ -26,9 +26,9 @@ describe("the model manifest", () => {
      * reports a 1M window. The cockpit's window toggle exists only where a
      * `[1m]` row does, so Fable 5.1 offered no 1M at all.
      */
-    const listed = [row("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]" }), row("claude-fable-5-1", { resolves: "claude-fable-5-1", isDefault: true })];
+    const listed = [row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" }), row("claude-fable-5-1", { resolves: "claude-fable-5-1", isDefault: true })];
     const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["claude-fable-5[1m]", "claude-fable-5-1[1m]"]);
+    expect(out.map((m) => m.id)).toEqual(["sonnet[1m]", "claude-fable-5-1[1m]"]);
     const synthesized = out[1]!;
     expect(synthesized.resolves).toBe("claude-fable-5-1[1m]");
     // The 200k default row is filtered away, so the surviving 1M row carries it.
@@ -71,9 +71,9 @@ describe("declared models", () => {
      * an entitlement lookup, so a model the provider runs can be absent from
      * it — and the person running it still needs a row to pick.
      */
-    const listed = [row("claude-fable-5", { resolves: "claude-fable-5" })];
+    const listed = [row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" })];
     const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["claude-fable-5[1m]", "claude-fable-5-1[1m]"]);
+    expect(out.map((m) => m.id)).toEqual(["sonnet[1m]", "claude-fable-5-1[1m]"]);
     const declared = out[1]!;
     expect(declared).toMatchObject({ label: "Fable 5.1", source: "provider", isDefault: false, resolves: "claude-fable-5-1[1m]" });
     expect(declared.efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
@@ -85,6 +85,36 @@ describe("declared models", () => {
     const out = applyModelManifest(listed, BUNDLED_MANIFEST);
     expect(out.map((m) => m.id)).toEqual(["fable[1m]"]);
     expect(out[0]!.label).toBe("Fable (live)");
+  });
+});
+
+describe("retired models", () => {
+  test("Fable 5 is superseded by Fable 5.1: its listed row is dropped, the declaration still stands", () => {
+    // Claude Code 2.1.280 lists `claude-fable-5[1m]` and no Fable 5.1 at all.
+    const listed = [row("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]", label: "Fable" }), row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" })];
+    const out = applyModelManifest(listed, BUNDLED_MANIFEST);
+    expect(out.map((m) => m.id)).toEqual(["sonnet[1m]", "claude-fable-5-1[1m]"]);
+  });
+
+  test("a session saved on a retired model keeps its window — retirement is the picker's, not the store's", () => {
+    expect(normalizeClaudeModel("claude-fable-5")).toBe("claude-fable-5[1m]");
+  });
+
+  test("Opus 5.5 is the provider's default and rides through as listed — the 2.1.280 catalogue, measured", () => {
+    // As `parseClaudeModels` hands them over: the `default` row already folded
+    // into the `opus[1m]` it resolves to.
+    const listed = [
+      row("opus[1m]", { resolves: "claude-opus-5-5[1m]", label: "Opus (1M context)", isDefault: true }),
+      row("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]", label: "Fable" }),
+      row("sonnet", { resolves: "claude-sonnet-5" }),
+      row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" }),
+      row("haiku", { resolves: "claude-haiku-4-5-20251001" }),
+    ];
+    const out = applyModelManifest(listed, BUNDLED_MANIFEST);
+    expect(out.map((m) => m.id)).toEqual(["opus[1m]", "sonnet[1m]", "claude-fable-5-1[1m]"]);
+    expect(out[0]!.isDefault).toBe(true);
+    expect(normalizeClaudeModel("opus")).toBe("opus[1m]");
+    expect(normalizeClaudeModel("claude-opus-5-5")).toBe("claude-opus-5-5[1m]");
   });
 });
 

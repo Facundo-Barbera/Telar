@@ -84,7 +84,7 @@ export type ClaudeModelSdk = {
  * `supportedModels()`'s rows, narrowed and corrected.
  *
  * THE `default` ROW IS FOLDED INTO THE MODEL IT RESOLVES TO. Claude Code offers
- * "Default (recommended)" as a row of its own, resolving to `claude-opus-5[1m]`
+ * "Default (recommended)" as a row of its own, resolving to `claude-opus-5-5[1m]`
  * — and `opus[1m]` in the same list resolves to exactly that. Showing both is
  * the duplicate a reader has to work out for themselves. So the alias row is
  * dropped and its sibling is marked `isDefault`, which is what "default should
