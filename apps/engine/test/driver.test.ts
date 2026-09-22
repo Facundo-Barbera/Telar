@@ -1132,6 +1132,31 @@ describe("a provider wait is a row, not silence", () => {
       expect(sink.observations.some((o) => o.kind === "item.completed" && o.itemId === waitId && o.status === "completed")).toBeTrue();
     });
 
+    test("a compaction's silence is not a stall: no row, however long it runs", async () => {
+      // The provider announced it, so the quiet is the work. Measured: "The
+      // model has not answered after 30s" stacked under "Compacting context…"
+      // on every long compaction. The request that follows re-arms the watch.
+      const driver = createClaudeDriver(
+        async () => ({
+          async *query() {
+            yield { type: "system", subtype: "status", status: "requesting" };
+            yield { type: "system", subtype: "status", status: "compacting" };
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            yield { type: "system", subtype: "status", status: null, compact_result: "success" };
+            yield { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", pre_tokens: 900_000, post_tokens: 40_000 } };
+            yield { type: "stream_event", event: { type: "message_start" } };
+            yield { type: "assistant", message: { content: [{ type: "text", text: "after" }] } };
+            yield { type: "result", subtype: "success" };
+          },
+        }),
+        { providerSilenceMs: 20 },
+      );
+      const { sink, result } = run(driver);
+      await expect(result).resolves.toMatchObject({ text: "after" });
+      expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
+      expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "context_compaction")).toBeTrue();
+    });
+
     test("a request that answers under the threshold produces no row at all", async () => {
       const driver = createClaudeDriver(
         async () => ({
