@@ -87,17 +87,41 @@ export function neutralHalf(mode: CompositionMode): ThemeHalf {
 /* ------------------------------------------------------------ the compiler */
 
 /**
- * ONLY WHAT DIFFERS FROM THE BASE PALETTE IS EMITTED, which is what keeps
+ * THE TOKENS THIS COMPOSITION MOVED — ASKED OF THE PAIR, NEVER OF ONE STATE
+ * (#907).
+ *
+ * Only what differs from the base palette is emitted, which is what keeps
  * globals.css the single source of the default look: Telar's own composition
- * derives Telar's own values, every token matches, and the block is empty — so
- * no stylesheet is injected and the authored tokens stand. A tinted
- * composition emits only the tokens it actually moved, which is also the
- * smallest thing the pre-paint cache can hold.
+ * derives Telar's own values, every token matches, the set below is empty, and
+ * no stylesheet is injected at all.
+ *
+ * BUT "DIFFERS" IS A QUESTION ABOUT THE COMPOSITION, NOT ABOUT A HALF, and
+ * asking it per state opened a hole in the cascade. `html:root` is one type
+ * selector above globals.css's `.dark`, so a token the light state emits and
+ * the dark state omits keeps painting its LIGHT value at night — nothing in the
+ * dark block outranks it, and `.dark`'s authored value never gets a turn. Every
+ * tinted Look hit exactly that on `--border`: retinting moves the light
+ * border's chroma but leaves the dark one's `oklch(1 0 0 / 10%)` alone (it is
+ * not a plain three-part oklch, so `retint` returns it verbatim), so light
+ * declared a border, dark declared none, and every hairline in dark wore the
+ * light one — measured rgb(179,187,180) on a card edge under Grove.
+ *
+ * So the two states agree on WHICH tokens are declared and disagree only about
+ * their VALUES: a token that moved in EITHER state is emitted in BOTH, each
+ * carrying its own. That is still far short of sixteen lines a block — a Look
+ * moves the tokens its tint reaches and no others — and it closes the hole by
+ * construction rather than by remembering to check.
  */
-function declarations(half: ThemeHalf, neutral: ThemeHalf): string {
-  return THEME_TOKENS.filter((token) => half[token] && half[token] !== neutral[token])
-    .map((token) => `--${token}: ${half[token]};`)
-    .join(" ");
+function movedTokens(light: ThemeHalf, dark: ThemeHalf): ThemeToken[] {
+  return THEME_TOKENS.filter(
+    // Both halves are asked for a value, so a gap on one side can never
+    // re-open the asymmetry this exists to close.
+    (token) => light[token] && dark[token] && (light[token] !== TELAR_LIGHT[token] || dark[token] !== TELAR_DARK[token]),
+  );
+}
+
+function declarations(half: ThemeHalf, tokens: readonly ThemeToken[]): string {
+  return tokens.map((token) => `--${token}: ${half[token]};`).join(" ");
 }
 
 /**
@@ -141,10 +165,14 @@ function inkDeclarations(half: ThemeHalf, mode: CompositionMode): string {
 export function compileComposition(composition: Composition): string {
   const blocks: string[] = [];
   const lightHalf = halfFor(composition.light, "light");
-  const light = [declarations(lightHalf, TELAR_LIGHT), inkDeclarations(lightHalf, "light")].filter(Boolean).join(" ");
-  if (light) blocks.push(`html:root { ${light} }`);
   const darkHalf = halfFor(composition.dark, "dark");
-  const dark = [declarations(darkHalf, TELAR_DARK), inkDeclarations(darkHalf, "dark")].filter(Boolean).join(" ");
+  // One set for the pair — see `movedTokens`. The INK is still asked per state:
+  // it answers "does this state's card strand the ink?", which two different
+  // cards may genuinely answer differently.
+  const moved = movedTokens(lightHalf, darkHalf);
+  const light = [declarations(lightHalf, moved), inkDeclarations(lightHalf, "light")].filter(Boolean).join(" ");
+  if (light) blocks.push(`html:root { ${light} }`);
+  const dark = [declarations(darkHalf, moved), inkDeclarations(darkHalf, "dark")].filter(Boolean).join(" ");
   if (dark) blocks.push(`html:root.dark { ${dark} }`);
   return blocks.join(" ");
 }
@@ -417,6 +445,41 @@ export function writeDerived(composition: Composition, images: Record<string, st
     // Derived: one repaint after hydration, never a wrong colour.
   }
   setBackdropCss(composeComposition(composition, images), quiet);
+}
+
+/**
+ * THE CACHE OUTLIVES THE COMPILER, so a build that compiles DIFFERENTLY has to
+ * say so once on load (#907).
+ *
+ * `telar-theme-css` is written by `writeComposition` and by nobody else, which
+ * is what keeps it from ever disagreeing with the composition it caches — but
+ * "the composition" is not the only input. The compiler is the other one, and
+ * it just changed. Somebody wearing a tinted Look has the old stylesheet on
+ * disk, `readStored` hands back the same composition it always did, so nothing
+ * writes and the pre-paint script keeps injecting the broken sheet until they
+ * next touch Settings. A hairline bug that only clears when you go looking for
+ * the setting that causes it is not fixed.
+ *
+ * GUARDED BY A COMPARE, not by a version stamp: the fresh compile is sixteen
+ * string tests and it is the exact question being asked. A stamp would be a
+ * second thing to remember to bump. The compare also keeps the common case
+ * FREE — the backdrop half of `writeDerived` re-serialises every layer image,
+ * base64 and all, and paying that on every launch to answer "still the same?"
+ * would be the cure costing more than the disease.
+ */
+export function recompileStaleCss(): void {
+  const stored = readStored();
+  let cached: string | null = null;
+  try {
+    cached = window.localStorage.getItem(THEME_CSS_KEY);
+  } catch {
+    // Private browsing: nothing is cached, so nothing can be stale.
+    return;
+  }
+  // An absent key is an empty stylesheet, which is what a fresh install and
+  // Telar's own composition both compile to — so neither writes anything.
+  if ((cached ?? "") === compileComposition(stored.composition)) return;
+  writeDerived(stored.composition, stored.images);
 }
 
 export function useComposition(): {

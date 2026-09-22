@@ -12,7 +12,7 @@ import { AppearancePublisher } from "@/components/appearance-publisher";
 import { HostLookFollower } from "@/components/host-look-follower";
 import { applyAppearance, useAppearance } from "@/lib/appearance";
 import { applyBackdrop, useBackdropCss } from "@/lib/backdrop";
-import { applyThemeCss, useComposition } from "@/lib/composition";
+import { applyThemeCss, recompileStaleCss, useComposition } from "@/lib/composition";
 
 export function AppearanceProvider({ children }: { children: React.ReactNode }) {
   const { appearance } = useAppearance();
@@ -24,6 +24,13 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
   // the store this effect is watching, so the replay IS the preview now.
   useEffect(() => applyAppearance(appearance), [appearance]);
   useEffect(() => applyBackdrop(backdrop), [backdrop]);
+  // ONCE PER LOAD, BEFORE THE REPLAY BELOW READS IT. The cached stylesheet is
+  // written by the composition's apply and nobody else, so it tracks the
+  // composition perfectly — and not the COMPILER, which #907 changed under
+  // every window already wearing a tinted Look. This recompiles when the two
+  // disagree and costs one string compare when they do not; the effect after it
+  // then injects what it wrote.
+  useEffect(() => recompileStaleCss(), []);
   // The composition writes its compiled stylesheet to localStorage; this keeps
   // the injected <style id="telar-theme"> tracking it after the init script's
   // one shot. Watching the COMPOSITION rather than the cache: the cache is

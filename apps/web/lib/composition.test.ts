@@ -26,6 +26,7 @@ import {
   patchOverride,
   patchState,
   pruneCompositionImages,
+  recompileStaleCss,
   strandedTones,
   THEME_CSS_KEY,
   writeComposition,
@@ -65,20 +66,54 @@ describe("compileComposition", () => {
     expect(compileComposition(DEFAULT_COMPOSITION)).toBe("");
   });
 
-  test("only the tokens that actually moved are emitted", () => {
+  /** The token names one block declares, in order. */
+  function declared(block: string): string[] {
+    return [...block.matchAll(/--([a-z-]+):/g)].map((match) => match[1]!);
+  }
+  function blocks(css: string): { light: string; dark: string } {
+    const [light = "", dark = ""] = css.split("html:root.dark");
+    return { light, dark };
+  }
+
+  /**
+   * "MOVED" IS ASKED OF THE PAIR (#907). A token that differs from neutral in
+   * either state is declared in BOTH, each with its own value — because
+   * `html:root` outranks `.dark`, a token only the light block declares keeps
+   * its light value at night. Tokens neither state moved stay out, which is
+   * what keeps the identity composition compiling to nothing.
+   */
+  test("a token moved in one state is declared in both, and unmoved tokens in neither", () => {
+    const { light, dark } = blocks(compileComposition(patchOverride(composition(), "light", "border", "#aabbcc")));
+    expect(declared(light)).toEqual(["border"]);
+    // The dark block carries dark's OWN value — the neutral one, since dark
+    // did not move — never a copy of light's.
+    expect(declared(dark)).toEqual(["border"]);
+    expect(dark).toContain(`--border: ${TELAR_DARK.border};`);
+    expect(light).toContain("--border: #aabbcc;");
+  });
+
+  test("a tinted base moves the same tokens in both states", () => {
     const tinted = patchState(composition(), "light", { base: "#4999b6" });
-    const css = compileComposition(tinted);
-    expect(css).toContain("html:root {");
-    // Light moved; dark did not, so it contributes no block.
-    expect(css).not.toContain("html:root.dark");
-    for (const token of THEME_TOKENS) {
-      expect(css).not.toContain(`--${token}: ${TELAR_LIGHT[token]};`);
+    const { light, dark } = blocks(compileComposition(tinted));
+    expect(declared(light)).toEqual(declared(dark));
+    for (const token of THEME_TOKENS) expect(light).not.toContain(`--${token}: ${TELAR_LIGHT[token]};`);
+  });
+
+  test("every tinted built-in Look declares the same tokens in both states, the dark border kept translucent", () => {
+    for (const look of BUILT_IN_LOOKS) {
+      const css = compileComposition(look.composition);
+      if (css === "") continue; // Telar itself
+      const { light, dark } = blocks(css);
+      expect(declared(light), look.id).toEqual(declared(dark));
+      expect(light, look.id).toContain("--border:");
+      expect(dark, look.id).toContain(`--border: ${TELAR_DARK.border};`);
     }
   });
 
-  test("a hand-set override reaches the stylesheet", () => {
-    const css = compileComposition(patchOverride(composition(), "dark", "card", "#123456"));
-    expect(css).toContain("html:root.dark { --card: #123456; }");
+  test("a hand-set override reaches the stylesheet, and the other state declares its own value", () => {
+    const { light, dark } = blocks(compileComposition(patchOverride(composition(), "dark", "card", "#123456")));
+    expect(dark).toContain("--card: #123456;");
+    expect(light).toContain(`--card: ${TELAR_LIGHT.card};`);
   });
 
   /** `html:root` is one type selector above globals.css's `:root`, which is how
@@ -92,6 +127,30 @@ describe("compileComposition", () => {
     // dark half of the same pair needs no repair and shows the plain shape.
     expect(css).toContain("html:root { --card: #111111; ");
     expect(css).toContain("html:root.dark { --card: #222222; }");
+  });
+});
+
+/**
+ * THE CACHE OUTLIVES THE COMPILER (#907). A window that stored its stylesheet
+ * under the old per-state rule keeps injecting it until something recompiles;
+ * this is that something, and it must cost nothing when the cache agrees.
+ */
+describe("recompileStaleCss", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  test("rewrites a cached stylesheet the current compiler disagrees with", () => {
+    const grove = BUILT_IN_LOOKS.find((look) => look.id === "built-in-grove")!;
+    writeComposition(grove.composition, grove.images);
+    window.localStorage.setItem(THEME_CSS_KEY, "html:root { --border: oklch(0.91 0.0154 150.0); }");
+    recompileStaleCss();
+    expect(window.localStorage.getItem(THEME_CSS_KEY)).toBe(compileComposition(grove.composition));
+  });
+
+  test("leaves an agreeing cache alone, and writes nothing for the identity composition", () => {
+    recompileStaleCss();
+    expect(window.localStorage.getItem(THEME_CSS_KEY)).toBeNull();
   });
 });
 
@@ -130,15 +189,17 @@ describe("compileComposition repairs the ink, never the card", () => {
     const hostile = patchOverride(composition(), "light", "card", "#111111");
     const css = compileComposition(hostile);
     expect(stateDeclarations(css)).toEqual([...TONES]);
-    // The card is emitted EXACTLY as authored, and appears once.
-    expect(css.match(/--card: [^;]+;/g)).toEqual(["--card: #111111;"]);
+    // The card is emitted EXACTLY as authored, once per state (#907 declares a
+    // moved token in both blocks; dark carries its own, untouched, value).
+    expect(css.match(/--card: [^;]+;/g)).toEqual(["--card: #111111;", `--card: ${TELAR_DARK.card};`]);
     expect(compositionHalf(hostile, "light").card).toBe("#111111");
-    // Every declaration it drew is a state token and nothing else.
-    for (const declaration of css.replace(/^html:root \{ | \}$/g, "").split(" ").filter((part) => part.startsWith("--"))) {
+    // Every declaration the light block drew is the card or a state token.
+    const [lightBlock = ""] = css.split("html:root.dark");
+    for (const declaration of lightBlock.replace(/^html:root \{ | \}\s*$/g, "").split(" ").filter((part) => part.startsWith("--"))) {
       expect(["--card:", ...TONES.map((tone) => `--${tone}:`)]).toContain(declaration);
     }
-    // And the dark half, which this card did not touch, contributes nothing.
-    expect(css).not.toContain("html:root.dark");
+    // The dark half's card is fine, so it draws no state ink of its own.
+    expect(css).toContain(`html:root.dark { --card: ${TELAR_DARK.card}; }`);
   });
 
   test("a card no lightness can rescue draws nothing, and names what it cost", () => {
