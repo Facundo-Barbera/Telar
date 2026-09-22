@@ -671,6 +671,45 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
   return { runId: turn.runId, state: turn.state, input: turn.prompt };
 }
 
+type RowTurn = Pick<JournalTurn, "runId" | "state" | "held" | "decidedForBackgroundWork" | "askedBy"> & {
+  tasks: readonly Pick<JournalTask, "id">[];
+};
+
+/**
+ * THE TURNS THAT ARE ROWS, and where a hidden one's approvals go.
+ *
+ * A message sent mid-turn is steered into the running turn and renders as a
+ * user_message row inside it; a second copy here would double it. The brief
+ * `queued` state (an idle session's next turn, claimed within a heartbeat) is
+ * not worth a row either. A HELD message is the exception: it is queued, but
+ * nothing is about to take it, and the person has to see what a pause (or a
+ * restart) is holding in order to decide about it.
+ *
+ * A BACKGROUND CLAIM IS NOT A ROW (#912). The engine opens it so a sub-agent
+ * that outlived its turn has somewhere to have a tool call decided; nobody
+ * spoke in it, and a row per claim read as a column of "Decided a tool call…"
+ * lines between the person's messages. What a person needs of it is a card it
+ * parks, so each hidden claim names a HOST: the row that spawned the task
+ * asking, else the nearest row before it, else after. A claim with no row to
+ * host it stays a row, because a card with nowhere to render is a question
+ * nobody can answer.
+ */
+export function transcriptRows<T extends RowTurn>(transcript: readonly T[]): { shown: T[]; hostOf: Map<string, string> } {
+  const visible = transcript.filter((turn) => (turn.state !== "queued" || turn.held) && turn.state !== "steering" && turn.state !== "steered");
+  const rows = visible.filter((turn) => !turn.decidedForBackgroundWork);
+  const hostOf = new Map<string, string>();
+  for (const claim of visible) {
+    if (!claim.decidedForBackgroundWork) continue;
+    const at = visible.indexOf(claim);
+    const spawner = claim.askedBy ? rows.find((turn) => turn.tasks.some((task) => task.id === claim.askedBy)) : undefined;
+    const before = visible.slice(0, at).reverse().find((turn) => !turn.decidedForBackgroundWork);
+    const after = visible.slice(at + 1).find((turn) => !turn.decidedForBackgroundWork);
+    const host = spawner ?? before ?? after;
+    if (host) hostOf.set(claim.runId, host.runId);
+  }
+  return { shown: visible.filter((turn) => !turn.decidedForBackgroundWork || !hostOf.has(turn.runId)), hostOf };
+}
+
 /**
  * ONE TURN, RENDERED — your message, then everything the agent did about it.
  *
@@ -3739,14 +3778,7 @@ export function SessionCockpit({
         }
       : undefined;
 
-  // A message sent mid-turn is steered into the running turn and renders as a
-  // user_message row inside it; a second copy here would double it. The brief
-  // `queued` state (an idle session's next turn, claimed within a heartbeat)
-  // is not worth a row either.
-  // A HELD message is the exception: it is queued, but nothing is about to
-  // take it, and the person has to see what a pause (or a restart) is holding
-  // in order to decide about it.
-  const shown = transcript.filter((turn) => (turn.state !== "queued" || turn.held) && turn.state !== "steering" && turn.state !== "steered");
+  const { shown, hostOf } = transcriptRows(transcript);
   /**
    * WHERE THE TIME GOES WHEN A CONVERSATION OPENS (#407).
    *
@@ -4021,7 +4053,7 @@ export function SessionCockpit({
                 turn={turn}
                 roster={roster}
                 live={turn.runId === active?.runId}
-                requests={openRequests.filter((request) => request.runId === turn.runId && request.id !== composerQuestion?.id)}
+                requests={openRequests.filter((request) => (hostOf.get(request.runId) ?? request.runId) === turn.runId && request.id !== composerQuestion?.id)}
                 sending={sending}
                 onInsert={insertIntoComposer}
                 {...panelGestures}
