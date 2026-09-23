@@ -39,6 +39,21 @@ describe("the browser viewport vocabulary", () => {
     expect(fitViewport({ width: 1280, height: 800 }, { width: 640, height: 600 })).toEqual({ scale: 0.5, x: 0, y: 0, width: 640, height: 400 });
     expect(fitViewport({ width: 390, height: 844 }, { width: 1000, height: 900 })).toEqual({ scale: 1, x: 305, y: 0, width: 390, height: 844 });
   });
+
+  test("the fitted rect never reaches past the stage — the frame and the frozen frame are drawn only there", () => {
+    // The owner's panel after #922: the Default preset in a taller stage is a
+    // 975×609 page at the top, and nothing of it below row 609.
+    expect(fitViewport({ width: 1280, height: 800 }, { width: 975, height: 794 })).toEqual({ scale: 975 / 1280, x: 0, y: 0, width: 975, height: 609 });
+    for (const viewport of VIEWPORT_PRESETS) {
+      for (const stage of [{ width: 975, height: 794 }, { width: 640, height: 1200 }, { width: 1600, height: 500 }, { width: 333, height: 333 }]) {
+        const fit = fitViewport(viewport, stage);
+        expect(fit.y).toBe(0);
+        expect(fit.x + fit.width).toBeLessThanOrEqual(stage.width);
+        expect(fit.height).toBeLessThanOrEqual(stage.height);
+        expect(Math.abs(fit.height - viewport.height * fit.scale)).toBeLessThanOrEqual(0.5);
+      }
+    }
+  });
 });
 
 describe("the resize rails' math", () => {
