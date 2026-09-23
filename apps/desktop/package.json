@@ -6,6 +6,8 @@
   "productName": "Telar",
   "//comments-live-out-here": "AND NOT INSIDE `build`. electron-builder VALIDATES its configuration object against a schema and REFUSES an unknown property — `build.//asarUnpack` fails the whole package with \"configuration has an unknown property\", before a single file is copied. The `//key` convention this file uses everywhere else is safe in `scripts` (no validator) and in `build.mac.extendInfo` (passed through to Info.plist), and nowhere else under `build`. Found by running a real package; nothing in the unit suite can see it, because the schema lives in electron-builder.",
   "//build.asarUnpack": "THE FIRST NATIVE MODULE THIS APP SHIPS. A `.node` cannot be loaded from inside an asar archive, and node-pty needs a second file beside it — `spawn-helper`, which it `execl`s on macOS and resolves as a SIBLING of the addon. node-pty's own loader rewrites `app.asar` to `app.asar.unpacked` for that path, which is the package stating the requirement. Without it the addon is sealed in the archive and every terminal fails at load; with it and without after-pack.js, the helper is there but mode 0644 and every terminal fails at spawn with `posix_spawnp failed`. Both are verified on the built .app by build.afterPack rather than discovered by a user.",
+  "//build.mac.extraFiles": "THE COMPUTER-USE HELPER, AT Contents/Helpers/Computer Use for Telar.app — inside the bundle, so it leaves with Telar and is replaced by every Telar update. scripts/build-desktop.sh builds it into vendor/computer-use from the release pinned in computer-use-helper.json (scripts/computer-use-helper.mjs) and signs it there with its own entitlements; a build with no vendor/computer-use (package-desktop.sh, a local iteration) only warns and ships without it, and the engine then falls back to an external install the way a dev checkout does.",
+  "//build.mac.signIgnore": "WHY electron-builder MUST NOT SIGN THE HELPER. It would re-sign it with entitlements.mac.inherit.plist, whose com.apple.security.inherit is for children of a sandboxed parent, not for an app LaunchServices starts by itself, and the helper would lose the entitlements it was signed with. Already signed, it is still sealed into Telar's own signature.",
   "//build.afterPack": "Proves the two facts above about the artefact that was just written, and sets the executable bit node-pty's npm tarball does not carry. A build-time failure instead of a runtime one, and it means an app installed on a read-only volume never has to write into its own bundle to run a shell.",
   "description": "Telar desktop shell with a shared Electron-owned browser host.",
   "author": "Facundo Barbera <facundo.barbera@gmail.com>",
@@ -103,6 +105,7 @@
       "window-chrome.js",
       "window-material.js",
       "window-target.js",
+      "computer-use-helper.json",
       "package.json"
     ],
     "extraResources": [
@@ -141,6 +144,15 @@
         }
       ],
       "hardenedRuntime": true,
+      "extraFiles": [
+        {
+          "from": "vendor/computer-use",
+          "to": "Helpers"
+        }
+      ],
+      "signIgnore": [
+        "/Contents/Helpers/"
+      ],
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "extendInfo": {

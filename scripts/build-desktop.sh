@@ -130,6 +130,17 @@ cd "$SNAP"
 log "bun install --frozen-lockfile (snapshot)"
 NODE_OPTIONS= bun install --frozen-lockfile
 
+# --- computer-use helper (cua-driver, pinned) --------------------------------
+# Downloaded from the release pinned in apps/desktop/computer-use-helper.json,
+# refused unless its sha256 matches, rebuilt under Telar's bundle id and signed
+# with the Developer ID electron-builder is about to use (ad-hoc when there is
+# none, exactly as Telar itself then is). ANY failure here fails the build: a
+# release without its helper would silently hand computer use back to whatever
+# cua install the machine happens to have. after-pack.js re-checks the artefact.
+log "computer-use helper (cua-driver pinned in apps/desktop/computer-use-helper.json)"
+NODE_OPTIONS= bun scripts/computer-use-helper.mjs --out "$SNAP/apps/desktop/vendor/computer-use" --sign auto
+export TELAR_REQUIRE_COMPUTER_USE_HELPER=1
+
 # --- standalone web build ----------------------------------------------------
 log "build-app.sh (standalone Next server)"
 NODE_OPTIONS= bash apps/desktop/build-app.sh
@@ -221,6 +232,17 @@ if codesign -dv "$BUILT_APP" >/dev/null 2>&1; then
   # build, notarized or not, and it is what Squirrel checks when it swaps an
   # update into an installed app.
   codesign --verify --deep --strict "$BUILT_APP"
+  # The helper is signed apart from Telar (see computer-use-helper.mjs), so
+  # prove it carries the SAME team: a mismatch fails notarization at best and,
+  # for an un-notarized nightly, ships a helper macOS will not trust.
+  HELPER_NAME="$(NODE_OPTIONS= bun -e 'process.stdout.write(require(process.argv[1]).appName)' "$SNAP/apps/desktop/computer-use-helper.json")"
+  HELPER_APP="$BUILT_APP/Contents/Helpers/$HELPER_NAME.app"
+  team_of() { codesign -dv "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p'; }
+  if [ "$(team_of "$HELPER_APP")" != "$(team_of "$BUILT_APP")" ]; then
+    echo "build-desktop: $HELPER_APP is signed by team '$(team_of "$HELPER_APP")', Telar by '$(team_of "$BUILT_APP")'" >&2
+    exit 1
+  fi
+  log "computer-use helper signed by the same team as Telar"
   # GATEKEEPER ACCEPTANCE, only when the build was actually notarized.
   #
   # `spctl --assess` asks "would macOS let a user open this if they downloaded
