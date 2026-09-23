@@ -247,9 +247,12 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_type",
-    description: "Type text into an editable element, in the tab you are working in or the tabId you name.",
+    description:
+      "Type into an editable element by target or, with no target, into whatever has focus (say a cell you just clicked by x,y). In your tab or the tabId you name.",
     input: z.object({
-      ...targeted,
+      // Optional: absent means the focused element, which is not cleared first.
+      target: z.string().min(1).optional(),
+      element: z.string().optional(),
       ...tabId,
       text: z.string(),
       submit: z.boolean().optional(),
@@ -278,7 +281,8 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_press_key",
-    description: "Press a keyboard key, in the tab you are working in or the tabId you name.",
+    description:
+      "Press a key or a chord (Enter, Control+A, Meta+V, Shift+Tab), in the tab you are working in or the tabId you name.",
     input: z.object({ key: z.string().min(1), ...tabId }),
   },
   {

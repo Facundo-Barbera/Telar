@@ -308,10 +308,54 @@ function errorResult(error) {
 }
 
 /**
- * WHAT RUNS IN THE PAGE FOR THE COORDINATE TOOLS. A canvas-drawn page has no
- * refs, so this reads the DOM directly for what sits at a point, so a result
- * can say what a click landed on. A function source, called with JSON
- * arguments and returned by value.
+ * A KEY, OR A CHORD, IN ELECTRON'S NAMES. Models write keys the way the web
+ * (and Playwright) spells them — `ArrowDown`, `Control+A`, `ControlOrMeta+C`;
+ * `sendInputEvent` wants accelerator names and a separate modifiers array.
+ * The key is whatever follows the LAST `+`, so a trailing `++` is the plus
+ * key (`Shift++`), and a bare `+` is too. An unknown modifier is refused by
+ * name rather than typed as a letter: `Hyper+A` pressing A would be a quiet
+ * lie about what was pressed.
+ */
+const CHORD_MODIFIERS = {
+  control: "control", ctrl: "control",
+  meta: "meta", cmd: "meta", command: "meta",
+  alt: "alt", option: "alt",
+  shift: "shift",
+};
+const ELECTRON_KEY_NAMES = {
+  arrowup: "Up", arrowdown: "Down", arrowleft: "Left", arrowright: "Right",
+  escape: "Escape", esc: "Escape", enter: "Enter", return: "Return", space: "Space", " ": "Space",
+};
+
+function keyChord(key, platform = process.platform) {
+  const spec = String(key ?? "");
+  if (!spec) throw new Error("A key is required.");
+  let rest;
+  let name;
+  if (spec === "+") [rest, name] = ["", "+"];
+  else if (spec.endsWith("++")) [rest, name] = [spec.slice(0, -2), "+"];
+  else {
+    const cut = spec.lastIndexOf("+");
+    [rest, name] = cut < 0 ? ["", spec] : [spec.slice(0, cut), spec.slice(cut + 1)];
+  }
+  if (!name) throw new Error(`${spec} names no key after its modifiers. Write a chord like Control+A.`);
+  const modifiers = [];
+  for (const token of rest ? rest.split("+") : []) {
+    const lower = token.trim().toLowerCase();
+    const modifier = lower === "controlormeta" ? (platform === "darwin" ? "meta" : "control") : CHORD_MODIFIERS[lower];
+    if (!modifier) throw new Error(`Unknown modifier ${token || "(empty)"} in ${spec}. Use Control, Meta, Alt, Shift or ControlOrMeta.`);
+    if (!modifiers.includes(modifier)) modifiers.push(modifier);
+  }
+  return { keyCode: ELECTRON_KEY_NAMES[name.toLowerCase()] || name, modifiers };
+}
+
+/**
+ * WHAT RUNS IN THE PAGE FOR THE COORDINATE AND FOCUS TOOLS. A canvas-drawn
+ * page has no refs, so these read the DOM directly: what sits at a point,
+ * and what has focus. Focus is walked down through open shadow roots and
+ * same-origin frames because a spreadsheet keeps it on a contenteditable
+ * body INSIDE a frame — the top document's activeElement is just the iframe.
+ * Each is a function source, called with JSON arguments and returned by value.
  */
 const PAGE_DESCRIBE = `
   function describe(el) {
@@ -319,6 +363,23 @@ const PAGE_DESCRIBE = `
     const role = attr("role") || String(el.tagName || "").toLowerCase();
     const name = attr("aria-label") || attr("title") || attr("alt") || attr("placeholder") || String(el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 60);
     return { role, name };
+  }`;
+const PAGE_FOCUS = `${PAGE_DESCRIBE}
+  function deepestFocus() {
+    let el = document.activeElement;
+    for (;;) {
+      if (el && el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      let inner = null;
+      try { inner = el && el.contentDocument ? el.contentDocument.activeElement : null; } catch (e) { inner = null; }
+      if (inner) { el = inner; continue; }
+      return el;
+    }
+  }
+  function isEditable(el) {
+    if (!el) return false;
+    if (el.tagName === "TEXTAREA") return true;
+    if (el.tagName === "INPUT") return !["button", "submit", "reset", "checkbox", "radio", "file", "image", "range", "color", "hidden"].includes(String(el.type || "text").toLowerCase());
+    return Boolean(el.isContentEditable);
   }`;
 const PAGE_AT_POINT = `function (x, y) {${PAGE_DESCRIBE}
   let el = document.elementFromPoint(x, y);
@@ -328,6 +389,10 @@ const PAGE_AT_POINT = `function (x, y) {${PAGE_DESCRIBE}
     el = inner;
   }
   return el ? describe(el) : null;
+}`;
+const PAGE_FOCUSED_EDITABLE = `function () {${PAGE_FOCUS}
+  const el = deepestFocus();
+  return isEditable(el) ? describe(el) : null;
 }`;
 /** `button "Save"`, or just `canvas` when the element has no name. */
 function pageLabel(described) {
@@ -4086,6 +4151,10 @@ class DesktopBrowserManager {
     }
   }
 
+  async focusedEditable(tab) {
+    return (await this.evaluateInPage(tab, PAGE_FOCUSED_EDITABLE)) || null;
+  }
+
   async click(tab, args, action) {
     const at = this.coordinatesOf(tab, args);
     // Named BEFORE the click: the click may well replace what was there.
@@ -4156,6 +4225,7 @@ class DesktopBrowserManager {
   }
 
   async type(tab, args, action) {
+    if (String(args.target ?? "").trim() === "") return this.typeAtFocus(tab, args, action);
     const backendNodeId = this.backendNode(tab, args.target);
     if (action) this.checkpoint(action);
     await this.callOnNode(
@@ -4163,9 +4233,31 @@ class DesktopBrowserManager {
       backendNodeId,
       "function(){ this.scrollIntoView({block:'center',inline:'center'}); this.focus(); if ('value' in this) { this.value=''; this.dispatchEvent(new Event('input',{bubbles:true})); } }",
     );
+    await this.insertText(tab, String(args.text ?? ""), args.slowly, action);
+    if (args.submit) await this.press(tab, { key: "Enter" }, action);
+    return okText(`Typed into ${args.element || args.target}.`);
+  }
+
+  /**
+   * TYPING WITH NO TARGET goes where focus already is — the cell a click
+   * selected, a spreadsheet's name box, a textarea the snapshot never
+   * surfaced. Nothing is cleared: the model put the caret there on purpose.
+   * With nothing editable focused the keys would fall on the page's own
+   * shortcuts, so that is refused instead of typed into the void.
+   */
+  async typeAtFocus(tab, args, action) {
+    const focused = await this.focusedEditable(tab);
+    if (!focused) {
+      throw new Error("Nothing editable has focus in this tab. Click into a field or a cell first (a spreadsheet's name box or formula bar), or pass a target.");
+    }
+    await this.insertText(tab, String(args.text ?? ""), args.slowly, action);
+    if (args.submit) await this.press(tab, { key: "Enter" }, action);
+    return okText(`Typed into the focused ${pageLabel(focused)}.`);
+  }
+
+  async insertText(tab, text, slowly, action) {
     const debug = await this.ensureDebugger(tab);
-    const text = String(args.text ?? "");
-    if (args.slowly) {
+    if (slowly) {
       for (const char of text) {
         if (action) this.checkpoint(action);
         this.stampAgentInput(tab); // insertText raises no keydown: nothing to expect
@@ -4177,17 +4269,18 @@ class DesktopBrowserManager {
       this.stampAgentInput(tab);
       await debug.sendCommand("Input.insertText", { text });
     }
-    if (args.submit) await this.press(tab, { key: "Enter" }, action);
-    return okText(`Typed into ${args.element || args.target}.`);
   }
 
   async press(tab, args, action) {
     const key = String(args.key || "");
     if (!key) throw new Error("A key is required.");
+    const { keyCode, modifiers } = keyChord(key);
     if (action) this.checkpoint(action);
-    this.stampAgentInput(tab, 1); // keyDown → one keydown report
-    tab.view.webContents.sendInputEvent({ type: "keyDown", keyCode: key });
-    tab.view.webContents.sendInputEvent({ type: "keyUp", keyCode: key });
+    // One keyDown — its modifiers ride on it, not as keydowns of their own →
+    // one keydown report.
+    this.stampAgentInput(tab, 1);
+    tab.view.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    tab.view.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
     return okText(`Pressed ${key}.`);
   }
 
@@ -4931,4 +5024,4 @@ function managerForScope(managers, scopeKey, fallback = null) {
   return best;
 }
 
-module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };
+module.exports = { DesktopBrowserManager, managerForScope, keyChord, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };

@@ -4,14 +4,18 @@
  * The desktop host takes `browser_click {x, y}` as-is. Playwright MCP does not:
  * with `--caps vision` (see `transport.ts`) it has separate `browser_mouse_*_xy`
  * tools instead. This is the one place that knows the mapping, and the one
- * place that can say which canvas tools the headless runtime cannot do at all
- * (the `refusal` arm — answered to the model as an error, never sent).
+ * place that says which canvas tools the headless runtime cannot do at all —
+ * typing into whatever has focus (Playwright MCP types only by ref).
  */
 
 export type HeadlessCanvasCall = { name: string; args: Record<string, unknown> } | { refusal: string };
 
 function hasPoint(args: Record<string, unknown>): boolean {
   return typeof args.x === "number" && typeof args.y === "number";
+}
+
+function refusal(name: string): { refusal: string } {
+  return { refusal: `${name} here needs Telar's desktop browser, which this session cannot reach right now.` };
 }
 
 export function headlessCanvasCall(name: string, args: Record<string, unknown>): HeadlessCanvasCall {
@@ -32,5 +36,6 @@ export function headlessCanvasCall(name: string, args: Record<string, unknown>):
   if (name === "browser_drag") {
     return { name: "browser_mouse_drag_xy", args: { startX: args.x, startY: args.y, endX: args.toX, endY: args.toY } };
   }
+  if (name === "browser_type" && args.target === undefined) return refusal(name);
   return { name, args };
 }

@@ -4120,10 +4120,13 @@ describe("a focused page owns ⌘1..⌘9 (#660)", () => {
 
 /**
  * A PAGE DRAWN ON A CANVAS has no refs for what the screenshot shows, so the
- * acting tools also take the screenshot's CSS pixels. The fake page answers
- * the in-page read from `page`: what sits at a point.
+ * acting tools also take the screenshot's CSS pixels, type into whatever has
+ * focus, and take chords. The fake page answers the in-page reads from
+ * `page`: what sits at a point, and the focused editable.
  */
-describe("acting on a page with no refs — coordinates", () => {
+describe("acting on a page with no refs — coordinates, focus and chords", () => {
+  const { keyChord } = require("./browser-manager");
+
   async function canvasTab({ mode = "fixed", page = {} } = {}) {
     const harness = makeHarness();
     const { manager, views } = harness;
@@ -4150,6 +4153,7 @@ describe("acting on a page with no refs — coordinates", () => {
         return { exceptionDetails: { text: "Uncaught", exception: { description: "TypeError: frozen\n    at <anonymous>" } } };
       }
       if (expression.includes("elementFromPoint")) return { result: { value: page.atPoint ?? null } };
+      if (expression.includes("deepestFocus()")) return { result: { value: page.focused ?? null } };
       return answer;
     };
     // A look at the page is what licenses acting on it.
@@ -4228,5 +4232,47 @@ describe("acting on a page with no refs — coordinates", () => {
     expect(held.every((p) => p.type === "mouseMoved" && p.button === "left")).toBe(true);
     const off = await manager.callTool("s", "browser_drag", { x: 100, y: 100, toX: 100, toY: 900 });
     expect(textOf(off)).toContain("(100, 900) is outside the 1280×800 viewport");
+  });
+
+  test("type with no target inserts at focus without clearing it, and refuses when nothing editable has focus", async () => {
+    const { manager, debug } = await canvasTab({ page: { focused: { role: "textbox", name: "Formula" } } });
+    const result = await manager.callTool("s", "browser_type", { text: "=SUM(A1:A3)" });
+    expect(textOf(result)).toBe('Typed into the focused textbox "Formula".');
+    expect(debug.commands.filter((c) => c.method === "Input.insertText").map((c) => c.params.text)).toEqual(["=SUM(A1:A3)"]);
+    expect(debug.commands.some((c) => c.method === "DOM.resolveNode" || c.method === "Runtime.callFunctionOn")).toBe(false);
+
+    const blank = await canvasTab();
+    const refused = await blank.manager.callTool("s", "browser_type", { text: "x" });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toBe("Error: Nothing editable has focus in this tab. Click into a field or a cell first (a spreadsheet's name box or formula bar), or pass a target.");
+    expect(blank.debug.commands.some((c) => c.method === "Input.insertText")).toBe(false);
+  });
+
+  test("keyChord speaks Electron's key names and modifiers", () => {
+    expect(keyChord("Control+A")).toEqual({ keyCode: "A", modifiers: ["control"] });
+    expect(keyChord("Meta+V")).toEqual({ keyCode: "V", modifiers: ["meta"] });
+    expect(keyChord("Shift+Tab")).toEqual({ keyCode: "Tab", modifiers: ["shift"] });
+    expect(keyChord("ArrowDown")).toEqual({ keyCode: "Down", modifiers: [] });
+    expect(keyChord("Alt+ArrowLeft")).toEqual({ keyCode: "Left", modifiers: ["alt"] });
+    expect(keyChord("Enter")).toEqual({ keyCode: "Enter", modifiers: [] });
+    expect(keyChord("ControlOrMeta+C", "darwin")).toEqual({ keyCode: "C", modifiers: ["meta"] });
+    expect(keyChord("ControlOrMeta+C", "linux")).toEqual({ keyCode: "C", modifiers: ["control"] });
+    expect(keyChord("Shift++")).toEqual({ keyCode: "+", modifiers: ["shift"] });
+    expect(keyChord("+")).toEqual({ keyCode: "+", modifiers: [] });
+    expect(keyChord("Cmd+Shift+Z")).toEqual({ keyCode: "Z", modifiers: ["meta", "shift"] });
+    expect(() => keyChord("Hyper+A")).toThrow("Unknown modifier Hyper in Hyper+A. Use Control, Meta, Alt, Shift or ControlOrMeta.");
+  });
+
+  test("browser_press_key sends a chord as one keyDown/keyUp carrying its modifiers", async () => {
+    const { manager, views } = await canvasTab();
+    const result = await manager.callTool("s", "browser_press_key", { key: "Meta+V" });
+    expect(textOf(result)).toBe("Pressed Meta+V.");
+    expect(views[0].webContents.inputEvents).toEqual([
+      { type: "keyDown", keyCode: "V", modifiers: ["meta"] },
+      { type: "keyUp", keyCode: "V", modifiers: ["meta"] },
+    ]);
+    const unknown = await manager.callTool("s", "browser_press_key", { key: "Hyper+A" });
+    expect(unknown.isError).toBe(true);
+    expect(views[0].webContents.inputEvents).toHaveLength(2);
   });
 });

@@ -155,6 +155,12 @@ describe("coordinates, for a page with no ref to act on", () => {
     expect(() => parseBrowserToolInput("browser_drag", { x: 1, y: 2, toX: 3 })).toThrow(BrowserToolInputError);
   });
 
+  test("type needs no target, and a key may be a chord", () => {
+    expect(parseBrowserToolInput("browser_type", { text: "hello" })).toEqual({ text: "hello" });
+    expect(() => parseBrowserToolInput("browser_type", { target: "", text: "x" })).toThrow(BrowserToolInputError);
+    expect(parseBrowserToolInput("browser_press_key", { key: "Control+A" })).toEqual({ key: "Control+A" });
+  });
+
   test("the headless runtime gets its own coordinate tools", () => {
     expect(headlessCanvasCall("browser_click", { x: 3, y: 4 })).toEqual({ name: "browser_mouse_click_xy", args: { x: 3, y: 4 } });
     expect(headlessCanvasCall("browser_click", { x: 3, y: 4, doubleClick: true, button: "right" })).toEqual({
@@ -171,6 +177,12 @@ describe("coordinates, for a page with no ref to act on", () => {
     expect(headlessCanvasCall("browser_type", { target: "e2", text: "x" })).toEqual({
       name: "browser_type",
       args: { target: "e2", text: "x" },
+    });
+  });
+
+  test("and refuses, by name, what only the desktop browser can do", () => {
+    expect(headlessCanvasCall("browser_type", { text: "x" })).toEqual({
+      refusal: "browser_type here needs Telar's desktop browser, which this session cannot reach right now.",
     });
   });
 });
