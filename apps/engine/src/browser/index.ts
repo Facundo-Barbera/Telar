@@ -22,10 +22,10 @@ import nodePath from "node:path";
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import {
   browserErrorText,
+  headlessBrowserToolCall,
   imageDataUrlOf,
   isBrowserNotInstalled,
   isReadOnlyBrowserCall,
-  normalizeBrowserToolCall,
   parseBrowserTabs,
   textOf,
 } from "./helpers";
@@ -187,7 +187,9 @@ export class BrowserRuntime {
         isError: true,
       };
     }
-    const normalized = normalizeBrowserToolCall(name, args);
+    // In Playwright's vocabulary: a preset or a bare mode becomes numbers HERE,
+    // for this runtime only — the desktop host takes both itself.
+    const normalized = headlessBrowserToolCall(name, args);
     // Validated before the lease so a typo cannot spawn a Chromium.
     const input = parseBrowserToolInput(normalized.name, normalized.args);
     // `tabId` is the DESKTOP host's read-addressing (per-tab control); the
