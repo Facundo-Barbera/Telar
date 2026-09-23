@@ -245,7 +245,7 @@ import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, 
 import type { ClaudeConversation, ForkCut } from "./claude-fork";
 import { describeImport } from "./claude-transcript";
 import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
-import { applyModelOverlay } from "./model-overlay";
+import { applyModelOverlay, chosenDefault } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./schedules";
@@ -6617,7 +6617,7 @@ export class EngineStore {
    */
   setModelOverlay(
     instanceId: string,
-    patch: { favorites?: unknown; hidden?: unknown; order?: unknown; custom?: unknown },
+    patch: { favorites?: unknown; hidden?: unknown; order?: unknown; custom?: unknown; default?: unknown },
   ): ModelOverlay {
     assertInstanceId(instanceId);
     const next: ModelOverlay = { ...this.getModelOverlay(instanceId), updatedAt: this.now() };
@@ -6626,6 +6626,9 @@ export class EngineStore {
       next[key] = readModelIds(patch[key], key);
     }
     if (patch.custom !== undefined) next.custom = readCustomModels(patch.custom);
+    // `null` returns to Telar's own pick; a string must be a model id.
+    if (patch.default === null) delete next.default;
+    else if (patch.default !== undefined) next.default = readModelIds([patch.default], "default")[0]!;
 
     const stored = (() => {
       try {
@@ -10720,15 +10723,28 @@ export class EngineStore {
    * this reads the in-memory catalogue and nothing else. Cold yields
    * `undefined` — `prepareClaudeCatalogue` is what makes it warm in time.
    */
-  private defaultClaudeModelId(): string | undefined {
+  private defaultClaudeModelId(instanceId: string = defaultInstanceIdForDriver("claude")): string | undefined {
+    // THE READER'S CHOICE FIRST (Settings → Providers → Models). Checked against
+    // the list when there is one, so a withdrawn model falls back to Telar's
+    // pick; trusted as stored when cold, because it was picked off that list.
+    const chosen = (() => {
+      try {
+        return this.getModelOverlay(instanceId).default;
+      } catch {
+        return undefined;
+      }
+    })();
     const cached = this.modelCache.get("claude");
-    if (cached) return longDefaultOf(applyModelManifest(cached.models, this.manifest, cached.cliVersion));
+    if (cached) {
+      const listed = applyModelManifest(cached.models, this.manifest, cached.cliVersion);
+      return chosenDefault(listed, chosen)?.id ?? longDefaultOf(listed);
+    }
     // COLD MEMORY, WARM DISK. Reading the list spawns the provider's CLI, which
     // a synchronous claim cannot do and a user's first message must not wait
     // for. The last list this machine actually read is remembered instead, so a
     // restart is covered from its very first turn; the background refresh on
     // admission keeps it current.
-    return this.rememberedClaudeDefault();
+    return chosen ?? this.rememberedClaudeDefault();
   }
 
   /** The remembered default, or nothing. Never throws: a damaged record costs
@@ -10790,7 +10806,7 @@ export class EngineStore {
   ): ModelSelection | undefined {
     const normalized = this.normalizeModelSelection(driver, selection);
     if (driver !== "claude" || normalized?.model) return normalized;
-    const model = this.defaultClaudeModelId();
+    const model = this.defaultClaudeModelId(normalized?.instanceId ?? instanceId);
     // Nothing known: unchanged. A guess here would be the 200k bug wearing a
     // different hat.
     if (!model) return normalized;

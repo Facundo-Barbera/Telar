@@ -2507,7 +2507,7 @@ export class EngineClient {
    *  `{ hidden: [] }` clears the hides and omitting `hidden` leaves them. */
   setModelOverlay(
     instanceId: string,
-    patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[] },
+    patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[]; default?: string | null },
   ): Promise<{ overlay: ModelOverlay }> {
     return this.request("PATCH", `/v2/provider-instances/${encodeURIComponent(instanceId)}/models`, patch);
   }

@@ -156,7 +156,7 @@ export function useModelOverlays(targets: readonly ModelTarget[]): ReadonlyMap<P
  *  rather than the one this page started with. */
 export async function patchModelOverlay(
   instanceId: string,
-  patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[] },
+  patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[]; default?: string | null },
 ): Promise<void> {
   await api.setModelOverlay(instanceId, patch);
   forgetModelCatalogues();

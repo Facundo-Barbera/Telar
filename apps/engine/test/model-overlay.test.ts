@@ -142,3 +142,25 @@ test("an untouched overlay changes nothing at all", () => {
   const models = [row("sonnet", { efforts: ["low"] }), row("opus[1m]", { isDefault: true })];
   expect(applyModelOverlay(models, EMPTY)).toEqual(models);
 });
+
+describe("the reader's default", () => {
+  const listed = () => [row("fable[1m]", { isDefault: true }), row("opus[1m]"), row("old", { hidden: true })];
+
+  test("moves `isDefault` to the chosen row and off Telar's pick", () => {
+    const models = applyModelOverlay(listed(), { ...EMPTY, default: "opus[1m]" });
+    expect(models.filter((model) => model.isDefault).map((model) => model.id)).toEqual(["opus[1m]"]);
+  });
+
+  test("a choice the list no longer carries leaves Telar's pick standing", () => {
+    // A withdrawn model must fall back, never become a default nobody can run.
+    for (const chosen of ["gone", "old"]) {
+      const models = applyModelOverlay(listed(), { ...EMPTY, default: chosen });
+      expect(models.filter((model) => model.isDefault).map((model) => model.id)).toEqual(["fable[1m]"]);
+    }
+  });
+
+  test("a hand-typed row never becomes the default", () => {
+    const models = applyModelOverlay(listed(), { ...EMPTY, custom: [{ id: "typed" }], default: "typed" });
+    expect(models.filter((model) => model.isDefault).map((model) => model.id)).toEqual(["fable[1m]"]);
+  });
+});
