@@ -55,6 +55,8 @@ import path from "node:path";
 import {
   driverTakesComputerUse,
   type ComputerUseBackend,
+  type ComputerUseGrant,
+  type ComputerUsePane,
   type ComputerUsePermission,
   type ComputerUseStatus,
   type McpServer,
@@ -111,7 +113,10 @@ export type BundledHelper = {
   bundleId: string;
   /** OUR socket and pid file. cua's default is ~/Library/Caches/cua-driver/
    *  cua-driver.sock (cua-driver-core/src/daemon.rs `default_socket_path`),
-   *  which a separately installed CuaDriver.app listens on. */
+   *  which a separately installed CuaDriver.app listens on. cua 0.28.2's
+   *  `serve` accepts `--pid-file` but IGNORES it (main.rs always writes
+   *  `default_pid_file_path()`), so nothing reads this file: our daemon is
+   *  found in the process table instead (`helperDaemonPids`). */
   socket: string;
   pidFile: string;
   /** Where cua keeps config, telemetry ids and extensions for this copy. */
@@ -161,6 +166,11 @@ export function bundledHelper(app: string, home: string): BundledHelper {
  * is its own responsible process and macOS attributes its grants (and names its
  * prompts) to the helper rather than to Telar. `-n` because cua's `mcp` would
  * otherwise have done this with `-a CuaDriver`; `-g` keeps it in the background.
+ *
+ * ONE LAUNCH SHOWS AS TWO PROCESSES. `serve` outside a bundle named
+ * CuaDriver.app re-execs itself with the TCC responsibility disclaimed
+ * (cua-driver/src/responsibility.rs `reexec_disclaimed_if_needed`): the parent
+ * only waits for the child, and the child binds the socket and does the work.
  */
 export function helperDaemonLaunch(helper: BundledHelper): { command: string; args: string[] } {
   return {
@@ -247,36 +257,104 @@ export type HelperDeps = {
   spawn?: typeof spawn;
   listening?: (socket: string) => Promise<boolean>;
   sleep?: (ms: number) => Promise<void>;
+  /** Every process's pid and command line (`ps -axo pid=,command=`). */
+  processes?: () => { pid: number; command: string }[];
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** `/usr/bin/open` with these args; true when it exited 0. */
+  open?: (args: string[]) => Promise<boolean>;
 };
 
 const launching = new Map<string, Promise<boolean>>();
 
+function psProcesses(): { pid: number; command: string }[] {
+  const answer = spawnSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  return (answer.stdout ?? "").split("\n").flatMap((line) => {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    return match ? [{ pid: Number(match[1]), command: match[2]! }] : [];
+  });
+}
+
 /**
- * Up, or started. Concurrent callers share one launch. The daemon starts with
- * cua's gate off and nobody asks for a prompt, so starting it draws nothing on
- * the screen — which is why, unlike an external install, Telar may start it at
- * engine start and at a claim.
+ * OUR daemon's pids — the disclaiming parent and the serving child — read from
+ * the process table: OUR binary running `serve` on OUR socket. Never a pid
+ * file: cua ignores `--pid-file` and writes the SHARED
+ * ~/Library/Caches/cua-driver/cua-driver.pid, which a separately installed
+ * CuaDriver.app also writes, so a pid there may be the person's own daemon.
+ */
+export function helperDaemonPids(helper: BundledHelper, deps: HelperDeps = {}): number[] {
+  return (deps.processes ?? psProcesses)()
+    .filter(({ command }) => command.startsWith(`${helper.binary} serve`) && command.includes(`--socket ${helper.socket}`))
+    .map(({ pid }) => pid);
+}
+
+/**
+ * The launch lock beside the socket. The in-process `launching` map only
+ * dedupes callers inside ONE engine; this one holds across processes (a second
+ * engine, a restarted one racing the old one's launch). `wx` is the atomic part;
+ * a lock older than a launch can take is a crashed launcher's and is taken over.
+ */
+function takeLaunchLock(helper: BundledHelper, staleMs: number): (() => void) | undefined {
+  const lock = `${helper.socket}.launch.lock`;
+  for (let tries = 0; tries < 2; tries += 1) {
+    try {
+      fs.closeSync(fs.openSync(lock, "wx"));
+      return () => fs.rmSync(lock, { force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined;
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs < staleMs) return undefined;
+        fs.rmSync(lock, { force: true });
+      } catch {
+        // Released between the two calls: try again.
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Up, or started — ONE DAEMON PER SOCKET. Concurrent callers in this process
+ * share one launch; across processes, whoever holds the launch lock launches
+ * and everyone else waits for the socket, and a helper daemon already in the
+ * process table (up, not listening yet) is waited for rather than doubled.
+ * The daemon starts with cua's gate off and nobody asks for a prompt, so
+ * starting it draws nothing on the screen — which is why, unlike an external
+ * install, Telar may start it at engine start and at a claim.
  */
 export function ensureHelperDaemon(helper: BundledHelper, deps: HelperDeps = {}, timeoutMs = 10_000): Promise<boolean> {
   const listening = deps.listening ?? socketListening;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const existing = launching.get(helper.socket);
   if (existing) return existing;
-  const attempt = (async () => {
-    if (await listening(helper.socket)) return true;
-    fs.mkdirSync(path.dirname(helper.socket), { recursive: true });
-    fs.mkdirSync(helper.stateDir, { recursive: true });
-    const launch = helperDaemonLaunch(helper);
-    try {
-      (deps.spawn ?? spawn)(launch.command, launch.args, { stdio: "ignore", detached: true }).unref();
-    } catch {
-      return false;
-    }
+  const waitForSocket = async () => {
     for (let waited = 0; waited < timeoutMs; waited += 250) {
       await sleep(250);
       if (await listening(helper.socket)) return true;
     }
     return false;
+  };
+  const attempt = (async () => {
+    if (await listening(helper.socket)) return true;
+    fs.mkdirSync(path.dirname(helper.socket), { recursive: true });
+    fs.mkdirSync(helper.stateDir, { recursive: true });
+    // Running but not listening yet: someone else's launch, still starting.
+    if (helperDaemonPids(helper, deps).length > 0) return waitForSocket();
+    const release = takeLaunchLock(helper, timeoutMs + 5_000);
+    if (!release) return waitForSocket();
+    try {
+      // Re-checked under the lock: another process may have finished its launch
+      // between our first look and taking the lock.
+      if (await listening(helper.socket)) return true;
+      const launch = helperDaemonLaunch(helper);
+      try {
+        (deps.spawn ?? spawn)(launch.command, launch.args, { stdio: "ignore", detached: true }).unref();
+      } catch {
+        return false;
+      }
+      return await waitForSocket();
+    } finally {
+      release();
+    }
   })().finally(() => launching.delete(helper.socket));
   launching.set(helper.socket, attempt);
   return attempt;
@@ -302,15 +380,36 @@ export async function resetComputerUseAccess(probe: ComputerUseProbe = {}, deps:
     });
   const codes = [];
   for (const { command, args } of helperResetCommands(helper.bundleId)) codes.push(await run(command, args));
-  try {
-    const pid = Number(fs.readFileSync(helper.pidFile, "utf8").trim());
-    // A stale pid file can name someone else's process by now; only ours is stopped.
-    const command = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" }).stdout ?? "";
-    if (Number.isInteger(pid) && pid > 0 && command.includes(helper.binary)) process.kill(pid, "SIGTERM");
-  } catch {
-    // No pid file or no such process: nothing is holding the old grants.
-  }
+  stopHelperDaemon(helper, deps);
   return codes.every((code) => code === 0) ? { reset: true } : { reset: false, message: "macOS did not reset every permission." };
+}
+
+/** SIGTERM to OUR daemon — both of its processes, found by `helperDaemonPids` —
+ *  and nothing else. False when there was none to stop. */
+export function stopHelperDaemon(helper: BundledHelper, deps: HelperDeps = {}): boolean {
+  const pids = helperDaemonPids(helper, deps);
+  for (const pid of pids) {
+    try {
+      (deps.kill ?? ((target, signal) => process.kill(target, signal)))(pid, "SIGTERM");
+    } catch {
+      // Gone already: the parent exits with its child.
+    }
+  }
+  return pids.length > 0;
+}
+
+/** Stop our daemon, wait for it to be gone — socket quiet, processes exited, or
+ *  `ensureHelperDaemon` would wait on the dying one — then start a fresh one. */
+export async function restartHelperDaemon(helper: BundledHelper, deps: HelperDeps = {}, timeoutMs = 5_000): Promise<boolean> {
+  const listening = deps.listening ?? socketListening;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  if (stopHelperDaemon(helper, deps)) {
+    for (let waited = 0; waited < timeoutMs; waited += 100) {
+      if (!(await listening(helper.socket)) && helperDaemonPids(helper, deps).length === 0) break;
+      await sleep(100);
+    }
+  }
+  return ensureHelperDaemon(helper, deps);
 }
 
 export type ComputerUseProbe = {
@@ -345,36 +444,128 @@ export function resolveComputerUseServer(probe: ComputerUseProbe = {}): McpServe
   return resolveComputerUse(probe)?.server;
 }
 
+/** The Privacy & Security lists, by the URLs cua's own gate opens
+ *  (platform-macos/src/permissions/gate.rs `settings_url`). */
+export const SETTINGS_PANE_URL: Record<ComputerUsePane, string> = {
+  accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+  "screen-recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+};
+
+function runOpen(args: string[], timeoutMs = 30_000): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn("/usr/bin/open", args, { stdio: "ignore", timeout: timeoutMs });
+      child.once("exit", (code) => resolve(code === 0));
+      child.once("error", () => resolve(false));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+type HelperGrants = { accessibility: boolean; screenRecording: boolean };
+
 /**
- * ASKING macOS FOR THE GRANTS.
+ * THE HELPER'S GRANTS, FROM A FRESH PROCESS. cua's hidden probe
+ * (`--cua-internal-permission-probe`, handled first thing in main.rs) prints
+ * `{accessibility, screen_recording}` and exits; `-request` first calls
+ * `AXIsProcessTrustedWithOptions(prompt)` and `CGRequestScreenCaptureAccess()`
+ * for whatever is missing — which also puts the helper INTO both Settings lists.
  *
- * BUNDLED: Telar's helper asks for itself. Its daemon is started through
- * LaunchServices and then asked `check_permissions {prompt: true}`, which calls
- * the Accessibility and Screen Recording request APIs IN THE DAEMON — so the
- * prompts name "Computer Use for Telar". NOT `cua-driver permissions grant`:
- * that relaunches `/Applications/CuaDriver.app` by hardcoded path, and its
- * receiving half refuses to run outside a bundle named CuaDriver.app
- * (`cli.rs` `request_permissions_via_launchservices`, `__permissions-host-request`).
+ * Fresh because macOS caches a negative Accessibility / Screen Recording answer
+ * in the process that asked (cua's gate.rs says so and probes the same way), so
+ * the long-lived daemon cannot see a grant given after it started. Through
+ * LaunchServices (`open -n -W`, stdout to a file) because a child of the engine
+ * would be answered for TELAR's grants, not the helper's.
+ */
+export async function probeHelperGrants(helper: BundledHelper, request: boolean, deps: HelperDeps = {}): Promise<HelperGrants | { error: string }> {
+  const out = path.join(os.tmpdir(), `telar-cu-probe-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  try {
+    fs.writeFileSync(out, "");
+    const flag = request ? "--cua-internal-permission-probe-request" : "--cua-internal-permission-probe";
+    const ran = await (deps.open ?? runOpen)(["-n", "-g", "-W", "--stdout", out, "-a", helper.app, "--args", flag]);
+    const text = fs.readFileSync(out, "utf8").trim();
+    if (!ran && !text) return { error: "The helper's permission check did not run." };
+    const report = JSON.parse(text.split("\n").pop() ?? "") as { accessibility?: unknown; screen_recording?: unknown };
+    return { accessibility: report.accessibility === true, screenRecording: report.screen_recording === true };
+  } catch {
+    return { error: "The helper's permission check gave no answer." };
+  } finally {
+    fs.rmSync(out, { force: true });
+  }
+}
+
+const missingPanes = (grants: HelperGrants): ComputerUsePane[] => [
+  ...(grants.accessibility ? [] : ["accessibility" as const]),
+  ...(grants.screenRecording ? [] : ["screen-recording" as const]),
+];
+
+const PANE_LABEL: Record<ComputerUsePane, string> = { accessibility: "Accessibility", "screen-recording": "Screen Recording" };
+
+/**
+ * ASKING macOS FOR THE GRANTS — and always leaving the person somewhere they
+ * can finish.
+ *
+ * BUNDLED: the helper asks for itself, through its hidden request probe (see
+ * `probeHelperGrants`). NOT `check_permissions {prompt: true}` through the MCP
+ * proxy, which is what this used to do: cua refuses a prompt on the tool path
+ * (cua-driver-core/src/tool.rs, `os_permission_prompt_requires_trusted_host`),
+ * and the refusal was swallowed — the "Grant access does nothing" bug. And NOT
+ * `cua-driver permissions grant`: that relaunches `/Applications/CuaDriver.app`
+ * by hardcoded path (`cli.rs` `request_permissions_via_launchservices`).
+ *
+ * The macOS prompt appears at most once per app — after that the request APIs
+ * return false silently — so the prompt is never the whole answer: the first
+ * list still missing a grant is opened in System Settings, as cua's own gate
+ * does. Accessibility first; the pane asks again for Screen Recording once it
+ * is the one left. The daemon is started too, so the tools are ready when the
+ * grants are, and the answer says what each step did.
  *
  * EXTERNAL (dev): cua's own `permissions grant`, which launches CuaDriver.app
- * through LaunchServices so the dialogs attribute to it.
- *
- * Detached either way; a fresh grant reaches sessions at the next probe.
+ * through LaunchServices so the dialogs attribute to it and runs cua's gate.
  */
-export function grantComputerUseAccess(probe: ComputerUseProbe = {}, deps: HelperDeps = {}): { started: boolean; backend?: ComputerUseBackend } {
+export async function grantComputerUseAccess(probe: ComputerUseProbe = {}, deps: HelperDeps = {}): Promise<ComputerUseGrant> {
   const resolved = resolveComputerUse(probe);
   if (!resolved || resolved.server.spec.transport !== "stdio") return { started: false };
-  const spec = resolved.server.spec;
-  if (resolved.helper) {
-    void ensureHelperDaemon(resolved.helper, deps).then((up) => (up ? callTool(spec, "check_permissions", { prompt: true }, 180_000, deps) : undefined));
-    return { started: true, backend: "cua" };
+  const { helper } = resolved;
+  if (!helper) {
+    try {
+      (deps.spawn ?? spawn)(resolved.server.spec.command, ["permissions", "grant"], { stdio: "ignore", detached: true }).unref();
+      return { started: true, backend: "cua" };
+    } catch (error) {
+      return { started: false, backend: "cua", message: error instanceof Error ? error.message : "cua-driver did not start." };
+    }
   }
-  try {
-    (deps.spawn ?? spawn)(spec.command, ["permissions", "grant"], { stdio: "ignore", detached: true }).unref();
-    return { started: true, backend: "cua" };
-  } catch {
-    return { started: false, backend: "cua" };
-  }
+  const daemon = await ensureHelperDaemon(helper, deps);
+  const asked = await probeHelperGrants(helper, true, deps);
+  const prompted = !("error" in asked);
+  // No answer is no reason to leave the person nowhere: Accessibility is the
+  // list every grant starts in.
+  const missing = prompted ? missingPanes(asked) : (["accessibility"] as ComputerUsePane[]);
+  const pane = missing[0];
+  const opened = pane ? await (deps.open ?? runOpen)([SETTINGS_PANE_URL[pane]]) : false;
+  const problems = [
+    daemon ? undefined : "The computer-use helper did not start.",
+    prompted ? undefined : asked.error,
+    pane && !opened ? `System Settings did not open ${PANE_LABEL[pane]}.` : undefined,
+  ].filter(Boolean);
+  return {
+    started: true,
+    backend: "cua",
+    daemon,
+    prompted,
+    ...(prompted ? { permission: missing.length === 0 ? ("granted" as const) : ("denied" as const) } : {}),
+    ...(pane && opened ? { opened: pane } : {}),
+    ...(problems.length ? { message: problems.join(" ") } : {}),
+  };
+}
+
+/** "Show in Finder" for the helper, to drag into a Settings list that does not
+ *  name it yet (a list only shows an app after it has asked, or been added). */
+export async function revealComputerUseHelper(probe: ComputerUseProbe = {}, deps: HelperDeps = {}): Promise<{ revealed: boolean }> {
+  const helper = resolveComputerUse(probe)?.helper;
+  if (!helper) return { revealed: false };
+  return { revealed: await (deps.open ?? runOpen)(["-R", helper.app]) };
 }
 
 /* ------------------------------------------------------------------ *
@@ -476,24 +667,50 @@ export function interpretListApps(answer: ToolAnswer): ProbeOutcome {
   return answer.isError ? { permission: classifyProbeError(answer.text), message: answer.text.slice(0, 400) } : { permission: "granted" };
 }
 
+function daemonGrants(answer: ToolAnswer): HelperGrants | undefined {
+  const report = answer.kind === "result" ? answer.structured : undefined;
+  return report ? { accessibility: report.accessibility === true, screenRecording: report.screen_recording === true } : undefined;
+}
+
+/** The daemon processes whose capture has been seen to work, per socket. */
+const captureVerified = new Map<string, string>();
+/** When Telar last restarted a daemon that could not capture, per socket. */
+const lastRestart = new Map<string, number>();
+
+type CaptureCheck = { ok: true } | { ok: false; unknown?: boolean; reason: string };
+
 /**
- * The bundled helper: `check_permissions {prompt: false}`, read-only. NOT
- * `list_apps` — Telar starts this daemon with cua's gate off, so nothing would
- * refuse `list_apps` for a missing grant (it needs none), and "granted" would be
- * a lie. The daemon reports its OWN grants, which are the helper's.
+ * WHETHER THE DAEMON CAN ACTUALLY CAPTURE: one real window screenshot, which
+ * is what a session will ask it for. cua's read-only `check_permissions`
+ * never runs its own live check (`SCShareableContent`, which Tahoe may follow
+ * with a consent of its own) and `prompt:true` is refused on the tool path, so
+ * the booleans are all it gives — and its `CGPreflightScreenCaptureAccess` has
+ * been seen answering no while TCC holds the grant. `get_window_state` adds
+ * `screenshot_width` only when a frame came back.
+ *
+ * Telar's own window when there is one (the pane is open in it), else any
+ * window on screen. The image is dropped. Once per daemon process: a daemon
+ * that captured once keeps its grant for its lifetime.
  */
-export function interpretPermissions(answer: ToolAnswer): ProbeOutcome {
-  if (answer.kind !== "result") return interpretListApps(answer);
-  let report = answer.structured;
-  if (!report) {
-    try {
-      report = JSON.parse(answer.text) as Record<string, unknown>;
-    } catch {
-      return { permission: answer.isError ? classifyProbeError(answer.text) : "unknown", message: answer.text.slice(0, 400) };
-    }
+async function daemonCaptures(spec: StdioSpec, helper: BundledHelper, timeoutMs: number, deps: HelperDeps): Promise<CaptureCheck> {
+  const daemon = helperDaemonPids(helper, deps).join(",");
+  if (daemon && captureVerified.get(helper.socket) === daemon) return { ok: true };
+  const listed = await callTool(spec, "list_windows", { on_screen_only: true }, timeoutMs, deps);
+  if (listed.kind !== "result" || listed.isError) return { ok: false, unknown: true, reason: listed.kind === "result" ? listed.text.slice(0, 300) : "list_windows gave no answer." };
+  type Window = { window_id?: unknown; pid?: unknown; bounds?: { width?: unknown; height?: unknown } };
+  const windows = ((listed.structured?.windows ?? []) as Window[]).filter(
+    (window): window is { window_id: number; pid: number } =>
+      typeof window.window_id === "number" && typeof window.pid === "number" && Number(window.bounds?.width) > 0 && Number(window.bounds?.height) > 0,
+  );
+  const target = windows.find((window) => window.pid === process.ppid) ?? windows[0];
+  if (!target) return { ok: false, unknown: true, reason: "no window on screen to test with." };
+  const shot = await callTool(spec, "get_window_state", { pid: target.pid, window_id: target.window_id, include_accessibility_tree: false }, timeoutMs, deps);
+  if (shot.kind === "result" && !shot.isError && typeof shot.structured?.screenshot_width === "number") {
+    if (daemon) captureVerified.set(helper.socket, daemon);
+    return { ok: true };
   }
-  const missing = [report.accessibility === true ? undefined : "Accessibility", report.screen_recording === true ? undefined : "Screen Recording"].filter(Boolean);
-  return missing.length === 0 ? { permission: "granted" } : { permission: "denied", message: `Not granted: ${missing.join(", ")}.` };
+  const reason = shot.kind === "result" ? shot.text : shot.kind === "error" ? shot.message : "no answer.";
+  return { ok: false, reason: reason.slice(0, 300) || "no frame came back." };
 }
 
 /** An external install's daemon, as `pgrep -f` sees it. */
@@ -527,9 +744,47 @@ export async function computerUseStatus(probe: ComputerUseProbe = {}, timeoutMs 
   const spec = resolved.server.spec;
   const { helper } = resolved;
   if (helper) {
-    const up = await ensureHelperDaemon(helper, deps);
-    const outcome = up ? interpretPermissions(await callTool(spec, "check_permissions", { prompt: false }, timeoutMs, deps)) : { permission: "unknown" as const };
-    return { installed: true, bundled: true, backend: resolved.backend, hostRunning: up, permission: outcome.permission, ...(outcome.message ? { message: outcome.message } : {}) };
+    let up = await ensureHelperDaemon(helper, deps);
+    const fresh = await probeHelperGrants(helper, false, deps);
+    // Without the fresh probe, the daemon's own (possibly stale) booleans are
+    // the best there is.
+    const grants: HelperGrants | undefined =
+      "error" in fresh ? (up ? daemonGrants(await callTool(spec, "check_permissions", { prompt: false }, timeoutMs, deps)) : undefined) : fresh;
+    let outcome: ProbeOutcome & { missing?: ComputerUsePane[] };
+    if (!grants) {
+      outcome = { permission: "unknown", message: "error" in fresh ? fresh.error : NO_ANSWER };
+    } else if (missingPanes(grants).length > 0) {
+      const missing = missingPanes(grants);
+      outcome = { permission: "denied", message: `Not granted: ${missing.map((pane) => PANE_LABEL[pane]).join(", ")}.`, missing };
+    } else if (!up) {
+      outcome = { permission: "unknown", message: "The computer-use helper did not start." };
+    } else {
+      // READY IS A CAPTURE, NOT A BOOLEAN. A daemon still holding an answer
+      // macOS cached before the grant, or one whose preflight is simply wrong
+      // for it (cua: "unreliable for CLI / child processes"), is restarted —
+      // ours only — and tried once more.
+      // At most once a minute: the pane polls every few seconds while the
+      // person is in System Settings.
+      let capture = await daemonCaptures(spec, helper, timeoutMs, deps);
+      const now = (probe.now ?? Date.now)();
+      if (!capture.ok && !capture.unknown && now - (lastRestart.get(helper.socket) ?? -Infinity) >= 60_000) {
+        lastRestart.set(helper.socket, now);
+        up = await restartHelperDaemon(helper, deps);
+        if (up) capture = await daemonCaptures(spec, helper, timeoutMs, deps);
+      }
+      outcome = capture.ok
+        ? { permission: "granted", missing: [] }
+        : { permission: capture.unknown ? "unknown" : "denied", message: `Screen Recording is on, but the helper could not capture a window: ${capture.reason}` };
+    }
+    return {
+      installed: true,
+      bundled: true,
+      backend: resolved.backend,
+      hostRunning: up,
+      permission: outcome.permission,
+      ...(outcome.message ? { message: outcome.message } : {}),
+      ...(outcome.missing ? { missing: outcome.missing } : {}),
+    };
   }
   const outcome = interpretListApps(await callTool(spec, "list_apps", {}, timeoutMs, deps));
   const hostRunning = await running(CUA_DAEMON_PATTERN);

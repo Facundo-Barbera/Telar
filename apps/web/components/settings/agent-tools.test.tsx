@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComputerUseStatus } from "@telar/engine-client";
-import { ComputerUseProviders, computerUseHint, computerUseState, PermissionsSection } from "./permissions-section";
+import { ComputerUseProviders, computerUseHint, computerUseState, grantFollowUp, GRANT_POLL_MS, GRANT_WAIT_MS, PermissionsSection } from "./permissions-section";
 
 const probe = (over: Partial<ComputerUseStatus> = {}) =>
   ({ installed: true, hostRunning: true, backend: "cua", permission: "granted", ...over }) as unknown as ComputerUseStatus;
@@ -77,7 +77,7 @@ test("a client that refuses Telar as its caller is 'Not accepted', not a grant t
 
 test("the row says the probe is the gate, behind its ⓘ", () => {
   expect(permissions).toContain('const GATE_INFO = "Sessions get the desktop tools only after a check here answers Ready."');
-  expect(permissions).toContain("info={bundled ? `${GATE_INFO} ${REMOVE_INFO}` : GATE_INFO}");
+  expect(permissions).toContain("info={bundled ? `${GATE_INFO} ${FINDER_INFO} ${REMOVE_INFO}` : GATE_INFO}");
 });
 
 test("bundled, the prompts name Telar's helper, not an app the reader installed", () => {
@@ -190,4 +190,29 @@ test("the text stays readable with the switch off", () => {
   // on, so the disclosure is not nested under the preamble's own state.
   const disclosure = orientation.slice(orientation.indexOf("Show the text"));
   expect(disclosure).not.toContain("policy.preamble &&");
+});
+
+test("while System Settings is open the pane waits, moves on to Screen Recording, and flips to Ready by itself", () => {
+  const denied = (missing: ("accessibility" | "screen-recording")[]) => probe({ permission: "denied", missing });
+  expect(grantFollowUp("accessibility", denied(["accessibility", "screen-recording"]))).toBe("wait");
+  // Accessibility on, Screen Recording left: Grant again, which opens that list.
+  expect(grantFollowUp("accessibility", denied(["screen-recording"]))).toBe("next-pane");
+  // Already in the Screen Recording list: never loops back.
+  expect(grantFollowUp("screen-recording", denied(["screen-recording"]))).toBe("wait");
+  expect(grantFollowUp("screen-recording", probe())).toBe("done");
+  expect(grantFollowUp(undefined, probe())).toBe("done");
+  // Re-measured on a clock AND on focus, and bounded like cua's own gate.
+  expect(permissions).toContain("window.setInterval(() => void tick(), GRANT_POLL_MS)");
+  expect(permissions).toContain('window.addEventListener("focus", tick)');
+  expect(GRANT_POLL_MS).toBeLessThanOrEqual(5_000);
+  expect(GRANT_WAIT_MS).toBe(600_000);
+});
+
+test("Grant's failures reach the row, and the helper can be shown in Finder", () => {
+  expect(permissions).toContain("if (answer.message) setError(answer.message);");
+  expect(permissions).toContain("api.revealComputerUseHelper()");
+  expect(permissions).toContain("Show in Finder");
+  // Why Finder is there is not inferable from the button: ⓘ, not a hint.
+  expect(permissions).toContain("drag it in");
+  expect(computerUseHint("not-granted", { bundled: true })).not.toContain("Finder");
 });
