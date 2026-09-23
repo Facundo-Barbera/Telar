@@ -39,7 +39,7 @@ import path from "node:path";
 
 /** Bumped whenever the words below change. The skill's front matter carries it,
  *  so a file on disk says which release wrote it. */
-export const ORIENTATION_VERSION = 4;
+export const ORIENTATION_VERSION = 5;
 
 /** The skill's name, which is also its directory and the `$telar` a person or a
  *  model types. One constant so the writer, the remover and the preamble that
@@ -272,6 +272,14 @@ they say "the browser" in Telar, this is what they mean.
 - Never substitute Chrome, Safari, another profile, or a headless browser.
 - \`browser_fill_secret\` fills a login from their 1Password without the value
   ever entering this conversation. Use it instead of asking them to paste one.
+- **No ref for what you can see?** A page drawn on a canvas (a spreadsheet, a
+  diagram) has none. Take \`browser_take_screenshot\` and act by coordinates:
+  \`browser_click\`, \`browser_hover\` and \`browser_drag\` take \`x\`,\`y\` in that
+  image's CSS pixels, and \`browser_type\` with no target types into whatever
+  then has focus. \`browser_press_key\` takes chords (\`Control+A\`, \`Meta+V\`).
+- In a spreadsheet drawn on a canvas, reach cells through its name box (type
+  \`B7\`, Enter) and formula bar; \`browser_paste\` tab-separated rows to fill
+  many cells at once, and \`browser_copy\` reads a selection back.
 
 ## The project notebook
 
