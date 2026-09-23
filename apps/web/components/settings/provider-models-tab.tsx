@@ -98,6 +98,12 @@ export function reorderIds(
 }
 
 /** "7 from Claude · 1 you added · 2 hidden" — only the clauses that are true. */
+/** The engine's own rule (`chosenDefault`): a row the provider withdrew or
+ *  somebody typed never becomes what runs when nobody chose. */
+export function canBeDefault(model: ProviderModel): boolean {
+  return !model.hidden && model.source !== "user";
+}
+
 export function modelCountLine(models: readonly ProviderModel[], driverLabel: string): string {
   const published = models.filter((model) => model.source !== "user").length;
   const added = models.length - published;
@@ -231,7 +237,7 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
           return (
             <div
               key={model.id}
-              className={cn("flex items-center gap-2 px-2.5 py-1.5", model.hiddenByUser && "opacity-55")}
+              className={cn("group flex items-center gap-2 px-2.5 py-1.5", model.hiddenByUser && "opacity-55")}
             >
               <button
                 type="button"
@@ -246,6 +252,30 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
               <span className={cn("min-w-0 truncate text-xs-plus", model.hiddenByUser && "line-through")}>{model.label}</span>
               <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-3xs text-muted-foreground">{model.id}</code>
               {model.isDefault && <span className="shrink-0 text-3xs text-muted-foreground">Default</span>}
+              {/* The reader's own default can be handed back to Telar's pick;
+                  any other row a session could run can take its place. */}
+              {model.isDefault && overlay.default === model.id ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void patch({ default: null })}
+                  className="shrink-0 text-3xs text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                >
+                  Reset
+                </button>
+              ) : (
+                !model.isDefault &&
+                canBeDefault(model) && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void patch({ default: model.id })}
+                    className="shrink-0 text-3xs text-muted-foreground/70 opacity-0 underline-offset-2 transition-opacity group-hover:opacity-100 hover:text-foreground hover:underline focus-visible:opacity-100"
+                  >
+                    Make default
+                  </button>
+                )
+              )}
               {added && <span className="shrink-0 text-3xs text-muted-foreground">added by you</span>}
               <div className="ml-auto flex shrink-0 items-center gap-0.5">
                 <button

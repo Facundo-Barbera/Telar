@@ -3,7 +3,7 @@ import { engineClient, engineErrorResponse, requestObject } from "@/lib/engine/e
 /**
  * What one login's reader did to that provider's model list.
  *
- * FOUR LISTS, PATCHED BY PRESENCE. Each key is forwarded only when the client
+ * FOUR LISTS AND A DEFAULT, PATCHED BY PRESENCE. Each key is forwarded only when the client
  * actually sent it, because `[]` ("I cleared this") and absent ("I did not touch
  * it") are different requests and JSON can only tell them apart by the key. The
  * engine owns every other rule — what a model id may look like, how long a list
@@ -33,6 +33,8 @@ export async function PATCH(request: Request, context: Context) {
         ...("hidden" in input ? { hidden: input.hidden as string[] } : {}),
         ...("order" in input ? { order: input.order as string[] } : {}),
         ...("custom" in input ? { custom: input.custom as { id: string; label?: string }[] } : {}),
+        // `null` is "back to Telar's pick", which only the key's presence can say.
+        ...("default" in input ? { default: input.default as string | null } : {}),
       }),
     );
   } catch (error) {

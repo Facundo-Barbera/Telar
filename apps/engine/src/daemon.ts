@@ -4095,6 +4095,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...("hidden" in input ? { hidden: input.hidden } : {}),
             ...("order" in input ? { order: input.order } : {}),
             ...("custom" in input ? { custom: input.custom } : {}),
+            ...("default" in input ? { default: input.default } : {}),
           }),
         });
         return;

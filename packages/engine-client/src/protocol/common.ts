@@ -1690,6 +1690,13 @@ export const ModelOverlay = z.object({
    */
   order: z.array(z.string().min(1)).default([]),
   custom: z.array(CustomProviderModel).default([]),
+  /**
+   * The row this login runs when a session names no model, chosen by the
+   * reader. Absent means Telar's own pick (the manifest's `defaults.chat`, else
+   * the provider's). A row the catalogue no longer carries is ignored rather
+   * than invented, so a withdrawn model falls back instead of failing a turn.
+   */
+  default: z.string().min(1).optional(),
   updatedAt: Timestamp,
 });
 export type ModelOverlay = z.infer<typeof ModelOverlay>;

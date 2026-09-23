@@ -8,7 +8,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { ProviderModel } from "@telar/engine-client";
-import { addableModelId, modelCountLine, reorderIds } from "./provider-models-tab";
+import { addableModelId, canBeDefault, modelCountLine, reorderIds } from "./provider-models-tab";
 
 const model = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => ({
   id,
@@ -107,4 +107,12 @@ describe("reorderIds", () => {
   test("an id that is not on screen changes nothing", () => {
     expect(reorderIds(rendered, ["a"], "gone", -1)).toEqual(["a"]);
   });
+});
+
+test("only a row the provider still publishes is offered as the default", () => {
+  expect(canBeDefault(model("opus[1m]"))).toBe(true);
+  expect(canBeDefault(model("withdrawn", { hidden: true }))).toBe(false);
+  expect(canBeDefault(model("typed", { source: "user" }))).toBe(false);
+  // Hidden from the picker is curation, not withdrawal: it can still be the default.
+  expect(canBeDefault(model("curated", { hiddenByUser: true }))).toBe(true);
 });

@@ -783,7 +783,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `{ hidden: [] }` clears the hides and omitting `hidden` leaves them. */
     setModelOverlay: (
       instanceId: string,
-      patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[] },
+      patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[]; default?: string | null },
     ) =>
       request<{ overlay: ModelOverlay }>(
         fetcher,
