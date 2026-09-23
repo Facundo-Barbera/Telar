@@ -154,8 +154,12 @@ release Xcode: archive, export (the re-sign to Apple Distribution —
 `destination: upload` ships a dev-signed binary Apple refuses), altool
 upload. The phone then updates itself through the TestFlight app (internal
 testing: no review, live minutes after processing, builds expire after 90
-days). Why the Mac and not GitHub's macOS lane, and how every other workflow
-came to live there too: docs/operations/mac-mini-runner-plan-2026-09-11.md.
+days). The same build is then offered to the EXTERNAL group "Nightly" by
+`apps/ios/testflight-external.sh` — added to the group and submitted for Beta
+App Review once processed; the first build of each new version waits hours in
+review, later builds of that version minutes. Why the Mac and not GitHub's
+macOS lane, and how every other workflow came to live there too:
+docs/operations/mac-mini-runner-plan-2026-09-11.md.
 
 Credentials are the repo secrets `APPLE_API_KEY_P8_BASE64` /
 `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` — an ADMIN App Store Connect API
