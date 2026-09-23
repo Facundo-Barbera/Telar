@@ -144,8 +144,8 @@ class FakeWebContents extends EventEmitter {
    * `captureError` makes it fail, `captureEmpty` makes it answer a blank
    * frame.
    */
-  async capturePage() {
-    this.captures.push({ visibleAtCapture: this.view ? this.view.visible : null });
+  async capturePage(rect) {
+    this.captures.push({ visibleAtCapture: this.view ? this.view.visible : null, ...(rect ? { rect } : {}) });
     if (this.captureGate) await this.captureGate;
     if (this.captureError) throw this.captureError;
     return {
@@ -1960,8 +1960,12 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     await manager.setVisible("s", true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const shown = debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1);
-    // Same intrinsic viewport; only the presentation scale changes.
-    expect(shown.params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false, scale: 0.5 });
+    // Same intrinsic viewport; only the presentation scale changes — and the
+    // page's widget stays the VIEW's size, not the override's: without
+    // `dontSetVisibleSize` Chromium grows it to 1280×800 past the view, a
+    // white slab below the page once the canvas is opaque.
+    expect(shown.params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false, scale: 0.5, dontSetVisibleSize: true });
+    expect(debug.commands.filter((c) => c.method === "Emulation.setVisibleSize").at(-1).params).toEqual({ width: 640, height: 400 });
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
     expect(manager.state("s").presentation).toMatchObject({ width: 1280, height: 800, scale: 0.5, rect: { width: 640, height: 400 } });
     // A CDP click from a snapshot's CSS point is dispatched at the NATIVE
@@ -2150,7 +2154,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     const debug = wc.debugger;
     const overrides = () => debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride");
     expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.5 });
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
     return { ...harness, tab, wc, debug, overrides };
   }
@@ -2172,7 +2176,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     expect(tab.debuggerReady).toBe(true);
     expect(overrides().length).toBe(before + 1);
     expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.5 });
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
   });
 
@@ -2183,10 +2187,10 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     await manager.setVisible("s", true);
     await tab.geometry.queue;
     expect(views).toHaveLength(2);
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     // The old debugger's detach arrives late, as a closing WebContents' does.
     old.emit("detach", {}, "target closed");
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     expect(tab.debuggerReady).toBe(true);
   });
 
@@ -2202,7 +2206,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     wc.closeDevTools();
     await tab.geometry.queue;
     expect(overrides().length).toBe(before + 2);
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     // The view itself never moved: the same fitted rect throughout.
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
   });
@@ -2229,7 +2233,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
     await tab.geometry.queue;
     expect(overrides().length).toBe(before + 1);
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
   });
 
   test("suspect 2: a rejected setDeviceMetricsOverride leaves the record unsettled, so the next pass retries", async () => {
@@ -2245,14 +2249,14 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     manager.setBounds("s", { x: 0, y: 0, width: 640, height: 300 });
     await tab.geometry.queue;
     expect(refusals).toBe(1);
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     expect(manager.emulationSettled(tab)).toBe(false);
     // The republish of the same bounds is not a fast-path frame while the
     // record is unsettled.
     manager.setBounds("s", { x: 0, y: 0, width: 640, height: 300 });
     await tab.geometry.queue;
     expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.375 });
-    expect(tab.viewportOverride).toBe("1280x800@0.375");
+    expect(tab.viewportOverride).toBe("1280x800@0.375 in 480x300");
   });
 
   test("suspect 3, ruled out: a cockpit zoom change alone re-sends a fixed tab's emulation with the zoom in its scale", async () => {
@@ -2264,7 +2268,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     expect(overrides().length).toBe(before + 1);
     expect(Math.abs(overrides().at(-1).params.scale - 0.45)).toBeLessThan(1e-9);
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 576, height: 360 });
-    expect(tab.viewportOverride).toBe("1280x800@0.45");
+    expect(tab.viewportOverride).toBe("1280x800@0.45 in 576x360");
   });
 
   test("suspect 4, ruled out: a fixed tab hidden and shown again — panel closed, or another tab in front — is re-emulated at the shown scale", async () => {
@@ -2446,7 +2450,7 @@ describe("fit-to-panel viewport mode", () => {
     const fixed = await manager.callTool("s", "browser_resize", { preset: "default" });
     expect(textOf(fixed)).toContain("1280×800 (default)");
     expect(manager.state("s").tabs[0].viewport).toEqual({ width: 1280, height: 800, preset: "default", mode: "fixed" });
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     // The orchestrator's call, exactly as the engine now forwards it.
     const back = await manager.callTool("s", "browser_resize", { mode: "fit" });
     expect(back.isError).toBeFalsy();
@@ -2903,7 +2907,9 @@ describe("the panel's corner, and the frozen frame a menu opens over", () => {
 
     const freezing = manager.freezeView("s");
     await Promise.resolve();
-    expect(tab.view.webContents.captures).toEqual([{ visibleAtCapture: true }]);
+    // Cropped to the view's own size: a widget larger than its view must not
+    // come back as the page shrunk into a corner of a bigger frame.
+    expect(tab.view.webContents.captures).toEqual([{ visibleAtCapture: true, rect: { x: 0, y: 0, width: 640, height: 400 } }]);
     expect(view.visible).toBe(true);
 
     release();
@@ -4354,5 +4360,85 @@ describe("acting on a page with no refs — coordinates, focus, chords, paste an
     const result = await manager.callTool("s", "browser_copy", {});
     expect(result.isError).toBe(true);
     expect(textOf(result)).toBe("Error: The page threw while Telar read it (TypeError: frozen). Take a fresh screenshot and try again.");
+  });
+});
+
+/**
+ * THE WHITE SLAB UNDER A FIXED PAGE (after #922). `setDeviceMetricsOverride`
+ * without `dontSetVisibleSize` has Chromium resize the page's render widget to
+ * the override's own width×height (`WebContentsImpl::SetDeviceEmulationSize`)
+ * — 1280×800 in a view given 975×609. The page is drawn scaled into that
+ * widget's corner and the rest is canvas, overflowing the view to the window's
+ * edge: invisible while the canvas was transparent, white once it was opaque,
+ * and the whole oversized surface is what a frozen frame captured. A fake
+ * cannot paint, so these pin the commands; the Electron fit-zoom suite
+ * samples the pixels.
+ */
+describe("a fixed page's widget is the view's size, never the override's", () => {
+  // The owner's panel: the Default preset in a stage taller than the page.
+  const STAGE = { x: 8, y: 120, width: 975, height: 794 };
+
+  async function fixedInTallStage(zoom = 1) {
+    const harness = makeHarness();
+    const { manager, views, setCockpitZoom } = harness;
+    if (zoom !== 1) setCockpitZoom(zoom);
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    await manager.resizeTab(tab, { preset: "default" });
+    manager.setBounds("s", STAGE);
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    const debug = views[0].webContents.debugger;
+    const last = (method) => debug.commands.filter((c) => c.method === method).at(-1);
+    const count = (method) => debug.commands.filter((c) => c.method === method).length;
+    return { ...harness, tab, debug, last, count };
+  }
+
+  test("shown: the override leaves the widget alone and the widget is pinned to the view's bounds", async () => {
+    const { manager, views, last } = await fixedInTallStage();
+    const { rect } = manager.state("s").presentation;
+    // Top-aligned, full width, only as tall as the scaled page.
+    expect(rect).toEqual({ x: 8, y: 120, width: 975, height: 609 });
+    expect(views[0].bounds).toEqual(rect);
+    expect(last("Emulation.setDeviceMetricsOverride").params).toMatchObject({ width: 1280, height: 800, dontSetVisibleSize: true });
+    expect(last("Emulation.setVisibleSize").params).toEqual({ width: 975, height: 609 });
+  });
+
+  test("under the cockpit's zoom the widget is the view's own pixels, the same numbers setBounds was given", async () => {
+    const { views, last } = await fixedInTallStage(1.25);
+    const { width, height } = views[0].bounds;
+    expect({ width, height }).toEqual({ width: 1219, height: 761 });
+    expect(last("Emulation.setVisibleSize").params).toEqual({ width, height });
+  });
+
+  test("hidden, the widget takes the full viewport again; shown, it is pinned back to the view", async () => {
+    const { manager, tab, last, count } = await fixedInTallStage();
+    const pinned = count("Emulation.setVisibleSize");
+    await manager.setVisible("s", false);
+    await tab.geometry.queue;
+    // A hidden page needs a real widget for its captures and input.
+    expect(last("Emulation.setDeviceMetricsOverride").params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    expect(count("Emulation.setVisibleSize")).toBe(pinned);
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expect(last("Emulation.setDeviceMetricsOverride").params).toMatchObject({ dontSetVisibleSize: true });
+    expect(count("Emulation.setVisibleSize")).toBe(pinned + 1);
+    expect(last("Emulation.setVisibleSize").params).toEqual({ width: 975, height: 609 });
+  });
+
+  test("a new panel size re-pins the widget even where the fit scale would round the same", async () => {
+    const { manager, tab, last } = await fixedInTallStage();
+    manager.setBounds("s", { ...STAGE, width: 800 });
+    await tab.geometry.queue;
+    expect(last("Emulation.setVisibleSize").params).toEqual({ width: 800, height: 500 });
+    expect(tab.viewportOverride).toBe("1280x800@0.625 in 800x500");
+  });
+
+  test("the frozen frame is cropped to the view's own pixels and painted back at the fitted rect", async () => {
+    const { manager, views } = await fixedInTallStage(1.25);
+    const frame = await manager.freezeView("s");
+    expect(views[0].webContents.captures.at(-1).rect).toEqual({ x: 0, y: 0, width: 1219, height: 761 });
+    // The rect stays in the panel's CSS pixels — what the renderer paints in.
+    expect(frame.rect).toEqual({ x: 8, y: 120, width: 975, height: 609 });
   });
 });
