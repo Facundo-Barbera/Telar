@@ -30,12 +30,14 @@ describe("the browser viewport vocabulary", () => {
     expect(parseViewportInput("1024")).toBeUndefined();
   });
 
-  test("the stage reserves the rail, and fit scales down and centres within it — the same arithmetic as the host", () => {
+  test("the stage reserves the rail, and fit scales down, centres across and top-aligns — the same arithmetic as the host", () => {
     expect(stageOf({ width: 652, height: 412 })).toEqual({ width: 640, height: 400 });
     expect(VIEWPORT_RAIL).toBe(12);
     expect(fitViewport({ width: 1280, height: 800 }, { width: 640, height: 400 })).toEqual({ scale: 0.5, x: 0, y: 0, width: 640, height: 400 });
-    expect(fitViewport({ width: 1280, height: 800 }, { width: 640, height: 600 })).toEqual({ scale: 0.5, x: 0, y: 100, width: 640, height: 400 });
-    expect(fitViewport({ width: 390, height: 844 }, { width: 1000, height: 900 })).toEqual({ scale: 1, x: 305, y: 28, width: 390, height: 844 });
+    // A stage taller than the fitted page: the page starts at the top, like
+    // a device toolbar's screen, not centred over a band of nothing.
+    expect(fitViewport({ width: 1280, height: 800 }, { width: 640, height: 600 })).toEqual({ scale: 0.5, x: 0, y: 0, width: 640, height: 400 });
+    expect(fitViewport({ width: 390, height: 844 }, { width: 1000, height: 900 })).toEqual({ scale: 1, x: 305, y: 0, width: 390, height: 844 });
   });
 });
 

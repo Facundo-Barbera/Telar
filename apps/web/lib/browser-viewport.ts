@@ -81,15 +81,18 @@ export function stageOf(host: { width: number; height: number }): { width: numbe
 }
 
 /**
- * Where the page sits inside the stage: scaled down to fit (never up) and
- * centred. Mirrors the host's `fitViewport` exactly, so the device frame and
- * the rails the panel draws land on the native rect.
+ * Where the page sits inside the stage: scaled down to fit (never up),
+ * centred across and TOP-ALIGNED — the way a browser's device toolbar shows
+ * an emulated screen, so a page shorter than the stage starts under the
+ * address row rather than floating over a band of nothing. Mirrors the
+ * host's `fitViewport` exactly, so the device frame and the rails the panel
+ * draws land on the native rect.
  */
 export function fitViewport(viewport: ViewportSize, stage: { width: number; height: number }): { scale: number; x: number; y: number; width: number; height: number } {
   const scale = Math.min(1, stage.width / viewport.width, stage.height / viewport.height);
   const width = Math.max(1, Math.round(viewport.width * scale));
   const height = Math.max(1, Math.round(viewport.height * scale));
-  return { scale, x: Math.max(0, Math.floor((stage.width - width) / 2)), y: Math.max(0, Math.floor((stage.height - height) / 2)), width, height };
+  return { scale, x: Math.max(0, Math.floor((stage.width - width) / 2)), y: 0, width, height };
 }
 
 export type ResizeDirection = "east" | "south" | "southeast";

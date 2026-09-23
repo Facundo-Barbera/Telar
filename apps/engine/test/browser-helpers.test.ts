@@ -13,6 +13,7 @@ import {
   MUTATING_TOOLS,
   ScopedRuntimePool,
   browserErrorText,
+  headlessBrowserToolCall,
   imageDataUrlOf,
   isReadOnlyBrowserCall,
   normalizeBrowserToolCall,
@@ -37,6 +38,21 @@ describe("browser tool routing", () => {
     // The alias is exact, not a prefix: a tool that merely starts the same way
     // must not be rewritten into a tab listing.
     expect(normalizeBrowserToolCall("browser_list_tabs_v2", args)).toEqual({ name: "browser_list_tabs_v2", args });
+  });
+
+  test("a resize's preset and mode reach the desktop host as themselves — fit must not become a fixed standard size", () => {
+    expect(normalizeBrowserToolCall("browser_resize", { mode: "fit" })).toEqual({ name: "browser_resize", args: { mode: "fit" } });
+    expect(normalizeBrowserToolCall("browser_resize", { preset: "phone" })).toEqual({ name: "browser_resize", args: { preset: "phone" } });
+  });
+
+  test("the headless browser gets numbers: a preset is its size, a bare mode the standard size, explicit numbers stay", () => {
+    expect(headlessBrowserToolCall("browser_resize", { preset: "phone" })).toEqual({ name: "browser_resize", args: { width: 390, height: 844 } });
+    expect(headlessBrowserToolCall("browser_resize", { mode: "fit" })).toEqual({ name: "browser_resize", args: { width: 1280, height: 800 } });
+    // Playwright MCP rejects parameters it does not know: the mode is dropped
+    // rather than sent along with the size.
+    expect(headlessBrowserToolCall("browser_resize", { mode: "fixed", width: 900, height: 600 })).toEqual({ name: "browser_resize", args: { width: 900, height: 600 } });
+    // The alias rides along, so the headless path needs only this one call.
+    expect(headlessBrowserToolCall("browser_list_tabs", {})).toEqual({ name: "browser_tabs", args: { action: "list" } });
   });
 });
 

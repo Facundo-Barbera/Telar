@@ -83,21 +83,38 @@ export function normalizeBrowserToolCall(
   args: Record<string, unknown>,
 ): { name: string; args: Record<string, unknown> } {
   if (name === "browser_list_tabs") return { name: "browser_tabs", args: { action: "list" } };
-  // A preset is Telar's own vocabulary; the browsers (desktop host and
-  // Playwright's `browser_resize`) take numbers.
-  if (name === "browser_resize") {
-    if (typeof args.preset === "string") {
-      const preset = BROWSER_VIEWPORT_PRESETS[args.preset as BrowserViewportPreset];
-      if (preset) return { name, args: { width: preset.width, height: preset.height } };
-    }
-    // A bare mode has no numbers for the headless browser (which has no panel
-    // to fit): "fit"/"fixed" there mean the standard size. The desktop host
-    // takes the mode itself — the desktop path does not go through here.
-    if (typeof args.mode === "string" && args.width === undefined && args.height === undefined) {
-      return { name, args: { width: BROWSER_VIEWPORT_PRESETS.default.width, height: BROWSER_VIEWPORT_PRESETS.default.height } };
-    }
-  }
   return { name, args };
+}
+
+/**
+ * The same call, in the HEADLESS browser's vocabulary. Playwright's
+ * `browser_resize` takes numbers only: a preset is Telar's own word for a
+ * size, and a bare mode has nothing to fit (there is no panel) — "fit" and
+ * "fixed" there mean the standard size.
+ *
+ * ONLY THE HEADLESS PATH. The desktop host speaks presets and modes itself
+ * (`resizeTab`), and this rewrite used to sit inside `normalizeBrowserToolCall`
+ * where the desktop client also ran it — so `browser_resize {mode: "fit"}`
+ * reached the host as `{width: 1280, height: 800}`, which is a request for a
+ * FIXED 1280×800, and the tool answered "resized" while the tab stayed fixed.
+ */
+export function headlessBrowserToolCall(
+  name: string,
+  args: Record<string, unknown>,
+): { name: string; args: Record<string, unknown> } {
+  const call = normalizeBrowserToolCall(name, args);
+  if (call.name !== "browser_resize") return call;
+  // Numbers and nothing else: Playwright MCP rejects a parameter it does not
+  // know, so `mode` never rides along with an explicit size either.
+  const { preset, mode, ...rest } = call.args;
+  if (typeof preset === "string") {
+    const size = BROWSER_VIEWPORT_PRESETS[preset as BrowserViewportPreset];
+    if (size) return { name: call.name, args: { width: size.width, height: size.height } };
+  }
+  if (typeof mode === "string" && rest.width === undefined && rest.height === undefined) {
+    return { name: call.name, args: { width: BROWSER_VIEWPORT_PRESETS.default.width, height: BROWSER_VIEWPORT_PRESETS.default.height } };
+  }
+  return { name: call.name, args: rest };
 }
 
 /**

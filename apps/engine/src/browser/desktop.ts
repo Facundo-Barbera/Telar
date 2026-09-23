@@ -129,7 +129,10 @@ export class DesktopBrowserClient {
     // Normalized and validated HERE, exactly like the headless path: the host
     // speaks `browser_tabs {action:"list"}`, not Telar's read-only alias, and
     // a rejection on this side of the wire names the field instead of costing
-    // a round trip.
+    // a round trip. NOT `headlessBrowserToolCall`: a `browser_resize` preset
+    // or mode is the host's own vocabulary, and rewritten to numbers it would
+    // ask for a FIXED standard size — which is how `{mode: "fit"}` used to
+    // leave a tab fixed while answering "resized".
     let normalized: { name: string; args: Record<string, unknown> };
     try {
       const call = normalizeBrowserToolCall(name, args);

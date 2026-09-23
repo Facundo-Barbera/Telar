@@ -21,6 +21,15 @@
  *   · hidden again, the last meaningful size is retained and emulated for
  *     the background agent, and a click there still lands.
  *
+ * And two more facts about the view itself:
+ *   · a loaded page paints on an OPAQUE WHITE canvas — a pixel the fixture
+ *     does not paint reads white, not the transparent nothing that let the
+ *     cockpit show through pages with no root background (App Store Connect);
+ *   · a FIXED preset in a stage taller than the fitted page sits at the TOP
+ *     of the stage, the view is exactly the emulated page (viewport × scale),
+ *     and the page's own `position: fixed; bottom: 0` footer sits at the
+ *     emulated bottom — nothing of the page can be painted below the frame.
+ *
  * Run: `bun run test:desktop:fit-zoom` from apps/desktop
  * (own temp userData, window shown inactive, no focus).
  */
@@ -40,8 +49,9 @@ const FIXTURE = `<!doctype html><html><head><meta charset="utf-8"><title>Fit zoo
   h1 { font-size:24px; line-height:24px; margin:16px; height:24px; }
   #box { position:absolute; left:100px; top:100px; width:200px; height:60px; background:#7255ba; }
   #probe { position:absolute; left:0; top:0; width:20px; height:20px; }
+  #floor { position:fixed; left:0; bottom:0; width:100%; height:20px; background:#1e90ff; }
 </style></head><body>
-<h1 id="h">Heading</h1><div id="box"></div><div id="probe"></div>
+<h1 id="h">Heading</h1><div id="box"></div><div id="probe"></div><div id="floor"></div>
 <div id="click">none</div>
 <script>
   addEventListener('click', (e) => { document.getElementById('click').textContent = e.clientX + ',' + e.clientY; });
@@ -61,7 +71,31 @@ const METRICS = `({
   h: (() => { const r = document.getElementById('h').getBoundingClientRect(); return [r.width, r.height, parseFloat(getComputedStyle(document.getElementById('h')).fontSize)]; })(),
   box: (() => { const r = document.getElementById('box').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })(),
   probe: document.getElementById('probe').getBoundingClientRect().width,
+  floor: document.getElementById('floor').getBoundingClientRect().bottom,
 })`;
+/**
+ * THE CANVAS IS OPAQUE WHITE. A pixel the fixture does not paint (its body
+ * has no background) is read back from the compositor: white, alpha 255.
+ * Polled, because `setBackgroundColor` lands on the renderer's next frame.
+ */
+async function untilOpaqueCanvas(tab, width, height) {
+  let seen = null;
+  for (let i = 0; i < 40; i += 1) {
+    const shot = await tab.view.webContents.capturePage();
+    const size = shot.getSize();
+    const ratio = size.width / width;
+    const x = Math.round((width - 40) * ratio);
+    const y = Math.round((height - 40) * ratio);
+    const pixels = shot.toBitmap();
+    const offset = (y * size.width + x) * 4;
+    // BGRA: an opaque white is 255 in every channel; the old transparent
+    // canvas read 0 in every channel.
+    seen = [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]];
+    if (seen.every((channel) => channel === 255)) return seen;
+    await delay(50);
+  }
+  return seen;
+}
 async function settle(manager, tab) {
   for (let i = 0; i < 50; i += 1) {
     if (!tab.loading && (await evaluate(manager, tab, "document.readyState")) === "complete") return;
@@ -130,6 +164,10 @@ async function main() {
       assert(Math.abs(purple.length - 200 * ratio) <= 2, `${label}: rendered box width ${purple.length}, expected ${200 * ratio}`);
       assert(Math.abs(purple[0] - 100 * ratio) <= 2, `${label}: rendered box offset ${purple[0]}`);
       note(`${label}: rendered box width=${purple.length}, pixels per CSS px=${ratio}`);
+      // The page has a document, so it paints on an opaque white canvas.
+      const canvas = await untilOpaqueCanvas(tab, width, height);
+      note(`${label}: unpainted pixel reads ${canvas}`);
+      assert(canvas.every((channel) => channel === 255), `${label}: the canvas under the page is not opaque white (BGRA ${canvas}) — the cockpit shows through`);
       return m;
     };
 
@@ -142,15 +180,26 @@ async function main() {
     }
 
     // ── 2. FIXED → FIT: from a scaled fixed preset back to native fit ──
+    // A stage TALLER than the fitted page: 1280×800 in 640×600 is 640×400 at
+    // 0.5, placed at the TOP of the stage. The view is exactly that page —
+    // the emulated size × scale — and the page's fixed footer sits at the
+    // emulated bottom (800), so nothing of it can paint below the frame.
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 600 });
+    await tab.geometry.queue;
     await manager.action("s", { action: "resize", preset: "default" });
     await tab.geometry.queue;
     const fixed = await untilInner(manager, tab, 1280, 800);
     const fixedScale = manager.state("s").presentation.scale;
-    note(`fixed default in 640×400: inner=${fixed.inner} scale=${fixedScale} h=${fixed.h} override=${tab.viewportOverride}`);
-    assert(fixed.inner[0] === 1280 && fixedScale === 0.5, "fixed preset did not scale to fit");
+    const fixedRect = tab.view.getBounds();
+    const presented = manager.state("s").presentation.rect;
+    note(`fixed default in 640×600: inner=${fixed.inner} vv=${fixed.vv} floor=${fixed.floor} scale=${fixedScale} rect=${JSON.stringify(fixedRect)} presented=${JSON.stringify(presented)} h=${fixed.h} override=${tab.viewportOverride}`);
+    assert(fixed.inner[0] === 1280 && fixed.inner[1] === 800 && fixedScale === 0.5, `fixed preset did not lay out at 1280×800 scaled 0.5 (${fixed.inner} @ ${fixedScale})`);
+    assert(fixedRect.x === 0 && fixedRect.y === 0 && fixedRect.width === 640 && fixedRect.height === 400, `fixed view is not the top-aligned fitted page: ${JSON.stringify(fixedRect)}`);
+    assert(presented.x === 0 && presented.y === 0 && presented.width === 640 && presented.height === 400, `the presentation rect ${JSON.stringify(presented)} is not the view's`);
+    assert(fixed.floor === 800, `the page's fixed footer bottoms out at ${fixed.floor}, not the emulated 800 — the page is laid out for something other than the emulated height`);
     await manager.action("s", { action: "resize", mode: "fit" });
     await tab.geometry.queue;
-    await checkNative("fit after fixed", 640, 400);
+    await checkNative("fit after fixed", 640, 600);
     // Rapid toggles and resizes interleaved — the last state wins, native.
     await Promise.all([
       manager.action("s", { action: "resize", preset: "phone" }),

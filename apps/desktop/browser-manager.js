@@ -41,6 +41,28 @@ const VIEWPORT_MAX = 5_000;
  *  ask the compositor for a wall of pixels. */
 const VIEWPORT_MAX_AREA = 5_000 * 3_000;
 
+/**
+ * THE CANVAS UNDER THE PAGE. A browser gives a page an opaque base to paint
+ * on — white, or Chromium's own dark canvas (#121212) when the root element
+ * opts into `color-scheme: dark` — and a page that paints no root background
+ * of its own (App Store Connect does not) relies on it. The view here used to
+ * be transparent for its whole life, so such a page drew its cards and grey
+ * sidebar text straight over the dark cockpit. Blink applies the dark-scheme
+ * canvas only over an opaque base (`LocalFrameView::ShouldUseColorAdjustBackground`,
+ * `kIfBaseNotTransparent`), so white is the right base for light AND dark
+ * pages: a dark page gets its own dark canvas on top of it.
+ *
+ * TRANSPARENT UNTIL THERE IS A DOCUMENT TO PAINT. A fresh view's first
+ * document is shown from `did-start-loading` (see `place`) and has no frame
+ * yet; an opaque base there is a white rectangle flashing over the themed
+ * panel until the first paint — the strip the transparency was introduced
+ * for. So the canvas goes opaque at `dom-ready` of a real document and back
+ * to nothing when the tab is blank again (`documentReady`); a navigation
+ * from one page to the next keeps it, the way a browser keeps its own.
+ */
+const PAGE_CANVAS = "#ffffff";
+const NO_CANVAS = "#00000000";
+
 /** A requested viewport → the clamped one, or a thrown reason. */
 function resolveViewport(input) {
   if (input && typeof input === "object" && typeof input.preset === "string") {
@@ -93,12 +115,17 @@ function presetOf(viewport) {
 /**
  * PRESENTATION-ONLY FIT. The page keeps its intrinsic CSS viewport; when the
  * panel is narrower than that, the native view is scaled down to fit (never
- * up — a small page in a wide panel is shown at 1:1, centred). Returns the
- * scale and the native rect the view should occupy inside `bounds`.
+ * up — a small page in a wide panel is shown at 1:1). Returns the scale and
+ * the native rect the view should occupy inside `bounds`: centred across,
+ * TOP-ALIGNED — the way a browser's device toolbar shows an emulated screen.
+ * It used to centre vertically too, which put a band of nothing above a page
+ * shorter than the stage and read as the page sitting in the wrong place.
  * Measured in a real Electron (Astra's probe, 2026-09-06): bounds 640×400
  * with `Emulation.setDeviceMetricsOverride {1280×800, scale: 0.5}` keeps
  * innerWidth/innerHeight at 1280×800, native input maps through the scale on
  * its own, and CDP `Input.dispatch*` takes NATIVE (scaled) coordinates.
+ * The renderer draws its device frame with the same arithmetic
+ * (apps/web/lib/browser-viewport.ts `fitViewport`); the two move together.
  */
 function fitViewport(viewport, bounds) {
   const scale = Math.min(1, bounds.width / viewport.width, bounds.height / viewport.height);
@@ -108,7 +135,7 @@ function fitViewport(viewport, bounds) {
     scale,
     rect: {
       x: bounds.x + Math.max(0, Math.floor((bounds.width - width) / 2)),
-      y: bounds.y + Math.max(0, Math.floor((bounds.height - height) / 2)),
+      y: bounds.y,
       width,
       height,
     },
@@ -1887,6 +1914,7 @@ class DesktopBrowserManager {
     const place = () => {
       if (tab.view !== view || view.webContents.isDestroyed?.()) return;
       this.applyBorderRadius(tab, view);
+      this.applyCanvas(tab, view);
       // PREVIEWED: the view fills its own window and the panel's visibility
       // rules do not apply to it (#473).
       // A PREVIEWED TAB IS NOT THIS WINDOW'S, so the cockpit's zoom is not
@@ -1985,6 +2013,20 @@ class DesktopBrowserManager {
     if (tab.borderRadius === radius) return;
     tab.borderRadius = radius;
     view.setBorderRadius?.(radius);
+  }
+
+  /**
+   * THE CANVAS, WRITTEN ONLY ON A CHANGE — see PAGE_CANVAS for why it is
+   * opaque at all and why not from the start. Called from `place()`, which
+   * runs on every bounds publish, so it is the one writer and the pipeline's
+   * idempotence covers it: the edges that move `documentReady` (dom-ready, a
+   * tab going blank, a new WebContents) all run the pipeline already.
+   */
+  applyCanvas(tab, view) {
+    const canvas = tab.documentReady ? PAGE_CANVAS : NO_CANVAS;
+    if (tab.canvas === canvas) return;
+    tab.canvas = canvas;
+    view.setBackgroundColor(canvas);
   }
 
   applyVisibility() {
@@ -2187,10 +2229,13 @@ class DesktopBrowserManager {
   /** Everything a fresh view needs once it exists, whoever made the
    *  WebContents inside it. */
   attachView(tab, view) {
-    // Let the themed renderer host show through while a page is navigating.
-    // An opaque white native underlay otherwise appears as a strip whenever
-    // its bounds update a frame ahead of the surrounding right-panel layout.
-    view.setBackgroundColor("#00000000");
+    // No canvas yet: this WebContents has no document to paint, and an opaque
+    // white underlay would show as a strip wherever its bounds land a frame
+    // ahead of the panel's layout. `applyCanvas` turns it opaque once a
+    // document is ready — see PAGE_CANVAS.
+    tab.documentReady = false;
+    tab.canvas = undefined;
+    this.applyCanvas(tab, view);
     view.setVisible(false);
     this.window.contentView.addChildView(view);
     tab.view = view;
@@ -2755,6 +2800,13 @@ class DesktopBrowserManager {
       /** The scheme currently pushed to this WebContents, so a resync does not
        *  re-send it. Cleared with the view, like `viewportOverride`. */
       colorSchemeApplied: undefined,
+      /** This WebContents holds a real document with its DOM ready — the
+       *  point at which the view gets an opaque canvas (see PAGE_CANVAS).
+       *  False for a blank tab and for a fresh WebContents. */
+      documentReady: false,
+      /** The canvas colour last written to the view, so `applyCanvas` writes
+       *  only on a change. Reset with the view. */
+      canvas: undefined,
       /** This tab's own window while it is previewed out of the panel (#473).
        *  The view lives in that window's `contentView` meanwhile; the cockpit
        *  neither places nor hides it — see `previewing`. */
@@ -2808,6 +2860,10 @@ class DesktopBrowserManager {
       // DOM start page lives under a blank tab) — re-place through the
       // pipeline, which is idempotent when nothing changed.
       const blank = this.isBlank(tab);
+      // Blank again (navigated to about:blank, or the load that made it
+      // non-blank is gone): no document, no canvas — the start page below
+      // must not sit under an opaque white view (see PAGE_CANVAS).
+      if (blank) tab.documentReady = false;
       if (blank !== tab.wasBlank) { tab.wasBlank = blank; this.applyGeometry(tab).catch(() => {}); }
       this.emitState(tab.scopeKey);
     };
@@ -2859,6 +2915,11 @@ class DesktopBrowserManager {
     wc.on("dom-ready", () => {
       if (wc.isDestroyed()) return;
       wc.setBackgroundThrottling(false);
+      // A real document is ready to paint: the view gets its opaque canvas
+      // on the pipeline run below (see PAGE_CANVAS). about:blank is no
+      // document — the start page shows through it.
+      const url = wc.getURL();
+      tab.documentReady = Boolean(url) && url !== "about:blank";
       // Attach-and-apply, not apply-if-attached: a human navigation on a
       // never-inspected tab must land on the intrinsic viewport too.
       this.ensureViewport(tab).catch(() => {});
@@ -2870,6 +2931,16 @@ class DesktopBrowserManager {
     });
     wc.on("did-stop-loading", () => {
       tab.loading = false;
+      // A document that finished loading is a document to paint on, whether
+      // or not this process saw its dom-ready (a page restored from the
+      // back/forward cache fires none). dom-ready is the usual, earlier
+      // edge; this one is the belt (see PAGE_CANVAS). `sync` below takes it
+      // back for about:blank.
+      const url = wc.getURL();
+      if (url && url !== "about:blank" && !tab.documentReady) {
+        tab.documentReady = true;
+        this.applyGeometry(tab).catch(() => {});
+      }
       sync();
       this.finishDeferredHibernate(tab);
     });
@@ -2906,7 +2977,13 @@ class DesktopBrowserManager {
     wc.on("devtools-closed", () => this.devToolsEdge(tab));
     // A renderer that went away took its emulation with it; the reload's
     // dom-ready runs the pipeline, which must not find the record settled.
-    wc.on("render-process-gone", () => this.forgetEmulation(tab));
+    // It took its document too: until a reload, the view shows the cockpit
+    // through, not a white rectangle where the page was (see PAGE_CANVAS).
+    wc.on("render-process-gone", () => {
+      this.forgetEmulation(tab);
+      tab.documentReady = false;
+      this.applyGeometry(tab).catch(() => {});
+    });
     wc.on("destroyed", () => {
       if (tab.hibernating || tab.view !== view) return;
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
