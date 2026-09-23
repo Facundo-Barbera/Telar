@@ -98,6 +98,9 @@ class FakeWebContents extends EventEmitter {
     return false;
   }
 
+  /** dom-ready's first act; a no-op here, recorded nowhere. */
+  setBackgroundThrottling() {}
+
   setWindowOpenHandler(handler) {
     this.windowOpenHandler = handler;
   }
@@ -238,9 +241,13 @@ class FakeView {
     // Every radius this view was TOLD, in order — the manager writes only on
     // a change, so the list is the claim, not the last value.
     this.radii = [];
+    // And every canvas colour, the same way: the page's opaque base, or none.
+    this.canvases = [];
   }
 
-  setBackgroundColor() {}
+  setBackgroundColor(color) {
+    this.canvases.push(color);
+  }
 
   /** Electron 36+. Recorded rather than performed. */
   setBorderRadius(radius) {
@@ -1923,10 +1930,12 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
 describe("per-tab viewports — intrinsic size independent of the column, presentation-only fit", () => {
   const { fitViewport, resolveViewport } = require("./browser-manager");
 
-  test("fitViewport scales down to fit and centres, never scales up", () => {
+  test("fitViewport scales down to fit, centres across and top-aligns, never scales up", () => {
     expect(fitViewport({ width: 1280, height: 800 }, { x: 10, y: 20, width: 640, height: 400 })).toEqual({ scale: 0.5, rect: { x: 10, y: 20, width: 640, height: 400 } });
-    expect(fitViewport({ width: 1280, height: 800 }, { x: 0, y: 0, width: 640, height: 600 })).toEqual({ scale: 0.5, rect: { x: 0, y: 100, width: 640, height: 400 } });
-    expect(fitViewport({ width: 390, height: 844 }, { x: 0, y: 0, width: 1000, height: 900 })).toEqual({ scale: 1, rect: { x: 305, y: 28, width: 390, height: 844 } });
+    // A stage taller than the fitted page: the page starts at the stage's
+    // top, as a device toolbar shows a screen — not centred over a band.
+    expect(fitViewport({ width: 1280, height: 800 }, { x: 0, y: 0, width: 640, height: 600 })).toEqual({ scale: 0.5, rect: { x: 0, y: 0, width: 640, height: 400 } });
+    expect(fitViewport({ width: 390, height: 844 }, { x: 0, y: 30, width: 1000, height: 900 })).toEqual({ scale: 1, rect: { x: 305, y: 30, width: 390, height: 844 } });
   });
 
   test("resolveViewport accepts presets and clamps custom sizes", () => {
@@ -2426,6 +2435,208 @@ describe("fit-to-panel viewport mode", () => {
     const restored = new DesktopBrowserManager(window, { createId: () => "x", createView: () => new FakeView(), wait: async () => {}, profiles: manager.profiles, tabStore: { load: () => doc, save: () => {}, flushSync: () => {} } });
     restored.ensureAutoRelease = () => {};
     expect(restored.state("s").tabs[0].viewport).toEqual({ width: 640, height: 400, preset: null, mode: "fit" });
+  });
+
+  test("browser_resize {mode: \"fit\"} on a fixed tab puts it back in fit — native bounds, no emulation — and says so", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    const fixed = await manager.callTool("s", "browser_resize", { preset: "default" });
+    expect(textOf(fixed)).toContain("1280×800 (default)");
+    expect(manager.state("s").tabs[0].viewport).toEqual({ width: 1280, height: 800, preset: "default", mode: "fixed" });
+    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    // The orchestrator's call, exactly as the engine now forwards it.
+    const back = await manager.callTool("s", "browser_resize", { mode: "fit" });
+    expect(back.isError).toBeFalsy();
+    expect(textOf(back)).toContain("640×400 (fit to panel");
+    expect(manager.state("s").tabs[0].viewport).toEqual({ width: 640, height: 400, preset: null, mode: "fit" });
+    expect(manager.state("s").presentation).toMatchObject({ mode: "fit", scale: 1, rect: { x: 0, y: 0, width: 640, height: 400 } });
+    expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
+    expect(tab.viewportOverride).toBe("native");
+    expect(views[0].webContents.debugger.commands.at(-1).method).toBe("Emulation.clearDeviceMetricsOverride");
+  });
+});
+
+describe("a fixed tab's view is exactly the emulated page — bounds and emulation cannot disagree, and the page is top-aligned", () => {
+  /** The rectangle the page renders into (viewport × the scale last sent)
+   *  against the rectangle the view was given. Chromium lays the page out
+   *  at the emulated size whatever the view's size is, so any difference
+   *  here is either page painted outside the frame or a strip of nothing
+   *  inside it. */
+  function expectAgreed(view, rect) {
+    expect(view.bounds).toEqual(rect);
+    const last = view.webContents.debugger.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1);
+    const scale = last.params.scale ?? 1;
+    expect({ width: Math.round(last.params.width * scale), height: Math.round(last.params.height * scale) }).toEqual({ width: rect.width, height: rect.height });
+  }
+
+  test("through fit → fixed, the rail-reserved stage, a preset change and a cockpit zoom", async () => {
+    const { manager, setCockpitZoom, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    const view = views[0];
+    // The owner's stage: wider than tall for the standard page, so the fit
+    // is width-bound and the stage has room left under the page.
+    manager.setBounds("s", { x: 12, y: 40, width: 858, height: 790 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    // Fit: the view IS the stage, nothing emulated.
+    expect(view.bounds).toEqual({ x: 12, y: 40, width: 858, height: 790 });
+    expect(tab.viewportOverride).toBe("native");
+
+    await manager.resizeTab(tab, { preset: "default" });
+    await tab.geometry.queue;
+    // 1280×800 at 858/1280: 858×536, at the TOP of the stage (y: 40, not
+    // 40 + 127) — a device toolbar's screen, not a page floating mid-panel.
+    expectAgreed(view, { x: 12, y: 40, width: 858, height: 536 });
+    expect(manager.state("s").presentation).toMatchObject({ mode: "fixed", rect: { x: 12, y: 40, width: 858, height: 536 } });
+    expect(Math.abs(manager.state("s").presentation.scale - 858 / 1280)).toBeLessThan(1e-9);
+
+    // The renderer, now in fixed mode, republishes the stage inside its
+    // resize rails (12px off each axis). The view follows the smaller fit
+    // and so does the emulation — a full pass, not the drag fast path.
+    manager.setBounds("s", { x: 12, y: 40, width: 846, height: 778 });
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 12, y: 40, width: 846, height: 529 });
+
+    // A tall preset in the same stage: height-bound, centred across, top-aligned.
+    await manager.resizeTab(tab, { preset: "phone" });
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 255, y: 40, width: 360, height: 778 });
+
+    // The cockpit's own zoom rides both the bounds and the emulation scale.
+    await manager.resizeTab(tab, { preset: "default" });
+    setCockpitZoom(0.9);
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 11, y: 36, width: 761, height: 476 });
+  });
+
+  test("a hidden fixed tab is emulated at its own size, and shown again in a taller stage it is placed at the top, agreed", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    const view = views[0];
+    await manager.resizeTab(tab, { preset: "default" });
+    // Never shown: no bounds written, emulated at its own size, scale 1.
+    expect(view.bounds).toBeNull();
+    expect(view.webContents.debugger.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 600 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", false);
+    await tab.geometry.queue;
+    expect(view.webContents.debugger.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 0, y: 0, width: 640, height: 400 });
+  });
+});
+
+describe("the canvas under the page — opaque once a document is ready, none before", () => {
+  const NONE = "#00000000";
+  const WHITE = "#ffffff";
+
+  test("a fresh view has no canvas; dom-ready of a real document gives it an opaque white one; a blank tab takes it back", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s");
+    const tab = manager.activeTab("s");
+    const view = views[0];
+    const wc = view.webContents;
+    // Attached with no canvas: the first document has no frame yet, and an
+    // opaque underlay there is the white strip transparency was introduced for.
+    expect(view.canvases).toEqual([NONE]);
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    // The first document, edge by edge (the fake's loadURL fires them all at
+    // once): loading — the view is shown for it — then committed, still no
+    // canvas; dom-ready is the edge that paints it.
+    wc.emit("did-start-loading");
+    await tab.geometry.queue;
+    expect(view.visible).toBe(true);
+    wc.url = "https://one.example/";
+    wc.emit("did-navigate");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE]);
+    wc.emit("dom-ready");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE]);
+    wc.emit("did-stop-loading");
+    await tab.geometry.queue;
+    // A claim, not a pulse: later placements and dom-readys write nothing.
+    manager.setBounds("s", { x: 0, y: 0, width: 900, height: 500 });
+    await tab.geometry.queue;
+    wc.emit("dom-ready");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE]);
+    // The next page keeps it, the way a browser keeps its own canvas
+    // between documents — no dark flash between two light pages.
+    await manager.navigateTab(tab, "https://two.example/");
+    expect(view.canvases).toEqual([NONE, WHITE]);
+    wc.emit("dom-ready");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE]);
+    // Blank again (the page navigated itself to about:blank): the DOM start
+    // page is drawn under this view, so the canvas goes with the document.
+    await wc.loadURL("about:blank");
+    await tab.geometry.queue;
+    expect(view.visible).toBe(false);
+    expect(view.canvases).toEqual([NONE, WHITE, NONE]);
+    // about:blank's own dom-ready is no document.
+    wc.emit("dom-ready");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE, NONE]);
+    // THE BELT: a document that finished loading without this process seeing
+    // its dom-ready (a back/forward-cache restore fires none) is still a
+    // document to paint on.
+    await wc.loadURL("https://three.example/");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE, NONE, WHITE]);
+    // A renderer that went away took its document with it: the cockpit shows
+    // through until a reload, not a white rectangle where the page was.
+    wc.emit("render-process-gone");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE, NONE, WHITE, NONE]);
+  });
+
+  test("a woken tab's new WebContents starts without a canvas again, until its document is ready", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    await tab.geometry.queue;
+    expect(views[0].canvases).toEqual([NONE, WHITE]);
+    manager.hibernateTab(tab);
+    // Hold the new WebContents' load open so the fresh view can be seen
+    // before its document is ready.
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const createView = manager.createView;
+    manager.createView = (options) => {
+      const view = createView(options);
+      view.webContents.loadGate = gate;
+      return view;
+    };
+    const woke = manager.wakeTab(tab);
+    await Promise.resolve();
+    expect(views[1].canvases).toEqual([NONE]);
+    release();
+    await woke;
+    await tab.geometry.queue;
+    expect(views[1].canvases).toEqual([NONE, WHITE]);
+  });
+
+  test("a tab in a window of its own keeps its canvas — the page is the whole window there", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    views[0].webContents.emit("dom-ready");
+    await tab.geometry.queue;
+    await manager.action("s", { action: "preview" });
+    await manager.applyGeometry(tab);
+    expect(views[0].canvases).toEqual([NONE, WHITE]);
   });
 });
 
