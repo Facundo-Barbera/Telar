@@ -30,7 +30,7 @@ import {
   type GitHubSnapshot,
   type GitignoreRemoval,
   type GitignoreResult,
-  type ComputerUseBackend,
+  type ComputerUseGrant,
   type ComputerUseStatus,
   type AgentMessageIntent,
   type AgentOrientation,
@@ -1770,9 +1770,16 @@ export class EngineClient {
   }
 
   /** Ask macOS for Accessibility + Screen Recording — through Telar's bundled
-   *  helper when there is one (the prompts name it), else cua's own flow. */
-  grantComputerUseAccess(): Promise<{ started: boolean; backend?: ComputerUseBackend }> {
+   *  helper when there is one (the prompts name it), else cua's own flow — and
+   *  open the Settings pane the person finishes in. Answers what happened. */
+  grantComputerUseAccess(): Promise<ComputerUseGrant> {
     return this.request("POST", "/v2/computer-use/grant", {});
+  }
+
+  /** Reveal the bundled helper in Finder, to drag into a Settings list that
+   *  does not show it yet. `revealed: false` without a bundled helper. */
+  revealComputerUseHelper(): Promise<{ revealed: boolean }> {
+    return this.request("POST", "/v2/computer-use/reveal", {});
   }
 
   /** Reset the bundled helper's two macOS grants (`tccutil reset`, its bundle

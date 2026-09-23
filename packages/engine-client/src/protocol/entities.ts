@@ -1680,6 +1680,10 @@ export function driverTakesComputerUse(driver: ProviderDriverKind): boolean {
   return COMPUTER_USE_DRIVERS.includes(driver);
 }
 
+/** The System Settings → Privacy & Security lists a grant is finished in. */
+export const ComputerUsePane = z.enum(["accessibility", "screen-recording"]);
+export type ComputerUsePane = z.infer<typeof ComputerUsePane>;
+
 export const ComputerUseStatus = z.object({
   installed: z.boolean(),
   hostRunning: z.boolean(),
@@ -1692,8 +1696,27 @@ export const ComputerUseStatus = z.object({
   permission: ComputerUsePermission.optional(),
   /** The backend's own words, when there were any. */
   message: z.string().optional(),
+  /** Bundled: the lists still missing the helper's grant, when measured. */
+  missing: z.array(ComputerUsePane).optional(),
 });
 export type ComputerUseStatus = z.infer<typeof ComputerUseStatus>;
+
+/**
+ * What "Grant access" DID, step by step, so the pane can say it rather than
+ * nothing. Bundled: whether the helper's daemon came up, whether it answered the
+ * prompt call, what it reported, and which Settings pane was opened for the
+ * person to finish in. `message` is the first thing that went wrong.
+ */
+export const ComputerUseGrant = z.object({
+  started: z.boolean(),
+  backend: ComputerUseBackend.optional(),
+  daemon: z.boolean().optional(),
+  prompted: z.boolean().optional(),
+  permission: ComputerUsePermission.optional(),
+  opened: ComputerUsePane.optional(),
+  message: z.string().optional(),
+});
+export type ComputerUseGrant = z.infer<typeof ComputerUseGrant>;
 
 /**
  * WHO WRITES THE WORDS THE HUMAN DIDN'T — t3 code's TextGeneration idea, on
