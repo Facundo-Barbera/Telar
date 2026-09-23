@@ -418,7 +418,7 @@ jobs:
 
   # THE ELECTRON SUITE, WHICH NOTHING RAN UNTIL NOW (#622).
   #
-  # Thirteen `*.electron-test.js` files drive a REAL Electron against real pages,
+  # Fourteen `*.electron-test.js` files drive a REAL Electron against real pages,
   # the real OS clipboard, real popups and a real pseudo-terminal. They are the
   # only proof of several
   # browser behaviours — #618 and #621 both landed verified by nothing else —
@@ -500,6 +500,7 @@ jobs:
           run_case browser         BROWSER_REGRESSION_OK
           run_case popup           BROWSER_POPUP_OK
           run_case fit-zoom        BROWSER_FIT_ZOOM_OK
+          run_case canvas-control  BROWSER_CANVAS_CONTROL_OK
           run_case persistence     BROWSER_PERSISTENCE_OK
           run_case profile-cookies PROFILE_COOKIES_OK
           run_case host-header     HOST_HEADER_OK
