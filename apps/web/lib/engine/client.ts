@@ -20,7 +20,7 @@ import type {
   GitignoreRemoval,
   GitignoreResult,
   GitOverview,
-  ComputerUseBackend,
+  ComputerUseGrant,
   ComputerUseStatus,
   RememberedLogin,
   Schedule,
@@ -1164,8 +1164,9 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     computerUseStatus: () => request<{ computerUse: ComputerUseStatus }>(fetcher, "GET", "/api/computer-use"),
     /** Asks macOS for the grants — through Telar's bundled helper when there
      *  is one, else through an external cua install. */
-    grantComputerUseAccess: () =>
-      request<{ started: boolean; backend?: ComputerUseBackend }>(fetcher, "POST", "/api/computer-use/grant", {}),
+    grantComputerUseAccess: () => request<ComputerUseGrant>(fetcher, "POST", "/api/computer-use/grant", {}),
+    /** Shows the bundled helper in Finder, to drag into a Settings list. */
+    revealComputerUseHelper: () => request<{ revealed: boolean }>(fetcher, "POST", "/api/computer-use/reveal", {}),
     /** Clears the bundled helper's grants only; `reset: false` without one. */
     resetComputerUseAccess: () =>
       request<{ reset: boolean; message?: string }>(fetcher, "POST", "/api/computer-use/reset", {}),
