@@ -151,7 +151,8 @@ function fitViewport(viewport, bounds) {
  * gate already believed settled.
  */
 function emulationKey(target) {
-  return `${target.width}x${target.height}@${target.scale}`;
+  const key = `${target.width}x${target.height}@${target.scale}`;
+  return target.view ? `${key} in ${target.view.width}x${target.view.height}` : key;
 }
 
 /** How long a capture of a hidden view may take before it is an error rather
@@ -2267,8 +2268,13 @@ class DesktopBrowserManager {
     // are no pixels behind a start page, a previewed tab or a 1×1 panel.
     if (!this.isTabVisible(tab) || this.isBlank(tab) || this.previewing(tab)) return null;
     const rect = this.nativeRect(tab);
+    // CROPPED TO THE VIEW'S OWN SIZE, so the picture is exactly the pixels the
+    // live view shows at `rect`. A widget larger than its view (an emulation
+    // that resized it — see `syncViewport`) returned its whole surface: the
+    // page shrunk into a corner of a white frame, then drawn into `rect`.
+    const { width, height } = this.windowRect(rect);
     try {
-      const image = await withTimeout(tab.view.webContents.capturePage(), FREEZE_TIMEOUT_MS, FREEZE_TIMEOUT_MESSAGE);
+      const image = await withTimeout(tab.view.webContents.capturePage({ x: 0, y: 0, width, height }), FREEZE_TIMEOUT_MS, FREEZE_TIMEOUT_MESSAGE);
       if (!image || image.isEmpty()) return null;
       return { data: image.toPNG().toString("base64"), mimeType: "image/png", rect };
     } catch {
@@ -3892,13 +3898,27 @@ class DesktopBrowserManager {
     }
     const wanted = emulationKey(target);
     if (tab.viewportOverride === wanted) return;
+    // A SHOWN TAB KEEPS ITS WIDGET AT THE VIEW'S SIZE. Without
+    // `dontSetVisibleSize`, Chromium resizes the page's render widget to the
+    // override's width×height (`WebContentsImpl::SetDeviceEmulationSize`) —
+    // 1280×800 inside a 973×608 view. The page is drawn scaled into its
+    // top-left and the rest of that widget is the canvas, overflowing the
+    // view down to the window's edge: invisible while the canvas was
+    // transparent, a white slab once #922 made it opaque, and the shrunk
+    // frozen frame a `capturePage` of that widget returns. DevTools' own
+    // device mode sends the same flag; `setVisibleSize` then pins the widget
+    // to the view explicitly, undoing any size a hidden period left behind.
+    // A HIDDEN tab still gets the full size: it has no view bounds worth the
+    // name, and its captures and synthetic input need a real widget (above).
     await debug.sendCommand("Emulation.setDeviceMetricsOverride", {
       width: target.width,
       height: target.height,
       deviceScaleFactor: 1,
       mobile: false,
       ...(target.scale === 1 ? {} : { scale: target.scale }),
+      ...(target.view ? { dontSetVisibleSize: true } : {}),
     });
+    if (target.view) await debug.sendCommand("Emulation.setVisibleSize", target.view);
     tab.viewportOverride = wanted;
   }
 
@@ -3953,8 +3973,13 @@ class DesktopBrowserManager {
     // a size the view does not have — clipped at 0.9×, letterboxed at 1.1×
     // (#895). The CSS-space scale the renderer draws its frame with stays
     // unzoomed, which is why `state()` computes that one itself.
-    const scale = this.isTabVisible(tab) ? fitViewport(viewport, this.bounds).scale * this.cockpitZoom() : 1;
-    return { emulate: true, width: viewport.width, height: viewport.height, scale };
+    if (!this.isTabVisible(tab)) return { emulate: true, width: viewport.width, height: viewport.height, scale: 1 };
+    const scale = fitViewport(viewport, this.bounds).scale * this.cockpitZoom();
+    // THE WIDGET STAYS THE VIEW'S SIZE. `place` gives the view this rect;
+    // the emulation must not resize the page's widget past it (see
+    // `syncViewport`), so the size travels with the target and its key.
+    const native = this.windowRect(this.nativeRect(tab));
+    return { emulate: true, width: viewport.width, height: viewport.height, scale, view: { width: native.width, height: native.height } };
   }
 
   /**

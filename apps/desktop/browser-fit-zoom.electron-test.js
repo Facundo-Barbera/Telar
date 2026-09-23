@@ -28,12 +28,16 @@
  *   · a FIXED preset in a stage taller than the fitted page sits at the TOP
  *     of the stage, the view is exactly the emulated page (viewport × scale),
  *     and the page's own `position: fixed; bottom: 0` footer sits at the
- *     emulated bottom — nothing of the page can be painted below the frame.
+ *     emulated bottom — nothing of the page can be painted below the frame;
+ *   · and the page's own SURFACE is that rect too: its capture is the view's
+ *     size with the footer on its last row, not a 1280×800 widget with the
+ *     page in its corner and white canvas below (the slab after #922), and
+ *     the frozen frame a menu shows is the same picture at the same rect.
  *
  * Run: `bun run test:desktop:fit-zoom` from apps/desktop
  * (own temp userData, window shown inactive, no focus).
  */
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, nativeImage } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
@@ -95,6 +99,38 @@ async function untilOpaqueCanvas(tab, width, height) {
     await delay(50);
   }
   return seen;
+}
+/** The fixture's footer, BGRA. */
+const FLOOR = [255, 144, 30, 255];
+/**
+ * What a captured surface shows of a view `width`×`height` CSS px: its size,
+ * whether that IS the view at the window's device ratio, the middle pixel
+ * of its bottom row, and where the purple box starts (x) and its row (y).
+ */
+function surfaceFacts(image, width, height, dpr) {
+  const size = image.getSize();
+  const ratio = size.width / width;
+  const pixels = image.toBitmap();
+  const at = (x, y) => { const o = (y * size.width + x) * 4; return [pixels[o], pixels[o + 1], pixels[o + 2], pixels[o + 3]]; };
+  const bottom = at(Math.round(size.width / 2), size.height - 1);
+  let box = [-1, -1];
+  for (let y = 0; y < size.height && box[0] < 0; y += 1) {
+    for (let x = 0; x < size.width; x += 1) {
+      const p = at(x, y);
+      if (p[0] === 186 && p[1] === 85 && p[2] === 114) { box = [x, y]; break; }
+    }
+  }
+  return { size, ratio, matches: Math.abs(size.width - width * dpr) <= 1 && Math.abs(size.height - height * dpr) <= 1, bottom, box };
+}
+/** Polled: the widget resize and its next frame land after the CDP call. */
+async function untilSurface(tab, width, height, dpr) {
+  let facts = null;
+  for (let i = 0; i < 40; i += 1) {
+    facts = surfaceFacts(await tab.view.webContents.capturePage(), width, height, dpr);
+    if (facts.matches && facts.bottom.join() === FLOOR.join()) return facts;
+    await delay(50);
+  }
+  return facts;
 }
 async function settle(manager, tab) {
   for (let i = 0; i < 50; i += 1) {
@@ -197,6 +233,30 @@ async function main() {
     assert(fixedRect.x === 0 && fixedRect.y === 0 && fixedRect.width === 640 && fixedRect.height === 400, `fixed view is not the top-aligned fitted page: ${JSON.stringify(fixedRect)}`);
     assert(presented.x === 0 && presented.y === 0 && presented.width === 640 && presented.height === 400, `the presentation rect ${JSON.stringify(presented)} is not the view's`);
     assert(fixed.floor === 800, `the page's fixed footer bottoms out at ${fixed.floor}, not the emulated 800 — the page is laid out for something other than the emulated height`);
+    // THE WIDGET IS THE VIEW, NOT THE OVERRIDE (the white slab after #922).
+    // `view.getBounds()` is only what was asked for; the page's own surface is
+    // what paints. Chromium used to grow it to 1280×800 behind a 640×400 view,
+    // page in the corner and opaque canvas below it down to the window edge.
+    // So: the surface is the view's size, and its bottom row is the page's
+    // own footer — no canvas below the fitted rect.
+    const live = await untilSurface(tab, 640, 400, nativeDpr);
+    note(`fixed surface: ${JSON.stringify(live.size)} ratio=${live.ratio} bottom=${live.bottom} box=${live.box}`);
+    assert(live.matches, `the page's widget is ${JSON.stringify(live.size)}, not the 640×400 view — it overflows the fitted rect`);
+    assert(live.bottom.join() === FLOOR.join(), `the surface's bottom row is ${live.bottom}, not the page's footer — canvas below the page`);
+    // The box sits at CSS (100, 100); at scale 0.5 that is (50, 50) of the view.
+    assert(Math.abs(live.box[0] - 50 * live.ratio) <= 2 && Math.abs(live.box[1] - 50 * live.ratio) <= 2, `the page is not scaled into the full view: box at ${live.box}`);
+    // THE FROZEN FRAME IS THE LIVE PAGE: same size, same content, not the
+    // page shrunk into a corner of a larger white frame.
+    const frame = await manager.freezeView("s");
+    assert(frame, "no frozen frame for a shown fixed page");
+    assert(JSON.stringify(frame.rect) === JSON.stringify(presented), `frozen rect ${JSON.stringify(frame.rect)} is not the live rect ${JSON.stringify(presented)}`);
+    const frozen = surfaceFacts(nativeImage.createFromBuffer(Buffer.from(frame.data, "base64")), 640, 400, nativeDpr);
+    note(`frozen frame: ${JSON.stringify(frozen.size)} bottom=${frozen.bottom} box=${frozen.box}`);
+    assert(frozen.matches, `frozen frame is ${JSON.stringify(frozen.size)}, not the live ${JSON.stringify(live.size)}`);
+    assert(frozen.bottom.join() === FLOOR.join(), `frozen frame's bottom row is ${frozen.bottom} — the page is shrunk inside it`);
+    assert(frozen.box.join() === live.box.join(), `frozen box ${frozen.box} is not where the live box is (${live.box})`);
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
     await manager.action("s", { action: "resize", mode: "fit" });
     await tab.geometry.queue;
     await checkNative("fit after fixed", 640, 600);
