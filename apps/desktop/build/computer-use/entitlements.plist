@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  cua's own scripts/CuaDriver.entitlements, and nothing else. NOT Telar's
+	  inherit plist: that carries com.apple.security.inherit, which only makes
+	  sense for a child of a sandboxed parent, and this helper is launched on its
+	  own through LaunchServices. Also NOT cua's release-bundle extras
+	  (application-identifier, keychain-access-groups): they are restricted,
+	  need cua's provisioning profile, and serve only cua's experimental history
+	  feature, which refuses to run under any team but cua's anyway.
+	-->
+	<key>com.apple.security.device.screen-capture</key>
+	<true/>
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>
