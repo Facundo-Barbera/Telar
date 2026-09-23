@@ -1,0 +1,120 @@
+name: Bump bundled cua-driver
+
+# Telar bundles its own copy of cua-driver (scripts/computer-use-helper.mjs
+# rebuilds trycua/cua's CuaDriver.app as "Computer Use for Telar", under
+# Telar's own bundle id so a user's Accessibility / Screen Recording grants
+# survive an update). The pin that names which release that is lives in
+# apps/desktop/computer-use-helper.json, and nothing else ever moves it
+# forward — upstream cutting a new stable cua-driver-rs tag is invisible to
+# this repo until something goes and looks. This workflow is that look, on a
+# schedule, and it opens a PR rather than committing straight to main: see the
+# PR body step below for why a human still has to press merge.
+on:
+  schedule:
+    # An off-minute (not :00) so this does not queue behind every other
+    # weekly workflow's on-the-hour cron.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: bump-computer-use-helper
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PIN_FILE: apps/desktop/computer-use-helper.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Record the currently pinned release
+        id: before
+        run: |
+          set -euo pipefail
+          echo "tag=$(node -p "JSON.parse(require('fs').readFileSync(process.env.PIN_FILE,'utf8')).tag")" >> "$GITHUB_OUTPUT"
+
+      - name: Check for a newer stable release and rewrite the pin
+        run: bun scripts/bump-computer-use-helper.mjs
+
+      - name: See whether the pin actually changed
+        id: diff
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- "$PIN_FILE"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read the new pinned release
+        if: steps.diff.outputs.changed == 'true'
+        id: after
+        run: |
+          set -euo pipefail
+          echo "tag=$(node -p "JSON.parse(require('fs').readFileSync(process.env.PIN_FILE,'utf8')).tag")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "JSON.parse(require('fs').readFileSync(process.env.PIN_FILE,'utf8')).version")" >> "$GITHUB_OUTPUT"
+
+      # Idempotent against re-runs of this same schedule: a branch or an open
+      # PR for this exact version already existing means an earlier run (or a
+      # person) is already on it, so this run backs off instead of racing it.
+      - name: Open a PR, unless one is already out for this version
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          OLD_TAG: ${{ steps.before.outputs.tag }}
+          NEW_TAG: ${{ steps.after.outputs.tag }}
+          VERSION: ${{ steps.after.outputs.version }}
+        run: |
+          set -euo pipefail
+          BRANCH="chore/bump-cua-driver-$VERSION"
+
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "$BRANCH already exists on origin; assuming a PR is already out for it."
+            exit 0
+          fi
+          if [ -n "$(gh pr list --repo "$REPO" --state open --head "$BRANCH" --json number --jq '.[0].number // empty')" ]; then
+            echo "an open PR already targets $BRANCH; nothing to do."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add "$PIN_FILE"
+          git commit \
+            -m "chore(desktop): bump bundled cua-driver to $VERSION" \
+            -m "Telar ships its own copy of cua-driver (scripts/computer-use-helper.mjs), rebuilt under Telar's own bundle id and signature rather than depending on a system install. That pin rides upstream releases instead of tracking main, so this scheduled check is what moves it forward whenever trycua/cua cuts a new stable cua-driver-rs tag."
+          git push origin "$BRANCH"
+
+          # The default GITHUB_TOKEN this step runs as cannot trigger other
+          # workflows on the PR it opens (GitHub's own restriction, to stop a
+          # workflow from recursively kicking off more workflows) — verify.yml
+          # and main-red.yml will NOT run on this PR by themselves. A human
+          # merging it should re-run them, or push an empty commit, first.
+          gh pr create \
+            --repo "$REPO" \
+            --head "$BRANCH" \
+            --title "chore(desktop): bump bundled cua-driver to $VERSION" \
+            --body "$(cat <<EOF
+          Opened automatically by the scheduled bump-computer-use-helper check.
+
+          Bundled cua-driver: \`$OLD_TAG\` -> \`$NEW_TAG\`.
+
+          Release notes: https://github.com/trycua/cua/releases/tag/$NEW_TAG
+
+          This PR must be merged by a person, never on its own. Before merging,
+          build the helper on a Mac (\`bun scripts/computer-use-helper.mjs\`) and
+          read the release notes for changes to how the daemon finds its socket
+          or asks for permissions. Nightlies build only from main, so the first
+          nightly after merging is where the rebuilt helper is proven to launch.
+          EOF
+          )"
