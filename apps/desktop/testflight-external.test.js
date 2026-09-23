@@ -104,25 +104,47 @@ const ALREADY_SUBMITTED = {
 };
 const APPLE_DOWN = { errors: [{ code: "SERVICE_UNAVAILABLE", status: "503", detail: "Try again later." }] };
 
+const WHATS_NEW =
+  "Nightly build of Telar Mobile. Pair with a Mac running the current Telar nightly, then follow a session, read its transcript and answer an approval from the phone. Report anything that looks wrong or stalls.";
+const NO_LOCALIZATIONS = { data: [] };
+const localization = (id, locale) => ({ type: "betaBuildLocalizations", id, attributes: { locale, whatsNew: null } });
+
 const BUILDS_URL = `${API}/v1/builds?filter[app]=${APP_ID}&filter[version]=${BUILD_NUMBER}&fields[builds]=processingState`;
+const LOCALIZATIONS_URL = `${API}/v1/builds/b-1/betaBuildLocalizations`;
+const CREATE_LOCALIZATION_URL = `${API}/v1/betaBuildLocalizations`;
 const GROUPS_URL = `${API}/v1/apps/${APP_ID}/betaGroups?filter[name]=Nightly&filter[isInternalGroup]=false&fields[betaGroups]=name,isInternalGroup`;
 const ADD_URL = `${API}/v1/betaGroups/g-ext/relationships/builds`;
 const SUBMIT_URL = `${API}/v1/betaAppReviewSubmissions`;
+const CREATE_LOCALIZATION_BODY = {
+  data: {
+    type: "betaBuildLocalizations",
+    attributes: { locale: "en-US", whatsNew: WHATS_NEW },
+    relationships: { build: { data: { type: "builds", id: "b-1" } } },
+  },
+};
+const patchLocalizationBody = (id) => ({ data: { type: "betaBuildLocalizations", id, attributes: { whatsNew: WHATS_NEW } } });
 const ADD_BODY = JSON.stringify({ data: [{ type: "builds", id: "b-1" }] });
 const SUBMIT_BODY = JSON.stringify({
   data: { type: "betaAppReviewSubmissions", relationships: { build: { data: { type: "builds", id: "b-1" } } } },
 });
 
-/** The full happy sequence: Apple hiccups once, the build appears, processes, is added and submitted. */
+/**
+ * The full happy sequence: Apple hiccups once, the build appears, processes,
+ * gets its What to Test text, is added and submitted.
+ */
 const HAPPY = [
   reply(503, APPLE_DOWN),
   reply(200, NO_BUILD),
   reply(200, build("PROCESSING")),
   reply(200, build("VALID")),
+  reply(200, NO_LOCALIZATIONS),
+  reply(201, { data: localization("loc-new", "en-US") }),
   reply(200, EXTERNAL_GROUP),
   reply(204),
   reply(201, { data: { type: "betaAppReviewSubmissions", id: "s-1" } }),
 ];
+const ADD_AT = HAPPY.length - 2;
+const SUBMIT_AT = HAPPY.length - 1;
 
 /**
  * Run the script by /bin/bash with `curl` shadowed. `responses` is what the
@@ -179,12 +201,15 @@ describe("testflight-external.sh offers a processed build to the external group"
       ["GET", BUILDS_URL],
       ["GET", BUILDS_URL],
       ["GET", BUILDS_URL],
+      ["GET", LOCALIZATIONS_URL],
+      ["POST", CREATE_LOCALIZATION_URL],
       ["GET", GROUPS_URL],
       ["POST", ADD_URL],
       ["POST", SUBMIT_URL],
     ]);
-    expect(outcome.calls[5].data).toBe(ADD_BODY);
-    expect(outcome.calls[6].data).toBe(SUBMIT_BODY);
+    expect(JSON.parse(outcome.calls[5].data)).toEqual(CREATE_LOCALIZATION_BODY);
+    expect(outcome.calls[ADD_AT].data).toBe(ADD_BODY);
+    expect(outcome.calls[SUBMIT_AT].data).toBe(SUBMIT_BODY);
 
     // Status codes are what it prints, and the 503 was said and survived.
     expect(outcome.stdout).toContain("-> 503");
@@ -192,12 +217,46 @@ describe("testflight-external.sh offers a processed build to the external group"
     expect(outcome.stdout).toContain("-> 204");
     expect(outcome.stdout).toContain("-> 201");
     expect(outcome.stdout).toContain("is processed");
+    expect(outcome.stdout).toContain("has its en-US What to Test text");
     expect(outcome.stdout).toContain("submitted for Beta App Review");
+  });
+
+  test("an existing en-US localization is PATCHed with What to Test rather than duplicated", () => {
+    const responses = [...HAPPY];
+    responses[4] = reply(200, { data: [localization("loc-de", "de-DE"), localization("loc-en", "en-US")] });
+    responses[5] = reply(200, { data: localization("loc-en", "en-US") });
+    const outcome = run({ responses });
+    expect(outcome.stderr).not.toContain("::error::");
+    expect(outcome.status).toBe(0);
+    expect(outcome.calls[5]).toMatchObject({ method: "PATCH", url: `${API}/v1/betaBuildLocalizations/loc-en` });
+    expect(JSON.parse(outcome.calls[5].data)).toEqual(patchLocalizationBody("loc-en"));
+    expect(outcome.calls.filter((call) => call.url === CREATE_LOCALIZATION_URL)).toEqual([]);
+    expect(outcome.calls.at(-1)).toMatchObject({ method: "POST", url: SUBMIT_URL });
+  });
+
+  test("a localization in another locale only does not count: en-US is POSTed", () => {
+    const responses = [...HAPPY];
+    responses[4] = reply(200, { data: [localization("loc-de", "de-DE")] });
+    const outcome = run({ responses });
+    expect(outcome.stderr).not.toContain("::error::");
+    expect(outcome.status).toBe(0);
+    expect(outcome.calls[5]).toMatchObject({ method: "POST", url: CREATE_LOCALIZATION_URL });
+    expect(JSON.parse(outcome.calls[5].data)).toEqual(CREATE_LOCALIZATION_BODY);
+  });
+
+  test("a refused What to Test text is an error before anything is added or submitted", () => {
+    const responses = [...HAPPY];
+    responses[5] = reply(409, { errors: [{ code: "ENTITY_ERROR.ATTRIBUTE.INVALID", status: "409", detail: "whatsNew is too long." }] });
+    const outcome = run({ responses });
+    expect(outcome.status).toBe(1);
+    expect(outcome.stderr).toContain("::error::");
+    expect(outcome.stderr).toContain("whatsNew is too long.");
+    expect(outcome.calls.filter((call) => call.url === ADD_URL || call.url === SUBMIT_URL)).toEqual([]);
   });
 
   test("a 409 saying the build is already in the group counts as success, and it still submits", () => {
     const responses = [...HAPPY];
-    responses[5] = reply(409, ALREADY_IN_GROUP);
+    responses[ADD_AT] = reply(409, ALREADY_IN_GROUP);
     const outcome = run({ responses });
     expect(outcome.stderr).not.toContain("::error::");
     expect(outcome.status).toBe(0);
@@ -208,7 +267,7 @@ describe("testflight-external.sh offers a processed build to the external group"
 
   test("a review submission that already exists counts as success", () => {
     const responses = [...HAPPY];
-    responses[6] = reply(409, ALREADY_SUBMITTED);
+    responses[SUBMIT_AT] = reply(409, ALREADY_SUBMITTED);
     const outcome = run({ responses });
     expect(outcome.stderr).not.toContain("::error::");
     expect(outcome.status).toBe(0);
@@ -218,7 +277,7 @@ describe("testflight-external.sh offers a processed build to the external group"
 
   test("an ENTITY_ERROR saying the build is already approved counts as success too", () => {
     const responses = [...HAPPY];
-    responses[6] = reply(422, {
+    responses[SUBMIT_AT] = reply(422, {
       errors: [{ code: "ENTITY_ERROR.ATTRIBUTE.INVALID", status: "422", detail: "This build has already been approved for external testing." }],
     });
     const outcome = run({ responses });
@@ -229,7 +288,7 @@ describe("testflight-external.sh offers a processed build to the external group"
 
   test("any other refusal of the submission is an error carrying Apple's detail", () => {
     const responses = [...HAPPY];
-    responses[6] = reply(409, {
+    responses[SUBMIT_AT] = reply(409, {
       errors: [{ code: "STATE_ERROR.ENTITY_STATE_INVALID", status: "409", detail: "Missing export compliance information." }],
     });
     const outcome = run({ responses });
@@ -238,13 +297,15 @@ describe("testflight-external.sh offers a processed build to the external group"
     expect(outcome.stderr).toContain("Missing export compliance information.");
   });
 
-  test("no external group named Nightly fails, names what was found, and POSTs nothing", () => {
-    const outcome = run({ responses: [reply(200, build("VALID")), reply(200, ONLY_INTERNAL_GROUP)] });
+  test("no external group named Nightly fails, names what was found, and adds or submits nothing", () => {
+    const outcome = run({
+      responses: [reply(200, build("VALID")), reply(200, NO_LOCALIZATIONS), reply(201, { data: localization("loc-new", "en-US") }), reply(200, ONLY_INTERNAL_GROUP)],
+    });
     expect(outcome.status).toBe(1);
     expect(outcome.stderr).toContain("::error::");
     expect(outcome.stderr).toContain("no EXTERNAL beta group named 'Nightly'");
     expect(outcome.stderr).toContain("'Nightly' (internal, id g-int)");
-    expect(outcome.calls.filter((call) => call.method === "POST")).toEqual([]);
+    expect(outcome.calls.filter((call) => call.url === ADD_URL || call.url === SUBMIT_URL)).toEqual([]);
   });
 
   test("a build that processed as INVALID is an error, not a wait", () => {
@@ -281,8 +342,8 @@ describe("the token", () => {
   test("never appears in the output, even under bash -x", () => {
     const outcome = run({ responses: HAPPY, trace: true });
     expect(outcome.status).toBe(0);
-    // Every call carried one, so the stub saw seven; if this is 0 the check
-    // below would be vacuous.
+    // Every call carried one, so the stub saw as many as there were calls; if
+    // this were 0 the check below would be vacuous.
     expect(outcome.tokens).toHaveLength(HAPPY.length);
     for (const token of outcome.tokens) {
       expect(outcome.output).not.toContain(token);

@@ -6,8 +6,10 @@
 # none of them on its own:
 #
 #   1. wait until App Store Connect has PROCESSED the build (VALID),
-#   2. add the build to the external group,
-#   3. submit it for Beta App Review.
+#   2. give the build its "What to Test" text (Beta App Review refuses a
+#      submission without one — measured on the first submission by hand),
+#   3. add the build to the external group,
+#   4. submit it for Beta App Review.
 #
 # The first build of each new marketing version sits in Beta App Review for
 # hours, sometimes a day; later builds of the SAME version are re-approved in
@@ -40,6 +42,7 @@
 #   TELAR_TESTFLIGHT_EXTERNAL_GROUP   the external group's name (Nightly)
 #   TELAR_ASC_POLL_SECONDS            seconds between processing polls (30)
 #   TELAR_ASC_POLL_TIMEOUT_SECONDS    how long to wait for VALID (1800)
+#   TELAR_TESTFLIGHT_WHATS_NEW        the en-US "What to Test" text
 set -euo pipefail
 
 BUILD_NUMBER="${1:-}"
@@ -55,6 +58,7 @@ APP_ID="${TELAR_ASC_APP_ID:-6807300090}"
 GROUP_NAME="${TELAR_TESTFLIGHT_EXTERNAL_GROUP:-Nightly}"
 POLL_SECONDS="${TELAR_ASC_POLL_SECONDS:-30}"
 POLL_TIMEOUT_SECONDS="${TELAR_ASC_POLL_TIMEOUT_SECONDS:-1800}"
+WHATS_NEW="${TELAR_TESTFLIGHT_WHATS_NEW:-Nightly build of Telar Mobile. Pair with a Mac running the current Telar nightly, then follow a session, read its transcript and answer an approval from the phone. Report anything that looks wrong or stalls.}"
 API="https://api.appstoreconnect.apple.com"
 
 WORK="$(mktemp -d)"
@@ -216,7 +220,43 @@ PYTHON
   sleep "$POLL_SECONDS"
 done
 
-# ---- 2. Find the external group --------------------------------------------
+# ---- 2. Set "What to Test" -------------------------------------------------
+#
+# Beta App Review will not take a build whose en-US localization has no
+# `whatsNew`. A build may already have one (a re-run, or someone typed it in
+# App Store Connect), in which case it is PATCHed rather than duplicated —
+# a second POST for the same locale is a 409.
+asc GET "/v1/builds/$build_id/betaBuildLocalizations"
+if [[ "$STATUS" != "200" ]]; then
+  fail_with_apple_errors "could not read build $BUILD_NUMBER's test localizations"
+fi
+read -r localization_verb localization_id <<<"$(python3 - "$BODY" <<'PYTHON'
+import json, sys
+with open(sys.argv[1]) as body:
+    localizations = json.load(body).get("data", [])
+en_us = [loc for loc in localizations if loc.get("attributes", {}).get("locale") == "en-US"]
+print("PATCH", en_us[0]["id"]) if en_us else print("POST -")
+PYTHON
+)"
+if [[ "$localization_verb" == "PATCH" ]]; then
+  asc PATCH "/v1/betaBuildLocalizations/$localization_id" "$(python3 -c '
+import json, sys
+print(json.dumps({"data": {"type": "betaBuildLocalizations", "id": sys.argv[1], "attributes": {"whatsNew": sys.argv[2]}}}))
+' "$localization_id" "$WHATS_NEW")"
+  expected=200
+else
+  asc POST "/v1/betaBuildLocalizations" "$(python3 -c '
+import json, sys
+print(json.dumps({"data": {"type": "betaBuildLocalizations", "attributes": {"locale": "en-US", "whatsNew": sys.argv[2]}, "relationships": {"build": {"data": {"type": "builds", "id": sys.argv[1]}}}}}))
+' "$build_id" "$WHATS_NEW")"
+  expected=201
+fi
+if [[ "$STATUS" != "$expected" ]]; then
+  fail_with_apple_errors "App Store Connect refused the en-US What to Test text for build $BUILD_NUMBER"
+fi
+echo "build $BUILD_NUMBER has its en-US What to Test text"
+
+# ---- 3. Find the external group --------------------------------------------
 #
 # An INTERNAL group of the same name exists, so the name alone is not enough:
 # `filter[isInternalGroup]=false` picks the external one, and the answer is
@@ -281,7 +321,7 @@ sys.exit(1)
 PYTHON
 }
 
-# ---- 3. Add the build to the group -----------------------------------------
+# ---- 4. Add the build to the group -----------------------------------------
 asc POST "/v1/betaGroups/$group_id/relationships/builds" "{\"data\":[{\"type\":\"builds\",\"id\":\"$build_id\"}]}"
 case "$STATUS" in
   204) echo "build $BUILD_NUMBER added to '$GROUP_NAME'" ;;
@@ -296,7 +336,7 @@ case "$STATUS" in
   *) fail_with_apple_errors "App Store Connect refused to add build $BUILD_NUMBER to '$GROUP_NAME'" ;;
 esac
 
-# ---- 4. Submit for Beta App Review -----------------------------------------
+# ---- 5. Submit for Beta App Review -----------------------------------------
 #
 # A build that is already submitted, or already approved (a later build of a
 # version whose first build passed), answers 409 / ENTITY_ERROR with an
