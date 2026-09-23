@@ -5,9 +5,9 @@
  * is done with them." The engine answers that from facts it already stamps: an
  * assignment is a `task` turn (`assignmentsOf`), and a result reaching the
  * coordinator is a turn carrying `agentIntent: "result"` with the delegate's
- * run in `agentSourceRunId` — the very pair `fireSubscriptions` already
- * deduplicates on. Nothing here reads a word of anybody's text, and nothing
- * here asks a model.
+ * run in `agentSourceRunId` — the very pair `fireSubscriptions` reads to know
+ * a run's completion is already in front of the coordinator (#590, #919).
+ * Nothing here reads a word of anybody's text, and nothing here asks a model.
  *
  * A PURE FOLD, SEPARATE FROM THE STORE, because the rule is five clauses whose
  * interactions are the whole risk and the store is the one place they cannot
@@ -111,7 +111,7 @@ export function newestAssignment(assignments: readonly SessionAssignment[]): Ses
  *
  *   - A `result` REACHED IT. The delegate called `sessions_send` from inside
  *     the run doing the work, so the turn on the coordinator names that run in
- *     `agentSourceRunId` — the same pair `fireSubscriptions` dedupes on.
+ *     `agentSourceRunId` — the same pair `fireSubscriptions` reads (#919).
  *   - A WAKE FOR THAT RUN WAS CONSUMED by a turn that COMPLETED. A wake still
  *     queued is not delivery, and one whose turn failed or was stopped is a
  *     coordinator that did not get to read it.

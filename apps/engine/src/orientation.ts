@@ -39,7 +39,7 @@ import path from "node:path";
 
 /** Bumped whenever the words below change. The skill's front matter carries it,
  *  so a file on disk says which release wrote it. */
-export const ORIENTATION_VERSION = 4;
+export const ORIENTATION_VERSION = 5;
 
 /** The skill's name, which is also its directory and the `$telar` a person or a
  *  model types. One constant so the writer, the remover and the preamble that
@@ -119,8 +119,10 @@ It is not this CLI's own notion of a session, and not a chat thread.
 - **Sessions are PEERS.** One you create is not your child: nothing links the
   two, it does not report back, and you learn what it did by asking.
 - **Assignment** — \`sessions_send\` with \`intent: "task"\` is what starts work;
-  creating a session starts none. \`report\` is passive, \`result\` wakes an
-  awaiting coordinator, \`blocker\` asks for intervention.
+  creating a session starts none. \`report\` is passive and is for progress
+  mid-task; \`result\` is your FINAL answer — send it last, it wakes an awaiting
+  coordinator once, and the completion that follows it will not wake them
+  again; \`blocker\` asks for intervention.
 - **A message arrives as a NOTICE, not as text.** The recipient is handed one
   line — who sent it, which run holds it, how long it is, its opening — and
   fetches the body with \`sessions_read\`. Put the point in the first line.
@@ -133,7 +135,9 @@ It is not this CLI's own notion of a session, and not a chat thread.
   human archives it — and every worktree session is a whole checkout on their
   disk. Create what the work needs and nothing more.
 - **Do not acknowledge acknowledgements.** A \`report\` back saying "received" is
-  a turn somebody pays for. Completion already arrives on its own.
+  a turn somebody pays for. Completion already arrives on its own — and a
+  coordinator that has your \`result\` is told your run ended on its transcript,
+  not in a second turn.
 - **Reporting to the PERSON is \`sessions_send\` to \`agent\`.** That is the
   built-in Agent — their own conversation, not a session. It writes ONE row in
   their inbox and starts no turn: nobody is woken, no model is invoked, nothing
