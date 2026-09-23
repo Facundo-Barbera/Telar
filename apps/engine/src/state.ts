@@ -462,11 +462,24 @@ const ALL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed", "t
  * A `once` subscription means "wake me when the thing I am waiting for is
  * OVER". A `request_opened` is not over: the target parked an approval and is
  * still working, and a subscription spent on it left the coordinator to wait
- * forever for a completion that had nowhere to land. An interim `result` is not
- * over either — see `submitAgentTurn`, which no longer spends the subscription
- * on one.
+ * forever for a completion that had nowhere to land. A `result` is not over
+ * either — see `submitAgentTurn`, which does not spend the subscription on one;
+ * the completion that follows it does (#919).
  */
 const TERMINAL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed", "turn_stopped"];
+
+/**
+ * THE STATES IN WHICH A RESULT HAS REACHED THE MODEL — issue #919.
+ *
+ * `queued` is deliberately absent: a result nobody has read is what
+ * `mergeIntoWaitingResult` folds the completion into. Every state here means
+ * the result's turn was handed to a worker (`claimed`, `running`), has already
+ * run (`completed`), or was folded into a turn the model was in the middle of
+ * (`steering`, `steered`). A `failed`, `stopped`, `ambiguous` or `discarded`
+ * result is one the coordinator did NOT get to read, so its run's completion
+ * still wakes.
+ */
+const RESULT_DELIVERED_STATES: ReadonlySet<Turn["state"]> = new Set(["claimed", "running", "steering", "steered", "completed"]);
 
 /** The contract's own list, as a set, so an unknown mode is refused at the edge
  *  rather than written to disk and failing later inside `autoResolution`. */
@@ -9346,8 +9359,14 @@ export class EngineStore {
        * guarded on a live turn, not on a shelf, so the mail simply waits — and
        * `pendingNotifications` reports it to `sessions_status` meanwhile, which
        * is the poll a coordinator that cares already has.
+       *
+       * A PASSIVE WAKE IS NOT MAIL (#919). The one passive wake there is, is
+       * the completion of a run whose `result` this session already has in
+       * front of its model — `fireSubscriptions` writes it for the record.
+       * Mailing it would deliver, at the next idle, the very turn the rule
+       * exists to prevent.
        */
-      if (turn.notification) this.holdNotification(sessionId, turn.notification);
+      if (turn.notification && !turn.wakeReason) this.holdNotification(sessionId, turn.notification);
       this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
       return { turn: structuredClone(turn), replayed: false };
     }
@@ -9550,13 +9569,15 @@ export class EngineStore {
      * IS ANYONE AWAITING THIS SENDER'S END? That question decides the DELIVERY
      * of a `result` — awaited, it wakes; unawaited, it is passive activity.
      *
-     * IT DOES NOT SPEND THE SUBSCRIPTION (#240). A worker routinely sends a
-     * result MID-TASK and keeps going; consuming the one-shot here meant the
+     * IT DOES NOT SPEND THE SUBSCRIPTION (#240). A worker used to send a
+     * result MID-TASK and keep going; consuming the one-shot here meant the
      * `turn_completed` that actually ended the errand had no subscription left
      * to fire on, and the coordinator waited for an end that never came — twice
      * in one day before this was found. Only a TERMINAL event removes a `once`
      * now, in `fireSubscriptions`, which is the one place that knows a turn
-     * ended.
+     * ended. Since #919 that completion is recorded rather than delivered once
+     * the result is in front of the model — see `resultDeliveredTo` — and the
+     * contract asks for a result to be a run's LAST word.
      */
     const waiting = intent === "result" && sender.sessionId
       ? this.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
@@ -12271,22 +12292,34 @@ export class EngineStore {
       }
       if (subscriber.agentMessagesBlocked) continue;
       /**
-       * A RESULT AND A COMPLETION ARE TWO DIFFERENT FACTS (#240).
+       * A RESULT AND A COMPLETION ARE TWO DIFFERENT FACTS (#240) — AND SINCE
+       * #919 THE SECOND IS RECORDED, NOT DELIVERED, ONCE THE FIRST IS READ.
        *
-       * This used to swallow the `turn_completed` of any run whose worker had
-       * already sent an awaited `result`, on the reading that the result WAS
-       * the run's outcome. It is not, and the engine cannot tell: a worker
-       * sends a result for the part it finished and keeps working, and the
-       * coordinator that was told "here is the analysis" still needs to hear
-       * "and the run has ended" before it acts. Suppressed, the errand simply
-       * never closed. The result says what was produced; the completion says
-       * the turn is over, and a coordinator gets both.
+       * #240 reverted a suppression: this used to swallow the `turn_completed`
+       * of any run whose worker had already sent an awaited `result`, and a
+       * worker that sent a result for the part it finished and kept working
+       * left its coordinator waiting for an end that never arrived. #590 then
+       * folded the second ROW into the result still waiting in the queue
+       * (`mergeIntoWaitingResult`), which covers the completion that lands
+       * before the result is read.
        *
-       * STILL TRUE AFTER #590. What that issue folds is the second ROW, by
-       * merging the ending into the result still waiting in the queue — the
-       * fact is carried, listed and spoken, never dropped. If you are here
-       * because two notices about one run look redundant, read
-       * `mergeIntoWaitingResult` below; suppression has been tried.
+       * THE CASE NEITHER COVERED is the measured one (#919): the coordinator
+       * has CLAIMED the result — or it was steered into the turn it was in —
+       * and the worker's run ends seconds later. The merge misses (the turn is
+       * not `queued`), the completion is held, and the coordinator spends a
+       * whole turn after the result turn saying "that session finished;
+       * already integrated". Seven times in one day's transcripts, every one
+       * the same shape.
+       *
+       * THE RESOLUTION IS THE CONTRACT, NOT A GUESS BY THE ENGINE. `result`
+       * now means "my final answer — send it last" and mid-task progress is a
+       * `report` (see `sessions_send` and the `telar` skill). Under that
+       * contract a completion arriving after its result is in front of the
+       * model is news the model already has, so `resultDeliveredTo` records
+       * it as a passive row and wakes nobody. A `turn_failed` or
+       * `turn_stopped` still wakes — a run that fell over after reporting is
+       * something to act on — as does an `always` subscriber, who asked to be
+       * interrupted, and any completion whose run sent no result.
        */
       const wakeReason: WakeReason = {
         kind,
@@ -12309,6 +12342,52 @@ export class EngineStore {
        */
       const interrupting = (subscription.completionWake ?? "settled_only") === "always" && this.hasLiveTurn(subscriberId);
       if (!interrupting && this.mergeIntoWaitingResult(subscriberId, targetSessionId, notification, kind)) {
+        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
+        continue;
+      }
+      /**
+       * A COMPLETION WHOSE RESULT IS ALREADY IN FRONT OF THE MODEL — issue #919.
+       *
+       * The sibling of the merge above, for the result the subscriber has
+       * already taken: no hold, no turn. It still spends a one-shot exactly as
+       * the other terminal branches do — the run ended, and this subscriber
+       * has been told everything it will hear about it.
+       *
+       * A ROW IS STILL WRITTEN, as a passive turn (the shape `submitTurn` gives
+       * a routine report, minus the mailbox), so the transcript and
+       * `sessions_status` say "and the run has ended" where a person looks for
+       * it. Nothing claims it and nothing is woken by it.
+       *
+       * ONLY A CLEAN ENDING. A failure or a stop after a result is a run that
+       * fell over having already reported, and that is actionable: it takes
+       * the ordinary path. And only for `settled_only` — `always` is an opt-in
+       * to interrupts that this rule does not quietly take back.
+       */
+      if (
+        kind === "turn_completed" &&
+        (subscription.completionWake ?? "settled_only") === "settled_only" &&
+        this.resultDeliveredTo(subscriberId, targetSessionId, turn.runId)
+      ) {
+        const recorded: NotificationDetail = { ...notification, deliveries: 1 };
+        try {
+          this.submitTurn(subscriberId, {
+            runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
+            input: notificationLabel(recorded),
+            origin: "session",
+            wakeReason,
+            notification: recorded,
+            agentDelivery: "passive",
+          });
+        } catch (error) {
+          // The same contract as the wake path below: a subscriber that cannot
+          // take a row (its project put away, say) keeps its own state, and the
+          // reason goes on its journal.
+          if (!(error instanceof EngineStateError && error.code === "conflict")) throw error;
+          this.appendEvent(subscriberId, {
+            type: "runtime.warning",
+            message: `a completion from session ${targetSessionId} could not be recorded: ${error.message}`,
+          });
+        }
         if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
         continue;
       }
@@ -13078,6 +13157,33 @@ export class EngineStore {
     // with `replayed: true` is how a client learns the words changed.
     this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
     return true;
+  }
+
+  /**
+   * HAS THIS RUN'S RESULT REACHED THE SUBSCRIBER'S MODEL — issue #919.
+   *
+   * THE SAME KEY AS `mergeIntoWaitingResult`: a `result` from the session
+   * that acted, naming the run it acted in on `agentSourceRunId`. Where the
+   * merge wants the one turn nobody has read (`queued`), this wants any turn
+   * somebody has — see `RESULT_DELIVERED_STATES`.
+   *
+   * AND ONLY A RESULT THAT WAS DELIVERED AS A WAKE. A passive result (nobody
+   * was awaiting it when it was sent, and the recipient was busy or put away)
+   * is `completed` on the queue but reached no model: it sits in the mailbox,
+   * and the completion is what carries it out on the flush. Treating that as
+   * "already read" would leave a shelved coordinator's result waiting for a
+   * wake that never comes — the lost-message class #631 closed.
+   */
+  private resultDeliveredTo(subscriberId: string, targetSessionId: string, runId: string): boolean {
+    return this.scanQueue(subscriberId).turns.some(
+      (candidate) =>
+        RESULT_DELIVERED_STATES.has(candidate.state) &&
+        candidate.origin === "session" &&
+        candidate.agentIntent === "result" &&
+        candidate.agentDelivery !== "passive" &&
+        candidate.sender?.sessionId === targetSessionId &&
+        candidate.agentSourceRunId === runId,
+    );
   }
 
   /* ---------------------------------------------------------------- *
