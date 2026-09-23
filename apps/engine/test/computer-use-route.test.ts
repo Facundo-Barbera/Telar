@@ -28,7 +28,7 @@ afterEach(async () => {
 
 const GRANTED: ComputerUseStatus = { installed: true, backend: "cua", hostRunning: true, permission: "granted" };
 
-async function engine(): Promise<{ daemon: EngineDaemon; measured: () => number }> {
+async function engine(resetComputerUse?: () => Promise<{ reset: boolean; message?: string }>): Promise<{ daemon: EngineDaemon; measured: () => number }> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-computer-use-"));
   roots.push(directory);
   let measures = 0;
@@ -41,7 +41,7 @@ async function engine(): Promise<{ daemon: EngineDaemon; measured: () => number 
     forClaim: () => undefined,
     measureIfHostRunning: async () => undefined,
   };
-  const daemon = await startEngine({ models: stubModels, engineRoot: directory, computerUseGate });
+  const daemon = await startEngine({ models: stubModels, engineRoot: directory, computerUseGate, ...(resetComputerUse ? { resetComputerUse } : {}) });
   daemons.push(daemon);
   return { daemon, measured: () => measures };
 }
@@ -61,4 +61,20 @@ test("POST /v2/computer-use/host is no longer a route", async () => {
     body: "{}",
   });
   expect(response.status).toBe(404);
+});
+
+test("POST /v2/computer-use/reset resets, then re-measures so the gate stops handing out the tools", async () => {
+  let resets = 0;
+  const { daemon, measured } = await engine(async () => ((resets += 1), { reset: true }));
+  const before = measured();
+  expect(await new EngineClient(daemon.discovery).resetComputerUseAccess()).toEqual({ reset: true });
+  expect(resets).toBe(1);
+  expect(measured()).toBe(before + 1);
+});
+
+test("a reset that did nothing does not re-measure", async () => {
+  const { daemon, measured } = await engine(async () => ({ reset: false, message: "no helper" }));
+  const before = measured();
+  expect(await new EngineClient(daemon.discovery).resetComputerUseAccess()).toEqual({ reset: false, message: "no helper" });
+  expect(measured()).toBe(before);
 });

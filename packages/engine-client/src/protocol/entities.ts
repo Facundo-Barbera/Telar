@@ -1683,6 +1683,9 @@ export function driverTakesComputerUse(driver: ProviderDriverKind): boolean {
 export const ComputerUseStatus = z.object({
   installed: z.boolean(),
   hostRunning: z.boolean(),
+  /** True when the helper bundled inside Telar.app is what's in use — its
+   *  grants are its own, and only then can the pane remove them. */
+  bundled: z.boolean().optional(),
   /** Absent when not installed. */
   backend: ComputerUseBackend.optional(),
   /** Absent when not installed: there is nothing to measure. */

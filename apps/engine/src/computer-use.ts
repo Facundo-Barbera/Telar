@@ -5,10 +5,12 @@
  * scroll, drag, keys) is served by an MCP server injected into a CLAIM, so every
  * provider Telar supplies reaches the SAME desktop through the SAME approval
  * pipeline runtime modes already gate. One backend supplies it: cua-driver
- * (github.com/trycua/cua, MIT), the open-source computer-use driver. A stdio MCP
- * server that auto-launches its own permission-holding daemon (CuaDriver.app,
- * `com.trycua.driver`), so the macOS grants belong to an app Telar can bundle
- * rather than to a proprietary one.
+ * (github.com/trycua/cua, MIT), the open-source computer-use driver. A packaged
+ * Telar ships its own copy inside Telar.app as "Computer Use for Telar"
+ * (`COMPUTER_USE_HELPER_BUNDLE_ID`), with its own grants, socket and state, so
+ * a CuaDriver.app the person installed separately is never used or disturbed.
+ * A dev checkout has no bundle and uses that external install, whose stdio MCP
+ * server auto-launches its own permission-holding daemon (`com.trycua.driver`).
  *
  * EVERY PROVIDER TELAR DRIVES GETS IT, Codex included since #521 — see
  * `COMPUTER_USE_DRIVERS` in the protocol package for why it did not, and why
@@ -45,8 +47,9 @@
  * works — and Telar's injection would only have switched that off in favour of
  * the same engine. Sky could never give a Telar session a desktop.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -74,35 +77,240 @@ import {
 export const COMPUTER_USE_SERVER_ID = "mac";
 
 export type { ComputerUseBackend };
-export type ResolvedComputerUse = { server: McpServer; backend: ComputerUseBackend };
+/** `helper` is present only for the helper bundled inside Telar.app. */
+export type ResolvedComputerUse = { server: McpServer; backend: ComputerUseBackend; helper?: BundledHelper };
 
 /* ------------------------------------------------------------------ *
  * cua-driver.
  * ------------------------------------------------------------------ */
 
-/** Where the installer puts things: a symlink in ~/.local/bin, and the app it
+/** Where cua's installer puts things: a symlink in ~/.local/bin, and the app it
  *  points at. Either being executable is enough to run `cua-driver mcp`, which
- *  proxies through (and auto-launches) the app's daemon. */
+ *  proxies through (and auto-launches) the app's daemon. A DEV checkout's only
+ *  route — a packaged Telar with its helper never looks here. */
 const CUA_APP_BINARY = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
 const cuaSymlink = (home: string) => path.join(home, ".local", "bin", "cua-driver");
 
+/**
+ * THE HELPER TELAR SHIPS — cua-driver inside Telar.app as "Computer Use for
+ * Telar" (apps/desktop/computer-use-helper.json, scripts/computer-use-helper.mjs).
+ * The desktop shell names its path in TELAR_COMPUTER_USE_HELPER.
+ *
+ * ITS OWN IDENTITY IS THE POINT. macOS keys the Accessibility and Screen
+ * Recording grants to bundle id + team, so the helper's grants are neither a
+ * separately installed CuaDriver.app's nor Telar's, and survive Telar updates.
+ * Changing this id orphans every grant already given; the packaging test pins
+ * it against the build's pin.
+ */
+export const COMPUTER_USE_HELPER_BUNDLE_ID = "com.telar.desktop.computer-use";
+
+export type BundledHelper = {
+  /** The helper's .app, inside Telar.app/Contents/Helpers. */
+  app: string;
+  binary: string;
+  bundleId: string;
+  /** OUR socket and pid file. cua's default is ~/Library/Caches/cua-driver/
+   *  cua-driver.sock (cua-driver-core/src/daemon.rs `default_socket_path`),
+   *  which a separately installed CuaDriver.app listens on. */
+  socket: string;
+  pidFile: string;
+  /** Where cua keeps config, telemetry ids and extensions for this copy. */
+  stateDir: string;
+  /** For the daemon AND the MCP proxy. */
+  env: Record<string, string>;
+};
+
+/**
+ * ISOLATION FROM A SEPARATELY INSTALLED cua. Renaming the bundle is not enough
+ * on its own: cua derives its socket and state from its EXECUTABLE NAME, not
+ * its bundle (`bundle.rs` `state_namespace`), and an `mcp` proxy that finds no
+ * daemon relaunches one with `open -a CuaDriver` by app NAME
+ * (`cli.rs` `launch_daemon_with_state_and_wait`) — which is the person's own
+ * install and its grants. So everything cua would put in a shared place is
+ * pointed at ours, and Telar starts the daemon itself (`helperDaemonLaunch`).
+ *
+ * Telemetry and the update check are off: cua's defaults report usage to
+ * cua's analytics and poll GitHub, neither of which a person asked Telar to do
+ * on their behalf, and the pinned version rides Telar's releases instead.
+ */
+export function bundledHelper(app: string, home: string): BundledHelper {
+  const caches = path.join(home, "Library", "Caches", COMPUTER_USE_HELPER_BUNDLE_ID);
+  const stateDir = path.join(home, "Library", "Application Support", COMPUTER_USE_HELPER_BUNDLE_ID);
+  return {
+    app,
+    binary: path.join(app, "Contents", "MacOS", "cua-driver"),
+    bundleId: COMPUTER_USE_HELPER_BUNDLE_ID,
+    socket: path.join(caches, "driver.sock"),
+    pidFile: path.join(caches, "driver.pid"),
+    stateDir,
+    env: {
+      CUA_DRIVER_RS_HOME: stateDir,
+      CUA_DRIVER_HOME: stateDir,
+      CUA_DRIVER_TELEMETRY_HOME: stateDir,
+      CUA_DRIVER_RS_TELEMETRY_ENABLED: "false",
+      CUA_DRIVER_RS_UPDATE_CHECK: "false",
+      // cua's first-launch gate opens System Settings panes and waits on
+      // stdin; the grant is Telar's to ask for, from the settings pane.
+      CUA_DRIVER_RS_PERMISSIONS_GATE: "0",
+    },
+  };
+}
+
+/**
+ * How Telar starts the helper's daemon: THROUGH LAUNCHSERVICES, so the daemon
+ * is its own responsible process and macOS attributes its grants (and names its
+ * prompts) to the helper rather than to Telar. `-n` because cua's `mcp` would
+ * otherwise have done this with `-a CuaDriver`; `-g` keeps it in the background.
+ */
+export function helperDaemonLaunch(helper: BundledHelper): { command: string; args: string[] } {
+  return {
+    command: "/usr/bin/open",
+    args: [
+      "-n",
+      "-g",
+      "-a",
+      helper.app,
+      ...Object.entries(helper.env).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+      "--args",
+      "serve",
+      "--socket",
+      helper.socket,
+      "--pid-file",
+      helper.pidFile,
+      "--no-permissions-gate",
+    ],
+  };
+}
+
+/** What "Remove permissions" runs — the helper's two grants and nothing else. */
+export function helperResetCommands(bundleId: string): { command: string; args: string[] }[] {
+  return ["Accessibility", "ScreenCapture"].map((service) => ({ command: "/usr/bin/tccutil", args: ["reset", service, bundleId] }));
+}
+
+function server(command: string, args: string[], at: number, env?: Record<string, string>): McpServer {
+  return {
+    id: COMPUTER_USE_SERVER_ID,
+    label: "Computer Use (Mac)",
+    enabled: true,
+    spec: { transport: "stdio", command, args, ...(env ? { env } : {}) },
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+
+/**
+ * THE ORDER: the bundled helper, then CUA_DRIVER_BIN, then cua's own install.
+ *
+ * A PACKAGED TELAR WITH A HELPER NEVER FALLS BACK. With TELAR_COMPUTER_USE_HELPER
+ * set, a missing binary answers undefined — computer use absent — rather than
+ * quietly driving the desktop through another app's grants, which is exactly
+ * the confusion bundling exists to end. The desktop only sets it when the helper
+ * is in the bundle, so a dev checkout (no bundle) keeps the external route.
+ */
 function resolveCua(env: Record<string, string | undefined>, home: string, exists: (candidate: string) => boolean, at: number): ResolvedComputerUse | undefined {
+  const bundledApp = env.TELAR_COMPUTER_USE_HELPER?.trim();
+  if (bundledApp) {
+    const helper = bundledHelper(bundledApp, home);
+    if (!exists(helper.binary)) return undefined;
+    // `CUA_DRIVER_EMBEDDED=1` on the PROXY only: with no daemon on our socket it
+    // fails instead of `open -a CuaDriver` (cli.rs `run_mcp_via_daemon_proxy`).
+    // Telar starts the daemon; see `ensureHelperDaemon`.
+    return { backend: "cua", helper, server: server(helper.binary, ["mcp", "--socket", helper.socket], at, { ...helper.env, CUA_DRIVER_EMBEDDED: "1" }) };
+  }
   const override = env.CUA_DRIVER_BIN?.trim();
   const command = [override, cuaSymlink(home), CUA_APP_BINARY].find((candidate): candidate is string => Boolean(candidate) && exists(candidate!));
   if (!command) return undefined;
-  return {
-    backend: "cua",
-    server: {
-      id: COMPUTER_USE_SERVER_ID,
-      label: "Computer Use (Mac)",
-      enabled: true,
-      // `mcp` is a stdio MCP server that auto-launches CuaDriver.app's daemon
-      // and proxies through it — so nothing here needs a separate host wake.
-      spec: { transport: "stdio", command, args: ["mcp"] },
-      createdAt: at,
-      updatedAt: at,
-    },
-  };
+  // `mcp` is a stdio MCP server that auto-launches CuaDriver.app's daemon and
+  // proxies through it — so nothing here needs a separate host wake.
+  return { backend: "cua", server: server(command, ["mcp"], at) };
+}
+
+/* ------------------------------------------------------------------ *
+ * The bundled helper's daemon — Telar's to start.
+ * ------------------------------------------------------------------ */
+
+/** Whether something accepts connections on a unix socket. */
+export function socketListening(socket: string, timeoutMs = 1_000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const connection = net.connect(socket);
+    const done = (answer: boolean) => {
+      connection.destroy();
+      resolve(answer);
+    };
+    connection.setTimeout(timeoutMs, () => done(false));
+    connection.once("connect", () => done(true));
+    connection.once("error", () => done(false));
+  });
+}
+
+export type HelperDeps = {
+  spawn?: typeof spawn;
+  listening?: (socket: string) => Promise<boolean>;
+  sleep?: (ms: number) => Promise<void>;
+};
+
+const launching = new Map<string, Promise<boolean>>();
+
+/**
+ * Up, or started. Concurrent callers share one launch. The daemon starts with
+ * cua's gate off and nobody asks for a prompt, so starting it draws nothing on
+ * the screen — which is why, unlike an external install, Telar may start it at
+ * engine start and at a claim.
+ */
+export function ensureHelperDaemon(helper: BundledHelper, deps: HelperDeps = {}, timeoutMs = 10_000): Promise<boolean> {
+  const listening = deps.listening ?? socketListening;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const existing = launching.get(helper.socket);
+  if (existing) return existing;
+  const attempt = (async () => {
+    if (await listening(helper.socket)) return true;
+    fs.mkdirSync(path.dirname(helper.socket), { recursive: true });
+    fs.mkdirSync(helper.stateDir, { recursive: true });
+    const launch = helperDaemonLaunch(helper);
+    try {
+      (deps.spawn ?? spawn)(launch.command, launch.args, { stdio: "ignore", detached: true }).unref();
+    } catch {
+      return false;
+    }
+    for (let waited = 0; waited < timeoutMs; waited += 250) {
+      await sleep(250);
+      if (await listening(helper.socket)) return true;
+    }
+    return false;
+  })().finally(() => launching.delete(helper.socket));
+  launching.set(helper.socket, attempt);
+  return attempt;
+}
+
+/**
+ * "Remove permissions": `tccutil reset` for the helper's id only — never
+ * Telar's, never a separately installed cua's — then stop its daemon so no
+ * process keeps a grant it no longer has. The next check starts a fresh one.
+ */
+export async function resetComputerUseAccess(probe: ComputerUseProbe = {}, deps: HelperDeps = {}): Promise<{ reset: boolean; message?: string }> {
+  const helper = resolveComputerUse(probe)?.helper;
+  if (!helper) return { reset: false, message: "Only Telar's bundled computer-use helper can be reset here." };
+  const run = (command: string, args: string[]) =>
+    new Promise<number | null>((resolve) => {
+      try {
+        const child = (deps.spawn ?? spawn)(command, args, { stdio: "ignore" });
+        child.once("exit", (code) => resolve(code));
+        child.once("error", () => resolve(null));
+      } catch {
+        resolve(null);
+      }
+    });
+  const codes = [];
+  for (const { command, args } of helperResetCommands(helper.bundleId)) codes.push(await run(command, args));
+  try {
+    const pid = Number(fs.readFileSync(helper.pidFile, "utf8").trim());
+    // A stale pid file can name someone else's process by now; only ours is stopped.
+    const command = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" }).stdout ?? "";
+    if (Number.isInteger(pid) && pid > 0 && command.includes(helper.binary)) process.kill(pid, "SIGTERM");
+  } catch {
+    // No pid file or no such process: nothing is holding the old grants.
+  }
+  return codes.every((code) => code === 0) ? { reset: true } : { reset: false, message: "macOS did not reset every permission." };
 }
 
 export type ComputerUseProbe = {
@@ -138,18 +346,31 @@ export function resolveComputerUseServer(probe: ComputerUseProbe = {}): McpServe
 }
 
 /**
- * cua's own native granting flow: `cua-driver permissions grant` launches
- * CuaDriver.app through LaunchServices so the macOS dialogs attribute to the
- * app, requests Accessibility + Screen Recording, and verifies live capture.
- * Detached so the dialogs are the app's, not ours. A no-op for an uninstalled
- * machine. A fresh grant does not reach sessions until the next probe — the
- * pane's Test access — records it.
+ * ASKING macOS FOR THE GRANTS.
+ *
+ * BUNDLED: Telar's helper asks for itself. Its daemon is started through
+ * LaunchServices and then asked `check_permissions {prompt: true}`, which calls
+ * the Accessibility and Screen Recording request APIs IN THE DAEMON — so the
+ * prompts name "Computer Use for Telar". NOT `cua-driver permissions grant`:
+ * that relaunches `/Applications/CuaDriver.app` by hardcoded path, and its
+ * receiving half refuses to run outside a bundle named CuaDriver.app
+ * (`cli.rs` `request_permissions_via_launchservices`, `__permissions-host-request`).
+ *
+ * EXTERNAL (dev): cua's own `permissions grant`, which launches CuaDriver.app
+ * through LaunchServices so the dialogs attribute to it.
+ *
+ * Detached either way; a fresh grant reaches sessions at the next probe.
  */
-export function grantComputerUseAccess(probe: ComputerUseProbe = {}): { started: boolean; backend?: ComputerUseBackend } {
+export function grantComputerUseAccess(probe: ComputerUseProbe = {}, deps: HelperDeps = {}): { started: boolean; backend?: ComputerUseBackend } {
   const resolved = resolveComputerUse(probe);
   if (!resolved || resolved.server.spec.transport !== "stdio") return { started: false };
+  const spec = resolved.server.spec;
+  if (resolved.helper) {
+    void ensureHelperDaemon(resolved.helper, deps).then((up) => (up ? callTool(spec, "check_permissions", { prompt: true }, 180_000, deps) : undefined));
+    return { started: true, backend: "cua" };
+  }
   try {
-    spawn(resolved.server.spec.command, ["permissions", "grant"], { stdio: "ignore", detached: true }).unref();
+    (deps.spawn ?? spawn)(spec.command, ["permissions", "grant"], { stdio: "ignore", detached: true }).unref();
     return { started: true, backend: "cua" };
   } catch {
     return { started: false, backend: "cua" };
@@ -179,33 +400,33 @@ export function classifyProbeError(text: string): ComputerUsePermission {
   return "unknown";
 }
 
-/** One JSON-RPC exchange: initialize, then a REAL read-only `list_apps` — the
- *  honest way to ask "is this permitted". A running daemon with a pending grant
- *  answers immediately with a structured error; a daemon this call had to
- *  launch may put its permissions panel on screen first, which is why the wait
- *  is generous. */
-function probeListApps(spec: { command: string; args?: string[]; env?: Record<string, string> }, timeoutMs: number): Promise<{ permission: ComputerUsePermission; message?: string }> {
+type ToolAnswer =
+  | { kind: "result"; isError: boolean; text: string; structured?: Record<string, unknown> }
+  | { kind: "error"; message: string }
+  | { kind: "timeout" };
+
+type StdioSpec = { command: string; args?: string[]; env?: Record<string, string> };
+
+/** One JSON-RPC exchange through the MCP server: initialize, then one tool call. */
+function callTool(spec: StdioSpec, name: string, args: Record<string, unknown>, timeoutMs: number, deps: HelperDeps = {}): Promise<ToolAnswer> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(spec.command, spec.args ?? [], { env: { ...process.env, ...(spec.env ?? {}) }, stdio: ["pipe", "pipe", "ignore"] });
+      child = (deps.spawn ?? spawn)(spec.command, spec.args ?? [], { env: { ...process.env, ...(spec.env ?? {}) }, stdio: ["pipe", "pipe", "ignore"] });
     } catch (error) {
-      resolve({ permission: "unknown", message: error instanceof Error ? error.message : "could not start the client" });
+      resolve({ kind: "error", message: error instanceof Error ? error.message : "could not start the client" });
       return;
     }
     let settled = false;
-    const finish = (outcome: { permission: ComputerUsePermission; message?: string }) => {
+    const finish = (answer: ToolAnswer) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       child.kill();
-      resolve(outcome);
+      resolve(answer);
     };
-    const timer = setTimeout(
-      () => finish({ permission: "unknown", message: "No answer — a permission dialog may be on screen. Decide it, then test again." }),
-      timeoutMs,
-    );
-    child.once("error", (error) => finish({ permission: "unknown", message: error.message }));
+    const timer = setTimeout(() => finish({ kind: "timeout" }), timeoutMs);
+    child.once("error", (error) => finish({ kind: "error", message: error.message }));
 
     let buffer = "";
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -215,7 +436,11 @@ function probeListApps(spec: { command: string; args?: string[]; env?: Record<st
         const line = buffer.slice(0, cut);
         buffer = buffer.slice(cut + 1);
         if (!line.trim()) continue;
-        let msg: { id?: number; result?: { content?: { type?: string; text?: string }[]; isError?: boolean }; error?: { message?: string } };
+        let msg: {
+          id?: number;
+          result?: { content?: { type?: string; text?: string }[]; isError?: boolean; structuredContent?: Record<string, unknown> };
+          error?: { message?: string };
+        };
         try {
           msg = JSON.parse(line);
         } catch {
@@ -223,15 +448,11 @@ function probeListApps(spec: { command: string; args?: string[]; env?: Record<st
         }
         if (msg.id === 1) {
           child.stdin?.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
-          child.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "list_apps", arguments: {} } }) + "\n");
+          child.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } }) + "\n");
         } else if (msg.id === 2) {
-          if (msg.error) {
-            finish({ permission: classifyProbeError(msg.error.message ?? ""), message: (msg.error.message ?? "").slice(0, 400) });
-            return;
-          }
+          if (msg.error) return finish({ kind: "error", message: msg.error.message ?? "" });
           const text = (msg.result?.content ?? []).map((part) => part.text ?? "").join(" ");
-          finish(msg.result?.isError ? { permission: classifyProbeError(text), message: text.slice(0, 400) } : { permission: "granted" });
-          return;
+          return finish({ kind: "result", isError: Boolean(msg.result?.isError), text, ...(msg.result?.structuredContent ? { structured: msg.result.structuredContent } : {}) });
         }
       }
     });
@@ -241,7 +462,41 @@ function probeListApps(spec: { command: string; args?: string[]; env?: Record<st
   });
 }
 
-/** The daemon's process, as `pgrep -f` sees it. */
+type ProbeOutcome = { permission: ComputerUsePermission; message?: string };
+
+const NO_ANSWER = "No answer — a permission dialog may be on screen. Decide it, then test again.";
+
+/** An external install: a REAL read-only `list_apps`. A running CuaDriver.app
+ *  with a pending grant refuses it from its first-launch gate with
+ *  `permissions_pending`; a daemon this call had to launch may put its
+ *  permissions panel on screen first, which is why the wait is generous. */
+export function interpretListApps(answer: ToolAnswer): ProbeOutcome {
+  if (answer.kind === "timeout") return { permission: "unknown", message: NO_ANSWER };
+  if (answer.kind === "error") return { permission: classifyProbeError(answer.message), message: answer.message.slice(0, 400) };
+  return answer.isError ? { permission: classifyProbeError(answer.text), message: answer.text.slice(0, 400) } : { permission: "granted" };
+}
+
+/**
+ * The bundled helper: `check_permissions {prompt: false}`, read-only. NOT
+ * `list_apps` — Telar starts this daemon with cua's gate off, so nothing would
+ * refuse `list_apps` for a missing grant (it needs none), and "granted" would be
+ * a lie. The daemon reports its OWN grants, which are the helper's.
+ */
+export function interpretPermissions(answer: ToolAnswer): ProbeOutcome {
+  if (answer.kind !== "result") return interpretListApps(answer);
+  let report = answer.structured;
+  if (!report) {
+    try {
+      report = JSON.parse(answer.text) as Record<string, unknown>;
+    } catch {
+      return { permission: answer.isError ? classifyProbeError(answer.text) : "unknown", message: answer.text.slice(0, 400) };
+    }
+  }
+  const missing = [report.accessibility === true ? undefined : "Accessibility", report.screen_recording === true ? undefined : "Screen Recording"].filter(Boolean);
+  return missing.length === 0 ? { permission: "granted" } : { permission: "denied", message: `Not granted: ${missing.join(", ")}.` };
+}
+
+/** An external install's daemon, as `pgrep -f` sees it. */
 const CUA_DAEMON_PATTERN = "CuaDriver";
 
 function running(pattern: string): Promise<boolean> {
@@ -261,15 +516,22 @@ function running(pattern: string): Promise<boolean> {
  * rather than remembered: whether the driver is installed, whether its daemon
  * is up, and the grant from one real read-only call.
  *
- * `hostRunning` is measured AFTER the probe: `cua-driver mcp` auto-launches the
- * daemon, so asking first reported "not running" on a machine that was granted
- * and working by the time the answer came back.
+ * `hostRunning` is measured AFTER the probe: `cua-driver mcp` auto-launches an
+ * external install's daemon, so asking first reported "not running" on a
+ * machine that was granted and working by the time the answer came back. The
+ * bundled helper's daemon is Telar's to start, and is started first.
  */
-export async function computerUseStatus(probe: ComputerUseProbe = {}, timeoutMs = 30_000): Promise<ComputerUseStatus> {
+export async function computerUseStatus(probe: ComputerUseProbe = {}, timeoutMs = 30_000, deps: HelperDeps = {}): Promise<ComputerUseStatus> {
   const resolved = resolveComputerUse(probe);
   if (!resolved || resolved.server.spec.transport !== "stdio") return { installed: false, hostRunning: false };
   const spec = resolved.server.spec;
-  const outcome = await probeListApps({ command: spec.command, ...(spec.args ? { args: spec.args } : {}), ...(spec.env ? { env: spec.env } : {}) }, timeoutMs);
+  const { helper } = resolved;
+  if (helper) {
+    const up = await ensureHelperDaemon(helper, deps);
+    const outcome = up ? interpretPermissions(await callTool(spec, "check_permissions", { prompt: false }, timeoutMs, deps)) : { permission: "unknown" as const };
+    return { installed: true, bundled: true, backend: resolved.backend, hostRunning: up, permission: outcome.permission, ...(outcome.message ? { message: outcome.message } : {}) };
+  }
+  const outcome = interpretListApps(await callTool(spec, "list_apps", {}, timeoutMs, deps));
   const hostRunning = await running(CUA_DAEMON_PATTERN);
   return { installed: true, backend: resolved.backend, hostRunning, permission: outcome.permission, ...(outcome.message ? { message: outcome.message } : {}) };
 }
@@ -319,7 +581,16 @@ export function createComputerUseGate(
   deps: { status?: (probe: ComputerUseProbe) => Promise<ComputerUseStatus>; hostRunning?: () => Promise<boolean>; now?: () => number } = {},
 ): ComputerUseGate {
   const status = deps.status ?? ((p: ComputerUseProbe) => computerUseStatus(p));
-  const hostRunning = deps.hostRunning ?? (() => running(CUA_DAEMON_PATTERN));
+  // BUNDLED, "running" is "started": Telar's helper daemon starts with nothing
+  // to draw (cua's gate off, no prompt asked), so the start-time probe may
+  // start it rather than wait for someone to open the pane. An external install
+  // is only probed when CuaDriver is already up, for the reason above.
+  const hostRunning =
+    deps.hostRunning ??
+    (() => {
+      const helper = resolveComputerUse(probe)?.helper;
+      return helper ? ensureHelperDaemon(helper) : running(CUA_DAEMON_PATTERN);
+    });
   const now = deps.now ?? Date.now;
   let last: ComputerUseMeasurement | undefined;
   let inFlight: Promise<ComputerUseStatus> | undefined;
@@ -337,7 +608,15 @@ export function createComputerUseGate(
   return {
     last: () => last,
     measure,
-    forClaim: () => (last?.status.installed && last.status.permission === "granted" ? resolveComputerUse(probe) : undefined),
+    forClaim: () => {
+      if (!(last?.status.installed && last.status.permission === "granted")) return undefined;
+      const resolved = resolveComputerUse(probe);
+      // The bundled proxy never launches a daemon itself (it would reach for
+      // CuaDriver.app), so a claim revives ours if it has gone. Deduplicated,
+      // and a socket connect when it is up.
+      if (resolved?.helper) void ensureHelperDaemon(resolved.helper);
+      return resolved;
+    },
     async measureIfHostRunning() {
       try {
         if (!resolveComputerUse(probe)) return undefined;
