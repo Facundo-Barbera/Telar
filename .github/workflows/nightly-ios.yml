@@ -1,10 +1,16 @@
 name: Nightly iOS build
 
-# The phone's nightly channel: TestFlight internal testing. Same shape as
-# nightly-desktop.yml — the tag is the deliberate act, the workflow is the
-# consequence — and the same rule: a nightly installs itself on real devices
-# (TestFlight auto-updates internal testers), so it builds from what the tag
-# points at on the trunk, not from a branch someone happened to have.
+# The phone's nightly channel: TestFlight internal testing AND the external
+# group "Nightly" — every upload is offered to both, by apps/ios/
+# testflight-external.sh once App Store Connect has processed it. Internal
+# testers get it minutes after processing; external testers get it once Beta
+# App Review clears it, and the FIRST build of each new marketing version sits
+# in that review for hours (a full review) while later builds of the same
+# version pass in minutes (Apple re-approves them against the reviewed one).
+# Same shape as nightly-desktop.yml — the tag is the deliberate act, the
+# workflow is the consequence — and the same rule: a nightly installs itself
+# on real devices (TestFlight auto-updates testers), so it builds from what
+# the tag points at on the trunk, not from a branch someone happened to have.
 #
 # `ios-nightly-*` only: the desktop nightly owns `v*-nightly.*`, and one tag
 # pattern per artifact keeps the two from racing a shared version scheme.
@@ -84,7 +90,10 @@ jobs:
     # worked. #758 is what gets it BUILDING here; #757 is what gets it
     # PUBLISHING. Fixing either alone does not produce a nightly.
     runs-on: macos-latest
-    timeout-minutes: 45
+    # 45 covered archive → export → upload. The external-group step then waits
+    # up to 30 minutes for App Store Connect to process the build before it
+    # can be added and submitted, so the ceiling is the old one plus that wait.
+    timeout-minutes: 80
     env:
       # THE ONE XCODE ON THIS MAC, and it must be a release build: App Store
       # Connect refuses uploads from a beta. A missing app fails the first
@@ -167,11 +176,13 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" ${EXISTING[@]+"${EXISTING[@]}"}
           rm -f "$RUNNER_TEMP/dist.p12"
 
-      # nightly.sh is the whole pipeline (archive → export → upload); the
-      # workflow only supplies credentials and the runner's Xcode. The
-      # minute-stamp build number is minted inside the script, so a re-run
-      # after a dead upload gets a fresh, acceptable number.
-      - name: Archive and upload to TestFlight
+      # nightly.sh is the whole pipeline (archive → export → upload → offer to
+      # the external group); the workflow only supplies credentials and the
+      # runner's Xcode. The minute-stamp build number is minted inside the
+      # script, so a re-run after a dead upload gets a fresh, acceptable
+      # number, and the script hands that same number to
+      # testflight-external.sh itself — one step, nothing passed through here.
+      - name: Archive, upload to TestFlight, and offer to the external group
         env:
           TELAR_ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           TELAR_ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER }}
