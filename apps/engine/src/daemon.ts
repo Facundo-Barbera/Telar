@@ -47,7 +47,7 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
-import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
+import { createComputerUseGate, grantComputerUseAccess, type ComputerUseGate } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { readProjectIconBytes } from "./project-icon";
@@ -322,6 +322,15 @@ export type EngineDaemonOptions = {
    * replaces the `supportedCommands()` handshake. Both default to the real thing.
    */
   providerSkills?: { env?: NodeJS.ProcessEnv; loadProviderCommands?: LoadProviderCommands };
+  /**
+   * Whether computer use WORKS here, remembered from the last probe — the one
+   * fact that decides whether a claim gets the `mac` server.
+   *
+   * INJECTED BY TESTS: a test daemon must never probe this machine's
+   * cua-driver, because probing a stopped daemon launches it and that is when
+   * it puts its permissions panel on screen. The default is the real gate.
+   */
+  computerUseGate?: ComputerUseGate;
 };
 
 export type EngineDaemon = {
@@ -883,6 +892,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * generation fence as `wakeEmbeddedWorker`.
    */
   let cancelEmbeddedClaims: ((cancellations: StoppedClaim[]) => void) | undefined;
+  const computerUseGate = options.computerUseGate ?? createComputerUseGate();
   let store: EngineStore;
   try {
   store = new EngineStore(root, options.now, {
@@ -913,16 +923,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.models ? { models: options.models } : {}),
     ...(options.volumes ? { volumes: options.volumes } : {}),
     ...(options.ambientEnv ? { ambientEnv: options.ambientEnv } : {}),
-    // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
-    // installing or removing a driver applies to the next turn. Injected here,
-    // not defaulted in the store, so tests never read the real machine. The
-    // first claim that resolves also wakes the Sky host app if that is the
-    // backend — cua self-launches — once per daemon, in the background.
-    computerUse: () => {
-      const resolved = resolveComputerUse();
-      if (resolved) launchComputerUseHost();
-      return resolved;
-    },
+    // Telar's computer use (cua-driver), answered from the gate's LAST PROBE —
+    // never probed per claim — so only a measured `granted` injects it. The
+    // binary is re-resolved per claim, so an uninstall applies to the next
+    // turn. Injected here, not defaulted in the store, so tests never read the
+    // real machine.
+    computerUse: () => computerUseGate.forClaim(),
   });
   } catch (error) { lock.release(); throw error; }
   /**
@@ -2586,25 +2592,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * COMPUTER USE, MEASURED. The GET runs one real read-only call through
-       * the Sky client, because that is the only honest answer to "is the
-       * Automation grant in place" — and when the grant is still undecided,
-       * that same call is what makes macOS show its own prompt, which names
-       * the responsible app better than this daemon can from the inside.
-       * The POST wakes the host app the client drives.
+       * COMPUTER USE, MEASURED. The GET runs one real read-only `list_apps`
+       * through cua-driver, because that is the only honest answer to "does
+       * computer use work here" — and the gate KEEPS the answer, so this is
+       * also how a fresh grant reaches sessions: only a last answer of
+       * `granted` puts the `mac` server into a claim.
        */
       if (request.method === "GET" && url.pathname === "/v2/computer-use") {
-        writeJson(response, 200, { computerUse: await computerUseStatus() });
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/computer-use/host") {
-        openComputerUseHost();
-        writeJson(response, 200, { ok: true });
+        writeJson(response, 200, { computerUse: await computerUseGate.measure() });
         return;
       }
       // cua's native granting flow — CuaDriver.app requests Accessibility +
-      // Screen Recording, attributed to itself. Sky has no such command (its
-      // probe is the grant), so this reports what it did.
+      // Screen Recording, attributed to itself — reporting what it started.
+      // The grant reaches sessions at the next GET above, not here.
       if (request.method === "POST" && url.pathname === "/v2/computer-use/grant") {
         writeJson(response, 200, grantComputerUseAccess());
         return;
@@ -5777,6 +5777,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }, options.warmUsageCacheAfterMs);
       warmUp.unref();
     }
+
+    /**
+     * COMPUTER USE AT START, only against a cua daemon that is ALREADY
+     * running — the one probe that cannot draw a permissions panel on screen
+     * (see `createComputerUseGate`). So a machine that works has the tools from
+     * its first turn, and one that does not stays exactly as quiet as before.
+     * Fire-and-forget; the gate swallows its own failures.
+     */
+    void computerUseGate.measureIfHostRunning();
 
     let closed = false;
     return {

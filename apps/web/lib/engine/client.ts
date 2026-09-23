@@ -1160,11 +1160,9 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     markSessionRead: (sessionId: string, runId: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/read`, { runId }),
     /** Computer use, measured — slow by design (one subprocess round trip in
-     *  the engine), and the probe doubles as the macOS granting flow. */
+     *  the engine). A granted answer is also what lets sessions claim the tools. */
     computerUseStatus: () => request<{ computerUse: ComputerUseStatus }>(fetcher, "GET", "/api/computer-use"),
-    /** Wake the Sky host app in the background. Idempotent. */
-    wakeComputerUseHost: () => request<{ ok: boolean }>(fetcher, "POST", "/api/computer-use/host", {}),
-    /** cua's native granting flow — CuaDriver.app requests the grants. No-op for Sky. */
+    /** cua's native granting flow — CuaDriver.app requests the grants. */
     grantComputerUseAccess: () =>
       request<{ started: boolean; backend?: ComputerUseBackend }>(fetcher, "POST", "/api/computer-use/grant", {}),
     /** The logins a person allowed agents to fill without being asked again —

@@ -38,3 +38,13 @@ if (process.env.NODE_ENV === "production" || process.env.NODE_ENV === undefined)
 /** Unconditional, not a default: an inherited `TELAR_TEXTGEN=on` from somebody's
  *  shell would silently restore the exact bug this file exists to stop. */
 process.env.TELAR_TEXTGEN = "off";
+
+/**
+ * THE SUITE DOES NOT TALK TO THIS MACHINE'S DESKTOP EITHER. Every test daemon
+ * builds the real computer-use gate, and a probe against a stopped cua-driver
+ * launches CuaDriver.app — which is when it puts its permissions panel on
+ * screen. The kill switch makes the resolver answer undefined, so nothing is
+ * spawned. A test about the gate injects `computerUseGate`, or passes its own
+ * `env` to the resolver.
+ */
+process.env.TELAR_COMPUTER_USE = "0";
