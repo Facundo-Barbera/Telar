@@ -1725,7 +1725,9 @@ class DesktopBrowserManager {
    * IS THE EMULATION ALREADY WHAT IT SHOULD BE? Asked WITHOUT binding a
    * debugger — that is the whole point: `ensureDebuggerOnly` is an await (and,
    * on a fresh tab, a real attach), so a drag frame that owes no CDP at all
-   * must be able to find that out from the recorded override alone.
+   * must be able to find that out from the recorded override alone. Which is
+   * only safe because every edge that can move Chromium's state behind the
+   * record forgets it — see `forgetEmulation` (#917).
    */
   emulationSettled(tab) {
     const target = this.viewportTarget(tab);
@@ -2199,8 +2201,7 @@ class DesktopBrowserManager {
     tab.debuggerReady = false;
     tab.debuggerListenersBound = false;
     // A new WebContents has no emulation: forget what the old one was told.
-    tab.viewportOverride = undefined;
-    tab.colorSchemeApplied = undefined;
+    this.forgetEmulation(tab);
     // A new view is square, whatever the old one had been rounded to (#475).
     tab.borderRadius = undefined;
     this.bindTab(tab);
@@ -2218,6 +2219,35 @@ class DesktopBrowserManager {
    *  the serialized pipeline, so it cannot race a resize or a bounds change. */
   ensureViewport(tab) {
     return this.applyGeometry(tab);
+  }
+
+  /**
+   * THE RECORD IS NEVER MORE TRUSTED THAN THE FACT (#917). `viewportOverride`
+   * and `colorSchemeApplied` say what this manager last SENT, and the geometry
+   * fast path (`applyGeometryNow`) reads them INSTEAD of a CDP round trip — so
+   * on every edge where Chromium's own state can move without this manager
+   * sending anything, the record is forgotten, or the fast path skips the
+   * re-send forever: a fixed tab whose view sits at the fitted rect while the
+   * page lays out for something else. The edges: the debugger session
+   * detaching (its overrides go with it), the renderer going away, and
+   * DevTools opening or closing (its device-mode model clears the device
+   * metrics on attach, in the same target, and nothing restores them when it
+   * detaches). Forgotten, not re-sent: the next pipeline run sends what is
+   * owed, and `undefined` reads as "no override" on both of `syncViewport`'s
+   * branches, which is exactly what a cleared page holds.
+   */
+  forgetEmulation(tab) {
+    tab.viewportOverride = undefined;
+    tab.colorSchemeApplied = undefined;
+  }
+
+  /** Either edge of DevTools: the record is forgotten and the pipeline sends
+   *  what the tab owes again, re-attaching the debugger first if the open
+   *  took it (an older Chromium force-detaches; a current one keeps both). */
+  devToolsEdge(tab) {
+    this.forgetEmulation(tab);
+    this.applyGeometry(tab).catch(() => {});
+    this.emitState(tab.scopeKey);
   }
 
   async wakeTab(tab) {
@@ -2871,9 +2901,12 @@ class DesktopBrowserManager {
     });
     // DevTools are part of what the strip shows about a tab, so both edges of
     // the window's life — including the person closing it by its own button —
-    // are a state push.
-    wc.on("devtools-opened", () => this.emitState(tab.scopeKey));
-    wc.on("devtools-closed", () => this.emitState(tab.scopeKey));
+    // are a state push. And an emulation pass (#917): see `forgetEmulation`.
+    wc.on("devtools-opened", () => this.devToolsEdge(tab));
+    wc.on("devtools-closed", () => this.devToolsEdge(tab));
+    // A renderer that went away took its emulation with it; the reload's
+    // dom-ready runs the pipeline, which must not find the record settled.
+    wc.on("render-process-gone", () => this.forgetEmulation(tab));
     wc.on("destroyed", () => {
       if (tab.hibernating || tab.view !== view) return;
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
@@ -3586,7 +3619,12 @@ class DesktopBrowserManager {
         }
       });
       debug.on("detach", () => {
+        // A detach from a WebContents this tab has already left (the old one
+        // closing under a wake) must not unsettle the new one's record.
+        if (tab.view?.webContents?.debugger !== debug) return;
         tab.debuggerReady = false;
+        // The session's overrides went with it (#917).
+        this.forgetEmulation(tab);
       });
       tab.debuggerListenersBound = true;
     }

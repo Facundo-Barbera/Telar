@@ -2121,6 +2121,171 @@ describe("the geometry pipeline — bounds and emulation are serialized per tab,
   });
 });
 
+describe("the recorded emulation never outlives the real one (#917)", () => {
+  /**
+   * A FIXED tab shown in a narrow panel with its emulation settled — the one
+   * state the drag fast path is allowed to trust, and so the one state in
+   * which a record that outlived Chromium's override used to stick forever.
+   * 1280×800 into 640×400 is scale 0.5, the whole panel.
+   */
+  async function settledFixedTab() {
+    const harness = makeHarness();
+    const { manager, views } = harness;
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    await manager.resizeTab(tab, { preset: "default" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    const wc = views[0].webContents;
+    const debug = wc.debugger;
+    const overrides = () => debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride");
+    expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.5 });
+    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
+    return { ...harness, tab, wc, debug, overrides };
+  }
+
+  test("suspect 1: a debugger detach forgets the record, so identical bounds re-attach and re-send where the fast path used to skip", async () => {
+    const { manager, tab, debug, overrides, views } = await settledFixedTab();
+    const before = overrides().length;
+    // Chromium ended the session: its overrides went with it.
+    debug.attached = false;
+    debug.emit("detach", {}, "target closed");
+    expect(tab.debuggerReady).toBe(false);
+    expect(tab.viewportOverride).toBeUndefined();
+    expect(manager.emulationSettled(tab)).toBe(false);
+    // The renderer's self-heal republish: the SAME stage, no fit change — the
+    // frame the fast path used to answer with one setBounds and no CDP.
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await tab.geometry.queue;
+    expect(debug.isAttached()).toBe(true);
+    expect(tab.debuggerReady).toBe(true);
+    expect(overrides().length).toBe(before + 1);
+    expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.5 });
+    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
+  });
+
+  test("a detach from the WebContents a tab has already left does not unsettle the new one", async () => {
+    const { manager, tab, debug: old, views } = await settledFixedTab();
+    manager.hibernateTab(tab);
+    await manager.wakeTab(tab);
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expect(views).toHaveLength(2);
+    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    // The old debugger's detach arrives late, as a closing WebContents' does.
+    old.emit("detach", {}, "target closed");
+    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.debuggerReady).toBe(true);
+  });
+
+  test("suspect 1: DevTools opening and closing each forget the record and re-send — DevTools clears the device metrics behind the debugger's back", async () => {
+    const { manager, tab, wc, overrides, views } = await settledFixedTab();
+    const before = overrides().length;
+    await manager.action("s", { action: "toggle-devtools" });
+    await tab.geometry.queue;
+    expect(wc.isDevToolsOpened()).toBe(true);
+    expect(overrides().length).toBe(before + 1);
+    expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.5 });
+    // The person closes the window by its own button: the same edge.
+    wc.closeDevTools();
+    await tab.geometry.queue;
+    expect(overrides().length).toBe(before + 2);
+    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    // The view itself never moved: the same fitted rect throughout.
+    expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
+  });
+
+  test("the appearance override rides the same edges: DevTools closing re-sends a dark scheme", async () => {
+    const { manager, tab, wc, debug } = await settledFixedTab();
+    await manager.action("s", { action: "appearance", scheme: "dark" });
+    const media = () => debug.commands.filter((c) => c.method === "Emulation.setEmulatedMedia");
+    const before = media().length;
+    await manager.action("s", { action: "toggle-devtools" });
+    await tab.geometry.queue;
+    wc.closeDevTools();
+    await tab.geometry.queue;
+    expect(media().length).toBe(before + 2);
+    expect(media().at(-1).params.features).toEqual([{ name: "prefers-color-scheme", value: "dark" }]);
+    expect(tab.colorSchemeApplied).toBe("dark");
+  });
+
+  test("suspect 1: a renderer that went away takes the record with it", async () => {
+    const { manager, tab, wc, overrides } = await settledFixedTab();
+    const before = overrides().length;
+    wc.emit("render-process-gone", {}, { reason: "crashed" });
+    expect(tab.viewportOverride).toBeUndefined();
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await tab.geometry.queue;
+    expect(overrides().length).toBe(before + 1);
+    expect(tab.viewportOverride).toBe("1280x800@0.5");
+  });
+
+  test("suspect 2: a rejected setDeviceMetricsOverride leaves the record unsettled, so the next pass retries", async () => {
+    const { manager, tab, debug, overrides } = await settledFixedTab();
+    const original = debug.sendCommand.bind(debug);
+    let refusals = 0;
+    debug.sendCommand = async (method, params) => {
+      if (method === "Emulation.setDeviceMetricsOverride" && refusals++ === 0) throw new Error("Target closed.");
+      return original(method, params);
+    };
+    // A shorter stage moves the fit scale (0.5 → 0.375), so a new emulation
+    // is owed — and refused.
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 300 });
+    await tab.geometry.queue;
+    expect(refusals).toBe(1);
+    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(manager.emulationSettled(tab)).toBe(false);
+    // The republish of the same bounds is not a fast-path frame while the
+    // record is unsettled.
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 300 });
+    await tab.geometry.queue;
+    expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.375 });
+    expect(tab.viewportOverride).toBe("1280x800@0.375");
+  });
+
+  test("suspect 3, ruled out: a cockpit zoom change alone re-sends a fixed tab's emulation with the zoom in its scale", async () => {
+    const { setCockpitZoom, tab, overrides, views } = await settledFixedTab();
+    const before = overrides().length;
+    // A wheel zoom: the factor moved, the panel published nothing.
+    setCockpitZoom(0.9);
+    await tab.geometry.queue;
+    expect(overrides().length).toBe(before + 1);
+    expect(Math.abs(overrides().at(-1).params.scale - 0.45)).toBeLessThan(1e-9);
+    expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 576, height: 360 });
+    expect(tab.viewportOverride).toBe("1280x800@0.45");
+  });
+
+  test("suspect 4, ruled out: a fixed tab hidden and shown again — panel closed, or another tab in front — is re-emulated at the shown scale", async () => {
+    const { manager, tab, overrides, views } = await settledFixedTab();
+    // The panel closes: the hidden emulation is the intrinsic size at scale 1.
+    await manager.setVisible("s", false);
+    await tab.geometry.queue;
+    expect(overrides().at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    expect(views[0].visible).toBe(false);
+    // It reopens on the same rect: the reveal runs the whole pass, not a placement.
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.5 });
+    expect(views[0].visible).toBe(true);
+    expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
+    // Another tab in front (the human's, so it takes the screen), then this
+    // one again.
+    await manager.createTab("s", "https://two.example/", "human");
+    await tab.geometry.queue;
+    expect(overrides().at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    expect(views[0].visible).toBe(false);
+    await manager.action("s", { action: "select", index: 0 });
+    await tab.geometry.queue;
+    expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.5 });
+    expect(views[0].visible).toBe(true);
+    expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
+  });
+});
+
 describe("the cockpit's own zoom — the panel publishes CSS pixels, the view takes window pixels (#895)", () => {
   test("a published rect is placed scaled by the cockpit's zoom, and unscaled at zoom 1", async () => {
     const { manager, setCockpitZoom, views } = makeHarness();
