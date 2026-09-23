@@ -3,11 +3,11 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-/** Kick off cua's native granting flow. Returns immediately; the grant dialogs
- *  name Telar's bundled helper, or an external cua install in dev. */
+/** Clear the macOS grants of Telar's bundled computer-use helper, and only
+ *  its; `{ reset: false }` when there is no bundled helper to reset. */
 export async function POST() {
   try {
-    return Response.json(await (await engineClient()).grantComputerUseAccess());
+    return Response.json(await (await engineClient()).resetComputerUseAccess());
   } catch (error) {
     return engineErrorResponse(error);
   }

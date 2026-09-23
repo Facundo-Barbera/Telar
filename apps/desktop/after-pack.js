@@ -81,6 +81,39 @@ function verifyPackagedPty(appPath, deps = {}) {
 }
 
 /**
+ * THE COMPUTER-USE HELPER, CHECKED ON THE ARTEFACT. A release build must carry
+ * it (build-desktop.sh sets TELAR_REQUIRE_COMPUTER_USE_HELPER=1); a local
+ * package may not, and then says so. When it is there it must answer to the
+ * pinned bundle id, be runnable, and carry cua's MIT notice — a helper under
+ * any other id would orphan every grant a person already gave it.
+ *
+ * @param {string} appPath absolute path to the `.app` bundle
+ * @param {{bundleId: string, appName: string}} pin apps/desktop/computer-use-helper.json
+ * @param {{required?: boolean, fs?: typeof fs}} [deps]
+ */
+function verifyPackagedComputerUse(appPath, pin, deps = {}) {
+  const io = deps.fs ?? fs;
+  const helper = path.join(appPath, "Contents", "Helpers", `${pin.appName}.app`);
+  const plist = path.join(helper, "Contents", "Info.plist");
+  if (!io.existsSync(plist)) {
+    if (deps.required) throw new Error(`packaged app has no computer-use helper at ${helper} — build-desktop.sh must build it before packaging.`);
+    return null;
+  }
+  const info = io.readFileSync(plist, "utf8");
+  const id = /<key>CFBundleIdentifier<\/key>\s*<string>([^<]*)<\/string>/.exec(info)?.[1];
+  if (id !== pin.bundleId) throw new Error(`computer-use helper answers to ${id ?? "no bundle id"}, not ${pin.bundleId}`);
+  const executable = /<key>CFBundleExecutable<\/key>\s*<string>([^<]*)<\/string>/.exec(info)?.[1] ?? "";
+  const binary = path.join(helper, "Contents", "MacOS", executable);
+  if (!executable || !io.existsSync(binary) || (io.statSync(binary).mode & 0o111) === 0) {
+    throw new Error(`computer-use helper's executable ${binary} is missing or not executable`);
+  }
+  if (!io.existsSync(path.join(helper, "Contents", "Resources", "LICENSE-cua.txt"))) {
+    throw new Error("computer-use helper is missing cua's MIT notice (Contents/Resources/LICENSE-cua.txt)");
+  }
+  return { helper, binary };
+}
+
+/**
  * electron-builder's `Arch` enum, as the names node's `process.arch` uses —
  * which is what node-pty names its prebuild directories after. Spelled out
  * rather than imported so this file stays requireable by a unit test that has
@@ -96,7 +129,11 @@ exports.default = async function afterPack(context) {
   const arch = ARCH_NAMES[context.arch] ?? process.arch;
   const found = verifyPackagedPty(appPath, { arch });
   console.log(`  • node-pty unpacked and runnable from ${found.from}${found.chmodded ? " (spawn-helper made executable)" : ""}`);
+  const pin = JSON.parse(fs.readFileSync(path.join(__dirname, "computer-use-helper.json"), "utf8"));
+  const helper = verifyPackagedComputerUse(appPath, pin, { required: process.env.TELAR_REQUIRE_COMPUTER_USE_HELPER === "1" });
+  console.log(helper ? `  • computer-use helper ${pin.bundleId} (cua-driver ${pin.version}) packaged` : "  • no computer-use helper in this build (not required)");
 };
 
 exports.verifyPackagedPty = verifyPackagedPty;
+exports.verifyPackagedComputerUse = verifyPackagedComputerUse;
 exports.UNPACKED = UNPACKED;

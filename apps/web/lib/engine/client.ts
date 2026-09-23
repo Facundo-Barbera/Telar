@@ -1162,9 +1162,13 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** Computer use, measured — slow by design (one subprocess round trip in
      *  the engine). A granted answer is also what lets sessions claim the tools. */
     computerUseStatus: () => request<{ computerUse: ComputerUseStatus }>(fetcher, "GET", "/api/computer-use"),
-    /** cua's native granting flow — CuaDriver.app requests the grants. */
+    /** Asks macOS for the grants — through Telar's bundled helper when there
+     *  is one, else through an external cua install. */
     grantComputerUseAccess: () =>
       request<{ started: boolean; backend?: ComputerUseBackend }>(fetcher, "POST", "/api/computer-use/grant", {}),
+    /** Clears the bundled helper's grants only; `reset: false` without one. */
+    resetComputerUseAccess: () =>
+      request<{ reset: boolean; message?: string }>(fetcher, "POST", "/api/computer-use/reset", {}),
     /** The logins a person allowed agents to fill without being asked again —
      *  metadata only, never a value. Revoking is the only write. */
     browserLogins: () => request<{ logins: RememberedLogin[] }>(fetcher, "GET", "/api/browser-logins"),

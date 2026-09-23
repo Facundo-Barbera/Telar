@@ -1769,10 +1769,16 @@ export class EngineClient {
     return this.request("GET", "/v2/computer-use");
   }
 
-  /** Run cua's native granting flow (CuaDriver.app requests Accessibility +
-   *  Screen Recording, attributed to itself). */
+  /** Ask macOS for Accessibility + Screen Recording — through Telar's bundled
+   *  helper when there is one (the prompts name it), else cua's own flow. */
   grantComputerUseAccess(): Promise<{ started: boolean; backend?: ComputerUseBackend }> {
     return this.request("POST", "/v2/computer-use/grant", {});
+  }
+
+  /** Reset the bundled helper's two macOS grants (`tccutil reset`, its bundle
+   *  id only). `reset: false` when there is no bundled helper. */
+  resetComputerUseAccess(): Promise<{ reset: boolean; message?: string }> {
+    return this.request("POST", "/v2/computer-use/reset", {});
   }
 
   /**

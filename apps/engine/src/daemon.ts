@@ -47,7 +47,7 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
-import { createComputerUseGate, grantComputerUseAccess, type ComputerUseGate } from "./computer-use";
+import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, type ComputerUseGate } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { readProjectIconBytes } from "./project-icon";
@@ -331,6 +331,8 @@ export type EngineDaemonOptions = {
    * it puts its permissions panel on screen. The default is the real gate.
    */
   computerUseGate?: ComputerUseGate;
+  /** INJECTED BY TESTS for the same reason: the real one runs `tccutil`. */
+  resetComputerUse?: () => Promise<{ reset: boolean; message?: string }>;
 };
 
 export type EngineDaemon = {
@@ -2602,11 +2604,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { computerUse: await computerUseGate.measure() });
         return;
       }
-      // cua's native granting flow — CuaDriver.app requests Accessibility +
-      // Screen Recording, attributed to itself — reporting what it started.
+      // Ask macOS for the grants — the bundled helper asks for itself, an
+      // external install through cua's own flow — reporting what it started.
       // The grant reaches sessions at the next GET above, not here.
       if (request.method === "POST" && url.pathname === "/v2/computer-use/grant") {
         writeJson(response, 200, grantComputerUseAccess());
+        return;
+      }
+      // "Remove permissions": the bundled helper's grants only. Re-measured at
+      // once so the gate stops handing sessions tools that now fail.
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/reset") {
+        const outcome = await (options.resetComputerUse ?? resetComputerUseAccess)();
+        if (outcome.reset) await computerUseGate.measure();
+        writeJson(response, 200, outcome);
         return;
       }
       /**

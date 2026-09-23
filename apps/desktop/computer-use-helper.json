@@ -1,0 +1,11 @@
+{
+  "//": "THE cua-driver TELAR SHIPS, pinned. scripts/computer-use-helper.mjs downloads exactly this asset, refuses it unless its sha256 matches, and rebuilds it as Contents/Helpers/<appName>.app under Telar's own bundle id and signature. The scheduled bump workflow is the only thing that should edit tag/version/asset/url/sha256; bundleId must never change, or every user's macOS grants are orphaned.",
+  "tag": "cua-driver-rs-v0.28.2",
+  "version": "0.28.2",
+  "asset": "cua-driver-rs-0.28.2-darwin-universal.tar.gz",
+  "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/cua-driver-rs-0.28.2-darwin-universal.tar.gz",
+  "sha256": "e273181b26709c88b1d809474deb3c592b4efae3530b11d76318f1887fc3fbb1",
+  "bundleId": "com.telar.desktop.computer-use",
+  "appName": "Computer Use for Telar",
+  "displayName": "Computer Use for Telar (cua)"
+}

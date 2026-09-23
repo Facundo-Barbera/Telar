@@ -712,11 +712,26 @@ async function publishTailscaleServe(home, port) {
   return tailscaleServeUrl;
 }
 
+/**
+ * THE COMPUTER-USE HELPER THIS APP CARRIES (Contents/Helpers, see
+ * computer-use-helper.json) — or null in a dev checkout and in a local package
+ * built without it, where the engine keeps using an external cua install. Named
+ * only when it is really there: once named, the engine never falls back.
+ */
+function computerUseHelperPath() {
+  if (!app.isPackaged) return null;
+  const { appName } = require("./computer-use-helper.json");
+  const helper = path.join(path.dirname(process.resourcesPath), "Helpers", `${appName}.app`);
+  return fs.existsSync(helper) ? helper : null;
+}
+
 function childEnv(home) {
+  const computerUseHelper = computerUseHelperPath();
   return {
     ...process.env,
     ELECTRON_RUN_AS_NODE: "1",
     TELAR_HOME: home,
+    ...(computerUseHelper ? { TELAR_COMPUTER_USE_HELPER: computerUseHelper } : {}),
     ...(browserControlConfig
       ? {
           TELAR_DESKTOP_BROWSER_CONTROL_PORT: String(browserControlConfig.port),
