@@ -7,6 +7,7 @@
  * gate is driven with an injected `status`, never the real probe.
  */
 import { describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,16 +18,20 @@ import {
   classifyProbeError,
   COMPUTER_USE_HELPER_BUNDLE_ID,
   COMPUTER_USE_SERVER_ID,
+  computerUseStatus,
   createComputerUseGate,
   ensureHelperDaemon,
   grantComputerUseAccess,
   helperDaemonLaunch,
+  helperDaemonPids,
   helperResetCommands,
   interpretListApps,
-  interpretPermissions,
   resetComputerUseAccess,
   resolveComputerUse,
   resolveComputerUseServer,
+  revealComputerUseHelper,
+  SETTINGS_PANE_URL,
+  type HelperDeps,
   withComputerUse,
   type ComputerUseProbe,
   type ResolvedComputerUse,
@@ -143,6 +148,59 @@ describe("the helper bundled inside Telar.app", () => {
     expect(spawned).toHaveLength(1);
   });
 
+  test("one daemon per socket across processes: a launch lock held elsewhere is waited on, not doubled", async () => {
+    const helper = bundledHelper(APP, fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-home-")));
+    fs.mkdirSync(path.dirname(helper.socket), { recursive: true });
+    // Another engine is mid-launch: it holds the lock, and its daemon comes up.
+    fs.writeFileSync(`${helper.socket}.launch.lock`, "");
+    const spawned: string[][] = [];
+    let polls = 0;
+    const deps: HelperDeps = {
+      spawn: ((command: string, args: string[]) => (spawned.push([command, ...args]), { unref() {} })) as never,
+      listening: async () => (polls += 1) > 3,
+      sleep: async () => {},
+      processes: () => [],
+    };
+    expect(await ensureHelperDaemon(helper, deps)).toBe(true);
+    expect(spawned).toEqual([]);
+    // The lock is the other launcher's to release, not ours.
+    expect(fs.existsSync(`${helper.socket}.launch.lock`)).toBe(true);
+  });
+
+  test("a helper already running but not yet listening is waited on, not launched again", async () => {
+    const helper = bundledHelper(APP, fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-home-")));
+    const spawned: string[][] = [];
+    let polls = 0;
+    const deps: HelperDeps = {
+      spawn: ((command: string, args: string[]) => (spawned.push([command, ...args]), { unref() {} })) as never,
+      listening: async () => (polls += 1) > 2,
+      sleep: async () => {},
+      processes: () => [{ pid: 9, command: `${helper.binary} serve --socket ${helper.socket} --no-permissions-gate` }],
+    };
+    expect(await ensureHelperDaemon(helper, deps)).toBe(true);
+    expect(spawned).toEqual([]);
+  });
+
+  test("a stale lock from a crashed launcher is taken over, and released after the launch", async () => {
+    const helper = bundledHelper(APP, fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-home-")));
+    fs.mkdirSync(path.dirname(helper.socket), { recursive: true });
+    const lock = `${helper.socket}.launch.lock`;
+    fs.writeFileSync(lock, "");
+    const old = new Date(Date.now() - 60 * 60_000);
+    fs.utimesSync(lock, old, old);
+    let up = false;
+    const spawned: string[][] = [];
+    const deps: HelperDeps = {
+      spawn: ((command: string, args: string[]) => (spawned.push([command, ...args]), (up = true), { unref() {} })) as never,
+      listening: async () => up,
+      sleep: async () => {},
+      processes: () => [],
+    };
+    expect(await ensureHelperDaemon(helper, deps)).toBe(true);
+    expect(spawned).toHaveLength(1);
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
   test("Remove permissions resets exactly the helper's two grants", () => {
     expect(helperResetCommands(COMPUTER_USE_HELPER_BUNDLE_ID)).toEqual([
       { command: "/usr/bin/tccutil", args: ["reset", "Accessibility", "com.telar.desktop.computer-use"] },
@@ -157,7 +215,14 @@ describe("the helper bundled inside Telar.app", () => {
       const child = { once: (event: string, fn: (code: number) => void) => (event === "exit" && queueMicrotask(() => fn(0)), child) };
       return child;
     }) as never;
-    expect(await resetComputerUseAccess(bundled(), { spawn: spawnStub })).toEqual({ reset: true });
+    const killed: number[] = [];
+    const processes = () => [
+      { pid: 400, command: "/Applications/CuaDriver.app/Contents/MacOS/cua-driver serve" },
+      { pid: 501, command: `${BINARY} serve --socket ${bundledHelper(APP, HOME).socket} --no-permissions-gate` },
+    ];
+    expect(await resetComputerUseAccess(bundled(), { spawn: spawnStub, processes, kill: (pid) => void killed.push(pid) })).toEqual({ reset: true });
+    // Our daemon stops so nothing holds the old grants; the person's own cua is untouched.
+    expect(killed).toEqual([501]);
     expect(ran.map((argv) => argv.slice(0, 3))).toEqual([
       ["/usr/bin/tccutil", "reset", "Accessibility"],
       ["/usr/bin/tccutil", "reset", "ScreenCapture"],
@@ -167,27 +232,216 @@ describe("the helper bundled inside Telar.app", () => {
     expect(ran).toEqual([]);
   });
 
-  test("the grant asks the helper's own daemon to prompt, never `permissions grant`", async () => {
-    const spawned: string[][] = [];
-    const spawnStub = ((command: string, args: string[]) => {
-      spawned.push([command, ...args]);
-      return { unref() {}, once() {}, kill() {}, stdout: null, stdin: null };
-    }) as never;
+  /**
+   * A stand-in for macOS: `open` runs the helper's hidden probe (answering
+   * `grants` into the `--stdout` file) or opens a Settings pane / Finder; the
+   * MCP proxy answers `check_permissions` with the daemon's (possibly stale)
+   * view. Records everything, spawns nothing.
+   */
+  const fakeMac = (
+    options: {
+      grants?: { accessibility: boolean; screen_recording: boolean } | "silent";
+      daemonSees?: { accessibility: boolean; screen_recording: boolean };
+      /** Whether each successive window capture brings a frame back. */
+      captures?: boolean[];
+      windows?: { window_id: number; pid: number; bounds: { width: number; height: number } }[];
+      up?: boolean;
+      processes?: { pid: number; command: string }[];
+    } = {},
+  ) => {
+    const captures = [...(options.captures ?? [true])];
+    const opened: string[][] = [];
+    const tools: { name: string; args: unknown }[] = [];
+    const killed: number[] = [];
+    const launched: string[][] = [];
+    let up = options.up ?? true;
+    const deps: HelperDeps = {
+      listening: async () => up,
+      sleep: async () => {},
+      processes: () => (options.processes ?? []).filter(({ pid }) => !killed.includes(pid)),
+      kill: (pid) => {
+        killed.push(pid);
+        up = false;
+      },
+      open: async (args) => {
+        opened.push(args);
+        const out = args[args.indexOf("--stdout") + 1];
+        if (args.includes("--stdout") && out && options.grants !== "silent") fs.writeFileSync(out, JSON.stringify(options.grants ?? { accessibility: false, screen_recording: false }) + "\n");
+        return true;
+      },
+      spawn: ((command: string, args: string[]) => {
+        if (command === "/usr/bin/open") {
+          launched.push(args);
+          up = true;
+          return { unref() {} };
+        }
+        // The MCP proxy: initialize, then one tool call.
+        const child = Object.assign(new EventEmitter(), {
+          stdout: new EventEmitter(),
+          kill() {},
+          stdin: {
+            write(line: string) {
+              const msg = JSON.parse(line) as { id?: number; params?: { name: string; arguments: unknown } };
+              if (msg.id === 1) queueMicrotask(() => child.stdout.emit("data", Buffer.from(JSON.stringify({ id: 1, result: {} }) + "\n")));
+              if (msg.id === 2) {
+                const name = msg.params!.name;
+                tools.push({ name, args: msg.params!.arguments });
+                const result =
+                  name === "list_windows"
+                    ? { content: [], structuredContent: { windows: options.windows ?? [{ window_id: 77, pid: 4242, bounds: { width: 800, height: 600 } }] } }
+                    : name === "get_window_state"
+                      ? (captures.shift() ?? true)
+                        ? { content: [{ type: "text", text: "ok" }], structuredContent: { screenshot_width: 800 } }
+                        : { content: [{ type: "text", text: "px_capture_unavailable: SCShareableContent::get failed" }], structuredContent: {} }
+                      : { content: [], structuredContent: options.daemonSees ?? { accessibility: true, screen_recording: true } };
+                queueMicrotask(() => child.stdout.emit("data", Buffer.from(JSON.stringify({ id: 2, result }) + "\n")));
+              }
+            },
+          },
+        });
+        void args;
+        return child;
+      }) as never,
+    };
+    return { deps, opened, tools, killed, launched };
+  };
+
+  test("Grant asks through the helper's own fresh probe, never `check_permissions {prompt:true}` and never `permissions grant`", async () => {
+    // THE BUG: cua refuses prompt:true on the tool path
+    // (`os_permission_prompt_requires_trusted_host`), and the refusal was swallowed.
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-grant-"));
-    expect(grantComputerUseAccess(bundled({ home }), { spawn: spawnStub, listening: async () => true })).toEqual({ started: true, backend: "cua" });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(spawned.flat()).not.toContain("grant");
-    expect(spawned[0]).toEqual([BINARY, "mcp", "--socket", bundledHelper(APP, home).socket]);
+    const mac = fakeMac();
+    const answer = await grantComputerUseAccess(bundled({ home }), mac.deps);
+    expect(mac.tools).toEqual([]);
+    const probe = mac.opened[0]!;
+    // Through LaunchServices from the helper's bundle, so the prompts name it.
+    expect(probe.slice(0, 3)).toEqual(["-n", "-g", "-W"]);
+    expect(probe.slice(probe.indexOf("-a"))).toEqual(["-a", APP, "--args", "--cua-internal-permission-probe-request"]);
+    expect(mac.opened.flat()).not.toContain("grant");
+    expect(answer).toEqual({ started: true, backend: "cua", daemon: true, prompted: true, permission: "denied", opened: "accessibility" });
   });
 
-  test("the bundled probe reads the daemon's own grants, not whether list_apps answered", () => {
-    const result = (structured: Record<string, unknown>) => ({ kind: "result" as const, isError: false, text: "", structured });
-    expect(interpretPermissions(result({ accessibility: true, screen_recording: true }))).toEqual({ permission: "granted" });
-    expect(interpretPermissions(result({ accessibility: true, screen_recording: false }))).toEqual({ permission: "denied", message: "Not granted: Screen Recording." });
-    expect(interpretPermissions({ kind: "result", isError: false, text: JSON.stringify({ accessibility: false, screen_recording: false }) }).permission).toBe("denied");
-    expect(interpretPermissions({ kind: "timeout" }).permission).toBe("unknown");
-    // The external route keeps reading list_apps.
+  test("Grant always leaves the person in the Settings list still missing a grant", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-grant-"));
+    const both = fakeMac();
+    await grantComputerUseAccess(bundled({ home }), both.deps);
+    expect(both.opened.at(-1)).toEqual([SETTINGS_PANE_URL.accessibility]);
+
+    const screen = fakeMac({ grants: { accessibility: true, screen_recording: false } });
+    expect((await grantComputerUseAccess(bundled({ home }), screen.deps)).opened).toBe("screen-recording");
+    expect(screen.opened.at(-1)).toEqual([SETTINGS_PANE_URL["screen-recording"]]);
+    expect(SETTINGS_PANE_URL["screen-recording"]).toBe("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
+
+    const done = fakeMac({ grants: { accessibility: true, screen_recording: true } });
+    const answer = await grantComputerUseAccess(bundled({ home }), done.deps);
+    expect(answer.permission).toBe("granted");
+    expect(answer.opened).toBeUndefined();
+    expect(done.opened).toHaveLength(1);
+  });
+
+  test("Grant says what went wrong instead of swallowing it — and still opens Accessibility", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-grant-"));
+    const silent = fakeMac({ grants: "silent", up: false });
+    // The daemon never comes up: `open` for the daemon is stubbed not to raise it.
+    silent.deps.spawn = (() => ({ unref() {} })) as never;
+    const answer = await grantComputerUseAccess(bundled({ home }), silent.deps);
+    expect(answer.daemon).toBe(false);
+    expect(answer.prompted).toBe(false);
+    expect(answer.opened).toBe("accessibility");
+    expect(answer.message).toContain("helper did not start");
+    expect(answer.message).toContain("permission check gave no answer");
+  });
+
+  test("Show in Finder reveals the helper, and nothing without one", async () => {
+    const mac = fakeMac();
+    expect(await revealComputerUseHelper(bundled(), mac.deps)).toEqual({ revealed: true });
+    expect(mac.opened).toEqual([["-R", APP]]);
+    expect(await revealComputerUseHelper(cuaOnly(), mac.deps)).toEqual({ revealed: false });
+  });
+
+  describe("the status probe", () => {
+    const helper = bundledHelper(APP, HOME);
+    const ours = [
+      { pid: 501, command: `${BINARY} serve --socket ${helper.socket} --pid-file ${helper.pidFile} --no-permissions-gate` },
+      { pid: 502, command: `${BINARY} serve --socket ${helper.socket} --pid-file ${helper.pidFile} --no-permissions-gate` },
+    ];
+    const theirs = [
+      { pid: 400, command: "/Applications/CuaDriver.app/Contents/MacOS/cua-driver serve" },
+      { pid: 600, command: `${BINARY} mcp --socket ${helper.socket}` },
+      { pid: 700, command: `/usr/bin/vim ${BINARY} serve` },
+    ];
+
+    const home = () => fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-status-"));
+    const withSocket = (list: { pid: number; command: string }[], at: string) =>
+      list.map((p) => ({ ...p, command: p.command.replaceAll(helper.socket, bundledHelper(APP, at).socket) }));
+    const granted = { accessibility: true, screen_recording: true };
+
+    test("reads the grants from a fresh process, and never captures while one is missing", async () => {
+      const before = fakeMac();
+      expect(await computerUseStatus(bundled({ home: home() }), 1_000, before.deps)).toMatchObject({ permission: "denied", missing: ["accessibility", "screen-recording"], hostRunning: true });
+      expect(before.opened[0]!.at(-1)).toBe("--cua-internal-permission-probe");
+      expect(before.tools).toEqual([]);
+    });
+
+    test("Ready is a real capture by the daemon, of Telar's own window when there is one — never check_permissions", async () => {
+      const mac = fakeMac({
+        grants: granted,
+        windows: [
+          { window_id: 1, pid: 999, bounds: { width: 10, height: 10 } },
+          { window_id: 2, pid: process.ppid, bounds: { width: 900, height: 700 } },
+        ],
+      });
+      expect(await computerUseStatus(bundled({ home: home() }), 1_000, mac.deps)).toMatchObject({ permission: "granted", missing: [], hostRunning: true });
+      expect(mac.tools.map((t) => t.name)).toEqual(["list_windows", "get_window_state"]);
+      expect(mac.tools[1]!.args).toEqual({ pid: process.ppid, window_id: 2, include_accessibility_tree: false });
+      expect(mac.killed).toEqual([]);
+    });
+
+    test("a daemon that cannot capture despite the grant is restarted — ours only, both processes — and tried again", async () => {
+      const at = home();
+      const mac = fakeMac({ grants: granted, captures: [false, true], processes: withSocket([...theirs, ...ours], at) });
+      expect(await computerUseStatus(bundled({ home: at }), 1_000, mac.deps)).toMatchObject({ permission: "granted", hostRunning: true });
+      expect(mac.killed.sort()).toEqual([501, 502]);
+      expect(mac.launched).toHaveLength(1);
+      expect(mac.launched[0]).toContain("serve");
+    });
+
+    test("still no frame after the restart: not Ready, says why, and is not restarted again on the next poll", async () => {
+      const at = home();
+      const mac = fakeMac({ grants: granted, captures: [false, false, false], processes: withSocket(ours, at) });
+      const status = await computerUseStatus(bundled({ home: at }), 1_000, mac.deps);
+      expect(status.permission).toBe("denied");
+      expect(status.message).toContain("could not capture a window");
+      expect(status.message).toContain("SCShareableContent");
+      expect(mac.launched).toHaveLength(1);
+      await computerUseStatus(bundled({ home: at }), 1_000, mac.deps);
+      expect(mac.launched).toHaveLength(1);
+    });
+
+    test("a daemon that captured once is not asked to capture again", async () => {
+      const at = home();
+      const mac = fakeMac({ grants: granted, processes: withSocket(ours, at) });
+      await computerUseStatus(bundled({ home: at }), 1_000, mac.deps);
+      await computerUseStatus(bundled({ home: at }), 1_000, mac.deps);
+      expect(mac.tools.filter((t) => t.name === "get_window_state")).toHaveLength(1);
+    });
+
+    test("no window to test with is Unknown, not a denial, and restarts nothing", async () => {
+      const at = home();
+      const mac = fakeMac({ grants: granted, windows: [], processes: withSocket(ours, at) });
+      expect(await computerUseStatus(bundled({ home: at }), 1_000, mac.deps)).toMatchObject({ permission: "unknown" });
+      expect(mac.killed).toEqual([]);
+    });
+
+    test("helperDaemonPids finds our serve on our socket and nothing else", () => {
+      expect(helperDaemonPids(helper, { processes: () => [...theirs, ...ours] })).toEqual([501, 502]);
+      expect(helperDaemonPids(helper, { processes: () => theirs })).toEqual([]);
+    });
+  });
+
+  test("the external route keeps reading list_apps", () => {
     expect(interpretListApps({ kind: "result", isError: false, text: "[]" })).toEqual({ permission: "granted" });
+    expect(interpretListApps({ kind: "timeout" }).permission).toBe("unknown");
   });
 });
 

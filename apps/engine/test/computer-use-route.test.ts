@@ -12,7 +12,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ComputerUseStatus } from "@telar/engine-client";
+import type { ComputerUseGrant, ComputerUseStatus } from "@telar/engine-client";
 import { EngineClient } from "@telar/engine-client";
 import type { ComputerUseGate } from "../src/computer-use";
 import { startEngine, type EngineDaemon } from "../src/daemon";
@@ -28,7 +28,10 @@ afterEach(async () => {
 
 const GRANTED: ComputerUseStatus = { installed: true, backend: "cua", hostRunning: true, permission: "granted" };
 
-async function engine(resetComputerUse?: () => Promise<{ reset: boolean; message?: string }>): Promise<{ daemon: EngineDaemon; measured: () => number }> {
+async function engine(
+  resetComputerUse?: () => Promise<{ reset: boolean; message?: string }>,
+  grantComputerUse?: () => Promise<ComputerUseGrant>,
+): Promise<{ daemon: EngineDaemon; measured: () => number }> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-computer-use-"));
   roots.push(directory);
   let measures = 0;
@@ -41,7 +44,7 @@ async function engine(resetComputerUse?: () => Promise<{ reset: boolean; message
     forClaim: () => undefined,
     measureIfHostRunning: async () => undefined,
   };
-  const daemon = await startEngine({ models: stubModels, engineRoot: directory, computerUseGate, ...(resetComputerUse ? { resetComputerUse } : {}) });
+  const daemon = await startEngine({ models: stubModels, engineRoot: directory, computerUseGate, ...(resetComputerUse ? { resetComputerUse } : {}), ...(grantComputerUse ? { grantComputerUse } : {}) });
   daemons.push(daemon);
   return { daemon, measured: () => measures };
 }
@@ -77,4 +80,10 @@ test("a reset that did nothing does not re-measure", async () => {
   const before = measured();
   expect(await new EngineClient(daemon.discovery).resetComputerUseAccess()).toEqual({ reset: false, message: "no helper" });
   expect(measured()).toBe(before);
+});
+
+test("POST /v2/computer-use/grant answers what each step did — a failure is said, not swallowed", async () => {
+  const outcome: ComputerUseGrant = { started: true, backend: "cua", daemon: false, prompted: false, opened: "accessibility", message: "The computer-use helper did not start." };
+  const { daemon } = await engine(undefined, async () => outcome);
+  expect(await new EngineClient(daemon.discovery).grantComputerUseAccess()).toEqual(outcome);
 });

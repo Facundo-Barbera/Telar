@@ -26,6 +26,7 @@ import {
   WorkerTurnFailure,
   WorkerTurnFailureCode,
   type WakeKind,
+  type ComputerUseGrant,
   type EngineDiscovery,
   type EngineErrorCode,
   type EngineHealth,
@@ -47,7 +48,7 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
-import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, type ComputerUseGate } from "./computer-use";
+import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, revealComputerUseHelper, type ComputerUseGate } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { readProjectIconBytes } from "./project-icon";
@@ -333,6 +334,8 @@ export type EngineDaemonOptions = {
   computerUseGate?: ComputerUseGate;
   /** INJECTED BY TESTS for the same reason: the real one runs `tccutil`. */
   resetComputerUse?: () => Promise<{ reset: boolean; message?: string }>;
+  /** INJECTED BY TESTS: the real one raises macOS prompts and opens System Settings. */
+  grantComputerUse?: () => Promise<ComputerUseGrant>;
 };
 
 export type EngineDaemon = {
@@ -2605,10 +2608,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       // Ask macOS for the grants — the bundled helper asks for itself, an
-      // external install through cua's own flow — reporting what it started.
-      // The grant reaches sessions at the next GET above, not here.
+      // external install through cua's own flow — and open the Settings list
+      // to finish in, answering what each step did. The grant reaches sessions
+      // at the next GET above, not here.
       if (request.method === "POST" && url.pathname === "/v2/computer-use/grant") {
-        writeJson(response, 200, grantComputerUseAccess());
+        writeJson(response, 200, await (options.grantComputerUse ?? grantComputerUseAccess)());
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/reveal") {
+        writeJson(response, 200, await revealComputerUseHelper());
         return;
       }
       // "Remove permissions": the bundled helper's grants only. Re-measured at
