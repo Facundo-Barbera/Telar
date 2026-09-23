@@ -5,7 +5,7 @@
  * with `--caps vision` (see `transport.ts`) it has separate `browser_mouse_*_xy`
  * tools instead. This is the one place that knows the mapping, and the one
  * place that says which canvas tools the headless runtime cannot do at all —
- * typing into whatever has focus (Playwright MCP types only by ref).
+ * typing into whatever has focus, and paste/copy without the system clipboard.
  */
 
 export type HeadlessCanvasCall = { name: string; args: Record<string, unknown> } | { refusal: string };
@@ -37,5 +37,6 @@ export function headlessCanvasCall(name: string, args: Record<string, unknown>):
     return { name: "browser_mouse_drag_xy", args: { startX: args.x, startY: args.y, endX: args.toX, endY: args.toY } };
   }
   if (name === "browser_type" && args.target === undefined) return refusal(name);
+  if (name === "browser_paste" || name === "browser_copy") return refusal(name);
   return { name, args };
 }

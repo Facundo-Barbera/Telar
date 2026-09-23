@@ -67,6 +67,8 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   // so nothing can ever classify it as an auto-acceptable read.
   "browser_fill_secret",
   "browser_drag",
+  "browser_paste",
+  "browser_copy",
 ]);
 
 /**

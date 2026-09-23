@@ -394,6 +394,33 @@ const PAGE_FOCUSED_EDITABLE = `function () {${PAGE_FOCUS}
   const el = deepestFocus();
   return isEditable(el) ? describe(el) : null;
 }`;
+// A real paste hands the page a ClipboardEvent carrying a DataTransfer; a
+// false from dispatchEvent is the page's preventDefault — it took the text.
+const PAGE_PASTE = `function (text) {${PAGE_FOCUS}
+  const el = deepestFocus();
+  const target = el || document.body || document.documentElement;
+  const data = new DataTransfer();
+  data.setData("text/plain", text);
+  const handled = !target.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true, composed: true }));
+  return { handled, editable: isEditable(el) ? describe(el) : null };
+}`;
+// What the page's own copy handler wrote wins (a canvas spreadsheet's
+// selection is not a DOM selection); otherwise the selection itself.
+const PAGE_COPY = `function () {${PAGE_FOCUS}
+  const el = deepestFocus();
+  const target = el || document.body || document.documentElement;
+  const data = new DataTransfer();
+  const handled = !target.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true, composed: true }));
+  const written = data.getData("text/plain") || data.getData("text/html");
+  if (handled && written) return written;
+  if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT") && typeof el.selectionStart === "number") {
+    return String(el.value || "").slice(el.selectionStart, el.selectionEnd);
+  }
+  const doc = (el && el.ownerDocument) || document;
+  return doc.getSelection ? String(doc.getSelection()) : "";
+}`;
+const COPY_MAX_BYTES = 16 * 1024;
+
 /** `button "Save"`, or just `canvas` when the element has no name. */
 function pageLabel(described) {
   return described.name ? `${described.role} "${described.name}"` : described.role;
@@ -401,6 +428,13 @@ function pageLabel(described) {
 
 function pointText(point) {
   return `(${point.x}, ${point.y})`;
+}
+
+function capCopied(text) {
+  if (Buffer.byteLength(text) <= COPY_MAX_BYTES) return text;
+  // Cut on bytes, then drop a code point the cut split in half.
+  const cut = Buffer.from(text).subarray(0, COPY_MAX_BYTES).toString("utf8").replace(/�$/, "");
+  return `${cut}\n… [truncated]`;
 }
 
 /** Where words that are not an address go. Google for now; a setting can
@@ -4284,6 +4318,45 @@ class DesktopBrowserManager {
     return okText(`Pressed ${key}.`);
   }
 
+  /**
+   * PASTE WITHOUT THE CLIPBOARD. Chromium has one clipboard — the system's —
+   * so a tab-scoped one cannot exist, and writing the human's clipboard to
+   * paste would clobber what they copied. Instead the page gets what a real
+   * paste delivers: a `paste` event carrying the text. A canvas spreadsheet
+   * takes tab-separated rows that way as a block of cells. A page that
+   * ignores the event but has an editable focused gets the text inserted.
+   */
+  async paste(tab, args, action) {
+    const text = typeof args.text === "string" ? args.text : "";
+    if (!text) throw new Error("browser_paste needs the text to paste.");
+    const count = Array.from(text).length;
+    if (action) this.checkpoint(action);
+    // A synthetic ClipboardEvent raises no pointerdown or keydown: nothing
+    // for the preload to report.
+    this.stampAgentInput(tab);
+    const outcome = (await this.evaluateInPage(tab, PAGE_PASTE, [text])) || {};
+    if (outcome.handled) return okText(`Pasted ${count} characters; the page handled the paste event.`);
+    if (!outcome.editable) {
+      throw new Error("Nothing took the paste: nothing editable has focus and the page did not handle a paste event. Click into a cell or field first.");
+    }
+    await this.insertText(tab, text, false, action);
+    return okText(`Inserted ${count} characters at the focused ${pageLabel(outcome.editable)}; the page did not handle a paste event.`);
+  }
+
+  /**
+   * COPY, READ BACK — never written to the system clipboard. The page's own
+   * copy handler is asked first (a canvas grid's selection lives in its
+   * model, not the DOM, and only the handler can serialize it); otherwise
+   * the DOM selection.
+   */
+  async copy(tab, action) {
+    if (action) this.checkpoint(action);
+    this.stampAgentInput(tab); // a synthetic copy event: nothing to report
+    const text = await this.evaluateInPage(tab, PAGE_COPY);
+    if (typeof text !== "string" || !text) throw new Error("Nothing is selected in this tab. Select text or cells first.");
+    return okText(capCopied(text));
+  }
+
   async fillForm(tab, args, action) {
     for (const field of Array.isArray(args.fields) ? args.fields : []) {
       const backendNodeId = this.backendNode(tab, field.target);
@@ -4762,6 +4835,8 @@ class DesktopBrowserManager {
         case "browser_press_key": return this.press(await target(), args, action);
         case "browser_hover": return this.hover(await target(), args);
         case "browser_drag": return this.drag(await target(), args, action);
+        case "browser_paste": return this.paste(await target(), args, action);
+        case "browser_copy": return this.copy(await target(), action);
         case "browser_resize": {
           const tab = await target();
           const size = await this.resizeTab(tab, args);

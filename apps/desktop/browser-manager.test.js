@@ -4121,10 +4121,11 @@ describe("a focused page owns ⌘1..⌘9 (#660)", () => {
 /**
  * A PAGE DRAWN ON A CANVAS has no refs for what the screenshot shows, so the
  * acting tools also take the screenshot's CSS pixels, type into whatever has
- * focus, and take chords. The fake page answers the in-page reads from
- * `page`: what sits at a point, and the focused editable.
+ * focus, take chords, and paste/copy through the page's own clipboard events.
+ * The fake page answers the in-page reads from `page`: what sits at a point,
+ * the focused editable, and what the paste/copy events came back with.
  */
-describe("acting on a page with no refs — coordinates, focus and chords", () => {
+describe("acting on a page with no refs — coordinates, focus, chords, paste and copy", () => {
   const { keyChord } = require("./browser-manager");
 
   async function canvasTab({ mode = "fixed", page = {} } = {}) {
@@ -4152,6 +4153,8 @@ describe("acting on a page with no refs — coordinates, focus and chords", () =
       if (page.throws && !expression.includes("__telar_agent_cursor__")) {
         return { exceptionDetails: { text: "Uncaught", exception: { description: "TypeError: frozen\n    at <anonymous>" } } };
       }
+      if (expression.includes('new ClipboardEvent("paste"')) return { result: { value: page.paste } };
+      if (expression.includes('new ClipboardEvent("copy"')) return { result: { value: page.copy } };
       if (expression.includes("elementFromPoint")) return { result: { value: page.atPoint ?? null } };
       if (expression.includes("deepestFocus()")) return { result: { value: page.focused ?? null } };
       return answer;
@@ -4274,5 +4277,82 @@ describe("acting on a page with no refs — coordinates, focus and chords", () =
     const unknown = await manager.callTool("s", "browser_press_key", { key: "Hyper+A" });
     expect(unknown.isError).toBe(true);
     expect(views[0].webContents.inputEvents).toHaveLength(2);
+  });
+
+  test("paste: a page that handles the event takes it; otherwise the focused editable gets it inserted; otherwise it is refused", async () => {
+    const handled = await canvasTab({ page: { paste: { handled: true, editable: { role: "textbox", name: "" } } } });
+    const pasted = await handled.manager.callTool("s", "browser_paste", { text: "1\t2\n3\t4" });
+    expect(textOf(pasted)).toBe("Pasted 7 characters; the page handled the paste event.");
+    const expression = handled.debug.commands.find((c) => c.method === "Runtime.evaluate" && c.params.expression.includes('"paste"')).params;
+    expect(expression.returnByValue).toBe(true);
+    expect(expression.expression).toContain(JSON.stringify("1\t2\n3\t4"));
+    expect(handled.debug.commands.some((c) => c.method === "Input.insertText")).toBe(false);
+    // The system clipboard is never the route.
+    expect(handled.clipboard.text).toBe("");
+
+    const fallback = await canvasTab({ page: { paste: { handled: false, editable: { role: "textarea", name: "Notes" } } } });
+    const inserted = await fallback.manager.callTool("s", "browser_paste", { text: "hello" });
+    expect(textOf(inserted)).toBe('Inserted 5 characters at the focused textarea "Notes"; the page did not handle a paste event.');
+    expect(fallback.debug.commands.filter((c) => c.method === "Input.insertText").map((c) => c.params.text)).toEqual(["hello"]);
+
+    const nobody = await canvasTab({ page: { paste: { handled: false, editable: null } } });
+    const refused = await nobody.manager.callTool("s", "browser_paste", { text: "x" });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toBe("Error: Nothing took the paste: nothing editable has focus and the page did not handle a paste event. Click into a cell or field first.");
+  });
+
+  test("copy: the page's handler text verbatim, else the selection, else refused; capped at 16 KB", async () => {
+    const handler = await canvasTab({ page: { copy: "a\tb\nc\td" } });
+    expect(textOf(await handler.manager.callTool("s", "browser_copy", {}))).toBe("a\tb\nc\td");
+    const empty = await canvasTab({ page: { copy: "" } });
+    const refused = await empty.manager.callTool("s", "browser_copy", {});
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toBe("Error: Nothing is selected in this tab. Select text or cells first.");
+    const big = await canvasTab({ page: { copy: "é".repeat(10_000) } });
+    const capped = textOf(await big.manager.callTool("s", "browser_copy", {}));
+    expect(capped.endsWith("\n… [truncated]")).toBe(true);
+    expect(Buffer.byteLength(capped.replace("\n… [truncated]", ""))).toBeLessThanOrEqual(16 * 1024);
+    expect(capped).not.toContain("�");
+  });
+
+  /**
+   * THE IN-PAGE SCRIPTS THEMSELVES, run against a small fake DOM: the copy
+   * fallback to a textarea's selected range and to the document selection,
+   * and the focus walk into a frame's contenteditable body (where a canvas
+   * spreadsheet keeps focus).
+   */
+  test("the page scripts: copy falls back to the selection, and focus is found inside a frame's contenteditable body", async () => {
+    const vm = require("node:vm");
+    const { manager, debug } = await canvasTab({ page: { copy: "x", paste: { handled: true } } });
+    await manager.callTool("s", "browser_copy", {});
+    await manager.callTool("s", "browser_paste", { text: "1\t2" });
+    const sent = (needle) => debug.commands.find((c) => c.method === "Runtime.evaluate" && c.params.expression.includes(needle)).params.expression;
+    class DataTransfer { constructor() { this.data = new Map(); } setData(type, value) { this.data.set(type, value); } getData(type) { return this.data.get(type) || ""; } }
+    class ClipboardEvent { constructor(type, init) { this.type = type; Object.assign(this, init); } }
+    const run = (expression, document) => vm.runInNewContext(expression, { document, DataTransfer, ClipboardEvent });
+    const element = (fields) => ({ getAttribute: () => null, textContent: "", dispatchEvent: () => true, ...fields });
+
+    const copy = sent('"copy"');
+    const handler = element({ tagName: "DIV", dispatchEvent: (event) => { event.clipboardData.setData("text/plain", "a\tb"); return false; } });
+    expect(run(copy, { activeElement: handler, getSelection: () => "ignored" })).toBe("a\tb");
+    const textarea = element({ tagName: "TEXTAREA", value: "hello world", selectionStart: 6, selectionEnd: 11 });
+    expect(run(copy, { activeElement: textarea })).toBe("world");
+    const body = element({ tagName: "BODY", isContentEditable: false });
+    expect(run(copy, { activeElement: body, getSelection: () => "picked text" })).toBe("picked text");
+
+    const paste = sent('"paste"');
+    const cellBody = element({ tagName: "BODY", isContentEditable: true, textContent: "  Q3   totals " });
+    const frame = element({ tagName: "IFRAME", contentDocument: { activeElement: cellBody } });
+    expect(JSON.parse(JSON.stringify(run(paste, { activeElement: frame })))).toEqual({ handled: false, editable: { role: "body", name: "Q3 totals" } });
+    expect(JSON.parse(JSON.stringify(run(paste, { activeElement: body })))).toEqual({ handled: false, editable: null });
+    const checkbox = element({ tagName: "INPUT", type: "checkbox" });
+    expect(JSON.parse(JSON.stringify(run(paste, { activeElement: checkbox })))).toEqual({ handled: false, editable: null });
+  });
+
+  test("a page that throws while being read is answered in a sentence", async () => {
+    const { manager } = await canvasTab({ page: { throws: true } });
+    const result = await manager.callTool("s", "browser_copy", {});
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe("Error: The page threw while Telar read it (TypeError: frozen). Take a fresh screenshot and try again.");
   });
 });

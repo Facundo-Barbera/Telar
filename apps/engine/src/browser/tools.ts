@@ -87,6 +87,8 @@ export const BrowserToolName = z.enum([
   "browser_network_requests",
   "browser_fill_secret",
   "browser_drag",
+  "browser_paste",
+  "browser_copy",
 ]);
 
 /** Named viewport sizes `browser_resize {preset}` accepts. The desktop host
@@ -110,7 +112,7 @@ export type BrowserToolDefinition = {
    *
    * UNDER 350 BYTES, ENFORCED BY A TEST (#515). Every description here is in
    * the context of every session that can browse, whether or not it ever opens
-   * a page — seventeen tools' worth of prose, paid for on every turn. Anything
+   * a page — nineteen tools' worth of prose, paid for on every turn. Anything
    * that needs more than a couple of sentences of reasoning belongs in this
    * file's header or in the `telar` skill, where a model reads it once and
    * only when it is relevant.
@@ -372,6 +374,23 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
       /** Press this after filling — the login button's snapshot ref. */
       submit: z.object({ ...targeted }).optional(),
     }),
+  },
+  /**
+   * NEITHER TOUCHES THE SYSTEM CLIPBOARD. Chromium has one clipboard, the
+   * user's, so a tab-scoped one cannot exist: paste hands the page the event a
+   * real paste delivers, and copy reads back what the page's own handler set.
+   */
+  {
+    name: "browser_paste",
+    description:
+      "Paste text into what has focus as a real paste does, never touching the clipboard. Tab-separated rows fill many spreadsheet cells at once. In your tab or the tabId you name.",
+    input: z.object({ text: z.string().min(1), ...tabId }),
+  },
+  {
+    name: "browser_copy",
+    description:
+      "Read what a copy would take — the page's copy text, else the selection — never touching the clipboard; reads cells selected on a canvas-drawn page. In your tab or the tabId you name.",
+    input: z.object({ ...tabId }),
   },
 ];
 
