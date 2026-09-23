@@ -76,7 +76,27 @@ test("a client that refuses Telar as its caller is 'Not accepted', not a grant t
 });
 
 test("the row says the probe is the gate, behind its ⓘ", () => {
-  expect(permissions).toContain('info="Sessions get the desktop tools only after a check here answers Ready."');
+  expect(permissions).toContain('const GATE_INFO = "Sessions get the desktop tools only after a check here answers Ready."');
+  expect(permissions).toContain("info={bundled ? `${GATE_INFO} ${REMOVE_INFO}` : GATE_INFO}");
+});
+
+test("bundled, the prompts name Telar's helper, not an app the reader installed", () => {
+  const hint = computerUseHint("not-granted", { bundled: true }) ?? "";
+  expect(hint).toContain("Accessibility + Screen Recording");
+  expect(hint).toContain("Computer Use for Telar");
+  expect(hint).not.toContain("CuaDriver.app");
+  // Dev builds still drive an external install, and say so.
+  expect(computerUseHint("not-granted")).toContain("CuaDriver.app");
+  expect(computerUseHint("ready", { bundled: true })).toBeUndefined();
+});
+
+test("Remove permissions is the bundled helper's alone, and asks first", () => {
+  expect(permissions).toContain("{bundled &&");
+  expect(permissions).toContain('state !== "checking"');
+  expect(permissions).toContain("Confirm remove");
+  // What it removes and what it leaves is not inferable from the button: ⓘ.
+  expect(permissions).toContain("clears only Telar's bundled helper, not a separately installed cua");
+  expect(permissions).toContain("api.resetComputerUseAccess()");
 });
 
 test("the Computer use row says WHOSE sessions it governs, in one line", () => {

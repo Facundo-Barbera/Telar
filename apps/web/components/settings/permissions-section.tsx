@@ -6,9 +6,12 @@
  * Claude and OpenCode sessions drive Mac apps through a desktop engine Telar
  * owns; Codex ships its own and keeps it, which is what the row's provider
  * badges say (#368). One backend supplies Telar's: cua-driver (trycua/cua,
- * MIT). CuaDriver.app holds the Accessibility + Screen Recording grants, and
- * "Grant access" runs cua's native flow, which launches the app through
- * LaunchServices so the dialogs attribute to it.
+ * MIT), bundled inside Telar.app as its own helper, "Computer Use for Telar".
+ * The helper holds its OWN Accessibility + Screen Recording grants — separate
+ * from any cua a person installed themselves — and "Grant access" asks macOS
+ * through it, so the prompts name it. "Remove permissions" clears those grants
+ * and nobody else's. Dev builds have no bundled helper and still use an
+ * external install, whose grants this row neither names nor removes.
  *
  * CODEX'S SKY CLIENT WENT. It was the proprietary fallback, and its service
  * authenticates callers by OpenAI's Team ID on the parent/responsible process,
@@ -68,6 +71,11 @@ export function computerUseState(input: { status?: ComputerUseStatus; checking: 
   return "not-granted";
 }
 
+const GATE_INFO = "Sessions get the desktop tools only after a check here answers Ready.";
+/** Not inferable from the button: whose grants go, and that they don't come back by themselves. */
+const REMOVE_INFO =
+  "Remove permissions clears only Telar's bundled helper, not a separately installed cua. Grant access again to use computer use.";
+
 const BADGE: Record<Exclude<ComputerUseState, "checking">, { label: string; variant: "secondary" | "outline" | "destructive" }> = {
   ready: { label: "Ready", variant: "secondary" },
   "not-granted": { label: "Not granted", variant: "destructive" },
@@ -82,7 +90,7 @@ const BADGE: Record<Exclude<ComputerUseState, "checking">, { label: string; vari
  * with its badge; the rest name the grant that fixes them, or say plainly that
  * nothing on this Mac will.
  */
-export function computerUseHint(state: ComputerUseState): string | undefined {
+export function computerUseHint(state: ComputerUseState, { bundled = false }: { bundled?: boolean } = {}): string | undefined {
   switch (state) {
     case "ready":
     case "checking":
@@ -94,6 +102,8 @@ export function computerUseHint(state: ComputerUseState): string | undefined {
     case "not-running":
       return "The driver launches when a session first needs it.";
     case "not-granted":
+      // Bundled, the prompts name Telar's own helper — not an app the reader installed.
+      if (bundled) return "Computer use needs Accessibility + Screen Recording. The macOS prompts name “Computer Use for Telar”.";
       return "cua-driver needs Accessibility + Screen Recording. “Grant access” launches CuaDriver.app so macOS attributes the prompts to it.";
     case "not-accepted":
       return "The installed computer-use client does not accept Telar as a caller, so sessions are not given its tools.";
@@ -173,8 +183,23 @@ export function PermissionsSection() {
     }
   };
 
+  // Asks first, in the row, like Reset conversation: the grants come back only
+  // through the macOS prompts again.
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const remove = async () => {
+    setConfirmingRemove(false);
+    try {
+      const answer = await api.resetComputerUseAccess();
+      await check();
+      if (!answer.reset && answer.message) setError(answer.message);
+    } catch {
+      setError("The engine did not answer.");
+    }
+  };
+
+  const bundled = status?.bundled === true;
   const state = computerUseState({ ...(status ? { status } : {}), checking, failed: !status && !checking && error !== undefined });
-  const hint = computerUseHint(state);
+  const hint = computerUseHint(state, { bundled });
 
   return (
     // NO CAPTION: the row's own sentence is the one that changes with the state,
@@ -184,7 +209,7 @@ export function PermissionsSection() {
       <Row
         label="Computer use"
         icon={MonitorIcon}
-        info="Sessions get the desktop tools only after a check here answers Ready."
+        info={bundled ? `${GATE_INFO} ${REMOVE_INFO}` : GATE_INFO}
         {...(hint ? { hint } : {})}
         // The backend's own words, verbatim, under the instruction rather than
         // instead of it — a failure is exactly when the fix is worth re-reading.
@@ -211,6 +236,22 @@ export function PermissionsSection() {
                 Test access
               </Button>
             )}
+            {bundled &&
+              state !== "checking" &&
+              (confirmingRemove ? (
+                <>
+                  <Button size="sm" variant="destructive" disabled={checking} onClick={() => void remove()}>
+                    Confirm remove
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setConfirmingRemove(false)}>
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button size="sm" variant="outline" disabled={checking} onClick={() => setConfirmingRemove(true)}>
+                  Remove permissions
+                </Button>
+              ))}
           </div>
         }
       >
