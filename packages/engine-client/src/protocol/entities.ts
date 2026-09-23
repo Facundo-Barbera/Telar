@@ -1618,22 +1618,31 @@ export type SidebarLayout = z.infer<typeof SidebarLayout>;
 export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] };
 
 /**
- * COMPUTER USE, MEASURED — the settings page's permission readout.
+ * COMPUTER USE, MEASURED — the settings page's permission readout, and since
+ * the claim gate, THE ONE FACT THAT DECIDES WHETHER A SESSION GETS THE TOOLS.
  *
- * Three facts with three different fixes, which is why they are not one enum:
- * the Codex plugin being absent is an install task, the Sky host app being
- * down is one button, and the Automation grant is a macOS decision keyed on a
- * responsible process the engine cannot reliably name from the inside. The
- * `permission` answer comes from ONE REAL read-only call — which is also the
- * granting flow, because an undecided grant makes macOS raise its own prompt.
+ * Separate facts with separate fixes, which is why they are not one enum: the
+ * driver being absent is an install task, and the grants are a macOS decision
+ * the driver's own flow requests. The `permission` answer comes from ONE REAL
+ * read-only call, and only `granted` puts the `mac` server into a claim.
+ *
+ * `unauthenticated` is the backend refusing TELAR AS A SENDER — not a grant
+ * the person can flip. Codex's bundled Sky client answered `-10000: Sender
+ * process is not authenticated` to every caller whose parent and responsible
+ * process were not OpenAI-signed, which is every caller Telar can be; the pane
+ * used to read that as "not granted" and point at the Automation pane, which
+ * could not fix it. `host-not-running` is kept so an older engine's answer
+ * still parses; the current one never produces it.
  */
-export const ComputerUsePermission = z.enum(["granted", "denied", "host-not-running", "unknown"]);
+export const ComputerUsePermission = z.enum(["granted", "denied", "unauthenticated", "host-not-running", "unknown"]);
 export type ComputerUsePermission = z.infer<typeof ComputerUsePermission>;
 
-/** Which engine is supplying the desktop: `cua` is Telar's own open-source
- *  driver (trycua/cua, MIT); `sky` is Codex's proprietary bundled client, the
- *  fallback. The pane names it so the reader knows what holds the grants. */
-export const ComputerUseBackend = z.enum(["cua", "sky"]);
+/** Which engine is supplying the desktop. `cua` is Telar's own open-source
+ *  driver (trycua/cua, MIT). Codex's proprietary Sky client used to be the
+ *  fallback and is gone: it authenticates callers by OpenAI's Team ID, so from
+ *  Telar it never answered anything but `-10000`. One value today; the pane
+ *  still names it so the reader knows what holds the grants. */
+export const ComputerUseBackend = z.enum(["cua"]);
 export type ComputerUseBackend = z.infer<typeof ComputerUseBackend>;
 
 /**

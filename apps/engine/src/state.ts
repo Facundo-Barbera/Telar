@@ -4601,9 +4601,10 @@ export class EngineStore {
       git?: GitRunner;
       asyncGit?: AsyncGitRunner;
       gh?: GhRunner;
-      /** Resolves Telar's computer-use backend (cua-driver, or Sky). INJECTED
-       *  BY THE DAEMON, absent by default — so tests never read the real
-       *  machine's installs, and a store without it simply has no computer use. */
+      /** The daemon's computer-use gate: resolves cua-driver only while the
+       *  last probe answered `granted`. INJECTED BY THE DAEMON, absent by
+       *  default — so tests never read the real machine's installs, and a
+       *  store without it simply has no computer use. */
       computerUse?: () => ResolvedComputerUse | undefined;
       /** Asks the installed harnesses what they can run. INJECTED BY TESTS ONLY
        *  — the default is the real subprocess handshake, and a store test that
@@ -10601,10 +10602,11 @@ export class EngineStore {
        */
       const registered = resolveMcpServers(this.listMcpServers(), session.projectId);
       /**
-       * TELAR'S OWN COMPUTER USE (cua-driver, or Sky as a fallback). Injected
-       * at claim time like everything else here, and re-resolved per claim so
-       * installing or removing the driver applies to the next turn rather than
-       * the next daemon. Goes to every provider Telar drives — Codex included
+       * TELAR'S OWN COMPUTER USE (cua-driver). A claim asks the daemon's gate,
+       * but the answer comes from the LAST PROBE, never one run here: only a
+       * measured `granted` resolves. Removing the driver applies to the next
+       * turn; a newly installed one is not injected until it is measured (the
+       * settings pane, or Test access). Goes to every provider Telar drives — Codex included
        * since #521, where withholding it turned out to leave those sessions
        * with no desktop at all rather than with their own — see
        * `withComputerUse`.

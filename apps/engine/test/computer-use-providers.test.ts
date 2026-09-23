@@ -19,7 +19,7 @@
 import { describe, expect, test } from "bun:test";
 import { COMPUTER_USE_DRIVERS, driverTakesComputerUse, type McpServer, type ProviderDriverKind } from "@telar/engine-client";
 import { codexMcpServers } from "../src/codex-driver";
-import { claimHasComputerUse, COMPUTER_USE_SERVER_ID, resolveComputerUse, withComputerUse } from "../src/computer-use";
+import { claimHasComputerUse, COMPUTER_USE_SERVER_ID, createComputerUseGate, resolveComputerUse, withComputerUse, type ComputerUseProbe } from "../src/computer-use";
 import { mcpConfiguration } from "../src/opencode/driver";
 import type { DriverRun } from "../src/provider-contract";
 
@@ -27,15 +27,8 @@ const DRIVERS: readonly ProviderDriverKind[] = ["claude", "codex", "opencode"];
 
 const HOME = "/Users/tester";
 const CUA = `${HOME}/.local/bin/cua-driver`;
-const CODEX = `${HOME}/.codex`;
-const SKY_CLIENT = `${CODEX}/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient`;
-const SKY_LAUNCHER = `${CODEX}/plugins/cache/openai-bundled/computer-use/1.0.1/bin/computer-use-client-launcher`;
-
-const machine = (exists: (candidate: string) => boolean) =>
-  resolveComputerUse({ env: {}, home: HOME, platform: "darwin", exists, listVersions: () => ["1.0.1"], now: () => 0 });
-
-const cua = machine((candidate) => candidate === CUA)!;
-const sky = machine((candidate) => candidate === SKY_CLIENT || candidate === SKY_LAUNCHER)!;
+const probe: ComputerUseProbe = { env: {}, home: HOME, platform: "darwin", exists: (candidate) => candidate === CUA, now: () => 0 };
+const cua = resolveComputerUse(probe)!;
 
 /** A user server every provider gets, so "nothing" is never confused with
  *  "nothing reached this driver at all". */
@@ -57,19 +50,6 @@ describe("the computer-use tool set, per provider", () => {
     // #521. Codex was withheld on the reasoning that it ships its own provider,
     // and the effect was a Codex session with NO desktop — not one of its own.
     expect(Object.fromEntries(DRIVERS.map((driver) => [driver, claimFor(driver).map((server) => server.id)]))).toEqual({
-      claude: ["linear", COMPUTER_USE_SERVER_ID],
-      codex: ["linear", COMPUTER_USE_SERVER_ID],
-      opencode: ["linear", COMPUTER_USE_SERVER_ID],
-    });
-  });
-
-  test("the backend does not change who gets it — Sky follows cua", () => {
-    // Sky used to be Claude-only, on the reasoning that it is native on Codex.
-    // Sky reaching a Codex session is the odd-looking pairing that reasoning was
-    // guarding: it is Codex's own plugin handed back to Codex. It is still the
-    // right answer — same name, same approval gate as every other provider, and
-    // the native feature goes off so the model is never offered both.
-    expect(Object.fromEntries(DRIVERS.map((driver) => [driver, claimFor(driver, sky).map((server) => server.id)]))).toEqual({
       claude: ["linear", COMPUTER_USE_SERVER_ID],
       codex: ["linear", COMPUTER_USE_SERVER_ID],
       opencode: ["linear", COMPUTER_USE_SERVER_ID],
@@ -99,13 +79,11 @@ describe("Codex carries it without ever seeing two desktops", () => {
    * proves what Telar sends. Only a live Codex session can prove what Codex
    * does with it — see the PR for #521.
    */
-  const overlay = (driver: ProviderDriverKind, resolved = cua) => {
-    const claim = claimFor(driver, resolved);
-    return {
-      servers: codexMcpServers(claim),
-      ...(claimHasComputerUse(claim) ? { features: { computer_use: false } } : {}),
-    };
-  };
+  const overlayOf = (claim: McpServer[]) => ({
+    servers: codexMcpServers(claim),
+    ...(claimHasComputerUse(claim) ? { features: { computer_use: false } } : {}),
+  });
+  const overlay = (driver: ProviderDriverKind, resolved = cua) => overlayOf(claimFor(driver, resolved));
 
   test("the `mac` server reaches Codex's config and turns the native feature off", () => {
     expect(overlay("codex")).toEqual({
@@ -119,12 +97,24 @@ describe("Codex carries it without ever seeing two desktops", () => {
     });
   });
 
-  test("Sky's CODEX_HOME pin travels into Codex's config too", () => {
-    expect(overlay("codex", sky).servers?.[COMPUTER_USE_SERVER_ID]).toEqual({
-      command: SKY_LAUNCHER,
-      args: ["mcp"],
-      env: { CODEX_HOME: CODEX },
-    });
+  /** The Codex claim after the daemon's gate measured one probe that said `permission`. */
+  const gated = async (permission: "granted" | "denied" | "unauthenticated" | "unknown") => {
+    const gate = createComputerUseGate(probe, { status: async () => ({ installed: true, backend: "cua", hostRunning: true, permission }), hostRunning: async () => true });
+    await gate.measure();
+    return overlayOf(withComputerUse([linear], [linear], "codex", gate.forClaim()));
+  };
+
+  test("a gate that has not measured `granted` leaves the native feature alone", async () => {
+    // An installed driver without its grants used to be injected anyway, which
+    // switched a WORKING native computer use off in exchange for tools that
+    // could only answer `permissions_pending`.
+    for (const permission of ["denied", "unauthenticated", "unknown"] as const) {
+      expect(await gated(permission)).toEqual({ servers: { linear: { url: "https://mcp.linear.app/mcp" } } });
+    }
+  });
+
+  test("a granted gate hands Codex the same overlay as a resolved driver", async () => {
+    expect(await gated("granted")).toEqual(overlay("codex"));
   });
 
   test("no computer-use backend on the machine leaves the native feature alone", () => {
@@ -152,16 +142,5 @@ describe("OpenCode carries it as an ordinary local server", () => {
     const config = mcpConfiguration(run("opencode"));
     expect(config[COMPUTER_USE_SERVER_ID]).toEqual({ type: "local", command: [CUA, "mcp"], environment: undefined });
     expect(config.linear).toEqual({ type: "remote", url: "https://mcp.linear.app/mcp", headers: undefined, oauth: false });
-  });
-
-  test("Sky's CODEX_HOME pin travels with it", () => {
-    // OpenCode OVERLAYS `environment` on the server process's own, so the
-    // launcher keeps PATH and HOME — the same spawn the Claude driver gives it.
-    const config = mcpConfiguration({ ...run("opencode"), mcpServers: claimFor("opencode", sky) });
-    expect(config[COMPUTER_USE_SERVER_ID]).toEqual({
-      type: "local",
-      command: [SKY_LAUNCHER, "mcp"],
-      environment: { CODEX_HOME: CODEX },
-    });
   });
 });
