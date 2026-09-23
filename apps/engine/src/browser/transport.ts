@@ -254,6 +254,9 @@ export class PlaywrightMcpTransport {
     const args = [
       cli,
       "--headless",
+      // Coordinate tools (browser_mouse_*_xy) for canvas-drawn pages; see canvas.ts.
+      "--caps",
+      "vision",
       // Ephemeral by default; a configured profile dir makes logins durable.
       ...(this.options.userDataDir ? ["--user-data-dir", this.options.userDataDir] : ["--isolated"]),
       "--browser",

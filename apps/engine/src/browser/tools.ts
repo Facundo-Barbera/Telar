@@ -86,6 +86,7 @@ export const BrowserToolName = z.enum([
   "browser_console_messages",
   "browser_network_requests",
   "browser_fill_secret",
+  "browser_drag",
 ]);
 
 /** Named viewport sizes `browser_resize {preset}` accepts. The desktop host
@@ -109,7 +110,7 @@ export type BrowserToolDefinition = {
    *
    * UNDER 350 BYTES, ENFORCED BY A TEST (#515). Every description here is in
    * the context of every session that can browse, whether or not it ever opens
-   * a page — sixteen tools' worth of prose, paid for on every turn. Anything
+   * a page — seventeen tools' worth of prose, paid for on every turn. Anything
    * that needs more than a couple of sentences of reasoning belongs in this
    * file's header or in the `telar` skill, where a model reads it once and
    * only when it is relevant.
@@ -155,6 +156,27 @@ const targeted = {
 const tabId = {
   tabId: z.number().int().nonnegative().optional(),
 };
+
+/**
+ * WHERE THE SNAPSHOT HAS NO REF. A page drawn on a `<canvas>` (a spreadsheet,
+ * a diagram) exposes nothing to point at, so click and hover also take a point
+ * in `browser_take_screenshot`'s CSS pixels. Exactly one of the two: a ref and
+ * a point together would leave the host guessing which one was meant.
+ */
+const point = {
+  target: z.string().min(1).optional(),
+  element: z.string().optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+};
+const ONE_OF_TARGET_OR_POINT = {
+  message: "pass a target from browser_snapshot, or both x and y from a screenshot — not both",
+};
+function targetOrPoint(input: { target?: string; x?: number; y?: number }): boolean {
+  const hasPoint = input.x !== undefined || input.y !== undefined;
+  if (input.target !== undefined) return !hasPoint;
+  return input.x !== undefined && input.y !== undefined;
+}
 
 export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
@@ -212,13 +234,16 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_click",
-    description: "Click an element using a target from browser_snapshot, in the tab you are working in or the tabId you name.",
-    input: z.object({
-      ...targeted,
-      ...tabId,
-      doubleClick: z.boolean().optional(),
-      button: z.enum(["left", "right", "middle"]).optional(),
-    }),
+    description:
+      "Click by target from browser_snapshot, or at x,y in browser_take_screenshot's CSS pixels where the snapshot has no ref (a canvas-drawn page). In your tab or the tabId you name.",
+    input: z
+      .object({
+        ...point,
+        ...tabId,
+        doubleClick: z.boolean().optional(),
+        button: z.enum(["left", "right", "middle"]).optional(),
+      })
+      .refine(targetOrPoint, ONE_OF_TARGET_OR_POINT),
   },
   {
     name: "browser_type",
@@ -258,8 +283,15 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_hover",
-    description: "Move Telar's visible agent cursor over an element, in the tab you are working in or the tabId you name.",
-    input: z.object({ ...targeted, ...tabId }),
+    description:
+      "Move Telar's visible agent cursor over a target, or to x,y in screenshot CSS pixels where there is no ref. In your tab or the tabId you name.",
+    input: z.object({ ...point, ...tabId }).refine(targetOrPoint, ONE_OF_TARGET_OR_POINT),
+  },
+  {
+    name: "browser_drag",
+    description:
+      "Drag with the left button from x,y to toX,toY in screenshot CSS pixels — to select cells or move a shape on a canvas-drawn page. In your tab or the tabId you name.",
+    input: z.object({ x: z.number(), y: z.number(), toX: z.number(), toY: z.number(), ...tabId }),
   },
   {
     name: "browser_resize",

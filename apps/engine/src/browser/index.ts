@@ -30,11 +30,13 @@ import {
   textOf,
 } from "./helpers";
 import type { BrowserProfileIdentity, DesktopBrowserClient, DesktopBrowserState } from "./desktop";
+import { headlessCanvasCall } from "./canvas";
 import { ScopedRuntimePool, type ScopedRuntimeResource } from "./pool";
 import { installBrowser, PlaywrightMcpTransport, type BrowserTransportOptions } from "./transport";
 import { BrowserToolResult, parseBrowserToolInput } from "./tools";
 
 export * from "./bounds";
+export * from "./canvas";
 export * from "./desktop";
 export * from "./helpers";
 export * from "./pool";
@@ -196,13 +198,15 @@ export class BrowserRuntime {
     // headless runtime has no human to share with and Playwright MCP would
     // reject the unknown parameter, so it is accepted-and-dropped here.
     delete input.tabId;
+    const wire = headlessCanvasCall(normalized.name, input);
+    if ("refusal" in wire) return { content: [{ type: "text", text: wire.refusal }], isError: true };
 
     // Take the scope's lease BEFORE any await. Without this ordering another
     // scope's acquisition can hit the LRU in the gap between `start()`
     // resolving and `tools/call` registering its pending RPC, and evict the
     // browser out from under a call that was about to look idle.
     const resource = this.scopeFor(scope);
-    const result = await resource.transport.call(normalized.name, input);
+    const result = await resource.transport.call(wire.name, wire.args);
     if (!result.isError || !this.install || this.installAttempted) return result;
 
     /**
@@ -232,7 +236,7 @@ export class BrowserRuntime {
       };
     }
     if (this.closed) return result;
-    return this.scopeFor(scope).transport.call(normalized.name, input);
+    return this.scopeFor(scope).transport.call(wire.name, wire.args);
   }
 
   /**

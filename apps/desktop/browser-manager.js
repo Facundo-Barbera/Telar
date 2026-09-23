@@ -307,6 +307,37 @@ function errorResult(error) {
   };
 }
 
+/**
+ * WHAT RUNS IN THE PAGE FOR THE COORDINATE TOOLS. A canvas-drawn page has no
+ * refs, so this reads the DOM directly for what sits at a point, so a result
+ * can say what a click landed on. A function source, called with JSON
+ * arguments and returned by value.
+ */
+const PAGE_DESCRIBE = `
+  function describe(el) {
+    const attr = (name) => (el.getAttribute && el.getAttribute(name)) || "";
+    const role = attr("role") || String(el.tagName || "").toLowerCase();
+    const name = attr("aria-label") || attr("title") || attr("alt") || attr("placeholder") || String(el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 60);
+    return { role, name };
+  }`;
+const PAGE_AT_POINT = `function (x, y) {${PAGE_DESCRIBE}
+  let el = document.elementFromPoint(x, y);
+  while (el && el.shadowRoot) {
+    const inner = el.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === el) break;
+    el = inner;
+  }
+  return el ? describe(el) : null;
+}`;
+/** `button "Save"`, or just `canvas` when the element has no name. */
+function pageLabel(described) {
+  return described.name ? `${described.role} "${described.name}"` : described.role;
+}
+
+function pointText(point) {
+  return `(${point.x}, ${point.y})`;
+}
+
 /** Where words that are not an address go. Google for now; a setting can
  *  choose another engine later. */
 const SEARCH_URL = "https://www.google.com/search?q=";
@@ -3999,8 +4030,67 @@ class DesktopBrowserManager {
     }
   }
 
+  /**
+   * A POINT FROM THE SCREENSHOT, for a page whose content has no refs (a
+   * canvas). `null` means the call named a ref instead. The point is in the
+   * screenshot's CSS pixels — the tab's intrinsic viewport — so it is checked
+   * against that, and only `inputPoint` turns it into what CDP wants. Both a
+   * ref and a point is refused rather than one silently winning: the model
+   * meant one of them, and guessing which is how a click lands elsewhere.
+   */
+  coordinatesOf(tab, args) {
+    const hasTarget = String(args.target ?? "").trim() !== "";
+    const hasX = args.x !== undefined && args.x !== null;
+    const hasY = args.y !== undefined && args.y !== null;
+    if (hasTarget && (hasX || hasY)) throw new Error("Pass either a target from browser_snapshot or x and y from browser_take_screenshot, not both.");
+    if (hasTarget) return null;
+    if (!hasX && !hasY) throw new Error("Pass a target from browser_snapshot, or x and y in the CSS pixels of browser_take_screenshot's image.");
+    return this.viewportPoint(tab, args.x, args.y);
+  }
+
+  viewportPoint(tab, x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("x and y go together: pass both, as numbers in the CSS pixels of browser_take_screenshot's image.");
+    const point = { x, y };
+    const viewport = this.effectiveViewport(tab);
+    if (x < 0 || y < 0 || x >= viewport.width || y >= viewport.height) {
+      throw new Error(`${pointText(point)} is outside the ${viewport.width}×${viewport.height} viewport of the screenshot. Scroll or resize, then take a fresh screenshot.`);
+    }
+    return point;
+  }
+
+  /** Call one of the PAGE_* functions in the tab's top document. A page that
+   *  throws (a frozen realm, an overridden global) is answered in a sentence. */
+  async evaluateInPage(tab, fn, args = []) {
+    const debug = await this.ensureDebugger(tab);
+    const result = await debug.sendCommand("Runtime.evaluate", {
+      expression: `(${fn})(${args.map((value) => JSON.stringify(value)).join(", ")})`,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    if (result?.exceptionDetails) {
+      const detail = result.exceptionDetails.exception?.description || result.exceptionDetails.text || "an error";
+      throw new Error(`The page threw while Telar read it (${String(detail).split("\n")[0]}). Take a fresh screenshot and try again.`);
+    }
+    return result?.result?.value;
+  }
+
+  /** `: canvas` / `: button "Save"` for a result text — or nothing when the
+   *  point holds nothing or the page would not say. The input already landed;
+   *  a failed description must not turn it into an error. */
+  async labelAt(tab, point) {
+    try {
+      const described = await this.evaluateInPage(tab, PAGE_AT_POINT, [point.x, point.y]);
+      return described?.role ? `: ${pageLabel(described)}` : "";
+    } catch {
+      return "";
+    }
+  }
+
   async click(tab, args, action) {
-    const point = await this.targetPoint(tab, args.target);
+    const at = this.coordinatesOf(tab, args);
+    // Named BEFORE the click: the click may well replace what was there.
+    const label = at ? await this.labelAt(tab, at) : "";
+    const point = at || await this.targetPoint(tab, args.target);
     await this.showAgentCursor(tab, point, "move");
     await this.wait(CURSOR_MOVE_MS);
     await this.showAgentCursor(tab, point, "click");
@@ -4015,7 +4105,54 @@ class DesktopBrowserManager {
     await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
     await debug.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: native.x, y: native.y, button, clickCount });
     await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: native.x, y: native.y, button, clickCount });
-    return okText(`Clicked ${args.element || args.target}.`);
+    return okText(at ? `Clicked at ${pointText(at)}${label}.` : `Clicked ${args.element || args.target}.`);
+  }
+
+  async hover(tab, args) {
+    const at = this.coordinatesOf(tab, args);
+    const label = at ? await this.labelAt(tab, at) : "";
+    const point = at || await this.targetPoint(tab, args.target);
+    await this.showAgentCursor(tab, point, "move");
+    const debug = await this.ensureDebugger(tab);
+    this.stampAgentInput(tab);
+    const native = this.inputPoint(tab, point);
+    await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
+    return okText(at ? `Hovered at ${pointText(at)}${label}.` : `Hovered ${args.element || args.target}.`);
+  }
+
+  /**
+   * A LEFT-BUTTON DRAG between two screenshot points: a range of cells, a
+   * slider, a shape. The moves in between carry the pressed button, and there
+   * are several of them, because a page that tracks a drag reads mousemoves
+   * with the button down — a press and a release alone would be a click.
+   */
+  async drag(tab, args, action) {
+    const values = [args.x, args.y, args.toX, args.toY];
+    if (values.some((value) => value === undefined || value === null)) {
+      throw new Error("browser_drag needs x, y, toX and toY in the CSS pixels of browser_take_screenshot's image.");
+    }
+    const from = this.viewportPoint(tab, args.x, args.y);
+    const to = this.viewportPoint(tab, args.toX, args.toY);
+    await this.showAgentCursor(tab, from, "move");
+    await this.wait(CURSOR_MOVE_MS);
+    const debug = await this.ensureDebugger(tab);
+    const mouse = (type, point, extra = {}) => {
+      const native = this.inputPoint(tab, point);
+      return debug.sendCommand("Input.dispatchMouseEvent", { type, x: native.x, y: native.y, ...extra });
+    };
+    if (action) this.checkpoint(action);
+    // One pointerdown for the press → one preload report expected.
+    this.stampAgentInput(tab, 1);
+    await mouse("mouseMoved", from);
+    await mouse("mousePressed", from, { button: "left", buttons: 1, clickCount: 1 });
+    const steps = 5;
+    for (let step = 1; step <= steps; step += 1) {
+      const point = { x: from.x + ((to.x - from.x) * step) / steps, y: from.y + ((to.y - from.y) * step) / steps };
+      await mouse("mouseMoved", point, { button: "left", buttons: 1 });
+    }
+    await mouse("mouseReleased", to, { button: "left", buttons: 0, clickCount: 1 });
+    await this.showAgentCursor(tab, to, "move");
+    return okText(`Dragged from ${pointText(from)} to ${pointText(to)}.`);
   }
 
   async type(tab, args, action) {
@@ -4530,16 +4667,8 @@ class DesktopBrowserManager {
         case "browser_fill_form": return this.fillForm(await target(), args, action);
         case "browser_select_option": return this.selectOption(await target(), args, action);
         case "browser_press_key": return this.press(await target(), args, action);
-        case "browser_hover": {
-          const tab = await target();
-          const point = await this.targetPoint(tab, args.target);
-          await this.showAgentCursor(tab, point, "move");
-          const debug = await this.ensureDebugger(tab);
-          this.stampAgentInput(tab);
-          const native = this.inputPoint(tab, point);
-          await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
-          return okText(`Hovered ${args.element || args.target}.`);
-        }
+        case "browser_hover": return this.hover(await target(), args);
+        case "browser_drag": return this.drag(await target(), args, action);
         case "browser_resize": {
           const tab = await target();
           const size = await this.resizeTab(tab, args);

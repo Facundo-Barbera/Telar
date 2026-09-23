@@ -4117,3 +4117,116 @@ describe("a focused page owns ⌘1..⌘9 (#660)", () => {
     expect(scopes.at(-1)).toEqual([]);
   });
 });
+
+/**
+ * A PAGE DRAWN ON A CANVAS has no refs for what the screenshot shows, so the
+ * acting tools also take the screenshot's CSS pixels. The fake page answers
+ * the in-page read from `page`: what sits at a point.
+ */
+describe("acting on a page with no refs — coordinates", () => {
+  async function canvasTab({ mode = "fixed", page = {} } = {}) {
+    const harness = makeHarness();
+    const { manager, views } = harness;
+    await manager.createTab("s", "https://sheet.example/");
+    const tab = manager.activeTab("s");
+    if (mode === "fixed") {
+      // The narrow-panel case: 1280×800 shown in 640×400 → scale 0.5.
+      await manager.resizeTab(tab, { preset: "default" });
+      manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+      await manager.setVisible("s", true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } else {
+      manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+      await manager.setVisible("s", true);
+      await manager.resizeTab(tab, { mode: "fit" });
+    }
+    const debug = views[0].webContents.debugger;
+    const originalSend = debug.sendCommand.bind(debug);
+    debug.sendCommand = async (method, params) => {
+      const answer = await originalSend(method, params);
+      if (method !== "Runtime.evaluate") return answer;
+      const expression = String(params?.expression || "");
+      if (page.throws && !expression.includes("__telar_agent_cursor__")) {
+        return { exceptionDetails: { text: "Uncaught", exception: { description: "TypeError: frozen\n    at <anonymous>" } } };
+      }
+      if (expression.includes("elementFromPoint")) return { result: { value: page.atPoint ?? null } };
+      return answer;
+    };
+    // A look at the page is what licenses acting on it.
+    await manager.callTool("s", "browser_snapshot", {});
+    const mouse = () => debug.commands.filter((c) => c.method === "Input.dispatchMouseEvent").map((c) => c.params);
+    return { ...harness, tab, debug, mouse };
+  }
+
+  test("a click by coordinates lands at the SCALED native point under a fixed tab at 0.5 and names what was there", async () => {
+    const { manager, mouse } = await canvasTab({ page: { atPoint: { role: "canvas", name: "" } } });
+    const result = await manager.callTool("s", "browser_click", { x: 300, y: 200 });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toBe("Clicked at (300, 200): canvas.");
+    expect(mouse().map(({ type, x, y }) => ({ type, x, y }))).toEqual([
+      { type: "mouseMoved", x: 150, y: 100 },
+      { type: "mousePressed", x: 150, y: 100 },
+      { type: "mouseReleased", x: 150, y: 100 },
+    ]);
+  });
+
+  test("under fit the screenshot IS the native viewport: the point is dispatched unscaled", async () => {
+    const { manager, mouse } = await canvasTab({ mode: "fit", page: { atPoint: { role: "gridcell", name: "B7" } } });
+    const result = await manager.callTool("s", "browser_click", { x: 300, y: 200, doubleClick: true });
+    expect(textOf(result)).toBe('Clicked at (300, 200): gridcell "B7".');
+    expect(mouse().find((p) => p.type === "mousePressed")).toMatchObject({ x: 300, y: 200, clickCount: 2 });
+  });
+
+  test("a point outside the screenshot's viewport, neither a ref nor a point, or both, is refused before any input", async () => {
+    const { manager, mouse } = await canvasTab();
+    const outside = await manager.callTool("s", "browser_click", { x: 1280, y: 10 });
+    expect(outside.isError).toBe(true);
+    expect(textOf(outside)).toBe("Error: (1280, 10) is outside the 1280×800 viewport of the screenshot. Scroll or resize, then take a fresh screenshot.");
+    const neither = await manager.callTool("s", "browser_click", {});
+    expect(neither.isError).toBe(true);
+    expect(textOf(neither)).toContain("Pass a target from browser_snapshot, or x and y");
+    const both = await manager.callTool("s", "browser_click", { target: "e1", x: 10, y: 10 });
+    expect(both.isError).toBe(true);
+    expect(textOf(both)).toContain("not both");
+    const half = await manager.callTool("s", "browser_hover", { x: 10 });
+    expect(half.isError).toBe(true);
+    expect(textOf(half)).toContain("x and y go together");
+    expect(mouse()).toEqual([]);
+  });
+
+  test("the ref path keeps its own words", async () => {
+    const { manager } = await canvasTab();
+    expect(textOf(await manager.callTool("s", "browser_click", { target: "e1", element: "Count" }))).toBe("Clicked Count.");
+  });
+
+  test("a click still lands when the page will not say what is at the point", async () => {
+    const { manager, mouse } = await canvasTab({ page: { throws: true } });
+    const result = await manager.callTool("s", "browser_click", { x: 10, y: 20 });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toBe("Clicked at (10, 20).");
+    expect(mouse().some((p) => p.type === "mousePressed")).toBe(true);
+  });
+
+  test("hover by coordinates moves the pointer to the scaled point and shows the agent cursor at the CSS point", async () => {
+    const { manager, mouse, messages } = await canvasTab({ page: { atPoint: { role: "button", name: "Bold" } } });
+    const result = await manager.callTool("s", "browser_hover", { x: 50, y: 60 });
+    expect(textOf(result)).toBe('Hovered at (50, 60): button "Bold".');
+    expect(mouse()).toEqual([{ type: "mouseMoved", x: 25, y: 30 }]);
+    expect(messages.filter((m) => m.channel === "telar:browser:pointer").at(-1).payload).toMatchObject({ phase: "move", x: 50, y: 60 });
+  });
+
+  test("a drag presses at the start, moves with the button held, and releases at the end", async () => {
+    const { manager, mouse } = await canvasTab();
+    const result = await manager.callTool("s", "browser_drag", { x: 100, y: 100, toX: 300, toY: 200 });
+    expect(textOf(result)).toBe("Dragged from (100, 100) to (300, 200).");
+    const events = mouse();
+    expect(events[0]).toEqual({ type: "mouseMoved", x: 50, y: 50 });
+    expect(events[1]).toMatchObject({ type: "mousePressed", x: 50, y: 50, button: "left" });
+    expect(events.at(-1)).toMatchObject({ type: "mouseReleased", x: 150, y: 100, button: "left" });
+    const held = events.slice(2, -1);
+    expect(held.length).toBeGreaterThan(1);
+    expect(held.every((p) => p.type === "mouseMoved" && p.button === "left")).toBe(true);
+    const off = await manager.callTool("s", "browser_drag", { x: 100, y: 100, toX: 100, toY: 900 });
+    expect(textOf(off)).toContain("(100, 900) is outside the 1280×800 viewport");
+  });
+});
