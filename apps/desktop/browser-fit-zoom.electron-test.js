@@ -243,7 +243,8 @@ async function main() {
     note(`fixed surface: ${JSON.stringify(live.size)} ratio=${live.ratio} bottom=${live.bottom} box=${live.box}`);
     assert(live.matches, `the page's widget is ${JSON.stringify(live.size)}, not the 640×400 view — it overflows the fitted rect`);
     assert(live.bottom.join() === FLOOR.join(), `the surface's bottom row is ${live.bottom}, not the page's footer — canvas below the page`);
-    assert(Math.abs(live.box[0] - 50 * live.ratio) <= 2 && Math.abs(live.box[1] - 100 * live.ratio) <= 2, `the page is not scaled into the full view: box at ${live.box}`);
+    // The box sits at CSS (100, 100); at scale 0.5 that is (50, 50) of the view.
+    assert(Math.abs(live.box[0] - 50 * live.ratio) <= 2 && Math.abs(live.box[1] - 50 * live.ratio) <= 2, `the page is not scaled into the full view: box at ${live.box}`);
     // THE FROZEN FRAME IS THE LIVE PAGE: same size, same content, not the
     // page shrunk into a corner of a larger white frame.
     const frame = await manager.freezeView("s");
