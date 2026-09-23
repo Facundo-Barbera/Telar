@@ -18,6 +18,7 @@ import {
   isReadOnlyBrowserCall,
   normalizeBrowserToolCall,
   fileUrlViolation,
+  headlessCanvasCall,
   parseBrowserTabs,
   parseBrowserToolInput,
   textOf,
@@ -79,13 +80,14 @@ describe("browser permission classification", () => {
     expect(isReadOnlyBrowserCall("browser_handle_dialog")).toBe(false);
   });
 
-  test("the mutating set and the tool schemas are the same sixteen tools", () => {
-    // Fifteen Playwright-backed tools (browser_resize included) plus
-    // browser_fill_secret, which the socket routes above the runtime
-    // (secret-fill.ts) but which must still carry a schema and a mutating
-    // classification like everything else.
+  test("the mutating set and the tool schemas are the same nineteen tools", () => {
+    // Fifteen Playwright-backed tools (browser_resize included), the three
+    // canvas tools (drag, paste, copy), plus browser_fill_secret, which the
+    // socket routes above the runtime (secret-fill.ts) but which must still
+    // carry a schema and a mutating classification like everything else.
     const schemaNames = BROWSER_TOOLS.map((tool) => String(tool.name));
-    expect(new Set(schemaNames).size).toBe(16);
+    expect(new Set(schemaNames).size).toBe(19);
+    for (const name of ["browser_drag", "browser_paste", "browser_copy"]) expect(MUTATING_TOOLS.has(name)).toBe(true);
     // A tool that can mutate but has no schema is a tool the engine gates and
     // then cannot describe; a schema with no classification is worse.
     for (const name of MUTATING_TOOLS) expect(schemaNames).toContain(name);
@@ -126,6 +128,68 @@ describe("browser tool input validation", () => {
     expect(parseBrowserToolInput("browser_take_screenshot", {})).toEqual({ type: "png", scale: "css" });
     expect(parseBrowserToolInput("browser_console_messages", {})).toEqual({ level: "info" });
     expect(parseBrowserToolInput("browser_network_requests", {})).toEqual({ static: false });
+  });
+});
+
+describe("coordinates, for a page with no ref to act on", () => {
+  test("click and hover take exactly one of a target or a point", () => {
+    for (const name of ["browser_click", "browser_hover"]) {
+      expect(parseBrowserToolInput(name, { target: "e1" })).toEqual({ target: "e1" });
+      expect(parseBrowserToolInput(name, { x: 300, y: 200 })).toEqual({ x: 300, y: 200 });
+      expect(() => parseBrowserToolInput(name, { target: "e1", x: 300, y: 200 })).toThrow(/not both/);
+      expect(() => parseBrowserToolInput(name, {})).toThrow(/pass a target from browser_snapshot, or both x and y/);
+      expect(() => parseBrowserToolInput(name, { x: 300 })).toThrow(BrowserToolInputError);
+      expect(() => parseBrowserToolInput(name, { y: 200 })).toThrow(BrowserToolInputError);
+      expect(() => parseBrowserToolInput(name, { target: "e1", x: 300 })).toThrow(BrowserToolInputError);
+    }
+    expect(parseBrowserToolInput("browser_click", { x: 1, y: 2, doubleClick: true, button: "right" })).toEqual({
+      x: 1,
+      y: 2,
+      doubleClick: true,
+      button: "right",
+    });
+  });
+
+  test("type needs no target; drag, paste and copy parse", () => {
+    expect(parseBrowserToolInput("browser_type", { text: "hello" })).toEqual({ text: "hello" });
+    expect(() => parseBrowserToolInput("browser_type", { target: "", text: "x" })).toThrow(BrowserToolInputError);
+    expect(parseBrowserToolInput("browser_drag", { x: 1, y: 2, toX: 3, toY: 4 })).toEqual({ x: 1, y: 2, toX: 3, toY: 4 });
+    expect(() => parseBrowserToolInput("browser_drag", { x: 1, y: 2, toX: 3 })).toThrow(BrowserToolInputError);
+    expect(parseBrowserToolInput("browser_paste", { text: "1\t2\n3\t4", tabId: 2 })).toEqual({ text: "1\t2\n3\t4", tabId: 2 });
+    expect(() => parseBrowserToolInput("browser_paste", { text: "" })).toThrow(BrowserToolInputError);
+    expect(parseBrowserToolInput("browser_copy", {})).toEqual({});
+    expect(parseBrowserToolInput("browser_press_key", { key: "Control+A" })).toEqual({ key: "Control+A" });
+  });
+
+  test("the headless runtime gets its own coordinate tools", () => {
+    expect(headlessCanvasCall("browser_click", { x: 3, y: 4 })).toEqual({ name: "browser_mouse_click_xy", args: { x: 3, y: 4 } });
+    expect(headlessCanvasCall("browser_click", { x: 3, y: 4, doubleClick: true, button: "right" })).toEqual({
+      name: "browser_mouse_click_xy",
+      args: { x: 3, y: 4, button: "right", clickCount: 2 },
+    });
+    expect(headlessCanvasCall("browser_hover", { x: 5, y: 6 })).toEqual({ name: "browser_mouse_move_xy", args: { x: 5, y: 6 } });
+    expect(headlessCanvasCall("browser_drag", { x: 1, y: 2, toX: 3, toY: 4 })).toEqual({
+      name: "browser_mouse_drag_xy",
+      args: { startX: 1, startY: 2, endX: 3, endY: 4 },
+    });
+    const byRef = { target: "e1", element: "Save", doubleClick: true };
+    expect(headlessCanvasCall("browser_click", byRef)).toEqual({ name: "browser_click", args: byRef });
+    expect(headlessCanvasCall("browser_type", { target: "e2", text: "x" })).toEqual({
+      name: "browser_type",
+      args: { target: "e2", text: "x" },
+    });
+  });
+
+  test("and refuses, by name, what only the desktop browser can do", () => {
+    for (const [name, args] of [
+      ["browser_type", { text: "x" }],
+      ["browser_paste", { text: "x" }],
+      ["browser_copy", {}],
+    ] as const) {
+      expect(headlessCanvasCall(name, args)).toEqual({
+        refusal: `${name} here needs Telar's desktop browser, which this session cannot reach right now.`,
+      });
+    }
   });
 });
 

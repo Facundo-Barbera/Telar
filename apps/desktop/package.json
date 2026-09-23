@@ -23,6 +23,7 @@
     "test:desktop:browser": "env -u ELECTRON_RUN_AS_NODE electron ./browser-manager.electron-test.js",
     "test:desktop:popup": "env -u ELECTRON_RUN_AS_NODE electron ./browser-popup.electron-test.js",
     "test:desktop:fit-zoom": "env -u ELECTRON_RUN_AS_NODE electron ./browser-fit-zoom.electron-test.js",
+    "test:desktop:canvas-control": "env -u ELECTRON_RUN_AS_NODE electron ./browser-canvas-control.electron-test.js",
     "test:desktop:persistence": "env -u ELECTRON_RUN_AS_NODE electron ./browser-persistence.electron-test.js",
     "test:desktop:profile-cookies": "env -u ELECTRON_RUN_AS_NODE electron ./browser-profile-cookies.electron-test.js",
     "test:desktop:host-header": "env -u ELECTRON_RUN_AS_NODE electron ./host-header.electron-test.js",

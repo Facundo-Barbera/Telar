@@ -307,6 +307,136 @@ function errorResult(error) {
   };
 }
 
+/**
+ * A KEY, OR A CHORD, IN ELECTRON'S NAMES. Models write keys the way the web
+ * (and Playwright) spells them — `ArrowDown`, `Control+A`, `ControlOrMeta+C`;
+ * `sendInputEvent` wants accelerator names and a separate modifiers array.
+ * The key is whatever follows the LAST `+`, so a trailing `++` is the plus
+ * key (`Shift++`), and a bare `+` is too. An unknown modifier is refused by
+ * name rather than typed as a letter: `Hyper+A` pressing A would be a quiet
+ * lie about what was pressed.
+ */
+const CHORD_MODIFIERS = {
+  control: "control", ctrl: "control",
+  meta: "meta", cmd: "meta", command: "meta",
+  alt: "alt", option: "alt",
+  shift: "shift",
+};
+const ELECTRON_KEY_NAMES = {
+  arrowup: "Up", arrowdown: "Down", arrowleft: "Left", arrowright: "Right",
+  escape: "Escape", esc: "Escape", enter: "Enter", return: "Return", space: "Space", " ": "Space",
+};
+
+function keyChord(key, platform = process.platform) {
+  const spec = String(key ?? "");
+  if (!spec) throw new Error("A key is required.");
+  let rest;
+  let name;
+  if (spec === "+") [rest, name] = ["", "+"];
+  else if (spec.endsWith("++")) [rest, name] = [spec.slice(0, -2), "+"];
+  else {
+    const cut = spec.lastIndexOf("+");
+    [rest, name] = cut < 0 ? ["", spec] : [spec.slice(0, cut), spec.slice(cut + 1)];
+  }
+  if (!name) throw new Error(`${spec} names no key after its modifiers. Write a chord like Control+A.`);
+  const modifiers = [];
+  for (const token of rest ? rest.split("+") : []) {
+    const lower = token.trim().toLowerCase();
+    const modifier = lower === "controlormeta" ? (platform === "darwin" ? "meta" : "control") : CHORD_MODIFIERS[lower];
+    if (!modifier) throw new Error(`Unknown modifier ${token || "(empty)"} in ${spec}. Use Control, Meta, Alt, Shift or ControlOrMeta.`);
+    if (!modifiers.includes(modifier)) modifiers.push(modifier);
+  }
+  return { keyCode: ELECTRON_KEY_NAMES[name.toLowerCase()] || name, modifiers };
+}
+
+/**
+ * WHAT RUNS IN THE PAGE FOR THE COORDINATE AND FOCUS TOOLS. A canvas-drawn
+ * page has no refs, so these read the DOM directly: what sits at a point,
+ * and what has focus. Focus is walked down through open shadow roots and
+ * same-origin frames because a spreadsheet keeps it on a contenteditable
+ * body INSIDE a frame — the top document's activeElement is just the iframe.
+ * Each is a function source, called with JSON arguments and returned by value.
+ */
+const PAGE_DESCRIBE = `
+  function describe(el) {
+    const attr = (name) => (el.getAttribute && el.getAttribute(name)) || "";
+    const role = attr("role") || String(el.tagName || "").toLowerCase();
+    const name = attr("aria-label") || attr("title") || attr("alt") || attr("placeholder") || String(el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 60);
+    return { role, name };
+  }`;
+const PAGE_FOCUS = `${PAGE_DESCRIBE}
+  function deepestFocus() {
+    let el = document.activeElement;
+    for (;;) {
+      if (el && el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      let inner = null;
+      try { inner = el && el.contentDocument ? el.contentDocument.activeElement : null; } catch (e) { inner = null; }
+      if (inner) { el = inner; continue; }
+      return el;
+    }
+  }
+  function isEditable(el) {
+    if (!el) return false;
+    if (el.tagName === "TEXTAREA") return true;
+    if (el.tagName === "INPUT") return !["button", "submit", "reset", "checkbox", "radio", "file", "image", "range", "color", "hidden"].includes(String(el.type || "text").toLowerCase());
+    return Boolean(el.isContentEditable);
+  }`;
+const PAGE_AT_POINT = `function (x, y) {${PAGE_DESCRIBE}
+  let el = document.elementFromPoint(x, y);
+  while (el && el.shadowRoot) {
+    const inner = el.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === el) break;
+    el = inner;
+  }
+  return el ? describe(el) : null;
+}`;
+const PAGE_FOCUSED_EDITABLE = `function () {${PAGE_FOCUS}
+  const el = deepestFocus();
+  return isEditable(el) ? describe(el) : null;
+}`;
+// A real paste hands the page a ClipboardEvent carrying a DataTransfer; a
+// false from dispatchEvent is the page's preventDefault — it took the text.
+const PAGE_PASTE = `function (text) {${PAGE_FOCUS}
+  const el = deepestFocus();
+  const target = el || document.body || document.documentElement;
+  const data = new DataTransfer();
+  data.setData("text/plain", text);
+  const handled = !target.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true, composed: true }));
+  return { handled, editable: isEditable(el) ? describe(el) : null };
+}`;
+// What the page's own copy handler wrote wins (a canvas spreadsheet's
+// selection is not a DOM selection); otherwise the selection itself.
+const PAGE_COPY = `function () {${PAGE_FOCUS}
+  const el = deepestFocus();
+  const target = el || document.body || document.documentElement;
+  const data = new DataTransfer();
+  const handled = !target.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true, composed: true }));
+  const written = data.getData("text/plain") || data.getData("text/html");
+  if (handled && written) return written;
+  if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT") && typeof el.selectionStart === "number") {
+    return String(el.value || "").slice(el.selectionStart, el.selectionEnd);
+  }
+  const doc = (el && el.ownerDocument) || document;
+  return doc.getSelection ? String(doc.getSelection()) : "";
+}`;
+const COPY_MAX_BYTES = 16 * 1024;
+
+/** `button "Save"`, or just `canvas` when the element has no name. */
+function pageLabel(described) {
+  return described.name ? `${described.role} "${described.name}"` : described.role;
+}
+
+function pointText(point) {
+  return `(${point.x}, ${point.y})`;
+}
+
+function capCopied(text) {
+  if (Buffer.byteLength(text) <= COPY_MAX_BYTES) return text;
+  // Cut on bytes, then drop a code point the cut split in half.
+  const cut = Buffer.from(text).subarray(0, COPY_MAX_BYTES).toString("utf8").replace(/�$/, "");
+  return `${cut}\n… [truncated]`;
+}
+
 /** Where words that are not an address go. Google for now; a setting can
  *  choose another engine later. */
 const SEARCH_URL = "https://www.google.com/search?q=";
@@ -3999,8 +4129,71 @@ class DesktopBrowserManager {
     }
   }
 
+  /**
+   * A POINT FROM THE SCREENSHOT, for a page whose content has no refs (a
+   * canvas). `null` means the call named a ref instead. The point is in the
+   * screenshot's CSS pixels — the tab's intrinsic viewport — so it is checked
+   * against that, and only `inputPoint` turns it into what CDP wants. Both a
+   * ref and a point is refused rather than one silently winning: the model
+   * meant one of them, and guessing which is how a click lands elsewhere.
+   */
+  coordinatesOf(tab, args) {
+    const hasTarget = String(args.target ?? "").trim() !== "";
+    const hasX = args.x !== undefined && args.x !== null;
+    const hasY = args.y !== undefined && args.y !== null;
+    if (hasTarget && (hasX || hasY)) throw new Error("Pass either a target from browser_snapshot or x and y from browser_take_screenshot, not both.");
+    if (hasTarget) return null;
+    if (!hasX && !hasY) throw new Error("Pass a target from browser_snapshot, or x and y in the CSS pixels of browser_take_screenshot's image.");
+    return this.viewportPoint(tab, args.x, args.y);
+  }
+
+  viewportPoint(tab, x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("x and y go together: pass both, as numbers in the CSS pixels of browser_take_screenshot's image.");
+    const point = { x, y };
+    const viewport = this.effectiveViewport(tab);
+    if (x < 0 || y < 0 || x >= viewport.width || y >= viewport.height) {
+      throw new Error(`${pointText(point)} is outside the ${viewport.width}×${viewport.height} viewport of the screenshot. Scroll or resize, then take a fresh screenshot.`);
+    }
+    return point;
+  }
+
+  /** Call one of the PAGE_* functions in the tab's top document. A page that
+   *  throws (a frozen realm, an overridden global) is answered in a sentence. */
+  async evaluateInPage(tab, fn, args = []) {
+    const debug = await this.ensureDebugger(tab);
+    const result = await debug.sendCommand("Runtime.evaluate", {
+      expression: `(${fn})(${args.map((value) => JSON.stringify(value)).join(", ")})`,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    if (result?.exceptionDetails) {
+      const detail = result.exceptionDetails.exception?.description || result.exceptionDetails.text || "an error";
+      throw new Error(`The page threw while Telar read it (${String(detail).split("\n")[0]}). Take a fresh screenshot and try again.`);
+    }
+    return result?.result?.value;
+  }
+
+  /** `: canvas` / `: button "Save"` for a result text — or nothing when the
+   *  point holds nothing or the page would not say. The input already landed;
+   *  a failed description must not turn it into an error. */
+  async labelAt(tab, point) {
+    try {
+      const described = await this.evaluateInPage(tab, PAGE_AT_POINT, [point.x, point.y]);
+      return described?.role ? `: ${pageLabel(described)}` : "";
+    } catch {
+      return "";
+    }
+  }
+
+  async focusedEditable(tab) {
+    return (await this.evaluateInPage(tab, PAGE_FOCUSED_EDITABLE)) || null;
+  }
+
   async click(tab, args, action) {
-    const point = await this.targetPoint(tab, args.target);
+    const at = this.coordinatesOf(tab, args);
+    // Named BEFORE the click: the click may well replace what was there.
+    const label = at ? await this.labelAt(tab, at) : "";
+    const point = at || await this.targetPoint(tab, args.target);
     await this.showAgentCursor(tab, point, "move");
     await this.wait(CURSOR_MOVE_MS);
     await this.showAgentCursor(tab, point, "click");
@@ -4015,10 +4208,58 @@ class DesktopBrowserManager {
     await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
     await debug.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: native.x, y: native.y, button, clickCount });
     await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: native.x, y: native.y, button, clickCount });
-    return okText(`Clicked ${args.element || args.target}.`);
+    return okText(at ? `Clicked at ${pointText(at)}${label}.` : `Clicked ${args.element || args.target}.`);
+  }
+
+  async hover(tab, args) {
+    const at = this.coordinatesOf(tab, args);
+    const label = at ? await this.labelAt(tab, at) : "";
+    const point = at || await this.targetPoint(tab, args.target);
+    await this.showAgentCursor(tab, point, "move");
+    const debug = await this.ensureDebugger(tab);
+    this.stampAgentInput(tab);
+    const native = this.inputPoint(tab, point);
+    await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
+    return okText(at ? `Hovered at ${pointText(at)}${label}.` : `Hovered ${args.element || args.target}.`);
+  }
+
+  /**
+   * A LEFT-BUTTON DRAG between two screenshot points: a range of cells, a
+   * slider, a shape. The moves in between carry the pressed button, and there
+   * are several of them, because a page that tracks a drag reads mousemoves
+   * with the button down — a press and a release alone would be a click.
+   */
+  async drag(tab, args, action) {
+    const values = [args.x, args.y, args.toX, args.toY];
+    if (values.some((value) => value === undefined || value === null)) {
+      throw new Error("browser_drag needs x, y, toX and toY in the CSS pixels of browser_take_screenshot's image.");
+    }
+    const from = this.viewportPoint(tab, args.x, args.y);
+    const to = this.viewportPoint(tab, args.toX, args.toY);
+    await this.showAgentCursor(tab, from, "move");
+    await this.wait(CURSOR_MOVE_MS);
+    const debug = await this.ensureDebugger(tab);
+    const mouse = (type, point, extra = {}) => {
+      const native = this.inputPoint(tab, point);
+      return debug.sendCommand("Input.dispatchMouseEvent", { type, x: native.x, y: native.y, ...extra });
+    };
+    if (action) this.checkpoint(action);
+    // One pointerdown for the press → one preload report expected.
+    this.stampAgentInput(tab, 1);
+    await mouse("mouseMoved", from);
+    await mouse("mousePressed", from, { button: "left", buttons: 1, clickCount: 1 });
+    const steps = 5;
+    for (let step = 1; step <= steps; step += 1) {
+      const point = { x: from.x + ((to.x - from.x) * step) / steps, y: from.y + ((to.y - from.y) * step) / steps };
+      await mouse("mouseMoved", point, { button: "left", buttons: 1 });
+    }
+    await mouse("mouseReleased", to, { button: "left", buttons: 0, clickCount: 1 });
+    await this.showAgentCursor(tab, to, "move");
+    return okText(`Dragged from ${pointText(from)} to ${pointText(to)}.`);
   }
 
   async type(tab, args, action) {
+    if (String(args.target ?? "").trim() === "") return this.typeAtFocus(tab, args, action);
     const backendNodeId = this.backendNode(tab, args.target);
     if (action) this.checkpoint(action);
     await this.callOnNode(
@@ -4026,9 +4267,31 @@ class DesktopBrowserManager {
       backendNodeId,
       "function(){ this.scrollIntoView({block:'center',inline:'center'}); this.focus(); if ('value' in this) { this.value=''; this.dispatchEvent(new Event('input',{bubbles:true})); } }",
     );
+    await this.insertText(tab, String(args.text ?? ""), args.slowly, action);
+    if (args.submit) await this.press(tab, { key: "Enter" }, action);
+    return okText(`Typed into ${args.element || args.target}.`);
+  }
+
+  /**
+   * TYPING WITH NO TARGET goes where focus already is — the cell a click
+   * selected, a spreadsheet's name box, a textarea the snapshot never
+   * surfaced. Nothing is cleared: the model put the caret there on purpose.
+   * With nothing editable focused the keys would fall on the page's own
+   * shortcuts, so that is refused instead of typed into the void.
+   */
+  async typeAtFocus(tab, args, action) {
+    const focused = await this.focusedEditable(tab);
+    if (!focused) {
+      throw new Error("Nothing editable has focus in this tab. Click into a field or a cell first (a spreadsheet's name box or formula bar), or pass a target.");
+    }
+    await this.insertText(tab, String(args.text ?? ""), args.slowly, action);
+    if (args.submit) await this.press(tab, { key: "Enter" }, action);
+    return okText(`Typed into the focused ${pageLabel(focused)}.`);
+  }
+
+  async insertText(tab, text, slowly, action) {
     const debug = await this.ensureDebugger(tab);
-    const text = String(args.text ?? "");
-    if (args.slowly) {
+    if (slowly) {
       for (const char of text) {
         if (action) this.checkpoint(action);
         this.stampAgentInput(tab); // insertText raises no keydown: nothing to expect
@@ -4040,18 +4303,58 @@ class DesktopBrowserManager {
       this.stampAgentInput(tab);
       await debug.sendCommand("Input.insertText", { text });
     }
-    if (args.submit) await this.press(tab, { key: "Enter" }, action);
-    return okText(`Typed into ${args.element || args.target}.`);
   }
 
   async press(tab, args, action) {
     const key = String(args.key || "");
     if (!key) throw new Error("A key is required.");
+    const { keyCode, modifiers } = keyChord(key);
     if (action) this.checkpoint(action);
-    this.stampAgentInput(tab, 1); // keyDown → one keydown report
-    tab.view.webContents.sendInputEvent({ type: "keyDown", keyCode: key });
-    tab.view.webContents.sendInputEvent({ type: "keyUp", keyCode: key });
+    // One keyDown — its modifiers ride on it, not as keydowns of their own →
+    // one keydown report.
+    this.stampAgentInput(tab, 1);
+    tab.view.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    tab.view.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
     return okText(`Pressed ${key}.`);
+  }
+
+  /**
+   * PASTE WITHOUT THE CLIPBOARD. Chromium has one clipboard — the system's —
+   * so a tab-scoped one cannot exist, and writing the human's clipboard to
+   * paste would clobber what they copied. Instead the page gets what a real
+   * paste delivers: a `paste` event carrying the text. A canvas spreadsheet
+   * takes tab-separated rows that way as a block of cells. A page that
+   * ignores the event but has an editable focused gets the text inserted.
+   */
+  async paste(tab, args, action) {
+    const text = typeof args.text === "string" ? args.text : "";
+    if (!text) throw new Error("browser_paste needs the text to paste.");
+    const count = Array.from(text).length;
+    if (action) this.checkpoint(action);
+    // A synthetic ClipboardEvent raises no pointerdown or keydown: nothing
+    // for the preload to report.
+    this.stampAgentInput(tab);
+    const outcome = (await this.evaluateInPage(tab, PAGE_PASTE, [text])) || {};
+    if (outcome.handled) return okText(`Pasted ${count} characters; the page handled the paste event.`);
+    if (!outcome.editable) {
+      throw new Error("Nothing took the paste: nothing editable has focus and the page did not handle a paste event. Click into a cell or field first.");
+    }
+    await this.insertText(tab, text, false, action);
+    return okText(`Inserted ${count} characters at the focused ${pageLabel(outcome.editable)}; the page did not handle a paste event.`);
+  }
+
+  /**
+   * COPY, READ BACK — never written to the system clipboard. The page's own
+   * copy handler is asked first (a canvas grid's selection lives in its
+   * model, not the DOM, and only the handler can serialize it); otherwise
+   * the DOM selection.
+   */
+  async copy(tab, action) {
+    if (action) this.checkpoint(action);
+    this.stampAgentInput(tab); // a synthetic copy event: nothing to report
+    const text = await this.evaluateInPage(tab, PAGE_COPY);
+    if (typeof text !== "string" || !text) throw new Error("Nothing is selected in this tab. Select text or cells first.");
+    return okText(capCopied(text));
   }
 
   async fillForm(tab, args, action) {
@@ -4530,16 +4833,10 @@ class DesktopBrowserManager {
         case "browser_fill_form": return this.fillForm(await target(), args, action);
         case "browser_select_option": return this.selectOption(await target(), args, action);
         case "browser_press_key": return this.press(await target(), args, action);
-        case "browser_hover": {
-          const tab = await target();
-          const point = await this.targetPoint(tab, args.target);
-          await this.showAgentCursor(tab, point, "move");
-          const debug = await this.ensureDebugger(tab);
-          this.stampAgentInput(tab);
-          const native = this.inputPoint(tab, point);
-          await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
-          return okText(`Hovered ${args.element || args.target}.`);
-        }
+        case "browser_hover": return this.hover(await target(), args);
+        case "browser_drag": return this.drag(await target(), args, action);
+        case "browser_paste": return this.paste(await target(), args, action);
+        case "browser_copy": return this.copy(await target(), action);
         case "browser_resize": {
           const tab = await target();
           const size = await this.resizeTab(tab, args);
@@ -4802,4 +5099,4 @@ function managerForScope(managers, scopeKey, fallback = null) {
   return best;
 }
 
-module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };
+module.exports = { DesktopBrowserManager, managerForScope, keyChord, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };

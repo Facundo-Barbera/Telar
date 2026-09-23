@@ -224,8 +224,10 @@ describe("what the toolkit costs before a single page is opened", () => {
       }
     }
     console.log(`  telar-browser descriptions: ${total} bytes across ${BROWSER_TOOLS.length} tools`);
-    // The whole server's prose, in every browsing session's context.
-    expect(total).toBeLessThan(3_000);
+    // The whole server's prose, in every browsing session's context. Raised
+    // from 3,000 when the coordinate route joined: click and hover describe
+    // both ways to address a page, and drag is a seventeenth tool.
+    expect(total).toBeLessThan(3_600);
   });
 
   test("the three bounded tools say so, and name their narrowing argument", () => {
