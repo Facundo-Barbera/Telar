@@ -26,7 +26,7 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { rememberedProjectName, writeFrontDoorNote } from "@/lib/composer-project";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -2987,7 +2987,9 @@ export function SessionCockpit({
    * this it painted the whole of it under a fresh greeting.
    */
   const transcript = useMemo(
-    () => (sessionId ? projectTranscript(turns, items, events, tasks) : []),
+    // A peer's passive report is drawn inside the turn it arrived during — see
+    // `hostPassiveArrivals`.
+    () => (sessionId ? hostPassiveArrivals(projectTranscript(turns, items, events, tasks)) : []),
     [sessionId, turns, items, events, tasks, projectTranscript],
   );
   /**
