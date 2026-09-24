@@ -95,7 +95,7 @@ import Testing
 
     @Test func theBannerIsShownForTheMacThatCannotPushAndNoOther() {
         let readiness = PushReadiness(missingRelay: [macA], unreachable: [macB])
-        // The Agent screen draws it for ITS Mac only — a banner over one
+        // A screen about one Mac draws it for ITS Mac only — a banner over one
         // conversation about a different machine would be a puzzle.
         #expect(readiness.missingRelay.contains(macA))
         #expect(!readiness.missingRelay.contains(macB))

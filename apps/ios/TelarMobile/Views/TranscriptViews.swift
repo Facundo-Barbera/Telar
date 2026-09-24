@@ -524,13 +524,9 @@ struct TaskChipRow: View {
 /// scales, so the grammar is learned once. Its own fold state, so two runs in
 /// the same response open independently.
 ///
-/// GENERIC OVER THE ROW, because the Agent's conversation folds by these same
-/// two rules over `AgentRow` and not `JournalItem` at all (#569). Its tool calls
-/// were drawn one flat line each — twelve calls, twelve lines — for exactly as
-/// long as this chrome could only be handed a session's items. What a row LOOKS
-/// like never reaches here: `content` draws it however that screen draws it, and
-/// the only two questions asked about a row are whether it failed and what the
-/// tally calls it.
+/// GENERIC OVER THE ROW (#569). What a row LOOKS like never reaches here:
+/// `content` draws it however that screen draws it, and the only two questions
+/// asked about a row are whether it failed and what the tally calls it.
 ///
 /// THE FAILURE MARK IS A GLYPH, NOT A COUNT — the phone's own choice, and it
 /// reads every row rather than only the hidden ones: a run with a failure in it
@@ -649,8 +645,7 @@ struct StepFoldView<Row: Identifiable, Content: View>: View {
 
 /// One run of a SESSION's activity rows. All that is left here is what a
 /// session's items mean — which failed, what the tally calls each one, and which
-/// view draws one; the fold itself is `StepFoldView`, shared with the Agent's
-/// conversation.
+/// view draws one; the fold itself is `StepFoldView`.
 struct ActivityRunView: View {
     /// Already filtered by `renderable` — this view counts what it is given.
     let rows: [JournalItem]
