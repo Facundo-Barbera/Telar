@@ -176,13 +176,23 @@ export type EngineStatePaths = {
    *  `/v2/usage` handler. */
   usageModelRates: string;
   /** What #523 designated as the Main session, until #531 dropped the
-   *  designation — see `main-sweep.ts`. Startup litter now, kept only long
-   *  enough to be swept once. */
+   *  designation. Litter with no reader; the sweep that removed it went with
+   *  the built-in Agent (#908), and it stays named here so a leftover copy is
+   *  not flagged as an undeclared file. */
   mainSession: string;
   /** The marker `sweepSpoolAndLooms` leaves once it has removed the Spool's
    *  and the Looms' leftovers, so a swept home does not walk both trees again
    *  on every later start — see `decommission-sweep.ts`. */
   decommissionMarker: string;
+  /**
+   * WHERE A DECOMMISSIONED FEATURE'S DATA IS SET ASIDE, not deleted — #908.
+   * `retired/agent-<stamp>/` is the built-in Agent's whole `agent/` directory,
+   * moved there once by `retireAgentStore`.
+   */
+  retired: string;
+  /** The marker `retireAgentStore` leaves once it has run, so a home is
+   *  handled once — see `decommission-sweep.ts`. */
+  agentRetiredMarker: string;
   /**
    * Chromium user-data-dirs for the HEADLESS browser runtime — `BrowserRuntime`
    * in `daemon.ts`, the provider a detached machine or a quit app falls back
@@ -257,6 +267,8 @@ export function statePaths(root: string): EngineStatePaths {
     usageModelRates: path.join(resolved, "usage-model-rates.json"),
     mainSession: path.join(resolved, "main-session.json"),
     decommissionMarker: path.join(resolved, "decommissioned-spool-looms"),
+    retired: path.join(resolved, "retired"),
+    agentRetiredMarker: path.join(resolved, "decommissioned-agent"),
     browserProfiles: path.join(resolved, "browser-profiles"),
     diagnostics: path.join(resolved, "diagnostics"),
     nodeModulesReaped: path.join(resolved, "node-modules-reaped"),

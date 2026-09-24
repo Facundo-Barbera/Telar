@@ -17,15 +17,6 @@
  * calls while the daemon builds them out of `store.*` calls — the parity
  * `tools.ts`'s header argues for, held by one port rather than by two lists
  * somebody keeps in step.
- *
- * ── AND WHY IT IS NOT IN `agent/tools.ts`, WHERE THREE OF THEM WERE ─────────
- * `sessions_find`, `sessions_outline` and `sessions_answer` shipped on the
- * cockpit AGENT's wall (#531), built in-process from `store.*`. A SESSION could
- * not reach them: the Agent is a LangGraph thread with its own capability, and
- * nothing a session holds points at it. Moving them here is what makes the
- * issue's own sentence — "engine `sessions-tools`, same wall, all read-only" —
- * true, and the Agent keeps them by taking this wall rather than by having its
- * own copy of it.
  */
 import { z } from "zod";
 import type { Item } from "@telar/engine-client";
@@ -237,50 +228,12 @@ const GREP =
  * for. The overrun is bounded by the default itself — a caller asking for 2,500
  * can be handed at most 8,000, which is what it would have got by omitting the
  * argument — and it buys `more: false` on the first call, which is both the
- * honest answer to "is that all of it" and the signal the turn's dedup keys on.
+ * honest answer to "is that all of it".
  *
  * Above the default the number is the caller's again: a 40,000-character answer
  * is paged, because that IS a case where the window is the constraint.
  */
 const ANSWER_WHOLE_UNDER = ANSWER_SLICE_DEFAULT;
-
-/**
- * WHAT A `sessions_answer` REPLY SAYS ABOUT THE RUN IT RESOLVED TO (#608).
- *
- * ── WHY THE TURN'S MEMO CANNOT DERIVE THIS FROM THE ARGUMENTS ───────────────
- * #592's memo keys on the literal arguments, and the waste this answers has
- * arguments that DIFFER while the payload does not: `{from: 0, limit: 2500}` and
- * `{from: 2500, limit: 2400}` are two calls for one run's text, and an omitted
- * `runId` is a third spelling of the same read. The identity that matters is the
- * RESOLVED `(sessionId, runId)`, and only the reply knows it.
- *
- * ── AND IT LIVES HERE, BESIDE THE TOOL THAT WRITES THE SHAPE ────────────────
- * `agent/runtime.ts` owns the memo; this owns what a reply looks like. Reading
- * the reply's JSON in the graph would put a parser for this tool's output two
- * files away from the `json(...)` call that produces it, which is how a field
- * rename silently turns a dedup off.
- *
- * `latest` SEPARATES THE TWO SPELLINGS. A reply to a call that NAMED a runId
- * says nothing about which turn is newest — it may well be an old one — so only
- * a resolution the store made for us is worth remembering as "the latest".
- */
-export type AnswerIdentity = { sessionId: string; runId: string; latest: boolean; whole: boolean };
-
-export function answerIdentity(name: string, args: Record<string, unknown>, text: string): AnswerIdentity | undefined {
-  if (name !== "sessions_answer") return undefined;
-  const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
-  if (!sessionId) return undefined;
-  let reply: { runId?: unknown; more?: unknown };
-  try {
-    reply = JSON.parse(text) as { runId?: unknown; more?: unknown };
-  } catch {
-    // An error answer is not JSON, and a shape this cannot read is simply not
-    // memoised — the failure direction is a duplicate page, never a wrong one.
-    return undefined;
-  }
-  if (typeof reply?.runId !== "string" || !reply.runId) return undefined;
-  return { sessionId, runId: reply.runId, latest: typeof args.runId !== "string" || !args.runId, whole: reply.more === false };
-}
 
 /**
  * WHEN THERE IS NOTHING TO READ, SAY SO IN A SENTENCE THAT CLOSES (#592).
@@ -296,8 +249,7 @@ export function answerIdentity(name: string, args: Record<string, unknown>, text
  *
  * ── THE SHAPE, WHICH IS `DECLINED_ANSWER`'S ─────────────────────────────────
  * Name the fact, shut the retry down in as many words, and point at the one
- * move that is not a retry. `agent/approval.ts` argues that shape for a declined
- * call; this is the same problem with the person taken out of it.
+ * move that is not a retry.
  *
  * ── AND WHY THE CLOSING HALF IS HERE RATHER THAN AT THE THROW ───────────────
  * The store's sentences are served to an HTTP client too, and "do not guess

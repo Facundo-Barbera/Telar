@@ -62,11 +62,13 @@ export const DIRECTORY_CATEGORIES: Readonly<Record<string, StorageCategory>> = {
   sessions: "sessions",
   python: "python",
   "browser-profiles": "browser-profiles",
-  agent: "agent",
   notes: "notes",
   dictation: "dictation",
   run: "run",
   diagnostics: "diagnostics",
+  // A decommissioned feature's data, set aside rather than deleted (#908 moved
+  // the built-in Agent's `agent/` here). Nothing reads it, so it is `other`.
+  retired: "other",
   // Configuration that outgrew a single file, so it reads under the same
   // heading as the JSON beside it rather than as a row of its own.
   orientation: "settings",
@@ -84,7 +86,6 @@ const CATEGORY_DIRECTORIES: Readonly<Partial<Record<StorageCategory, string>>> =
   sessions: "sessions",
   python: "python",
   "browser-profiles": "browser-profiles",
-  agent: "agent",
   notes: "notes",
   dictation: "dictation",
   run: "run",

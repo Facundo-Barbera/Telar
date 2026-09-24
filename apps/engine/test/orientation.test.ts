@@ -295,6 +295,15 @@ test("the skill says the things a coordinator gets wrong", () => {
   expect(TELAR_SKILL.toLowerCase()).toContain("refused");
 });
 
+test("the skill no longer offers the built-in Agent as an address (#908)", () => {
+  // It left the binary; a session told `sessions_send` to `agent` reaches the
+  // person would send into a session id that does not exist.
+  expect(TELAR_SKILL).not.toContain("built-in Agent");
+  expect(TELAR_SKILL).not.toContain("`sessions_send` to `agent`");
+  // v6 is the release that dropped it, so every installed SKILL.md re-syncs.
+  expect(ORIENTATION_VERSION).toBeGreaterThanOrEqual(6);
+});
+
 test("the skill's front matter is what a provider actually reads", () => {
   expect(TELAR_SKILL.startsWith("---\n")).toBe(true);
   expect(TELAR_SKILL).toContain(`name: ${TELAR_SKILL_NAME}`);

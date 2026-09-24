@@ -14,8 +14,7 @@
  *     the other session's id fail to appear;
  *   - a claim that is not live buys nothing, so a stale or forged token cannot
  *     post at all;
- *   - the built-in Agent is refused, because `agent` is not a session and the
- *     link would be permanently dead;
+ *   - a proof naming a session other than the claim's is refused;
  *   - a posted comment drops the detail cache, so the thread the panel shows is
  *     not thirty seconds behind the comment it just wrote.
  */
@@ -136,11 +135,11 @@ test("a claim that is not live posts nothing at all", async () => {
   expect(calls).toEqual([]);
 });
 
-test("the built-in Agent is refused, because `agent` is not a session to link to", async () => {
+test("a proof naming a session other than the claim's posts nothing", async () => {
   const { store, calls, proof } = setup();
   await expect(
     store.projectGitHubComment("project_one", { kind: "issue", number: 1, body: "x" }, { ...proof, sessionId: "agent" }),
-  ).rejects.toThrow(/no session a comment could link to/);
+  ).rejects.toThrow();
   expect(calls).toEqual([]);
 });
 
