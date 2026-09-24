@@ -129,3 +129,82 @@ export function sweepReport(sweep: DecommissionSweep): string | undefined {
   });
   return `Telar engine: removed ${parts.join(" and ")} — the Spool and the Looms are decommissioned (#501)`;
 }
+
+/* ------------------------------------------------------------------ *
+ * WHAT THE BUILT-IN AGENT LEFT ON DISK — issue #908.
+ *
+ * The Agent left the binary; `<engineRoot>/agent/` did not. It holds the
+ * thread database and its archives, settings, memory and — at 0600 — the
+ * OpenCode Go key somebody pasted. Nothing in this build reads any of it.
+ *
+ * MOVED, NOT DELETED, and that is the owner's decision rather than the Spool's
+ * judgement above. The key is theirs, and the Agent is being rebuilt outside
+ * Telar; a store it may want to read again is not litter. So the directory is
+ * RENAMED, whole, to `retired/agent-<stamp>/`. A rename on one volume moves
+ * nothing but a directory entry: every file keeps its bytes, its owner and its
+ * mode, the key included, and no byte of any file is read on the way.
+ *
+ * WHY IT MOVES AT ALL rather than staying put: `agent/` is no longer a
+ * directory the product declares (#665), and `retired/` is.
+ *
+ * ONCE, BEST-EFFORT, ONE LINE — the Spool sweep's rules. A failed rename
+ * leaves `agent/` exactly where it was and the marker unwritten, so the next
+ * start tries again; it never throws into a daemon's boot.
+ * ------------------------------------------------------------------ */
+
+export type AgentRetirement =
+  /** Moved; `to` is where it went. */
+  | { moved: true; to: string }
+  /** Nothing to do: already handled, or no `agent/` on this home. */
+  | { moved: false }
+  /** The rename failed and will be retried next start. */
+  | { moved: false; failed: string };
+
+/** `2026-09-23T10:04:05.006Z` → `2026-09-23T10-04-05-006Z`: sortable, and
+ *  legal in a file name on every filesystem the store can live on. */
+function stampOf(at: number): string {
+  return new Date(at).toISOString().replace(/[:.]/g, "-");
+}
+
+/**
+ * Move `<engineRoot>/agent/` to `<engineRoot>/retired/agent-<stamp>/`, once per
+ * home. `now` stamps the destination, injected so a test names it exactly.
+ */
+export function retireAgentStore(engineRoot: string, now: () => number = Date.now): AgentRetirement {
+  const paths = statePaths(path.resolve(engineRoot));
+  try {
+    if (fs.existsSync(paths.agentRetiredMarker)) return { moved: false };
+    const source = path.join(paths.root, "agent");
+    let result: AgentRetirement = { moved: false };
+    if (fs.existsSync(source)) {
+      fs.mkdirSync(paths.retired, { recursive: true });
+      // The marker makes a clash all but impossible, but a rename onto an
+      // existing directory fails or replaces it, so the name is made unique.
+      let target = path.join(paths.retired, `agent-${stampOf(now())}`);
+      for (let n = 1; fs.existsSync(target); n += 1) target = path.join(paths.retired, `agent-${stampOf(now())}-${n}`);
+      fs.renameSync(source, target);
+      result = { moved: true, to: target };
+    }
+    try {
+      fs.writeFileSync(paths.agentRetiredMarker, `${new Date(now()).toISOString()}\n`, "utf8");
+    } catch {
+      // Without the marker the next start checks for `agent/`, finds none and
+      // tries again to write this. Not worth a failure.
+    }
+    return result;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    return { moved: false, failed: code ?? (error instanceof Error ? error.message : String(error)) };
+  }
+}
+
+/** The one line, or nothing when there was nothing to say. */
+export function retireAgentReport(retirement: AgentRetirement): string | undefined {
+  if (retirement.moved) {
+    return `Telar engine: moved the built-in Agent's data to ${retirement.to} — the Agent was removed (#908); nothing was deleted`;
+  }
+  if ("failed" in retirement) {
+    return `Telar engine: could not move the built-in Agent's data out of agent/ (${retirement.failed}); it is untouched and will be retried on the next start`;
+  }
+  return undefined;
+}

@@ -50,20 +50,6 @@ export const ENGINE_PROTOCOL_VERSION = 2 as const;
 export const Id = z.string().min(1);
 export type Id = z.infer<typeof Id>;
 
-/**
- * THE ONE ID IN THIS NAMESPACE THAT IS NOT A SESSION — issue #784.
- *
- * `sessions_send` takes it as a target and nothing else does: it addresses the
- * built-in Agent, the person's own conversation, which is a LangGraph thread
- * with no session document, no queue and no transcript to read. The engine's
- * `apps/engine/src/agent/identity.ts` is where it is used and explained; the
- * VALUE lives here because two things outside that file have to recognise it
- * without importing the engine — this contract, and the assignment fold in
- * `./assignments.ts`, which must never turn a row naming it into work somebody
- * was handed.
- */
-export const AGENT_SELF_ID = "agent";
-
 /** Epoch milliseconds, as v1 used. Not ISO strings — they sort and diff wrong
  *  as often as they read nicely, and every consumer here does arithmetic. */
 export const Timestamp = z.number().int().nonnegative();
@@ -511,8 +497,6 @@ export const StorageCategory = z.enum([
   "browser-profiles",
   /** The parsed-transcript cache behind Usage, and its price list. */
   "usage",
-  /** The cockpit Agent's own thread, memory and checkpoints. */
-  "agent",
   /** Project notebooks. */
   "notes",
   "dictation",
@@ -1527,87 +1511,6 @@ export const ProviderModel = z.object({
   source: z.enum(["provider", "user"]).default("provider"),
 });
 export type ProviderModel = z.infer<typeof ProviderModel>;
-
-/**
- * WHICH OF OPENCODE GO'S THREE ENDPOINTS A MODEL ANSWERS ON (#551).
- *
- * Go publishes three request shapes — OpenAI's `chat/completions`, an
- * Anthropic-shaped `/messages`, and OpenAI's `/responses` — and a model belongs
- * to exactly one. The Agent builds a client per shape since #571 and speaks all
- * three, so this rides as a per-row BADGE rather than as a refusal; whether a
- * row can be picked is `AgentModel.supported`, which the engine decides and
- * which no surface may second-guess from this field.
- *
- * `unknown` IS THIS BUILD ADMITTING IT DOES NOT KNOW, not a fourth endpoint.
- * The mapping exists in one table on opencode.ai/docs/go and nowhere machine-
- * readable, so the engine carries a transcription of it; an id Go starts
- * serving before anybody updates that table lands here.
- */
-export const GoRoute = z.enum(["chat", "messages", "responses", "unknown"]);
-export type GoRoute = z.infer<typeof GoRoute>;
-
-/**
- * ONE MODEL THE BUILT-IN AGENT MAY RUN — Go's id, described.
- *
- * ── WHY IT EXTENDS `ProviderModel` RATHER THAN REPLACING IT ─────────────────
- * The fields below `route` are the new ones and the reason this type exists:
- * Go's `/models` answers `{ id, object, created, owned_by }` and nothing else,
- * so a picker built on it is raw strings in arbitrary order. models.dev
- * describes them, the engine merges the two, and these are the merged facts.
- *
- * The `ProviderModel` half is a COMPATIBILITY TAIL, and it is deliberate. An
- * iPhone ships from the App Store on its own clock and talks to whatever engine
- * the Mac is running; `AgentModelList` decodes its rows as `ProviderModel` and
- * DROPS any it cannot read, so an engine that answered only the new shape would
- * empty the model pill on every phone that had not updated — silently, and with
- * no message to explain it. Six keys is a cheap price for that not happening.
- * A later release may retire them once no supported client reads them.
- */
-export const AgentModel = ProviderModel.extend({
-  /** models.dev's display name — "Kimi K3" — or the id when nobody described
-   *  it. `label` carries the same string for the older clients. */
-  name: z.string().min(1),
-  /** The section a picker files it under: "GLM", "Kimi", "DeepSeek". Derived by
-   *  the engine from the id, NOT models.dev's own `family`, which files three
-   *  Qwens as three families and leaves other models without one. */
-  family: z.string().min(1),
-  route: GoRoute,
-  /** Whether Telar's Agent client can actually run it. `chat` and `unknown`
-   *  yes; `messages` and `responses` no — see `GoRoute`. */
-  supported: z.boolean(),
-  /** Whether models.dev had anything to say. False leaves every optional field
-   *  below absent, and the row still lists: an id you can run is worth showing
-   *  whether or not a third party has described it. */
-  described: z.boolean(),
-  reasoning: z.boolean().optional(),
-  toolCall: z.boolean().optional(),
-  attachment: z.boolean().optional(),
-  /** Tokens in and tokens out. Absent rather than zero when undescribed. */
-  context: z.number().int().positive().optional(),
-  output: z.number().int().positive().optional(),
-  /** `YYYY-MM-DD`, models.dev's own — what "newest first" is sorted on. */
-  releaseDate: z.string().min(1).optional(),
-});
-export type AgentModel = z.infer<typeof AgentModel>;
-
-/**
- * `GET /v2/agent/models` — what the Agent may run, and where each half came
- * from.
- *
- * THE TWO SOURCES FAIL INDEPENDENTLY, which is why they are reported
- * separately rather than as one "ok" flag. `go: null` means Go did not answer
- * and `models` is empty — the only state with no picker. `modelsDev: null`
- * means the descriptions are missing and every row is `described: false`, which
- * is a worse-looking but entirely usable list. A surface says which happened by
- * reading these, never by inferring it from a row.
- */
-export const AgentModelCatalogue = z.object({
-  models: z.array(AgentModel),
-  source: z.object({ go: Timestamp.nullable(), modelsDev: Timestamp.nullable() }),
-  /** The service's own words when a half failed. Never invented. */
-  message: z.string().min(1).optional(),
-});
-export type AgentModelCatalogue = z.infer<typeof AgentModelCatalogue>;
 
 /** Where a catalogue came from, so a surface can say whether it is asking or
  *  guessing. `builtin` is this cockpit's own list and is a known gap. */

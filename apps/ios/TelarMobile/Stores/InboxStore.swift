@@ -145,28 +145,6 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// ZERO FROM A MAC THAT PREDATES THE FILTER, which sent every row — the
     /// sections below then hold the settled ones already and this adds nothing.
     private(set) var shelvedOnMac = 0
-    /// WHETHER THIS MAC HAS A BUILT-IN AGENT (#531), as of its last answer.
-    ///
-    /// FALSE UNTIL A MAC SAYS OTHERWISE, and false again the moment one says it
-    /// is off: unlike `layout` beside it, an absent field here is a real answer
-    /// rather than "cannot say". A Mac whose engine predates the feature sends
-    /// nothing and means off, and holding a stale `true` for it would put a row
-    /// on this sidebar that its own rail does not draw.
-    private(set) var agentEnabled = false
-    /// THE AGENT'S OWN STATE, for the sidebar row's status line (#539).
-    ///
-    /// A SECOND REQUEST, AND ONLY WHERE THERE IS A ROW TO PUT IT ON. It cannot
-    /// ride the live read beside `agentEnabled`: that read is CONDITIONAL on the
-    /// Mac's sessions revision, and the Agent's own turns move nothing in the
-    /// sessions store — so a status folded in there would freeze on whatever it
-    /// said when some unrelated session was last written, and read "working" for
-    /// an hour after the turn ended.
-    ///
-    /// So it is asked for separately, after the live read and only when that
-    /// read says this Mac HAS an Agent. On every phone whose Macs have never
-    /// switched one on — which is every phone out of the box — nothing extra is
-    /// ever fetched.
-    private(set) var agentState: AgentState?
     /// WHETHER THIS PHONE IS ASKING FOR THEM. Off until a reader opens the
     /// shelf, and it stays on afterwards: the rows cost nothing to keep, and
     /// turning it back off would mean re-fetching all of them the next time
@@ -185,9 +163,6 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
-                // AFTER the live read, because that read is what says whether
-                // this Mac has an Agent at all — see `agentState`.
-                await self?.refreshAgent()
                 // 3s while anything is live, 10s when the whole list idles.
                 let lively = self?.anythingLive ?? false
                 try? await Task.sleep(for: .seconds(lively ? 3 : 10))
@@ -198,21 +173,6 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     func stop() {
         loop?.cancel()
         loop = nil
-    }
-
-    /// The Agent's state for the sidebar row's line — nothing at all when this
-    /// Mac has no Agent, which is every Mac out of the box.
-    ///
-    /// A FAILED ASK KEEPS WHAT IS ON SCREEN, like every other read here: the row
-    /// is still worth pressing, and the next tick is seconds away. Only the
-    /// SWITCH going off clears the line, and it clears it because the row goes
-    /// with it.
-    func refreshAgent() async {
-        guard agentEnabled else {
-            agentState = nil
-            return
-        }
-        if let answer = try? await api.agent() { agentState = answer.agent }
     }
 
     /// A read receipt landed on a session this store lists. Clear its dot NOW.
@@ -398,11 +358,6 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         // and the sections below then hold the settled rows themselves — so
         // zero here is "nothing withheld", never "nothing settled".
         shelvedOnMac = live.settledCount ?? 0
-        // WHETHER THIS MAC HAS AN AGENT (#531). Taken straight, not merged with
-        // what was held: nil is the Mac saying "off", not "cannot say", so an
-        // Agent switched off on the desktop leaves this sidebar on the very
-        // next poll rather than lingering until something else moves.
-        agentEnabled = live.agent?.enabled ?? false
         projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
         projects = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0) })
         assignments = live.assignments

@@ -15,10 +15,10 @@
  * carrying the WHOLE `RunView` - so there is no delta to apply wrong, and a
  * reader that missed a frame is corrected by the next rather than drifting.
  *
- * `fetch` RATHER THAN `EventSource`, for the reasons `lib/agent/thread.ts`
- * writes out: `EventSource` cannot be aborted exactly on unmount (the browser
- * reconnects on its own schedule) and cannot carry a header, which the remote
- * host hop needs. Reading the body with a reader gives an exact abort.
+ * `fetch` RATHER THAN `EventSource`: `EventSource` cannot be aborted exactly
+ * on unmount (the browser reconnects on its own schedule) and cannot carry a
+ * header, which the remote host hop needs. Reading the body with a reader gives
+ * an exact abort.
  *
  * RECONNECT IS THE NORMAL CASE. A stream ends when a proxy times it out, when
  * the engine restarts, when a laptop sleeps. Each reopen re-reads status FIRST,

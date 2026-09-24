@@ -192,14 +192,11 @@ import {
   type OutlineRow,
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
-import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
 import { lastKeytermFit, type KeytermFit } from "./dictation/fit";
 import { dictationLanguages, isDictationLanguage, isDictationProviderId, type DictationLanguage, type DictationProviderId } from "./dictation/provider";
 import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings } from "./dictation/settings";
 import type { DictationContext } from "./dictation/keyterms";
-import { AGENT_IS_NOT_A_SESSION, AGENT_SELF_ID, isAgentSelf, type AgentSenderProof } from "./agent/identity";
-import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
@@ -223,8 +220,7 @@ import {
 } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { agentInboxNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, timeoutNotification, wakeNotification } from "./notification";
-import type { AgentInboxKind, AgentInboxRow } from "./agent/inbox";
+import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
 import {
   commentOn,
   DEFAULT_ISSUE_FILTER,
@@ -1863,28 +1859,9 @@ function isDeltaOnlyBatch(observations: unknown[]): boolean {
   return true;
 }
 
-/**
- * ONE WAKE, ON ITS WAY TO THE BUILT-IN AGENT (#531, reshaped by #541 A).
- *
- * THE NOTIFICATION IS THE WHOLE OF IT NOW. It used to be the notice text plus a
- * `WakeReason`, because the runtime turned both into a TURN — the text was the
- * model's input and the reason was the row's provenance. Nothing on the far side
- * starts a turn any more: the wake becomes one INBOX ROW (`agent/inbox.ts`) that
- * the next human-started turn opens with. `NotificationDetail` already carries
- * every field that row needs, minted once in `notification.ts` (#550), so
- * handing over the notification rather than its two halves is what keeps the
- * Agent's row and a session's notification item the same fact.
- *
- * STILL NO TURN AROUND IT: the Agent's runtime decides what a wake costs, which
- * is now an INSERT rather than a conversation. See `setAgentWakeSink`.
- *
- * `inboxKind` IS THE ONE THING THE NOTIFICATION CANNOT SAY (#541 D). A deadline
- * taking a request's default is not one of `NotificationKind`'s three, and
- * minting a fourth would have rippled through every surface that draws a
- * SESSION's notification item to express a distinction only the Agent's inbox
- * ranks on. Absent, the row's kind is derived exactly as it always was.
- */
-export type AgentWake = { notification: NotificationDetail; inboxKind?: AgentInboxKind };
+/** WHO IS SENDING A `sessions_send`, PROVEN: the sending turn's own live claim.
+ *  The store reads the sender off the claim, never off the caller's word. */
+export type SenderProof = { sessionId: string; runId: string; claimToken: string };
 
 /**
  * How to read ONE file's patch — the two questions that change what git prints
@@ -3347,62 +3324,10 @@ export class EngineStore {
   }
 
   /* ---------------------------------------------------------------- *
-   * THE AGENT'S KEY — issue #531.
-   *
-   * `MainSession` and its designation stood here. What is left of that feature
-   * in this file is the one thing that was never about a session: where the
-   * OpenCode Go key comes from, and whether there is one.
-   * ---------------------------------------------------------------- */
-
-  /** `<engineRoot>/agent`, for the rungs and the store that live in it. */
-  private get agentDir(): string {
-    return path.join(this.paths.root, "agent");
-  }
-
-  /**
-   * WHICH RUNG ANSWERED, AND WHETHER A KEY IS SET HERE — the two facts a
-   * settings pane needs to decide between a field and a setup prompt.
-   *
-   * NEVER THE KEY, not even redacted, not even its length: all three are how a
-   * secret ends up in a log one pass later. `set` is whether THIS machine's own
-   * rung holds one, which is the only rung a person can clear from the pane;
-   * `source` says which rung the next call would actually spend, which is what
-   * explains a surprising bill. See `agent/credentials.ts`.
-   */
-  agentCredential(): { source?: GoKeySource; set: boolean } {
-    const found = resolveGoCredential({ agentDir: this.agentDir });
-    return { ...(found ? { source: found.source } : {}), set: readAgentKey(this.agentDir) !== undefined };
-  }
-
-  /** Store the pasted key, or clear it with an empty string. The one write, so
-   *  the 0600 file has exactly one author. */
-  setAgentKey(key: unknown): { source?: GoKeySource; set: boolean } {
-    if (typeof key !== "string") throw new EngineStateError("invalid_request", "the Agent's key must be text");
-    if (key.length > 4096) throw new EngineStateError("invalid_request", "that key is too long");
-    writeAgentKey(this.agentDir, key);
-    return this.agentCredential();
-  }
-
-  /**
-   * CARRY A #526 KEY ACROSS, ONCE — see `carryOverLegacyKey`.
-   *
-   * Read from where the old pane put it: a sensitive `OPENCODE_API_KEY` on the
-   * `telar` provider login, which no longer exists as a driver and whose row is
-   * swept away at startup. Reading the secret store directly rather than
-   * through `resolveProviderInstance` is deliberate — that path is typed by
-   * `ProviderDriverKind`, and the whole point is that `telar` is no longer one.
-   */
-  carryOverAgentKey(): boolean {
-    const legacy = this.readProviderSecrets()[secretKey("telar", "OPENCODE_API_KEY")];
-    return carryOverLegacyKey(this.agentDir, legacy);
-  }
-
-  /* ---------------------------------------------------------------- *
    * THE DICTATION KEY — issue #544.
    *
-   * Beside the Agent's rather than on it: same 0600 pattern, same
-   * write-only rule, different vendor and its own directory. See
-   * `dictation/credentials.ts` for why sharing one file would be wrong.
+   * A 0600, write-only key in its own directory. See
+   * `dictation/credentials.ts`.
    * ---------------------------------------------------------------- */
 
   /** `<engineRoot>/dictation` — the key lives in it, and nothing else does
@@ -3555,35 +3480,6 @@ export class EngineStore {
    */
   dictationKey(): string | undefined {
     return readDictationKey(this.dictationDir);
-  }
-
-  /**
-   * AND THEN DROP WHAT THE CARRY LEFT BEHIND — see `carryOverAgentKey`.
-   *
-   * `readProviderInstances` removes the retired `telar` ROW but deliberately
-   * will not touch a credential, because it runs from anywhere and could beat
-   * the carry to it. This is the other half, and it has exactly one safe
-   * caller: the startup sweep, one step after the key has been moved.
-   *
-   * KEYED ON A RETIRED DRIVER, NOT ON `telar` THE STRING. Any secret whose
-   * instance id no longer appears in the registry is a secret nothing can ever
-   * present again — the row it belonged to is gone by the time this runs.
-   */
-  removeRetiredProviderSecrets(): boolean {
-    const secrets = this.readProviderSecrets();
-    const live = new Set(this.listProviderInstances().map((instance) => instance.id));
-    // A key with no separator is not one `secretKey` could have minted, so it is
-    // not this sweep's to judge — `indexOf` would return -1 and `slice(0, -1)`
-    // would hand the set a plausible-looking prefix that never matches, which is
-    // a silent delete dressed up as a lookup. Left alone, like a malformed row.
-    const orphaned = Object.keys(secrets).filter((key) => {
-      const separator = key.indexOf(SECRET_KEY_SEPARATOR);
-      return separator > 0 && !live.has(key.slice(0, separator));
-    });
-    if (orphaned.length === 0) return false;
-    for (const key of orphaned) delete secrets[key];
-    this.writeDocument(this.paths.providerSecrets, { version: STATE_VERSION, secrets });
-    return true;
   }
 
   /**
@@ -4288,14 +4184,11 @@ export class EngineStore {
      * session. A registry that outlives a driver is an ordinary consequence of
      * shipping, and it must cost the user nothing but the row.
      *
-     * THE ROW GOES; THE SECRET IS LEFT EXACTLY WHERE IT IS. This is the half of
-     * the rule that matters, and it is the opposite of `removeProviderInstance`,
-     * which takes both. `carryOverAgentKey` still has to find that #526 key to
-     * move it into the Agent's own store, and this read runs from anywhere —
-     * a worker, a test, any route that lands before the daemon's startup sweep.
-     * A lazy read that deleted credentials would be a coin flip on whether the
-     * upgrade kept somebody's key. `agent/main-sweep.ts` removes the orphaned
-     * secret instead, one step AFTER the carry, where the order is guaranteed.
+     * THE ROW GOES; THE SECRET IS LEFT EXACTLY WHERE IT IS. This is the opposite
+     * of `removeProviderInstance`, which takes both: this read runs from
+     * anywhere — a worker, a test, any route — and a lazy read that deleted
+     * credentials is not one a person would expect. (The built-in Agent that
+     * used to carry the #526 key across and then drop it is gone, #908.)
      *
      * THE PRUNE IS NARROW ON PURPOSE. Only an unknown `driver` is forgiven here;
      * every other malformed row still throws below, because that is corruption
@@ -6904,16 +6797,6 @@ export class EngineStore {
     const project = this.getProject(projectId);
     const target = this.forgeNumber(input.number);
     assertId(proof.sessionId, "sender session id");
-    /**
-     * THE BUILT-IN AGENT CANNOT COMMENT, and the refusal is the same one
-     * `submitAgentTurn` gives for the same reason: the Agent is a LangGraph
-     * thread with no session document, so `agent` in a marker would be a
-     * permanent link on github.com to a conversation `sessions_read` cannot
-     * open. A dead link is worse than no attribution.
-     */
-    if (isAgentSelf(proof.sessionId)) {
-      throw new EngineStateError("invalid_request", "the built-in Agent has no session a comment could link to");
-    }
     // Throws unless the claim is live and really is this session's. The id below
     // is the store's finding, not the caller's claim.
     const claimed = this.requireSenderClaim(proof);
@@ -7613,8 +7496,7 @@ export class EngineStore {
        * auto-accepted — regardless of what its creator was allowed to do.
        *
        * WITH NO CEILING THIS IS EXACTLY THE LINE IT WAS. A human's own click
-       * has no creator to inherit from, and neither does the built-in Agent,
-       * which is a thread rather than a session and has no runtime mode to read.
+       * has no creator to inherit from.
        */
       runtimeMode: (() => {
         const posture = detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE;
@@ -8008,29 +7890,6 @@ export class EngineStore {
    * is gone, and only where its result was discarded.
    */
   private requireSession(sessionId: string): Session {
-    /**
-     * THE RESERVED AGENT ID IS REFUSED HERE, IN WORDS — issue #784.
-     *
-     * WRITTEN BEFORE THE HAPPY PATH, and this is the one line that makes the
-     * reserved target affordable. `agent` passes `assertId` (letters only) and
-     * names no session document, so every read of it fell through to
-     * `not_found` — "session does not exist" for the one id in this engine that
-     * deliberately does not, which tells a caller nothing and invites it to
-     * create one. Fifteen-odd callers validate a session id by asking this
-     * method for one; a refusal here is a refusal at all of them, in one
-     * sentence, rather than a rule each door writes for itself and one door
-     * forgets.
-     *
-     * `invalid_request` RATHER THAN `not_found`, because the id is not missing.
-     * It names something real that is not a session, and the two are different
-     * answers to a caller deciding whether to retry.
-     *
-     * `sessions_send` IS THE ONE VERB THAT TAKES IT, and it never arrives here:
-     * it branches on the id before it asks for a session at all. Everything
-     * else — read, status, stop, settle, diff, requests, subscribe-to — is a
-     * thing there is no Agent to do it to.
-     */
-    if (isAgentSelf(sessionId)) throw new EngineStateError("invalid_request", AGENT_IS_NOT_A_SESSION);
     const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
     return parseSession(stored);
@@ -8444,19 +8303,6 @@ export class EngineStore {
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
     inbox: InboxPolicy;
-    /**
-     * WHETHER THIS MAC HAS AN AGENT (#531) — one flag, on the one read every
-     * rail already makes.
-     *
-     * IT RIDES THIS ANSWER for `inbox`'s reason: it is the one read every rail
-     * already makes, so the entry costs no request of its own. A FLAG rather
-     * than the whole document because the rail draws an entry, and an entry
-     * needs to know whether to exist and nothing else. The thread id, the model and the
-     * pending request are `/v2/agent`'s business, which is the pane's read
-     * rather than the sidebar's — putting them here would cost every poll on
-     * every client for a row that only shows a label.
-     */
-    agent: { enabled: boolean };
     revision: number;
     settledCount: number;
   } {
@@ -8468,18 +8314,14 @@ export class EngineStore {
      */
     const revision = this.sessionsRevision({ all: options.all === true });
     const inbox = this.getInboxPolicy();
-    // Read once and spread into both arms below, like `inbox`: the two paths
-    // differ in how they find the ROWS, never in what rides beside them.
-    const agent = { enabled: readAgentSettings(agentPaths(this.paths.root)).enabled };
     /**
      * NOTHING IS EXEMPTED FROM THE SHELF ANY MORE (#531).
      *
      * #522 kept the designated conversation on this list whatever the settling
      * clock said, because the rail drew its Main entry from a ROW here and a
-     * time rule would have made that entry vanish on a Tuesday. The Agent has
-     * no row: its entry is drawn from the flag above and exists whether or not
-     * any session does. So the exemption goes with the designation, and every
-     * conversation now settles by the same rule.
+     * time rule would have made that entry vanish on a Tuesday. The exemption
+     * went with the designation, and every conversation now settles by the same
+     * rule.
      */
     const indexed = this.shelfFromIndex(inbox, options.all === true);
     if (indexed) {
@@ -8506,7 +8348,6 @@ export class EngineStore {
         ...full,
         sessions: full.sessions.map(liveRow),
         inbox,
-        agent,
         revision,
         settledCount: indexed.settledCount,
       };
@@ -8543,7 +8384,6 @@ export class EngineStore {
         ? full.assignments
         : Object.fromEntries(Object.entries(full.assignments).filter(([id]) => !shelved.has(id))),
       inbox,
-      agent,
       revision,
       settledCount: shelved.size,
     };
@@ -9089,12 +8929,6 @@ export class EngineStore {
       sender?: { sessionId?: string };
       /** A CLOCK started this turn — issue #543. See the origin enum. */
       scheduleOrigin?: { scheduleId: string; dueAt: number };
-      /**
-       * THE ONE SENDER A HUMAN STOP DOES NOT LATCH OUT — set by
-       * `submitAgentTurn` from the built-in Agent's proof and by nothing else.
-       * See the latch below for the argument.
-       */
-      fromBuiltInAgent?: true;
     },
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
@@ -9128,29 +8962,13 @@ export class EngineStore {
       return { turn: structuredClone(known), replayed: true };
     }
     /**
-     * A HUMAN STOP LATCHES OUT PEERS, NOT THE THING THE HUMAN IS TYPING AT
-     * (#539).
-     *
-     * The latch was written for a runaway orchestrator: a person presses Stop, a
-     * coordinator two rooms away has not noticed, and its next `sessions_send`
-     * restarts exactly the work that was just ended. Nobody decided that, which
-     * is why it refuses.
-     *
-     * The built-in Agent is the opposite case and the owner met it on day one.
-     * It has no errand of its own: every send it makes is one a person asked for
-     * in the composer, seconds earlier, in front of them. Refusing that one is
-     * the machine telling the human they may not do the thing they are doing —
-     * and the only way round it was to go to the stopped session and type
-     * something there, which is the Stop undone by hand.
-     *
-     * SO THE EXEMPTION IS THE SENDER, NOT THE INTENT. `fromBuiltInAgent` comes
-     * from a proof only the in-process Agent capability can build (see
-     * `submitAgentTurn`); a peer session's send carries a claim instead and is
-     * still refused here, wake included. And the latch is NOT cleared by the
-     * Agent going through it — only a human message on the session itself does
-     * that, below — so the next peer that tries is still turned away.
+     * A HUMAN STOP LATCHES OUT PEERS. The latch was written for a runaway
+     * orchestrator: a person presses Stop, a coordinator two rooms away has not
+     * noticed, and its next `sessions_send` restarts exactly the work that was
+     * just ended. Nobody decided that, which is why it refuses — wake included.
+     * Only a human message on the session itself clears it, below.
      */
-    if (input.origin === "session" && session.agentMessagesBlocked && !input.fromBuiltInAgent) {
+    if (input.origin === "session" && session.agentMessagesBlocked) {
       throw new EngineStateError("conflict", "this session was stopped by its user; agent messages cannot restart it. Wait for a new human message.");
     }
     /**
@@ -9499,55 +9317,13 @@ export class EngineStore {
   submitAgentTurn(
     sessionId: string,
     input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string },
-    proof?: AgentSenderProof,
-  ): { turn: Turn; replayed: boolean; stoppedByUser?: { at?: number } } {
-    /**
-     * THE AGENT IS NOT A RECIPIENT OF A TURN — issue #784, and the refusal is
-     * here rather than only in `requireSession` because this is the method that
-     * would have written something first.
-     *
-     * A message TO the Agent has its own verb (`sendToAgent`) and leaves one
-     * inbox row. Reaching this one with the reserved id would mean queueing a
-     * turn on a session document that does not exist — the store would refuse a
-     * few lines down, but by then the run id is spoken for and the caller has
-     * been told about a session rather than about the Agent.
-     */
-    if (isAgentSelf(sessionId)) throw new EngineStateError("invalid_request", AGENT_IS_NOT_A_SESSION);
+    proof?: SenderProof,
+  ): { turn: Turn; replayed: boolean } {
     let sender: { sessionId?: string } = {};
-    let fromBuiltInAgent = false;
     if (proof) {
       assertId(proof.sessionId, "sender session id");
-      if (proof.claimToken === undefined) {
-        /**
-         * THE AGENT'S PROOF IS ITS OWN NAME, and it is claimless because there
-         * is nothing to claim: the Agent is a LangGraph thread, not a session,
-         * so it has no queue, no run and no token the engine could check — the
-         * same reason `subscribe` knows it by name (see `agent/identity.ts`).
-         *
-         * WHAT MAKES THAT SAFE IS THE SHAPE, not a check. `AgentTurnInput`, the
-         * only wire form of this argument, requires a run id and a token, so no
-         * HTTP body can produce a claimless proof at all — and the guard below
-         * stops a body from reaching this branch by NAMING `agent` with a forged
-         * claim instead. In-process, `buildSessionsCapability` builds it from
-         * the `self` it was constructed with, which the daemon supplies.
-         *
-         * IT STAMPS NO SENDER. The Agent has no session page to link to and no
-         * id a `sessions_read` would resolve, so a turn attributed to `agent`
-         * would be a dead link in the transcript and a lie in the notice. It
-         * stays what it is today — an agent's words, with no session behind
-         * them — and the exemption below is the only thing the proof buys.
-         */
-        if (!isAgentSelf(proof.sessionId)) {
-          throw new EngineStateError("invalid_request", "a claimless sender proof belongs to the built-in Agent alone");
-        }
-        fromBuiltInAgent = true;
-      } else {
-        if (isAgentSelf(proof.sessionId)) {
-          throw new EngineStateError("invalid_request", "the built-in Agent has no claim to send with; this proof is not its own");
-        }
-        const claimed = this.requireSenderClaim(proof);
-        sender = { sessionId: claimed.sessionId };
-      }
+      const claimed = this.requireSenderClaim(proof);
+      sender = { sessionId: claimed.sessionId };
     }
     const intent = input.intent ?? "report";
     /**
@@ -9642,17 +9418,6 @@ export class EngineStore {
      */
     const scope = intent === "task" ? input.scope : undefined;
     /**
-     * READ BEFORE THE SUBMIT, because the submit is what may clear it — and
-     * reported even though the send SUCCEEDED. The Agent going through a latch
-     * it is exempt from is the one case where a person's Stop is silently
-     * stepped over, so the tool answer says whose Stop it was and when. The
-     * caller decides what to do with that; nothing here refuses.
-     */
-    const latched = fromBuiltInAgent ? this.getSession(sessionId) : undefined;
-    const stoppedByUser = latched?.agentMessagesBlocked
-      ? { ...(latched.agentMessagesBlockedAt !== undefined ? { at: latched.agentMessagesBlockedAt } : {}) }
-      : undefined;
-    /**
      * THE NOTICE AND THE NOTIFICATION ARE ONE STRING NOW (#550).
      *
      * `agentNotice` used to be minted here and the row, the prompt and a later
@@ -9679,102 +9444,14 @@ export class EngineStore {
       input: input.input,
       ...(input.attachments ? { attachments: input.attachments } : {}),
       origin: "session", sender, agentIntent: intent, agentDelivery: delivery,
-      // The Agent's proof names no run — it has none — so there is no source
-      // run to carry. A session sender's always does.
-      ...(proof?.runId ? { agentSourceRunId: proof.runId } : {}),
-      ...(fromBuiltInAgent ? { fromBuiltInAgent: true as const } : {}),
+      ...(proof ? { agentSourceRunId: proof.runId } : {}),
       notification,
       agentNotice: notification.body,
       // Only a TASK carries a scope. A report that named one would read as an
       // assignment in every surface that folds these turns.
       ...(scope ? { assignmentScope: scope } : {}),
     });
-    return { ...result, ...(stoppedByUser ? { stoppedByUser } : {}) };
-  }
-
-  /**
-   * ══ A SESSION ADDRESSES THE BUILT-IN AGENT — issue #784, step 1 ══
-   *
-   * `agent/inbox.ts` has declared this seam and its own absence since #541:
-   * *"`peer_message` IS THE FIFTH, and it has no producer yet … the day
-   * something CAN address the Agent, the row it writes should not need a
-   * migration to exist."* This is that producer, and the row needs no migration.
-   *
-   * ── WHY THIS IS NOT `submitAgentTurn` WITH A BRANCH ─────────────────────────
-   * Everything that method does is a TURN on a session: a run id the queue owns,
-   * a backlog cap, a mailbox, a cohort merge, a delivery decision. The Agent has
-   * none of that and wants none of it. A report reaching the person used to cost
-   * a turn in an ordinary session — a model call, a row in a conversation they
-   * were reading, a provider bill — and #784's finding is that a flush *changes
-   * the count and not the kind*: forty wakes becoming eight is a smaller version
-   * of the thing that was asked to stop. So this writes ONE ROW and starts
-   * nothing. `agent/digest.ts` renders it at the top of the next turn a PERSON
-   * begins, which is the only moment a report costs anything at all.
-   *
-   * ── IT IS PULL, AND THAT IS WHAT ANSWERS THE HARD CASES ─────────────────────
-   * Asleep: nothing arrives, and the digest is there at breakfast, capped at
-   * `DIGEST_MAX_CHARS` however long the night was. In a meeting: the same. On a
-   * phone: the same, and the phone's own alerts are untouched because they ride
-   * session activity and this touches none. One session rather than fifteen: a
-   * person with no orchestrator has nothing writing rows and nothing to opt out
-   * of.
-   *
-   * ── THE SENDER MUST BE A SESSION IN A LIVE TURN ─────────────────────────────
-   * THREE REFUSALS, AND EACH IS A DIFFERENT SENDER (`agent/identity.ts` holds
-   * the two ways there are to prove who is sending):
-   *
-   *   - NO PROOF AT ALL is the outward sessions socket — a chat client the
-   *     person is typing at. It is not a session, it has no run, and a person
-   *     with a keyboard does not need an inbox row to reach their own Agent.
-   *   - A CLAIMLESS PROOF is the Agent itself, and it may not address itself: a
-   *     conversation that could write its own inbox would open its next turn
-   *     reading a digest of what it had already said.
-   *   - A CLAIM THAT IS NOT LIVE is refused by `requireSenderClaim`, exactly as
-   *     it is for every other send.
-   *
-   * What is left is a session inside a running turn, which is the orchestrator
-   * this issue is about — and it always has the run id the row's fetch call
-   * needs, which is what makes the body retrievable with nothing stored twice.
-   *
-   * ── AND IT ANSWERS WHETHER ANYTHING KEPT IT ─────────────────────────────────
-   * `undefined` when the Agent is switched off or has no thread yet. The sink is
-   * optional and a miss is silent for a WAKE, because a wake happens to a turn
-   * that is ending and there is nobody to tell; this is a call somebody made,
-   * and a sender told "sent" about a message nothing kept is the "held and lost
-   * look identical" failure one layer up.
-   */
-  sendToAgent(input: { input: string; intent?: Turn["agentIntent"] }, proof?: AgentSenderProof): { row?: AgentInboxRow; notice: string } {
-    if (!proof) {
-      throw new EngineStateError(
-        "invalid_request",
-        "only a session inside a turn can address the Agent; this caller is an agent outside any session (the sessions socket), and the person it is talking to already has the Agent in front of them",
-      );
-    }
-    assertId(proof.sessionId, "sender session id");
-    if (proof.claimToken === undefined) {
-      throw new EngineStateError(
-        "invalid_request",
-        isAgentSelf(proof.sessionId)
-          ? "the built-in Agent cannot address itself"
-          : "a claimless sender proof belongs to the built-in Agent alone",
-      );
-    }
-    const claimed = this.requireSenderClaim(proof);
-    const intent = input.intent ?? "report";
-    const notification = agentInboxNotification({
-      senderSessionId: claimed.sessionId,
-      senderRunId: proof.runId,
-      body: input.input,
-      intent,
-    });
-    /**
-     * NO try/catch, UNLIKE EVERY OTHER SINK CALL IN THIS FILE. The others are
-     * inside a turn that is ending and must not be failed by the Agent refusing
-     * a row; this one IS the call, and a sender is entitled to hear that its
-     * message did not land rather than to be told it did.
-     */
-    const row = this.agentWakeSink?.({ notification });
-    return { ...(row ? { row } : {}), notice: notification.body };
+    return result;
   }
 
   /**
@@ -10701,10 +10378,6 @@ export class EngineStore {
          * nothing.
          */
         ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
-        // THE COORDINATOR BRIEFING IS GONE FROM HERE (#531). It was resolved at
-        // claim time because the coordinator was a session; the Agent is not
-        // one, so its briefing is a constant in its own runtime and no claim
-        // carries it. See `agent/briefing.ts`.
         turn,
       };
     }
@@ -11210,8 +10883,6 @@ export class EngineStore {
     if (stopped.length > 0) this.writeQueue(sessionId, queue);
     // A peer must not undo a human Stop by immediately sending another turn.
     // A fresh human message clears this gate; no discarded work is replayed.
-    // The stamp rides with it so the one exempt sender — the built-in Agent,
-    // see `submitAgentTurn` — can say WHEN the person stopped this.
     if (by === "user") {
       session.agentMessagesBlocked = true;
       session.agentMessagesBlockedAt = at;
@@ -12029,19 +11700,8 @@ export class EngineStore {
     if (subscriberSessionId === input.targetSessionId) {
       throw new EngineStateError("invalid_request", "a session cannot subscribe to itself");
     }
-    /**
-     * THE BUILT-IN AGENT IS A SUBSCRIBER THAT IS NOT A SESSION (#531).
-     *
-     * Both subscriber-side checks below ask the session store about it — does
-     * it exist, is it archived — and neither has an answer for the Agent: it
-     * has no session document and cannot be archived. So they are skipped by
-     * name, and every TARGET-side check still runs unchanged, which is the half
-     * that protects the other session.
-     */
-    if (!isAgentSelf(subscriberSessionId)) {
-      const subscriber = this.getSession(subscriberSessionId);
-      if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
-    }
+    const subscriber = this.getSession(subscriberSessionId);
+    if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
     const target = this.getSession(input.targetSessionId);
     if (target.state !== "active") throw new EngineStateError("conflict", "an archived session will do nothing worth waking for");
     const events = input.events && input.events.length > 0 ? [...new Set(input.events)] : [...ALL_WAKE_KINDS];
@@ -12083,26 +11743,6 @@ export class EngineStore {
     return structuredClone(subscription);
   }
 
-  /**
-   * WHERE A WAKE FOR THE BUILT-IN AGENT GOES (#531).
-   *
-   * Registered by the daemon when the Agent's runtime is built, cleared when it
-   * is torn down. A function rather than an import because the direction has to
-   * be this way round: the runtime knows about the store, and the store must
-   * not know about a graph.
-   *
-   * IT ANSWERS THE ROW IT WROTE, OR NOTHING — added by #784. Every caller before
-   * this one fired and forgot, because a wake happens to a turn that is ending
-   * and there is nobody to tell. `sendToAgent` is a CALL somebody made, and its
-   * answer is the difference between "your message is in the Agent's inbox" and
-   * "the Agent is switched off, so nothing kept it" — which a sender that has
-   * just reported a finding needs to know and cannot find out any other way.
-   * `undefined` stays the honest answer for both of those misses.
-   */
-  setAgentWakeSink(sink: ((wake: AgentWake) => AgentInboxRow | undefined) | undefined): void {
-    this.agentWakeSink = sink;
-  }
-  private agentWakeSink?: (wake: AgentWake) => AgentInboxRow | undefined;
   /** Sessions already refused for running on the removed `telar` driver, so the
    *  refusal is one log line rather than one per worker poll (#531). */
   private readonly warnedLegacyDriver = new Set<string>();
@@ -12125,10 +11765,9 @@ export class EngineStore {
     return true;
   }
 
-  /** What this session — or the built-in Agent — has asked to be woken by. */
+  /** What this session has asked to be woken by. */
   subscriptionsFor(subscriberSessionId: string): Subscription[] {
-    // The existence check is the session store's, and the Agent is not in it.
-    if (!isAgentSelf(subscriberSessionId)) this.getSession(subscriberSessionId);
+    this.getSession(subscriberSessionId);
     return structuredClone(this.readSubscriptions().filter((each) => each.subscriberSessionId === subscriberSessionId));
   }
 
@@ -12229,10 +11868,6 @@ export class EngineStore {
      * prevent, one level up. It is read and never written (`holdNotification`
      * stores it, `mergeNotifications` builds new ones), so sharing it is safe.
      *
-     * AND IT IS WHAT THE AGENT'S BRANCH HANDS OVER TOO (#541 A), so an inbox row
-     * and a session's notification item cannot describe the same completion
-     * differently.
-     *
      * THE WAKE TEXT IS ITS BODY, NOT A TURN'S INPUT (#550). Same sentence, same
      * author — what changed is where it sits. On `input` it was engine prose in
      * the slot a person's words occupy, and every reader downstream had to be
@@ -12249,33 +11884,6 @@ export class EngineStore {
     for (const subscription of hits) {
       const subscriberId = subscription.subscriberSessionId;
       if (subscriberId === targetSessionId) continue;
-      /**
-       * THE AGENT'S WAKE STARTS NOTHING (#531, changed by #541 A).
-       *
-       * Everything below is a turn on a SESSION — a queue, a backlog cap, a
-       * mailbox, a coalesce against what is already queued there. The Agent has
-       * none of that machinery in this store, and as of #541 it wants none: a
-       * wake becomes an INBOX ROW on its thread and the next turn a PERSON
-       * begins opens with a digest of what is unread. So the notification is
-       * handed over and the runtime writes a row; the one-shot is still spent
-       * here, on the same rule as every other subscription.
-       *
-       * THE SINK IS OPTIONAL AND A MISS IS SILENT. An engine whose Agent is
-       * switched off has no sink registered, and a wake for a subscription it
-       * has not taken out yet is a wake with nowhere to go — which is not a
-       * fault of the turn that just ended.
-       */
-      if (isAgentSelf(subscriberId)) {
-        try {
-          this.agentWakeSink?.({ notification });
-        } catch {
-          // The Agent's own runtime refusing a wake must not fail the turn
-          // whose ending caused it — `fireSubscriptions`' contract, applied to
-          // the one subscriber that is not a session.
-        }
-        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
-        continue;
-      }
       let subscriber: Session | undefined;
       try {
         subscriber = this.getSession(subscriberId);
@@ -12802,7 +12410,7 @@ export class EngineStore {
        * reindexes inside it — so resolving mid-iteration would be walking a map
        * that moves underneath.
        */
-      let due: Array<{ request: EngineRequest; answer: RequestDefault; deadlineMs: number }>;
+      let due: Array<{ request: EngineRequest; answer: RequestDefault }>;
       try {
         due = [...this.liveRequests(sessionId).values()].flatMap((request) => {
           /**
@@ -12816,13 +12424,13 @@ export class EngineStore {
            */
           const answer = deadlineResolution(request, now);
           if (answer === null || request.deadlineMs === undefined) return [];
-          return [{ request, answer, deadlineMs: request.deadlineMs }];
+          return [{ request, answer }];
         });
       } catch {
         // One unreadable session must not stop the sweep for the rest.
         continue;
       }
-      for (const { request, answer, deadlineMs } of due) {
+      for (const { request, answer } of due) {
         try {
           this.resolveRequest(sessionId, request.id, {
             decision: answer.decision,
@@ -12843,46 +12451,9 @@ export class EngineStore {
           continue;
         }
         resolved.push(request.id);
-        this.announceTimeout(sessionId, request, answer.decision, deadlineMs);
       }
     }
     return resolved;
-  }
-
-  /**
-   * ONE INBOX ROW FOR A DECISION TAKEN IN SOMEBODY'S ABSENCE — #541 D.
-   *
-   * AFTER THE RESOLUTION AND OUTSIDE ITS TRANSACTION, on `openRequest`'s own
-   * argument: the durable fact is the resolution, and an Agent that is switched
-   * off, reset, or simply absent must not be able to undo one by refusing to
-   * hear about it.
-   *
-   * IT IS NOT GATED ON A SUBSCRIPTION, and that is the difference from every
-   * other row in that inbox. A wake is news about work somebody asked to be told
-   * about; this is a decision made on the person's behalf, and "nobody had
-   * subscribed" is not a reason to keep that from them.
-   */
-  private announceTimeout(sessionId: string, request: EngineRequest, decision: "accept" | "decline", deadlineMs: number): void {
-    if (!this.agentWakeSink) return;
-    try {
-      const session = this.getSession(sessionId);
-      this.agentWakeSink({
-        notification: timeoutNotification({
-          sessionId,
-          sessionTitle: session.title,
-          runId: request.runId,
-          requestId: request.id,
-          requestKind: request.detail.kind,
-          title: clampWake(requestTitle(request.detail)),
-          decision,
-          deadlineMs,
-        }),
-        inboxKind: "request_timeout",
-      });
-    } catch {
-      // The Agent's runtime refusing a row must not undo a resolution that has
-      // already committed — `fireSubscriptions`' contract, one sweep over.
-    }
   }
 
   /**
@@ -15591,10 +15162,9 @@ export class EngineStore {
    * than one that is behind, because a reader cannot recover from it by asking
    * again.
    *
-   * A THROWING WATCHER MUST NOT TAKE DOWN THE TURN THAT WAS TALKING TO IT.
-   * Same guarantee `agentRuntime.push` makes, for the same reason: the socket
-   * on the other end is allowed to have gone, and its own route is what tidies
-   * up when it notices.
+   * A THROWING WATCHER MUST NOT TAKE DOWN THE TURN THAT WAS TALKING TO IT. The
+   * socket on the other end is allowed to have gone, and its own route is what
+   * tidies up when it notices.
    */
   private publish(event: EngineEvent): void {
     if (this.watchers.size === 0) return;
@@ -15615,9 +15185,6 @@ export class EngineStore {
    * writer. That is what makes this feed COMPLETE and TOTALLY ORDERED without
    * anybody having to remember to emit: a second call site would be a frame
    * that exists for some writes and not others, which is worse than no feed.
-   *
-   * THE SAME SIGNATURE AS `agentRuntime.watch`, deliberately, so the engine's
-   * two streams are one pattern rather than two things to learn.
    *
    * A FRAME IS NEVER THE RECORD. Every frame here names a fact the reader can
    * re-derive from a cursor'd read of `/events` — which is what makes the feed

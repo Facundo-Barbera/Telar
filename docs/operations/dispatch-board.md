@@ -560,7 +560,9 @@ and is recorded here as history, not as a list anyone can wire back.
 - **#541** — Agent v2. Held at his word on 2026-09-20: *"mejor dejamos este issue
   solo hasta mañana."* It is the third definition of the Agent's shape and the
   issue itself says it must be the last for a while. Parts A and D were the
-  recommended cut; he has not taken it.
+  recommended cut; he has not taken it. *Overtaken by #908 (2026-09-23): the
+  built-in Agent left the binary; it is being rebuilt outside Telar and may
+  return as a plugin.*
 - **#760** — which tests earn their place. The analysis is done; what to delete
   is a judgement about risk appetite, not a measurement.
 - **#198's last piece: is a detached run's terminal read-only, or can you type

@@ -103,7 +103,7 @@ type ControlTriggerProps = ComponentPropsWithoutRef<"button"> & {
   ariaLabel: string;
 };
 
-export const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>(
+const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>(
   ({ open, icon, label, detail, ariaLabel, className, ...props }, ref) => (
     <button {...props} ref={ref} type="button" className={cn(controlClass(open, props.disabled), className)} aria-label={ariaLabel}>
       <span className="flex shrink-0 [&_svg]:size-3.5">{icon}</span>
@@ -130,11 +130,7 @@ export const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>
 );
 ControlTrigger.displayName = "ControlTrigger";
 
-/** Exported for the Agent's own three pills (#539), which are the same
- *  furniture over a different source: the Agent has no provider catalogue, no
- *  session and no runtime mode, so it cannot reuse the controls below — but it
- *  must not look like a second cockpit either. */
-export function MenuHeading({ children }: { children: ReactNode }) {
+function MenuHeading({ children }: { children: ReactNode }) {
   return <div className="px-2 pb-1 pt-1 text-2xs font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
 }
 
@@ -146,7 +142,7 @@ export function MenuHeading({ children }: { children: ReactNode }) {
  * everyone already understands, where it turned a short menu into a half-screen
  * panel. This is the reference cockpit's shape for exactly those lists.
  */
-export function CompactRow({
+function CompactRow({
   label,
   hint,
   selected,
@@ -181,7 +177,7 @@ export function CompactRow({
 }
 
 /** A single-select row: label, description, tick when chosen. */
-export function ChoiceRow({
+function ChoiceRow({
   label,
   description,
   selected,

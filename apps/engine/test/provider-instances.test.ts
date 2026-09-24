@@ -45,8 +45,7 @@ test("a fresh install already has built-in slots with OpenCode disabled", () => 
   // as a URL path segment and as a settings anchor.
   expect(instances.map((instance) => instance.id)).toEqual(["claude", "codex", "opencode"]);
   // OpenCode alone is off out of the box. (`telar` was a fourth slot until #531
-  // removed the driver with it — the engine's own loop is the built-in Agent
-  // now, and no session runs on it.)
+  // removed the driver with it; no session runs on it.)
   expect(instances.filter((instance) => instance.enabled).map((instance) => instance.id)).toEqual(["claude", "codex"]);
   // No config dir on the base login, and for Claude that is load-bearing:
   // setting CLAUDE_CONFIG_DIR even to ~/.claude reaches a different, empty
@@ -578,13 +577,12 @@ test("a registry naming a driver this build retired still reads", () => {
   expect(onDisk.providerInstances.map((instance: { id: string }) => instance.id)).toEqual(["claude", "codex", "opencode"]);
 });
 
-test("the read drops the retired row but will not touch the key the carry still needs", () => {
+test("the read drops the retired row but will not touch its key", () => {
   /**
-   * THE ORDERING HAZARD, PINNED. `readProviderInstances` runs from anywhere —
-   * a worker, a route, a test — and can easily beat the daemon's startup sweep.
-   * If it deleted secrets the way `removeProviderInstance` does, whether the
-   * upgrade kept somebody's key would depend on which read happened to land
-   * first. So the lazy path takes the row and leaves the credential.
+   * `readProviderInstances` runs from anywhere — a worker, a route, a test. If
+   * it deleted secrets the way `removeProviderInstance` does, a lazy read would
+   * be quietly deleting a credential somebody pasted. So it takes the row and
+   * leaves the key.
    */
   const directory = root();
   upgradedFrom526(directory);
@@ -593,37 +591,6 @@ test("the read drops the retired row but will not touch the key the carry still 
   engine.listProviderInstances();
   const secrets = JSON.parse(fs.readFileSync(path.join(directory, "provider-secrets.json"), "utf8"));
   expect(secrets.secrets["telar OPENCODE_API_KEY"]).toBe("sk-from-526");
-  // And the carry, running afterwards, still finds it.
-  expect(engine.carryOverAgentKey()).toBe(true);
-  expect(engine.agentCredential().set).toBe(true);
-});
-
-test("the sweep drops the orphaned secret only after the carry has read it", () => {
-  const directory = root();
-  upgradedFrom526(directory);
-  const engine = new EngineStore(directory, () => 100);
-
-  // The daemon's order: carry, then drop.
-  expect(engine.carryOverAgentKey()).toBe(true);
-  expect(engine.removeRetiredProviderSecrets()).toBe(true);
-
-  const secrets = JSON.parse(fs.readFileSync(path.join(directory, "provider-secrets.json"), "utf8"));
-  expect(secrets.secrets["telar OPENCODE_API_KEY"]).toBeUndefined();
-  // The key survived the drop, in its new home.
-  expect(engine.agentCredential().set).toBe(true);
-  // Idempotent: a second start has nothing left to say.
-  expect(engine.removeRetiredProviderSecrets()).toBe(false);
-});
-
-test("a live login's secrets are never mistaken for an orphan", () => {
-  const engine = store();
-  engine.saveProviderInstance({
-    id: "claude_work",
-    driver: "claude",
-    env: [{ name: "ANTHROPIC_API_KEY", value: "sk-live", sensitive: true }],
-  });
-  expect(engine.removeRetiredProviderSecrets()).toBe(false);
-  expect(engine.resolveProviderInstance("claude_work", "claude").env[0]?.value).toBe("sk-live");
 });
 
 test("a malformed row is still corruption, and still refuses to read", () => {
@@ -641,21 +608,4 @@ test("a malformed row is still corruption, and still refuses to read", () => {
     }),
   );
   expect(() => new EngineStore(directory, () => 100).listProviderInstances()).toThrow(EngineStateError);
-});
-
-test("a secret key the registry could not have minted is left alone", () => {
-  /**
-   * `indexOf` returns -1 for a key with no separator, and `slice(0, -1)` would
-   * hand the live-id set a prefix that never matches — a silent delete wearing
-   * a lookup's clothes. Same judgement as a malformed row: not this sweep's.
-   */
-  const directory = root();
-  fs.writeFileSync(
-    path.join(directory, "provider-secrets.json"),
-    JSON.stringify({ version: 2, secrets: { NOSEPARATOR: "keep-me" } }),
-  );
-  const engine = new EngineStore(directory, () => 100);
-  expect(engine.removeRetiredProviderSecrets()).toBe(false);
-  const secrets = JSON.parse(fs.readFileSync(path.join(directory, "provider-secrets.json"), "utf8"));
-  expect(secrets.secrets.NOSEPARATOR).toBe("keep-me");
 });

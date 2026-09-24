@@ -28,10 +28,9 @@ import { promisify } from "node:util";
  * SPAWNING A SUBPROCESS TO FILL A MENU IS EXPENSIVE, so both reads are cached,
  * and the cache is what makes them acceptable to call from a popover.
  */
-import type { AgentModelCatalogue, Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
+import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
 import { refuseCliSpawnUnderTest, requireCli, resolveCliAsync } from "./cli-resolution";
 import { CodexAppServer, resolveCodexBinary } from "./codex/app-server";
-import { defaultAgentModel, readAgentCatalogue } from "./agent/catalogue";
 
 /**
  * How long to wait for a provider to describe itself.
@@ -330,43 +329,6 @@ export async function readOpenCodeModels(): Promise<{ models: ProviderModel[]; m
     const ids = [...new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[A-Za-z0-9_.-]+\/\S+$/.test(line)))];
     return { models: ids.map((id) => ({ id, label: id, efforts: [], isDefault: false, hidden: false, fastMode: false, hiddenByUser: false, legacy: false, source: "provider" as const })) };
   } catch (error) { return { models: [], message: error instanceof Error ? error.message : "OpenCode did not answer models" }; }
-}
-
-/**
- * WHAT THE BUILT-IN AGENT MAY RUN — OpenCode Go's public model list, described
- * (#526, rehoused by #531, described by #551).
- *
- * NOT PART OF `readModelCatalogue`. That function is keyed by
- * `ProviderDriverKind` and answers "what can this SESSION run"; the Agent is
- * not a session and `telar` is no longer a driver kind.
- *
- * ── THE MERGE IS `agent/catalogue.ts`'S, AND ALL OF IT IS ───────────────────
- * This is the thin part: it asks for the catalogue and puts the older
- * `ProviderModel` fields back on each row for the clients that still read them
- * (see `AgentModel`'s note on why the tail exists). Which ids exist, what they
- * are called, which endpoint each answers on and whether this build can run it
- * are decided there, once, so the phone and the desktop cannot disagree.
- */
-export async function readAgentModels(agentDir?: string): Promise<AgentModelCatalogue> {
-  const catalogue = await readAgentCatalogue(agentDir ? { agentDir } : {});
-  const fallback = defaultAgentModel(catalogue.models);
-  return {
-    ...catalogue,
-    models: catalogue.models.map((model) => ({
-      ...model,
-      // THE COMPATIBILITY TAIL. `label` is the described name so an old client
-      // shows "Kimi K3" rather than the id it used to show; the rest are the
-      // shapes a provider catalogue carries and the Agent has no equivalent of.
-      label: model.name,
-      efforts: [],
-      isDefault: model.id === fallback,
-      hidden: false,
-      fastMode: false,
-      hiddenByUser: false,
-      legacy: false,
-      source: "provider" as const,
-    })),
-  };
 }
 
 export async function readModelCatalogue(

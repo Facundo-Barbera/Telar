@@ -429,7 +429,6 @@ export function Composer({
   sending,
   runtimeMode,
   session,
-  controls,
   projectId,
   projectName,
   usage,
@@ -456,14 +455,9 @@ export function Composer({
   draft: string;
   ready: boolean;
   /**
-   * WHICH OF THE TWO MESSAGE BOXES THIS IS (#548).
-   *
-   * The Agent screen renders this same component, and until now nothing on the
-   * page said which one you were looking at. It names the editable root — `id`
-   * and `data-composer` — and it is what the page API reports to an external
-   * client that has to choose before it speaks into one. Not derived from
-   * `session` or `controls`: a composer's identity should not be a side effect
-   * of which props a caller happened to pass.
+   * WHICH MESSAGE BOX THIS IS (#548). It names the editable root — `id` and
+   * `data-composer` — and it is what the page API reports to an external
+   * client. There is one kind today.
    */
   kind?: ComposerKind;
   /** Files picked but not yet sent. Owned by the cockpit because sending them
@@ -501,15 +495,6 @@ export function Composer({
   sending: boolean;
   runtimeMode?: RuntimeMode;
   session?: Session;
-  /**
-   * THE CALLER'S OWN CONTROL PILLS, INSTEAD OF THIS COMPOSER'S (#539).
-   *
-   * One caller passes them: the Agent screen, whose three settings are the same
-   * three questions but none of the same sources — no provider catalogue, no
-   * per-model effort list, no session runtime mode. Given, the pills below are
-   * not rendered at all; absent, nothing changes for anybody.
-   */
-  controls?: React.ReactNode;
   /**
    * ABSENT MEANS THIS CONVERSATION HAS NO PROJECT, and that is a positive
    * statement rather than a missing value — see `Session.projectId`'s own note.
@@ -738,10 +723,9 @@ export function Composer({
    * THE PAGE API'S SIDE OF THE COMPOSER (#548) — see lib/page-api.ts.
    * ---------------------------------------------------------------- */
 
-  /** The DOM id of the editable root. `turn-prompt` is the session composer's
-   *  and stays: it is in the app's own label, and external clients already
-   *  reach for it. */
-  const editorId = kind === "agent" ? "agent-prompt" : "turn-prompt";
+  /** The DOM id of the editable root. `turn-prompt` stays: it is in the app's
+   *  own label, and external clients already reach for it. */
+  const editorId = "turn-prompt";
   /** Registered under React's own instance key rather than the DOM id, so a
    *  second composer of the same kind is a duplicate-id bug and not also an
    *  unregistration of the first. */
@@ -1792,12 +1776,10 @@ export function Composer({
                   the row's shape is the one it will keep. */}
               <AddContextMenu onPick={addFiles} />
               {/**
-               * THE MIC (#544), and mounting it HERE is what puts it on both
-               * composers at once: the Agent screen renders this same
-               * component with `kind="agent"`, so one button cannot drift into
-               * two. It inserts through `window.telar.dictate`, which is the
-               * same door the headset already speaks through (#548) — the
-               * registry is what decides which box that is, not this row.
+               * THE MIC (#544). It inserts through `window.telar.dictate`,
+               * which is the same door the headset already speaks through
+               * (#548) — the registry is what decides which box that is, not
+               * this row.
                *
                * IN THE LEFT CLUSTER because that cluster is already "things
                * that go into this message". The right one is send and turn
@@ -1865,19 +1847,7 @@ export function Composer({
                * the access mode without opening anything, which is the point —
                * a menu that is always closed is state you cannot see.
                */}
-              {/**
-               * THE AGENT BRINGS ITS OWN THREE (#539).
-               *
-               * The controls below are gated on a session, and the gate is real
-               * rather than an oversight: they read a provider catalogue, a
-               * per-model effort list and one of the engine's session runtime
-               * modes, and the Agent has none of the three. Rendering the
-               * caller's row here rather than teaching this one about the Agent
-               * keeps `composer.tsx` about sessions and keeps the Agent's pills
-               * next to the state they write.
-               */}
-              {controls}
-              {!controls && (session || (fresh && driver)) && (
+              {(session || (fresh && driver)) && (
                 <>
                   <AgentControl
                     driver={activeDriver}

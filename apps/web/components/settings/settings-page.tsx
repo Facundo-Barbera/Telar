@@ -24,7 +24,7 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, CalendarClockIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
@@ -63,7 +63,6 @@ import { useSectionFromUrl } from "./use-section-from-url";
 const AppearanceSection = dynamic(() => import("./appearance-section").then((mod) => mod.AppearanceSection));
 const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
-const AgentSection = dynamic(() => import("./agent-section").then((mod) => mod.AgentSection));
 const SchedulesSection = dynamic(() => import("./schedules-section").then((mod) => mod.SchedulesSection));
 const DictationSection = dynamic(() => import("./dictation-section").then((mod) => mod.DictationSection));
 const McpSection = dynamic(() => import("./mcp-section").then((mod) => mod.McpSection));
@@ -157,27 +156,6 @@ const SECTIONS: SettingsSection[] = [
    * already draws for the browser — the same subject, so the same glyph.
    */
   { id: "integrations", label: "Browser", icon: GlobeIcon, group: "Cockpit" },
-  /**
-   * THE AGENT'S OWN TAB (#556), FIRST UNDER "RUNTIME" and no longer a group
-   * stacked in the middle of General.
-   *
-   * IT WAS ON GENERAL BECAUSE IT WAS NEW, not because it belonged there: one
-   * experimental group between Links and Dictation, below three rows about
-   * every session and above three about this install. It has six rows of its
-   * own now — a switch, a credential, a model, two defaults and a reset — which
-   * is a pane, and burying a pane's worth of setup inside the one General pane
-   * is how a feature becomes unfindable.
-   *
-   * UNDER "RUNTIME" because whether this Mac HAS an Agent is a fact about the
-   * machine that runs turns: every rail on every device draws from it, and the
-   * key it spends lives with that engine's state. Cockpit is decisions about
-   * this window; this is not one.
-   *
-   * THE GLYPH IS THE RAIL ENTRY'S — `SparklesIcon`, the same one
-   * components/session/agent-entry.tsx draws, so the nav item and the row it
-   * configures are recognisably one subject.
-   */
-  { id: "agent", label: "Agent", icon: SparklesIcon, group: "Runtime" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   /**
    * UNDER "RUNTIME", beside Providers and for the same reason: both are CLIs
@@ -186,6 +164,12 @@ const SECTIONS: SettingsSection[] = [
    */
   { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "Runtime" },
   { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
+  /**
+   * UNDER "RUNTIME": a schedule fires on the machine that runs turns, and only
+   * while its engine is up. It shared the built-in Agent's pane until that left
+   * the app (#908); a conversation's own clock outlived it.
+   */
+  { id: "schedules", label: "Schedules", icon: CalendarClockIcon, group: "Runtime" },
   /**
    * UNDER "RUNTIME" (#544): dictation is a service the machine that runs turns
    * spends a key on, like Providers and TextGen — not a decision about this
@@ -251,18 +235,9 @@ export const SECTION_ALIASES: Record<string, string> = {
    * lands on the one row it could have meant.
    */
   settled: "general",
-  /**
-   * THE AGENT LEFT GENERAL FOR A TAB OF ITS OWN (#556), and `main` is the id
-   * that has to keep landing on it.
-   *
-   * "Main" is what this feature was called before #531 — the designated
-   * coordinator conversation — and the word is still in the registry's own
-   * keywords because people who used it keep typing it. General is untouched
-   * and every id that named General still answers General; what moved is the
-   * Agent's rows, so the alias points at where they went rather than at the
-   * pane they were cut from.
-   */
-  main: "agent",
+  // THE BUILT-IN AGENT'S PANE IS GONE (#908). Scheduled work was the one thing
+  // on it that outlived the Agent, so its id lands there.
+  agent: "schedules",
 };
 
 /** A figure the engine reported, in the register the rest of the app uses for
@@ -427,20 +402,7 @@ export function SettingsPage() {
           </>
         )}
 
-        {/* THE AGENT, AND THE ONE OTHER THING THAT STARTS IT (#543).
-            This pane held a single group on purpose — "nothing else in Settings
-            is about the Agent, and a tab that held the Agent plus something
-            adjacent would be General again, one size down". Scheduled work is
-            the exception that proves it rather than an erosion of it: a schedule
-            is an agent turn with a clock in front of it, so it belongs beside
-            the Agent and nowhere else. It reads SECOND because the Agent is the
-            thing that runs and this is only when. */}
-        {active === "agent" && (
-          <>
-            <AgentSection />
-            <SchedulesSection />
-          </>
-        )}
+        {active === "schedules" && <SchedulesSection />}
 
         {/* AND THE SAME FOR DICTATION (#544), which left General by the same
             door and for a sharper reason: it ships OFF, so the row a reader

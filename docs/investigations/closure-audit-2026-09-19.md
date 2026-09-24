@@ -280,7 +280,7 @@ implementation.
 | Issue | Evidence |
 |---|---|
 | **#463** iOS `InboxStore.remember()` double read | **Fixed in #502** (`c2f8f8be`, merged 2026-09-14T22:56Z — 17 h after filing). `remember(_ data: Data?)` now takes the bytes the poll earned (`InboxStore.swift:435-439`); `liveSessionsData` and `sessionData` deleted outright. Credited `Refs #499`, which is why nothing pointed back. No remainder. |
-| **#531** Built-in Agent on LangGraph.js | **Shipped in #533 + #536** (both merged 2026-09-16T08:00Z — 5.5 h after filing). Verified part by part: `apps/engine/src/agent/` runtime + checkpointer + store, `agent.json` / `threads.sqlite`, all eight `/v2/agent/*` routes incl. `/stream`, argument-aware gate in `approval.ts`, idempotent runId from `toolCallId` (`sessions-tools/tools.ts:935`), `telar` driver kind removed, web `/agent` + `/hosts/[hostId]/agent`, iOS `AgentView.swift` et al., full test suite + live smokes. Remainder mapped to #541 / #543 / #563 in the closing comment. |
+| **#531** Built-in Agent on LangGraph.js | **Shipped in #533 + #536** (both merged 2026-09-16T08:00Z — 5.5 h after filing). Verified part by part: `apps/engine/src/agent/` runtime + checkpointer + store, `agent.json` / `threads.sqlite`, all eight `/v2/agent/*` routes incl. `/stream`, argument-aware gate in `approval.ts`, idempotent runId from `toolCallId` (`sessions-tools/tools.ts:935`), `telar` driver kind removed, web `/agent` + `/hosts/[hostId]/agent`, iOS `AgentView.swift` et al., full test suite + live smokes. Remainder mapped to #541 / #543 / #563 in the closing comment. *Since removed whole by #908 (2026-09-23): the Agent left the binary to be rebuilt outside Telar; the paths cited here no longer exist.* |
 
 ### Open — the five that arrived with a prior read
 

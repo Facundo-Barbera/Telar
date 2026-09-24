@@ -3,11 +3,10 @@
 /**
  * WHO DICTATES ON THIS MAC, AND WITH WHOSE KEY (#544).
  *
- * A HOOK RATHER THAN LOCAL STATE, for `useAgentSettings`' reason: the pane is
- * not the only surface that has to know — the mic button reads the provider to
- * decide whether to exist at all — and a same-window CustomEvent carries a
- * change across without either side polling a preference that moves twice a
- * year. Switching the provider on in settings makes the button appear on a
+ * A HOOK RATHER THAN LOCAL STATE: the pane is not the only surface that has
+ * to know — the mic button reads the provider to decide whether to exist at
+ * all — and a same-window CustomEvent carries a change across without either
+ * side polling a preference that moves twice a year. Switching the provider on in settings makes the button appear on a
  * composer in another tab of this window without a reload.
  *
  * ENGINE STATE, NOT LOCAL STORAGE. Whether this Mac can dictate is a fact about

@@ -371,7 +371,6 @@ struct SessionSidebar: View {
                     ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
                 }
             } else {
-                agentBand
                 draftRows
                 attentionBand
                 pinnedBand
@@ -404,115 +403,6 @@ struct SessionSidebar: View {
     @ViewBuilder
     private var layoutErrorLine: some View {
         if let layoutError { Text(layoutError).font(.caption).foregroundStyle(Theme.statusRed) }
-    }
-
-    /// Each Mac's built-in Agent (#531).
-    @ViewBuilder
-    private var agentBand: some View {
-        // EACH MAC'S BUILT-IN AGENT, above everything (#531) —
-        // experimental, and absent on every phone whose Macs have never
-        // switched one on.
-        //
-        // ONE ROW PER MAC, and nothing is looked up in that Mac's
-        // sessions to draw it. The Main band this replaces had to find a
-        // designated conversation among the rows, so it appeared a beat
-        // late on a Mac still answering its first poll and not at all if
-        // the conversation had fallen off the page. The Agent is not a
-        // session: one flag decides, and the row is there the moment the
-        // Mac says it is.
-        //
-        // FIRST, AND OUTSIDE SEARCH, for the desktop's reason: it is not
-        // a band and not an entry in the list, it is the row that is
-        // always in the same place. A search is a question about the
-        // whole list and flattens every band — and this row is not in
-        // the list to be found, so it simply goes.
-        //
-        // A DIRECT DESTINATION rather than a `NavigationLink(value:)`.
-        // The value form resolves against the destinations registered
-        // for session ids, and an Agent has no id in that namespace —
-        // there is nothing to register it under.
-        let agentRows = inbox.agents
-        if !agentRows.isEmpty {
-            Section {
-                ForEach(agentRows) { row in
-                    NavigationLink {
-                        if let api = settings.api(for: row.hostId) {
-                            AgentView(hostId: row.hostId, api: api)
-                        } else {
-                            // A Mac whose client cannot be built is one
-                            // this phone is no longer paired with. The
-                            // sentence is better than a blank screen.
-                            ContentUnavailableView(
-                                "That Mac is not connected",
-                                systemImage: "sparkles",
-                                description: Text("Pair with it again to reach its Agent.")
-                            )
-                        }
-                    } label: {
-                        // A TALLER ROW WITH ONE STATUS LINE (#539). It
-                        // was a single line the height of a conversation,
-                        // on the argument that it only answers "where do
-                        // I go to coordinate". The owner's first night
-                        // says half of that was wrong: "is it working, is
-                        // it waiting for me" is a question this row has,
-                        // and answering nothing made the one
-                        // always-present entry the least informative
-                        // thing on the sidebar.
-                        Label {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text("Agent").font(.subheadline)
-                                    // WHAT CAME IN WHILE THE SCREEN WAS
-                                    // SHUT (#541 A). A wake no longer
-                                    // starts a turn, so without this the
-                                    // sidebar cannot say anything
-                                    // arrived. A COUNT and never a tone:
-                                    // whether any of it is waiting on a
-                                    // person is the status line's job,
-                                    // one line down, and two things
-                                    // competing to signal urgency on one
-                                    // row is how neither gets read.
-                                    if let badge = row.badge {
-                                        Text(badge)
-                                            .font(Theme.monoSmall)
-                                            .monospacedDigit()
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 1)
-                                            .background(Theme.surface, in: Capsule())
-                                            .foregroundStyle(Theme.textMuted)
-                                            .accessibilityLabel("\(badge) unread")
-                                    }
-                                    // WHICH MAC, and only when there is more
-                                    // than one to tell apart — the rule
-                                    // `HostLabel` applies to every other row
-                                    // on this sidebar.
-                                    if settings.hosts.count > 1, let name = settings.host(row.hostId)?.name {
-                                        Text(name).font(.caption).foregroundStyle(Theme.textMuted)
-                                    }
-                                }
-                                .lineLimit(1)
-                                agentStatusLine(row.status)
-                            }
-                        } icon: {
-                            Image(systemName: "sparkles")
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-            } header: {
-                // A GLYPH BEFORE THE WORD, the treatment "Needs you"
-                // gets and for the same reason: it says this band is
-                // different before the word is read. No count — one Mac
-                // has at most one Agent, so a number here would only
-                // ever say how many Macs are paired.
-                HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
-                    Text(agentRows.count > 1 ? "Agents" : "Agent")
-                }
-                .bandCaption()
-                .accessibilityElement(children: .combine)
-            }
-        }
     }
 
     /// Saved but unsent prompts, which are work in progress and go first.
@@ -1141,35 +1031,6 @@ struct SessionSidebar: View {
         case .blocked: return Theme.statusAmber
         case .working, .queued, .monitoring: return Theme.accent
         case .idle: return nil
-        }
-    }
-
-    /// THE AGENT ROW'S STATUS LINE (#539) — the same grammar `statusSlot` gives
-    /// a session below, because a reader who has learned this list should not
-    /// have to learn one row separately.
-    ///
-    /// A PULSING DOT FOR "STILL GOING", A STILL DOT FOR "WAITING FOR A PERSON",
-    /// and nothing at all beside a quiet line: the motion is the fastest read on
-    /// the sidebar, and an approval that has parked is exactly the thing that is
-    /// NOT moving.
-    @ViewBuilder private func agentStatusLine(_ status: AgentStatus) -> some View {
-        HStack(spacing: 3) {
-            switch status.tone {
-            case .working: SteppedPulseDot(color: Theme.statusSky)
-            case .waiting: Image(systemName: "circle.circle").font(.system(Theme.captionTiny))
-            case .idle: EmptyView()
-            }
-            Text(status.label).lineLimit(1)
-        }
-        .font(.caption2.weight(status.tone == .idle ? .regular : .medium))
-        .foregroundStyle(agentStatusTone(status.tone))
-    }
-
-    private func agentStatusTone(_ tone: AgentStatus.Tone) -> Color {
-        switch tone {
-        case .waiting: return Theme.statusAmber
-        case .working: return Theme.statusSky
-        case .idle: return Theme.textMuted.opacity(0.7)
         }
     }
 

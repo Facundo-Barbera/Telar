@@ -82,22 +82,6 @@ function verbPhrase(intent: NonNullable<Turn["agentIntent"]>): string {
   }
 }
 
-/** The same verbs addressed to the Agent, which is a PERSON'S conversation and
- *  not a session. "this session" would be the one reader of these lines who is
- *  not one. */
-function agentVerbPhrase(intent: NonNullable<Turn["agentIntent"]>): string {
-  switch (intent) {
-    case "task":
-      return "wants the Agent to do something";
-    case "blocker":
-      return "reports a BLOCKER and is asking for a person";
-    case "result":
-      return "sent the Agent a result";
-    default:
-      return "sent the Agent a report";
-  }
-}
-
 export type AgentNoticeInput = {
   /** The session RECEIVING the message — whose turn holds the body, and whose
    *  id the fetch call names. */
@@ -137,43 +121,5 @@ export function agentNotice(input: AgentNoticeInput): string {
     assignment
       ? `None of it is in this notice. Read it with ${where} before acting on it.`
       : `None of it is in this notice. Fetch it with ${where} if it is worth the context.`,
-  ].join("\n");
-}
-
-/**
- * THE SAME TWO LINES FOR A MESSAGE ADDRESSED TO THE AGENT — issue #784.
- *
- * ITS OWN FUNCTION RATHER THAN A FLAG ON `agentNotice`, because the fetch pair
- * is a DIFFERENT PAIR. Every notice above names the RECIPIENT's session and the
- * turn that holds the body there. The Agent has no session and takes no turn —
- * a message to it is one inbox row — so the only place the words survive is the
- * SENDER's own transcript, in the turn whose `sessions_send` carried them. A
- * shared shape would have had `recipientSessionId` holding the sender's id,
- * which is a field lying about itself in the one file whose whole job is that
- * four readers quote the same sentence.
- *
- * AND THE BODY IS GENUINELY THERE. `sessions_read(sender, senderRun)` returns
- * the sending turn, whose events include this call with its `input` argument
- * whole — so "none of it is in this notice" stays true in both directions
- * rather than becoming an apology for a message nothing kept.
- *
- * NO `task` SPECIAL CASE IN THE SECOND LINE, and that is deliberate: the Agent
- * is the person's conversation, nothing assigns it work, and a sentence telling
- * it to read something "before acting" would be a peer handing a person an
- * instruction. It fetches if the person's next turn makes that worth doing.
- */
-export function agentInboxNotice(input: {
-  /** The SENDING session — who spoke, and the first half of the fetch. */
-  senderSessionId: string;
-  /** The sending turn's own run — the second half. */
-  senderRunId: string;
-  body: string;
-  intent: NonNullable<Turn["agentIntent"]>;
-}): string {
-  const size = `${input.body.length.toLocaleString("en-US")} chars`;
-  const where = `sessions_read(sessionId: "${input.senderSessionId}", runId: "${input.senderRunId}")`;
-  return [
-    `[agent message · ${input.intent}] session ${input.senderSessionId} ${agentVerbPhrase(input.intent)} (run ${input.senderRunId}, ${size}).`,
-    `None of it is in this notice. Fetch it with ${where} if it is worth the context.`,
   ].join("\n");
 }

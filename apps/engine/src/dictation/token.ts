@@ -224,7 +224,7 @@ function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-/** A backstop, not the design — see `redactKey` in `agent/credentials.ts`. */
+/** A backstop, not the design: the key should never reach an error text at all. */
 function scrub(text: string, key: string): string {
   return text.split(key).join("[redacted]");
 }

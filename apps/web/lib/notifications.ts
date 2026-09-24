@@ -11,20 +11,17 @@
  * ── SO THE CLASSIFICATION IS ONE FUNCTION ───────────────────────────────────
  * `notificationVerbs` is the only place that turns a happening into a word.
  * `notificationLabel` (the transcript row, the cockpit's turn header, a wake
- * that landed mid-turn) and `agentInboxLabel` (the strip above the composer)
- * both derive from it, so a register can differ and the CLASSIFICATION cannot:
- * there is no second switch to forget a new intent in.
+ * that landed mid-turn) derives from it, so there is no second switch to forget
+ * a new intent in.
  *
  * ── HERE RATHER THAN IN `transcript.tsx` ────────────────────────────────────
- * The verbs used to live beside the component that drew them, on the argument
- * that the cockpit imports the transcript anyway. The inbox strip does not, and
- * the copy it kept instead is half of what #572 is. A pure module both can
- * import has no direction to be wrong about.
+ * The verbs used to live beside the component that drew them. A pure module
+ * has no direction to be wrong about, and the table is testable on its own.
  */
-import type { AgentInboxRow, AgentMessageIntent, NotificationKind, RequestResolver, WakeKind } from "@telar/engine-client";
+import type { AgentMessageIntent, NotificationKind, RequestResolver, WakeKind } from "@telar/engine-client";
 
 /** Everything the verb is decided from, and nothing else — so a caller holding
- *  a `NotificationDetail`, a `WakeReason` or an inbox row can all ask. */
+ *  a `NotificationDetail` or a `WakeReason` can ask. */
 export type NotificationSubject = {
   kind: NotificationKind;
   /** For a peer's message: what the sender said it was. */
@@ -45,9 +42,6 @@ export type NotificationSubject = {
 export type NotificationVerbs = {
   /** The sentence a transcript row, a turn header and the phone all say. */
   verb: string;
-  /** The digest's terser word, for the inbox strip that sits beside the block
-   *  the model was shown — "Finished", not "Session finished a turn". */
-  short: string;
   /** `warning` when a person has to move; the rail's own pair. */
   tone: "warning" | "muted";
 };
@@ -56,13 +50,13 @@ export function notificationVerbs(subject: NotificationSubject): NotificationVer
   if (subject.kind === "peer_message") {
     switch (subject.intent ?? "report") {
       case "task":
-        return { verb: "A session assigned work", short: "Assigned work", tone: "muted" };
+        return { verb: "A session assigned work", tone: "muted" };
       case "blocker":
-        return { verb: "A session reported a blocker", short: "Reported a blocker", tone: "warning" };
+        return { verb: "A session reported a blocker", tone: "warning" };
       case "result":
-        return { verb: "A session sent a result", short: "Sent a result", tone: "muted" };
+        return { verb: "A session sent a result", tone: "muted" };
       default:
-        return { verb: "A session sent a message", short: "Sent a message", tone: "muted" };
+        return { verb: "A session sent a message", tone: "muted" };
     }
   }
   /**
@@ -74,37 +68,26 @@ export function notificationVerbs(subject: NotificationSubject): NotificationVer
    * undo.
    */
   if (subject.resolvedBy === "timeout") {
-    return { verb: "Session ran out its deadline and took its default", short: "Answered for you", tone: "muted" };
+    return { verb: "Session ran out its deadline and took its default", tone: "muted" };
   }
   // A PARKED REQUEST IS ITS OWN KIND, and the one a reader can act on. Keyed on
   // either field because the two spellings of it — a `request` notification and
   // a `request_opened` wake — are the same happening reaching two callers.
   if (subject.kind === "request" || subject.wakeKind === "request_opened") {
-    return { verb: "Session asked a question", short: "Waiting on you", tone: "warning" };
+    return { verb: "Session asked a question", tone: "warning" };
   }
   switch (subject.wakeKind) {
     case "turn_completed":
-      return { verb: "Session finished a turn", short: "Finished", tone: "muted" };
+      return { verb: "Session finished a turn", tone: "muted" };
     case "turn_failed":
-      return { verb: "Session failed a turn", short: "Failed", tone: "warning" };
+      return { verb: "Session failed a turn", tone: "warning" };
     case "turn_stopped":
-      return { verb: "Session was stopped", short: "Stopped", tone: "muted" };
+      return { verb: "Session was stopped", tone: "muted" };
     default:
       // A NEWER ENGINE'S VOCABULARY IS STILL A NOTIFICATION. Naming it vaguely
       // is honest; dropping the row would lose the fact entirely.
-      return { verb: "Session activity", short: "Activity", tone: "muted" };
+      return { verb: "Session activity", tone: "muted" };
   }
-}
-
-/** An inbox row's flat kind, as the three notification kinds. The strip and a
- *  session's own row describe one happening, so they classify it one way. */
-export function inboxSubject(row: Pick<AgentInboxRow, "kind"> & { intent?: AgentMessageIntent }): NotificationSubject {
-  if (row.kind === "peer_message") return { kind: "peer_message", ...(row.intent ? { intent: row.intent } : {}) };
-  // Both are requests; the resolver is what tells "waiting on you" from
-  // "already answered for you" (#541 D). No `wakeKind` — nothing woke.
-  if (row.kind === "request_timeout") return { kind: "request", resolvedBy: "timeout" };
-  if (row.kind === "request_opened") return { kind: "request", wakeKind: "request_opened" };
-  return { kind: "wake", wakeKind: row.kind };
 }
 
 /**

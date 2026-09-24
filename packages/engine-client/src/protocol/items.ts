@@ -502,7 +502,7 @@ export const Item = z.object({
    * (#616). The distinction has to be on the row itself: a session can hold
    * imported history and live turns at once, so "is this session imported" is
    * not a question with one answer, and a row that passes for a Telar turn it
-   * never was misleads every later reader, the Agent's digest included.
+   * never was misleads every later reader.
    *
    * `literal(true)`, not `boolean`, so absent and `false` are not two spellings
    * of the same state. An imported row says so; every other row stays silent.

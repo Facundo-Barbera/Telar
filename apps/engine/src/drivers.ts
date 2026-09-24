@@ -90,8 +90,7 @@ export function createDefaultDrivers(): DriverSelector {
    * refused a driver up front.
    *
    * `telar` WAS A FOURTH (#526) and is gone (#531): the engine's own agent loop
-   * is no longer something a SESSION runs. It is the built-in Agent, which has
-   * no session behind it at all — see `agent/runtime.ts`.
+   * is not something a SESSION runs.
    */
   const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver() };
   // Returns `undefined` for a kind this build does not know, which the worker

@@ -48,11 +48,6 @@ import type {
   InboxPolicy,
   AgentOrientation,
   EnvMode,
-  AgentAnswer,
-  AgentModelCatalogue,
-  AgentState,
-  AgentInboxAnswer,
-  AgentThreadAnswer,
   DictationAnswer,
   DictationProviderId,
   DictationDiagnosisAnswer,
@@ -201,8 +196,8 @@ function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undef
  * next person costing a connection budget (#586).
  *
  * THE COCKPIT DOES OPEN A STREAMING FETCH, AND THE ENGINE DOES SERVE ONE. The
- * Agent screen holds `/api/agent/stream` for as long as it is open
- * (`lib/agent/thread.ts`), proxied to the engine's `/v2/agent/stream`. #82 is
+ * run feed holds one for as long as the masthead is mounted
+ * (`lib/run/status-stream.ts`). #82 is
  * not an argument against HAVING one — it is CLOSED, and its own slice 4 names
  * "one multiplexed per-client events channel… 1–2 regardless of activity" as
  * the durable answer. What it forbids is STACKING them.
@@ -219,7 +214,7 @@ function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undef
  *
  * THE BUDGET MUST BE SPENT DELIBERATELY, which is the live constraint. A
  * streaming fetch is a BARE `fetch` and so bypasses the gate below while still
- * holding one of the six: Agent screen open plus a sessions stream plus two
+ * holding one of the six: the run feed plus a sessions stream plus two
  * gated reads is four of six, leaving two for navigation. Workable, and it has
  * to be counted rather than discovered — an ungated stream nobody budgeted for
  * is exactly the shape #82 was filed about.
@@ -412,11 +407,6 @@ export type LiveSessionsPage = {
    *  behind `?all=1`. Absent from an engine that predates the filter, which
    *  means "you have everything", never "the shelf is empty". */
   settledCount?: number;
-  /** Whether this Mac has a built-in Agent (#531) — one flag, which is all a
-   *  pinned row showing a label needs. Rides this read for `inbox`'s reason:
-   *  the rail already polls it, per host, per tick. Absent is off, and so is an
-   *  engine older than the feature. */
-  agent?: { enabled: boolean };
   unchanged?: false;
 };
 
@@ -548,72 +538,6 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
     setSessionDefaults: (patch: { envMode?: EnvMode }) =>
       request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
-    /* -------------------------------------------------------------- *
-     * THE BUILT-IN AGENT — issue #531.
-     *
-     * NOT UNDER `/api/sessions/`, because the Agent is not one: its
-     * conversation is a thread rather than a journal, and a screen that
-     * reached it through a session route would be told a conversation exists
-     * that `sessionBootstrap` cannot open.
-     *
-     * The RAIL calls none of these — `liveSessions` above carries
-     * `agent: { enabled }`, which is the whole of what the entry needs.
-     * -------------------------------------------------------------- */
-    /** Whether this Mac has an Agent, which thread, whether a turn runs, and
-     *  the one approval it may be parked on. The credential rides along —
-     *  which RUNG answered, never the key. */
-    agent: () => request<AgentAnswer>(fetcher, "GET", "/api/agent"),
-    /** Switch it on, pick its model, choose its effort and access, paste its
-     *  key, or start again. `reset` archives the conversation and mints a new
-     *  thread; it is the only patch that moves `generation`. `effort` and
-     *  `access` take `""` to clear — see `EngineClient.setAgent`. */
-    setAgent: (patch: { enabled?: boolean; model?: string; effort?: string; access?: string; reset?: boolean; apiKey?: string }) =>
-      request<AgentAnswer>(fetcher, "PATCH", "/api/agent", patch),
-    /** What OpenCode Go serves the Agent, DESCRIBED — names, families, context
-     *  limits and the endpoint each id answers on (#551). FAILS SOFT in two
-     *  independent halves: `source.go === null` is an unreachable Go and an
-     *  empty list, `source.modelsDev === null` is a full list of undescribed
-     *  ids. Either way a `message` carries the reason rather than an error. */
-    agentModels: () => request<AgentModelCatalogue>(fetcher, "GET", "/api/agent/models"),
-    /** Say something. The run id comes back before the turn runs, so the
-     *  composer has something to name in a Cancel. */
-    sendAgentTurn: (text: string) =>
-      request<{ runId: string; queued: number; agent: AgentState }>(fetcher, "POST", "/api/agent/turns", { text }),
-    /** Stop the live turn, or drop a queued one. `stopped: false` means there
-     *  was nothing left to stop, which is a fact rather than an error. */
-    cancelAgentTurn: (runId: string) =>
-      request<{ stopped: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/turns/${encodeURIComponent(runId)}/cancel`),
-    /** The transcript, bounded by a count AND a byte budget — #515's rule.
-     *  `after` pages forward; `tail` opens on the LAST page and `before` walks
-     *  back from it (#580). Page until `more` is false. */
-    agentThread: (options: { after?: number; before?: number; tail?: boolean; limit?: number } = {}) => {
-      const query = new URLSearchParams();
-      if (options.after !== undefined) query.set("after", String(options.after));
-      if (options.before !== undefined) query.set("before", String(options.before));
-      if (options.tail) query.set("tail", "1");
-      if (options.limit !== undefined) query.set("limit", String(options.limit));
-      const suffix = query.toString();
-      return request<AgentThreadAnswer>(fetcher, "GET", `/api/agent/thread${suffix ? `?${suffix}` : ""}`);
-    },
-    /** Answer the parked approval BY ID, so a stale question cannot approve the
-     *  one that replaced it. `resolved: false` means it was already answered. */
-    resolveAgentRequest: (requestId: string, decision: "accept" | "decline") =>
-      request<{ resolved: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/requests/${encodeURIComponent(requestId)}`, { decision }),
-    /** THE WAKE INBOX (#541 A) — what a completion on a subscribed session writes
-     *  now that it no longer starts an Agent turn. `unreadOnly` is the strip
-     *  above the composer; without it this pages the whole inbox. */
-    agentInbox: (options: { after?: number; limit?: number; unreadOnly?: boolean } = {}) => {
-      const query = new URLSearchParams();
-      if (options.after !== undefined) query.set("after", String(options.after));
-      if (options.limit !== undefined) query.set("limit", String(options.limit));
-      if (options.unreadOnly) query.set("unread", "1");
-      const suffix = query.toString();
-      return request<AgentInboxAnswer>(fetcher, "GET", `/api/agent/inbox${suffix ? `?${suffix}` : ""}`);
-    },
-    /** Mark rows read BY ID, so a client holding a stale list cannot clear rows
-     *  that landed after it last looked. `read` is how many actually moved. */
-    markAgentInboxRead: (ids: readonly number[]) =>
-      request<{ read: number; unread: number }>(fetcher, "POST", "/api/agent/inbox/read", { ids: [...ids] }),
     /* -------------------------------------------------------------- *
      * DICTATION — issue #544, first step.
      *

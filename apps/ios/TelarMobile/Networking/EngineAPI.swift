@@ -84,20 +84,6 @@ protocol EngineAPI: Sendable {
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
     ) async throws
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws
-    /// ── THE BUILT-IN AGENT (#531) ───────────────────────────────────────────
-    ///
-    /// NOT UNDER `api/sessions/`, because the Agent is not one: its conversation
-    /// is a thread rather than a journal, and a phone that reached it through a
-    /// session route would be told a conversation exists that `sessionEvents`
-    /// cannot open.
-    ///
-    /// THE SIDEBAR CALLS NONE OF THESE. It reads `agent: { enabled }` off the
-    /// live list it already polls, which is all a row showing a word needs.
-    ///
-    /// DEFAULTED IN THE EXTENSION BELOW, like `sidebarLayout()`: a double that
-    /// models the transcript should not have to implement four routes it will
-    /// never be asked for.
-    func agent() async throws -> AgentAnswer
     /// A SHORT-LIVED TRANSCRIPTION TOKEN (#544). The phone holds no Deepgram
     /// key; it asks the Mac for one dictation's worth of credential and opens
     /// its own socket with it — the audio never passes through the cockpit.
@@ -138,51 +124,6 @@ protocol EngineAPI: Sendable {
     /// accepted a write would have a settings screen report a change that
     /// never happened.
     func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer
-    /// The transcript forward from a cursor. Bounded by a count AND a byte
-    /// budget, whichever is reached first — page until `more` is false.
-    ///
-    /// THIS IS THE POLL, NOT THE OPEN (#580). A screen opening a conversation
-    /// asks for `agentThreadTail` and walks back with `agentThread(before:)`;
-    /// this is what keeps it up to date once it has.
-    func agentThread(after: Int) async throws -> AgentThreadPage
-    /// THE LAST PAGE, which is the one somebody opening the Agent is looking at
-    /// (#580). `cursor` comes back as the thread's TIP, so the forward poll
-    /// starts from the end rather than from the top of this window.
-    func agentThreadTail(limit: Int) async throws -> AgentThreadPage
-    /// One page FURTHER BACK, exclusive of `before` — what pulling down at the
-    /// top of the transcript asks for. `oldest` is the next `before`, and
-    /// `more` says whether anything older is left.
-    func agentThread(before: Int, limit: Int) async throws -> AgentThreadPage
-    func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted
-    /// `stopped: false` means there was nothing left to stop, which is a fact
-    /// rather than an error — a Stop pressed a beat late must not paint a
-    /// failure over a turn that worked.
-    func cancelAgentTurn(_ runId: String) async throws
-    /// BY ID, so a phone holding a stale question cannot approve the one that
-    /// replaced it. Two decisions and not three: the Agent's gate is decided
-    /// per call, so there is nothing an "always" could attach to.
-    func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws
-    /// THE WAKE INBOX (#541 A) — what a completion on a session the Agent
-    /// subscribed to writes now that it no longer starts a turn. `unreadOnly` is
-    /// the strip above the composer; without it this pages the whole inbox.
-    ///
-    /// DEFAULTED BELOW TO AN EMPTY PAGE, like the routes beside it: a double
-    /// that models the transcript should not have to implement one, and a Mac
-    /// too old to serve it answers the same thing — no strip.
-    func agentInbox(after: Int, unreadOnly: Bool) async throws -> AgentInboxPage
-    /// Mark rows read BY ID, so a phone holding a stale list cannot clear rows
-    /// that landed after it last looked.
-    func markAgentInboxRead(_ ids: [Int]) async throws
-    /// WHAT THE AGENT MAY RUN — the composer's model pill (#539).
-    ///
-    /// FAILS SOFT rather than throwing: a Mac that could not reach OpenCode Go,
-    /// or has no key yet, answers an EMPTY list and a `message`. An empty picker
-    /// carrying the reason beats one full of ids that 404.
-    func agentModels() async throws -> AgentModelList
-    /// THE THREE COMPOSER PILLS' WRITE — the same route that Mac's own Settings
-    /// uses, so the phone and the desktop read one value. Fields are sent BY
-    /// PRESENCE, and `""` clears one.
-    func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer
     /// REMOVE A SESSION AND EVERYTHING IT OWNS — transcript included. No undo,
     /// and the engine refuses while a turn is in flight (`EngineStore
     /// .deleteSession` throws a conflict on a queued, claimed or running one),
@@ -292,21 +233,6 @@ extension EngineAPI {
     /// A double that models the transcript and not the rail answers "nobody has
     /// arranged anything", which is a real arrangement and not an error.
     func sidebarLayout() async throws -> SidebarLayout { SidebarLayout() }
-
-    /// A double that models the transcript models no Agent — which is also what
-    /// a Mac that has never switched one on answers, so the screen's "off"
-    /// state is what a caller gets rather than a failure.
-    func agent() async throws -> AgentAnswer { AgentAnswer(agent: AgentState(enabled: false), credential: nil) }
-    func agentThread(after: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: after, more: false) }
-    func agentThreadTail(limit: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: 0, more: false) }
-    func agentThread(before: Int, limit: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: 0, more: false) }
-    func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted { AgentTurnAccepted(runId: "", queued: 0, agent: nil) }
-    func cancelAgentTurn(_ runId: String) async throws {}
-    func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {}
-    func agentInbox(after: Int, unreadOnly: Bool) async throws -> AgentInboxPage { AgentInboxPage(rows: [], cursor: after) }
-    func markAgentInboxRead(_ ids: [Int]) async throws {}
-    func agentModels() async throws -> AgentModelList { AgentModelList(models: [], message: nil) }
-    func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer { AgentAnswer(agent: AgentState(enabled: false), credential: nil) }
 
     /// A DOUBLE CANNOT MINT A CREDENTIAL, and must not pretend to: every other
     /// default here answers with a real, empty state, but there is no empty
@@ -808,62 +734,6 @@ struct HTTPEngineAPI: EngineAPI {
 
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {
         let _: IgnoredBody = try await send("PATCH", "api/sessions/\(escape(id))", body: patch)
-    }
-
-    // ── THE BUILT-IN AGENT (#531) ────────────────────────────────────────────
-
-    func agent() async throws -> AgentAnswer {
-        try await get("api/agent")
-    }
-
-    func agentThread(after: Int) async throws -> AgentThreadPage {
-        try await get("api/agent/thread", query: [URLQueryItem(name: "after", value: String(after))])
-    }
-
-    func agentThreadTail(limit: Int) async throws -> AgentThreadPage {
-        try await get("api/agent/thread", query: [
-            URLQueryItem(name: "tail", value: "1"),
-            URLQueryItem(name: "limit", value: String(limit)),
-        ])
-    }
-
-    func agentThread(before: Int, limit: Int) async throws -> AgentThreadPage {
-        try await get("api/agent/thread", query: [
-            URLQueryItem(name: "before", value: String(before)),
-            URLQueryItem(name: "limit", value: String(limit)),
-        ])
-    }
-
-    func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted {
-        try await post("api/agent/turns", body: ["text": AnyEncodable(text)])
-    }
-
-    func cancelAgentTurn(_ runId: String) async throws {
-        let _: IgnoredBody = try await post("api/agent/turns/\(escape(runId))/cancel", body: [:])
-    }
-
-    func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {
-        let _: IgnoredBody = try await post(
-            "api/agent/requests/\(escape(requestId))", body: ["decision": AnyEncodable(accept ? "accept" : "decline")]
-        )
-    }
-
-    func agentInbox(after: Int, unreadOnly: Bool) async throws -> AgentInboxPage {
-        var query = [URLQueryItem(name: "after", value: String(after))]
-        if unreadOnly { query.append(URLQueryItem(name: "unread", value: "1")) }
-        return try await get("api/agent/inbox", query: query)
-    }
-
-    func markAgentInboxRead(_ ids: [Int]) async throws {
-        let _: IgnoredBody = try await post("api/agent/inbox/read", body: ["ids": AnyEncodable(ids)])
-    }
-
-    func agentModels() async throws -> AgentModelList {
-        try await get("api/agent/models")
-    }
-
-    func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer {
-        try await send("PATCH", "api/agent", body: patch)
     }
 
     // ── DICTATION (#544) ─────────────────────────────────────────────────────

@@ -22,7 +22,7 @@
  * the same reason.
  */
 import type { NotificationDetail, NotificationEntry, WakeKind } from "@telar/engine-client";
-import { agentInboxNotice, agentNotice, type AgentNoticeInput } from "./agent-notice";
+import { agentNotice, type AgentNoticeInput } from "./agent-notice";
 
 /**
  * How long a row's one line may be. Past this a notification stops being
@@ -83,44 +83,6 @@ export function peerNotification(input: AgentNoticeInput): NotificationDetail {
 }
 
 /**
- * A PEER'S MESSAGE ADDRESSED TO THE AGENT — issue #784.
- *
- * SAME KIND, DIFFERENT SUBJECT, and the difference is the whole of why this is
- * a second function. `peerNotification`'s `sessionId` and `fetch` both name the
- * RECIPIENT's turn, because that is where the body was stored. Nothing stores a
- * body for the Agent — the message is one inbox row — so both name the SENDER
- * and the turn it spoke from, which is where the words actually are.
- *
- * THAT IS ALSO THE RIGHT SUBJECT FOR THE ROW. `inboxRowFromNotification` reads
- * `sessionId` as "the session this is ABOUT" and `runId` as "its turn"; for a
- * completion those are the session that finished, and for this they are the
- * session that spoke. A row naming the Agent as its own subject would point the
- * digest at a conversation the person is already in.
- */
-export function agentInboxNotification(input: {
-  senderSessionId: string;
-  senderRunId: string;
-  body: string;
-  intent: AgentNoticeInput["intent"];
-}): NotificationDetail {
-  const body = agentInboxNotice({
-    senderSessionId: input.senderSessionId,
-    senderRunId: input.senderRunId,
-    body: input.body,
-    intent: input.intent,
-  });
-  return {
-    kind: "peer_message",
-    sessionId: input.senderSessionId,
-    runId: input.senderRunId,
-    intent: input.intent,
-    summary: summaryOf(body),
-    fetch: { sessionId: input.senderSessionId, runId: input.senderRunId },
-    body,
-  };
-}
-
-/**
  * A WAKE OR A PARKED REQUEST, ANNOUNCED. `body` is the engine's own wake text —
  * the same string that used to be the turn's `input`, now on a field that says
  * who wrote it.
@@ -143,53 +105,6 @@ export function wakeNotification(input: {
     summary: summaryOf(input.body),
     fetch: { sessionId: input.targetSessionId, runId: input.runId },
     body: input.body,
-  };
-}
-
-/**
- * A DEADLINE THAT TOOK A REQUEST'S DEFAULT, ANNOUNCED — issue #541 D.
- *
- * `kind: "request"` BECAUSE THAT IS WHAT IT IS ABOUT, and NO `wakeKind`, because
- * nothing woke: no session finished, failed, stopped or parked anything. The
- * clock ran out. The Agent's inbox is told which row this is by an explicit
- * `inboxKind` on the wake (`AgentWake`) rather than by a fourth
- * `NotificationKind` — see `agent/inbox.ts` for why that trade was taken.
- *
- * IT SAYS THE DECISION, NOT JUST THAT ONE WAS MADE. Every other notice in this
- * file is deliberately a ping with the payload a fetch away, and this is the one
- * exception: the whole value of the row is the sentence "I went with X because
- * you were away", and a person who has to fetch to learn what X was has been
- * told nothing they can act on. The decision is one word.
- *
- * AND IT SAYS IT IS DONE. A reader that took this for an ask would try to answer
- * a resolved request and be refused by the store, which is a confusing way to
- * learn something it could simply have been told.
- */
-export function timeoutNotification(input: {
-  sessionId: string;
-  sessionTitle: string;
-  runId: string;
-  requestId: string;
-  requestKind: string;
-  /** The asker's own one-line description of what was being asked. */
-  title: string;
-  decision: "accept" | "decline";
-  deadlineMs: number;
-}): NotificationDetail {
-  const body = [
-    `[request: answered for you] Session ${input.sessionId} "${input.sessionTitle}" — request ${input.requestId} (kind ${input.requestKind}) sat for its whole ${Math.round(input.deadlineMs / 1000)}s deadline with nobody answering, so the default its asker stated was taken: ${input.decision.toUpperCase()}.`,
-    `What it was about: ${input.title}`,
-    "—",
-    `This is ALREADY DONE and cannot be un-answered — it is news, not a question. The turn it belongs to is sessions_read(sessionId: "${input.sessionId}", runId: "${input.runId}"). Tell the person what was decided for them if it matters.`,
-  ].join("\n");
-  return {
-    kind: "request",
-    sessionId: input.sessionId,
-    runId: input.runId,
-    requestId: input.requestId,
-    summary: summaryOf(body),
-    fetch: { sessionId: input.sessionId, runId: input.runId },
-    body,
   };
 }
 

@@ -10,11 +10,9 @@
  *    reads as conclusions.
  *
  * WHY IT IS NOT IN `transcript.tsx`. Those rules belong to the ACTIVITY LANE, not
- * to a session: the Agent's conversation (#569) is a flat row log with no turns,
- * no tasks and no `JournalItem` in it, and its tool calls stacked one flat row
- * each — twelve calls, twelve lines — for exactly as long as the fold lived in a
- * file that could only be handed a session's items. Two copies of "+N earlier
- * steps" is how one gains a failure count and the other does not.
+ * to a session's items, and a fold that could only be handed `JournalItem`s is
+ * one the next surface would copy. Two copies of "+N earlier steps" is how one
+ * gains a failure count and the other does not.
  *
  * SO IT IS GENERIC OVER THE ROW, and knows nothing else about one: whether a row
  * failed and what the tally calls it are questions each transcript answers for

@@ -885,23 +885,21 @@ struct ComposerView: View {
     /// SwiftUI's focus system has no view of its own to move focus to. The
     /// field mirrors its first-responder state into this flag instead.
     let focus: Binding<Bool>
-    /// WHAT THIS BOX IS ATTACHED TO — a session, or the Agent (#539). See
-    /// `ComposerHost`: the composer names the handful of facts it reads rather
-    /// than a store, so the Agent screen gets THIS composer instead of a bare
-    /// `TextField` with a send button.
+    /// WHAT THIS BOX IS ATTACHED TO. See `ComposerHost`: the composer names
+    /// the handful of facts it reads rather than a store.
     let host: any ComposerHost
     /// HOW THE BOX ASKS FOR A DICTATION TOKEN (#544) — the one call it makes
     /// that is not about this conversation, so it is handed in rather than
     /// reached through `ComposerHost`.
     ///
-    /// OPTIONAL, AND THE MIC IS ABSENT WITHOUT IT. Both screens pass one; the
+    /// OPTIONAL, AND THE MIC IS ABSENT WITHOUT IT. The session passes one; the
     /// default is for the layout tests, which build this box to measure it and
     /// have no Mac to talk to. A button that appeared and then failed at the
     /// first tap would be worse than none.
     var api: (any EngineAPI)?
     /// THE PILLS, SUPPLIED BY THE SCREEN. A session's three read a provider
-    /// catalogue and a runtime mode; the Agent's read `agent.json`. Neither is
-    /// this box's business — it owns the row they sit in and nothing else.
+    /// catalogue and a runtime mode, which is not this box's business — it
+    /// owns the row they sit in and nothing else.
     var controls: AnyView = AnyView(EmptyView())
     /// SENDING ALWAYS GOES TO THE END. The transcript's scroll lives a struct
     /// up, so the composer says "sent" and the transcript decides what that
@@ -1194,13 +1192,6 @@ struct ComposerView: View {
                     // could never be sent. The sheet is now presented from the
                     // composer's root (see `.photosPicker` on `body`), which
                     // outlives focus.
-                    // HIDDEN WHERE THE ROUTE CANNOT TAKE FILES — the Agent's
-                    // `POST /v2/agent/turns` takes `{ text }` and has no
-                    // attachment index to reference bytes by. A photo button
-                    // that uploaded into nowhere would be worse than none; see
-                    // `AgentComposerHost.acceptsAttachments`, the one line that
-                    // changes when the thread route grows attachments.
-                    if host.acceptsAttachments {
                     Button {
                         pickingPhotos = true
                     } label: {
@@ -1212,7 +1203,6 @@ struct ComposerView: View {
                             .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                     }
                     .accessibilityLabel("Attach photos")
-                    }
                     // NO PASTE CONTROL HERE ANY MORE. A screenshot on the
                     // clipboard goes in through the field's own Paste, which
                     // is where a person looks for it.
@@ -1222,9 +1212,7 @@ struct ComposerView: View {
                                 onStash: stashDraft, onOpen: { showingStash = true })
                     // THE MIC, in the same cluster and for the same reason:
                     // everything here is a way of getting words into this
-                    // message. It is on BOTH screens because the Agent renders
-                    // this same composer (#539) — one button, not two that
-                    // agree.
+                    // message.
                     // AND ONLY WHERE THAT MAC ACTUALLY DICTATES. `off` is the
                     // default: the keyboard's own dictation already works in
                     // this box, so an uninvited mic would be Telar claiming a
@@ -1252,10 +1240,8 @@ struct ComposerView: View {
                         .accessibilityLabel("Stop the running turn")
                     }
                     // THE SCREEN'S OWN PILLS (#539). A session hands its model
-                    // and runtime-mode pills down; the Agent hands its model,
-                    // effort and access. The box owns the row, not the row's
-                    // contents — which is what let the Agent have this composer
-                    // at all.
+                    // and runtime-mode pills down; the box owns the row, not
+                    // the row's contents.
                     controls
                 }
             }
@@ -1400,8 +1386,7 @@ struct ComposerView: View {
 }
 
 /// A 44pt labelled menu pill — the composer toolbar's own vocabulary (subtle
-/// fill, hairline, capsule, chevron). SHARED BY BOTH CONTROL ROWS (#539), so a
-/// session's pills and the Agent's cannot drift into two shapes.
+/// fill, hairline, capsule, chevron).
 struct ComposerLabeledPill<Items: View>: View {
     let icon: String
     let label: String
@@ -1417,20 +1402,9 @@ struct ComposerLabeledPill<Items: View>: View {
 }
 
 /// THE PILL'S LOOK, WITHOUT THE MENU BEHIND IT.
-///
-/// Lifted out of `ComposerLabeledPill` (#551) because one control no longer
-/// opens a menu: the Agent's model pill opens a searchable SHEET, a `Menu`
-/// being unable to search or section thirty-eight described models. It must
-/// still be the same pill — that is the whole rule these shapes are shared
-/// under — so the drawing lives in one place and the two triggers wrap it.
-///
-/// `tint` IS THE ONE THING A CALLER MAY CHANGE, and only to warn: the Agent's
-/// pill turns its glyph amber when the model about to run is on an endpoint
-/// Telar cannot speak to.
 struct ComposerPillLabel: View {
     let icon: String
     let label: String
-    var tint: Color = Theme.text
 
     /// A CAPPED WIDTH IS NOT A FIXED ONE (#674). #449 grouped this pill with
     /// the composer's 44pt circles and held its sizes back; it does not belong
@@ -1447,7 +1421,7 @@ struct ComposerPillLabel: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: icon).font(.system(Theme.subhead)).foregroundStyle(tint)
+            Image(systemName: icon).font(.system(Theme.subhead)).foregroundStyle(Theme.text)
             Text(label)
                 .font(.system(Theme.subhead, weight: .semibold))
                 .lineLimit(1)
@@ -1463,8 +1437,7 @@ struct ComposerPillLabel: View {
     }
 }
 
-/// A menu row with a tick where it is the one in force. Shared for the same
-/// reason as the pill above.
+/// A menu row with a tick where it is the one in force.
 @ViewBuilder func composerMenuRow(_ label: String, selected: Bool) -> some View {
     if selected {
         Label(label, systemImage: "checkmark")
@@ -1476,8 +1449,7 @@ struct ComposerPillLabel: View {
 /// THE SESSION'S TWO PILLS — model and runtime mode.
 ///
 /// LIFTED OUT OF `ComposerView` (#539) so the box owns the ROW and not its
-/// contents: these read a provider catalogue and a session record, which is
-/// exactly what the Agent has none of. Nothing about what they draw changed.
+/// contents: these read a provider catalogue and a session record.
 struct SessionComposerControls: View {
     let store: SessionStore
 

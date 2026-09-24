@@ -33,7 +33,6 @@ import { useCallback, useEffect, useState } from "react";
 import type { JournalReclaim, PackageCacheStatus, StorageCategory, StorageEntry, StorageReport } from "@telar/engine-client";
 import {
   ActivityIcon,
-  BotIcon,
   DatabaseIcon,
   FolderGitIcon,
   HardDriveIcon,
@@ -120,7 +119,6 @@ const CATEGORIES: Record<StorageCategory, { label: string; hint: string; icon: L
     hint: "The parsed-transcript cache behind Usage, and the price list it costs turns against.",
     icon: ActivityIcon,
   },
-  agent: { label: "Agent memory", hint: "The cockpit Agent's own conversation, its memory and its checkpoints.", icon: BotIcon },
   notes: { label: "Project notebooks", hint: "The notes kept beside each project's code.", icon: NotebookPenIcon },
   dictation: { label: "Dictation", hint: "What dictation keeps on this machine.", icon: MicIcon },
   run: { label: "Run mounts", hint: "Scratch space a running turn mounts for itself.", icon: PlayIcon },
