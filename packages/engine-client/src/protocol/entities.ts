@@ -1088,12 +1088,11 @@ export const Session = z.object({
    * WHEN THE PERSON PRESSED STOP — the companion stamp to the latch above, set
    * and cleared with it.
    *
-   * It exists because one sender is EXEMPT from the latch and still has to be
-   * told about it: the built-in Agent, which a human is driving turn by turn
-   * (#539). Its `sessions_send` goes through, and its tool answer says the
-   * session was stopped by the person and when — a sentence that needs a time,
-   * and `updatedAt` is not one (any later touch moves it). A peer session's
-   * send is still refused outright, so only the Agent ever reads this.
+   * It was added for the built-in Agent (#539), the one sender that was exempt
+   * from the latch and was told whose Stop it stepped over and when. That Agent
+   * is gone (#908) and every peer send is refused outright, so nothing reads it
+   * today; it is still written with the latch because `updatedAt` is not a
+   * stop time (any later touch moves it) and records already carry it.
    *
    * ABSENT ON A RECORD LATCHED BEFORE THIS FIELD EXISTED, which is why every
    * reader treats the time as optional and says "stopped by the person" without
@@ -1474,92 +1473,6 @@ export type SessionDefaults = z.infer<typeof SessionDefaults>;
 /** `local` — what the engine did before this document existed, so an install
  *  that never opens the settings page behaves exactly as it always has. */
 export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
-
-/**
- * THE BUILT-IN AGENT, AND EVERYTHING THIS MACHINE REMEMBERS ABOUT IT (#531).
- *
- * WHAT IT REPLACED, AND WHY THE SHAPE CHANGED. `MainSession` DESIGNATED a
- * conversation: it named a session id, and the coordinator was an ordinary
- * session wearing a briefing. The Agent is not a session at all — it has its
- * own identity, its own history and its own lifecycle, and Telar sessions are
- * resources it operates on through tools. So the id this document carries is a
- * THREAD id, and nothing in the rail has to exist for it to be real.
- *
- * ENVIRONMENT-SCOPED, like the documents above it: remote web, the desktop
- * shell and a paired phone must agree about whether the Agent exists, and a
- * per-browser copy would put an entry in one client's rail and not another's.
- */
-export const AgentSettings = z.object({
-  /** Off out of the box. A user who never opens the setting sees exactly the
-   *  Telar they had: no entry above the rail, no thread, no document. */
-  enabled: z.boolean(),
-  /**
-   * THE CONVERSATION, as LangGraph's `thread_id` and as OpenCode Go's
-   * `x-opencode-session`. One id, one conversation, both sides.
-   *
-   * IT OUTLIVES `enabled`, on the requirement the designation had before it:
-   * switching the Agent off keeps the thread, so switching it
-   * back on resumes the conversation that was already there rather than minting
-   * a second one. Absent means the Agent has never been switched on.
-   */
-  threadId: z.string().min(1).max(120).optional(),
-  /**
-   * WHICH MODEL THE AGENT RUNS, as the provider's own identifier. Absent means
-   * the default in `agent/go.ts` — a real id rather than a concept, spelled
-   * once so this document does not become a second place it lives. Never
-   * interpreted: it is whatever OpenCode Go serves, passed through.
-   */
-  model: z.string().min(1).max(120).optional(),
-  /**
-   * WHICH CONVERSATION THIS IS — bumped by a RESET and by nothing else.
-   *
-   * NARROW ON PURPOSE. Enabling or disabling does not start a new conversation
-   * — only a reset does, so only a reset moves this. It is
-   * what a client compares to know its cached transcript is about a thread that
-   * no longer exists.
-   *
-   * ABSENT MEANS ZERO, so a document written before this field parses rather
-   * than costing the thread.
-   */
-  generation: z.number().int().nonnegative().optional(),
-  /**
-   * HOW HARD THE MODEL SHOULD THINK — `reasoning_effort` on the wire (#539).
-   *
-   * THE NAME IS THE API'S, NOT OURS. OpenCode Go's surface is
-   * OpenAI-compatible, and `reasoning_effort` is that API's spelling for
-   * exactly this: a depth, not a token count. Three values rather than the
-   * seven OpenAI now accepts (`none` … `max`) because three is what a composer
-   * pill can be read at a glance, and because low/medium/high are the ones
-   * every model that supports the parameter at all understands.
-   *
-   * ABSENT MEANS THE PARAMETER IS NOT SENT — the provider's own default, and
-   * what every conversation before this field did. That distinction is the
-   * whole reason it is optional rather than defaulting to "medium": a model
-   * with no reasoning mode must not start receiving a field it will refuse.
-   */
-  effort: z.enum(["low", "medium", "high"]).optional(),
-  /**
-   * WHETHER THE AGENT ASKS BEFORE THE GATED CALLS (#539).
-   *
-   * `ask` is what shipped and stays the default: the approval gate parks an
-   * `interrupt()` and a person answers it. `auto` resolves those interrupts BY
-   * POLICY — the same `resolvedBy: "policy"` a session's runtime mode uses —
-   * so the Agent runs unattended.
-   *
-   * THE GATED LIST DOES NOT WIDEN, and that is the load-bearing half. `auto` is
-   * about who ANSWERS the question, never about which calls raise one:
-   * `needsApproval` is untouched, so the same calls are still gated, still
-   * ledgered and still written to the transcript as decisions. A setting that
-   * quietly enlarged what the Agent may do would be a different feature wearing
-   * this one's name.
-   */
-  access: z.enum(["ask", "auto"]).optional(),
-});
-export type AgentSettings = z.infer<typeof AgentSettings>;
-
-/** Off, and no thread yet — what an install that never opens Settings keeps
- *  doing, and what an unreadable document falls back to. */
-export const DEFAULT_AGENT_SETTINGS: AgentSettings = { enabled: false };
 
 /** Generous: a rail with a thousand project groups has other problems. The cap
  *  exists so a runaway client cannot grow this document without bound. */

@@ -62,7 +62,6 @@ import {
   type NotesMcpInfo,
   type PreparedPrompt,
   type PreparedPromptAuthor,
-  type AgentModelCatalogue,
   type ModelCatalogue,
   type ModelOverlay,
   type CustomProviderModel,
@@ -452,185 +451,6 @@ export type SessionGrepMatch = {
 export type SessionGrepAnswer = { matches: SessionGrepMatch[]; more: boolean; next?: number };
 
 /**
- * What `GET /v2/sessions/:id/bootstrap` answers with — everything a cockpit
- * needs to OPEN a conversation, from one read (#407).
- *
- * IT IS THE SNAPSHOT PLUS TWO KEYS, deliberately: the same fold answers both
- * routes, so a field the snapshot grows arrives here too and the two can never
- * describe different sessions.
- *
- * WHY IT EXISTS AT ALL — the shape, not the size. A client opening on a
- * snapshot must then tail the journal from the cursor that snapshot stamped, so
- * the second request cannot be sent until the first has returned; the two round
- * trips are strictly serial and each one crosses a cockpit route handler as
- * well as the engine. The engine holds both halves at one instant.
- */
-/**
- * The designation, plus whether the assistant it designates can actually call a
- * model.
- *
- * THE CREDENTIAL RIDES THE SAME ANSWER because one pane reads both and must not
- * be able to draw a switched-on Main beside a stale "no key". WHICH RUNG
- * answered, never the key itself: `source` absent means all three are empty and
- * the setup field is the honest thing to show, and `rejected` means the newest
- * settled turn was refused by the service — a key that exists and does not work.
- *
- * BOTH OPTIONAL AT EVERY HOP. An engine older than this field sends no
- * `credential`, and a client must read that as "cannot say" rather than as "no
- * key" — the difference between a quiet pane and one demanding setup from
- * somebody whose assistant is working.
- */
-
-
-/* ------------------------------------------------------------------ *
- * THE BUILT-IN AGENT — issue #531.
- *
- * These are the ANSWER shapes rather than the stored document: `AgentSettings`
- * is what is on disk, and this is that plus the three things only a running
- * engine knows — whether a turn is executing, how many are behind it, and the
- * one approval it may be parked on.
- * ------------------------------------------------------------------ */
-
-/** What an approval asks, carried whole so a surface need not re-derive which
- *  call it is about from the conversation. */
-export type AgentRequest = {
-  type: "approval";
-  id: string;
-  runId: string;
-  tool: string;
-  args: Record<string, unknown>;
-  toolCallId: string;
-  /** One sentence in the words a person reads, specific to the call. */
-  reason: string;
-  openedAt: number;
-};
-
-/**
- * WHAT ONE TURN COST THE MODEL — the provider's own numbers, summed over the
- * turn's laps (#539). A turn that calls three tools goes back to the model four
- * times; the question a person asks is what the TURN cost.
- */
-export type AgentUsage = {
-  input: number;
-  output: number;
-  total: number;
-  /**
-   * HOW MUCH OF `input` THE PROVIDER SERVED OUT OF ITS PROMPT CACHE (#563).
-   *
-   * A FRACTION OF `input` RATHER THAN A NUMBER BESIDE IT, on every route the
-   * engine can run — so `cacheRead / input` is the proportion a client draws,
-   * and adding it to `input` would double-count.
-   *
-   * ABSENT IS "NOBODY SAID", NOT ZERO: an OpenAI-compatible server need not
-   * forward cache statistics at all, and a Mac running an engine from before
-   * #563 item 3 sends none. Zero is a real and different answer — the cache was
-   * cold — so a client must not coalesce the two.
-   */
-  cacheRead?: number;
-  /** What it cost to WRITE this turn's prefix into the cache. Only the
-   *  Anthropic-shaped route bills this, so it is absent on the others rather
-   *  than zero. */
-  cacheCreate?: number;
-};
-
-/**
- * THE CONTEXT METER — the last completed turn's cost, and how full the prompt
- * that produced it was.
- *
- * The Agent reported no context at all before this (#539). The numbers come from
- * the two places that actually know them: `usage` is what the provider reported,
- * and `contextChars` is what the engine's trim step measured on its way to
- * deciding what to send — system prompt included, against `budgetChars`, the
- * same ceiling the decision used. Neither is recomputed by a client.
- */
-export type AgentLastUsage = {
-  /** The turn these numbers came from. */
-  runId: string;
-  at: number;
-  /** ABSENT WHEN THE MODEL REPORTED NONE — an OpenAI-compatible server is not
-   *  obliged to send usage, and a zero would read as a free turn. */
-  usage?: AgentUsage;
-  /** The prompt's size in characters on the turn's last lap. */
-  contextChars: number;
-  /** The trim ceiling `contextChars` is a proportion of. */
-  budgetChars: number;
-  /**
-   * HOW MANY OLDER TURNS THIS TURN FOLDED to one line each (#567).
-   *
-   * THE SENTENCE THAT EXPLAINS A FALLING METER. The engine folds to a LOW-water
-   * mark — about 60% of the budget — so the reading really does drop from full
-   * to two thirds between two turns, and a gauge that does that with nothing
-   * said beside it reads as broken rather than as working.
-   *
-   * OPTIONAL ON THE WIRE: a Mac running an engine from before #567 sends none,
-   * which a client reads as "nothing to say" rather than as zero turns folded.
-   */
-  folded?: number;
-  /**
-   * HOW MANY TIMES THAT TURN WENT BACK TO THE MODEL (#570).
-   *
-   * MODEL CALLS, not tool calls: the last lap is the one that answers, so a turn
-   * that used no tool reports `1`. The engine caps this (see the engine's own
-   * `MAX_LAPS`) and lands the turn with an answer at the cap rather than letting
-   * the graph throw, which is why the number is worth showing — a turn that ended
-   * at the ceiling looks exactly like one that finished early unless it says so.
-   *
-   * OPTIONAL ON THE WIRE, like `folded`: an engine from before this sends none.
-   */
-  laps?: number;
-};
-
-export type AgentState = {
-  enabled: boolean;
-  threadId?: string;
-  model?: string;
-  /** `reasoning_effort` on the wire. ABSENT MEANS THE PARAMETER IS NOT SENT —
-   *  the provider's own default — which is not the same as a default value. */
-  effort?: "low" | "medium" | "high";
-  /** Absent means `ask`, which is what shipped: a person answers the approval
-   *  gate. `auto` answers it by policy. Neither changes which calls are gated. */
-  access?: "ask" | "auto";
-  /** Bumped by a reset and nothing else — a cached transcript compares it to
-   *  know it is about a thread that no longer exists. */
-  generation?: number;
-  /** A turn is executing right now. FALSE while one is parked for a person,
-   *  which is why `request` sits beside this rather than inside it. */
-  running: boolean;
-  runId?: string;
-  queued: number;
-  request?: AgentRequest;
-  /** The context meter, from the last turn that ENDED. Absent until one has;
-   *  unchanged while the next runs, so it never blanks mid-thought. */
-  lastUsage?: AgentLastUsage;
-  /**
-   * HOW MANY WAKES ARE WAITING — issue #541, section A.
-   *
-   * A completion or a parked request on a session the Agent subscribed to used
-   * to START A TURN. It now writes an INBOX ROW and starts nothing, and the next
-   * turn a person begins opens with a digest of what is unread.
-   *
-   * THE COUNT RIDES THIS ANSWER rather than a route of its own because the rail
-   * already polls `/v2/agent` every few seconds for the status line, and a badge
-   * is one integer. The rows themselves are `agentInbox()`.
-   *
-   * OPTIONAL ON THE WIRE: a Mac running an engine from before #541 sends none,
-   * and a client must read that as "no badge" rather than as zero waiting.
-   */
-  inboxUnread?: number;
-};
-
-export type AgentAnswer = {
-  agent: AgentState;
-  /**
-   * WHICH RUNG ANSWERED, AND WHETHER THIS MACHINE HOLDS ONE ITSELF — never the
-   * key, not even redacted. `set` is the only rung a person can clear from the
-   * pane; `source` is the rung the next call would actually spend, which is
-   * what explains a surprising bill. See `apps/engine/src/agent/credentials.ts`.
-   */
-  credential?: { source?: "setting" | "environment" | "cli"; set: boolean };
-};
-
-/**
  * WHO TRANSCRIBES, AND WHETHER THIS MAC CAN — issue #544.
  *
  * `off` IS THE DEFAULT AND IT IS A REAL CHOICE. macOS and iOS dictation already
@@ -773,131 +593,19 @@ export type DictationDiagnosisAnswer = {
 };
 
 /**
- * One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
- * vocabulary so a client that already draws a session recognises the shapes.
+ * What `GET /v2/sessions/:id/bootstrap` answers with — everything a cockpit
+ * needs to OPEN a conversation, from one read (#407).
  *
- * `detail` IS KEYED BY `kind`:
+ * IT IS THE SNAPSHOT PLUS TWO KEYS, deliberately: the same fold answers both
+ * routes, so a field the snapshot grows arrives here too and the two can never
+ * describe different sessions.
  *
- *   user_message      `{ text, origin: "human" | "wake", wakeReason? }`
- *   assistant_message `{ text, itemId }` — one per thing the assistant SAYS,
- *                     including the sentence before a tool call. `itemId` is
- *                     the id the live deltas carry, so a client painting a
- *                     streamed bubble reconciles it with the row that lands
- *                     rather than drawing the same sentence twice.
- *   tool_call         `{ name, toolCallId, input, output, status }`
- *   request_opened    the whole `AgentRequest`
- *   request_resolved  `{ requestId, decision, tool }`
- *   turn_started      `{ origin, brief? }` — `brief` only on a turn a voice
- *                     client asked to have answered aloud (#567).
- *   turn_done         `{ status, text?, message?, usage?, contextChars,
- *                     budgetChars, folded, laps }` — `text` is the turn's ANSWER,
- *                     the same words as its last assistant row. Two readers, two
- *                     shapes: a list view renders this without replaying the
- *                     thread. ON A `failed` TURN both `message` and `text` carry
- *                     the reason and neither is ever empty (#602): a failure that
- *                     told the person nothing had them re-ask and pay twice, so
- *                     the reader that folds the log draws `message` and the one
- *                     that cannot — a voice client — still has an answer to give.
- *                     The meter fields are `AgentLastUsage`'s, written
- *                     on EVERY ending (completed, stopped, failed) because a
- *                     turn that spent its tokens and then failed still spent
- *                     them. A row written before the meter existed carries none
- *                     of them, one from before #567 carries no `folded`, and one
- *                     from before #570 no `laps`.
+ * WHY IT EXISTS AT ALL — the shape, not the size. A client opening on a
+ * snapshot must then tail the journal from the cursor that snapshot stamped, so
+ * the second request cannot be sent until the first has returned; the two round
+ * trips are strictly serial and each one crosses a cockpit route handler as
+ * well as the engine. The engine holds both halves at one instant.
  */
-export type AgentRow = {
-  id: number;
-  threadId: string;
-  runId: string;
-  at: number;
-  kind: "user_message" | "assistant_message" | "tool_call" | "request_opened" | "request_resolved" | "turn_started" | "turn_done";
-  detail: Record<string, unknown>;
-};
-
-export type AgentThreadAnswer = {
-  rows: AgentRow[];
-  /** The id to pass as the next `after`. On a forward page, the last row read
-   *  — unmoved when the page was empty. On a backward window (`tail`/`before`,
-   *  #580) the THREAD'S TIP, because that is what a reader who just opened on
-   *  the last page has to poll forward from. */
-  cursor: number;
-  /** More in the direction you are paging: newer rows for `after`, OLDER ones
-   *  for `tail`/`before`. */
-  more: boolean;
-  /** Backward windows only: the lowest id returned, and so the next `before`.
-   *  Absent when the window was empty. */
-  oldest?: number;
-  threadId?: string;
-};
-
-/**
- * ONE ROW OF THE AGENT'S WAKE INBOX — issue #541, section A.
- *
- * A subscribed session finishing, failing, being stopped, or parking a request
- * lands here instead of starting an Agent turn. The next turn a PERSON begins
- * opens with a digest of what is unread, ranked: waiting on you, failed,
- * completed, everything else counted.
- *
- * `summary` IS THE NOTIFICATION'S OWN LINE (#550) — the same first line a
- * session's notification item shows — so the two surfaces cannot describe one
- * completion in two different sentences.
- */
-export type AgentInboxRow = {
-  /** Monotonic. The cursor a reader pages by, and the id `markAgentInboxRead`
-   *  takes. Its own id space: NOT a transcript row id. */
-  id: number;
-  at: number;
-  /** The session this is about. */
-  sessionId: string;
-  /** Its turn — the one that ended, or the one a request belongs to. */
-  runId: string;
-  /** The four wake transitions, plus `peer_message` for a message addressed to
-   *  the Agent, plus `request_timeout` for a request that answered itself with
-   *  its own default because nobody came (#541 D).
-   *
-   *  `request_timeout` IS NOT `request_opened`, and the difference is the whole
-   *  reason it exists rather than reusing the kind: `request_opened` ranks as
-   *  WAITING ON YOU in the digest and the strip, and a request that has already
-   *  resolved is the one thing nobody is waiting on. It is news, not an ask.
-   *
-   *  Nothing can address the Agent yet (see `apps/engine/src/agent/identity.ts`);
-   *  `peer_message` is in the vocabulary so the row that lands the day something
-   *  can needs no migration. */
-  kind: "turn_completed" | "turn_failed" | "turn_stopped" | "request_opened" | "request_timeout" | "peer_message";
-  /** For a peer message: what the sender said it was. */
-  intent?: AgentMessageIntent;
-  summary: string;
-  read: boolean;
-};
-
-export type AgentInboxAnswer = {
-  rows: AgentInboxRow[];
-  /** The id to pass as the next `after`. Unmoved when the page was empty. */
-  cursor: number;
-  more: boolean;
-  /** How many are unread IN TOTAL, not on this page — so a section showing five
-   *  rows can still badge the true number behind them. */
-  unread: number;
-};
-
-/**
- * ONE FRAME OF `GET /v2/agent/stream`.
- *
- * A ROW IS DURABLE AND PAGEABLE; A DELTA IS NEITHER. Tokens are pushed live and
- * stored nowhere — the `assistant_message` row that follows carries the whole
- * text, so a client joining mid-sentence sees the finished message a moment
- * later rather than half of one for ever.
- *
- * AN `inbox` FRAME IS A NUDGE. It is pushed the moment a wake lands so a cockpit
- * can badge it without waiting for a poll, and it is NOT replayed by `after` —
- * that cursor is the transcript's. A client that reconnects reads
- * `agentInbox()`, which is the authoritative list.
- */
-export type AgentStreamEvent =
-  | { type: "row"; row: AgentRow }
-  | { type: "delta"; runId: string; itemId: string; text: string }
-  | { type: "inbox"; row: AgentInboxRow };
-
 export type SessionBootstrap = SessionSnapshot & {
   /**
    * The journal from `cursor`. Empty on a quiet session, which is the ordinary
@@ -948,40 +656,6 @@ export type LiveSessionsAnswer = {
    * band the rows it holds or must ask again.
    */
   settledCount?: number;
-  /**
-   * WHETHER THIS MAC HAS AN AGENT — one flag (#531).
-   *
-   * IT RIDES THIS READ for the reason `daemonId`, `inbox` and `layout` do: this
-   * is the one request every rail already makes, per host, per tick, and a
-   * one-field document fetched beside it would be a second round trip for
-   * something that moves twice a year. The desktop rail and the phone's sidebar
-   * read the same flag from the same answer, which is what stops them
-   * disagreeing about whether the entry is there.
-   *
-   * A FLAG AND NOTHING MORE. The thread, the model and any parked approval are
-   * `/v2/agent`'s business — the pane's read, not the sidebar's. Putting them
-   * here would cost every poll on every client for a row that shows a label.
-   *
-   * Absent from an engine older than the feature, which a client reads as
-   * "off" — the same thing it reads for an engine that has never been switched
-   * on.
-   */
-  /**
-   * WHETHER THIS MAC HAS A BUILT-IN AGENT — one flag, and deliberately only one
-   * (#531).
-   *
-   * IT RIDES THIS READ for `mainSession`'s reason, which is the whole of why
-   * `/v2/agent` exists and the rail never calls it: this is the one request
-   * every rail already makes, per host, per tick, and the entry it draws is a
-   * label and a link. A row that shows a word needs no thread, no model and no
-   * running flag, so sending them here would be four fields spent on nothing
-   * and a second thing to keep in step.
-   *
-   * ABSENT IS OFF, which is also what an engine older than the feature means.
-   * The two cases are indistinguishable here and should be: both draw the rail
-   * Telar always drew.
-   */
-  agent?: { enabled: boolean };
   /** The discriminant, present only so `unchanged` narrows this union in a
    *  caller rather than needing a cast. Never sent on the wire. */
   unchanged?: false;
@@ -1445,207 +1119,15 @@ export class EngineClient {
     return this.request("PATCH", "/v2/session-defaults", patch);
   }
 
-
-  /* ---------------------------------------------------------------- *
-   * THE BUILT-IN AGENT — issue #531.
-   *
-   * NOT UNDER `/v2/sessions/`, because the Agent is not one: it has no id in
-   * that namespace, its conversation is a LangGraph thread rather than a
-   * journal, and a client that reached it through a session route would be
-   * told a conversation exists that `events()` cannot open.
-   *
-   * The RAIL reads none of these — `liveSessions()` carries `agent: { enabled }`
-   * for the entry, which is the only thing a row that shows a label needs.
-   * ---------------------------------------------------------------- */
-
-  /** Whether this Mac has an Agent, which thread it is on, whether a turn is
-   *  running, and the one approval it may be parked on. The credential rides
-   *  along so a settings pane decides between a field and a setup prompt from
-   *  one instant — which RUNG answered, never the key. */
-  agent(): Promise<AgentAnswer> {
-    return this.request("GET", "/v2/agent");
-  }
-
-  /**
-   * Switch it on or off, pick its model, or start again.
-   *
-   * `apiKey` IS WRITE-ONLY: it is stored 0600 beside the thread and read back
-   * only as `credential.set`. An empty string clears it, which is what a person
-   * emptying the field means.
-   *
-   * `reset: true` ARCHIVES the conversation and mints a new thread — the old
-   * file stays in `agent/` with a timestamp, because a person who resets has
-   * asked to start again rather than to lose what they had. It is also the only
-   * patch that moves `generation`, which is how a cached transcript knows it is
-   * about a thread that no longer exists.
-   *
-   * `key` IS WRITE-ONLY AND NEVER COMES BACK. The Agent's OpenCode Go key is
-   * rung 1 of the ladder in `agent/credentials.ts`, and the answer says only
-   * which rung ANSWERED — a field that could read a stored key back is one
-   * screen-share away from leaking it.
-   *
-   * AN EMPTY STRING CLEARS IT, and that is the one place this patch departs
-   * from the provider registry's rule that blank never clears. There the field
-   * is one of many on a shared form and blank means "I did not retype it"; here
-   * it is the only writer of this secret and a Remove button has to be able to
-   * say so. Absent still means "leave it alone".
-   */
-  setAgent(patch: {
-    enabled?: boolean;
-    model?: string;
-    /** `"low" | "medium" | "high"`, or `""` to stop sending `reasoning_effort`
-     *  at all — the provider's own default, and what every turn did before this
-     *  field existed. */
-    effort?: string;
-    /** `"ask"` (the default, and what shipped) or `"auto"`. `auto` resolves the
-     *  approval gate's interrupts by policy; it does NOT widen which calls are
-     *  gated. `""` is the same as `"ask"`. */
-    access?: string;
-    reset?: boolean;
-    apiKey?: string;
-  }): Promise<AgentAnswer> {
-    return this.request("PATCH", "/v2/agent", patch);
-  }
-
-  /**
-   * WHAT OPENCODE GO SERVES THE AGENT — the model picker's list.
-   *
-   * IT FAILS SOFT, and a caller must treat it that way: a Go that is
-   * unreachable, or a machine with no key yet, answers an EMPTY list and a
-   * `message` rather than an error. The pane then offers what it can and says
-   * why, which is the order people actually do this in — the setting is opened
-   * before the key is pasted at least as often as after.
-   *
-   * NO CREDENTIAL COMES BACK. `agent()` is where that lives; this is a list.
-   */
-  agentModels(): Promise<AgentModelCatalogue> {
-    return this.request("GET", "/v2/agent/models");
-  }
-
-  /**
-   * Say something to the Agent. Answers the run id before the turn runs, so a
-   * composer has something to follow; a turn already running queues this one
-   * behind it rather than interleaving.
-   *
-   * `brief` IS FOR A TURN THAT WILL BE HEARD RATHER THAN READ (#567): the
-   * answer comes back as two or three spoken sentences, with no lists and no
-   * code. It applies to THIS turn only and is stored nowhere — the same
-   * conversation opened in the cockpit a minute later is unchanged — so a voice
-   * client sends it on every turn and a written one never does.
-   */
-  sendAgentTurn(text: string, options: { brief?: boolean } = {}): Promise<{ runId: string; queued: number; agent: AgentState }> {
-    return this.request("POST", "/v2/agent/turns", { text, ...(options.brief ? { brief: true } : {}) });
-  }
-
-  /** Stop the Agent's live turn, or drop a queued one. `stopped: false` means
-   *  there was nothing left to stop, which is a fact rather than an error. */
-  cancelAgentTurn(runId: string): Promise<{ stopped: boolean; agent: AgentState }> {
-    return this.request("POST", `/v2/agent/turns/${encodeURIComponent(runId)}/cancel`);
-  }
-
-  /**
-   * The transcript, from either end. Bounded by a count AND a byte budget,
-   * whichever is reached first — `#515`'s rule.
-   *
-   * `after` pages FORWARD from a cursor: what a poll and a stream reconnect
-   * ride. `tail: true` opens on the LAST page and `before` walks back from it
-   * (#580) — what a screen opening a long conversation reads instead of
-   * walking the whole of it. Passing neither still means "from the beginning".
-   */
-  agentThread(options: { after?: number; before?: number; tail?: boolean; limit?: number } = {}): Promise<AgentThreadAnswer> {
-    const query = new URLSearchParams();
-    if (options.after !== undefined) query.set("after", String(options.after));
-    if (options.before !== undefined) query.set("before", String(options.before));
-    if (options.tail) query.set("tail", "1");
-    if (options.limit !== undefined) query.set("limit", String(options.limit));
-    const suffix = query.toString();
-    return this.request("GET", `/v2/agent/thread${suffix ? `?${suffix}` : ""}`);
-  }
-
-  /**
-   * THE WAKE INBOX, forward from a cursor — issue #541, section A.
-   *
-   * `unreadOnly` IS THE SECTION ABOVE THE COMPOSER; without it this pages the
-   * whole inbox, which is what a "show everything" disclosure would ask for.
-   * Bounded by a count the engine clamps, with `more` when the page stopped
-   * early — the same contract `agentThread` has.
-   */
-  agentInbox(options: { after?: number; limit?: number; unreadOnly?: boolean } = {}): Promise<AgentInboxAnswer> {
-    const query = new URLSearchParams();
-    if (options.after !== undefined) query.set("after", String(options.after));
-    if (options.limit !== undefined) query.set("limit", String(options.limit));
-    if (options.unreadOnly) query.set("unread", "1");
-    const suffix = query.toString();
-    return this.request("GET", `/v2/agent/inbox${suffix ? `?${suffix}` : ""}`);
-  }
-
-  /** Mark inbox rows read, by id. `read` is how many actually MOVED, so a second
-   *  press of the same button answers `0` rather than claiming a write that did
-   *  nothing. BY ID and never "everything", so a client holding a stale list
-   *  cannot clear rows that landed after it last looked. */
-  markAgentInboxRead(ids: readonly number[]): Promise<{ read: number; unread: number }> {
-    return this.request("POST", "/v2/agent/inbox/read", { ids: [...ids] });
-  }
-
-  /**
-   * A SESSION ADDRESSES THE AGENT — issue #784. One inbox row, and no turn
-   * anywhere.
-   *
-   * `proof` IS THE SENDING TURN'S OWN CLAIM, the same one `submitAgentTurn`
-   * carries: the engine checks it is live and reads the sender off it, so a
-   * model cannot name a session it is not. There is no unproven arm — the row's
-   * only retrieval is `sessions_read(sender, senderRun)`, and a row with no
-   * sender would be a summary with no way back to what was said.
-   *
-   * `row` ABSENT MEANS NOTHING KEPT IT: the Agent is switched off on this
-   * machine, or has no thread yet. The caller is told, because a sender that has
-   * just reported a finding and is told "sent" about a message that went nowhere
-   * is the exact failure the cadence work exists to stop.
-   */
-  sendToAgent(input: {
-    input: string;
-    intent?: "task" | "report" | "result" | "blocker";
-    proof: { sessionId: string; runId: string; claimToken: string };
-  }): Promise<{ row?: AgentInboxRow; notice: string }> {
-    return this.request("POST", "/v2/agent/inbox/message", input);
-  }
-
-  /** Answer the parked approval. BY ID, so a client holding a stale question
-   *  cannot approve the one that replaced it; `resolved: false` means it had
-   *  already been answered. */
-  resolveAgentRequest(requestId: string, decision: "accept" | "decline"): Promise<{ resolved: boolean; agent: AgentState }> {
-    return this.request("POST", `/v2/agent/requests/${encodeURIComponent(requestId)}`, { decision });
-  }
-
-  /**
-   * The Agent's live feed, as a URL and a header rather than a method.
-   *
-   * SERVER-SENT EVENTS, so the response is a stream this client has no business
-   * buffering: a caller opens it with `fetch` plus a reader and reads `data:`
-   * frames of `AgentStreamEvent`. `after` replays the transcript from that
-   * cursor inside the same response before the live feed starts, which is what
-   * closes the gap a page-then-subscribe would leave.
-   *
-   * THE TOKEN IS RETURNED BESIDE THE URL because the route is behind the same
-   * bearer auth as every other one, and `EventSource` cannot send a header —
-   * a caller that needs one must use `fetch`.
-   */
-  agentStream(after = 0): { url: string; headers: Record<string, string> } {
-    return {
-      url: `http://${this.discovery.host}:${this.discovery.port}/v2/agent/stream?after=${after}`,
-      headers: { authorization: `Bearer ${this.discovery.token}` },
-    };
-  }
-
   /**
    * WHERE EVERY SESSION'S EVENTS ARRIVE — issue #586.
    *
-   * A URL AND HEADERS RATHER THAN A SUBSCRIPTION, exactly like `agentStream`:
-   * the caller opens the connection, so a cockpit route can PIPE the body
+   * A URL AND HEADERS RATHER THAN A SUBSCRIPTION: the caller opens the
+   * connection, so a cockpit route can PIPE the body
    * untouched instead of parsing and re-framing it, and a client that wants
    * `EventSource` can have one.
    *
-   * NO `after`, UNLIKE THE AGENT'S. An event id here is per session —
+   * NO `after`. An event id here is per session —
    * `PRIMARY KEY(session_id, id)` — so there is no machine-wide cursor to
    * replay from, and a parameter that silently meant nothing would be worse
    * than none. The feed is live-only and its readers reconcile on their own
@@ -1682,9 +1164,9 @@ export class EngineClient {
    * dictation off, and one that names no key must not clear it.
    *
    * THE KEY IS WRITE-ONLY AND NEVER COMES BACK. An empty string clears it —
-   * the same departure `setAgent` makes from the provider registry's "blank
-   * never clears", and for the same reason: this field is the only writer of
-   * the secret and a Remove button has to be able to mean it.
+   * a departure from the provider registry's "blank never clears", because
+   * this field is the only writer of the secret and a Remove button has to be
+   * able to mean it.
    *
    * SWITCHING A PROVIDER OFF DOES NOT THROW ITS KEY AWAY, so turning dictation
    * back on is one click rather than a trip to the vendor's console.
@@ -3127,11 +2609,11 @@ export class EngineClient {
   /**
    * EVERY RUN TRANSITION FOR THIS SESSION'S PROJECT — issue #890.
    *
-   * A URL AND HEADERS RATHER THAN A SUBSCRIPTION, exactly like `agentStream`
-   * and `sessionsStream`: the caller opens it, so a cockpit route can pipe the
+   * A URL AND HEADERS RATHER THAN A SUBSCRIPTION, exactly like
+   * `sessionsStream`: the caller opens it, so a cockpit route can pipe the
    * body untouched.
    *
-   * ITS FRAMES CARRY THE WHOLE `RunView`, WHICH THE OTHER TWO FEEDS' FRAMES
+   * ITS FRAMES CARRY THE WHOLE `RunView`, WHICH THE SESSIONS FEED'S FRAMES
    * DELIBERATELY DO NOT. Their rule — a frame names a journal entry a reader
    * can page back to — has nothing to stand on here: a run's status lives in
    * the engine's memory, and the only read of it is `/run/status`, which is the
