@@ -362,6 +362,20 @@ function claudeContextEnvForModel(model: string | undefined): Record<string, str
 }
 
 /**
+ * DEFER MCP TOOL SCHEMAS. Measured on the 24 Sep benchmark: Telar's first
+ * request carried 142 tools (321 kB) against the terminal's 33 — computer use
+ * alone 136 kB — about 38k tokens more context on every call. Claude Code only
+ * turns tool search on by itself past ~10% of the window (100k tokens on 1M)
+ * and not at all behind a custom base URL, so it never did. Forced on here so
+ * the model sees tool NAMES and loads a schema when it needs one. An explicit
+ * `ENABLE_TOOL_SEARCH` in the engine's environment or the session's env patch
+ * wins — the patch is applied after this one.
+ */
+function claudeToolSearchEnv(base: Record<string, string | undefined>): Record<string, string> | undefined {
+  return base.ENABLE_TOOL_SEARCH === undefined ? { ENABLE_TOOL_SEARCH: "true" } : undefined;
+}
+
+/**
  * What the meter may ASSUME before the provider has said anything — and only
  * for a row that explicitly asks for the long window. Measured on the dogfood
  * app: a session configured as bare `opus` was assumed 1M here because the
@@ -1307,6 +1321,7 @@ export function createClaudeDriver(
       const sdkEffort = claudeEffort(claudeEffortFor(model, effort));
       const userServers = claudeMcpServers(userMcpServers);
       const contextEnv = claudeContextEnvForModel(model);
+      const toolSearchEnv = claudeToolSearchEnv(process.env);
 
       let finalText = "";
       let receivedPartialText = false;
@@ -2521,7 +2536,7 @@ export function createClaudeDriver(
          * as one — see `canonicalEnvPatch`. `{}` and `{ KEY: undefined }` are
          * opposite instructions that `JSON.stringify` rendered identically.
          */
-        env: canonicalEnvPatch(env, contextEnv),
+        env: canonicalEnvPatch(toolSearchEnv, env, contextEnv),
         effort: sdkEffort ?? null,
         fastMode: fastMode ?? null,
         executable: executable ?? null,
@@ -2592,7 +2607,7 @@ export function createClaudeDriver(
 
       /** The child's environment with the patch's deletions APPLIED, resolved
        *  once so the query options and the fingerprint cannot disagree. */
-      const childEnv = resolveChildEnv(process.env, env, contextEnv);
+      const childEnv = resolveChildEnv(process.env, toolSearchEnv, env, contextEnv);
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };

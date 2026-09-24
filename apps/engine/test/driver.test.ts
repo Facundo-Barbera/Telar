@@ -2419,6 +2419,30 @@ test("fast mode stays explicit, and Claude turns keep 1M enabled", async () => {
   expect(seen[2]).toMatchObject({ model: undefined, env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
 });
 
+test("MCP tool schemas are deferred behind tool search unless the environment says otherwise", async () => {
+  // 142 tools / ~38k tokens rode every request in the 24 Sep benchmark because
+  // Claude Code never switched tool search on by itself.
+  const seen: (Record<string, unknown> | undefined)[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      seen.push(input.options.env);
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const saved = process.env.ENABLE_TOOL_SEARCH;
+  try {
+    delete process.env.ENABLE_TOOL_SEARCH;
+    await run(driver, { model: "claude-opus-5-5[1m]" }).result;
+    process.env.ENABLE_TOOL_SEARCH = "false";
+    await run(driver, { model: "claude-opus-5-5[1m]", sessionId: "s-optout" }).result;
+  } finally {
+    if (saved === undefined) delete process.env.ENABLE_TOOL_SEARCH;
+    else process.env.ENABLE_TOOL_SEARCH = saved;
+  }
+  expect(seen[0]).toMatchObject({ ENABLE_TOOL_SEARCH: "true" });
+  expect(seen[1]).toMatchObject({ ENABLE_TOOL_SEARCH: "false" });
+});
+
 /**
  * WHICH BINARY ANSWERS THE TURN — the option that makes a packaged app work.
  *
