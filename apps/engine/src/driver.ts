@@ -2927,6 +2927,17 @@ export function createClaudeDriver(
        * until the next engine turn pumps them out.
        */
       const turnUuid = crypto.randomUUID();
+      /**
+       * EVERY SEND OF THIS TURN IS OURS, not only the first. A person's steer
+       * interrupts, and when it lands before the reply's first frame the CLI
+       * never answers `turnUuid` at all: it answers the steer. Keyed only on
+       * the first send, that reply (and every one after it) read as the CLI's
+       * own turn, its `result` was skipped as a stranger's, and the turn ran
+       * until someone pressed Stop — 7m46s on the Delta coordinator, with nine
+       * messages steered into a turn that could no longer end.
+       */
+      const ownSends = new Set<string>([turnUuid]);
+      let steerSent = false;
       if (persistent) {
         // The turn begins as one message pushed into the open stream. Stamped
         // as the person's only when it IS the person's — see `promptFromHuman`
@@ -3058,10 +3069,14 @@ export function createClaudeDriver(
                */
               const notifications = queued.map((message) => message.notification).filter((detail) => detail !== undefined);
               const allNotifications = !typedByAPerson && notifications.length === queued.length && notifications[0] !== undefined;
+              const steerUuid = crypto.randomUUID();
+              ownSends.add(steerUuid);
+              steerSent = true;
               runtime.feed.push({
                 type: "user",
                 message: { role: "user", content: claudeInitialContent(allNotifications ? claudeNotificationContent(text, notifications[0]!) : text, attachments) },
                 parent_tool_use_id: null,
+                uuid: steerUuid,
                 ...(allNotifications
                   ? { origin: claudeNotificationOrigin(notifications[0]!) }
                   : typedByAPerson
@@ -3236,14 +3251,17 @@ export function createClaudeDriver(
            */
           if (item.type === "stream_event" && item.event?.type === "message_start" && !parentToolUseId) {
             const sender = str(item.user_message_uuid);
-            if (sender === turnUuid) {
+            if (sender !== undefined && ownSends.has(sender)) {
               // Our reply has begun. Later message_starts INSIDE it (the
               // continuation after a tool round) carry no uuid — measured —
               // and are ours by position.
               ownTurnOpen = true;
               foreignTurn = undefined;
               runtime.echoesUserMessageUuid = true;
-            } else if (sender !== undefined || (runtime.echoesUserMessageUuid && !ownTurnOpen)) {
+            } else if (sender !== undefined || (runtime.echoesUserMessageUuid && !ownTurnOpen && !steerSent)) {
+              // (A senderless reply after a steer is the steer's answer: a
+              // steer can cut our first send before its reply began, and a
+              // turn that disowns the answer to its own message never ends.)
               // Another sender's turn, or — on a producer known to echo the
               // key — a turn with no sender at all before ours has begun:
               // the CLI's own. Its message_start carries no uuid (measured).
@@ -3286,7 +3304,7 @@ export function createClaudeDriver(
             const sender = str(item.user_message_uuid);
             const foreignResult =
               foreignTurn !== undefined ||
-              (sender !== undefined && sender !== turnUuid) ||
+              (sender !== undefined && !ownSends.has(sender)) ||
               // A CLI-originated turn that produced no message_start (a
               // notification answered without streaming) is still caught
               // by an origin that is NOT a person's — `human` is the one

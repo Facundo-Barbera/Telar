@@ -4020,6 +4020,56 @@ describe("a turn the CLI started by itself is not this turn", () => {
     expect(closed?.kind === "task.completed" && closed.task).toMatchObject({ id: "task_toolu_bg", state: "completed", resultText: "WOKE" });
   });
 
+  /**
+   * THE DELTA COORDINATOR, 17:58 (run_ef835bec…): a wake opened the turn and a
+   * person's steer cut it 0.9s later, before its reply's first frame. The CLI
+   * never answered the wake's uuid, so every later reply — the steer's, and the
+   * nine messages steered after it — read as the CLI's own turn, each `result`
+   * was skipped as a stranger's, and the turn sat "Working" for 7m46s until
+   * Stop. Both shapes of the steer's answer: echoing the steer's own key, and
+   * carrying no key at all.
+   */
+  for (const echoes of [true, false]) {
+    test(`a steer that cuts the turn before its first frame is still answered in it (steer reply ${echoes ? "echoes its key" : "carries no key"})`, async () => {
+      let startedGenerating: (() => void) | undefined;
+      const generating = new Promise<void>((resolve) => {
+        startedGenerating = resolve;
+      });
+      let cut: (() => void) | undefined;
+      const wasCut = new Promise<void>((resolve) => {
+        cut = resolve;
+      });
+      const driver = createClaudeDriver(async () => ({
+        query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+          const iterator = prompt[Symbol.asyncIterator]();
+          async function* pump() {
+            // Turn 1: the process shows it echoes the key.
+            yield* reply((await iterator.next()).value!.uuid!, "first");
+            // Turn 2: cut before any frame of the reply.
+            const opened = (await iterator.next()).value!;
+            startedGenerating!();
+            await wasCut;
+            yield { type: "result", subtype: "interrupted", user_message_uuid: opened.uuid };
+            const steered = (await iterator.next()).value!;
+            const answer = reply(steered.uuid!, "answered the steer");
+            if (!echoes) for (const frame of answer) delete (frame as { user_message_uuid?: string }).user_message_uuid;
+            // Disowned, this result is skipped and the stream ends under a
+            // turn with no result — a rejection here, a hang against the
+            // real CLI, which keeps the stream open.
+            yield* answer;
+          }
+          return Object.assign(pump(), { interrupt: async () => void cut!() });
+        },
+      }) as never);
+      await expect(run(driver, { sessionId: `session_cut_${echoes}` }).result).resolves.toMatchObject({ text: "first" });
+      const steer = new SteerMailbox();
+      const second = run(driver, { sessionId: `session_cut_${echoes}`, steer });
+      await generating;
+      steer.push("change course");
+      await expect(second.result).resolves.toMatchObject({ text: "answered the steer" });
+    });
+  }
+
   test("a notification in a LATER turn lands on the row its tool-use opened — no ghost row", async () => {
     /**
      * MEASURED: seven `task.completed` events in one session for ids like
