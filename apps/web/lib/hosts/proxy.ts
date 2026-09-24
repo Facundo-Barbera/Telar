@@ -65,13 +65,11 @@ const LIST_READS = new Set(["sessions/live", "health", "inbox", "projects"]);
 /**
  * A STREAM HAS NO DEADLINE, and this is the one read here that does not (#531).
  *
- * Every bound above exists because silence means a Mac has hung. On the Agent's
- * SSE feed silence is the NORMAL state: an idle Agent emits nothing for hours,
- * and the engine sends a comment frame every 25 seconds precisely so an open
- * connection is not mistaken for a dead one. A minute's timeout here would
- * sever a healthy stream every minute, on a schedule — the remote Agent screen
- * would reconnect for ever and look, from the reader's side, like a feed that
- * keeps dropping.
+ * Every bound above exists because silence means a Mac has hung. On an SSE feed
+ * silence is the NORMAL state: an idle session emits nothing for hours. A
+ * minute's timeout here would sever a healthy stream every minute, on a
+ * schedule — a remote screen would reconnect for ever and look, from the
+ * reader's side, like a feed that keeps dropping.
  *
  * `Infinity` RATHER THAN A BIGGER NUMBER, because there is no honest number:
  * the connection ends when the client goes away or the engine does, and both of
@@ -80,7 +78,7 @@ const LIST_READS = new Set(["sessions/live", "health", "inbox", "projects"]);
 /** Routes that are STREAMS and must never be given a finite upstream timeout:
  *  silence is their normal state, so a bound would sever a healthy connection
  *  on a schedule. `sessions/stream` joined on #586. */
-const STREAMS = new Set(["agent/stream", "sessions/stream"]);
+const STREAMS = new Set(["sessions/stream"]);
 
 /**
  * AND ONE STREAM WHOSE ROUTE CARRIES A SESSION ID IN THE MIDDLE OF IT (#890):

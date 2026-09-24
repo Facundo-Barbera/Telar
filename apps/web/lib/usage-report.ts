@@ -42,11 +42,7 @@ export type UsageFold = {
 /**
  * Every provider a usage row can name.
  *
- * `telar` WAS A FOURTH until #531 removed the driver. The Agent still spends
- * tokens, and this report does not yet count them — it folds per-SESSION usage,
- * and the Agent has no session. Counting it is a separate question from
- * removing the driver, and answering it here would have meant inventing a row
- * shape nothing writes.
+ * `telar` WAS A FOURTH until #531 removed the driver.
  */
 export const DRIVERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
 export const DRIVER_LABEL: Record<ProviderDriverKind, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };

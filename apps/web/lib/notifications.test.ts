@@ -8,27 +8,27 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { inboxSubject, notificationHead, notificationVerbs, stripNotificationKind, NOTIFICATION_HEAD_CHARS } from "./notifications";
+import { notificationHead, notificationVerbs, stripNotificationKind, NOTIFICATION_HEAD_CHARS } from "./notifications";
 
 describe("what a happening is called", () => {
   test("a peer's message is named by what the sender said it was", () => {
-    expect(notificationVerbs({ kind: "peer_message", intent: "task" })).toEqual({ verb: "A session assigned work", short: "Assigned work", tone: "muted" });
-    expect(notificationVerbs({ kind: "peer_message", intent: "blocker" })).toEqual({ verb: "A session reported a blocker", short: "Reported a blocker", tone: "warning" });
-    expect(notificationVerbs({ kind: "peer_message", intent: "result" })).toEqual({ verb: "A session sent a result", short: "Sent a result", tone: "muted" });
-    expect(notificationVerbs({ kind: "peer_message", intent: "report" })).toEqual({ verb: "A session sent a message", short: "Sent a message", tone: "muted" });
+    expect(notificationVerbs({ kind: "peer_message", intent: "task" })).toEqual({ verb: "A session assigned work", tone: "muted" });
+    expect(notificationVerbs({ kind: "peer_message", intent: "blocker" })).toEqual({ verb: "A session reported a blocker", tone: "warning" });
+    expect(notificationVerbs({ kind: "peer_message", intent: "result" })).toEqual({ verb: "A session sent a result", tone: "muted" });
+    expect(notificationVerbs({ kind: "peer_message", intent: "report" })).toEqual({ verb: "A session sent a message", tone: "muted" });
     // NO INTENT IS `report`, not a wake — the fall-through that started #572.
     expect(notificationVerbs({ kind: "peer_message" }).verb).toBe("A session sent a message");
   });
 
   test("a wake is named by its transition", () => {
-    expect(notificationVerbs({ kind: "wake", wakeKind: "turn_completed" })).toEqual({ verb: "Session finished a turn", short: "Finished", tone: "muted" });
-    expect(notificationVerbs({ kind: "wake", wakeKind: "turn_failed" })).toEqual({ verb: "Session failed a turn", short: "Failed", tone: "warning" });
-    expect(notificationVerbs({ kind: "wake", wakeKind: "turn_stopped" })).toEqual({ verb: "Session was stopped", short: "Stopped", tone: "muted" });
+    expect(notificationVerbs({ kind: "wake", wakeKind: "turn_completed" })).toEqual({ verb: "Session finished a turn", tone: "muted" });
+    expect(notificationVerbs({ kind: "wake", wakeKind: "turn_failed" })).toEqual({ verb: "Session failed a turn", tone: "warning" });
+    expect(notificationVerbs({ kind: "wake", wakeKind: "turn_stopped" })).toEqual({ verb: "Session was stopped", tone: "muted" });
   });
 
   test("a parked request is the same happening under either spelling", () => {
     const asKind = notificationVerbs({ kind: "request" });
-    expect(asKind).toEqual({ verb: "Session asked a question", short: "Waiting on you", tone: "warning" });
+    expect(asKind).toEqual({ verb: "Session asked a question", tone: "warning" });
     expect(notificationVerbs({ kind: "request", wakeKind: "request_opened" })).toEqual(asKind);
     expect(notificationVerbs({ kind: "wake", wakeKind: "request_opened" })).toEqual(asKind);
   });
@@ -42,38 +42,19 @@ describe("what a happening is called", () => {
    */
   test("a request that took its own default is news, not an ask", () => {
     const timedOut = notificationVerbs({ kind: "request", resolvedBy: "timeout" });
-    expect(timedOut).toEqual({ verb: "Session ran out its deadline and took its default", short: "Answered for you", tone: "muted" });
+    expect(timedOut).toEqual({ verb: "Session ran out its deadline and took its default", tone: "muted" });
     expect(timedOut.tone).not.toBe(notificationVerbs({ kind: "request" }).tone);
-    // And the inbox row lands on it, without inventing a wake that never was.
-    expect(inboxSubject({ kind: "request_timeout" })).toEqual({ kind: "request", resolvedBy: "timeout" });
-    expect(notificationVerbs(inboxSubject({ kind: "request_timeout" })).short).toBe("Answered for you");
-    expect(notificationVerbs(inboxSubject({ kind: "request_opened" })).short).toBe("Waiting on you");
   });
 
   // A NEWER ENGINE'S VOCABULARY IS STILL A NOTIFICATION. Vague beats blank.
   test("a wake with no transition still says something true", () => {
-    expect(notificationVerbs({ kind: "wake" })).toEqual({ verb: "Session activity", short: "Activity", tone: "muted" });
+    expect(notificationVerbs({ kind: "wake" })).toEqual({ verb: "Session activity", tone: "muted" });
   });
 
-  // THE CLASSIFICATION IS SHARED; ONLY THE REGISTER IS THE STRIP'S. A result and
-  // a completion differ in BOTH vocabularies or the strip has the bug the row
-  // just lost.
-  test("a peer's result and a completion differ in both registers", () => {
+  test("a peer's result and a completion are named differently", () => {
     const result = notificationVerbs({ kind: "peer_message", intent: "result" });
     const finished = notificationVerbs({ kind: "wake", wakeKind: "turn_completed" });
     expect(result.verb).not.toBe(finished.verb);
-    expect(result.short).not.toBe(finished.short);
-  });
-});
-
-describe("an inbox row is the same happening", () => {
-  test("the strip's flat kind maps onto the three notification kinds", () => {
-    expect(inboxSubject({ kind: "peer_message", intent: "result" })).toEqual({ kind: "peer_message", intent: "result" });
-    expect(inboxSubject({ kind: "peer_message" })).toEqual({ kind: "peer_message" });
-    expect(inboxSubject({ kind: "request_opened" })).toEqual({ kind: "request", wakeKind: "request_opened" });
-    expect(inboxSubject({ kind: "turn_completed" })).toEqual({ kind: "wake", wakeKind: "turn_completed" });
-    expect(inboxSubject({ kind: "turn_failed" })).toEqual({ kind: "wake", wakeKind: "turn_failed" });
-    expect(inboxSubject({ kind: "turn_stopped" })).toEqual({ kind: "wake", wakeKind: "turn_stopped" });
   });
 });
 

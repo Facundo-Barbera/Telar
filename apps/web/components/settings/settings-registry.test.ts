@@ -94,54 +94,11 @@ test("every indexed row is declared on the pane that actually renders it", () =>
     "Add a Mac": "remote",
     "Settle quiet sessions": "general",
     "Add a login": "providers",
-    // #556 is exactly the move this test was written for: the Agent's rows left
-    // General for a pane of their own, and an index still saying `general`
-    // would go on finding them and go on navigating to the pane they left.
-    "Agent (experimental)": "agent",
-    "OpenCode Go key": "agent",
-    "Reasoning effort": "agent",
-    Access: "agent",
-    "Reset conversation": "agent",
   };
   for (const [title, pageId] of Object.entries(paneOf)) {
     const entry = SETTINGS_SEARCH_INDEX.entries.find((candidate) => candidate.title === title);
     expect(entry?.pageId).toBe(pageId);
   }
-});
-
-test("every row of the Agent's pane is reachable from `/`", () => {
-  /**
-   * THE WHOLE PANE, NOT A SAMPLE (#556). The Agent moved off General and gained
-   * two rows the composer's pills had been writing with no settings home, so
-   * this is the one pane where "is the index complete" is a live question
-   * rather than a formality.
-   */
-  const agent = SETTINGS_SEARCH_INDEX.entries.filter((entry) => entry.pageId === "agent");
-  expect(agent.map((entry) => entry.title)).toEqual([
-    // IN PANE ORDER — switch, credential, model, the two defaults, reset — which
-    // is also the order a result list ties are broken in.
-    "Agent (experimental)",
-    "OpenCode Go key",
-    "Model",
-    "Reasoning effort",
-    "Access",
-    "Reset conversation",
-  ]);
-  for (const entry of agent) expect(entry.pageLabel).toBe("Agent");
-});
-
-test("the questions somebody types about the Agent land on its own rows", () => {
-  const hit = (query: string) => searchSettings(SETTINGS_SEARCH_INDEX, query)[0];
-  // The old word for it, which the rename did not take out of anybody's head.
-  expect(hit("main")?.pageId).toBe("agent");
-  // Typed off an API doc rather than off this screen.
-  expect(hit("reasoning_effort")?.title).toBe("Reasoning effort");
-  // What somebody calls the gate when they are tired of answering it.
-  expect(hit("approval")?.pageId).toBe("agent");
-  // The two rows whose titles a second pane also carries: the Agent's are
-  // distinguished by their own words, not by which pane sorts first.
-  expect(hit("opencode go key")?.pageId).toBe("agent");
-  expect(hit("kimi")?.title).toBe("Model");
 });
 
 test("a result carries the pane it lives on, which is what the list shows", () => {

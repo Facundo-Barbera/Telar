@@ -13,8 +13,7 @@
  */
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { commandDestination, jumpDestinations } from "./command-keys";
-import { AGENT_JUMP_SLOT, groupSessions, railJumpSlots, railRowsForCommandKeys, railSessionSlots } from "./session-groups";
+import { groupSessions, railJumpSlots, railRowsForCommandKeys } from "./session-groups";
 import { deriveSessionList, sessionHref, sessionKey, type SidebarSession } from "./session-list";
 
 const NOW = 1_800_000_000_000;
@@ -160,75 +159,5 @@ describe("the numbers a row wears line up with what the keys count", () => {
     const folded = railJumpSlots(railRows(rows, new Set(["beta"])));
     expect(folded.get(sessionKey(row("c1", "Gamma")))).toBe(2);
     expect(folded.get(sessionKey(row("b1", "Beta")))).toBeUndefined();
-  });
-});
-
-/**
- * ⌘1 OPENS THE AGENT WHEN THE RAIL DRAWS IT — issue #569.
- *
- * WHAT THIS WOULD HAVE CAUGHT is what shipped: the Agent's entry is pinned above
- * every band, so it is the FIRST thing in the rail, and the jumps counted from
- * the row under it — the one entry always on screen was the one entry no number
- * key could reach.
- *
- * THE TWO HALVES HAVE TO MOVE TOGETHER. `jumpDestinations` decides what a key
- * OPENS and `railJumpSlots` decides what a row WEARS; one shifting without the
- * other puts ⌘2 on the row ⌘1 opens, which is worse than no number at all. So
- * both are asserted against the same fact here.
- */
-describe("the Agent's place in the numbers", () => {
-  const AGENT = "/agent";
-  const rows = [
-    row("s1", "First", { createdAt: NOW - 1_000 }),
-    row("s2", "Second", { createdAt: NOW - 2_000 }),
-    row("s3", "Third", { createdAt: NOW - 3_000 }),
-  ];
-  const hrefs = rows.map((session) => sessionHref(session));
-
-  test("shown: ⌘1 is the Agent and the conversations start at ⌘2", () => {
-    const destinations = jumpDestinations(hrefs, AGENT);
-    expect(commandDestination("jump-1", destinations)).toEqual({ kind: "navigate", href: AGENT });
-    expect(commandDestination("jump-2", destinations)).toEqual({ kind: "navigate", href: "/projects/p1/sessions/s1" });
-    expect(commandDestination("jump-4", destinations)).toEqual({ kind: "navigate", href: "/projects/p1/sessions/s3" });
-    // Nothing is in the fifth place, and a key that promised a conversation
-    // there would open whatever happened to be last.
-    expect(commandDestination("jump-5", destinations)).toEqual({ kind: "noop" });
-  });
-
-  test("hidden: nothing moves — a Mac with the Agent off has the keys it always had", () => {
-    const destinations = jumpDestinations(hrefs);
-    expect(commandDestination("jump-1", destinations)).toEqual({ kind: "navigate", href: "/projects/p1/sessions/s1" });
-    expect(commandDestination("jump-3", destinations)).toEqual({ kind: "navigate", href: "/projects/p1/sessions/s3" });
-  });
-
-  test("it is the VIEWED Mac's Agent, because that is the row that was drawn", () => {
-    expect(jumpDestinations(hrefs, "/hosts/host_mini/agent")[0]).toBe("/hosts/host_mini/agent");
-  });
-
-  test("the badges shift with the keys, so a row wears the chord that opens it", () => {
-    const counted = railRowsForCommandKeys(groupSessions(deriveSessionList({ sessions: rows, now: NOW, autoSettleAfterHours: 72 }), []), undefined, {
-      agentEntry: true,
-    });
-    const slots = railJumpSlots(counted, { agentEntry: true });
-    expect(AGENT_JUMP_SLOT).toBe(1);
-    expect(counted.map((session) => slots.get(sessionKey(session)))).toEqual([2, 3, 4]);
-    // Said the other way round: the row the badge numbers is the row the key
-    // opens. `jumpDestinations` is handed the same array.
-    const destinations = jumpDestinations(counted.map((session) => sessionHref(session)), AGENT);
-    for (const session of counted) {
-      expect(destinations[slots.get(sessionKey(session))! - 1]).toBe(sessionHref(session));
-    }
-  });
-
-  test("nine numbers, not ten: the Agent spends one of them", () => {
-    const many = Array.from({ length: 20 }, (_, index) => row(`s${index}`, `Session ${index}`, { createdAt: NOW - index * 1_000 }));
-    expect(railSessionSlots(true)).toBe(8);
-    expect(railSessionSlots(false)).toBe(9);
-    const counted = railRowsForCommandKeys(groupSessions(deriveSessionList({ sessions: many, now: NOW, autoSettleAfterHours: 72 }), []), undefined, {
-      agentEntry: true,
-    });
-    expect(counted).toHaveLength(8);
-    expect(railJumpSlots(counted, { agentEntry: true }).get(sessionKey(many[7]!))).toBe(9);
-    expect(jumpDestinations(counted.map((session) => sessionHref(session)), AGENT)).toHaveLength(9);
   });
 });

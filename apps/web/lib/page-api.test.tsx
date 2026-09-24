@@ -47,7 +47,7 @@ function Box({
   ready = true,
   onSent,
 }: {
-  kind: "session" | "agent";
+  kind: "session";
   initial?: string;
   ready?: boolean;
   /** Handed the draft THIS RENDER holds — which is what the cockpit's own
@@ -232,35 +232,32 @@ describe("submit obeys the guards the Enter key obeys", () => {
 });
 
 describe("composer()", () => {
-  test("reports the Agent screen's box when that is the focused one", () => {
-    const session = mount(<Box kind="session" initial="in the session" />);
-    const agent = mount(<Box kind="agent" initial="in the agent" />);
+  test("reports the focused box, and follows the caret between two", () => {
+    const first = mount(<Box kind="session" initial="first" />);
+    const second = mount(<Box kind="session" initial="second" />);
 
-    focus(editorIn(agent));
-    expect(telar().composer()).toEqual({ id: "agent-prompt", kind: "agent", draft: "in the agent", focused: true });
+    focus(editorIn(second));
+    expect(telar().composer()).toEqual({ id: "turn-prompt", kind: "session", draft: "second", focused: true });
 
-    // And it follows the caret back.
-    focus(editorIn(session));
-    expect(telar().composer()).toEqual({ id: "turn-prompt", kind: "session", draft: "in the session", focused: true });
+    focus(editorIn(first));
+    expect(telar().composer()).toEqual({ id: "turn-prompt", kind: "session", draft: "first", focused: true });
   });
 
   test("the attributes an external client selects on are on the editable root", () => {
-    const agent = mount(<Box kind="agent" />);
-    const box = editorIn(agent);
-    expect(box.getAttribute("data-composer")).toBe("agent");
-    expect(box.getAttribute("id")).toBe("agent-prompt");
-    expect(editorIn(mount(<Box kind="session" />)).getAttribute("data-composer")).toBe("session");
+    const box = editorIn(mount(<Box kind="session" />));
+    expect(box.getAttribute("data-composer")).toBe("session");
+    expect(box.getAttribute("id")).toBe("turn-prompt");
   });
 
   test("dictation goes to the composer the caret is in", () => {
-    const session = mount(<Box kind="session" />);
-    const agent = mount(<Box kind="agent" />);
+    const first = mount(<Box kind="session" />);
+    const second = mount(<Box kind="session" />);
 
-    focus(editorIn(agent));
-    act(() => telar().dictate("for the agent"));
+    focus(editorIn(second));
+    act(() => telar().dictate("for the second"));
 
-    expect(stateOf(agent, "agent")).toBe("for the agent ");
-    expect(stateOf(session, "session")).toBe("");
+    expect(stateOf(second, "session")).toBe("for the second ");
+    expect(stateOf(first, "session")).toBe("");
   });
 });
 

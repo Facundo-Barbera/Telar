@@ -145,19 +145,9 @@ describe("the call sites #401 lists", () => {
     expect(sidebar).toContain('<KeyHint command="toggle-rail" />');
     // The numbers come off the same array the keys are handed — see
     // `railJumpSlots` and lib/command-keys.test.ts.
-    expect(sidebar).toContain("const jumpSlots = railJumpSlots(jumpRows, jumpAgentEntry);");
+    expect(sidebar).toContain("const jumpSlots = railJumpSlots(jumpRows);");
     expect(sidebar).toContain("useCommandKeys(jumpRows, {");
     expect(read("../session/session-row.tsx")).toContain("<KeyHintOverlay command={`jump-${jumpSlot}`}>");
-  });
-
-  test("the Agent's row, which holds ⌘1 when the rail draws it (#569)", () => {
-    // The one always-present entry in the rail had no number at all, because
-    // the jumps skipped it and landed on the first conversation instead.
-    expect(read("../session/agent-entry.tsx")).toContain("<KeyHintOverlay command={`jump-${jumpSlot}`}>");
-    // …and the one fact that decides both the badges and the keys is read once
-    // in the rail and handed to both, or ⌘2 lands on the row wearing ⌘1.
-    expect(read("../app-sidebar.tsx")).toContain("useCommandKeys(jumpRows, {");
-    expect(read("../app-sidebar.tsx")).toContain("}, jumpAgentHref);");
   });
 
   test("the Open menu's reveal row, which is the row ⌘O acts on", () => {

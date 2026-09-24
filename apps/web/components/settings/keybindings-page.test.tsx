@@ -41,16 +41,13 @@ test("the nine jumps are one row carrying the whole range", () => {
   expect(jump?.commandIds).toHaveLength(9);
 });
 
-test("the folded row SAYS what the numbers count, Agent included (#569)", () => {
-  // The row draws `⌘1–⌘9` and a title, and neither can say the thing somebody
-  // whose ⌘1 stopped opening their first conversation needs to read.
+test("the folded row SAYS what the numbers count (#569)", () => {
+  // The row draws `⌘1–⌘9` and a title, and neither can say which order the
+  // numbers follow.
   const jump = rowsWith().find((row) => row.id === "jump");
   expect(jump?.hint).toContain("top to bottom as drawn");
-  expect(jump?.hint).toContain("Agent");
-  expect(jump?.hint).toContain("⌘1");
-  expect(jump?.hint).toContain("⌘2");
   // It reaches the pane rather than sitting unread on the derivation.
-  expect(renderToStaticMarkup(<KeybindingsPage />)).toContain("it takes ⌘1 and conversations start at ⌘2");
+  expect(renderToStaticMarkup(<KeybindingsPage />)).toContain("shelved rows and folded groups skipped");
   // No other row grows a description off the back of this: every other binding
   // is its own explanation.
   expect(rowsWith().filter((row) => row.hint !== undefined)).toHaveLength(1);

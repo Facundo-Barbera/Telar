@@ -63,16 +63,15 @@ describe("the chord reaches the composer being typed into", () => {
   });
 
   test("with two mounted, the most recently focused one gets it", () => {
-    // The session screen and the Agent screen are different routes, so this is
-    // rare — but it is exactly the case a registry keyed any other way would
+    // Rare — but it is exactly the case a registry keyed any other way would
     // get wrong, and get wrong invisibly.
     const session = mount("session-box");
-    const agent = mount("agent-box");
-    live.push(session.unmount, agent.unmount);
+    const other = mount("other-box");
+    live.push(session.unmount, other.unmount);
 
-    markComposerActive("agent-box");
+    markComposerActive("other-box");
     toggleActiveDictation();
-    expect(agent.pressed()).toBe(1);
+    expect(other.pressed()).toBe(1);
     expect(session.pressed()).toBe(0);
 
     // Focus moves, and so does the chord — the composer registry's answer, not
@@ -80,17 +79,17 @@ describe("the chord reaches the composer being typed into", () => {
     markComposerActive("session-box");
     toggleActiveDictation();
     expect(session.pressed()).toBe(1);
-    expect(agent.pressed()).toBe(1);
+    expect(other.pressed()).toBe(1);
   });
 
   test("two mounted and nothing focused is no answer, not a guess", () => {
     const session = mount("session-box");
-    const agent = mount("agent-box");
-    live.push(session.unmount, agent.unmount);
+    const other = mount("other-box");
+    live.push(session.unmount, other.unmount);
     expect(activeDictation()).toBeUndefined();
     toggleActiveDictation();
     expect(session.pressed()).toBe(0);
-    expect(agent.pressed()).toBe(0);
+    expect(other.pressed()).toBe(0);
   });
 });
 
