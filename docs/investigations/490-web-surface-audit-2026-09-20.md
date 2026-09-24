@@ -435,6 +435,9 @@ the panel is open. *Unmeasured — no fixture for the browser surface.*
 
 ### 4.8 `lib/agent/status.ts` polls at 3 s past a stream that already exists
 
+*Moot since #908 (2026-09-23): the built-in Agent was removed, and with it
+`lib/agent/`, `agent/stream` and every Agent row in §4 above.*
+
 The only timer in the app whose replacement needs no new engine work:
 `daemon.ts:1968` already serves `agent/stream`, and `hosts/proxy.ts` already
 exempts it from the upstream timeout for exactly this reason.

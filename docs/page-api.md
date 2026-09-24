@@ -72,10 +72,9 @@ to a person.
 
 ## The active composer
 
-The most recently focused composer, falling back to the only one mounted. Two
-composers exist — the session one and the Agent screen's — and they are
-different routes, so in practice one is on screen. `composer()` is how a client
-tells which.
+The most recently focused composer, falling back to the only one mounted. There
+is one composer — the session's — so in practice one is on screen, and
+`composer()` reports it.
 
 ## The two stable attributes
 
@@ -84,10 +83,9 @@ On the editable root, for a client that would rather select the element itself:
 | Attribute | Values |
 | --- | --- |
 | `data-slot="composer-editor"` | the message box's editable root |
-| `data-composer` | `"session"` or `"agent"` |
+| `data-composer` | `"session"` |
 
-The session composer also keeps `id="turn-prompt"`; the Agent screen's is
-`id="agent-prompt"`.
+The composer also keeps `id="turn-prompt"`.
 
 ```js
 document.querySelector('[data-composer="session"]')

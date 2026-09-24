@@ -82,9 +82,15 @@ shape does not know about.
 ### The directories inside the store
 
 `sessions/`, `worktrees/` (tier 3 by rule, relocatable — see below), `python/`,
-`browser-profiles/`, `agent/`, `notes/`, `dictation/`, `run/`, `diagnostics/`,
+`browser-profiles/`, `notes/`, `dictation/`, `run/`, `diagnostics/`,
 `orientation/`, `appearance/`, `adopted/`, `tools/tectonic/<version>/`,
-`execution-json-backup/`.
+`execution-json-backup/`, `retired/`.
+
+`retired/` is where a decommissioned feature's data is set aside rather than
+deleted. The built-in Agent's `agent/` directory is moved there whole, once, as
+`retired/agent-<stamp>/` on the first start of a build without the Agent (#908,
+`retireAgentStore` in `decommission-sweep.ts`); the `decommissioned-agent`
+marker at the root records that it ran.
 
 **Two of these have same-named twins in tier 2, and they are different things:**
 
@@ -99,9 +105,11 @@ their logins with it. That is a real gap and it is listed as open below.
 
 ### Secrets
 
-Three places carry secrets at 0600 in files of their own: `agent/credentials.json`,
+Two places carry secrets at 0600 in files of their own:
 `dictation/credentials.json`, and the trio `provider-secrets.json` /
-`usage-limit-secrets.json` / `mcp-oauth.json`.
+`usage-limit-secrets.json` / `mcp-oauth.json`. A home that ran the built-in
+Agent also keeps its pasted key at `retired/agent-<stamp>/credentials.json`,
+still 0600 — moved there by #908, not deleted, and read by nothing.
 
 Splitting a secret out of the record it belongs to is deliberate and
 well-argued: `listProviderInstances` hands its answer to a settings page over
