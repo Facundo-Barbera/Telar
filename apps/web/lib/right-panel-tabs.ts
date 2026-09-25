@@ -128,6 +128,36 @@ export function openNewPanelTab<Kind extends string>(state: PanelTabState<Kind>,
 }
 
 /**
+ * PUT A TAB IN THE STRIP FOR SOMETHING THE AGENT OPENED — never the panel.
+ *
+ * `addPanelTab` is the person's verb and opens the panel, which is right for a
+ * gesture and wrong here: whether the panel is showing belongs to the person
+ * alone, and an agent that browses must not be what decides it. So `open` is
+ * never touched.
+ *
+ * SELECTED ONLY WHERE NOBODY IS LOOKING. With the panel closed, or open on the
+ * empty chooser, the tab becomes the active one, so the panel's next opening
+ * shows what the agent is doing. With the panel open on another tab, the
+ * person is reading that tab; this adds the new one beside it and leaves their
+ * view — and with it their keyboard — exactly where it was.
+ *
+ * SAME OBJECT WHEN NOTHING CHANGES, because the caller runs this on every
+ * agent browser event and a fresh object would rewrite the persisted panel
+ * each time.
+ */
+export function revealPanelTab<Kind extends string>(state: PanelTabState<Kind>, tab: PanelTabInstance<Kind>): PanelTabState<Kind> {
+  const present = state.tabs.some((entry) => entry.id === tab.id);
+  const unwatched = !state.open || activePanelTab(state) === undefined;
+  const activeTab = unwatched ? tab.id : state.activeTab;
+  if (present && activeTab === state.activeTab) return state;
+  return {
+    tabs: present ? state.tabs : [...state.tabs, tab],
+    ...(activeTab ? { activeTab } : {}),
+    open: state.open,
+  };
+}
+
+/**
  * Rewrite one instance's params — what keeps a tab's label true as the surface
  * under it moves (the Editor's active file becomes "Editor · README.md").
  *

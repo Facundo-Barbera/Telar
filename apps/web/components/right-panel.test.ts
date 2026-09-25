@@ -11,7 +11,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EngineEvent, Item, Task } from "@telar/engine-client";
 import {
+  agentBrowserActivity,
   browserPanelTab,
+  browserScopeToRelease,
   describeBrowserStart,
   describePanelTab,
   filePanelTabPath,
@@ -24,6 +26,7 @@ import {
   issuePanelTab,
   journalWrites,
   latestBrowserState,
+  LIVE_BROWSER_TAB,
   panelTabForPath,
   pdfPanelPath,
   pdfPanelTab,
@@ -285,6 +288,49 @@ describe("latestBrowserState", () => {
 
   test("is undefined when the session has never browsed", () => {
     expect(latestBrowserState([])).toBeUndefined();
+  });
+});
+
+describe("agentBrowserActivity", () => {
+  const browsed = (id: number, at: number, pages: number) =>
+    ({ id, at, type: "browser.state.changed", provider: "desktop", tabs: Array.from({ length: pages }, (_, n) => ({ id: `p${n}` })) }) as unknown as EngineEvent;
+
+  test("acts on an agent's browsing from after the mount, once", () => {
+    const events = [browsed(1, 100, 1), browsed(2, 200, 2)];
+    expect(agentBrowserActivity(events, 150, 0)).toEqual({ acted: true, through: 2 });
+    // The same array again, resumed where it stopped: nothing new to act on.
+    expect(agentBrowserActivity(events, 150, 2)).toEqual({ acted: false, through: 2 });
+  });
+
+  test("a replayed event from before the mount never brings the tab back", () => {
+    // The journal replays from zero on every load; a Browser tab the person
+    // closed last week must stay closed.
+    expect(agentBrowserActivity([browsed(1, 100, 3)], 150, 0)).toEqual({ acted: false, through: 0 });
+  });
+
+  test("a browser with no pages is not a reason to show one", () => {
+    expect(agentBrowserActivity([browsed(4, 200, 0)], 150, 0)).toEqual({ acted: false, through: 4 });
+  });
+
+  test("ignores everything that is not the browser", () => {
+    const other = { id: 5, at: 200, type: "display.opened", path: "a.md" } as unknown as EngineEvent;
+    expect(agentBrowserActivity([other], 150, 0)).toEqual({ acted: false, through: 0 });
+  });
+});
+
+describe("browserScopeToRelease", () => {
+  test("the first Browser tab releases the bare session scope the agent drives", () => {
+    expect(browserScopeToRelease("s1", { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} })).toBe("s1");
+  });
+
+  test("a second Browser releases its own scope, not the agent's", () => {
+    const id = `${LIVE_BROWSER_TAB}#2`;
+    expect(browserScopeToRelease("s1", { id, kind: LIVE_BROWSER_TAB, params: {} })).toBe(`s1#${id}`);
+  });
+
+  test("any other tab releases nothing", () => {
+    expect(browserScopeToRelease("s1", { id: "diff", kind: "diff", params: {} })).toBeUndefined();
+    expect(browserScopeToRelease("s1", undefined)).toBeUndefined();
   });
 });
 

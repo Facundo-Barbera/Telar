@@ -299,6 +299,14 @@ export type DesktopBrowserBridge = {
    */
   freezeView?(scopeKey: string): Promise<FrozenFrame | null>;
   onState(listener: (state: DesktopBrowserPanelState) => void): () => void;
+  /**
+   * PUT A SCOPE'S PAGES DOWN. `destroy` closes them rather than letting them
+   * sleep; `closedByPerson` is the panel's Browser tab being closed, which
+   * makes the agent's next browser call say so and keeps the scope's profile
+   * binding for its reopen. Optional because an older shell only knows the
+   * first two arguments — it still closes the pages, just without the reason.
+   */
+  releaseScope?(scopeKey: string, destroy?: boolean, options?: { closedByPerson?: boolean }): Promise<void>;
   /** Bind this session's browser scope to its project profile (per-project
    *  cookies). Idempotent; the engine does the same before agent turns. */
   bindProfile?(scopeKey: string, profileKey: string): Promise<{ scopeKey: string; profileKey: string; partition: string; profileId?: string; label?: string }>;
