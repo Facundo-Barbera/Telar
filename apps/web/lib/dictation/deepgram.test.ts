@@ -37,6 +37,7 @@ describe("listenUrl", () => {
     expect(query.get("model")).toBe("nova-3");
     expect(query.get("interim_results")).toBe("true");
     expect(query.get("smart_format")).toBe("true");
+    expect(query.get("numerals")).toBe("true");
   });
 
   test("no encoding or sample rate is declared beside container audio", () => {
