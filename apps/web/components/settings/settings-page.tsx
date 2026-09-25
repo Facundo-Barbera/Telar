@@ -24,7 +24,7 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { BlocksIcon, CalendarClockIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
@@ -63,7 +63,6 @@ import { useSectionFromUrl } from "./use-section-from-url";
 const AppearanceSection = dynamic(() => import("./appearance-section").then((mod) => mod.AppearanceSection));
 const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
-const SchedulesSection = dynamic(() => import("./schedules-section").then((mod) => mod.SchedulesSection));
 const DictationSection = dynamic(() => import("./dictation-section").then((mod) => mod.DictationSection));
 const McpSection = dynamic(() => import("./mcp-section").then((mod) => mod.McpSection));
 const OrientationSection = dynamic(() => import("./orientation-section").then((mod) => mod.OrientationSection));
@@ -166,12 +165,6 @@ const SECTIONS: SettingsSection[] = [
   { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "Runtime" },
   { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
   /**
-   * UNDER "RUNTIME": a schedule fires on the machine that runs turns, and only
-   * while its engine is up. It shared the built-in Agent's pane until that left
-   * the app (#908); a conversation's own clock outlived it.
-   */
-  { id: "schedules", label: "Schedules", icon: CalendarClockIcon, group: "Runtime" },
-  /**
    * UNDER "RUNTIME" (#544): dictation is a service the machine that runs turns
    * spends a key on, like Providers and TextGen — not a decision about this
    * window. A paired phone dictating through this Mac reads this pane's
@@ -236,9 +229,6 @@ export const SECTION_ALIASES: Record<string, string> = {
    * lands on the one row it could have meant.
    */
   settled: "general",
-  // THE BUILT-IN AGENT'S PANE IS GONE (#908). Scheduled work was the one thing
-  // on it that outlived the Agent, so its id lands there.
-  agent: "schedules",
 };
 
 /** A figure the engine reported, in the register the rest of the app uses for
@@ -405,8 +395,6 @@ export function SettingsPage() {
             <StoreSection />
           </>
         )}
-
-        {active === "schedules" && <SchedulesSection />}
 
         {/* AND THE SAME FOR DICTATION (#544), which left General by the same
             door and for a sharper reason: it ships OFF, so the row a reader

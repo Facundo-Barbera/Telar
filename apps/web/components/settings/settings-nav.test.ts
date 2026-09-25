@@ -78,6 +78,13 @@ test("Settled is gone from the nav, and its id lands on the rule that fills it",
   expect(source).toContain('settled: "general"');
 });
 
+test("Schedules is not a Settings pane: a schedule belongs to its session", () => {
+  // It lives in the session's masthead now (session/session-schedules.tsx).
+  expect(source).not.toContain('{ id: "schedules"');
+  expect(source).not.toContain("SchedulesSection");
+  expect(source).not.toContain('agent: "schedules"');
+});
+
 test("the OAuth callback's section id is still routable", () => {
   // `section=mcp` is baked into app/api/mcp/oauth/callback/route.ts.
   expect(source).toContain('mcp: "tools"');
