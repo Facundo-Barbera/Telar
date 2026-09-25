@@ -92,6 +92,7 @@
       "login-grant-writer.js",
       "vault-metadata.js",
       "push-relay.js",
+      "desktop-notifications.js",
       "remote-file.js",
       "workspace-openers.js",
       "preload.js",

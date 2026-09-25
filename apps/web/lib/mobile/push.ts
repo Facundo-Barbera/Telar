@@ -28,6 +28,9 @@ export type RelayCredential = { handle: string; keyId: string; sendKey: string }
 export interface SessionSignal {
   id: string; title: string; activity: string; activityAt?: number;
   lastTurnEndedAt?: number; lastTurnFailed?: boolean;
+  /** Where the cockpit shows it (`sessionHref`). Not part of `signalKey`: a
+   *  session moving project is not something to be told about. */
+  projectId?: string;
   /** The one open request a notification may offer to approve, when there is
    *  exactly one and it is an approval rather than a question or a secret. */
   approvable?: string;
@@ -254,15 +257,31 @@ export function signalKey(session: SessionSignal): string {
 export function sessionURL(hostId: string, sessionId: string): string {
   const url = new URL("telar://session"); url.searchParams.set("host", hostId); url.searchParams.set("id", sessionId); return url.toString();
 }
-export function notification(record: MobileRegistration, session: SessionSignal, previous: string | undefined): Delivery | undefined {
-  if (!record.enabled || record.mutedSessions.includes(session.id) || previous === undefined || previous === signalKey(session)) return;
-  let body: string | undefined;
-  if (session.activity === "blocked") body = "A session needs your input or approval.";
-  else if (session.activity === "idle" && session.lastTurnEndedAt && String(session.lastTurnEndedAt) !== previous.split(":")[2]) {
-    if (session.lastTurnFailed) body = "A session failed. Open Telar to review it.";
-    else if (record.completions) body = "A session finished. Its result is ready to review.";
+export type AlertKind = "blocked" | "failed" | "finished";
+export const ALERT_BODY: Record<AlertKind, string> = {
+  blocked: "A session needs your input or approval.",
+  failed: "A session failed. Open Telar to review it.",
+  finished: "A session finished. Its result is ready to review.",
+};
+/**
+ * WHICH TRANSITION, IF ANY, DESERVES AN ALERT — the one rule the phone and the
+ * Mac's own notifications share, so the two can never disagree about what
+ * "needs you" or "finished" means. `previous` undefined is a baseline, never
+ * an alert; a failure is never gated, a finish only by `completions`.
+ */
+export function alertKind(session: SessionSignal, previous: string | undefined, completions: boolean): AlertKind | undefined {
+  if (previous === undefined || previous === signalKey(session)) return;
+  if (session.activity === "blocked") return "blocked";
+  if (session.activity === "idle" && session.lastTurnEndedAt && String(session.lastTurnEndedAt) !== previous.split(":")[2]) {
+    if (session.lastTurnFailed) return "failed";
+    if (completions) return "finished";
   }
-  if (!body) return;
+}
+export function notification(record: MobileRegistration, session: SessionSignal, previous: string | undefined): Delivery | undefined {
+  if (!record.enabled || record.mutedSessions.includes(session.id)) return;
+  const kind = alertKind(session, previous, record.completions);
+  if (!kind) return;
+  const body = ALERT_BODY[kind];
   const approvable = session.activity === "blocked" ? session.approvable : undefined;
   const collapseId = crypto.createHash("sha256").update(session.id).digest("hex");
   return { token: record.token, topic: record.topic, sandbox: record.sandbox, kind: "alert", collapseId,
