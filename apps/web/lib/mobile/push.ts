@@ -270,7 +270,7 @@ export function activityDelivery(record: MobileRegistration, follow: MobileRegis
   const status = !session ? "Session unavailable" : session.activity === "blocked" ? "Needs you" : ended ? session.lastTurnFailed ? "Failed" : "Finished" : session.activity === "queued" ? "Queued" : session.activity === "monitoring" ? "Monitoring" : "Working";
   return { token: follow.token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", activityId: follow.sessionId,
     collapseId: crypto.createHash("sha256").update(follow.token).digest("hex"), payload: { aps: {
-      timestamp: Math.floor(now), event: ended ? "end" : "update", "stale-date": Math.floor(now + 180),
+      timestamp: Math.floor(now), event: ended ? "end" : "update", "stale-date": Math.floor(now + ACTIVITY_STALE_S),
       ...(ended ? { "dismissal-date": Math.floor(now + 300) } : {}),
       // Swift's default Date Codable representation uses the 2001 reference epoch.
       "content-state": { title: record.previews ? (session?.title ?? "Telar session").slice(0, 160) : "Telar session", status, updatedAt: now - 978307200, startedAt: follow.startedAt - 978307200, ended },
@@ -347,6 +347,19 @@ export async function sendAPNs(delivery: Delivery): Promise<DeliveryResult> {
 }
 
 export const AUTOMATIC_ACTIVITY = "__automatic__";
+/**
+ * HOW OFTEN A LIVE ACTIVITY IS REFRESHED WITH NOTHING NEW TO SAY, AND WHEN IT
+ * GOES STALE WITHOUT ONE — in seconds.
+ *
+ * A card whose `stale-date` passes reads "Waiting for an update" on the lock
+ * screen, so a session that is quietly working, or blocked on you, still gets
+ * a push before then. The refresh sits well inside the stale window, so one
+ * late tick does not grey the card. Every refresh is a relay call against the
+ * phone's 5,000-a-day budget, which alerts share; at one a minute, a few cards
+ * spent most of it.
+ */
+export const ACTIVITY_REFRESH_S = 120;
+export const ACTIVITY_STALE_S = 300;
 export function automaticSessions(sessions: SessionSignal[]): SessionSignal[] {
   const rank: Record<string, number> = { blocked: 0, working: 1, queued: 2, monitoring: 3 };
   return sessions.filter(s => s.activity in rank).sort((a,b) => rank[a.activity]! - rank[b.activity]! || a.id.localeCompare(b.id));
@@ -364,7 +377,7 @@ export function automaticActivityDelivery(record: MobileRegistration, sessions: 
   return { token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", ...(start ? {} : { activityId: AUTOMATIC_ACTIVITY }),
     collapseId: crypto.createHash("sha256").update(`automatic:${record.hostId}:${start ? startedAt : token}`).digest("hex"),
     payload: { aps: { timestamp: Math.floor(now), event: start ? "start" : ended ? "end" : "update", "content-state": state,
-      "stale-date": Math.floor(now + 180), ...(ended ? {"dismissal-date":Math.floor(now + 300)} : {}),
+      "stale-date": Math.floor(now + ACTIVITY_STALE_S), ...(ended ? {"dismissal-date":Math.floor(now + 300)} : {}),
       ...(start ? { "attributes-type":"SessionActivityAttributes", attributes:{hostId:record.hostId,sessionId:AUTOMATIC_ACTIVITY,hostName:record.hostName ?? "Mac"},
         "input-push-token":1, alert:{title:"Telar",body:"Agent work in progress"} } : {}),
     } } };

@@ -2,7 +2,7 @@ import { relayConfig, relayDelivery, relayHostId, revokeRelayDevice } from "./re
 import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
-import { AUTOMATIC_ACTIVITY, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
+import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
 
 /** A phone that actually ran the start reports the activity's token within seconds: iOS delivers it
  *  on `activityUpdates` and the app re-registers straight away. A receipt still standing alone after
@@ -105,7 +105,7 @@ export async function deliverRecord(
   for (const follow of automatic) {
     // The activity exists, so the start it came from worked: the attempt count has done its job.
     if (active.length && record.liveActivities) { next.automaticStartedAt = follow.startedAt; next.automaticStarts = undefined; }
-    if (aggregateSignal === record.automaticSignal && now - (record.activitySent[follow.token] ?? 0) < 60) continue;
+    if (aggregateSignal === record.automaticSignal && now - (record.activitySent[follow.token] ?? 0) < ACTIVITY_REFRESH_S) continue;
     const result = await safeSend(automaticActivityDelivery(record, sessions, follow.token, follow.startedAt, now));
     if (isDeadToken(result) || (result.status === 200 && (!active.length || !record.liveActivities))) {
       next.activities = next.activities.filter(a => a.token !== follow.token);
@@ -115,7 +115,7 @@ export async function deliverRecord(
   for (const follow of record.activities.filter(a => a.sessionId !== AUTOMATIC_ACTIVITY)) {
     const session = sessions.find(s => s.id === follow.sessionId);
     const changed = session && record.seen[session.id] !== signalKey(session);
-    if (!changed && now - (record.activitySent[follow.token] ?? 0) < 60) continue;
+    if (!changed && now - (record.activitySent[follow.token] ?? 0) < ACTIVITY_REFRESH_S) continue;
     const result = await safeSend(activityDelivery(record, follow, session, now));
     if (isDeadToken(result) || (result.status === 200 && (!session || session.activity === "idle"))) {
       next.activities = next.activities.filter(a => a.token !== follow.token);
@@ -176,7 +176,7 @@ const RECONCILE_INTERVAL = 600_000;
 /** A Live Activity whose timestamp stops moving goes stale on the lock screen,
  *  so one that is REGISTERED and has live work behind it is refreshed on this
  *  cadence even when no signal changed. Nothing else wakes on it. */
-const HEARTBEAT_INTERVAL = 60_000;
+const HEARTBEAT_INTERVAL = ACTIVITY_REFRESH_S * 1000;
 /** How long a frame waits for its neighbours before the pass runs. A turn
  *  ending writes several events at once, and one wide pass for the burst is
  *  the point — long enough to coalesce, short enough that "immediate" is still
@@ -199,6 +199,8 @@ type WorkerState = {
   /** The session feed is connected, so the timer below is a safety net rather
    *  than the mechanism — see `pollDelay` (#586). */
   telarMobilePushFeedOpen?: boolean;
+  /** A Live Activity with work behind it needs refreshing before it goes stale. */
+  telarMobilePushHeartbeat?: boolean;
   telarMobilePushFeedStop?: () => void;
 };
 const workerGlobal = globalThis as typeof globalThis & WorkerState;
@@ -280,11 +282,16 @@ function signals(sessions: readonly SessionSignal[]): SessionSignal[] {
   }));
 }
 
-/** Whether a stale Live Activity has to be refreshed on a tick where no session
- *  signal moved: one registered, and work actually behind it. */
+/** Whether some Live Activity has to be kept fresh: one registered, and work
+ *  actually behind it. ANY registered card, not only the automatic one: a
+ *  followed session's card is kept fresh even with the automatic one off. */
+export function heartbeatWanted(records: PushRecord[], sessions: SessionSignal[]): boolean {
+  return records.some(record => record.activities.length > 0) && automaticSessions(sessions).length > 0;
+}
+/** Whether a Live Activity has to be refreshed on a tick where no session
+ *  signal moved. */
 export function heartbeatDue(records: PushRecord[], sessions: SessionSignal[], since: number | undefined, now: number): boolean {
-  if (!records.some(record => record.liveActivities && record.activities.length > 0)) return false;
-  if (!automaticSessions(sessions).length) return false;
+  if (!heartbeatWanted(records, sessions)) return false;
   return since === undefined || now - since >= HEARTBEAT_INTERVAL;
 }
 
@@ -302,7 +309,12 @@ export function heartbeatDue(records: PushRecord[], sessions: SessionSignal[], s
  * against sixty disconnected, and that ratio is the whole of what #586 buys
  * this worker.
  */
-export function pollDelay(feedConnected: boolean): number {
+export function pollDelay(feedConnected: boolean, heartbeat = false): number {
+  // A LIVE ACTIVITY IS THE EXCEPTION. Connected, nothing else would wake this
+  // worker for ten minutes, and a card waiting on a blocked session emits no
+  // frames: it went stale after three and read "Waiting for an update" for
+  // the rest. While one needs refreshing the timer runs at the heartbeat.
+  if (feedConnected && heartbeat) return HEARTBEAT_INTERVAL;
   return feedConnected ? RECONCILE_INTERVAL : POLL_INTERVAL;
 }
 
@@ -397,6 +409,8 @@ export async function sendRelayTest(deviceId: string, topic: string, send = rela
 export function startMobilePushWorker(): void {
   if (workerGlobal.telarMobilePushTimer || !pushAvailable() || process.env.TELAR_COCKPIT !== "1") return;
   const tick = async () => {
+    // Recomputed every pass; any early return below leaves the ordinary cadence.
+    workerGlobal.telarMobilePushHeartbeat = false;
     try {
       const nowMs = Date.now();
       // PAUSED MEANS PAUSED. Not a cheaper tick, not the activities only: the
@@ -436,6 +450,7 @@ export function startMobilePushWorker(): void {
         // The one reason left to do anything is a Live Activity that would
         // otherwise go stale, refreshed from the list we already hold.
         sessions = workerGlobal.telarMobilePushSnapshot ?? [];
+        workerGlobal.telarMobilePushHeartbeat = heartbeatWanted(records, sessions);
         if (!heartbeatDue(records, sessions, workerGlobal.telarMobilePushBeatAt, nowMs)) return;
         // An empty change set: the activity refresh runs, no alert can fire.
         changed = new Set<string>();
@@ -445,6 +460,7 @@ export function startMobilePushWorker(): void {
         changed = reconcile ? undefined : changedSessions(sessions, workerGlobal.telarMobilePushSnapshot);
         workerGlobal.telarMobilePushSnapshot = sessions;
         await markApprovable(sessions, changed, id => api.session(id, { turns: 1 }));
+        workerGlobal.telarMobilePushHeartbeat = heartbeatWanted(records, sessions);
         if (changed && changed.size === 0 && !heartbeatDue(records, sessions, workerGlobal.telarMobilePushBeatAt, nowMs)) return;
       }
       workerGlobal.telarMobilePushBeatAt = nowMs;
@@ -496,7 +512,7 @@ export function startMobilePushWorker(): void {
     } finally {
       // THE CADENCE FOLLOWS THE FEED (#586): the reconcile when frames are
       // arriving, the old ten seconds when they are not.
-      workerGlobal.telarMobilePushTimer = setTimeout(tick, pollDelay(workerGlobal.telarMobilePushFeedOpen === true));
+      workerGlobal.telarMobilePushTimer = setTimeout(tick, pollDelay(workerGlobal.telarMobilePushFeedOpen === true, workerGlobal.telarMobilePushHeartbeat === true));
       workerGlobal.telarMobilePushTimer.unref();
     }
   };
