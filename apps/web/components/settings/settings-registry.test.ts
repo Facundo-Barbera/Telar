@@ -66,8 +66,12 @@ test("no two rows claim the same anchor", () => {
 test("the questions a person actually types find the row", () => {
   const first = (query: string) => searchSettings(SETTINGS_SEARCH_INDEX, query)[0]?.title;
   expect(first("settle")).toBe("Settle quiet sessions");
-  // Found by what it does, not by what it is called.
-  expect(first("worktree")).toBe("Workspace");
+  // Found by what it does, not by what it is called — behind the Storage rows
+  // that carry the word in their titles.
+  expect(first("worktree")).toBe("Delete inactive worktrees");
+  expect(searchSettings(SETTINGS_SEARCH_INDEX, "worktree").map((hit) => hit.title)).toContain("Workspace");
+  // A symptom, not a destination.
+  expect(first("disk space")).toBe("Delete inactive worktrees");
   expect(first("1password")).toBe("Remembered logins");
   expect(first("cookies")).toBe("Browser profiles");
   // Half-remembered, and in the wrong number.

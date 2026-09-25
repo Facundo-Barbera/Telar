@@ -43,18 +43,21 @@
  */
 
 import {
+  ArchiveIcon,
   AudioLinesIcon,
   BellIcon,
   BlocksIcon,
   BookMarkedIcon,
   CameraIcon,
   CircleUserRoundIcon,
+  ClockIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
   GaugeIcon,
+  GitMergeIcon,
   GitPullRequestIcon,
   GlobeIcon,
   HardDriveIcon,
@@ -71,6 +74,7 @@ import {
   PaletteIcon,
   PlugIcon,
   PlugZapIcon,
+  ScrollTextIcon,
   ServerIcon,
   SlidersHorizontalIcon,
   SmartphoneIcon,
@@ -83,11 +87,7 @@ import {
 } from "lucide-react";
 import { indexSettings, type SettingsPageSpec } from "@/lib/settings-search";
 
-/**
- * HOW A NEW WORKTREE IS PREPARED — the same five rows on two panes: this Mac's
- * defaults on Storage, one project's answer on Projects. The group is half the
- * anchor, so the two copies never collide.
- */
+/** HOW A NEW WORKTREE IS PREPARED — one project's answer, on Projects. */
 const WORKTREE_PREPARATION_ROWS: SettingsPageSpec["groups"][number]["rows"] = [
   {
     title: "Setup",
@@ -922,16 +922,9 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     ],
   },
   /**
-   * STORAGE (#642) — and the reason its rows are indexed at all is the reason
-   * the pane exists: nobody knew `execution.sqlite` was a gigabyte, so nobody
-   * would think to look for a pane about it. What a person types here is a
-   * symptom ("disk full", "space"), not a destination.
-   *
-   * THE PER-CATEGORY ROWS ARE NOT INDEXED. Their titles are copy, but which of
-   * them EXIST depends on what this install happens to have on disk — a machine
-   * that never ran the data-science plugin has no Python row — and an index
-   * that found a row which is not there is worse than one that finds the pane.
-   * The two standing rows are: the total, and the location.
+   * STORAGE — what Telar deletes on its own, and where things live. What a
+   * person types here is a symptom ("disk full", "space"), so the cleanup rows
+   * carry those words.
    */
   {
     id: "storage",
@@ -939,37 +932,50 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     icon: HardDriveIcon,
     groups: [
       {
-        title: "What Telar is keeping",
+        title: "Worktrees",
         rows: [
           {
-            title: "Total",
-            hint: "How much disk Telar itself is using, by category, with a way to open each one in Finder.",
-            keywords: ["disk", "space", "size", "storage", "gigabytes", "full", "how big", "reveal", "finder", "sqlite", "database", "cache"],
-            icon: HardDriveIcon,
+            title: "Delete inactive worktrees",
+            hint: "Releases the worktree of a session inactive this many days; its branch and conversation are kept.",
+            keywords: ["cleanup", "clean up", "disk", "space", "free", "full", "reclaim", "checkout", "idle", "old", "days"],
+            icon: ClockIcon,
           },
-        ],
-      },
-      {
-        /**
-         * TWO ROWS CALLED "Location", ON ONE PANE, AND DELIBERATELY. One moves
-         * the reproducible 92%; the other moves everything including the
-         * history that nothing reproduces. The group is what tells them apart,
-         * and it is half the anchor, so both are findable and neither is
-         * mistaken for the other.
-         */
-        title: "Session checkouts",
-        rows: [
           {
+            title: "Delete merged worktrees",
+            hint: "When its commits are already in the default branch.",
+            keywords: ["cleanup", "clean up", "disk", "space", "reclaim", "checkout", "merged"],
+            icon: GitMergeIcon,
+          },
+          {
+            title: "Delete worktrees of archived sessions",
+            hint: "Otherwise archiving keeps the worktree.",
+            keywords: ["cleanup", "clean up", "disk", "space", "reclaim", "checkout", "archive"],
+            icon: ArchiveIcon,
+          },
+          {
+            /**
+             * TWO ROWS CALLED "Location", ON ONE PANE, AND DELIBERATELY. One
+             * moves the reproducible worktrees; the other moves everything,
+             * including the history that nothing reproduces. The group tells
+             * them apart and is half the anchor.
+             */
             title: "Location",
-            hint: "Where session checkouts are made, and how to put them on another drive without moving your history.",
-            keywords: ["worktree", "checkout", "external", "drive", "move", "space", "disk", "12 gb", "relocate"],
+            hint: "Where new worktrees are made, and how to put them on another drive without moving your history.",
+            keywords: ["worktree", "checkout", "external", "drive", "move", "space", "disk", "relocate"],
             icon: FolderGitIcon,
           },
         ],
       },
       {
-        title: "Worktree defaults",
-        rows: WORKTREE_PREPARATION_ROWS,
+        title: "Logs",
+        rows: [
+          {
+            title: "Delete old logs",
+            hint: "Rotated logs only.",
+            keywords: ["cleanup", "clean up", "disk", "space", "logs", "rotate", "days"],
+            icon: ScrollTextIcon,
+          },
+        ],
       },
       {
         title: "Store",

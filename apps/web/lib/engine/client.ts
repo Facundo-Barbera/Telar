@@ -54,6 +54,8 @@ import type {
   DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
+  CleanupPolicy,
+  CleanupState,
   JournalReclaim,
   JournalRetirement,
   RetentionBucket,
@@ -665,6 +667,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** Forget a row. There is no "run now" — it would start a turn with none of
      *  the sweep's re-aiming, so twice pressed means two turns. */
     deleteSchedule: (id: string) => request<{ deleted: boolean }>(fetcher, "DELETE", `/api/schedules/${encodeURIComponent(id)}`),
+    /** The automatic cleanup's switches and last result — see `CleanupState`. */
+    cleanup: () => request<{ cleanup: CleanupState }>(fetcher, "GET", "/api/cleanup"),
+    setCleanupPolicy: (patch: Partial<CleanupPolicy>) => request<{ cleanup: CleanupState }>(fetcher, "PUT", "/api/cleanup", patch),
+    /** Sweep now; answers when it is done. */
+    runCleanup: () => request<{ cleanup: CleanupState }>(fetcher, "POST", "/api/cleanup/run", {}),
     /** Where session checkouts go on this install — see `WorktreesRoot`. */
     worktreesRoot: () => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "GET", "/api/worktrees-root"),
     /** Put them somewhere else from the next cut on; `null` restores the

@@ -6,7 +6,6 @@ import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { searchSettings } from "@/lib/settings-search";
 import {
   formatArtifacts,
-  MachineWorkspaceRows,
   parseArtifacts,
   parseEnv,
   parsePorts,
@@ -99,15 +98,6 @@ test("a write's error reads on the row that made it", () => {
   expect(html).toContain("not a valid environment variable name");
 });
 
-test("this Mac's defaults start empty, with no Inherit or Off, and only suggest", () => {
-  const html = renderToStaticMarkup(<MachineWorkspaceRows machine={{}} />);
-  expect(html).toContain("Worktree defaults");
-  expect(html).not.toContain("Inherit");
-  // Offered, never pre-filled: the textarea is empty and the path is a button.
-  expect(html).toContain("Add node_modules");
-  expect(html).not.toContain(">node_modules<");
-});
-
 test("the text forms parse what they format", () => {
   expect(parseEnv("A=1\n\n B = two=2 ")).toEqual({ ok: true, value: { A: "1", B: "two=2" } });
   expect(parseEnv("nope")).toEqual({ ok: false, message: "Line 1: expected KEY=value." });
@@ -121,7 +111,7 @@ test("the text forms parse what they format", () => {
   expect(parseArtifacts("=> x").ok).toBe(false);
 });
 
-test("search finds the rows on both panes", () => {
+test("search finds the rows on Projects, their one pane", () => {
   const hits = searchSettings(SETTINGS_SEARCH_INDEX, "seed dependencies");
-  expect(hits.map((hit) => hit.pageId).sort()).toEqual(["projects", "storage"]);
+  expect(hits.map((hit) => hit.pageId)).toEqual(["projects"]);
 });

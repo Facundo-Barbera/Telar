@@ -90,29 +90,16 @@ test("the OAuth callback's section id is still routable", () => {
   expect(source).toContain('mcp: "tools"');
 });
 
-test("Storage is a pane under Runtime, and it reads numbers → checkouts → store (#642)", () => {
+test("Storage is a pane under Runtime: automatic cleanup, then the store", () => {
   expect(source).toContain('{ id: "storage", label: "Storage"');
   const pane = source.slice(source.indexOf('active === "storage"'), source.indexOf('active === "plugins"'));
-  for (const section of ["<StorageSection />", "<WorktreesRootSection />", "<WorktreeListSection />", "<StoreSection />"]) {
-    expect(pane).toContain(section);
+  expect(pane).toContain("<CleanupSection />");
+  expect(pane).toContain("<StoreSection />");
+  expect(pane.indexOf("<CleanupSection />")).toBeLessThan(pane.indexOf("<StoreSection />"));
+  // Folded into the cleanup section or retired; none of them stands beside it.
+  for (const retired of ["<StorageSection", "<RetentionSection", "<WorktreesRootSection", "<WorktreeListSection", "<MachineWorkspaceSection"]) {
+    expect(pane).not.toContain(retired);
   }
-  /**
-   * THE ORDER IS THE ARGUMENT. Read what is on disk, then the cheap safe move
-   * (checkouts are re-cut from a recorded commit, so Telar still starts
-   * without the drive), then the whole-store move that cannot start without
-   * it. Putting the expensive option first would make it the default reading.
-   */
-  expect(pane.indexOf("<StorageSection />")).toBeLessThan(pane.indexOf("<WorktreesRootSection />"));
-  expect(pane.indexOf("<WorktreesRootSection />")).toBeLessThan(pane.indexOf("<StoreSection />"));
-  /**
-   * AND THE LIST READS UNDER THE LOCATION (#671), because that is the order the
-   * question arrives in: somebody reads "Session checkouts — 7.3 GB" and where
-   * they go, and the next thing they want is WHICH of them are finished. It
-   * stays above the store move for the same reason the location does — the
-   * cheap, reversible option before the expensive one.
-   */
-  expect(pane.indexOf("<WorktreesRootSection />")).toBeLessThan(pane.indexOf("<WorktreeListSection />"));
-  expect(pane.indexOf("<WorktreeListSection />")).toBeLessThan(pane.indexOf("<StoreSection />"));
 });
 
 test("the store's location left General with the pane that reports what is in it", () => {

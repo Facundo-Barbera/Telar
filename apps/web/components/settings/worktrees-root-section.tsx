@@ -31,7 +31,7 @@ import { chooseDirectory } from "@/lib/choose-directory";
 import { createEngineApi } from "@/lib/engine/client";
 import { REMOVABLE_DRIVE_WARNING } from "@/lib/desktop-store";
 import { Button } from "@/components/ui/button";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Row } from "./settings-shell";
 
 const api = createEngineApi();
 
@@ -42,7 +42,7 @@ const api = createEngineApi();
  */
 export function worktreesRootHint(state: WorktreesRoot): string {
   if (state.kind === "unreadable") {
-    return state.blocker ?? "Telar cannot read where session checkouts belong, and will not guess. Choose a location again.";
+    return state.blocker ?? "Telar cannot read where worktrees belong, and will not guess. Choose a location again.";
   }
   if (state.kind === "absent") return state.blocker ?? `${state.root} is on a drive that is not connected.`;
   /**
@@ -57,12 +57,13 @@ export function worktreesRootHint(state: WorktreesRoot): string {
   if (state.kind === "default") {
     return `${state.root}, beside the store.`;
   }
-  return `${state.root}${state.label ? ` on ${state.label}` : ""}. Existing checkouts stay where they are. ${
+  return `${state.root}${state.label ? ` on ${state.label}` : ""}. Existing worktrees stay where they are. ${
     state.label ? REMOVABLE_DRIVE_WARNING : ""
   }`.trim();
 }
 
-export function WorktreesRootSection() {
+/** Rows, not a group: they sit inside Storage's Worktrees group. */
+export function WorktreesRootRows() {
   const [state, setState] = useState<WorktreesRoot>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | undefined>(undefined);
@@ -120,14 +121,12 @@ export function WorktreesRootSection() {
   const moved = state !== undefined && state.kind !== "default";
 
   return (
-    <SettingsGroup
-      title="Session checkouts"
-      description="Re-cut from each session's recorded commit, so an external drive can hold them; the store itself cannot live there."
-    >
+    <>
       <Row
         icon={FolderGitIcon}
         label="Location"
-        hint={state ? worktreesRootHint(state) : "Where new session checkouts are made."}
+        hint={state ? worktreesRootHint(state) : "Where new worktrees are made."}
+        info="Worktrees can be recreated, so an external drive can hold them; the store itself cannot live there."
         {...(failure ? { error: failure } : {})}
         control={
           <span className="flex items-center gap-2">
@@ -142,29 +141,13 @@ export function WorktreesRootSection() {
           </span>
         }
       />
-      {/*
-        A SECOND, SEPARATE PRESS — issue #642 part 2, and the only thing on this
-        pane that removes anything.
-
-        IT APPEARS ONLY ONCE THE ROOT HAS MOVED, because before that there is
-        nowhere to move checkouts TO, and a button that would do nothing is a
-        button that teaches people to ignore buttons.
-
-        IT UNDER-PROMISES, DELIBERATELY. It cannot move a checkout holding
-        uncommitted changes — git refuses one, and this never forces it — so
-        the row says what it will not do BEFORE the press, and afterwards says
-        how many were left and why, per reason. "Commit it and run this again"
-        and "that branch no longer exists" send a person to two different
-        places, so they are never merged into one count.
-      */}
+      {/* Only once the root has moved: before that there is nowhere to move
+          them to. It never forces a worktree git refuses to move. */}
       {moved ? (
         <Row
           icon={MoveRightIcon}
-          label="Move the checkouts already there"
-          hint={
-            outcome?.summary ??
-            "Re-cuts each checkout at the new location. One with uncommitted changes stays put until committed."
-          }
+          label="Move existing worktrees"
+          hint={outcome?.summary ?? "Recreates each one at the new location. One with uncommitted changes stays put until committed."}
           control={
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void move()}>
               {busy ? "Moving…" : "Move"}
@@ -172,6 +155,6 @@ export function WorktreesRootSection() {
           }
         />
       ) : null}
-    </SettingsGroup>
+    </>
   );
 }
