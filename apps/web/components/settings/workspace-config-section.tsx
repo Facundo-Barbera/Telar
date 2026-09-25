@@ -4,21 +4,20 @@
  * HOW A NEW WORKTREE IS PREPARED — setup, environment, ports, seeded
  * dependencies and artifacts, per `protocol/workspace.ts`.
  *
- * TWO SURFACES, ONE SET OF EDITORS. This Mac's defaults live on Storage (a
- * value or nothing); a project's answer lives on Projects, where every field
- * has a third state. NOT `workspace-section.tsx`: that file is General's
- * "Workspace" row (checkout vs worktree), a different setting.
+ * ONE SURFACE: a project's answer, on Projects. This Mac's defaults have no
+ * editor any more (Storage was simplified), but a value already stored there
+ * is still inherited and shown as such. NOT `workspace-section.tsx`: that file
+ * is General's "Workspace" row (checkout vs worktree), a different setting.
  *
  * PER PROJECT, EVERY FIELD IS INHERIT / OFF / CUSTOM, mirroring the engine's
  * absent / `null` / value. Inherit shows what it inherits and from where, and
  * the answer comes from `resolveWorkspace` — the engine's own function — so the
  * pane can never describe a layering the engine does not do.
  *
- * NOTHING IS PRE-FILLED. The machine layer starts empty and stays empty until
- * somebody types into it; the one suggestion (an artifact path) is a button a
+ * NOTHING IS PRE-FILLED. The one suggestion (an artifact path) is a button a
  * person presses, never a value that appears on its own.
  *
- * COMMIT ON BLUR, AND THE ENGINE'S ANSWER IS THE STATE. Both writes are
+ * COMMIT ON BLUR, AND THE ENGINE'S ANSWER IS THE STATE. Writes are
  * whole-layer PUTs, so they are queued and each is built from the last answer
  * rather than from a render that may predate the previous write.
  */
@@ -30,7 +29,6 @@ import {
   type ProjectWorkspaceOverrides,
   type ProjectWorkspaceView,
   type WorkspaceArtifact,
-  type WorkspaceConfig,
   type WorkspacePorts,
   type WorkspaceSeed,
   type WorkspaceSetup,
@@ -574,72 +572,6 @@ export function ProjectWorkspaceSection({ projectId }: { projectId: string }) {
         if (next === undefined) delete overrides[field];
         else overrides[field] = next;
         return { ...base, overrides: overrides as ProjectWorkspaceOverrides };
-      })}
-    />
-  );
-}
-
-/* ------------------------------------------------------------------------ *
- * THIS MAC
- * ------------------------------------------------------------------------ */
-
-export function MachineWorkspaceRows({ machine, writer }: { machine: WorkspaceConfig; writer?: WorkspaceWriter }) {
-  return (
-    <SettingsGroup
-      title="Worktree defaults"
-      description="For every project on this Mac. A repo's .telar/workspace.json and a project's own settings take precedence."
-    >
-      {ROWS.map(({ field, label, icon, hint, info }) => (
-        <Row key={field} label={label} icon={icon} hint={hint} {...(info ? { info } : {})} {...rowState(writer, field)}>
-          <FieldEditor
-            field={field}
-            label={label}
-            value={machine[field]}
-            required={false}
-            commit={(next) => writer?.save(field, next)}
-            reject={(reason) => writer?.reject(field, reason)}
-          />
-        </Row>
-      ))}
-    </SettingsGroup>
-  );
-}
-
-export function MachineWorkspaceSection() {
-  const [machine, setMachine] = useState<WorkspaceConfig>();
-  const [failed, setFailed] = useState<string>();
-  const { answered, writer } = useLayerWriter<WorkspaceConfig>(
-    async (next) => (await api.setMachineWorkspace(next)).machine,
-    setMachine,
-  );
-
-  useEffect(() => {
-    const task = window.setTimeout(() => {
-      api
-        .machineWorkspace()
-        .then((answer) => answered(answer.machine))
-        .catch((cause) => setFailed(message(cause)));
-    }, 0);
-    return () => window.clearTimeout(task);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  if (failed) {
-    return (
-      <SettingsGroup title="Worktree defaults">
-        <Row label="Worktree preparation" icon={FileWarningIcon} error={failed} />
-      </SettingsGroup>
-    );
-  }
-  if (!machine) return null;
-  return (
-    <MachineWorkspaceRows
-      machine={machine}
-      writer={writer((base, field, next) => {
-        const layer: Record<string, unknown> = { ...base };
-        if (next === undefined || next === null) delete layer[field];
-        else layer[field] = next;
-        return layer as WorkspaceConfig;
       })}
     />
   );

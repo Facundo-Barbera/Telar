@@ -194,6 +194,9 @@ export type EngineDaemonOptions = {
   snoozeWakeSweepIntervalMs?: number;
   /** #543's sweep. 30 s by default — see the wiring for why not 60. */
   scheduleSweepIntervalMs?: number;
+  /** The automatic cleanup's cadence: 30 min, first run 5 min after start. */
+  cleanupIntervalMs?: number;
+  cleanupFirstDelayMs?: number;
   /**
    * Testable cadence for the request-deadline sweep — issue #541 D.
    *
@@ -1420,6 +1423,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * A THROW HERE MUST NOT TAKE THE DAEMON DOWN, as above; the sweep already
    * catches per row.
    */
+  /**
+   * THE AUTOMATIC CLEANUP: once five minutes after start, then every thirty.
+   * With every switch off, a sweep reads one small document and stops.
+   */
+  const sweepCleanup = () => {
+    void store
+      .runCleanup()
+      .then(() => {
+        storageCache.report = undefined;
+      })
+      .catch(() => {
+        /* the next tick tries again */
+      });
+  };
+  const cleanupFirst = setTimeout(sweepCleanup, options.cleanupFirstDelayMs ?? 5 * 60 * 1000);
+  cleanupFirst.unref();
+  const cleanupSweeper = setInterval(sweepCleanup, options.cleanupIntervalMs ?? 30 * 60 * 1000);
+  cleanupSweeper.unref();
   const scheduleSweeper = setInterval(() => {
     try {
       store.sweepSchedules();
@@ -2755,6 +2776,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * and the conversation), bring it back, or read its setup's log — see
        * `worktree-release.ts` and `worktree-setup.ts`.
        */
+      /**
+       * SETTINGS → STORAGE'S AUTOMATIC CLEANUP — `cleanup.ts`. GET reads a small
+       * document and never measures anything (#937); `run` sweeps now.
+       */
+      if (url.pathname === "/v2/cleanup" && (request.method === "GET" || request.method === "PUT")) {
+        if (request.method === "PUT") {
+          const saved = store.cleanup.setPolicy(await body(request));
+          if (!saved) throw new HttpError(400, "invalid_request", "inactive days must be 3, 7, 14 or 30; log days 7 or 30; the others true or false");
+        }
+        writeJson(response, 200, { cleanup: { policy: store.cleanup.policy(), ...(store.cleanup.last() ? { last: store.cleanup.last() } : {}), running: store.isCleanupRunning() } });
+        return;
+      }
+      if (url.pathname === "/v2/cleanup/run" && request.method === "POST") {
+        await store.runCleanup();
+        storageCache.report = undefined;
+        writeJson(response, 200, { cleanup: { policy: store.cleanup.policy(), ...(store.cleanup.last() ? { last: store.cleanup.last() } : {}), running: store.isCleanupRunning() } });
+        return;
+      }
       const sessionWorktree = /^\/v2\/sessions\/([^/]+)\/worktree\/(release|restore)$/.exec(url.pathname);
       if (sessionWorktree && request.method === "POST") {
         const sessionId = decodeURIComponent(sessionWorktree[1]!);
@@ -5419,8 +5458,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // `closeExecutionStore` and the process ending would be a write against
         // a store that has gone. The others only read or queue.
         clearInterval(requestDeadlineSweeper);
-        // No worktree setup outlives the engine that started it.
+        // No worktree setup outlives the engine that started it; a cleanup
+        // deletes, so it does not tick against a store that is closing.
         store.setups.stopAll();
+        clearTimeout(cleanupFirst);
+        clearInterval(cleanupSweeper);
         removeOwnDiscovery(store, daemonId);
         store.closeExecutionStore();
         lock.release();
@@ -5430,6 +5472,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     clearInterval(workerPruner);
     clearInterval(delegationSweeper);
     clearInterval(requestDeadlineSweeper);
+    clearTimeout(cleanupFirst);
+    clearInterval(cleanupSweeper);
     server.close();
     store.closeExecutionStore();
     lock.release();

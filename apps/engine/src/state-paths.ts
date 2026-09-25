@@ -137,6 +137,9 @@ export type EngineStatePaths = {
    *  project's overrides, in one document. See `workspace-config.ts`.
    *  Environment-scoped like `sessionDefaults`: read when a worktree is cut. */
   workspace: string;
+  /** The automatic cleanup's switches and last result — see `cleanup.ts`.
+   *  Environment-scoped: one policy for every project on this engine. */
+  cleanup: string;
   /** Where each project group sits in the rail — see `SidebarLayout`.
    *  Environment-scoped like `inbox`: one arrangement per engine, not per window. */
   sidebarLayout: string;
@@ -261,6 +264,7 @@ export function statePaths(root: string): EngineStatePaths {
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
     workspace: path.join(resolved, "workspace.json"),
+    cleanup: path.join(resolved, "cleanup.json"),
     sidebarLayout: path.join(resolved, "sidebar-layout.json"),
     appearance: path.join(resolved, "appearance.json"),
     engine: path.join(resolved, "engine.json"),

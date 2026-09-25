@@ -69,6 +69,7 @@ import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
+import { SessionSchedules } from "./session/session-schedules";
 import { RunHeaderControl } from "./run/run-header-control";
 import { OpenWorkspaceButton } from "./session/open-workspace-button";
 import { PromptText } from "./session/prompt-text";
@@ -3999,6 +4000,17 @@ export function SessionCockpit({
             onWatchRun={() => showPanelTab("terminal")}
             panel={
               <>
+                {/* Keyed by host and session, like Run: a different machine is a
+                    different mount. The last turn's state is the refresh cue —
+                    a schedule is set by a turn and fires as one. */}
+                {session && (
+                  <SessionSchedules
+                    key={`${hostId}:${session.id}`}
+                    sessionId={session.id}
+                    hostId={hostId}
+                    refreshKey={`${turns.at(-1)?.runId}:${turns.at(-1)?.state}`}
+                  />
+                )}
                 {/* THE CHECKOUT INSPECTOR NEEDS A CHECKOUT. Absent rather than
                     empty: a panel reporting "no changes" about a repository this
                     conversation does not have would be answering a question

@@ -652,7 +652,7 @@ export const SessionWorkspace = z.discriminatedUnion("mode", [
      * whose checkout is on disk.
      */
     released: z
-      .object({ at: Timestamp, reason: z.enum(["manual", "inactive", "merged", "archived"]) })
+      .object({ at: Timestamp, reason: z.enum(["manual", "inactive", "unchanged", "archived"]) })
       .optional(),
   }),
   /** No directory anywhere — see the note above. Nothing rides along: there is

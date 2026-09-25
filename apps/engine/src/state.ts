@@ -249,6 +249,7 @@ import { buildInventory, type InventoryProject, type InventorySession } from "./
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
 import { checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal } from "./worktree-release";
 import { WorktreeSetups } from "./worktree-setup";
+import { CleanupStore, diskUsage, planWorktreeCleanup, sweepLogs } from "./cleanup";
 import { pipeLauncher } from "./run/launcher";
 import { processGroupFor } from "./run/platform";
 import { CheckoutSizes, type CheckoutSizesOptions } from "./checkout-sizes";
@@ -2431,6 +2432,9 @@ export class EngineStore {
   readonly workspace: WorkspaceConfigStore;
   /** Each worktree's `setup.command`, run in the background after a cut. */
   readonly setups: WorktreeSetups;
+  /** Settings → Storage's automatic cleanup — see `cleanup.ts`. */
+  readonly cleanup: CleanupStore;
+  private cleanupRunning = false;
   private readonly notifier?: EngineNotifier;
   /** See the constructor: the daemon's in-process nudge to its embedded worker,
    *  absent unless the daemon injected it. */
@@ -4582,6 +4586,7 @@ export class EngineStore {
     this.ambientEnv = options.ambientEnv ?? process.env;
     this.paths = statePaths(root);
     this.workspace = new WorkspaceConfigStore(this.paths.workspace);
+    this.cleanup = new CleanupStore(this.paths.cleanup);
     this.setups = new WorktreeSetups({
       directoryOf: (sessionId) => sessionDir(this.paths, sessionId),
       launcher: pipeLauncher(processGroupFor(process.platform, (pid, signal) => process.kill(pid, signal))),
@@ -7674,7 +7679,7 @@ export class EngineStore {
    */
   async releaseSessionWorktree(
     sessionId: string,
-    reason: "manual" | "inactive" | "merged" | "archived",
+    reason: "manual" | "inactive" | "unchanged" | "archived",
     options: { strict?: boolean } = {},
   ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
     const session = this.getSession(sessionId);
@@ -7717,6 +7722,88 @@ export class EngineStore {
     this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
     this.appendEvent(sessionId, { type: "session.updated", session: updated });
     return { ok: true };
+  }
+
+  /**
+   * ONE CLEANUP SWEEP — Settings → Storage's switches (`cleanup.ts`). One at a
+   * time: a second call while one runs answers the state and does nothing.
+   * Every worktree goes through `releaseSessionWorktree` in strict mode, so the
+   * fixed rules hold whatever the switches say.
+   */
+  async runCleanup(): Promise<void> {
+    if (this.cleanupRunning) return;
+    this.cleanupRunning = true;
+    try {
+      const policy = this.cleanup.policy();
+      const now = this.now();
+      const sessions = this.readSessions();
+      const candidates = sessions.flatMap((session) =>
+        session.workspace.mode === "worktree" && session.projectId
+          ? [
+              {
+                sessionId: session.id,
+                archived: session.state === "archived",
+                released: session.workspace.released !== undefined,
+                lastActiveAt: Math.max(session.updatedAt, session.lastTurnEndedAt ?? 0, session.activityAt ?? 0),
+              },
+            ]
+          : [],
+      );
+      let freedBytes = 0;
+      let released = 0;
+      let skipped = 0;
+      for (const { sessionId, reason } of planWorktreeCleanup(candidates, policy, now)) {
+        const session = this.getSession(sessionId);
+        if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+        if (reason === "unchanged" && !(await this.branchUnchanged(session.projectId, session.workspace.branch))) continue;
+        if (!fs.existsSync(session.workspace.path)) continue;
+        const bytes = await diskUsage(session.workspace.path);
+        const result = await this.releaseSessionWorktree(sessionId, reason, { strict: true });
+        if (result.ok) {
+          released += 1;
+          freedBytes += bytes;
+        } else {
+          skipped += 1;
+        }
+      }
+      let logs = 0;
+      if (policy.logsDays !== null) {
+        const gone = new Set(
+          sessions.filter((session) => session.workspace.mode === "worktree" && session.workspace.released).map((session) => session.id),
+        );
+        const swept = await sweepLogs({
+          logDirectories: [this.paths.diagnostics],
+          setupLogs: [...gone].map((sessionId) => path.join(sessionDir(this.paths, sessionId), "setup.log")),
+          days: policy.logsDays,
+          now,
+        });
+        logs = swept.count;
+        freedBytes += swept.bytes;
+      }
+      this.cleanup.record({ at: this.now(), freedBytes, released, logs, skipped });
+    } finally {
+      this.cleanupRunning = false;
+    }
+  }
+
+  isCleanupRunning(): boolean {
+    return this.cleanupRunning;
+  }
+
+  /**
+   * DOES THIS BRANCH HOLD ANYTHING THE DEFAULT BRANCH DOES NOT? Unchanged
+   * means zero commits in `<default>..<branch>`. A git read that did not
+   * answer is "changed" — the safe side, since this licenses a delete.
+   */
+  private async branchUnchanged(projectId: string, branch: string): Promise<boolean> {
+    const project = this.getProject(projectId);
+    for (const base of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"]) {
+      const exists = await this.worktreeGit(project.root, ["rev-parse", "--verify", "--quiet", base]);
+      if (exists.status !== 0) continue;
+      const ahead = await this.worktreeGit(project.root, ["rev-list", "--count", `${base}..refs/heads/${branch}`]);
+      return ahead.status === 0 && !ahead.timedOut && ahead.stdout.trim() === "0";
+    }
+    return false;
   }
 
   /**
@@ -11431,7 +11518,7 @@ export class EngineStore {
    * Refuses while work is in flight: archiving under a running turn would
    * pull the checkout out from under a live provider process.
    */
-  archiveSession(sessionId: string): Session {
+  archiveSession(sessionId: string, options: { releaseCheckout?: boolean } = {}): Session {
     const session = this.getSession(sessionId);
     if (session.state === "archived") return session;
     const active = this.readQueue(sessionId).turns.find(
@@ -11451,7 +11538,15 @@ export class EngineStore {
     // none. Reading the pair together means a future project-less session that
     // somehow carried a worktree degrades to "leave the directory" instead of
     // throwing on a lookup that cannot succeed.
-    if (session.workspace.mode === "worktree" && session.projectId) {
+    // ONLY WHEN ASKED: Storage's "Delete worktrees of archived sessions", or
+    // a caller that is archiving precisely to give the checkout back. Off, the
+    // checkout stays, and the branch and directory are the person's to keep.
+    if (
+      session.workspace.mode === "worktree" &&
+      session.projectId &&
+      !session.workspace.released &&
+      (options.releaseCheckout ?? this.cleanup.policy().archived)
+    ) {
       const project = this.getProject(session.projectId);
       // Best-effort. A leaked directory is bounded inside the engine's own
       // root and is reapable later; refusing to archive because git was
@@ -11828,7 +11923,7 @@ export class EngineStore {
         if (row.owner.kind === "session" && row.owner.lifecycle === "settled") {
           // The supported path, which releases the checkout on the project
           // queue as part of putting the session down.
-          this.archiveSession(row.owner.sessionId);
+          this.archiveSession(row.owner.sessionId, { releaseCheckout: true });
           results.push({
             path: row.path,
             ok: true,

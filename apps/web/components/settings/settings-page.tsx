@@ -24,7 +24,7 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { BlocksIcon, CalendarClockIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
@@ -63,7 +63,6 @@ import { useSectionFromUrl } from "./use-section-from-url";
 const AppearanceSection = dynamic(() => import("./appearance-section").then((mod) => mod.AppearanceSection));
 const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
-const SchedulesSection = dynamic(() => import("./schedules-section").then((mod) => mod.SchedulesSection));
 const DictationSection = dynamic(() => import("./dictation-section").then((mod) => mod.DictationSection));
 const McpSection = dynamic(() => import("./mcp-section").then((mod) => mod.McpSection));
 const OrientationSection = dynamic(() => import("./orientation-section").then((mod) => mod.OrientationSection));
@@ -79,11 +78,7 @@ const TextGenSection = dynamic(() => import("./textgen-section").then((mod) => m
 const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.PluginsPage));
 const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
 const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
-const StorageSection = dynamic(() => import("./storage-section").then((mod) => mod.StorageSection));
-const RetentionSection = dynamic(() => import("./retention-section").then((mod) => mod.RetentionSection));
-const WorktreesRootSection = dynamic(() => import("./worktrees-root-section").then((mod) => mod.WorktreesRootSection));
-const MachineWorkspaceSection = dynamic(() => import("./workspace-config-section").then((mod) => mod.MachineWorkspaceSection));
-const WorktreeListSection = dynamic(() => import("./worktree-list-section").then((mod) => mod.WorktreeListSection));
+const CleanupSection = dynamic(() => import("./cleanup-section").then((mod) => mod.CleanupSection));
 const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
 const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
 
@@ -166,12 +161,6 @@ const SECTIONS: SettingsSection[] = [
   { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "Runtime" },
   { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
   /**
-   * UNDER "RUNTIME": a schedule fires on the machine that runs turns, and only
-   * while its engine is up. It shared the built-in Agent's pane until that left
-   * the app (#908); a conversation's own clock outlived it.
-   */
-  { id: "schedules", label: "Schedules", icon: CalendarClockIcon, group: "Runtime" },
-  /**
    * UNDER "RUNTIME" (#544): dictation is a service the machine that runs turns
    * spends a key on, like Providers and TextGen — not a decision about this
    * window. A paired phone dictating through this Mac reads this pane's
@@ -236,9 +225,6 @@ export const SECTION_ALIASES: Record<string, string> = {
    * lands on the one row it could have meant.
    */
   settled: "general",
-  // THE BUILT-IN AGENT'S PANE IS GONE (#908). Scheduled work was the one thing
-  // on it that outlived the Agent, so its id lands there.
-  agent: "schedules",
 };
 
 /** A figure the engine reported, in the register the rest of the app uses for
@@ -370,43 +356,13 @@ export function SettingsPage() {
           </>
         )}
 
-        {/* WHAT IS ON THIS MACHINE'S DISK, then where it lives (#642). The
-            figures come first deliberately: "move the store" is a decision, and
-            a decision is easier to make after reading what it would move than
-            before. */}
+        {/* What Telar deletes on its own, then where the store lives. */}
         {active === "storage" && (
           <>
-            <StorageSection />
-            {/* AND THEN HOW LONG ANY OF IT IS KEPT (#542). It reads directly
-                under the figures for the same reason the checkout list does:
-                somebody reads "Turn journal — 695 MB", and the next question is
-                whether all of it has to be. The flow deliberately ends back at
-                the Reclaim button above — a retention sweep frees pages inside
-                the database and returns no bytes to the disk, and a person who
-                deleted their history and then saw the same number would have been
-                given the worst possible outcome. */}
-            <RetentionSection />
-            {/* THE REPRODUCIBLE HALF BEFORE THE WHOLE (#642 part 2). Moving only
-                the checkouts leaves Telar able to start without the drive;
-                moving the store does not. The cheaper, safer choice should be
-                the one a reader meets first. */}
-            <WorktreesRootSection />
-            {/* AND THEN WHICH ONES CAN GO (#671). It reads directly under the
-                row that says where checkouts live and the figure that says what
-                they cost, because that is the order the question arrives in:
-                somebody reads "Session checkouts — 7.3 GB", and the next thing
-                they want is the list of them and which are finished. Before
-                this there was no such screen anywhere — the only mention of a
-                worktree in the whole cockpit was a count. */}
-            <WorktreeListSection />
-            {/* How a new checkout is prepared, beside the rows about checkouts.
-                Each project can override these on Projects. */}
-            <MachineWorkspaceSection />
+            <CleanupSection />
             <StoreSection />
           </>
         )}
-
-        {active === "schedules" && <SchedulesSection />}
 
         {/* AND THE SAME FOR DICTATION (#544), which left General by the same
             door and for a sharper reason: it ships OFF, so the row a reader

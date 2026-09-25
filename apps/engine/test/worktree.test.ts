@@ -523,6 +523,10 @@ test("archiving frees the checkout and KEEPS the branch", async () => {
   // Work the session produced.
   execFileSync("git", ["commit", "-qm", "session work", "--allow-empty"], { cwd: session.workspace.path });
 
+  // Deleting the checkout on archive is an opt-in Storage switch now.
+
+  store.cleanup.setPolicy({ archived: true });
+
   const archived = store.archiveSession("session_one");
   expect(archived.state).toBe("archived");
   // The removal runs on the same per-project queue the cut did, so it is not
