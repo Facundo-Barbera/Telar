@@ -1667,15 +1667,9 @@ ipcMain.handle("telar:browser:update-profile", (event, input) => {
 });
 ipcMain.handle("telar:browser:delete-profile", (event, input) => {
   const manager = requireBrowserManager(event);
-  /**
-   * A SESSION ACTUALLY BROWSING IN IT IS A REFUSAL, not a silent re-bind — the
-   * rule itself lives in the manager, which is what holds the tabs
-   * (`whyProfileIsInUse`, #430). The registry knows about project assignments
-   * and enforces those in `remove`.
-   */
-  const busy = manager.whyProfileIsInUse(input?.profileId);
-  if (busy) throw new Error(busy);
-  const removed = manager.profiles.remove(input?.profileId);
+  // Sessions and tabs in the profile move to where the ladder now sends them
+  // (`deleteProfile`); only the default itself is refused, by the registry.
+  const removed = manager.deleteProfile(input?.profileId);
   manager.emitAllStates();
   return { profiles: manager.listProfiles(), removed };
 });

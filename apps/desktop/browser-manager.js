@@ -1199,38 +1199,47 @@ class DesktopBrowserManager {
   }
 
   /**
-   * WHY FORGETTING THIS PROFILE WOULD TAKE A PAGE WITH IT — the sentence to
-   * refuse a delete with, or null when nothing this window holds is browsing
-   * in it. Live state only the manager has: the registry knows about project
-   * assignments and enforces those itself.
+   * FORGET A PROFILE, AND MOVE WHATEVER WAS BROWSING IN IT (#430, #476).
    *
-   * A BINDING IS NOT A REASON; A TAB IS (#430). Delete used to refuse whenever
-   * ANY scope in `scopeProfiles` named the profile — but a scope is bound the
-   * moment it opens (`declareProfile`), and every remembered scope is bound
-   * again at restore even with zero tabs, so on a machine that had been used
-   * for a while every row refused and there was no way out. A bound scope with
-   * nothing open loses nothing: its next tab walks the ladder again.
+   * Delete used to refuse while any tab — live or remembered — sat in the
+   * profile. Profiles made before shared profiles existed had tabs in dozens
+   * of sessions, so every row refused ("32 sessions have 41 tabs") and there
+   * was no way out short of closing them one session at a time.
    *
-   * WHAT WOULD ACTUALLY BREAK IS A TAB, and both kinds count. A tab signed
-   * into this jar (`profileId`) is the obvious one; a tab of ANOTHER profile in
-   * a session pointed at this one counts too, because `parseInventory` drops a
-   * whole scope whose profile id the registry no longer has — so deleting under
-   * it loses that session's remembered pages at the next restart. Hibernated
-   * and restored tabs are tabs: the panel draws them in the strip, and they are
-   * exactly what that restore would throw away.
+   * Now the registry forgets the record first (it still refuses the default),
+   * then each session pointed at the profile walks the ladder again, and each
+   * tab signed into it is put to sleep and re-homed in its session's new
+   * profile. A tab keeps its URL and wakes signed out; a session keeps its
+   * pages, because `parseInventory` would drop a whole scope whose profile id
+   * the registry no longer has. The cookie jar stays on disk, as ever.
    */
-  whyProfileIsInUse(profileId) {
-    const id = String(profileId || "").trim();
-    if (!id) return null;
-    const tabs = this.tabs.filter((tab) => tab.profileId === id || this.scopeProfiles.get(tab.scopeKey) === id);
-    if (!tabs.length) return null;
-    const sessions = new Set(tabs.map((tab) => tab.scopeKey)).size;
-    const label = this.profiles.get(id)?.label || "that profile";
-    return (
-      `${sessions === 1 ? "A session has" : `${sessions} sessions have`} ` +
-      `${tabs.length === 1 ? "a tab" : `${tabs.length} tabs`} open in “${label}”. ` +
-      `Close ${tabs.length === 1 ? "it" : "them"}, or switch ${sessions === 1 ? "that session" : "those sessions"} to another profile, first.`
-    );
+  deleteProfile(profileId) {
+    const removed = this.profiles.remove(profileId);
+    const id = removed.id;
+    const fallback = this.profiles.require(this.profiles.defaultProfileId);
+    const scopes = new Set();
+    for (const [scope, bound] of this.scopeProfiles) {
+      if (bound !== id) continue;
+      if (this.scopeProfileOverrides.get(scope) === id) this.scopeProfileOverrides.delete(scope);
+      const override = this.scopeProfileOverrides.get(scope);
+      const project = this.scopeProjects.get(scope);
+      const profile = override ? this.profiles.require(override) : project ? this.profiles.resolve(project) : fallback;
+      this.scopeProfiles.set(scope, profile.id);
+      scopes.add(scope);
+    }
+    this.drainProfileMigrations();
+    let tabs = 0;
+    for (const tab of this.tabs) {
+      if (tab.profileId !== id) continue;
+      this.hibernateTab(tab);
+      const profile = this.profiles.get(this.scopeProfiles.get(tab.scopeKey)) || fallback;
+      tab.profileId = profile.id;
+      tab.partition = profile.partition;
+      scopes.add(tab.scopeKey);
+      tabs += 1;
+    }
+    this.persist();
+    return { ...removed, sessions: scopes.size, tabs };
   }
 
   /** The extension host for a partition, created on first use. */

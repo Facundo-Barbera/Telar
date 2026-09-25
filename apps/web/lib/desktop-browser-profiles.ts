@@ -112,7 +112,7 @@ export function confirmProfileDeletion(profile: BrowserProfile, profiles: Browse
   const moved = assigned
     ? ` ${assigned === 1 ? "1 project" : `${assigned} projects`} will use ${fallback ? `"${fallback}"` : "the default"} instead.`
     : "";
-  return `Delete "${profile.label}"?${moved} Its cookies stay on disk.`;
+  return `Delete "${profile.label}"?${moved} Sessions browsing in it move over, and its open tabs reload signed out. Its cookies stay on disk.`;
 }
 
 /**
