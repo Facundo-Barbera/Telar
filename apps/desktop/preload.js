@@ -161,6 +161,19 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     write: (id, data) => ipcRenderer.invoke("telar:terminal:write", { id, data }),
     resize: (id, cols, rows) => ipcRenderer.invoke("telar:terminal:resize", { id, cols, rows }),
     kill: (id, signal) => ipcRenderer.invoke("telar:terminal:kill", { id, signal }),
+    /**
+     * CLOSE = KILL: SIGTERM to everything running in the terminal, SIGKILL a
+     * second later to whatever did not go. Resolves `{ ok }` once that is
+     * over; the exit itself still arrives through `onExit`.
+     */
+    close: (id) => ipcRenderer.invoke("telar:terminal:close", { id }),
+    /**
+     * Is anything running in these terminals right now — `{ terminals: [{ id,
+     * sessionId, origin, title, active, processes, command }] }`. Asked once,
+     * before a close, to decide whether to confirm it. With no ids, this
+     * window's own terminals.
+     */
+    active: (ids) => ipcRenderer.invoke("telar:terminal:active", ids ? { ids } : {}),
     // How a remounted panel finds the terminals its previous render left running.
     list: () => ipcRenderer.invoke("telar:terminal:list"),
     /**

@@ -2127,6 +2127,11 @@ ipcMain.handle("telar:terminal:open", (event, input) => {
     // could name arbitrary variables could set DYLD_INSERT_LIBRARIES.
     env: process.env,
     owner: RENDERER,
+    // The session whose panel this shell lives in, so settling that session
+    // can close it. The ORIGIN is not the renderer's to say: every terminal
+    // it opens is one a person asked for, and the host enforces that.
+    sessionId: input?.sessionId,
+    title: input?.title,
   });
   if (opened.pid !== undefined) terminalReaders.set(opened.id, event.sender);
   return opened;
@@ -2142,6 +2147,31 @@ ipcMain.handle("telar:terminal:resize", (event, input) => {
 ipcMain.handle("telar:terminal:kill", (event, input) => {
   requireCockpitSender(event, "stop a terminal");
   return { ok: requireTerminalHost().kill(input?.id, input?.signal || "SIGTERM", RENDERER) };
+});
+/**
+ * CLOSE = KILL. SIGTERM to every process group in the terminal, SIGKILL a
+ * second later to whatever did not go; answered once that is over. `kill`
+ * above stays for a caller that wants to send one particular signal. Whether
+ * to ASK before closing is the renderer's call, made with `active` below.
+ */
+ipcMain.handle("telar:terminal:close", async (event, input) => {
+  requireCockpitSender(event, "close a terminal");
+  return { ok: await requireTerminalHost().close(String(input?.id ?? ""), RENDERER) };
+});
+/**
+ * IS ANYTHING RUNNING IN THESE TERMINALS — asked once, before a close.
+ *
+ * The renderer's own terminals, and ALSO a run's when it names the id: a
+ * run's chip lives in the same strip and needs the same question answered
+ * before its close. That grants no verb and no id the renderer did not
+ * already hold — it names the id, and gets facts about it (the same facts
+ * `adopt` already confirms exist). With no ids, only its own are answered.
+ */
+ipcMain.handle("telar:terminal:active", async (event, input) => {
+  requireCockpitSender(event, "ask whether a terminal is busy");
+  const host = requireTerminalHost();
+  const ids = Array.isArray(input?.ids) ? input.ids.map(String) : undefined;
+  return { terminals: await host.activeProcesses(ids ? { ids } : { owner: RENDERER }) };
 });
 /** What is live right now — how a remounted panel finds the terminals its
  *  previous render left running. Facts only; no handles cross this, and no ids
@@ -3207,7 +3237,7 @@ ipcMain.handle("telar:updates:check", async () => {
  */
 const installGate = createInstallGate();
 
-ipcMain.handle("telar:updates:install", () => {
+ipcMain.handle("telar:updates:install", async () => {
   const decision = installGate.press({ packaged: app.isPackaged, devBuild: DEV_BUILD });
   if (decision === "unsupported") return { status: "unsupported" };
 
@@ -3238,6 +3268,23 @@ ipcMain.handle("telar:updates:install", () => {
   // an attended one.
   autoUpdater.autoInstallOnAppQuit = false;
   app.isQuitting = true;
+  /**
+   * THE TERMINALS ARE CLOSED BEFORE THE INSTALLER GETS THE QUIT, NOT DURING IT.
+   * The press was the person's consent to restart, so nothing is asked; but
+   * the close still gets its SIGTERM-then-SIGKILL second, and doing it here
+   * means `before-quit` finds nothing to hold. Holding the updater's own quit
+   * and re-issuing it later is a path nobody has watched Squirrel survive,
+   * and this is the one quit where finding out the hard way costs an update.
+   */
+  if (terminalHost && terminalHost.size > 0) {
+    try {
+      await terminalHost.closeAll();
+      await terminalHost.drain();
+    } catch (error) {
+      logShell("error", `closing terminals before the update restart failed: ${error?.stack || error}`);
+    }
+  }
+  terminalsClosedForQuit = true;
   try {
     autoUpdater.quitAndInstall();
   } catch (err) {
@@ -3246,6 +3293,7 @@ ipcMain.handle("telar:updates:install", () => {
     // duplicate, and the app is no longer quitting — it plainly did not.
     installGate.reset();
     app.isQuitting = false;
+    terminalsClosedForQuit = false;
     const message = err && err.message ? err.message : String(err);
     autoUpdater.logger?.error?.(`quitAndInstall failed: ${message}`);
     broadcastUpdateStatus("error", { version: lastUpdateStatus?.version, message });
@@ -3422,23 +3470,86 @@ function closeBrowserControl() {
   browserControl = null;
   if (control) void control.close();
 }
+
+/**
+ * QUITTING CLOSES EVERY TERMINAL, AND ASKS ONCE IF THAT ENDS SOMETHING.
+ *
+ * A terminal owns its process, so Telar going away takes them with it — the
+ * alternative, which is what used to happen, is a dev server that outlives
+ * the app, holds its port against the next launch, and that nothing in Telar
+ * can reach any more. The QUESTION is only asked when something is actually
+ * running (`decideQuit` in terminal-host.js): a Telar with idle prompts open
+ * quits exactly as it always did.
+ *
+ * WHY `before-quit` AND NOT `will-quit`: closing is SIGTERM, then SIGKILL a
+ * second later, and the dialog is asynchronous. `will-quit` cannot be held
+ * open for either. So the first quit is held here, the terminals are closed
+ * and drained, and the quit is then re-issued with `terminalsClosedForQuit`
+ * set so it passes straight through. With no terminals at all this does
+ * nothing and holds nothing.
+ *
+ * NO QUESTION FOR AN UPDATE. "Install & restart" was the person's answer
+ * already; `telar:updates:install` closes the terminals itself before handing
+ * the quit to the installer, so this handler never holds that quit. Nor is
+ * anything asked in a smoke or E2E shell, which has nobody to click a button.
+ *
+ * CANCEL LEAVES EVERYTHING AS IT WAS. `app.isQuitting` is put back so the
+ * engine and server exit handlers go on treating an unexpected exit as one.
+ */
+let terminalsClosedForQuit = false;
+let closingTerminalsForQuit = false;
+app.on("before-quit", (event) => {
+  if (terminalsClosedForQuit || !terminalHost || terminalHost.size === 0) return;
+  event.preventDefault();
+  if (closingTerminalsForQuit) return;
+  closingTerminalsForQuit = true;
+  void closeTerminalsThenQuit();
+});
+async function closeTerminalsThenQuit() {
+  const host = terminalHost;
+  try {
+    const { decideQuit } = require("./terminal-host");
+    const plan = decideQuit(await host.activeProcesses());
+    if (plan.action === "confirm" && !SMOKE && !E2E_USER_DATA) {
+      const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      const { response } = parent ? await dialog.showMessageBox(parent, plan.dialog) : await dialog.showMessageBox(plan.dialog);
+      if (response !== plan.dialog.defaultId) {
+        closingTerminalsForQuit = false;
+        app.isQuitting = false;
+        return;
+      }
+    }
+    await host.closeAll({ final: true });
+    // node-pty calls back into JS as each of those ends; exiting into one of
+    // those callbacks aborts the process. See `drain` in terminal-host.js.
+    await host.drain();
+  } catch (error) {
+    // The person asked to quit. A failure to ask or to close must not turn
+    // that into a Telar that cannot be quit; `will-quit` still signals every
+    // group that is left.
+    logShell("error", `closing terminals before quit failed: ${error?.stack || error}`);
+  }
+  terminalsClosedForQuit = true;
+  app.quit();
+}
+
 app.on("will-quit", () => {
   // The tab inventory's last word, before the windows go: what each session
   // had open is what it will have open on the next launch.
   // EVERY window's inventory, not the focused one's: a second window's tabs are
   // as much "what that session had open" as the first window's are.
   for (const manager of browserManagers) { try { manager.persistSync(); } catch {} }
-  // EVERY LIVE TERMINAL BECOMES `unknown`, NOT `exited`. We are about to stop
-  // being able to see these processes, and some of them are dev servers with
-  // children. Saying "exited" here is how a slot gets freed for something that
-  // is still listening — see terminal-host.js. It deliberately does not kill
-  // them: that decision is the engine's, not the shell's.
-  // The engine's channel goes FIRST: a stream that outlives the host would
-  // deliver nothing and look healthy, which is the one state `unknown` exists to
-  // prevent. Closing it makes the engine mark its runs `unknown` and hold their
-  // slots, which is the truth once this process is going away.
+  // THE TERMINALS ARE NORMALLY ALREADY CLOSED by `before-quit` above, and their
+  // exits already delivered to the engine over its channel. This `dispose` is
+  // the last resort for anything left — a quit path that skipped
+  // `before-quit` — and it ENDS them (SIGTERM to each shell's group) rather
+  // than marking them `unknown` and leaving them running.
+  // The host BEFORE the engine's channel now: a SIGTERM sent here can still
+  // produce an exit frame, and the channel is where it goes. Closing the
+  // channel then makes the engine treat anything it had not yet heard end as
+  // lost, which is the truth once this process is going away.
+  if (terminalHost) { try { void terminalHost.dispose(); } catch {} }
   if (runTerminalChannel) { try { void runTerminalChannel.close(); } catch {} runTerminalChannel = null; }
-  if (terminalHost) { try { terminalHost.dispose("Telar quit"); } catch {} }
   killServer();
   stopComputerUseHelper();
   closeBrowserControl();

@@ -77,7 +77,18 @@ const HEARTBEAT_MS = 2_000;
 
 /** Every route this server answers. Anything else is a 404 before a body is
  *  read or a terminal host is resolved. */
-const ROUTES = new Set(["POST /open", "POST /kill", "POST /write", "POST /resize", "POST /mirror", "GET /events", "GET /state"]);
+const ROUTES = new Set([
+  "POST /open",
+  "POST /kill",
+  "POST /close",
+  "POST /close-session",
+  "POST /active",
+  "POST /write",
+  "POST /resize",
+  "POST /mirror",
+  "GET /events",
+  "GET /state",
+]);
 
 function json(response, status, value) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -257,6 +268,12 @@ function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartb
           cols: input.cols,
           rows: input.rows,
           owner: ENGINE,
+          // ADDITIVE, all three. An engine that sends none of them gets a
+          // `run` terminal in no session — exactly what it got before — and
+          // one that sends an origin the engine may not claim is a 400.
+          origin: input.origin ?? undefined,
+          sessionId: input.sessionId,
+          title: input.title,
         });
         json(response, 200, opened);
         return;
@@ -265,6 +282,35 @@ function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartb
         // BY ID. The engine never names a pid, which is what keeps a signal
         // from reaching a stranger the kernel handed that number to.
         json(response, 200, { signalled: host.kill(String(input.id ?? ""), input.signal || "SIGTERM", ENGINE) });
+        return;
+      }
+      if (route === "POST /close") {
+        /**
+         * CLOSE = KILL, WITH THE ESCALATION BUILT IN. Where `/kill` sends the
+         * one signal it is given, this is SIGTERM to every group in the
+         * terminal and SIGKILL a second later, answered once that is over.
+         * `closed: false` is the same silence as `/write`'s: not this
+         * channel's id, or already gone.
+         */
+        json(response, 200, { closed: await host.close(String(input.id ?? ""), ENGINE) });
+        return;
+      }
+      if (route === "POST /close-session") {
+        /**
+         * SETTLING A SESSION ENDS ITS TERMINALS — ALL OF THEM, WHOEVER OPENED
+         * THEM. This is the one verb on this channel that reaches past the
+         * engine's own scope, and deliberately: a session is settled by the
+         * engine, and "its terminals" includes the shells the person opened
+         * in that session's panel. It cannot address a terminal by id, only a
+         * whole session, and a missing session id closes nothing.
+         */
+        json(response, 200, { closed: await host.killBySession(input.sessionId) });
+        return;
+      }
+      if (route === "POST /active") {
+        // Facts about the engine's own terminals, from one process table read
+        // now. `ids` narrows it; absent, every engine terminal is answered.
+        json(response, 200, { terminals: await host.activeProcesses({ owner: ENGINE, ids: Array.isArray(input.ids) ? input.ids : undefined }) });
         return;
       }
       if (route === "POST /write") {

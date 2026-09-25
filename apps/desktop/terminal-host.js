@@ -17,11 +17,22 @@
  * status `unknown` means "we cannot vouch that this is dead", and an `unknown`
  * run KEEPS HOLDING ITS PROJECT'S SLOT. So this host never reports a clean exit
  * it did not observe: the only thing that produces `exited` is node-pty's own
- * exit event, carrying a code. Everything else — the host torn down with
- * terminals still live, a kill we issued and never saw land, a handle that
- * threw — is `unknown`, with the pid in the message so a human can go and look.
+ * exit event, carrying a code. Everything else — a kill we issued and never
+ * saw land, a handle that threw — is `unknown`, with the pid in the message so
+ * a human can go and look. (The host being torn down is no longer on that
+ * list: it now ENDS its terminals, and their real exits settle them.)
  * The failure being designed against is the quiet one: this process dies, and
  * something downstream frees a slot for a server that is still listening.
+ *
+ * A TERMINAL OWNS ITS PROCESS, AND CLOSING IT ENDS IT ("Run = a new terminal",
+ * PR 1). Every PTY belongs to a SESSION and says who opened it (`origin`), and
+ * closing one — or every one of a session, or every one at quit — signals its
+ * process groups SIGTERM and, a second later, SIGKILL. The host going away is
+ * a close like any other, so it no longer marks live terminals `unknown`: it
+ * ends them, and the exit node-pty then reports is the one that settles them.
+ * THERE IS NO LIVENESS POLLING HERE, deliberately: "is something running in
+ * this terminal" is asked once, when a person is about to be asked to confirm,
+ * and answered from one `ps` snapshot — see `activeProcesses`.
  *
  * WHAT WE PUT IN THE ENVIRONMENT, AND NOTHING ELSE. Telar is a terminal
  * emulator, not a shell configurator. We contribute the window, the tabs, the
@@ -94,6 +105,46 @@ function terminalOwner(value) {
   throw new Error(`Telar does not know the terminal owner ${JSON.stringify(value)}.`);
 }
 
+/**
+ * WHY A TERMINAL EXISTS, WHICH IS NOT THE SAME QUESTION AS WHO MAY REACH IT.
+ *
+ * `owner` is the security boundary above: which door the verbs come through.
+ * `origin` is what a person sees on the tab — a shell they opened (`user`), a
+ * process an agent started so the person can watch it (`agent`), or a saved
+ * run configuration (`run`). The engine opens the last two; the renderer opens
+ * only the first.
+ *
+ * THE PAIRING IS ENFORCED HERE, not trusted from the caller. A renderer that
+ * could label its shell `agent` would make a person's own terminal look like
+ * something an agent is responsible for, and an engine terminal labelled
+ * `user` would claim a person typed a command they never saw. Neither is a
+ * privilege, both are a lie on screen, so both throw. Absent, each owner gets
+ * the only origin it ever had before this field existed — `user` for the
+ * renderer, `run` for the engine — which is what keeps today's engine client,
+ * which does not send one, working unchanged.
+ */
+const TerminalOrigin = Object.freeze({
+  USER: "user",
+  AGENT: "agent",
+  RUN: "run",
+});
+
+function terminalOrigin(value, owner) {
+  if (value === undefined || value === null) return owner === TerminalOwner.ENGINE ? TerminalOrigin.RUN : TerminalOrigin.USER;
+  const allowed = owner === TerminalOwner.ENGINE ? [TerminalOrigin.AGENT, TerminalOrigin.RUN] : [TerminalOrigin.USER];
+  if (allowed.includes(value)) return value;
+  throw new Error(`A terminal opened by the ${owner} cannot have the origin ${JSON.stringify(value)}.`);
+}
+
+/** A session id or a title as the host keeps it: a short string, or nothing.
+ *  Anything else is dropped rather than coerced, because `String({})` as a
+ *  session id would quietly put a terminal in a session nobody has. */
+function shortText(value, max) {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
 /** The terminal type we claim to be, and the one xterm.js is configured for. */
 const TERM = "xterm-256color";
 /** What the emulator can paint, for a parent that did not already say. See
@@ -113,6 +164,167 @@ const TERM_PROGRAM = "Telar";
 /** How long a killed terminal has to actually report its exit before we stop
  *  vouching for it. Past this we say `unknown` rather than guess `exited`. */
 const KILL_OBSERVE_MS = 5_000;
+
+/**
+ * HOW LONG A CLOSED TERMINAL'S PROCESSES GET TO END ON THEIR OWN.
+ *
+ * SIGTERM first because a dev server that is told politely flushes its logs,
+ * removes its lock file and gives the port back; SIGKILL a second later
+ * because a process that traps TERM, or is wedged, must not be able to keep a
+ * closed terminal's work alive behind the person's back. One second is what
+ * T3 Code settled on for the same close (Manager.ts:99) and it is long enough
+ * for every graceful shutdown we have watched, short enough that quitting
+ * Telar never feels like it hung.
+ */
+const CLOSE_GRACE_MS = 1_000;
+
+/**
+ * ONE SNAPSHOT OF THE PROCESS TABLE, ASKED WHEN SOMEBODY NEEDS AN ANSWER.
+ *
+ * NOT A POLL. This runs when a person is about to close a terminal or quit and
+ * we have to decide whether to ask them first, and once when a terminal is
+ * closed so its signal reaches every job in it. Nothing calls it on a timer.
+ *
+ * `ps` RATHER THAN node-pty's `process` getter, because the getter answers
+ * only the foreground program's NAME, and the two questions we have need more:
+ * whether anything besides the shell is running (children, background jobs),
+ * and which process GROUPS live on this terminal — an interactive shell puts
+ * each job in its own group, so signalling the shell's group alone would miss
+ * `bun run dev` started at the prompt. `tty` is what ties a job to the
+ * terminal it was started in; `tpgid` is the terminal's foreground group,
+ * which is how "the shell is busy" is told apart from "the shell is at a
+ * prompt". `-ww` so a long command line is not cut at 80 columns — it is shown
+ * to the person in the confirmation.
+ *
+ * `LC_ALL=C` so the columns are the ones the parser expects whatever the
+ * person's locale does to number formatting.
+ */
+function readProcessTable(deps = {}) {
+  const execFile = deps.execFile ?? require("node:child_process").execFile;
+  return new Promise((resolve, reject) => {
+    execFile(
+      "ps",
+      ["-A", "-ww", "-o", "pid=,ppid=,pgid=,tpgid=,tty=,command="],
+      { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } },
+      (error, stdout) => (error ? reject(error) : resolve(parseProcessTable(stdout))),
+    );
+  });
+}
+
+/** `ps`'s rows as numbers. A row that does not parse is skipped, not guessed. */
+function parseProcessTable(text) {
+  const rows = [];
+  for (const line of String(text || "").split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s?(.*)$/.exec(line);
+    if (!match) continue;
+    rows.push({
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+      pgid: Number(match[3]),
+      tpgid: Number(match[4]),
+      tty: match[5],
+      command: match[6].trim(),
+    });
+  }
+  return rows;
+}
+
+/** `/dev/ttys003` and `ttys003` are the same terminal; `??` and `?` are none. */
+function ttyName(value) {
+  if (typeof value !== "string") return undefined;
+  const name = value.replace(/^\/dev\//, "").trim();
+  return name && !/^\?+$/.test(name) ? name : undefined;
+}
+
+/**
+ * WHAT IS RUNNING IN ONE TERMINAL, from one snapshot. Pure, so it is tested
+ * against a table rather than against a machine.
+ *
+ * A PROCESS BELONGS TO THIS TERMINAL when it is the shell's child, in the
+ * shell's own group, or attached to the terminal's tty. The three overlap on
+ * purpose: a `run` terminal is `sh -c cmd` with no job control, so its work is
+ * in the shell's group; an interactive shell puts each job in a NEW group on
+ * the same tty; and a child that detached from the tty is still the shell's
+ * child. What is deliberately NOT followed is a grandchild that detached — a
+ * program that went out of its way to leave is not this terminal's to end.
+ *
+ * ACTIVE means somebody would lose something if this closed now: the
+ * terminal's foreground group is not the shell (a command holds the prompt),
+ * or anything other than the shell belongs to it (a backgrounded job, a
+ * child). An idle shell at its prompt is not active, and closing one is not
+ * worth a question.
+ *
+ * `groups` is every process group a close must signal — the shell's own
+ * first. Never a group id of 1 or less: `kill(-1)` is every process this user
+ * owns and `kill(-0)` is Telar's own group.
+ */
+function terminalActivity(terminal, rows) {
+  const tty = ttyName(terminal.tty);
+  const shell = rows.find((row) => row.pid === terminal.pid);
+  const members = rows.filter(
+    (row) =>
+      row.pid !== terminal.pid &&
+      (row.ppid === terminal.pid || row.pgid === terminal.pid || (tty !== undefined && ttyName(row.tty) === tty)),
+  );
+  const foreground = shell && shell.tpgid > 1 && shell.tpgid !== terminal.pid ? shell.tpgid : undefined;
+  const lead =
+    (foreground !== undefined && (members.find((row) => row.pid === foreground) ?? members.find((row) => row.pgid === foreground))) ||
+    members[0];
+  const groups = [...new Set([terminal.pid, ...members.map((row) => row.pgid)])].filter((group) => Number.isInteger(group) && group > 1);
+  return {
+    active: foreground !== undefined || members.length > 0,
+    processes: members.length,
+    command: lead ? lead.command : undefined,
+    groups,
+  };
+}
+
+/**
+ * QUIT OR ASK FIRST — the decision, with no Electron in it.
+ *
+ * ONE question for the whole app, never one per terminal: a person quitting
+ * with three dev servers up is making one decision, and three dialogs in a row
+ * is how the third gets clicked through unread. An idle shell is not counted —
+ * closing it loses nothing — so a Telar with only prompts open quits without
+ * asking, which is what quitting did before any of this existed.
+ *
+ * THE COPY EXPLAINS ITSELF: what is running (the command lines, so the person
+ * recognises their own work), what quitting does to it, and that the choice
+ * is theirs. It names no other product. The buttons say what they do; "OK"
+ * would not tell anyone that their server is about to stop.
+ *
+ * @param {Array<{ active: boolean, command?: string }>} terminals
+ *   what `activeProcesses` answered for every live terminal.
+ */
+function decideQuit(terminals) {
+  const list = Array.isArray(terminals) ? terminals : [];
+  const busy = list.filter((terminal) => terminal && terminal.active);
+  if (busy.length === 0) return { action: "quit", closing: list.length };
+  const count = busy.length;
+  const shown = busy.slice(0, 5).map((terminal) => `• ${clip(terminal.command || "a command", 80)}`);
+  if (count > shown.length) shown.push(`…and ${count - shown.length} more`);
+  return {
+    action: "confirm",
+    count,
+    closing: list.length,
+    dialog: {
+      type: "warning",
+      message: count === 1 ? "1 process is still running in Telar's terminals" : `${count} processes are still running in Telar's terminals`,
+      detail:
+        `${shown.join("\n")}\n\n` +
+        "Quitting Telar closes its terminals and ends everything running in them. " +
+        "Work they have not saved or finished will be lost.",
+      buttons: ["End them and quit", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+    },
+  };
+}
+
+function clip(text, max) {
+  const flat = String(text).replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
 
 /**
  * THE ENVIRONMENT A TELAR TERMINAL STARTS IN.
@@ -355,7 +567,13 @@ class TerminalHost {
     this.onData = options.onData ?? (() => {});
     this.onExit = options.onExit ?? (() => {});
     this.killObserveMs = options.killObserveMs ?? KILL_OBSERVE_MS;
+    this.closeGraceMs = options.closeGraceMs ?? CLOSE_GRACE_MS;
     this.killTree = options.killTree ?? ((pid, signal) => killTerminalTree(pid, signal, { platform: this.platform }));
+    // Injected so a test reads a table it wrote and runs the SIGKILL second on
+    // a clock it controls, rather than on the machine's and the wall's.
+    this.listProcesses = options.listProcesses ?? (() => readProcessTable());
+    this.setTimer = options.setTimeout ?? setTimeout;
+    this.clearTimer = options.clearTimeout ?? clearTimeout;
     // Injected only so `unusableCwd`'s refusals can be staged without making a
     // real unreadable directory in a test. Production reads the real one.
     this.fs = options.fs ?? fs;
@@ -381,10 +599,16 @@ class TerminalHost {
    * a PTY without one reports 0×0 and every full-screen program draws nothing.
    *
    * `owner` is recorded here and nowhere else: a terminal cannot change hands.
+   * Nor can `sessionId` or `origin`: a terminal belongs to the session whose
+   * panel it was opened in for its whole life, which is what lets settling
+   * that session close exactly its terminals and nobody else's.
    */
   open(request = {}) {
     if (this.disposed) throw new Error("Telar's terminal host is shutting down and will not start another shell.");
     const owner = terminalOwner(request.owner);
+    const origin = terminalOrigin(request.origin, owner);
+    const sessionId = shortText(request.sessionId, 200);
+    const title = shortText(request.title, 200);
     // ONE base environment, read once: the fallback shell comes from `$SHELL`,
     // so resolving it against a different environment than the one the child
     // gets would answer /bin/sh for a person whose shell is fish.
@@ -428,7 +652,27 @@ class TerminalHost {
       return { id, pid: undefined, ending };
     }
 
-    const record = { id, owner, pty, pid: pty.pid, shell, args, cwd: request.cwd, cols, rows, startedAt: this.now(), killTimer: null };
+    const record = {
+      id,
+      owner,
+      origin,
+      sessionId,
+      title,
+      pty,
+      pid: pty.pid,
+      // The slave side's name, `/dev/ttys003`. What ties an interactive
+      // shell's jobs — each in its own process group — back to this terminal.
+      tty: typeof pty.ptsName === "string" ? pty.ptsName : undefined,
+      shell,
+      args,
+      cwd: request.cwd,
+      cols,
+      rows,
+      startedAt: this.now(),
+      killTimer: null,
+      closing: null,
+      onLeaderExit: null,
+    };
     this.terminals.set(id, record);
     /**
      * A PTY'S FD ERRORING MUST NOT ABORT THE WHOLE SHELL.
@@ -472,6 +716,9 @@ class TerminalHost {
         exitCode: typeof ending?.exitCode === "number" ? ending.exitCode : undefined,
         signal: ending?.signal ? String(ending.signal) : undefined,
       });
+      // A terminal being closed learns here that its shell is gone, which is
+      // the moment to find out whether anything else in it still is.
+      if (record.onLeaderExit) record.onLeaderExit();
     });
     return { id, pid: record.pid };
   }
@@ -545,17 +792,117 @@ class TerminalHost {
    */
   list(owner) {
     const scope = terminalOwner(owner);
-    return [...this.terminals.values()]
-      .filter((record) => record.owner === scope)
-      .map((record) => ({
+    return [...this.terminals.values()].filter((record) => record.owner === scope).map(facts);
+  }
+
+  /** One terminal's facts, under the same scope rule as every verb. */
+  describe(id, owner) {
+    const record = this._owned(id, owner);
+    return record ? facts(record) : undefined;
+  }
+
+  /** How many terminals are live, whoever opened them. Quit asks this first:
+   *  with none, there is nothing to close and nothing to wait for. */
+  get size() {
+    return this.terminals.size;
+  }
+
+  /**
+   * CLOSE ONE TERMINAL, WHICH ENDS WHAT RUNS IN IT.
+   *
+   * Every process group on the terminal is sent SIGTERM, and whatever has not
+   * gone a second later gets SIGKILL (see `CLOSE_GRACE_MS`). The terminal
+   * settles through node-pty's own exit event, `exited` with the signal, the
+   * same as any other ending — a close is not a separate fate.
+   *
+   * Resolves `false` for an id the caller does not own (the same silence as
+   * `write`), else `true` once the escalation is over: every group is either
+   * confirmed empty or has been sent SIGKILL. It does NOT wait for the exit
+   * event itself, which arrives through `onExit` like always.
+   */
+  async close(id, owner, options = {}) {
+    const record = this._owned(id, owner);
+    if (!record) return false;
+    await this._close([record], options);
+    return true;
+  }
+
+  /**
+   * CLOSE EVERY TERMINAL A SESSION OWNS — what settling that session will do.
+   *
+   * EVERY OWNER BY DEFAULT, because the session is the unit here: settling it
+   * ends the shells the person opened in its panel AND the runs and agent
+   * terminals the engine opened there. `owner` narrows it for a caller that
+   * must stay in its own scope.
+   *
+   * A SESSION ID IS REQUIRED, and "no session" never matches "no session". A
+   * terminal opened before sessions were recorded, or by a caller that did not
+   * say, has none — and a settle that passed `undefined` must close nothing,
+   * not every terminal nobody labelled.
+   *
+   * @returns {Promise<number>} how many terminals were closed.
+   */
+  async killBySession(sessionId, options = {}) {
+    const wanted = shortText(sessionId, 200);
+    if (!wanted) return 0;
+    const scope = options.owner === undefined ? undefined : terminalOwner(options.owner);
+    const records = [...this.terminals.values()].filter(
+      (record) => record.sessionId === wanted && (scope === undefined || record.owner === scope),
+    );
+    await this._close(records, options);
+    return records.length;
+  }
+
+  /**
+   * CLOSE EVERYTHING — quitting Telar.
+   *
+   * `final` also stops the host starting anything new, BEFORE the snapshot is
+   * taken: a terminal opened during the second this takes would otherwise be
+   * the one survivor of a quit.
+   */
+  async closeAll(options = {}) {
+    if (options.final) this.disposed = true;
+    const records = [...this.terminals.values()];
+    await this._close(records, options);
+    return records.length;
+  }
+
+  /**
+   * IS ANYTHING RUNNING IN THESE TERMINALS, RIGHT NOW?
+   *
+   * Asked by whoever is about to close something and has to decide whether to
+   * ask first — the quit dialog today, the tab's close button next. One `ps`
+   * for every terminal asked about; no timer, no cache, no memory of the last
+   * answer. See `terminalActivity` for what "active" means.
+   *
+   * `owner` scopes it like `list`; with no owner every terminal is answered,
+   * which only main's quit path asks for. `ids` narrows it further.
+   *
+   * WHEN THE TABLE CANNOT BE READ, every terminal is `active`. The question is
+   * "should we ask before ending this", and the answer we cannot check is yes:
+   * a needless question costs a click, a missing one costs somebody's server.
+   * Windows has no `ps`, and gets the same answer for the same reason.
+   */
+  async activeProcesses(options = {}) {
+    const scope = options.owner === undefined ? undefined : terminalOwner(options.owner);
+    const ids = Array.isArray(options.ids) ? new Set(options.ids.map(String)) : undefined;
+    const records = [...this.terminals.values()].filter(
+      (record) => (scope === undefined || record.owner === scope) && (ids === undefined || ids.has(record.id)),
+    );
+    if (records.length === 0) return [];
+    const rows = await this._snapshot();
+    return records.map((record) => {
+      const activity = rows ? terminalActivity(record, rows) : { active: true, processes: 0, command: undefined };
+      return {
         id: record.id,
-        pid: record.pid,
-        shell: record.shell,
-        cwd: record.cwd,
-        cols: record.cols,
-        rows: record.rows,
-        startedAt: record.startedAt,
-      }));
+        sessionId: record.sessionId,
+        origin: record.origin,
+        title: record.title,
+        active: activity.active,
+        processes: activity.processes,
+        command: activity.command,
+      };
+    });
   }
 
   /**
@@ -575,25 +922,140 @@ class TerminalHost {
   }
 
   /**
-   * THE HOST IS GOING AWAY WHILE TERMINALS ARE STILL RUNNING.
+   * THE HOST IS GOING AWAY WHILE TERMINALS ARE STILL RUNNING — so it ends them.
    *
-   * Every one of them becomes `unknown`, never `exited`. This is the case the
-   * whole fate model exists for: the window closed, or the app is quitting, and
-   * the processes on the other side of those handles are a dev server and its
-   * children. We did not see them end and we are about to stop being able to,
-   * so we say so — and whatever downstream holds a slot keeps holding it.
+   * This USED to mark every live terminal `unknown` and signal nothing, on the
+   * argument that ending a person's long-running process at shutdown was the
+   * engine's policy to decide. It has been decided, the other way: a terminal
+   * owns its process, and quitting Telar closes its terminals. Leaving them
+   * running is how a dev server outlived the app that started it and held its
+   * port against the next launch, with nothing in Telar able to reach it.
    *
-   * It does NOT kill them. Deciding that a shutdown should take a user's
-   * long-running process with it is policy, and policy is the engine's.
+   * SYNCHRONOUS, AND SO THE SHELL'S GROUP ONLY. This is the last-resort path —
+   * `will-quit`, a test's teardown — where nothing can be awaited, so there is
+   * no process table to find an interactive shell's other job groups with.
+   * The ordinary quit goes through `closeAll` first, which does read it; by
+   * the time this runs there is normally nothing left. SIGKILL follows a
+   * second later if the process is still alive to deliver it.
+   *
+   * NO ENDING IS INVENTED. Each terminal settles when node-pty reports its
+   * exit, as `exited` with the signal. The returned promise resolves when the
+   * escalation is over, for a caller that can wait.
    */
-  dispose(reason = "Telar's terminal host shut down") {
+  dispose() {
     this.disposed = true;
-    for (const record of [...this.terminals.values()]) {
-      this._settle(record, {
-        fate: TerminalFate.UNKNOWN,
-        reason: `${reason} while this terminal was still running (pid ${record.pid}); Telar cannot vouch that it has ended`,
-      });
+    const records = [...this.terminals.values()];
+    return Promise.all(records.map((record) => this._closeRecord(record, null, {})));
+  }
+
+  /** One snapshot for a batch of closes, or `null` when there is none to be
+   *  had. Never throws: a close must still signal the shell's own group. */
+  async _snapshot() {
+    if (this.platform === "win32") return null;
+    try {
+      return await this.listProcesses();
+    } catch {
+      return null;
     }
+  }
+
+  async _close(records, options) {
+    if (records.length === 0) return;
+    // ONE TABLE, READ BEFORE ANY SIGNAL. After the first SIGTERM processes
+    // start dying and being reparented, and a table read then would miss the
+    // very jobs it is for.
+    const rows = records.some((record) => !record.closing) ? await this._snapshot() : null;
+    await Promise.all(records.map((record) => this._closeRecord(record, rows, options)));
+  }
+
+  /**
+   * SIGTERM NOW, SIGKILL AFTER THE GRACE — for one terminal's groups.
+   *
+   * THE SIGKILL DOES NOT WAIT FOR THE SHELL, AND DOES NOT STOP AT IT EITHER. A
+   * shell that traps TERM keeps running, so the second signal is what ends it;
+   * and a shell that dies on TERM can leave a child that ignored it, so the
+   * shell's exit alone is not the end of the terminal's work.
+   *
+   * THE SHELL'S EXIT IS THE ONE MOMENT WE LOOK, ONCE. When node-pty reports it,
+   * each group still pending is probed with signal 0; a group that is gone
+   * (ESRCH) is dropped, and if none is left the close is over early. That is
+   * what keeps a quit with well-behaved servers from always costing the full
+   * second — and it is also the guard against the one real hazard in a
+   * delayed `kill(-pgid)`: a group id we have seen go empty is never signalled
+   * again. A group still populated at the probe cannot have been reused.
+   *
+   * THE TIMER IS NOT unref'd, unlike every other timer in this file. Quitting
+   * awaits this, and an unref'd SIGKILL is one the process can exit without
+   * sending — the exact survivor this exists to prevent.
+   */
+  _closeRecord(record, rows, options) {
+    if (record.closing) return record.closing;
+    const graceMs = options.graceMs ?? this.closeGraceMs;
+    const groups = rows ? terminalActivity(record, rows).groups : [record.pid];
+    record.closing = new Promise((resolve) => {
+      const pending = new Set();
+      /**
+       * A HANGUP FIRST, TO THE SHELL'S OWN GROUP — because an interactive
+       * shell IGNORES SIGTERM. Without this every idle zsh would sit out the
+       * whole grace and die to SIGKILL, and quitting with three prompts open
+       * would always cost a second. SIGHUP is what closing a terminal window
+       * has always sent (the kernel sends it when the controlling terminal
+       * goes away): the shell exits and hands the hangup on to its jobs. The
+       * SIGTERM and SIGKILL below are unchanged; this only lets the ordinary
+       * case finish early. Not on Windows, whose killer is already final.
+       */
+      if (this.platform !== "win32") {
+        try {
+          this.killTree(record.pid, "SIGHUP");
+        } catch {
+          /* the SIGTERM below meets the same fate and handles it */
+        }
+      }
+      for (const group of groups) {
+        try {
+          this.killTree(group, "SIGTERM");
+          pending.add(group);
+        } catch {
+          // ESRCH: that group is already empty. Anything else (EPERM) is a
+          // group we cannot signal at all, and SIGKILL would fail the same way.
+        }
+      }
+      // Windows' killer is already `taskkill /T /F`; there is no gentler
+      // first step to escalate from.
+      if (pending.size === 0 || this.platform === "win32") {
+        resolve();
+        return;
+      }
+      let timer = null;
+      const finish = () => {
+        if (timer !== null) this.clearTimer(timer);
+        timer = null;
+        record.onLeaderExit = null;
+        resolve();
+      };
+      record.onLeaderExit = () => {
+        for (const group of [...pending]) {
+          try {
+            this.killTree(group, 0);
+          } catch (error) {
+            if (error && error.code === "ESRCH") pending.delete(group);
+          }
+        }
+        if (pending.size === 0) finish();
+      };
+      timer = this.setTimer(() => {
+        timer = null;
+        for (const group of pending) {
+          try {
+            this.killTree(group, "SIGKILL");
+          } catch {
+            /* already gone, which is the outcome we wanted */
+          }
+        }
+        finish();
+      }, graceMs);
+    });
+    return record.closing;
   }
 
   /**
@@ -610,9 +1072,11 @@ class TerminalHost {
    * every one of them AFTER printing its success marker. A gate reading only
    * the marker would have called each of those green.
    *
-   * Await this before `app.exit` when something was just signalled. It is not
-   * needed on an ordinary quit — `dispose` does not kill anything — which is
-   * why it is a separate call and not folded into `dispose`.
+   * Await this before `app.exit` when something was just signalled — which,
+   * now that quitting closes every terminal, is every quit that had one open.
+   * It stays a separate call rather than folded into `closeAll` because the
+   * wait belongs to whoever is about to exit, not to a close that a session
+   * settling will also make while the app carries on.
    */
   drain(ms = 400) {
     // Deliberately NOT unref'd: the whole point is to hold the loop open long
@@ -658,6 +1122,22 @@ function defaultShell(platform, env) {
   return chosen || "/bin/sh";
 }
 
+/** What `list` and `describe` say about a terminal: facts, never the handle. */
+function facts(record) {
+  return {
+    id: record.id,
+    pid: record.pid,
+    sessionId: record.sessionId,
+    origin: record.origin,
+    title: record.title,
+    shell: record.shell,
+    cwd: record.cwd,
+    cols: record.cols,
+    rows: record.rows,
+    startedAt: record.startedAt,
+  };
+}
+
 function size(value, fallback) {
   const rounded = Math.floor(Number(value));
   return Number.isFinite(rounded) && rounded > 0 ? Math.min(rounded, 9999) : fallback;
@@ -671,9 +1151,15 @@ module.exports = {
   TerminalHost,
   TerminalFate,
   TerminalOwner,
+  TerminalOrigin,
   TERM,
   TERM_PROGRAM,
+  CLOSE_GRACE_MS,
   terminalEnv,
+  readProcessTable,
+  parseProcessTable,
+  terminalActivity,
+  decideQuit,
   killTerminalTree,
   ensureSpawnHelper,
   spawnHelperCandidates,
