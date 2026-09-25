@@ -947,8 +947,7 @@ struct ComposerView: View {
     private var isListening: Bool { dictation?.phase == .listening }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !host.pendingAttachments.isEmpty
+        SessionDraft.canSend(text: draft, mediaTypes: host.pendingAttachments.map(\.mediaType))
     }
 
     var body: some View {

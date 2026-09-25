@@ -164,6 +164,7 @@ describe("maybeRetitleSession", () => {
     title: string;
     titleAfter: string;
     generated: string | undefined;
+    message: string;
   }>;
 
   function harness(overrides: Overrides = {}) {
@@ -189,7 +190,7 @@ describe("maybeRetitleSession", () => {
       if (overrides.titleAfter !== undefined) title = overrides.titleAfter;
       return Promise.resolve("generated" in overrides ? overrides.generated : "A Real Title");
     };
-    return { calls, run: () => maybeRetitleSession(store, "session_one", "fix the thing", generate as never) };
+    return { calls, run: () => maybeRetitleSession(store, "session_one", overrides.message ?? "fix the thing", generate as never) };
   }
 
   test("replaces the seed and renames the branch", async () => {
@@ -198,6 +199,13 @@ describe("maybeRetitleSession", () => {
     expect(calls.updates).toEqual([{ title: "A Real Title" }]);
     expect(calls.renamed).toEqual(["session_one"]);
     expect(calls.generate[0]).toMatchObject({ driver: "claude", model: "haiku", env: { A: "b" }, message: "fix the thing" });
+  });
+
+  test("an image-only first message keeps its seed — there are no words to title", async () => {
+    const { calls, run } = harness({ title: "New session", message: "  " });
+    await run();
+    expect(calls.generate).toHaveLength(0);
+    expect(calls.updates).toHaveLength(0);
   });
 
   test("switched off, it does not even ask", async () => {

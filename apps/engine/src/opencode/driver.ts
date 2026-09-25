@@ -230,7 +230,9 @@ export function createOpenCodeDriver(options: Options = {}): TurnDriver {
          * arriving on the same channel, and the notice's own text is what says
          * which peer and where to read them.
          */
-        const parts = [{ type: "text" as const, text: input.prompt, ...(input.notification ? { synthetic: true } : {}) }, ...(input.attachments ?? []).map((attachment) => ({
+        // An image-only message sends no text part — verified against OpenCode
+        // 1.18.31: a prompt of one file part is admitted and the image is seen.
+        const parts = [...(input.prompt.trim() || input.notification ? [{ type: "text" as const, text: input.prompt, ...(input.notification ? { synthetic: true } : {}) }] : []), ...(input.attachments ?? []).map((attachment) => ({
           type: "file" as const, mime: attachment.mediaType, filename: attachment.name,
           url: `data:${attachment.mediaType};base64,${fs.readFileSync(attachment.path).toString("base64")}`,
         }))];

@@ -130,8 +130,10 @@ export function codexTurnInput(prompt: string, attachments: TurnAttachment[] = [
     others.length === 0
       ? prompt
       : `${prompt}\n\nAttached files:\n${others.map((attachment) => `- ${attachment.name} (${attachment.mediaType}) at ${attachment.path}`).join("\n")}`;
+  // AN IMAGE-ONLY MESSAGE HAS NO TEXT ITEM. Verified against codex-cli 0.155.1:
+  // a turn of one `localImage` completes and the model describes the picture.
   return [
-    { type: "text", text, text_elements: [] },
+    ...(text.trim() ? [{ type: "text", text, text_elements: [] }] : []),
     ...images.map((attachment) => ({ type: "localImage", path: attachment.path })),
   ];
 }
@@ -901,13 +903,15 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                   if (steer.isClosed) return;
                   continue;
                 }
-                // Codex's `turn/steer` takes text. An attached file is named
-                // by its path so the agent can still open it — the same
-                // fallback the Claude seam uses for non-image files — rather
-                // than dropped, which is what the old text-only channel did.
+                // `turn/steer` takes the same input items `turn/start` does, so
+                // a steered image goes in as pixels — a screenshot sent
+                // mid-turn with no words is otherwise a path the model never
+                // looks at. Any other file is named by its path so the agent
+                // can still open it, the same fallback the Claude seam uses.
+                const images = queued.flatMap((message) => (message.attachments ?? []).filter((file) => file.mediaType.startsWith("image/")));
                 const text = queued
                   .map((message) => {
-                    const files = message.attachments ?? [];
+                    const files = (message.attachments ?? []).filter((file) => !file.mediaType.startsWith("image/"));
                     // An agent's message reaches the provider framed as a
                     // peer's and a wake as the engine's own notice, never as
                     // the person's — see ./attribution.ts.
@@ -962,7 +966,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                   await client.request("turn/steer", {
                     threadId: rootThreadId,
                     expectedTurnId: rootTurnId,
-                    input: codexTurnInput(text),
+                    input: codexTurnInput(text, images),
                   });
                 } catch (error) {
                   const errorId = itemIdFor(`steer-error-${crypto.randomUUID().slice(0, 8)}`);

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Turn } from "@telar/engine-client";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv } from "../src/state";
+import { summariseTurn } from "../src/turn-summary";
 
 const roots: string[] = [];
 /**
@@ -1475,6 +1476,38 @@ test("an attachment is stored under the engine's own name and a turn may only re
   expect(() => store.submitTurn("session_one", { runId: "run_two", input: "Look", attachments: ["att_missing"] })).toThrow(
     EngineStateError,
   );
+});
+
+test("an image-only message is a message; a blank one with only a PDF, or nothing, is not", () => {
+  const { store } = readyStore();
+  const png = (name: string) => store.putAttachment("session_one", { name, mediaType: "image/png", data: new Uint8Array([1, 2, 3, 4]) });
+  const pdf = store.putAttachment("session_one", { name: "spec.pdf", mediaType: "application/pdf", data: new Uint8Array([1]) });
+
+  const shot = png("Screenshot.png");
+  const { turn } = store.submitTurn("session_one", { runId: "run_image", input: "", attachments: [shot.id] });
+  expect(turn).toMatchObject({ input: "", state: "queued", attachments: [shot] });
+  // Its outline line names the picture rather than going blank.
+  expect(summariseTurn(turn, store.items("session_one")).input).toBe("[Screenshot.png]");
+  // Idempotent like any other send.
+  expect(store.submitTurn("session_one", { runId: "run_image", input: "", attachments: [shot.id] }).replayed).toBe(true);
+
+  // A file alone gives the agent a path and no reason; nothing at all is nothing.
+  for (const attempt of [
+    { runId: "run_pdf", input: " ", attachments: [pdf.id] },
+    { runId: "run_empty", input: "" },
+    { runId: "run_compact", input: "", kind: "compact" as const, attachments: [png("b.png").id] },
+  ]) {
+    expect(() => store.submitTurn("session_one", attempt)).toThrow(EngineStateError);
+  }
+  expect(store.turns("session_one").map((row) => row.runId)).toEqual(["run_image"]);
+});
+
+test("a browser draft promoted by an image-only message is titled by its picture", () => {
+  const { store } = readyStore();
+  store.createSession({ id: "session_draft", projectId: "project_one", draft: true, title: "Browser draft" });
+  const shot = store.putAttachment("session_draft", { name: "Screenshot.png", mediaType: "image/png", data: new Uint8Array([1]) });
+  store.submitTurn("session_draft", { runId: "run_first", input: "", attachments: [shot.id] });
+  expect(store.getSession("session_draft").title).toBe("Screenshot.png");
 });
 
 test("a per-turn model beats the session default and cannot change the provider", () => {

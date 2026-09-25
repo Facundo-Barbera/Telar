@@ -81,7 +81,9 @@ export function ConversationMessage({
   return (
     <Message from="user">
       <MessageContent from="user">
-        <PromptText text={text} {...(onOpenTab ? { onOpen: onOpenTab } : {})} />
+        {/* An image-only message is its pictures; an empty paragraph above
+            them would only be a gap. */}
+        {text.trim() && <PromptText text={text} {...(onOpenTab ? { onOpen: onOpenTab } : {})} />}
         <MessageAttachments {...(attachments ? { attachments } : {})} />
       </MessageContent>
     </Message>

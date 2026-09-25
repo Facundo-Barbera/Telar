@@ -179,7 +179,7 @@ export function summariseTurn(turn: Turn, items: Item[]): TurnSummary {
      * from the stored summary rather than re-derived, for the reason every other
      * one-liner here is: one author per sentence.
      */
-    input: turn.notification ? firstLine(turn.notification.summary, INPUT_LINE_CHARS) : firstLine(turn.input, INPUT_LINE_CHARS),
+    input: turn.notification ? firstLine(turn.notification.summary, INPUT_LINE_CHARS) : firstLine(turn.input.trim() ? turn.input : attachedLine(turn), INPUT_LINE_CHARS),
     itemCount: mine.length,
     itemTitles: mine.slice(0, ITEM_TITLES).map((item) => firstLine(item.title ?? item.detail.type, ITEM_TITLE_CHARS)),
     answerHead: head(answer, ANSWER_HEAD_CHARS),
@@ -276,6 +276,13 @@ export function outlineRow(summary: TurnSummary): OutlineRow {
  * instead would put a time on a row that has not ended and make "newest ended
  * first" mean something different for the tail of a live session.
  */
+/** An image-only message's line names what was sent, so an outline row is
+ *  never blank. */
+function attachedLine(turn: Turn): string {
+  const names = (turn.attachments ?? []).map((attachment) => attachment.name);
+  return names.length > 0 ? `[${names.join(", ")}]` : "";
+}
+
 function endedAt(turn: Turn): number | undefined {
   return turn.completedAt;
 }

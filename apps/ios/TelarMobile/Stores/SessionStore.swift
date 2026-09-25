@@ -84,15 +84,13 @@ import Observation
 
     func send(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !pendingAttachments.isEmpty else { return }
+        guard SessionDraft.canSend(text: trimmed, mediaTypes: pendingAttachments.map(\.mediaType)) else { return }
         // A still-unsent earlier message keeps its runId; a new message after a
-        // success mints a fresh one.
-        let pending = pendingSend?.text == trimmed
-            ? pendingSend!
-            : PendingSend(
-                runId: RunID.newRunId(), text: trimmed,
-                attachments: pendingAttachments.isEmpty ? nil : pendingAttachments.map(\.id)
-            )
+        // success mints a fresh one. The pictures are part of WHICH message:
+        // two image-only sends both have "" for text.
+        let attachments = pendingAttachments.isEmpty ? nil : pendingAttachments.map(\.id)
+        let pending = pendingSend.flatMap { $0.text == trimmed && $0.attachments == attachments ? $0 : nil }
+            ?? PendingSend(runId: RunID.newRunId(), text: trimmed, attachments: attachments)
         persist(pending)
         await deliver(pending)
     }

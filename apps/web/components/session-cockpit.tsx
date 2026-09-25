@@ -24,8 +24,11 @@ import {
   type Turn,
   type TurnAttachment,
   type TurnState,
+  seedSessionTitle,
+  turnHasContent,
   workspacePath,
 } from "@telar/engine-client";
+import { splitImages } from "@/lib/prompt-stash";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { rememberedProjectName, writeFrontDoorNote } from "@/lib/composer-project";
@@ -3276,7 +3279,7 @@ export function SessionCockpit({
     }
   };
   const submit = async () => {
-    if (!draft.trim() || browserDraftSendPending.current) return;
+    if (!turnHasContent(draft, attachments.map((file) => file.type)) || browserDraftSendPending.current) return;
     /**
      * `/compact` TYPED OUT IS THE SAME PRESS AS THE WHEEL'S BUTTON.
      *
@@ -3402,7 +3405,7 @@ export function SessionCockpit({
         window.history.replaceState(null, "", sessionHref({ id, projectId, hostId }));
         const created = await api.createSession(projectId, {
           id,
-          title: text.replace(/\s+/g, " ").slice(0, 80),
+          title: seedSessionTitle(text, splitImages(files).images.map((file) => file.name)),
           driver: draftDriver,
           envMode: draftEnvMode,
           ...(draftEnvMode === "worktree" && draftBase.baseRef ? { baseRef: draftBase.baseRef } : {}),

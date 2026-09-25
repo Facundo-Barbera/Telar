@@ -176,7 +176,9 @@ function claudeInitialContent(prompt: string, attachments: TurnAttachment[]): st
     }
     notes.push(`- ${attachment.name} (${attachment.mediaType}) at ${attachment.path}`);
   }
-  blocks.push({ type: "text", text: `${prompt}\n\nAttached files:\n${notes.join("\n")}` });
+  // An image-only message still carries this block, so the model is never
+  // handed pixels with no words at all — the note is the "look at this".
+  blocks.push({ type: "text", text: `${prompt.trim() ? `${prompt}\n\n` : ""}Attached files:\n${notes.join("\n")}` });
   return blocks;
 }
 
