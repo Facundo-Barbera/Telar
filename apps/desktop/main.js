@@ -44,6 +44,7 @@ const { readProfileRegistry } = require("./browser-profiles");
 const { createTabStore } = require("./browser-tab-store");
 const { createSitePermissionStore } = require("./site-permissions");
 const { resolveHelperExec } = require("./helper-exec");
+const { bundledHelperDaemon, stopHelperDaemon } = require("./computer-use-stop");
 const devUpdate = require("./dev-update");
 const updateWatchdog = require("./update-watchdog");
 const serviceWorkerWatchdog = require("./service-worker-watchdog");
@@ -3396,6 +3397,24 @@ function killServer() {
     else engineChild = null;
   }
 }
+/**
+ * THE COMPUTER-USE HELPER'S DAEMON GOES WITH US — issue #931. The engine
+ * launched it through LaunchServices, so it is launchd's child, not the
+ * engine's, and would otherwise outlive Telar indefinitely. Here and not in the
+ * engine's shutdown, which the IPC disconnect cuts short — see
+ * computer-use-stop.js. AFTER `killServer`, so the engine has already been told
+ * to stop before its helper is taken away. The next engine start launches a
+ * fresh one; the grants belong to the helper's bundle id and survive this.
+ */
+function stopComputerUseHelper() {
+  const helperApp = computerUseHelperPath();
+  if (!helperApp) return;
+  try {
+    stopHelperDaemon(bundledHelperDaemon(helperApp));
+  } catch (error) {
+    console.error("[telar-desktop] could not stop the computer-use helper:", error);
+  }
+}
 function closeBrowserControl() {
   const control = browserControl;
   browserControl = null;
@@ -3419,6 +3438,7 @@ app.on("will-quit", () => {
   if (runTerminalChannel) { try { void runTerminalChannel.close(); } catch {} runTerminalChannel = null; }
   if (terminalHost) { try { terminalHost.dispose("Telar quit"); } catch {} }
   killServer();
+  stopComputerUseHelper();
   closeBrowserControl();
   // The serve mapping outlives the process otherwise, pointing at a port
   // nobody answers. Best-effort and unawaited: quitting must not wait on
@@ -3512,6 +3532,7 @@ process.on("exit", killServer);
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
     killServer();
+    stopComputerUseHelper();
     process.exit(0);
   });
 }
