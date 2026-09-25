@@ -55,7 +55,9 @@ export function SessionSchedules({ sessionId, hostId, refreshKey }: { sessionId:
 
   const load = useCallback(async () => {
     try {
-      setSchedules((await api.schedules(sessionId)).schedules);
+      // An answer without a list (an older engine, a stub) is no schedules, not a crash.
+      const answer = (await api.schedules(sessionId)).schedules;
+      setSchedules(Array.isArray(answer) ? answer : []);
     } catch {
       // A masthead glyph has nowhere to say "could not read"; the next turn retries.
     }
