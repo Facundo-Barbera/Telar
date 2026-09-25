@@ -50,7 +50,7 @@ import { normaliseContextNoticePercent } from "@/lib/context-notice";
 import { useProviderInstance } from "@/lib/provider-instance-cache";
 import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
 import { insertReference } from "@/lib/drag-reference";
-import { sessionModelSelection, type ModelChoice } from "@/lib/models";
+import { projectDraftModel, sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/lib/engine/session-connection";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/lib/engine/session-sync";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
@@ -1518,14 +1518,44 @@ export function SessionCockpit({
    * default", the picker SHOWS which one that is, and nothing has to be written
    * for the two to agree. Seeding an id here would have meant guessing — and
    * the guess for Codex was wrong by two generations.
+   *
+   * EXCEPT FROM THE PROJECT'S OWN DEFAULT, which is not a guess — see
+   * `projectDraftModel`. Seeded when the project record answers, and never over
+   * a pick: `modelTouched` is the envMode seed's `touched`, for the same reason.
    */
   const [draftModel, setDraftModel] = useState<ModelChoice>({});
+  const [modelTouched, setModelTouched] = useState(false);
+  const [projectModel, setProjectModel] = useState<{ projectId: string; seed: ReturnType<typeof projectDraftModel> }>();
+  const [seededModelFor, setSeededModelFor] = useState<string>();
+  // Render-phase, like the envMode seed above. Keyed by project, so a canvas
+  // that moves to another project starts from THAT project's default.
+  if (!sessionId && !modelTouched && projectModel && projectModel.projectId === projectId && seededModelFor !== projectId) {
+    setSeededModelFor(projectId);
+    if (projectModel.seed) {
+      setDraftDriver(projectModel.seed.driver);
+      setDraftModel(projectModel.seed.choice);
+    }
+  }
+  /** EVERY human pick of a model knob goes through here, so the seed can never
+   *  overwrite one. Each control sends the WHOLE choice, so changing one knob
+   *  keeps the rest of the project's default. */
+  const chooseDraftModel = useCallback((next: ModelChoice) => {
+    setModelTouched(true);
+    setDraftModel(next);
+  }, []);
+  /**
+   * WHAT CREATION SENDS: the person's pick, and nothing for an untouched seed.
+   * The engine applies the project's default itself and drops any option the
+   * model no longer offers; re-sending the seed would skip that check.
+   */
+  const draftPick: ModelChoice = modelTouched ? draftModel : {};
   /**
    * Switching provider clears the choice, because a Claude id is not a thing
    * Codex can run — and neither are its effort levels or its Claude-only
    * switches.
    */
   const chooseDriver = useCallback((next: ProviderDriverKind) => {
+    setModelTouched(true);
     setDraftDriver(next);
     setDraftModel({});
   }, [setDraftModel]);
@@ -2620,7 +2650,7 @@ export function SessionCockpit({
         id, draft: true, title: "Browser draft", driver: draftDriver, envMode: draftEnvMode,
         ...(draftEnvMode === "worktree" ? draftBase : {}),
       });
-      const model = sessionModelSelection(created.session.providerInstanceId, draftModel);
+      const model = sessionModelSelection(created.session.providerInstanceId, draftPick);
       const patched = await draftApi.updateSession(id, {
         runtimeMode: draftRuntimeMode,
         ...(model ? { model } : {}),
@@ -2857,6 +2887,8 @@ export function SessionCockpit({
         // between "the name has not arrived" and "this project is not on this
         // Mac", and only the second is worth saying out loud.
         setProjectResolved(true);
+        // Where a new conversation's composer starts; see `draftModel`.
+        if (projectId !== undefined) setProjectModel({ projectId, seed: projectDraftModel(found?.defaultModel) });
         const plugins = cockpitPlugins(found);
         setDataScience(plugins.dataScience);
         setLatex(plugins.latex);
@@ -3379,7 +3411,7 @@ export function SessionCockpit({
         // ONE PATCH FOR EVERY CREATE-TIME CHOICE. Two round trips to set two
         // fields on a session that was created a moment ago is two chances for
         // the second to fail after the first landed.
-        const model = sessionModelSelection(created.session.providerInstanceId, draftModel);
+        const model = sessionModelSelection(created.session.providerInstanceId, draftPick);
         const creationPatch = {
           ...(draftRuntimeMode === "auto" ? {} : { runtimeMode: draftRuntimeMode }),
           ...(model ? { model } : {}),
@@ -3439,7 +3471,7 @@ export function SessionCockpit({
        * were written under. It cannot name a provider — `TurnModelSelection` has
        * no field for it — so the session's provider stays fixed for its life.
        */
-      const pending = session?.model ?? draftModel;
+      const pending = session?.model ?? draftPick;
       await api.submitTurn(target, {
         runId,
         input: text,
@@ -4160,7 +4192,7 @@ export function SessionCockpit({
           // are held locally and applied by the one patch that follows creation.
           onRuntimeMode={fresh ? setDraftRuntimeMode : (mode) => void setRuntimeMode(mode)}
           {...(fresh ? {} : { onResumeAfterRateLimit: (next: boolean) => void setResumeAfterRateLimit(next) })}
-          onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
+          onModelChange={fresh ? chooseDraftModel : (next) => void setModel(next)}
           // The composer's foot links its change count to the Diff surface —
           // a right-panel tab, so on the solo route the count stays a count
           // rather than becoming a link to nowhere.
