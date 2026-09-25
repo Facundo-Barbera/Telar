@@ -19,9 +19,9 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return Response.json(await (await engineClient()).worktrees());
+    return Response.json(await (await engineClient()).worktrees({ signal: request.signal }));
   } catch (error) {
     return engineErrorResponse(error);
   }

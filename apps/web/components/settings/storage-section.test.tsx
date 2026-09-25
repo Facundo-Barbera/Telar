@@ -17,7 +17,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { StorageReport } from "@telar/engine-client";
-import { cacheLabel, measuredLabel, orderEntries, StorageSection } from "./storage-section";
+import { cacheLabel, MEASURING_POLL_MS, measuredLabel, orderEntries, StorageSection } from "./storage-section";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -356,5 +356,130 @@ describe("what a checkout's node_modules costs, and why", () => {
     // thing where there are two, with two different answers.
     expect(said).toContain("copies every package");
     expect(said).toContain("no cache Telar can reach");
+  });
+});
+
+/**
+ * THE HANG THIS PANE USED TO CAUSE (Settings ▸ Storage never finished, and
+ * afterwards the sidebar and every conversation waited until a reload): a read
+ * that outlived the pane kept one of the cockpit's two read slots. Every read
+ * here now carries a signal, and unmounting pulls it.
+ *
+ * ON A CLOCK THE TEST OWNS: the pane's timers are captured rather than waited
+ * for, so nothing here sleeps.
+ */
+describe("Settings ▸ Storage ▸ hanging up", () => {
+  type Timer = { id: number; run: () => void; ms: number };
+  let timers: Timer[] = [];
+  let signals: AbortSignal[] = [];
+  const realSetTimeout = window.setTimeout;
+  const realClearTimeout = window.clearTimeout;
+
+  beforeEach(() => {
+    timers = [];
+    signals = [];
+    let next = 1;
+    window.setTimeout = ((run: () => void, ms = 0) => {
+      const id = next++;
+      timers.push({ id, run, ms });
+      return id;
+    }) as typeof window.setTimeout;
+    window.clearTimeout = ((id?: number) => {
+      timers = timers.filter((timer) => timer.id !== id);
+    }) as typeof window.clearTimeout;
+  });
+
+  afterEach(() => {
+    window.setTimeout = realSetTimeout;
+    window.clearTimeout = realClearTimeout;
+  });
+
+  /** Answers in order; `undefined` never answers, like a stuck engine. */
+  const answering = (...reports: (StorageReport | undefined)[]) => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(url);
+      if (init?.signal) signals.push(init.signal);
+      const report = reports.shift();
+      if (!report) return new Promise<Response>(() => {});
+      return new Response(JSON.stringify({ storage: report }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+  };
+
+  /** Let resolved fetches and React's commits land — no timers involved. */
+  const drain = async () => {
+    await act(async () => {
+      for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    });
+  };
+
+  const fire = async (ms: number) => {
+    const due = timers.filter((timer) => timer.ms === ms);
+    timers = timers.filter((timer) => timer.ms !== ms);
+    await act(async () => {
+      for (const timer of due) timer.run();
+    });
+    await drain();
+  };
+
+  async function open() {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<StorageSection />);
+    });
+    await fire(0);
+    return {
+      host,
+      unmount: () => {
+        act(() => root.unmount());
+        host.remove();
+      },
+    };
+  }
+
+  const MEASURING: StorageReport = {
+    ...REPORT,
+    entries: REPORT.entries.map((entry) =>
+      entry.category === "worktrees" ? { ...entry, bytes: 1_000_000_000, status: "measuring" as const, progress: { measured: 40, of: 141 } } : entry,
+    ),
+  };
+
+  test("a read the engine has not answered is aborted when the pane closes", async () => {
+    answering(undefined);
+    const view = await open();
+    expect(calls).toEqual(["/api/storage"]);
+    expect(signals.length).toBe(1);
+    expect(signals[0]!.aborted).toBe(false);
+
+    view.unmount();
+    expect(signals[0]!.aborted).toBe(true);
+  });
+
+  test("a row still being measured is asked about again, and the asking stops once it settles", async () => {
+    answering(MEASURING, REPORT);
+    const view = await open();
+    expect(view.host.textContent).toContain("Still measuring");
+    expect(view.host.textContent).toContain("40 of 141 sized");
+    expect(timers.map((timer) => timer.ms)).toEqual([MEASURING_POLL_MS]);
+
+    await fire(MEASURING_POLL_MS);
+    expect(calls).toEqual(["/api/storage", "/api/storage"]);
+    expect(view.host.textContent).not.toContain("Still measuring");
+    // Settled: nothing further is scheduled — #629's rule holds once it can.
+    expect(timers).toEqual([]);
+    view.unmount();
+  });
+
+  test("closing the pane while it is measuring cancels the next ask as well as the current one", async () => {
+    answering(MEASURING, undefined);
+    const view = await open();
+    await fire(MEASURING_POLL_MS);
+    expect(signals.length).toBe(2);
+
+    view.unmount();
+    expect(signals[1]!.aborted).toBe(true);
+    expect(timers).toEqual([]);
   });
 });

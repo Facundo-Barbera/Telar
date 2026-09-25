@@ -283,3 +283,39 @@ describe("the row's words", () => {
     expect(sentence).toContain("Branches are kept.");
   });
 });
+
+/**
+ * A READ THAT OUTLIVES THE PANE IS HUNG UP ON. Git reads per checkout take
+ * seconds on a large install; left running, this read held one of the
+ * cockpit's two read slots and the sidebar queued behind it until a reload.
+ * The pane's zero-timeout is run by hand, so nothing here sleeps.
+ */
+test("closing the pane aborts a checkouts read the engine has not answered", async () => {
+  const signals: AbortSignal[] = [];
+  const queued: Array<() => void> = [];
+  const realSetTimeout = window.setTimeout;
+  window.setTimeout = ((run: () => void) => (queued.push(run), queued.length)) as typeof window.setTimeout;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.signal) signals.push(init.signal);
+    return new Promise<Response>(() => {});
+  }) as typeof fetch;
+  try {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<WorktreeListSection />);
+    });
+    await act(async () => {
+      for (const run of queued.splice(0)) run();
+    });
+    expect(signals.length).toBe(1);
+    expect(signals[0]!.aborted).toBe(false);
+
+    act(() => root.unmount());
+    host.remove();
+    expect(signals[0]!.aborted).toBe(true);
+  } finally {
+    window.setTimeout = realSetTimeout;
+  }
+});

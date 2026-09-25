@@ -21,7 +21,15 @@
  * because a Settings window that hangs on a large store is worse than a stale
  * figure. NOTHING HERE IS ON A TIMER: #629 is open because four timers in the
  * rail cost ~97,000 requests a day, and a folder's size does not change by the
- * second. One fetch on open, one more per press of Refresh.
+ * second. One fetch on open, one more per press of Refresh — and, only while a
+ * row says the engine is still `measuring` it (the checkouts are sized in the
+ * background, never on the read), one more every few seconds until it settles.
+ * That asking is also what keeps the engine sizing: it stops once nobody asks.
+ *
+ * AND EVERY READ HANGS UP ON UNMOUNT. A read left running after the pane closed
+ * held one of the cockpit's two read slots — and the browser's connection —
+ * for as long as the engine took, and the sidebar and every conversation
+ * queued behind it until a reload.
  *
  * TELAR'S OWN FOOTPRINT AND NOTHING ELSE. There is no row here for Docker, for
  * Xcode, or for the projects a person works on, however much disk they take. A
@@ -29,7 +37,7 @@
  * which is a different product.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { JournalReclaim, PackageCacheStatus, StorageCategory, StorageEntry, StorageReport } from "@telar/engine-client";
 import {
   ActivityIcon,
@@ -56,6 +64,19 @@ import { Spinner } from "@/components/ui/spinner";
 import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
+
+/** How soon a row the engine is still measuring is asked about again. */
+export const MEASURING_POLL_MS = 2_000;
+
+/** What a row's figure is worth, in words, when it is not simply the figure. */
+export function statusLabel(entry: StorageEntry): string | undefined {
+  if (entry.status === "measuring") {
+    const progress = entry.progress ? ` ${entry.progress.measured.toLocaleString()} of ${entry.progress.of.toLocaleString()} sized.` : "";
+    return `Still measuring, so this is a floor for now.${progress}`;
+  }
+  if (entry.status === "partial") return "Some of it could not be read, so this is a floor.";
+  return undefined;
+}
 
 /**
  * WHAT EACH CATEGORY IS, IN A PERSON'S WORDS — which is why the copy lives here
@@ -222,17 +243,49 @@ export function StorageSection() {
   const [reclaiming, setReclaiming] = useState(false);
   const [reclaimed, setReclaimed] = useState<string | undefined>(undefined);
 
-  const load = useCallback(async (refresh: boolean) => {
-    setBusy(true);
-    setFailure(undefined);
-    try {
-      setReport((await api.storage(refresh ? { refresh: true } : {})).storage);
-    } catch {
-      setFailure("Telar could not measure its own store — the engine did not answer.");
-    } finally {
-      setBusy(false);
-    }
+  const inFlight = useRef<AbortController | undefined>(undefined);
+  const nextPoll = useRef<number | undefined>(undefined);
+
+  /** Hang up whatever is running or queued — on unmount, and before a new read. */
+  const hangUp = useCallback(() => {
+    inFlight.current?.abort();
+    inFlight.current = undefined;
+    window.clearTimeout(nextPoll.current);
+    nextPoll.current = undefined;
   }, []);
+
+  /**
+   * `quiet` is a follow-up poll: no spinner and no cleared error, because the
+   * figures on screen are still the answer and only one row is moving.
+   */
+  const load = useCallback(
+    async (refresh: boolean, quiet = false) => {
+      hangUp();
+      const own = new AbortController();
+      inFlight.current = own;
+      if (!quiet) {
+        setBusy(true);
+        setFailure(undefined);
+      }
+      try {
+        const { storage } = await api.storage({ ...(refresh ? { refresh: true } : {}), signal: own.signal });
+        if (own.signal.aborted) return;
+        setReport(storage);
+        if (storage.entries.some((entry) => entry.status === "measuring")) {
+          nextPoll.current = window.setTimeout(() => void load(false, true), MEASURING_POLL_MS);
+        }
+      } catch {
+        if (own.signal.aborted) return;
+        setFailure("Telar could not measure its own store — the engine did not answer.");
+      } finally {
+        if (inFlight.current === own) {
+          inFlight.current = undefined;
+          if (!quiet) setBusy(false);
+        }
+      }
+    },
+    [hangUp],
+  );
 
   /**
    * ONCE, ON OPEN. No interval, no focus listener, no revalidation — the read
@@ -246,8 +299,11 @@ export function StorageSection() {
    */
   useEffect(() => {
     const task = window.setTimeout(() => void load(false), 0);
-    return () => window.clearTimeout(task);
-  }, [load]);
+    return () => {
+      window.clearTimeout(task);
+      hangUp();
+    };
+  }, [load, hangUp]);
 
   /**
    * Finder is the shell's, so a browser tab has no Reveal and says why once
@@ -352,12 +408,13 @@ export function StorageSection() {
         ? orderEntries(report.entries).map((entry) => {
             const { label, hint, icon } = describe(entry.category);
             const isJournal = entry.category === "journal";
+            const status = statusLabel(entry);
             return (
               <Row
                 key={entry.category}
                 icon={icon}
                 label={label}
-                hint={
+                hint={[
                   isJournal
                     ? `${hint} Reclaim compacts superseded streaming rows; no turn or answer is removed.${reclaimed ? ` ${reclaimed}` : ""}`
                     : entry.category === "worktrees" && cacheNote
@@ -365,10 +422,14 @@ export function StorageSection() {
                       // than in a row of its own: "Session checkouts — 7.3 GB"
                       // is the sentence, and this is the answer to why.
                       ? `${hint} ${cacheNote}`
-                      : hint
-                }
+                      : hint,
+                  status,
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 control={
                   <span className="flex items-center gap-2">
+                    {entry.status === "measuring" ? <Spinner className="size-3.5" /> : null}
                     <span className="font-mono text-xs tabular-nums">{formatBytes(entry.bytes)}</span>
                     {isJournal ? (
                       // Disabled while the pane is measuring too: the vacuum
