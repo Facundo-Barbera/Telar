@@ -524,6 +524,16 @@ export const StorageEntry = z.object({
   bytes: z.number().min(0),
   path: z.string().min(1),
   kind: z.enum(["directory", "file"]),
+  /**
+   * HOW FAR THE ROW'S FIGURE CAN BE TRUSTED. ABSENT for a settled figure.
+   * `measuring`: the engine is still sizing it in the background, so `bytes` is
+   * the last settled figure or a floor, and asking again later will move it.
+   * `partial`: finished, but something could not be read. Optional so an engine
+   * from before it still satisfies a cockpit that knows about it.
+   */
+  status: z.enum(["measuring", "partial"]).optional(),
+  /** While `measuring`: how many of the row's parts have settled. */
+  progress: z.object({ measured: z.number().min(0), of: z.number().min(0) }).optional(),
 });
 export type StorageEntry = z.infer<typeof StorageEntry>;
 

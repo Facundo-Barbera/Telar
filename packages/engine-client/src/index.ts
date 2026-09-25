@@ -1341,13 +1341,15 @@ export class EngineClient {
   /**
    * What this engine is keeping on disk, by category — issue #642.
    *
-   * SLOW ON A COLD ENGINE, and worth knowing at the call site: the first read
-   * walks the whole store, which is seconds on a large one. Afterwards the
-   * measurement comes back with the `measuredAt` it was taken at until somebody
-   * asks for a fresh one. Nothing here polls, and there is no write.
+   * THE CHECKOUTS ARE SIZED IN THE BACKGROUND, never on this read: their row
+   * comes back `status: "measuring"` until the engine has walked them, and
+   * asking again is what picks up the progress (and what keeps the walk going
+   * — the engine stops sizing once nobody has asked for a while). The store's
+   * own categories come back with the `measuredAt` they were taken at until
+   * somebody asks for a fresh one. There is no write.
    */
-  storage(options: { refresh?: boolean } = {}): Promise<{ storage: StorageReport }> {
-    return this.request("GET", `/v2/storage${options.refresh ? "?refresh=1" : ""}`);
+  storage(options: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<{ storage: StorageReport }> {
+    return this.request("GET", `/v2/storage${options.refresh ? "?refresh=1" : ""}`, undefined, options.signal);
   }
 
   /**
@@ -1390,8 +1392,8 @@ export class EngineClient {
    * event counts are index ranges. Ask for it when a person is looking at the
    * figure and never on a path that repeats.
    */
-  retention(options: { bytes?: boolean } = {}): Promise<{ retention: RetentionPolicy; buckets: RetentionBucket[] }> {
-    return this.request("GET", `/v2/storage/retention${options.bytes ? "?bytes=1" : ""}`);
+  retention(options: { bytes?: boolean; signal?: AbortSignal } = {}): Promise<{ retention: RetentionPolicy; buckets: RetentionBucket[] }> {
+    return this.request("GET", `/v2/storage/retention${options.bytes ? "?bytes=1" : ""}`, undefined, options.signal);
   }
 
   /** Set the window, or turn it off with `idleAfterDays: null`. A window with
@@ -1480,12 +1482,12 @@ export class EngineClient {
    * who has to re-derive it per row will not. Read `WorktreeVerdict` before
    * drawing anything.
    *
-   * COSTS A WALK PER CHECKOUT, so it is a read a person asks for — never a
-   * poll. Nothing on this call is cached: every rung of the classification is
-   * live, and a cached verdict is one that was true earlier.
+   * COSTS TWO GIT READS PER CHECKOUT, so it is a read a person asks for —
+   * never a poll. The classification is live; the sizes are the engine's
+   * background measurement, and a row not yet sized has no `bytes`.
    */
-  worktrees(): Promise<{ inventory: WorktreeInventory }> {
-    return this.request("GET", "/v2/worktrees");
+  worktrees(options: { signal?: AbortSignal } = {}): Promise<{ inventory: WorktreeInventory }> {
+    return this.request("GET", "/v2/worktrees", undefined, options.signal);
   }
 
   /**

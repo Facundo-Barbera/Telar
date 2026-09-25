@@ -3031,6 +3031,10 @@ export const WorktreeInventory = z.object({
   /** Something under a root could not be read — a permission, a drive that went
    *  away mid-walk. The sizes are then a floor rather than a figure. */
   partial: z.boolean(),
+  /** Some checkout has not been sized yet — its row has no `bytes` — because
+   *  sizing runs in the background rather than on this read. Absent when every
+   *  row that can have a size has one. */
+  measuring: z.boolean().optional(),
   measuredAt: Timestamp,
 });
 export type WorktreeInventory = z.infer<typeof WorktreeInventory>;
