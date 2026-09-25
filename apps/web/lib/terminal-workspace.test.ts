@@ -318,6 +318,15 @@ describe("a run in the strip", () => {
     expect(ids(restored)).toEqual(["run", "shell"]);
   });
 
+  test("an agent's terminal, which came from no recipe, restores as a run and not as a shell", () => {
+    // `terminal_open` with a command of its own has no configId. Read back as a
+    // shell it would hold the engine's terminal id and get a second chip.
+    const agent = { runId: "term_agent", configId: "", terminalId: "term_agent", title: "vite" };
+    const restored = readWorkspace(workspaceParams(upsertRunShell(emptyWorkspace(), agent)));
+    expect(shellForRun(restored, "term_agent")).toEqual({ id: "run", terminalId: "term_agent", title: "vite", run: { runId: "term_agent", configId: "" } });
+    expect(terminalIds(restored)).toEqual([]);
+  });
+
   test("a second run gets its own chip beside the first", () => {
     const state = upsertRunShell(upsertRunShell(emptyWorkspace(), dev), { runId: "run_2", configId: "cfg_2", title: "api" });
     expect(runShells(state).map((shell) => shell.id)).toEqual(["run", "run#2"]);

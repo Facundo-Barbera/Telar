@@ -103,6 +103,8 @@ import {
 import { closeTerminalTab } from "@/lib/terminal-close";
 import { createRunApi } from "@/lib/run/api";
 import { foldTerminalParams } from "@/lib/terminal-workspace";
+import { freshTerminals, revealTerminal } from "@/lib/terminal-reveal";
+import type { RunView } from "@/lib/run/types";
 import {
   editorFileForPath,
   editorFromLegacyTabs,
@@ -302,6 +304,7 @@ function SessionMasthead({
   onRename,
   panel,
   onWatchRun,
+  onRunTerminals,
   menu,
 }: {
   /** Absent for a conversation that belongs to no project (#526) — the
@@ -330,6 +333,9 @@ function SessionMasthead({
   /** Opens the right panel's Run tab. Monitoring lives there; the masthead's
    *  Run control only configures, starts and stops. */
   onWatchRun?: () => void;
+  /** The Run control's feed, handed on so a terminal that opens gets its tab
+   *  and chip in the panel — see `revealNewTerminals` in the cockpit. */
+  onRunTerminals?: (terminals: readonly RunView[]) => void;
   /**
    * EVERYTHING THE TITLE MENU NEEDS EXCEPT THE RENAME, which is this
    * component's own inline editor and cannot be handed in from outside. The
@@ -567,6 +573,7 @@ function SessionMasthead({
             sessionId={session.id}
             hostId={hostId}
             {...(onWatchRun ? { onWatchOutput: onWatchRun } : {})}
+            {...(onRunTerminals ? { onTerminals: onRunTerminals } : {})}
           />
         )}
         {/* The folder itself, in the machine's own tools. Renders only on the
@@ -2621,6 +2628,41 @@ export function SessionCockpit({
   }, [events, dataScience, showPanelTab]);
 
   /**
+   * A TERMINAL THAT OPENS GETS ITS TAB AND ITS CHIP — never the panel.
+   *
+   * An agent's `terminal_open`, a `run_start`, and the person's own Run menu
+   * all open an engine terminal, and each arrives on the Run control's feed as
+   * a new terminal. Its chip used to appear only while the Terminal surface was
+   * mounted; with the panel hidden, or on the Diff, a dev server could start
+   * with nothing anywhere saying so. Now the Terminal tab is added if missing
+   * and the chip is written into it, whatever the panel is doing.
+   *
+   * THE PERSON'S VIEW IS NOT TOUCHED. `revealTerminal` never selects the tab,
+   * never makes the chip the active one in a strip that has one, and never
+   * changes `open` — and this never calls `makeRoomForPanel`, because nothing
+   * opens: the narrow-window rule only fires on an opening, and there is none.
+   * Nothing is focused either, so typing anywhere carries on.
+   *
+   * `display_open`'s GUARDS, above, for the same reasons: `mountedAt`, because
+   * the feed's first act is reading every terminal the session already has,
+   * and treating those as news would put back on each reload a Terminal tab
+   * the person closed; `seenTerminals`, so the frames that follow one terminal
+   * — ready, exited, closed by the person — do not re-add a chip they closed.
+   * Every terminal the feed names is marked seen, fresh or not.
+   */
+  const seenTerminals = useRef<Set<string>>(new Set());
+  const revealNewTerminals = useCallback(
+    (terminals: readonly RunView[]) => {
+      if (mountedAt.current === 0) mountedAt.current = Date.now();
+      const fresh = freshTerminals(terminals, mountedAt.current, seenTerminals.current);
+      for (const run of terminals) seenTerminals.current.add(run.terminalId);
+      if (fresh.length === 0) return;
+      updatePanel((current) => fresh.reduce((state, run) => revealTerminal(state, run, "terminal"), current));
+    },
+    [updatePanel],
+  );
+
+  /**
    * A PROMPT THE AGENT DRAFTED MARKS THE STASH — and deliberately does not open
    * it.
    *
@@ -4048,6 +4090,7 @@ export function SessionCockpit({
             // session's shells rather than a second surface drawing the same
             // kind of bytes.
             onWatchRun={() => showPanelTab("terminal")}
+            onRunTerminals={revealNewTerminals}
             panel={
               <>
                 {/* Keyed by host and session, like Run: a different machine is a
