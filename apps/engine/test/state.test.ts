@@ -2358,6 +2358,69 @@ test("an engine restart stops every session's background work — the idle-with-
   expect(restarted.readEvents("session_two").filter((event) => event.type === "task.completed")).toHaveLength(1);
 });
 
+test("once the turn ends, a backgrounded agent reads as monitoring, and paused or ambient work reads as nothing", () => {
+  /**
+   * THE COMPLAINT: a session whose turn had ended showed "Working" with its
+   * clock running, because one sub-agent was launched with `run_in_background`
+   * and `livenessOf` called any live agent working. Nothing was working in the
+   * foreground; the turn was waiting on a child.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
+  const claimed = store.claimNextTurn("worker_one")!;
+  const token = claimed.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_agent", providerTaskId: "a1", kind: "agent", backgrounded: true, state: "running", title: "Explore" } },
+  ]);
+  expect(store.getSession("session_one").activity).toBe("working");
+  store.completeTurn("session_one", "run_one", token, { text: "Launched" });
+  expect(store.getSession("session_one").activity).toBe("monitoring");
+
+  // PAUSED is alive but not moving: the row says paused, so the badge must not
+  // say busy.
+  store.reportSessionTasks("session_one", "worker_one", [
+    { kind: "task.progress", task: { id: "task_agent", providerTaskId: "a1", kind: "agent", backgrounded: true, state: "waiting" } },
+  ]);
+  expect(store.getSession("session_one").activity).toBe("idle");
+
+  // AMBIENT is the provider's housekeeping, excluded from activity by the SDK.
+  store.reportSessionTasks("session_one", "worker_one", [
+    { kind: "task.progress", task: { id: "task_agent", providerTaskId: "a1", kind: "agent", backgrounded: true, ambient: true, state: "running" } },
+  ]);
+  expect(store.getSession("session_one").activity).toBe("idle");
+});
+
+test("a close the level signal inferred yields to the notification that says the task failed", () => {
+  /**
+   * THE SDK SENDS THE LEVEL BEFORE THE BOOKEND. `background_tasks_changed`
+   * closes a backgrounded agent as a bare `completed`; its `task_notification`
+   * arrives a frame later saying `failed`. "The first ending is the ending"
+   * would keep the green row — for an agent that failed.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
+  const claimed = store.claimNextTurn("worker_one")!;
+  const token = claimed.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  const agent = { id: "task_agent", providerTaskId: "a1", kind: "agent" as const, backgrounded: true };
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { ...agent, state: "running" } },
+    { kind: "task.completed", task: { ...agent, state: "completed" } },
+    { kind: "task.completed", task: { ...agent, state: "failed", resultText: "could not reach the API" } },
+  ]);
+  expect(store.tasks("session_one")[0]).toMatchObject({ state: "failed", resultText: "could not reach the API" });
+
+  // A STATED ending is never rewritten: a completion that carried its result
+  // stays completed whatever arrives after it.
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "running" } },
+    { kind: "task.completed", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "completed", resultText: "done" } },
+    { kind: "task.completed", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "stopped" } },
+  ]);
+  expect(store.tasks("session_one").find((task) => task.id === "task_other")?.state).toBe("completed");
+});
+
 test("a provider turn is born running under a claim, and a human message sent meanwhile is steered into it", () => {
   const { store } = readyStore();
   const turn = store.openProviderTurn("session_one", {
@@ -2615,12 +2678,13 @@ test("a backgrounded agent outlives its turn, and a later report cannot resurrec
 
   const after = new Map(store.tasks("session_one").map((task) => [task.id, task]));
   // The attached agent is swept — no process reports for it any more. The
-  // detached one is spared exactly as a background shell would be, and it
-  // keeps the session working, not merely monitoring.
+  // detached one is spared exactly as a background shell would be — and, like
+  // one, it reads as monitoring: the turn has ended, nothing is working in the
+  // foreground.
   expect(after.get("task_attached")).toMatchObject({ state: "failed" });
   expect(after.get("task_detached")).toMatchObject({ state: "running", kind: "agent", backgrounded: true });
   expect(after.get("task_detached")?.failure).toBeUndefined();
-  expect(store.getSession("session_one").activity).toBe("working");
+  expect(store.getSession("session_one").activity).toBe("monitoring");
 
   // The next turn's driver has never heard of the sweep and reports the
   // ATTACHED agent (now closed) as still running. The first ending is the

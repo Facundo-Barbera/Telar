@@ -16,7 +16,9 @@ import {
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
   defaultInstanceIdForDriver,
+  countsAsActivity,
   isBackgroundWork,
+  isUnstatedEnding,
   livenessOf,
   AgentOrientation as AgentOrientationSchema,
   DEFAULT_AGENT_ORIENTATION,
@@ -1414,11 +1416,10 @@ function releaseDelegationSettle(session: Session): void {
  * which is finish order.
  */
 /**
- * The states `livenessOf` counts as alive, spelled once beside it.
- *
- * The contract decides WHETHER a session is live; this only has to date it, and
- * dating it off a different set of states than the one that classified it is
- * how `activityAt` ends up describing a task that already finished.
+ * A task that has not ended — still inside the process, whether or not it is
+ * moving. Wider than the contract's `countsAsActivity`, on purpose: a paused
+ * task is not activity, but it is still work in flight and still a row a cold
+ * provider process must be seeded with.
  */
 function isLiveTask(task: Task): boolean {
   return task.state === "pending" || task.state === "running" || task.state === "waiting";
@@ -8302,8 +8303,9 @@ export class EngineStore {
     if (live) {
       // Dated by the OLDEST live task, matching the blocked path above: the
       // number worth showing is how long this has been going, not when the most
-      // recent thing joined it.
-      const since = Math.min(...tasks.filter(isLiveTask).map((task) => task.startedAt));
+      // recent thing joined it. Dated off the SAME predicate that classified it,
+      // or `activityAt` describes a paused task the badge did not count.
+      const since = Math.min(...tasks.filter(countsAsActivity).map((task) => task.startedAt));
       return { ...base, activity: live === "working" ? "working" : "monitoring", activityAt: since };
     }
     // `activityAt` is deliberately absent on idle: there is no event to date.
@@ -15319,7 +15321,12 @@ export class EngineStore {
        * AND carried a failure — red, spinning, and wrong twice.
        */
       const settled = known !== undefined && (known.state === "completed" || known.state === "failed" || known.state === "stopped");
-      const state = settled ? known.state : seed.state;
+      // …except an ending nobody stated (`isUnstatedEnding`): the level signal
+      // closed it, and the notification behind it saying how it went is the
+      // better account. Only a worse outcome may replace it.
+      const corrected = settled && isUnstatedEnding(known) && (seed.state === "failed" || seed.state === "stopped");
+      const kept = settled && !corrected;
+      const state = kept ? known.state : seed.state;
       const terminal = state === "completed" || state === "failed" || state === "stopped";
       /**
        * A SETTLED TASK THAT LEARNS NOTHING NEW IS NOT RE-ANNOUNCED. The fold
@@ -15332,7 +15339,7 @@ export class EngineStore {
        * summary arriving after a sweep already closed the row) is worth a
        * row; a bare restatement of the ending is dropped here.
        */
-      if (settled) {
+      if (kept) {
         const additions = definedOnly(seed);
         const changed = Object.entries(additions)
           .filter(([key, value]) => !(key === "id" || key === "state" || key === "kind" || key === "providerTaskId") && JSON.stringify(known[key as keyof Task]) !== JSON.stringify(value))
