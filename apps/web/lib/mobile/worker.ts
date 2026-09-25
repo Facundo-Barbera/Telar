@@ -2,7 +2,7 @@ import { relayConfig, relayDelivery, relayHostId, revokeRelayDevice } from "./re
 import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
-import { desktopAttached, listenForDesktop, notifyDesktop } from "./desktop";
+import { desktopAttached, listenForDesktop, macTookAlert, notifyDesktop } from "./desktop";
 import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, turnIsOver, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
 
 /** A phone that actually ran the start reports the activity's token within seconds: iOS delivers it
@@ -37,7 +37,7 @@ export async function deliverRecord(
   sessions: SessionSignal[],
   send: (delivery: Delivery) => Promise<DeliveryResult>,
   now = Date.now() / 1000,
-  options: { changed?: ReadonlySet<string> } = {},
+  options: { changed?: ReadonlySet<string>; macTook?: (session: SessionSignal) => boolean } = {},
 ): Promise<PushRecord | undefined> {
   if (record.parked || (record.retryAt ?? 0) > now) return record;
   let failed = false;
@@ -74,7 +74,10 @@ export async function deliverRecord(
     // is the exception: it still has to be baselined.
     if (options.changed && !options.changed.has(session.id) && session.id in record.seen) continue;
     const payload = notification(record, session, record.seen[session.id] ?? (record.baselined ? "new:0:0:false" : undefined));
-    if (payload) {
+    // THE MAC TOOK THIS ONE ("Notify on", desktop.ts `notifyRoute`): nothing is
+    // sent, but `seen` still advances as if it had been. Held back, it would
+    // fire later — stale, and a duplicate — the moment the Mac went idle.
+    if (payload && !options.macTook?.(session)) {
       const result = await safeSend(payload);
       // Apple has rejected this phone's token for good. The record goes; the
       // app re-registers on its next open and pairing is untouched.
@@ -488,7 +491,7 @@ export function startMobilePushWorker(): void {
           const sent = record.relay ? await relayV2Delivery(record.relay, delivery) : relay ? await relayDelivery(relay, record, delivery) : await sendAPNs(delivery);
           if (sent.retryAfter !== undefined) pauseHost(sent.retryAfter);
           return sent;
-        }, Date.now() / 1000, narrow === undefined ? {} : { changed: narrow });
+        }, Date.now() / 1000, { macTook: macTookAlert, ...(narrow === undefined ? {} : { changed: narrow }) });
         // A phone may change preferences while APNs is in flight. Never overwrite it.
         const current = readPushRecords();
         const index = current.findIndex(r => r.revision === record.revision);
