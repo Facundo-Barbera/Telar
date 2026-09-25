@@ -2394,6 +2394,67 @@ test("a BACKGROUNDED agent missing from the level signal is closed, and its late
   expect(last.get("task_toolu_a2")).toMatchObject({ kind: "agent", state: "failed", resultText: "rate limited" });
 });
 
+test("the level REPLACES the live set: a task dropped from a later list is healed even when that list was about something else", async () => {
+  // Not "the list went empty": a second task starting is the membership
+  // change that reveals the first one's lost ending.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "s1", tool_use_id: "toolu_s1", description: "tail the log", task_type: "local_bash", is_backgrounded: true };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "s1", task_type: "local_bash", description: "tail the log" }] };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a1", task_type: "local_agent", description: "Explore" }] };
+      yield { type: "system", subtype: "task_started", task_id: "a1", tool_use_id: "toolu_a1", description: "Explore", task_type: "local_agent", is_backgrounded: true };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.flatMap((o) => (o.kind === "task.completed" ? [o.task.id] : []));
+  expect(closed).toEqual(["task_toolu_s1"]);
+  // The entry that arrived before its bookend minted nothing of its own: the
+  // one row is keyed on the tool_use id its sub-agent's items are filed under.
+  const rows = new Set(sink.observations.flatMap((o) => (o.kind.startsWith("task.") && "task" in o ? [o.task.id] : [])));
+  expect(rows).toEqual(new Set(["task_toolu_s1", "task_toolu_a1"]));
+});
+
+test("an entry the level lists is background work, even when the patch saying so was lost", async () => {
+  // A foreground agent sent to the background: the level lists it, and the
+  // `task_updated{is_backgrounded}` edge never arrives. Without the level the
+  // turn-end sweep failed a live agent.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "a1", tool_use_id: "toolu_a1", description: "Audit", task_type: "local_agent" };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a1", task_type: "local_agent", description: "Audit" }] };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  expect(sink.observations.filter((o) => o.kind === "task.completed")).toHaveLength(0);
+  const last = sink.observations.filter((o) => o.kind === "task.progress").at(-1);
+  expect(last?.kind === "task.progress" && last.task).toMatchObject({ id: "task_toolu_a1", kind: "agent", backgrounded: true, state: "running" });
+});
+
+test("the level's ambient flag is carried onto a live row, both ways", async () => {
+  // The SDK re-sends the level when "an entry's `ambient` flag flips". The row
+  // stays; it just stops (and then resumes) counting as activity.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "w1", tool_use_id: "toolu_w1", description: "watch files", task_type: "local_bash", is_backgrounded: true };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "w1", task_type: "local_bash", description: "watch files", ambient: true }] };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "w1", task_type: "local_bash", description: "watch files" }] };
+      // An ambient entry with no row stays out: its edges cannot mint one.
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "w1", task_type: "local_bash", description: "watch files" }, { task_id: "amb", task_type: "local_bash", description: "housekeeping", ambient: true }] };
+      yield { type: "system", subtype: "task_progress", task_id: "amb", description: "housekeeping" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const flags = sink.observations.flatMap((o) => (o.kind === "task.progress" ? [o.task.ambient] : []));
+  expect(flags).toEqual([true, false]);
+  expect(sink.observations.some((o) => o.kind.startsWith("task.") && "task" in o && o.task.providerTaskId === "amb")).toBe(false);
+});
+
 test("an ambient task is the CLI's housekeeping and never becomes a row", async () => {
   // The SDK marks its own auto-started watchers `ambient` and says "hosts
   // should exclude them from activity indicators". Suppressed at the start
