@@ -1,5 +1,5 @@
 import { forgetRelayConfig, relayConfig } from "@/lib/mobile/relay";
-import { pushAvailable, pushConfigured, readPushRecords } from "@/lib/mobile/push";
+import { activityReport, pushAvailable, pushConfigured, readPushRecords } from "@/lib/mobile/push";
 import { pushPausedUntil, startMobilePushWorker } from "@/lib/mobile/worker";
 import { readRemote } from "@/lib/remote/store";
 
@@ -88,6 +88,7 @@ export function GET(request: Request) {
         // HOW it is reached, and what the test alert sent after pairing
         // came back with. A status and Apple's word for it; never the key.
         transport: record.relay ? "v2" : "v1",
+        activity: activityReport(record),
         ...(record.relayTest && record.relayTest.keyId === record.relay?.keyId
           ? { test: { at: record.relayTest.at, status: record.relayTest.status, reason: record.relayTest.reason, relay: record.relayTest.relay === true } }
           : {}),

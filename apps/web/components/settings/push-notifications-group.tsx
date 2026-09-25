@@ -27,6 +27,7 @@ import { useEffect, useState } from "react";
 import { BellIcon, SmartphoneIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { fmtAgo } from "@/lib/format";
+import type { ActivityReport } from "@/lib/mobile/push";
 import { Row, SettingsGroup } from "./settings-shell";
 
 export interface PushRelayStatus {
@@ -66,6 +67,8 @@ export interface PushRelayStatus {
     transport?: "v1" | "v2";
     /** The test alert sent when this phone gave this Mac its current key. */
     test?: { at: number; status: number; reason?: string; relay: boolean };
+    /** Why this phone has, or has not, got an automatic Live Activity. */
+    activity?: ActivityReport;
   }>;
 }
 
@@ -91,7 +94,10 @@ export function deviceLine(device: PushRelayStatus["devices"][number], now = Dat
   if (!device.mine) parts.push("registered against another Mac — served from there");
   if (device.test) parts.push(testLine(device.test));
   parts.push(device.enabled ? "Alerts on" : "Alerts off");
-  if (device.liveActivities) parts.push("Live Activities");
+  if (device.liveActivities) {
+    const activity = device.activity ? activityLine(device.activity) : undefined;
+    parts.push(activity ? `Live Activities: ${activity}` : "Live Activities");
+  }
   // A DEBUG BUILD REGISTERS SANDBOX and can never be delivered to through the
   // relay, which is worth saying beside a phone that shows up and never rings.
   if (device.sandbox && device.transport !== "v2") parts.push("sandbox build — update the phone app to reach it");
@@ -117,6 +123,22 @@ export function testLine(test: NonNullable<PushRelayStatus["devices"][number]["t
   const said = test.reason ? `${test.status} ${test.reason}` : String(test.status);
   if (test.relay) return test.status === 0 ? "Test notification could not reach the relay" : `Relay refused the test notification (${said})`;
   return `Apple refused the test notification (${said})`;
+}
+
+/**
+ * THE AUTOMATIC LIVE ACTIVITY, IN ONE PHRASE. The case worth naming is a start
+ * Apple accepted with no card afterwards: iOS dropped it, which is otherwise
+ * indistinguishable from success on this side.
+ */
+export function activityLine(report: ActivityReport): string | undefined {
+  if (report.card) return "card running";
+  if (report.blocker === "no-start-token") return "no push-to-start token from this phone yet";
+  if (report.blocker === "gave-up") return "gave up after 3 starts that never appeared; retries when work next starts";
+  const start = report.lastStart;
+  if (!start) return undefined;
+  if (start.status === 200 && !start.relay) return "Apple accepted the last start, but no card appeared on the phone";
+  const said = start.reason ? `${start.status} ${start.reason}` : String(start.status);
+  return start.relay ? `relay refused the last start (${said})` : `Apple refused the last start (${said})`;
 }
 
 /** "Push paused until 14:32" — the relay's daily budget, in the words somebody

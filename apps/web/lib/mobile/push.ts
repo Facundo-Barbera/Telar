@@ -85,6 +85,10 @@ export interface PushRecord extends MobileRegistration {
   /** The test alert sent for this relay key, and what came of it: what
    *  Settings shows as "working" or the exact reason (`relay-v2.ts`). */
   relayTest?: { keyId: string; at: number; status: number; reason?: string; relay?: true };
+  /** The last push-to-start this Mac sent for the automatic card, and what
+   *  came back. Apple answers 200 for a start iOS then drops, so it is read
+   *  together with whether a card was registered afterwards (`activityReport`). */
+  automaticStart?: { at: number; status: number; reason?: string; relay?: true };
   updatedAt: number;
   seen: Record<string, string>;
   activitySent: Record<string, number>;
@@ -241,7 +245,7 @@ export function saveRegistration(deviceId: string, registration: MobileRegistrat
   //
   // `relayRevision` is deliberately NOT carried: the revision below is new, so
   // the relay has not seen this registration and must be sent it once.
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, automaticStart: old?.automaticStart, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
 export function signalKey(session: SessionSignal): string {
@@ -359,6 +363,34 @@ export const AUTOMATIC_ACTIVITY = "__automatic__";
  * spent most of it.
  */
 export const ACTIVITY_REFRESH_S = 120;
+/** A phone that can never start a card must not be pushed every 5 minutes forever: at most 3
+ *  accepted starts per push-to-start token. The count resets when the token changes (a reinstall)
+ *  and when work goes idle, so recovering never needs a reinstall. See `deliverRecord`. */
+export const AUTOMATIC_START_ATTEMPTS = 3;
+
+/**
+ * WHY THIS PHONE HAS, OR HAS NOT, GOT AN AUTOMATIC LIVE ACTIVITY FROM THIS MAC.
+ *
+ * Sent back to the phone with its registration and shown in its Settings.
+ * A card that never appears has four causes: the toggle, a missing
+ * push-to-start token, Apple refusing the start, and iOS dropping a start
+ * Apple accepted. The last one looks identical to success from here, and
+ * without this they could only be guessed at.
+ */
+export type ActivityReport = {
+  /** A card from this Mac is registered on the phone right now. */
+  card: boolean;
+  blocker?: "off" | "no-start-token" | "gave-up";
+  lastStart?: { at: number; status: number; reason?: string; relay?: boolean };
+};
+export function activityReport(record: PushRecord): ActivityReport {
+  const card = record.activities.some(activity => activity.sessionId === AUTOMATIC_ACTIVITY);
+  const blocker = !record.liveActivities ? "off" : !record.pushToStartToken ? "no-start-token"
+    : !card && (record.automaticStarts ?? 0) >= AUTOMATIC_START_ATTEMPTS ? "gave-up" : undefined;
+  const start = record.automaticStart;
+  return { card, ...(blocker ? { blocker } : {}),
+    ...(start ? { lastStart: { at: start.at, status: start.status, ...(start.reason ? { reason: start.reason } : {}), relay: start.relay === true } } : {}) };
+}
 export const ACTIVITY_STALE_S = 300;
 export function automaticSessions(sessions: SessionSignal[]): SessionSignal[] {
   const rank: Record<string, number> = { blocked: 0, working: 1, queued: 2, monitoring: 3 };
