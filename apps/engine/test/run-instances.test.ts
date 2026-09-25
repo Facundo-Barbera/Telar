@@ -1,11 +1,21 @@
 /**
- * The rules that make a shared deployment safe: one per project, ownership we
- * can vouch for, and a readiness claim that is actually about our process.
+ * "RUN = A NEW TERMINAL": what replaced the one-deployment-per-project slot.
+ *
+ * Every start opens a new terminal owned by the session that asked; none of
+ * them blocks another; a busy port warns and never refuses; and a readiness
+ * claim is still only ever about our own process.
+ *
+ * MOST OF THIS RUNS ON A LAUNCHER THAT STARTS NOTHING. The rules under test
+ * are the manager's — numbering, ownership, warnings — and a fake host that
+ * records what it was asked to open is a sharper witness to them than a real
+ * process. The one test that needs real output uses the pipe fallback, and
+ * stops what it started.
  */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { RunHandle, RunLaunchEvents, RunLaunchRequest, RunLauncher } from "../src/run/launcher";
 import { RunManager, type StartRunInput } from "../src/run/manager";
 import type { RunConfiguration } from "../src/run/types";
 
@@ -14,12 +24,7 @@ const worktree = () => track(fs.mkdtempSync(path.join(os.tmpdir(), "telar-run-tr
 const track = (dir: string): string => (tempDirs.push(dir), dir);
 /**
  * NOTHING THIS FILE STARTS OUTLIVES IT, and nothing it writes stays on disk.
- * Every run here is a real process in a real temp directory: a test that fails
- * midway used to leave a `sleep` holding a process group and a directory in
- * `/tmp`, so the next reader of a failure was also debugging the litter from
- * the last one. Managers are shut down after each test and the directories go
- * at the end — after, not during, because a manager still draining a group
- * needs its cwd to exist.
+ * Managers are shut down after each test and the directories go at the end.
  */
 const managers: RunManager[] = [];
 const tempDirs: string[] = [];
@@ -44,11 +49,10 @@ afterAll(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-
 const config = (command: string, extra: Partial<RunConfiguration> = {}): RunConfiguration => ({
   id: "runcfg_test",
   projectId: "proj_1",
-  name: "fixture",
+  name: "web dev",
   command,
   createdAt: 1,
   updatedAt: 1,
@@ -57,6 +61,7 @@ const config = (command: string, extra: Partial<RunConfiguration> = {}): RunConf
 
 const input = (tree: string, cfg: RunConfiguration, extra: Partial<StartRunInput> = {}): StartRunInput => ({
   projectId: "proj_1",
+  sessionId: "sess_a",
   config: cfg,
   worktreePath: tree,
   ...extra,
@@ -71,155 +76,172 @@ async function until(predicate: () => boolean, ms = 4000): Promise<boolean> {
   return predicate();
 }
 
-test("two sessions pressing play at the same moment produce ONE deployment", async () => {
-  const manager = runManager();
-  const tree = worktree();
-
-  // Launched together, in the same tick, from two different conversations.
-  const results = await Promise.allSettled([
-    manager.start(input(tree, config("sleep 30"), { sessionId: "sess_a" })),
-    manager.start(input(tree, config("sleep 30"), { sessionId: "sess_b" })),
-  ]);
-
-  const started = results.filter((result) => result.status === "fulfilled");
-  const refused = results.filter((result) => result.status === "rejected");
-  expect(started).toHaveLength(1);
-  expect(refused).toHaveLength(1);
-  expect((refused[0] as PromiseRejectedResult).reason.code).toBe("conflict");
-  expect(manager.history("proj_1").filter((run) => run.status !== "failed" && run.status !== "exited")).toHaveLength(1);
-
-  await manager.stop(manager.activeRun("proj_1")!.runId);
-}, 15_000);
-
-test("the same run is visible from either session, with the worktree it really used", async () => {
-  const manager = runManager();
-  const theirTree = worktree();
-  const started = await manager.start(input(theirTree, config("sleep 30"), { sessionId: "sess_a" }));
-
-  // A second session reads the project, not its own conversation.
-  const seen = manager.activeRun("proj_1")!;
-  expect(seen.runId).toBe(started.runId);
-  expect(seen.worktreePath).toBe(theirTree);
-  expect(seen.startedBySessionId).toBe("sess_a");
-
-  await manager.stop(started.runId);
-}, 15_000);
-
-test("a project with a different project's run is unaffected — the slot is per project", async () => {
-  const manager = runManager();
-  const tree = worktree();
-  const first = await manager.start(input(tree, config("sleep 30")));
-  const second = await manager.start({ ...input(tree, config("sleep 30")), projectId: "proj_2" });
-
-  expect(manager.activeRun("proj_1")?.runId).toBe(first.runId);
-  expect(manager.activeRun("proj_2")?.runId).toBe(second.runId);
-
-  await manager.stop(first.runId);
-  await manager.stop(second.runId);
-}, 15_000);
-
-test("a run we cannot signal goes unknown, keeps the slot, and is never signalled again", async () => {
-  let attempts = 0;
-  const manager = runManager({
-    kill: () => {
-      attempts += 1;
-      const error = new Error("operation not permitted") as NodeJS.ErrnoException;
-      error.code = "EPERM";
-      throw error;
+/**
+ * A terminal host that opens nothing: it names each terminal, remembers what
+ * it was asked for, and ends one when the test says so. Closing one reports
+ * the exit the real host would — a hangup, and why it was closing.
+ */
+function fakeHost() {
+  const opened: Array<{ id: string; request: RunLaunchRequest; events: RunLaunchEvents }> = [];
+  const closed: string[] = [];
+  let sequence = 0;
+  const launcher: RunLauncher = {
+    kind: "pty",
+    async launch(request, events) {
+      const id = `term_${(sequence += 1)}`;
+      opened.push({ id, request, events });
+      const handle: RunHandle = {
+        pid: 50_000 + sequence,
+        terminalId: id,
+        async close() {
+          closed.push(id);
+          events.exited({ exitCode: 0, signal: "1", closed: "close" });
+        },
+        async signal() {},
+        write: async () => true,
+        resize: async () => true,
+      };
+      return handle;
     },
-  });
+  };
+  return { launcher, opened, closed };
+}
+
+// ── two presses, two terminals ───────────────────────────────────────────────
+
+test("two starts of one configuration give two terminals, and neither blocks the other", async () => {
+  const host = fakeHost();
+  const manager = runManager({ launcher: host.launcher });
   const tree = worktree();
-  const run = await manager.start(input(tree, config("sleep 30")));
 
-  await expect(manager.stop(run.runId)).rejects.toThrow(/lost contact/);
-  expect(manager.run(run.runId).status).toBe("unknown");
-  expect(attempts).toBe(1);
+  const first = await manager.start(input(tree, config("bun run dev")));
+  const second = await manager.start(input(tree, config("bun run dev")));
 
-  // The slot is still held: a project whose port may still be taken must not
-  // quietly accept a second deployment.
-  await expect(manager.start(input(tree, config("sleep 30")))).rejects.toThrow(/lost contact/);
-  // And a second stop does not fire another signal into the dark.
-  await expect(manager.stop(run.runId)).rejects.toThrow(/lost contact/);
-  expect(attempts).toBe(1);
+  expect(first.terminalId).not.toBe(second.terminalId);
+  expect(first.status).toBe("running");
+  expect(second.status).toBe("running");
+  expect(first.title).toBe("web dev");
+  expect(second.title).toBe("web dev #2");
+  // THE HOST WAS TOLD — the session that owns each terminal, that it came from
+  // a configuration, and what its tab says.
+  expect(host.opened.map((entry) => [entry.request.sessionId, entry.request.origin, entry.request.title])).toEqual([
+    ["sess_a", "run", "web dev"],
+    ["sess_a", "run", "web dev #2"],
+  ]);
+  expect(manager.terminals("sess_a").map((run) => run.title).sort()).toEqual(["web dev", "web dev #2"]);
+});
 
-  // Releasing is the explicit way out, and it kills nothing.
-  const released = manager.release(run.runId);
-  expect(released.status).toBe("unknown");
-  expect(attempts).toBe(1);
-  const next = await manager.start(input(tree, config("sleep 30")));
-  expect(manager.activeRun("proj_1")?.runId).toBe(next.runId);
+test("two presses in the same tick still get two different numbers", async () => {
+  /**
+   * THE TITLE IS TAKEN BEFORE THE FIRST AWAIT. Two starts racing through the
+   * readiness baseline must not both come out "web dev".
+   */
+  const host = fakeHost();
+  const manager = runManager({ launcher: host.launcher, probe: async () => ({ answered: false, serving: false }) });
+  const tree = worktree();
+  const cfg = config("bun run dev", { readinessUrl: "http://localhost:65010" });
+  const both = await Promise.all([manager.start(input(tree, cfg)), manager.start(input(tree, cfg))]);
+  expect(both.map((run) => run.title).sort()).toEqual(["web dev", "web dev #2"]);
+});
 
-  // This manager's kill can never reach anything, so tidy up both fixtures
-  // directly rather than leaving `sleep 30` behind after the file.
-  for (const id of [run.runId, next.runId]) {
-    const pid = manager.run(id).pid;
-    if (!pid) continue;
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      /* already gone */
-    }
-  }
-}, 15_000);
+test("a closed instance frees its number, and ended ones keep their record", async () => {
+  const host = fakeHost();
+  const manager = runManager({ launcher: host.launcher });
+  const tree = worktree();
+  const first = await manager.start(input(tree, config("bun run dev")));
+  await manager.start(input(tree, config("bun run dev")));
 
-test("a healthy run cannot be released — releasing is only for the ones we lost", async () => {
-  const manager = runManager();
-  const run = await manager.start(input(worktree(), config("sleep 30")));
-  expect(() => manager.release(run.runId)).toThrow(/only a run Telar has lost contact with/);
-  await manager.stop(run.runId);
-}, 15_000);
+  await manager.close(first.terminalId, "person");
+  const third = await manager.start(input(tree, config("bun run dev")));
+  expect(third.title).toBe("web dev");
+  // The closed one is still listed, for its output, with who closed it.
+  const closed = manager.run(first.terminalId);
+  expect(closed.status).toBe("closed");
+  expect(closed.closedBy).toBe("person");
+  expect(manager.terminals("sess_a")).toHaveLength(3);
+});
 
-test("readiness is only claimed when the URL was silent before this run started", async () => {
+test("a terminal belongs to the session that opened it, and each session numbers its own", async () => {
+  const host = fakeHost();
+  const manager = runManager({ launcher: host.launcher });
+  const tree = worktree();
+  const mine = await manager.start(input(tree, config("bun run dev"), { sessionId: "sess_a" }));
+  const theirs = await manager.start(input(tree, config("bun run dev"), { sessionId: "sess_b" }));
+
+  expect(mine.title).toBe("web dev");
+  expect(theirs.title).toBe("web dev");
+  expect(manager.terminals("sess_a").map((run) => run.terminalId)).toEqual([mine.terminalId]);
+  expect(manager.terminals("sess_b").map((run) => run.terminalId)).toEqual([theirs.terminalId]);
+});
+
+// ── a busy port warns ────────────────────────────────────────────────────────
+
+test("a port that already answers warns on the terminal, and the terminal still opens", async () => {
+  /**
+   * THE OLD RULE BLOCKED; THIS ONE ONLY SAYS SO. Something already answering
+   * the readiness URL is recorded as a warning a person can read, the launch
+   * goes ahead, and — because a 200 afterwards would be about the stranger —
+   * the terminal can never claim `ready`.
+   */
+  const host = fakeHost();
+  const manager = runManager({ launcher: host.launcher, probe: async () => ({ answered: true, serving: true }), readyPollMs: 20 });
+  const run = await manager.start(input(worktree(), config("bun run dev", { readinessUrl: "http://localhost:3000" })));
+
+  expect(host.opened).toHaveLength(1);
+  expect(run.status).toBe("running");
+  expect(run.warning).toContain("port 3000 already answers");
+  expect(run.readiness.kind).toBe("unattributable");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(manager.run(run.terminalId).status).toBe("running");
+});
+
+test("a silent port warns about nothing", async () => {
+  const host = fakeHost();
+  const manager = runManager({ launcher: host.launcher, probe: async () => ({ answered: false, serving: false }) });
+  const run = await manager.start(input(worktree(), config("bun run dev", { readinessUrl: "https://localhost/app" })));
+  expect(run.warning).toBeUndefined();
+  expect(run.readiness.kind).toBe("pending");
+});
+
+// ── readiness is still about our own process ─────────────────────────────────
+
+test("readiness is only claimed when the URL was silent before this terminal opened", async () => {
   let answers = false;
-  const manager = runManager({ probe: async () => ({ answered: answers, serving: answers }), readyPollMs: 20 });
-  const run = await manager.start(input(worktree(), config("sleep 30", { readinessUrl: "http://localhost:65001" })));
+  const host = fakeHost();
+  const manager = runManager({ launcher: host.launcher, probe: async () => ({ answered: answers, serving: answers }), readyPollMs: 20 });
+  const run = await manager.start(input(worktree(), config("bun run dev", { readinessUrl: "http://localhost:65001" })));
 
-  expect(manager.run(run.runId).readiness.kind).toBe("pending");
-  expect(manager.run(run.runId).status).toBe("running");
+  expect(manager.run(run.terminalId).readiness.kind).toBe("pending");
+  expect(manager.run(run.terminalId).status).toBe("running");
 
   answers = true;
-  expect(await until(() => manager.run(run.runId).status === "ready")).toBe(true);
-  expect(manager.run(run.runId).readiness.kind).toBe("ready");
+  expect(await until(() => manager.run(run.terminalId).status === "ready")).toBe(true);
+  expect(manager.run(run.terminalId).readiness.kind).toBe("ready");
+});
 
-  await manager.stop(run.runId);
-}, 15_000);
-
-test("a URL that was ALREADY answering can never make this run ready", async () => {
-  // Somebody else's server is on that port. A 200 afterwards proves nothing
-  // about the process we just started, so the run says so instead of lying.
-  const manager = runManager({ probe: async () => ({ answered: true, serving: true }), readyPollMs: 20 });
-  const run = await manager.start(input(worktree(), config("sleep 30", { readinessUrl: "http://localhost:65002" })));
-
-  expect(manager.run(run.runId).readiness.kind).toBe("unattributable");
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  expect(manager.run(run.runId).status).toBe("running");
-  expect(manager.run(run.runId).readiness.kind).toBe("unattributable");
-
-  await manager.stop(run.runId);
-}, 15_000);
-
-test("a run without a readiness check never claims ready, however long it lives", async () => {
-  const manager = runManager({ probe: async () => ({ answered: true, serving: true }), readyPollMs: 20 });
-  const run = await manager.start(input(worktree(), config("sleep 30")));
+test("a terminal without a readiness check never claims ready, however long it lives", async () => {
+  const host = fakeHost();
+  const manager = runManager({ launcher: host.launcher, probe: async () => ({ answered: true, serving: true }), readyPollMs: 20 });
+  const run = await manager.start(input(worktree(), config("bun run dev")));
   await new Promise((resolve) => setTimeout(resolve, 100));
 
-  expect(manager.run(run.runId).status).toBe("running");
-  expect(manager.run(run.runId).readiness).toEqual({ kind: "none" });
+  expect(manager.run(run.terminalId).status).toBe("running");
+  expect(manager.run(run.terminalId).readiness).toEqual({ kind: "none" });
+});
 
-  await manager.stop(run.runId);
-}, 15_000);
+// ── output ───────────────────────────────────────────────────────────────────
 
 test("output is a bounded window, and what it dropped is reported rather than hidden", async () => {
   const manager = runManager();
   const run = await manager.start(input(worktree(), config("i=0; while [ $i -lt 2500 ]; do echo line-$i; i=$((i+1)); done")));
 
-  expect(await until(() => manager.run(run.runId).status === "exited", 20_000)).toBe(true);
-  const output = manager.output(run.runId);
+  expect(await until(() => manager.run(run.terminalId).status === "exited", 20_000)).toBe(true);
+  const output = manager.output(run.terminalId);
   expect(output.lines.length).toBeLessThanOrEqual(2000);
   expect(output.dropped).toBeGreaterThan(0);
   expect(output.lines.at(-1)?.text).toBe("line-2499");
   expect(output.cursor).toBe(output.dropped + output.lines.length);
 
   // A cursor from a previous read returns only what is newer.
-  expect(manager.output(run.runId, output.cursor).lines).toHaveLength(0);
+  expect(manager.output(run.terminalId, output.cursor).lines).toHaveLength(0);
 }, 30_000);

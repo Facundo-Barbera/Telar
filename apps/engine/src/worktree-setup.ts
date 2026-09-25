@@ -46,7 +46,10 @@ export const DEFAULT_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 
 const MAX_LINES = 2000;
 const MAX_LINE_CHARS = 4000;
-const STOP_GRACE_MS = 5000;
+/** How long a stopped setup's group gets between SIGTERM and SIGKILL — the
+ *  grace its launcher is built with. Longer than a terminal's second: an
+ *  installer interrupted mid-write deserves the time to clean up. */
+export const SETUP_STOP_GRACE_MS = 5000;
 
 type Live = {
   status: SetupStatus;
@@ -170,7 +173,7 @@ export class WorktreeSetups {
               ...(signal ? { signal } : {}),
             }),
           failed: (reason) => this.finish(sessionId, run, { state: "failed", detail: reason }),
-          lost: (reason) => this.finish(sessionId, run, { state: "interrupted", detail: reason }),
+          gone: (reason) => this.finish(sessionId, run, { state: "interrupted", detail: reason }),
         },
       );
     } catch (error) {
@@ -193,19 +196,11 @@ export class WorktreeSetups {
     if (!run) return false;
     run.stopping ??= why;
     if (why === "timed-out") this.append(sessionId, run, `\n[telar] setup timed out; stopping it\n`);
-    try {
-      run.handle?.stop(false);
-    } catch {
-      // Already gone: its exit is on the way.
-    }
-    const force = setTimeout(() => {
-      try {
-        run.handle?.stop(true);
-      } catch {
-        /* gone */
-      }
-    }, STOP_GRACE_MS);
-    force.unref?.();
+    // The handle's close is the polite signal, the grace, then SIGKILL — the
+    // escalation this used to spell out with its own timer.
+    void run.handle?.close().catch(() => {
+      /* already gone: its exit is on the way */
+    });
     return true;
   }
 

@@ -1,17 +1,19 @@
 /**
- * The `run_*` wall: saved launches and the project's one local deployment.
+ * The `run_*` wall: saved launches, and the terminals they open.
  *
- * THE AGENT GETS THE SAME RULES AS THE BUTTON, and the reason is not symmetry.
- * A model asked to "start the dev server" will try twice if the first answer is
- * ambiguous, and it will try from whichever conversation it happens to be in —
- * so the singleton, the worktree capture and the deliberate-takeover rule all
- * live under this wall in the manager rather than in the sentence a skill wrote.
- * A tool here cannot start a second deployment even if it wants to.
+ * "RUN = A NEW TERMINAL", AND THESE TOOLS KEEP THEIR NAMES FOR NOW. Each start
+ * opens a new terminal in this session's panel, where the person sees it; none
+ * blocks another, so there is no takeover to ask for and no lost run to
+ * release. The tools are renamed to `terminal_*` later, with these kept as
+ * aliases for a release — what changed here is only what they do.
  *
- * A REFUSAL NAMES THE WAY OUT. `run_start` against a live deployment answers
- * with what is running, from which tree, and the two verbs that resolve it
- * (`run_stop`, or `run_start` with `replace`), because a model that gets only
- * "conflict" will retry the identical call.
+ * THE AGENT GETS THE SAME RULES AS THE BUTTON: the worktree capture, the
+ * session ownership and the redaction all live under this wall in the manager,
+ * not in the sentence a skill wrote.
+ *
+ * A CLOSE FROM HERE IS RECORDED AS THE AGENT'S. Every close says who asked, so
+ * a later turn can be told "the person closed it" — and the person is the
+ * default everywhere else, which is why this wall always says `agent`.
  */
 import { z } from "zod";
 import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
@@ -40,12 +42,20 @@ function describe(run: RunView): string {
         : run.readiness.kind === "unattributable"
           ? ` — readiness cannot be attributed to this process (${run.readiness.reason})`
           : "";
-  const ended = run.endedAt ? ` exit ${run.exitCode ?? run.signal ?? "?"}.` : "";
-  // WHERE IT ALREADY IS, so an answer can point rather than describe: since
-  // #890 a live run is a shell in the cockpit's Terminal strip, and the id is
-  // the only name for it that both halves agree on.
-  const surface = run.terminalId ? ` Its terminal is ${run.terminalId} — the human sees it as a chip in the Terminal tab.` : "";
-  return `"${run.configName}" is ${run.status} (run ${run.runId}) from ${where}, cwd ${run.cwd}.${readiness}${ended}${run.error ? ` ${run.error}` : ""}${surface}`;
+  // WHO CLOSED IT IS THE FACT THAT DECIDES WHAT THE AGENT DOES NEXT. A
+  // terminal the person closed was ended on purpose, and reopening it unasked
+  // undoes their decision.
+  const closed =
+    run.status === "closed"
+      ? run.closedBy === "person"
+        ? " The person closed it — do not reopen it unless they ask."
+        : run.closedBy === "telar"
+          ? " Telar closed it."
+          : " You closed it."
+      : "";
+  const ended = run.endedAt && run.status !== "closed" ? ` exit ${run.exitCode ?? run.signal ?? "?"}.` : "";
+  const warning = run.warning ? ` Warning: ${run.warning}.` : "";
+  return `"${run.title}" is ${run.status} (terminal ${run.terminalId}) from ${where}, cwd ${run.cwd}.${readiness}${ended}${closed}${warning}${run.error ? ` ${run.error}` : ""}`;
 }
 
 export function runTools(tool: ToolFactory, capability: RunCapability): unknown[] {
@@ -114,7 +124,7 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
 
     tool(
       "run_delete_config",
-      "Forget a saved run configuration. It does not stop anything: a run already launched from it keeps its own copy of the command and keeps running.",
+      "Forget a saved run configuration. It does not close anything: a terminal already opened from it keeps its own copy of the command and keeps running.",
       { configId: z.string().min(1).describe("The configuration to remove.") },
       async (args) => {
         try {
@@ -128,24 +138,14 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
 
     tool(
       "run_status",
-      "What is deployed for this project right now — the live run with the worktree it was launched from, plus recent finished runs. A project has ONE local deployment, shared by every conversation, so this is the same answer another session would get. Call it before starting or stopping anything.",
+      "This session's terminals opened from run configurations — the open ones with the worktree each was launched from, then recently ended ones and who closed them. Each has a terminal id; pass it as runId to the other run_* tools. Call it before starting or closing anything.",
       {},
       async () => {
         try {
           const status = await capability.status();
-          if (!status.active) {
-            const recent = status.history[0];
-            return ok(
-              `Nothing is deployed for this project.${recent ? ` Last run: ${describe(recent)}` : ""}${
-                status.sessionWorktreePath ? `\nThis session's worktree: ${status.sessionWorktreePath}` : ""
-              }`,
-            );
-          }
-          const mismatch =
-            status.sessionWorktreePath && status.sessionWorktreePath !== status.active.worktreePath
-              ? `\nNOTE: this session works in ${status.sessionWorktreePath}, which is NOT the tree that run was launched from. Starting with replace:true would take the deployment over — do that only if the human asked for it.`
-              : "";
-          return ok(`${describe(status.active)}${mismatch}`);
+          const where = status.sessionWorktreePath ? `\nThis session's worktree: ${status.sessionWorktreePath}` : "";
+          if (!status.terminals.length) return ok(`This session has no terminals from run configurations.${where}`);
+          return ok(`${status.terminals.map((run) => `- ${describe(run)}`).join("\n")}${where}`);
         } catch (error) {
           return err(`Could not read the run status: ${failure(error)}`);
         }
@@ -154,61 +154,55 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
 
     tool(
       "run_start",
-      "Launch a saved configuration on this session's worktree. A project has ONE local deployment: if something is already running this refuses and tells you what — pass replace:true ONLY when the human has asked to take the deployment over, since another conversation may be watching it.",
+      "Open a NEW terminal in this session's panel running a saved configuration, on this session's worktree. The person sees it as a tab. Starting a configuration that is already open opens another instance ('web dev #2') rather than replacing it; if its port already answers you get a warning, and the terminal is still opened.",
       {
         configId: z.string().min(1).describe("Which saved configuration to launch (see run_configs)."),
-        replace: z.boolean().optional().describe("Stop the project's current deployment and take its place. A deliberate takeover, not a retry."),
+        replace: z.boolean().optional().describe("Ignored. Every start opens a new terminal; close one with run_stop first if you want only one."),
       },
       async (args) => {
         try {
-          const run = await capability.start({
-            configId: String(args.configId),
-            ...(args.replace === true ? { replace: true } : {}),
-          });
-          return ok(`Started ${describe(run)}\nUse run_output to read what it prints.`);
+          const run = await capability.start({ configId: String(args.configId) });
+          return ok(`Started ${describe(run)}\nUse run_output with runId ${run.terminalId} to read what it prints.`);
         } catch (error) {
-          // The manager's message serves the panel too, so it names the choice
-          // without naming tools. Spell the verbs out here: a model given only
-          // "already running" retries the identical call.
-          const ways = args.replace === true ? "" : "\nEither run_stop it first, or call run_start again with replace:true if the human asked to take it over.";
-          return err(`Did not start: ${failure(error)}${ways}`);
+          return err(`Did not start: ${failure(error)}`);
         }
       },
     ),
 
     tool(
       "run_stop",
-      "Stop the project's deployment — the whole process group, so watchers and child servers go too. Defaults to the live run. This is the ONLY way to stop a run: never use pkill, killall or kill on it.",
+      "Close a terminal, which ends everything running in it — the whole process group, so watchers and child servers go too. Give the terminal's id when this session has more than one open. This is the ONLY way to stop a run: never use pkill, killall or kill on it.",
       {
-        runId: z.string().min(1).optional().describe("A specific run. Default: whatever is deployed now."),
+        runId: z.string().min(1).optional().describe("The terminal to close (its id from run_status). Default: this session's one open terminal."),
         signal: z
           .enum(["SIGTERM", "SIGINT", "SIGKILL"])
           .optional()
           .describe(
-            "Which signal the polite attempt sends. Default SIGTERM. Use SIGINT for a server that traps SIGTERM to drain connections and only really stops on Ctrl-C. If the polite attempt is ignored Telar escalates to SIGKILL by itself, so you do not need to ask for that one.",
+            "A first signal to send before closing. Use SIGINT for a server that traps SIGTERM to drain connections and only really stops on Ctrl-C. If it is ignored the terminal is closed anyway (SIGTERM, then SIGKILL), so you do not need to ask for that.",
           ),
       },
       async (args) => {
         try {
           const run = await capability.stop({
-            ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
+            ...(typeof args.runId === "string" ? { terminalId: args.runId } : {}),
             ...(args.signal === "SIGTERM" || args.signal === "SIGINT" || args.signal === "SIGKILL" ? { signal: args.signal } : {}),
+            closedBy: "agent",
           });
-          return ok(`Stopped ${describe(run)}`);
+          return ok(`Closed ${describe(run)}`);
         } catch (error) {
-          return err(`Did not stop: ${failure(error)}`);
+          return err(`Did not close: ${failure(error)}`);
         }
       },
     ),
 
     tool(
       "run_restart",
-      "Stop and start the same configuration on the same worktree, holding the project's deployment slot across the gap so nothing else can slip in.",
-      { runId: z.string().min(1).optional().describe("A specific run. Default: whatever is deployed now.") },
+      "Close a terminal and open the same configuration on the same worktree in a new one. The new terminal has a new id.",
+      { runId: z.string().min(1).optional().describe("The terminal to restart (its id from run_status). Default: this session's one open terminal.") },
       async (args) => {
         try {
-          const run = await capability.restart(typeof args.runId === "string" ? { runId: args.runId } : {});
-          return ok(`Restarted ${describe(run)}`);
+          const run = await capability.restart({ ...(typeof args.runId === "string" ? { terminalId: args.runId } : {}), closedBy: "agent" });
+          return ok(`Restarted as ${describe(run)}`);
         } catch (error) {
           return err(`Did not restart: ${failure(error)}`);
         }
@@ -219,7 +213,7 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       "run_output",
       "Captured stdout and stderr for a run, including after it exited. Output is a bounded window — the oldest lines are dropped under load and the count of dropped lines is reported. Pass the cursor from a previous call to read only what is new; tail, grep and stream narrow what comes back WITHOUT moving that cursor, so you can grep now and still resume over everything later.",
       {
-        runId: z.string().min(1).optional().describe("A specific run. Default: whatever is deployed now."),
+        runId: z.string().min(1).optional().describe("The terminal to read (its id from run_status). Default: this session's one open terminal, else the one that ended last."),
         after: z.number().int().min(0).optional().describe("A cursor from an earlier call; only newer lines come back."),
         tail: z
           .number()
@@ -262,7 +256,7 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       "run_wait",
       "Wait until a run says something, becomes ready, or ends — then carry on. THIS IS HOW YOU WAIT FOR A SERVER: never sleep and hope. Give at least one of pattern, ready or exit; the answer says which one fired, so a timeout is distinguishable from a match and you never curl a port nothing is listening on. It returns the lines that arrived while waiting, and a cursor to resume run_output from.",
       {
-        runId: z.string().min(1).optional().describe("A specific run. Default: whatever is deployed now."),
+        runId: z.string().min(1).optional().describe("The terminal to wait on (its id from run_status). Default: this session's one open terminal."),
         pattern: z.string().min(1).max(500).optional().describe("A regular expression over lines printed from now on, e.g. 'Ready in|Listening on'."),
         ready: z
           .boolean()
@@ -297,7 +291,7 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
               : result.fired === "ready"
                 ? "READY — the readiness URL answered."
                 : result.fired === "exit"
-                  ? "EXITED — the run has finished; run_status says how."
+                  ? "EXITED — the terminal has ended; run_status says how, and who closed it if somebody did."
                   : "MATCHED — a line matched your pattern.";
           return ok(`${verdict}\n${body || "(nothing was printed while waiting)"}\n[cursor ${result.cursor}]`);
         } catch (error) {
@@ -306,18 +300,17 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       },
     ),
 
+    /**
+     * KEPT SO A MODEL THAT LEARNED IT GETS AN ANSWER RATHER THAN "NO SUCH
+     * TOOL" — and the answer is that there is nothing to release. It used to
+     * free a project's deployment slot held by a run Telar had lost; there is
+     * no slot and no lost state now.
+     */
     tool(
       "run_release",
-      "Give up on a run Telar has lost contact with, so the project can be deployed again. It signals NOTHING — whatever that process was doing may still be running, and stopping it is the human's to do. Only use this after telling them.",
-      { runId: z.string().min(1).describe("The run stuck in the unknown state.") },
-      async (args) => {
-        try {
-          const run = await capability.release({ runId: String(args.runId) });
-          return ok(`Released ${run.runId}. Telar is no longer tracking that process; if it is still running, it must be stopped by hand.`);
-        } catch (error) {
-          return err(`Could not release that run: ${failure(error)}`);
-        }
-      },
+      "No longer needed: runs are terminals now, and nothing is ever held for a run Telar lost track of. To end a run, close its terminal with run_stop.",
+      { runId: z.string().min(1).optional().describe("Ignored.") },
+      async () => ok("Nothing to release: runs are terminals now, and nothing blocks a new start. To end one, close its terminal with run_stop."),
     ),
   ];
 }

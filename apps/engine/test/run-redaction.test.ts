@@ -1,7 +1,7 @@
 /**
  * The promise attached to the word "secret": you will not see this value in
  * Telar. It has to hold in the places that are easy to forget — the file on
- * disk, the sentence after a restart, and a stream that hands us a secret two
+ * disk, the record after a restart, and a stream that hands us a secret two
  * characters at a time.
  */
 import { afterAll, afterEach, expect, test } from "bun:test";
@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { RunJournalFile } from "../src/run/journal";
+import type { RunLauncher } from "../src/run/launcher";
 import { RunManager, type StartRunInput } from "../src/run/manager";
 import { createOutputSplitter, safeCut } from "../src/run/stream";
 import { REDACTED, type RunConfiguration } from "../src/run/types";
@@ -62,87 +63,58 @@ const config = (extra: Partial<RunConfiguration> = {}): RunConfiguration => ({
   ...extra,
 });
 
-const input = (tree: string, cfg: RunConfiguration): StartRunInput => ({ projectId: "proj_1", config: cfg, worktreePath: tree });
+const input = (tree: string, cfg: RunConfiguration): StartRunInput => ({ projectId: "proj_1", sessionId: "sess_a", config: cfg, worktreePath: tree });
 
-function reap(pid: number | undefined): void {
-  if (pid === undefined) return;
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    /* already gone */
-  }
+/** A terminal host that opens nothing, and keeps whatever it opened across a
+ *  "restart" — which is what the name tag on disk is for. */
+function keepingHost() {
+  const held: Array<{ id: string; pid: number }> = [];
+  const launcher: RunLauncher = {
+    kind: "pty",
+    async launch() {
+      const terminal = { id: `term_${held.length + 1}`, pid: 70_000 + held.length };
+      held.push(terminal);
+      return { pid: terminal.pid, terminalId: terminal.id, close: async () => {}, signal: async () => {} };
+    },
+    held: async () => held,
+    adopt: async (facts) => ({ pid: facts.pid, terminalId: facts.id, close: async () => {}, signal: async () => {} }),
+  };
+  return launcher;
 }
 
-// ── the file on disk, and the sentence after a restart ─────────────────────
+// ── the file on disk, and the record after a restart ───────────────────────
 
-test("a secret pasted into the command or the name never reaches the journal, before OR after recovery", async () => {
-  // A human who marks TOKEN secret and then writes it into the command has put
-  // the same string into a field the record used to persist verbatim — and a
-  // recovered run has no secret list left to scrub it with on the way out.
+test("a secret pasted into the command or the name never reaches the name tag, before OR after a restart", async () => {
+  // A person who marks TOKEN secret and then writes it into the command has put
+  // the same string into a field the tag persists — and a re-listed terminal
+  // whose configuration is gone has no secret list left to scrub it with.
   const dir = temp("journal-secrets");
   const tree = temp("tree");
-  const journal = new RunJournalFile(dir);
-  const manager = runManager({ journal });
+  const launcher = keepingHost();
+  const manager = runManager({ journal: new RunJournalFile(dir), launcher });
   const recipe = config({ name: `deploy ${TOKEN}`, command: `sleep 30 # ${TOKEN}` });
-  const run = await manager.start(input(tree, recipe));
-  const pid = manager.run(run.runId).pid;
-  try {
-    const onDisk = fs.readFileSync(path.join(dir, "open-runs.json"), "utf8");
-    expect(onDisk).not.toContain(TOKEN);
-    expect(onDisk).toContain(REDACTED);
+  await manager.start(input(tree, recipe));
 
-    // A fresh manager over the same file is the restart: it has no
-    // configuration, no env, and therefore no way to scrub what it was handed.
-    const next = runManager({ journal: new RunJournalFile(dir) });
-    const [recovered] = next.recover();
-    expect(recovered).toBeDefined();
-    expect(JSON.stringify(recovered)).not.toContain(TOKEN);
-    expect(recovered!.status).toBe("unknown");
-    expect(recovered!.error).not.toContain(TOKEN);
-    // And the refusal it produces for the next launch is scrubbed too.
-    await expect(next.start(input(tree, config()))).rejects.toThrow(/lost contact/);
-    await expect(next.start(input(tree, config()))).rejects.not.toThrow(new RegExp(TOKEN));
-  } finally {
-    reap(pid);
-    await manager.shutdown();
-  }
-}, 15_000);
+  const onDisk = fs.readFileSync(path.join(dir, "open-terminals.json"), "utf8");
+  expect(onDisk).not.toContain(TOKEN);
+  expect(onDisk).toContain(REDACTED);
 
-test("the sentence about a lost run is scrubbed everywhere it is handed back", async () => {
-  const manager = runManager({ groupDrainMs: 150, probe: async () => ({ answered: false, serving: false }) });
-  const run = await manager.start(
-    input(temp("tree"), config({ name: `dev ${TOKEN}`, command: "sleep 30 &", readinessUrl: `http://127.0.0.1:65500/?k=${TOKEN}` })),
-  );
-  const pid = manager.run(run.runId).pid;
-  try {
-    // `sleep 30 &` leaves the group alive behind an exited shell: unknown, with
-    // a readiness that never got its answer.
-    const settled = await (async () => {
-      const deadline = Date.now() + 6000;
-      while (Date.now() < deadline) {
-        if (manager.run(run.runId).status === "unknown") return true;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      return false;
-    })();
-    expect(settled).toBe(true);
+  // A fresh manager over the same file is the restart — here with the
+  // configuration deleted, so nothing is left to scrub with but the file.
+  const next = runManager({ journal: new RunJournalFile(dir), launcher });
+  const [recovered] = await next.recover({ configFor: () => undefined });
+  expect(recovered).toBeDefined();
+  expect(recovered!.status).toBe("running");
+  expect(JSON.stringify(recovered)).not.toContain(TOKEN);
+});
 
-    const view = manager.run(run.runId);
-    expect(JSON.stringify(view)).not.toContain(TOKEN);
-    expect(view.readiness.kind).toBe("unattributable");
-    let refusal = "";
-    try {
-      await manager.start(input(temp("tree"), config()));
-    } catch (error) {
-      refusal = JSON.stringify({ message: (error as Error).message, detail: (error as { detail?: unknown }).detail });
-    }
-    expect(refusal).toContain("lost contact");
-    expect(refusal).not.toContain(TOKEN);
-  } finally {
-    reap(pid);
-    await manager.shutdown();
-  }
-}, 20_000);
+test("a busy port's warning and readiness sentence are scrubbed like every other text", async () => {
+  const manager = runManager({ launcher: keepingHost(), probe: async () => ({ answered: true, serving: true }) });
+  const run = await manager.start(input(temp("tree"), config({ name: `dev ${TOKEN}`, readinessUrl: `http://127.0.0.1:65500/?k=${TOKEN}` })));
+  expect(run.warning).toContain("already answers");
+  expect(run.readiness.kind).toBe("unattributable");
+  expect(JSON.stringify(run)).not.toContain(TOKEN);
+});
 
 // ── a secret arriving in pieces ────────────────────────────────────────────
 

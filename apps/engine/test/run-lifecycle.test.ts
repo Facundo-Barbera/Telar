@@ -60,6 +60,7 @@ const config = (command: string, extra: Partial<RunConfiguration> = {}): RunConf
 
 const input = (tree: string, cfg: RunConfiguration, extra: Partial<StartRunInput> = {}): StartRunInput => ({
   projectId: "proj_1",
+  sessionId: "sess_a",
   config: cfg,
   worktreePath: tree,
   ...extra,
@@ -67,18 +68,10 @@ const input = (tree: string, cfg: RunConfiguration, extra: Partial<StartRunInput
 
 /**
  * The ceiling on one wait, NOT a performance assertion. Every signal in this
- * file is scheduler-bound — a shell spawning, a shell exiting, a process group
- * draining — and when this machine is idle they all arrive in well under a
- * second (the group-drain verdict below measures at ~165 ms, which is its
- * `groupDrainMs` plus scheduling). The budget is two orders of magnitude above
- * that on purpose, so that reaching it means something is WEDGED rather than
- * that the runner was busy.
- *
- * SIZING THIS UP DOES NOT FIX #266, and was never going to: the orphan test
- * below stalls because the manager sometimes never receives the shell's `exit`
- * event at all, so the run sits at `running` for as long as anything cares to
- * wait — 34 s, in the measurement on that issue. A budget only decides how long
- * the suite takes to notice.
+ * file is scheduler-bound — a shell spawning, a shell exiting, a group being
+ * closed — and when this machine is idle they all arrive in well under a
+ * second. The budget is two orders of magnitude above that on purpose, so that
+ * reaching it means something is WEDGED rather than that the runner was busy.
  */
 const SETTLE_MS = 10_000;
 
@@ -114,81 +107,83 @@ function reap(pid: number | undefined): void {
   }
 }
 
-// ── the shell dying is not the group dying ─────────────────────────────────
+// ── the shell dying, and what Telar does NOT do about it ───────────────────
 
-test("a shell that exits leaving a child behind does NOT free the project", async () => {
-  // `cmd &` is how half the world starts a dev server: the shell returns 0
-  // immediately and the actual process is still there, holding the actual port.
-  const manager = runManager({ groupDrainMs: 150 });
-  const run = await manager.start(input(temp("tree"), config("sleep 30 &")));
-  const pid = manager.run(run.runId).pid;
+test("a shell that exits leaving a child behind is recorded as the exit it was, and blocks nothing", async () => {
+  /**
+   * `cmd &` returns 0 at once with the real process still running. This used
+   * to be asked about — the group probed for survivors, the run held
+   * `unknown` with the project's slot — and it is not any more: Telar does not
+   * track liveness. The record says what was observed (the shell exited 0),
+   * and the next start goes ahead. On the desktop the terminal stays open
+   * around the survivor and closing it ends it; the pipe fallback has no
+   * terminal, which is the honest limit of running without one.
+   */
+  const tree = temp("tree");
+  const manager = runManager();
+  const run = await manager.start(input(tree, config("sleep 30 & echo $! > child.pid")));
+  const pidFile = path.join(tree, "child.pid");
+  let child: number | undefined;
   try {
-    // THIS WAIT IS STILL FLAKY, AND THE FLAKE IS NOT THE BUDGET (#266). The
-    // chain is: the shell is scheduled, backgrounds its child, exits, that exit
-    // is delivered to us, and only then does the manager spend `groupDrainMs`
-    // asking the group whether anything is left. Idle, it completes in ~165 ms.
-    //
-    // It failed 3 times in ~130 local runs while this machine was busy with
-    // other bun processes, and each time the run was still `running` with the
-    // shell already dead and reaped — the surviving `sleep` reparented to ppid
-    // 1 — meaning the manager never received the shell's `exit` event at all.
-    // One was watched for 34 s and never got a verdict, and `shutdown()` then
-    // hangs waiting for the same thing, which is the afterEach hook timeout
-    // that rides along with this failure. CI's 6.2 s failures are that stall
-    // meeting the 6 s budget this wait used to have. It did not reproduce in
-    // 70 consecutive runs afterwards, 20 of them under a load average of 11,
-    // so the trigger is not plain CPU contention and is not yet pinned.
-    await until("the surviving child to keep the run from settling clean", () => manager.run(run.runId).status === "unknown");
-    const view = manager.run(run.runId);
-    expect(view.error).toMatch(/still alive in its process group/);
-    expect(view.endedAt).toBeGreaterThan(0);
-
-    // The slot stays held: the port is still taken, so the answer to "start it
-    // again" is no, not a second server.
-    expect(manager.activeRun("proj_1")?.runId).toBe(run.runId);
-    await expect(manager.start(input(temp("tree"), config("sleep 1")))).rejects.toThrow(/lost contact/);
-
-    // And a human who has checked can free it — still without anything being
-    // signalled on their behalf.
-    expect(manager.release(run.runId).status).toBe("unknown");
-    expect(manager.activeRun("proj_1")).toBeUndefined();
+    await until("the shell to exit", () => manager.run(run.terminalId).status === "exited");
+    await until("the child's pid to be written", () => fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8").trim().length > 0);
+    child = Number(fs.readFileSync(pidFile, "utf8").trim());
+    expect(manager.run(run.terminalId).exitCode).toBe(0);
+    const next = await manager.start(input(tree, config("sleep 1")));
+    expect(next.status).toBe("running");
   } finally {
-    reap(pid);
+    reap(child);
     await manager.shutdown();
   }
-}, settling());
+}, settling(2));
 
-test("stopping a run whose child ignores SIGTERM reports unknown rather than success", async () => {
-  // The parent has the default disposition and dies on TERM; the child traps it
-  // and does not. The old code called that a clean stop, because the handle it
-  // was watching had closed.
-  const manager = runManager({ groupDrainMs: 200, stopGraceMs: 1500 });
+test("closing a terminal whose child ignores SIGTERM ends the child too, and records the close", async () => {
+  /**
+   * The parent dies on TERM; the child traps it. The shell's exit inside the
+   * grace is when the group is asked, ONCE, whether it is empty — and it is
+   * not, so SIGKILL follows. The same rule the desktop host's close follows.
+   */
+  const tree = temp("tree");
+  const manager = runManager({ stopGraceMs: 500 });
   // The loop matters: `trap` protects the shell, not the `sleep` it is waiting
   // on, so a child that means to survive has to keep going after that dies.
-  const run = await manager.start(input(temp("tree"), config(`sh -c 'trap "" TERM; echo armed; while :; do sleep 1; done' & wait`)));
-  const pid = manager.run(run.runId).pid;
+  const run = await manager.start(input(tree, config(`sh -c 'trap "" TERM; echo armed; echo $$ > child.pid; while :; do sleep 1; done' & wait`)));
+  const pid = manager.run(run.terminalId).pid;
+  const pidFile = path.join(tree, "child.pid");
+  let child: number | undefined;
   try {
     // Wait for the trap to actually be installed: a TERM that arrives while the
     // child is still starting kills it, and would test nothing.
     await until('the child to print "armed", proving its TERM trap is installed', () =>
-      manager.output(run.runId).lines.some((line) => line.text === "armed"),
+      manager.output(run.terminalId).lines.some((line) => line.text === "armed") && fs.existsSync(pidFile),
     );
-    await expect(manager.stop(run.runId)).rejects.toThrow(/lost contact/);
-    expect(manager.run(run.runId).status).toBe("unknown");
+    child = Number(fs.readFileSync(pidFile, "utf8").trim());
+    const closed = await manager.close(run.terminalId, "person");
+    expect(closed.status).toBe("closed");
+    expect(closed.closedBy).toBe("person");
+    await until("the trapping child to be gone", () => {
+      try {
+        process.kill(child!, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    });
   } finally {
     reap(pid);
+    reap(child);
     await manager.shutdown();
   }
-  // Two waits' worth: the `armed` poll, then `stop`'s own grace period.
+  // Two waits' worth: the `armed` poll, then the close's own grace.
 }, settling(2));
 
-test("an ordinary run still exits cleanly — the group check does not make everything unknown", async () => {
-  const manager = runManager({ groupDrainMs: 200 });
+test("an ordinary run still exits cleanly", async () => {
+  const manager = runManager();
   const run = await manager.start(input(temp("tree"), config("echo done")));
   try {
-    await until("the ordinary run to be reported as exited", () => manager.run(run.runId).status === "exited");
-    expect(manager.run(run.runId).exitCode).toBe(0);
-    expect(manager.activeRun("proj_1")).toBeUndefined();
+    await until("the ordinary run to be reported as exited", () => manager.run(run.terminalId).status === "exited");
+    expect(manager.run(run.terminalId).exitCode).toBe(0);
+    expect(manager.run(run.terminalId).closedBy).toBeUndefined();
   } finally {
     await manager.shutdown();
   }
@@ -196,43 +191,12 @@ test("an ordinary run still exits cleanly — the group check does not make ever
 
 // ── surviving the daemon ───────────────────────────────────────────────────
 
-test("a run open in the journal comes back as unknown and keeps blocking the project", async () => {
+test("the pipe fallback writes no name tag — there is no host to keep its terminal across a restart", async () => {
   const dir = temp("journal");
-  const journal = new RunJournalFile(dir);
-  journal.open({
-    runId: "run_ghost",
-    projectId: "proj_1",
-    configId: "runcfg_test",
-    configName: "web dev",
-    command: "bun run dev",
-    worktreePath: "/tmp/tree",
-    cwd: "/tmp/tree",
-    startedAt: 1,
-    pid: 4242,
-  });
-
-  const manager = runManager({ journal });
-  const recovered = manager.recover();
-  expect(recovered).toHaveLength(1);
-  expect(recovered[0]!.status).toBe("unknown");
-  // The pid is prose so a human can go and look — nothing signalled it.
-  expect(recovered[0]!.error).toContain("4242");
-  expect(recovered[0]!.error).toMatch(/restarted while "web dev" was running/);
-
-  await expect(manager.start(input(temp("tree"), config("sleep 1")))).rejects.toThrow(/lost contact/);
-
-  manager.release("run_ghost");
-  // Released means checked: the record must not haunt the next start either.
-  expect(new RunJournalFile(dir).list()).toHaveLength(0);
-  await manager.shutdown();
-}, 15_000);
-
-test("a run that ends cleanly leaves nothing in the journal to recover", async () => {
-  const dir = temp("journal");
-  const manager = runManager({ journal: new RunJournalFile(dir), groupDrainMs: 100 });
-  const run = await manager.start(input(temp("tree"), config("echo hi")));
+  const manager = runManager({ journal: new RunJournalFile(dir) });
+  const run = await manager.start(input(temp("tree"), config("sleep 5")));
   try {
-    await until("the run to exit, which is what closes its journal record", () => manager.run(run.runId).status === "exited");
+    expect(run.status).toBe("running");
     expect(new RunJournalFile(dir).list()).toHaveLength(0);
   } finally {
     await manager.shutdown();
@@ -267,7 +231,7 @@ test("a start still probing when shutdown arrives never spawns anything", async 
   await expect(manager.start(input(tree, config("sleep 1")))).rejects.toThrow(/shutting down/);
 }, 15_000);
 
-test("a spawn that fails outright is reported as failed and frees the slot", async () => {
+test("a spawn that fails outright is reported as failed", async () => {
   const tree = temp("tree");
   const doomed = path.join(tree, "gone");
   fs.mkdirSync(doomed);
@@ -286,8 +250,8 @@ test("a spawn that fails outright is reported as failed and frees the slot", asy
   release({ answered: false, serving: false });
 
   const view = await starting;
-  await until("the spawn failure to be reported", () => manager.run(view.runId).status === "failed");
-  expect(manager.activeRun("proj_1")).toBeUndefined();
+  await until("the spawn failure to be reported", () => manager.run(view.terminalId).status === "failed");
+  expect(manager.run(view.terminalId).pid).toBeUndefined();
   await manager.shutdown();
 }, settling());
 
@@ -316,7 +280,7 @@ test("a readiness URL that an HTTP probe could never check is refused", () => {
 });
 
 test("a secret value pasted into the command is gone from the view too", async () => {
-  const manager = runManager({ groupDrainMs: 100 });
+  const manager = runManager();
   const run = await manager.start(
     input(
       temp("tree"),
@@ -324,7 +288,7 @@ test("a secret value pasted into the command is gone from the view too", async (
     ),
   );
   try {
-    const view = manager.run(run.runId);
+    const view = manager.run(run.terminalId);
     expect(view.command).not.toContain("sk_live_secret");
     expect(view.command).toContain("«redacted»");
     expect(view.configName).not.toContain("sk_live_secret");
@@ -335,7 +299,7 @@ test("a secret value pasted into the command is gone from the view too", async (
 }, 15_000);
 
 test("a run that never emits a newline is still bounded, and still scrubbed", async () => {
-  const manager = runManager({ groupDrainMs: 100 });
+  const manager = runManager();
   // 40k characters, no newline anywhere, with the secret buried in the middle
   // where a chunk boundary is most likely to cut it in half.
   const run = await manager.start(
@@ -347,13 +311,13 @@ test("a run that never emits a newline is still bounded, and still scrubbed", as
     ),
   );
   try {
-    await until("the unbuffered run to exit", () => manager.run(run.runId).status === "exited");
+    await until("the unbuffered run to exit", () => manager.run(run.terminalId).status === "exited");
     // `exit` can beat the last `data` events out of the pipe, so the captured
     // output is not complete just because the process is gone. Waiting on the
     // status alone made this assertion fail on a loaded machine — which is a
     // flaky test, not a flaky splitter.
-    await until("the pipe to deliver the output the exit raced", () => manager.output(run.runId).lines.length > 1);
-    const output = manager.output(run.runId);
+    await until("the pipe to deliver the output the exit raced", () => manager.output(run.terminalId).lines.length > 1);
+    const output = manager.output(run.terminalId);
     expect(output.lines.length).toBeGreaterThan(1);
     for (const line of output.lines) {
       expect(line.text.length).toBeLessThanOrEqual(4000);
@@ -388,7 +352,7 @@ test("something answering with a 500 is listening, not ready", async () => {
   let up = false;
   const manager = runManager({
     readyPollMs: 20,
-    groupDrainMs: 100,
+    
     probe: async () => (up ? { answered: true, serving: false } : { answered: false, serving: false }),
   });
   const run = await manager.start(input(temp("tree"), config("sleep 5", { readinessUrl: "http://localhost:65012" })));
@@ -397,8 +361,8 @@ test("something answering with a 500 is listening, not ready", async () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     // A crashing dev server answers every request; it is the state the human is
     // waiting to leave, so the run stays `running` and readiness stays pending.
-    expect(manager.run(run.runId).status).toBe("running");
-    expect(manager.run(run.runId).readiness.kind).toBe("pending");
+    expect(manager.run(run.terminalId).status).toBe("running");
+    expect(manager.run(run.terminalId).readiness.kind).toBe("pending");
   } finally {
     await manager.shutdown();
   }

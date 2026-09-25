@@ -11,6 +11,17 @@ This file records the decisions a future reader will otherwise re-litigate, and
 **one product limit that is easy to break by accident** — §5, which is the part
 worth reading even if nothing else here is.
 
+> **Superseded in part by "Run = a new terminal".** Everything below about ONE
+> deployment per project — the slot, `replace`, the `unknown` state that held the
+> slot, `release`, the liveness journal and the group probe after every exit — is
+> gone. A run is now a terminal owned by the SESSION: each start opens a new one
+> ("web dev", "web dev #2"), a busy port only warns, closing the terminal is the
+> host's `/close` (SIGTERM to every group, SIGKILL a second later) and records who
+> closed it, and Telar tracks no liveness — it records what the host reports. A
+> restarted engine re-lists the terminals the host kept (`GET /state`). The
+> headers of `manager.ts`, `launcher.ts`, `terminal-client.ts` and `journal.ts`
+> carry the current reasoning; the transport, redaction and §5 below still hold.
+
 The three modules it spans each carry their own reasoning in a header:
 `apps/desktop/run-terminal-server.js`, `apps/engine/src/run/terminal-client.ts`,
 `apps/engine/src/run/launcher.ts`. Read `docs/terminal-host.md` first — it is

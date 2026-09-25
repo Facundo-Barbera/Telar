@@ -1,37 +1,35 @@
 /**
- * HOW A RUN GETS A PROCESS — a port, because there are now two answers.
+ * HOW A RUN GETS A TERMINAL — a port, because there are two answers.
  *
- * Run shipped spawning a child with pipes and capturing redacted lines, which
- * the cockpit polled. The owner's decision for #198 is that RUN IS NOT A BUTTON
- * WITH A LOG PANE: it is a detached session in an integrated terminal, and the
- * terminal is a first-class surface Run is one client of. The pseudo-terminal
- * for that lives in Electron main (`apps/desktop/terminal-host.js` says why),
- * so the engine reaches it over a wire instead of holding it.
+ * On the desktop a run is a pseudo-terminal the shell holds in Electron main
+ * (`apps/desktop/terminal-host.js` says why it lives there), reached over a
+ * wire. Without Electron — `bun run src/main.ts`, a test, a headless host —
+ * there is no PTY to reach, so a run is a detached child with pipes. BOTH
+ * STAY, and the pipe launcher is the floor rather than the old way: multiple
+ * instances, no chip, the same byte path.
  *
- * BOTH ANSWERS STAY, AND THAT IS NOT A TRANSITION ARTEFACT. The engine also
- * runs as `bun run src/main.ts` with no Electron anywhere — no shell, no
- * channel, no PTY. A run there still has to work, so the pipe launcher is the
- * floor rather than the old way.
+ * WHAT THE PORT IS SHAPED AROUND IS WHAT THE HOST CAN TELL US, and since "Run
+ * = a new terminal" that is all the engine records — no liveness of its own:
  *
- * WHAT THE PORT IS SHAPED AROUND IS THE FATE MODEL, not the plumbing. Four
- * callbacks, and the difference between two of them is the whole feature:
- *
- *   exited   an end was OBSERVED, with a code. The slot may be freed.
+ *   exited   an end was OBSERVED, with a code (and, when the host was closing
+ *            it, why).
  *   failed   the launch itself threw; no process was ever created.
- *   lost     we stopped being able to vouch. `unknown`, and THE SLOT STAYS
- *            HELD. A channel that dies, goes quiet, or is torn down lands here
- *            — never in `exited`, whatever the reason was.
+ *   gone     the host no longer holds it and we did not hear it end — it was
+ *            closed while the engine was not listening.
  *   output   captured bytes.
  *
- * A LAUNCHER HANDS BACK A HANDLE, NOT A PID. `manager.ts` could previously say
- * "the pid is only ever used while our own `ChildProcess` has not yet fired
- * exit"; over a wire the equivalent is an id the host honours only while it
- * still holds what the id names. `stop` therefore belongs to the handle, so no
- * caller is ever in a position to aim a signal at a number by itself.
+ * There used to be a fourth, `lost`, which turned a dropped channel into an
+ * `unknown` run holding its project's slot. A dropped channel now reconnects
+ * (`terminal-client.ts`) and nothing holds anything.
+ *
+ * A LAUNCHER HANDS BACK A HANDLE, NOT A PID. Over the wire the handle is an id
+ * the host honours only while it still holds what the id names, so `close`
+ * belongs to the handle and no caller can aim a signal at a number by itself.
  */
 import { spawn } from "node:child_process";
 import type { RunProcessGroup } from "./platform";
-import type { RunTerminalClient, TerminalEnding } from "./terminal-client";
+import type { RunTerminalClient, TerminalEnding, TerminalFacts } from "./terminal-client";
+import { newPipeTerminalId, type RunOrigin } from "./types";
 
 export type RunLaunchRequest = {
   file: string;
@@ -42,100 +40,106 @@ export type RunLaunchRequest = {
   /** The PTY's size. Ignored by the pipe launcher, which has no geometry. */
   cols?: number;
   rows?: number;
+  /** Who owns the terminal and what its tab says. Ignored by the pipe launcher,
+   *  which has no tab and no host to tell — and absent for a worktree's setup
+   *  command, which borrows this launcher without being a terminal anybody
+   *  opened. */
+  sessionId?: string;
+  origin?: RunOrigin;
+  title?: string;
 };
+
+/** Why the host was ending a terminal, when it was the host that did. */
+export type RunCloseReason = NonNullable<TerminalEnding["closed"]>;
 
 export type RunLaunchEvents = {
   output(stream: "stdout" | "stderr", chunk: string): void;
-  /** An observed end, with a code. The ONLY route to a terminal status. */
-  exited(detail: { exitCode?: number; signal?: string }): void;
+  /** An observed end, with a code. */
+  exited(detail: { exitCode?: number; signal?: string; closed?: RunCloseReason }): void;
   /** No process was created at all. */
   failed(reason: string): void;
-  /** We can no longer vouch. `unknown`, and the project's slot stays held. */
-  lost(reason: string): void;
+  /** The host no longer holds it, and we did not hear how it ended. */
+  gone(reason: string): void;
 };
 
 /**
- * What is holding a run's process, while something still is.
- *
- * `stop` throws the way `process.kill` does — in particular with `code: "ESRCH"`
- * when there was nothing left to stop, which the manager reads as success.
+ * What is holding a terminal's process, while something still is.
  */
 export type RunHandle = {
   readonly pid: number | undefined;
   /**
-   * THE HOST'S NAME FOR THIS PTY, when the run is on one — and the reason it is
-   * published rather than kept private is that the cockpit needs to point at it.
-   *
-   * A run and a person's shell are the same kind of thing now (#890): both are
-   * terminals the desktop holds, and the strip draws them side by side. To draw
-   * a run the renderer has to be able to say WHICH terminal, and the only name
-   * that survives the trip is the host's id — a pid is reused by the kernel and
-   * an id is not. Absent for the pipe launcher, which has no terminal at all.
+   * THE TERMINAL'S NAME — the host's id on a PTY, a minted `pipe_…` id with no
+   * Electron. It is the identity of the whole record, which is why it is not
+   * optional: a caller names a terminal by it whether or not a host exists.
    */
-  readonly terminalId?: string;
+  readonly terminalId: string;
   /**
-   * `signal` REPLACES THE POLITE ATTEMPT AND NEVER THE FORCEFUL ONE. Ctrl-C
-   * semantics matter to a dev server that traps TERM to drain connections
-   * (#890), so a caller may ask for SIGINT — but a `force` stop stays SIGKILL,
-   * because a stop that can be refused is not what a second attempt is for.
+   * CLOSE IT, WHICH ENDS WHAT RUNS IN IT. Resolves once the escalation is over
+   * — SIGTERM, then SIGKILL after a grace — not necessarily once the exit has
+   * been reported; that still arrives through `exited`. Rejects only when the
+   * close could not even be asked for (the host is out of reach).
    */
-  stop(force: boolean, signal?: NodeJS.Signals): void;
+  close(): Promise<void>;
+  /**
+   * One polite signal to the whole tree, before a close — SIGINT for a server
+   * that only stops the way Ctrl-C stops it. Throws like `process.kill`.
+   */
+  signal(signal: NodeJS.Signals): Promise<void>;
   /**
    * KEYSTROKES, AND THEY ARE OPTIONAL BECAUSE ONE LAUNCHER GENUINELY HAS NO
-   * KEYBOARD.
-   *
-   * A pipe-launched run is spawned with `stdio: ["ignore", …]` — its stdin is
-   * /dev/null, and the honest answer for `bun run src/main.ts` or CI is "there
-   * is nothing to type into", not a write that silently goes nowhere. The
-   * manager refuses with `conflict` and says which shape it got, rather than
-   * this port pretending both shapes are the same.
-   *
-   * Answers whether the bytes reached a process. `false` is the ordinary race
-   * against an exit, not an error — see `terminal-client.ts`.
+   * KEYBOARD. A pipe-launched child's stdin is /dev/null; the honest answer
+   * there is "nothing to type into", not a write that silently goes nowhere.
    */
   write?(data: string): Promise<boolean>;
-  /** The geometry the surface drawing it is using. Same optionality, same
-   *  reason: a pipe has no columns. */
+  /** The geometry the surface drawing it is using. Same optionality. */
   resize?(cols: number, rows: number): Promise<boolean>;
   /**
-   * THE REDACTED BYTES, BACK TO WHOEVER IS HOLDING THE TERMINAL (#890).
-   *
-   * Only the terminal handle has one, and that is the whole of the asymmetry:
-   * a PTY held by the desktop shell has a SECOND audience — the cockpit's
-   * Terminal strip — reading the same device over IPC, and what that audience
-   * must see is the output of `manager.ts`'s redactor rather than the raw
-   * frames the host fans. A pipe-launched run has no such audience: there is no
-   * shell, no IPC and no chip, so there is nothing to mirror to.
-   *
-   * FIRE AND FORGET, AND DELIBERATELY SO. See `terminal-client.ts`: a repaint
-   * is not worth a run's slot.
+   * THE REDACTED BYTES, BACK TO WHOEVER IS HOLDING THE TERMINAL (#890). Only a
+   * PTY has a second audience — the cockpit's strip — and what it must see is
+   * the output of `manager.ts`'s redactor rather than the raw frames the host
+   * fans. FIRE AND FORGET: a repaint is not worth failing a terminal over.
    */
   mirror?(data: string, cursor: number): void;
 };
 
 export type RunLauncher = {
   /**
-   * WHICH SHAPE THE CAPTURED BYTES ARRIVE IN, because redaction differs.
-   *
-   * `pipes` gives two streams with a line discipline, redacted line by line
-   * (`stream.ts`). `pty` gives ONE stream with no reliable newlines and escape
-   * sequences in it, redacted by `pty-stream.ts` — which also means stdout and
-   * stderr are not separable there, because a pseudo-terminal genuinely is one
-   * device and nothing downstream can un-merge them.
+   * WHICH SHAPE THE CAPTURED BYTES ARRIVE IN, because redaction differs: two
+   * line-disciplined streams (`stream.ts`) or one PTY stream with escapes and
+   * no reliable newlines (`pty-stream.ts`).
    */
   readonly kind: "pipes" | "pty";
   launch(request: RunLaunchRequest, events: RunLaunchEvents): Promise<RunHandle>;
+  /**
+   * WHAT THE HOST STILL HOLDS, for an engine re-listing its terminals after a
+   * restart. Absent for pipes: a child of a previous engine is nobody's to
+   * pick up.
+   */
+  held?(): Promise<TerminalFacts[]>;
+  /** Follow a terminal the host kept from a previous engine. */
+  adopt?(facts: TerminalFacts, events: RunLaunchEvents): Promise<RunHandle>;
+  /** The engine is going down: stop listening, close nothing. */
+  detach?(): void;
 };
 
+/** How long a pipe child's group gets between SIGTERM and SIGKILL. The host's
+ *  own close uses the same second (`CLOSE_GRACE_MS` in terminal-host.js). */
+const PIPE_CLOSE_GRACE_MS = 1000;
+
 /**
- * The original: a detached child with two pipes.
+ * The fallback: a detached child with two pipes.
  *
  * `detached` comes from the platform — a POSIX group leader one signal reaches
  * whole, and on Windows nothing of the sort, which is why stopping there is
  * `taskkill /T`. The stdio tuple must stay a tuple or `stdout`/`stderr` come
  * back nullable under one of the two `@types/node` this file is compiled by.
+ *
+ * ITS CLOSE IS THE HOST'S CLOSE, REBUILT LOCALLY. SIGTERM to the group, a
+ * grace, SIGKILL — and because this process holds the `ChildProcess`, the
+ * exit it waits for is the real one rather than a guess.
  */
-export function pipeLauncher(group: RunProcessGroup): RunLauncher {
+export function pipeLauncher(group: RunProcessGroup, options: { graceMs?: number } = {}): RunLauncher {
+  const graceMs = options.graceMs ?? PIPE_CLOSE_GRACE_MS;
   return {
     kind: "pipes",
     launch(request, events) {
@@ -150,13 +154,21 @@ export function pipeLauncher(group: RunProcessGroup): RunLauncher {
         stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
       });
 
-      // LISTENERS FIRST, VERDICT SECOND. A spawn that fails emits `error`
-      // asynchronously, and an `error` on a ChildProcess with no listener is an
-      // unhandled exception that takes the daemon down — so nothing may return
-      // from here before both handlers are attached.
-      child.on("error", (error) => events.failed(error.message));
-      child.on("exit", (code, signal) => {
-        events.exited({ ...(code === null ? {} : { exitCode: code }), ...(signal ? { signal } : {}) });
+      let ended = false;
+      const exit = new Promise<void>((resolve) => {
+        // LISTENERS FIRST, VERDICT SECOND. A spawn that fails emits `error`
+        // asynchronously, and an `error` on a ChildProcess with no listener is
+        // an unhandled exception that takes the daemon down.
+        child.on("error", (error) => {
+          ended = true;
+          events.failed(error.message);
+          resolve();
+        });
+        child.on("exit", (code, signal) => {
+          ended = true;
+          events.exited({ ...(code === null ? {} : { exitCode: code }), ...(signal ? { signal } : {}) });
+          resolve();
+        });
       });
       for (const [stream, source] of [
         ["stdout", child.stdout],
@@ -167,13 +179,47 @@ export function pipeLauncher(group: RunProcessGroup): RunLauncher {
         source.on("data", (chunk: string) => events.output(stream, chunk));
       }
 
+      const within = (ms: number) =>
+        new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(ended), ms);
+          timer.unref?.();
+          void exit.then(() => {
+            clearTimeout(timer);
+            resolve(true);
+          });
+        });
+      const send = (force: boolean, signal?: NodeJS.Signals) => {
+        if (child.pid === undefined) return;
+        try {
+          group.stop(child.pid, force, signal);
+        } catch (error) {
+          // ESRCH: already gone; its `exit` is on the way.
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      };
+
       return Promise.resolve({
         get pid() {
           return child.pid;
         },
-        stop(force: boolean, signal?: NodeJS.Signals) {
-          if (child.pid === undefined) return;
-          group.stop(child.pid, force, signal);
+        terminalId: newPipeTerminalId(),
+        /**
+         * THE SHELL LEAVING IS NOT THE GROUP LEAVING. A child that traps TERM
+         * outlives the shell that obeyed it, so when the shell exits inside the
+         * grace the group is asked ONCE whether it is empty — the single look
+         * the host takes too — and SIGKILL goes to whatever is left. A group
+         * seen empty is never signalled again.
+         */
+        async close() {
+          if (ended) return;
+          send(false);
+          const exited = await within(graceMs);
+          if (exited && child.pid !== undefined && group.emptied(child.pid)) return;
+          send(true);
+          if (!exited) await within(graceMs);
+        },
+        async signal(signal: NodeJS.Signals) {
+          if (!ended) send(signal === "SIGKILL", signal);
         },
       });
     },
@@ -183,18 +229,33 @@ export function pipeLauncher(group: RunProcessGroup): RunLauncher {
 /**
  * A run on a real pseudo-terminal, held by the desktop shell.
  *
- * THE HOST'S VOCABULARY MAPS ONTO THE PORT'S ONE FOR ONE, and the mapping is
- * where `unknown` survives the wire: the host's `exited` — which only node-pty's
- * own exit event produces — is the only thing that becomes `exited` here.
- * Everything else the host can say, plus everything the CHANNEL can do to us,
- * becomes `lost`.
- *
  * NO GEOMETRY IS GUESSED. A PTY with no size reports 0×0 and every full-screen
- * program draws nothing, so a default is supplied — but it is a default for a
- * detached run nobody is looking at yet, and the surface that eventually shows
- * it is what resizes it.
+ * program draws nothing, so a default is supplied — for a terminal nobody is
+ * looking at yet; the surface that shows it is what resizes it.
  */
 export function terminalLauncher(client: RunTerminalClient, defaults: { cols?: number; rows?: number } = {}): RunLauncher {
+  const handleFor = (id: string, pid: number | undefined): RunHandle => ({
+    pid,
+    terminalId: id,
+    write: (data: string) => client.write(id, data),
+    resize: (cols: number, rows: number) => client.resize(id, cols, rows),
+    mirror: (data: string, cursor: number) => {
+      // SWALLOWED: a repaint nobody answered is a repaint, and the scrollback
+      // the chip re-reads on its next attach is the recovery.
+      void client.mirror(id, data, cursor).catch(() => {});
+    },
+    async close() {
+      await client.close(id);
+    },
+    async signal(signal: NodeJS.Signals) {
+      await client.kill(id, signal);
+    },
+  });
+  const sinkFor = (events: RunLaunchEvents) => ({
+    data: (chunk: string) => events.output("stdout", chunk),
+    ending: (ending: TerminalEnding) => deliver(ending, events),
+    gone: (reason: string) => events.gone(reason),
+  });
   return {
     kind: "pty",
     async launch(request, events) {
@@ -210,41 +271,24 @@ export function terminalLauncher(client: RunTerminalClient, defaults: { cols?: n
           env,
           cols: request.cols ?? defaults.cols ?? 120,
           rows: request.rows ?? defaults.rows ?? 30,
+          sessionId: request.sessionId,
+          origin: request.origin,
+          title: request.title,
         },
-        {
-          data: (chunk) => events.output("stdout", chunk),
-          ending: (ending) => deliver(ending, events),
-        },
+        sinkFor(events),
       );
       if (opened.ending) {
         deliver(opened.ending, events);
-        return { pid: opened.pid, stop: () => {} };
+        return { pid: opened.pid, terminalId: opened.id, close: async () => {}, signal: async () => {} };
       }
-      return {
-        pid: opened.pid,
-        terminalId: opened.id,
-        write: (data: string) => client.write(opened.id, data),
-        resize: (cols: number, rows: number) => client.resize(opened.id, cols, rows),
-        mirror: (data: string, cursor: number) => {
-          // SWALLOWED, unlike `stop`'s rejection. A kill nobody answered must
-          // become `unknown`; a repaint nobody answered is a repaint, and the
-          // scrollback the chip re-reads on its next attach is the recovery.
-          void client.mirror(opened.id, data, cursor).catch(() => {});
-        },
-        stop(force: boolean, signal?: NodeJS.Signals) {
-          // BY ID, AND FIRE-AND-FORGET IS NOT AN OPTION. A kill whose request
-          // never lands must not read as a kill that did, so a rejection is
-          // re-raised into the manager's `stopGroup`, which turns it into
-          // `unknown` — the slot stays held rather than being freed on a
-          // request nobody answered.
-          void client.kill(opened.id, force ? "SIGKILL" : (signal ?? "SIGTERM")).catch((error: unknown) => {
-            events.lost(
-              `Telar could not ask its terminal host to stop this run: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          });
-        },
-      };
+      return handleFor(opened.id, opened.pid);
     },
+    held: () => client.state(),
+    async adopt(facts, events) {
+      await client.adopt(facts.id, sinkFor(events));
+      return handleFor(facts.id, facts.pid);
+    },
+    detach: () => client.detach(),
   };
 }
 
@@ -253,12 +297,15 @@ function deliver(ending: TerminalEnding, events: RunLaunchEvents): void {
     events.exited({
       ...(typeof ending.exitCode === "number" ? { exitCode: ending.exitCode } : {}),
       ...(ending.signal ? { signal: ending.signal } : {}),
+      ...(ending.closed ? { closed: ending.closed } : {}),
     });
     return;
   }
   if (ending.fate === "failed") {
-    events.failed(ending.error ?? "Telar's terminal host could not start this run");
+    events.failed(ending.error ?? "Telar's terminal host could not start this terminal");
     return;
   }
-  events.lost(ending.reason ?? "Telar's terminal host can no longer vouch for this run's process");
+  // A host older than this change can still say `unknown`. It holds nothing
+  // now: the host has stopped holding the terminal, which is `gone`.
+  events.gone(ending.reason ?? "Telar's terminal host stopped holding this terminal");
 }

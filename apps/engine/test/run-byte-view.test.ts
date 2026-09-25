@@ -73,6 +73,7 @@ const config = (overrides: Partial<RunConfiguration> = {}): RunConfiguration => 
 
 const input = (dir: string, overrides: Partial<StartRunInput> = {}): StartRunInput => ({
   projectId: "proj_1",
+  sessionId: "sess_1",
   config: config(),
   worktreePath: dir,
   ...overrides,
@@ -98,7 +99,9 @@ function fakePty() {
       state.events = events;
       return {
         pid: 424242,
-        stop: () => state.events?.exited({ exitCode: 0 }),
+        terminalId: "term_fake",
+        close: async () => state.events?.exited({ exitCode: 0, closed: "close" }),
+        signal: async () => {},
         write: async (data: string) => {
           state.wrote.push(data);
           return true;
@@ -113,14 +116,13 @@ function fakePty() {
   return { launcher, state };
 }
 
-/** A manager whose process-group questions never reach a real pid. */
+/** A manager whose signals never reach a real pid. */
 function manage(launcher?: RunLauncher): RunManager {
   const manager = new RunManager({
     ...(launcher ? { launcher } : {}),
     kill: () => {
       throw Object.assign(new Error("no such process"), { code: "ESRCH" });
     },
-    groupDrainMs: 10,
     stopGraceMs: 50,
   });
   managers.push(manager);
@@ -298,9 +300,9 @@ test("the routes are wired to the capability, and refuse a shape they cannot ser
     return matched.route.handle({ params: matched.params, input: body, capability });
   };
 
-  await manager.start(input(dir));
+  const started = await manager.start(input(dir));
   state.events!.output("stdout", "\x1b[32mup\x1b[0m");
-  expect(await until(() => manager.bytes(manager.activeRun("proj_1")!.runId).chunks.length > 0)).toBe(true);
+  expect(await until(() => manager.bytes(started.terminalId).chunks.length > 0)).toBe(true);
 
   expect(await call("GET", "/run/bytes")).toEqual({ chunks: ["\x1b[32mup\x1b[0m"], cursor: 1, dropped: 0 });
   expect(await call("POST", "/run/write", { data: "y\r" })).toEqual({ delivered: true });

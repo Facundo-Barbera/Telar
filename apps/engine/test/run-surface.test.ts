@@ -124,61 +124,109 @@ test("an absolute working directory is refused at the door, in words a human cou
   ).rejects.toThrow(/must stay inside the worktree/i);
 });
 
-test("run_status describes the project's deployment, not this conversation's", async () => {
-  const theirTree = temp("theirs");
-  const myTree = temp("mine");
-  let worktreePath = theirTree;
-  const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath }));
+/** The terminal id a tool's answer names — the one thing it must always say. */
+const terminalIn = (text: string): string => /terminal (pipe_[0-9a-f]+|term_[0-9a-z_]+)/.exec(text)![1]!;
+
+test("run_status lists THIS session's terminals, each with its id", async () => {
+  const tree = temp("tree");
+  let sessionId = "s";
+  const { store, tools } = surface(() => ({ sessionId, projectId: "p", worktreePath: tree }));
   const config = store.create("p", { name: "server", command: "sleep 30" });
 
   const empty = await tools.get("run_status")!.call();
-  expect(empty.text).toContain("Nothing is deployed");
+  expect(empty.text).toContain("no terminals");
 
   const started = await tools.get("run_start")!.call({ configId: config.id });
   expect(started.isError).toBe(false);
   expect(started.text).toContain("running");
+  const id = terminalIn(started.text);
 
-  // Same project, a session sitting on a different tree: it sees the same run
-  // and is told plainly that the tree is not its own.
-  worktreePath = myTree;
   const seen = await tools.get("run_status")!.call();
-  expect(seen.text).toContain(theirTree);
-  expect(seen.text).toContain("NOTE: this session works in");
-  expect(seen.text).toContain(myTree);
+  expect(seen.text).toContain(id);
+  expect(seen.text).toContain(tree);
+
+  // Another session in the same project does not see it: the terminal is the
+  // session's, not the project's.
+  sessionId = "other";
+  expect((await tools.get("run_status")!.call()).text).toContain("no terminals");
 }, 15_000);
 
-test("run_start against a live deployment refuses and names the two ways out", async () => {
+test("run_start on a configuration already open opens another instance, and ignores replace", async () => {
   const tree = temp("tree");
-  const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const { store, tools, manager } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", { name: "server", command: "sleep 30" });
-  await tools.get("run_start")!.call({ configId: config.id });
+  const first = await tools.get("run_start")!.call({ configId: config.id });
+  const second = await tools.get("run_start")!.call({ configId: config.id, replace: true });
 
-  const second = await tools.get("run_start")!.call({ configId: config.id });
-  expect(second.isError).toBe(true);
-  // A model that gets a bare "conflict" retries the identical call.
-  expect(second.text).toMatch(/already/i);
-  expect(second.text).toContain("run_stop");
-  expect(second.text).toContain("replace");
+  expect(second.isError).toBe(false);
+  expect(second.text).toContain('"server #2"');
+  // `replace` took nothing over: the first one is still running.
+  expect(manager.run(terminalIn(first.text)).status).toBe("running");
+  expect(manager.run(terminalIn(second.text)).status).toBe("running");
 }, 15_000);
 
-test("a run id belonging to another project is not found rather than acted on", async () => {
+test("run_stop closes the terminal, records the agent as who closed it, and names the choice when there are two", async () => {
   const tree = temp("tree");
-  let projectId = "p";
-  const { store, manager, tools, capability } = surface(() => ({ sessionId: "s", projectId, worktreePath: tree }));
+  const { store, tools, manager } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const config = store.create("p", { name: "server", command: "sleep 30" });
+  const first = terminalIn((await tools.get("run_start")!.call({ configId: config.id })).text);
+  const second = terminalIn((await tools.get("run_start")!.call({ configId: config.id })).text);
+
+  // Two open and no id: guessing which dev server to close is how the wrong
+  // one goes, so the answer names both.
+  const ambiguous = await tools.get("run_stop")!.call({});
+  expect(ambiguous.isError).toBe(true);
+  expect(ambiguous.text).toContain(first);
+  expect(ambiguous.text).toContain(second);
+
+  const closed = await tools.get("run_stop")!.call({ runId: first });
+  expect(closed.isError).toBe(false);
+  expect(manager.run(first).status).toBe("closed");
+  expect(manager.run(first).closedBy).toBe("agent");
+  expect(manager.run(second).status).toBe("running");
+
+  // And the status an agent reads next says who closed it.
+  expect((await tools.get("run_status")!.call()).text).toContain("You closed it");
+}, 15_000);
+
+test("a close from the cockpit is the person's, and the agent is told so", async () => {
+  const tree = temp("tree");
+  const { store, tools, capability } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const config = store.create("p", { name: "server", command: "sleep 30" });
+  const id = terminalIn((await tools.get("run_start")!.call({ configId: config.id })).text);
+
+  // The route with no `closedBy` is the cockpit.
+  const closed = (await route("POST", "/run/stop").route.handle({ params: [], input: { terminalId: id }, capability })) as { closedBy?: string };
+  expect(closed.closedBy).toBe("person");
+  expect((await tools.get("run_status")!.call()).text).toContain("The person closed it — do not reopen it unless they ask");
+}, 15_000);
+
+test("a terminal id belonging to another session is not found rather than acted on", async () => {
+  const tree = temp("tree");
+  let sessionId = "s";
+  const { store, manager, tools, capability } = surface(() => ({ sessionId, projectId: "p", worktreePath: tree }));
   const config = store.create("p", { name: "server", command: "sleep 30" });
   const started = await tools.get("run_start")!.call({ configId: config.id });
-  const runId = /run (run_[0-9a-f]+)/.exec(started.text)![1]!;
+  const id = terminalIn(started.text);
 
-  projectId = "other";
-  const stopped = await tools.get("run_stop")!.call({ runId });
+  sessionId = "other";
+  const stopped = await tools.get("run_stop")!.call({ runId: id });
   expect(stopped.isError).toBe(true);
-  expect(stopped.text).toMatch(/no run/);
-  await expect(route("POST", "/run/stop").route.handle({ params: [], input: { runId }, capability })).rejects.toThrow(/no run/);
+  expect(stopped.text).toMatch(/no terminal/);
+  await expect(route("POST", "/run/stop").route.handle({ params: [], input: { terminalId: id }, capability })).rejects.toThrow(/no terminal/);
 
   // And it really was not touched.
-  projectId = "p";
-  expect(manager.run(runId).status).toBe("running");
+  expect(manager.run(id).status).toBe("running");
 }, 15_000);
+
+test("run_release is kept only to say it is no longer needed", async () => {
+  const tree = temp("tree");
+  const { tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
+  const released = await tools.get("run_release")!.call({ runId: "anything" });
+  expect(released.isError).toBe(false);
+  expect(released.text).toContain("Nothing to release");
+  expect(matchRunRoute("POST", "/run/release")).toBeUndefined();
+});
 
 test("output read through the tool is bounded, cursored, and scrubbed of secret values", async () => {
   const tree = temp("tree");
@@ -201,25 +249,12 @@ test("output read through the tool is bounded, cursored, and scrubbed of secret 
   expect(output.text).toMatch(/\[cursor \d+\]/);
 }, 15_000);
 
-test("release refuses a healthy run through either door", async () => {
-  const tree = temp("tree");
-  const { store, tools, capability } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
-  const config = store.create("p", { name: "server", command: "sleep 30" });
-  const started = await tools.get("run_start")!.call({ configId: config.id });
-  const runId = /run (run_[0-9a-f]+)/.exec(started.text)![1]!;
-
-  const released = await tools.get("run_release")!.call({ runId });
-  expect(released.isError).toBe(true);
-  expect(released.text).toMatch(/lost contact/);
-  await expect(route("POST", "/run/release").route.handle({ params: [], input: { runId }, capability })).rejects.toThrow(/lost contact/);
-}, 15_000);
-
 test("the route table covers the whole capability and nothing else", () => {
   expect(matchRunRoute("GET", "/run/configs")).toBeDefined();
   expect(matchRunRoute("POST", "/run/configs")).toBeDefined();
   expect(matchRunRoute("POST", "/run/configs/runcfg_1")?.params).toEqual(["runcfg_1"]);
   expect(matchRunRoute("DELETE", "/run/configs/runcfg_1")?.params).toEqual(["runcfg_1"]);
-  for (const tail of ["/run/start", "/run/stop", "/run/restart", "/run/release"]) {
+  for (const tail of ["/run/start", "/run/stop", "/run/restart"]) {
     expect(matchRunRoute("POST", tail)).toBeDefined();
     expect(matchRunRoute("GET", tail)).toBeUndefined();
   }
@@ -267,19 +302,16 @@ test("a wait that times out says so first, rather than burying it under the log"
   expect(waited.text).toContain("do not assume it is up");
 }, 20_000);
 
-test("run_wait exit waits a build out, and fires only once the VERDICT is in", async () => {
+test("run_wait exit waits a build out, and fires once the terminal has ended", async () => {
   const tree = temp("tree");
   const { store, tools, manager } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("echo building; sleep 0.2; echo done"));
   const started = await tools.get("run_start")!.call({ configId: config.id });
-  const runId = /run (run_[0-9a-f]+)/.exec(started.text)![1]!;
+  const id = terminalIn(started.text);
 
   const waited = await tools.get("run_wait")!.call({ exit: true, timeoutMs: 10_000 });
   expect(waited.text).toContain("EXITED");
-  // SETTLED, not merely "the shell is gone": the group verdict is what decides
-  // between `exited` and an `unknown` that holds the project's slot, and an
-  // agent told "exited" while that was still open would start the next thing.
-  expect(["exited", "failed"]).toContain(manager.run(runId).status);
+  expect(manager.run(id).status).toBe("exited");
 }, 20_000);
 
 test("waiting for readiness on a recipe with no readiness URL is refused, not waited out", async () => {
@@ -350,7 +382,7 @@ test("run_output narrows with tail, grep and stream WITHOUT moving the cursor", 
   expect(none.text).not.toContain("no output yet");
 }, 20_000);
 
-test("run_stop sends the signal it was asked for, and escalates with SIGKILL regardless", async () => {
+test("run_stop sends the signal it was asked for first, and the close escalates to SIGKILL regardless", async () => {
   // Ctrl-C semantics matter to a dev server that traps SIGTERM to drain
   // connections: for that process SIGTERM is a request it declines and SIGINT
   // is the one it obeys. What must NOT be configurable is the escalation — a
@@ -360,23 +392,34 @@ test("run_stop sends the signal it was asked for, and escalates with SIGKILL reg
   const { store, tools } = surface(
     () => ({ sessionId: "s", projectId: "p", worktreePath: tree }),
     {
-      // A group that swallows the polite signal, so the escalation is reached.
+      // A group that swallows every signal, so the whole escalation is reached.
       processGroup: {
         detached: true,
         stop: (pid, force, signal) => {
           signalled.push({ pid, signal: force ? "SIGKILL" : (signal ?? "SIGTERM") });
         },
-        liveness: () => "gone",
+        emptied: () => false,
       },
-      stopGraceMs: 120,
+      stopGraceMs: 60,
+      closeSettleMs: 60,
     },
   );
   const config = store.create("p", chatty("sleep 30"));
   await tools.get("run_start")!.call({ configId: config.id });
 
-  await tools.get("run_stop")!.call({ signal: "SIGINT" });
-  expect(signalled[0]!.signal).toBe("SIGINT");
-  expect(signalled.map((entry) => entry.signal)).toContain("SIGKILL");
+  try {
+    await tools.get("run_stop")!.call({ signal: "SIGINT" });
+    expect(signalled.map((entry) => entry.signal)).toEqual(["SIGINT", "SIGTERM", "SIGKILL"]);
+  } finally {
+    // This group swallowed even SIGKILL, so reap the fixture by the pid it saw.
+    for (const pid of new Set(signalled.map((entry) => entry.pid))) {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  }
 }, 20_000);
 
 test("the wait route exists, refuses a budget past the ceiling, and is a POST", async () => {
@@ -421,16 +464,39 @@ test("every call the worker's capability makes hits a route that exists", async 
   await capability.start({ configId: "runcfg_1" });
   await capability.stop({});
   await capability.restart({});
-  await capability.release({ runId: "run_1" });
   await capability.output({});
   // AND THE TWO #890 VERBS. `wait` is the one that would have been easiest to
   // spell differently on each side, since it is the only POST among the reads.
   await capability.output({ tail: 5, grep: "error", stream: "stderr" });
   await capability.wait({ runId: "run_1", pattern: "up", timeoutMs: 1 });
-  await capability.stop({ signal: "SIGINT" });
+  await capability.stop({ signal: "SIGINT", closedBy: "agent" });
 
-  expect(asked).toHaveLength(13);
+  expect(asked).toHaveLength(12);
   for (const { method, path } of asked) {
     expect({ method, path, matched: Boolean(matchRunRoute(method, path)) }).toEqual({ method, path, matched: true });
   }
+});
+
+test("the worker's capability names the terminal and who closed it on the wire", async () => {
+  // A close from a tool must reach the daemon as the AGENT's, or a later turn
+  // would be told the person closed it; and the old `runId` must arrive as the
+  // `terminalId` the routes read.
+  const bodies: Array<{ path: string; body: unknown }> = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    bodies.push({ path: `${url.pathname.replace(/^\/v2\/sessions\/[^/]+/, "")}${url.search}`, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  }) as unknown as FetchLike;
+  const capability = clientRunCapability(
+    new EngineClient({ version: 2, daemonId: "dmn_1", host: "127.0.0.1", port: 1, token: "t".repeat(32), startedAt: new Date().toISOString() }, fetchImpl),
+    "sess_1",
+  );
+  await capability.stop({ runId: "term_1", closedBy: "agent" });
+  await capability.wait({ runId: "term_1", exit: true, timeoutMs: 1 });
+  await capability.output({ runId: "term_1" });
+  expect(bodies).toEqual([
+    { path: "/run/stop", body: { terminalId: "term_1", closedBy: "agent" } },
+    { path: "/run/wait", body: { exit: true, timeoutMs: 1, terminalId: "term_1" } },
+    { path: "/run/output?terminalId=term_1", body: undefined },
+  ]);
 });

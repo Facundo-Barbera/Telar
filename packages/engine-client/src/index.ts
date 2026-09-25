@@ -147,6 +147,7 @@ import {
   type RunOutputFilter,
   type RunWaitAnswer,
   type RunStopSignal,
+  type RunClosedBy,
   type RunBytesAnswer,
   type RunWriteAnswer,
   type RunResizeAnswer,
@@ -689,12 +690,32 @@ function runBase(sessionId: string): string {
   return `/v2/sessions/${encodeURIComponent(sessionId)}/run`;
 }
 
-/** `?runId=&after=` for the two windows that share a cursor contract, written
- *  once so the line view and the byte view cannot drift apart in their
+/**
+ * WHICH TERMINAL A RUN VERB IS ABOUT. `terminalId` is the name; `runId` is the
+ * same value under its old name, still accepted for one release, and the wire
+ * always carries `terminalId`.
+ */
+export type RunTargetInput = { terminalId?: string; runId?: string };
+
+/** The wire's spelling of a target: `terminalId`, whichever name it came in. */
+function runTarget(input: RunTargetInput): { terminalId?: string } {
+  const terminalId = input.terminalId ?? input.runId;
+  return terminalId === undefined ? {} : { terminalId };
+}
+
+/** The same, for a JSON body: the target spelled once, the rest untouched. */
+function runBody<T extends RunTargetInput>(input: T): Omit<T, "runId" | "terminalId"> & { terminalId?: string } {
+  const { runId: _runId, terminalId: _terminalId, ...rest } = input;
+  return { ...rest, ...runTarget(input) };
+}
+
+/** `?terminalId=&after=` for the two windows that share a cursor contract,
+ *  written once so the line view and the byte view cannot drift apart in their
  *  spelling of it. */
-function runCursor(input: { runId?: string; after?: number } & RunOutputFilter): string {
+function runCursor(input: RunTargetInput & { after?: number } & RunOutputFilter): string {
   const query = new URLSearchParams();
-  if (input.runId !== undefined) query.set("runId", input.runId);
+  const { terminalId } = runTarget(input);
+  if (terminalId !== undefined) query.set("terminalId", terminalId);
   if (input.after !== undefined) query.set("after", String(input.after));
   // THE THREE NARROWINGS (#890). None of them moves the cursor — see
   // `RunOutputFilter` — so a caller may alternate them with `after` freely.
@@ -2572,15 +2593,13 @@ export class EngineClient {
   }
 
   /**
-   * The project's saved launch recipes and its one local deployment.
+   * The project's saved launch recipes, and the session's terminals.
    *
-   * SESSION-SCOPED URLS, PROJECT-SCOPED ANSWERS, and the mismatch is the design
-   * rather than an oversight. A run belongs to the project — every session
-   * looking at it sees the same deployment — but WHICH project, and which
-   * worktree the caller is sitting on, is something only the engine can resolve
-   * from a session id. So the session names the caller; the answer describes the
-   * project, and says which tree the caller is on so a client can tell "my dev
-   * server" from "the one started from another branch".
+   * SESSION-SCOPED URLS, AND TWO SCOPES OF ANSWER. A configuration belongs to
+   * the project — which project is something only the engine can resolve from
+   * a session id — while a terminal belongs to the session whose panel it
+   * opened in ("Run = a new terminal"), so status, stream and every terminal
+   * verb answer for the calling session alone.
    */
   runConfigurations(sessionId: string): Promise<RunConfigurationsAnswer> {
     return this.request("GET", `${runBase(sessionId)}/configs`);
@@ -2604,45 +2623,44 @@ export class EngineClient {
     return this.request("DELETE", `${runBase(sessionId)}/configs/${encodeURIComponent(configId)}`);
   }
 
+  /** The calling session's terminals, newest first. */
   runStatus(sessionId: string): Promise<RunStatusAnswer> {
     return this.request("GET", `${runBase(sessionId)}/status`);
   }
 
   /**
-   * Start a configuration. `replace` is REFUSED BY DEFAULT rather than assumed:
-   * a project has one local deployment, and taking over one somebody else is
-   * watching has to be asked for by name. Without it, a project that is already
-   * running answers `conflict`.
+   * Open a NEW terminal from a configuration, in the session's panel. Never a
+   * conflict with another terminal; a busy port comes back as `warning` on the
+   * view. `replace` is accepted and ignored.
    */
   startRun(sessionId: string, input: RunStartInput): Promise<RunView> {
     return this.request("POST", `${runBase(sessionId)}/start`, input);
   }
 
-  /** `signal` replaces the POLITE attempt only; the escalation stays SIGKILL
-   *  (#890). A dev server that traps SIGTERM needs SIGINT to stop at all. */
-  stopRun(sessionId: string, runId?: string, signal?: RunStopSignal): Promise<RunView> {
+  /**
+   * Close a terminal, which ends what runs in it. `signal` is a polite first
+   * word (SIGINT for a server that traps SIGTERM); the close follows it anyway.
+   * `closedBy` is who is asking — absent means the person.
+   */
+  stopRun(sessionId: string, terminalId?: string, signal?: RunStopSignal, options: { closedBy?: RunClosedBy } = {}): Promise<RunView> {
     return this.request("POST", `${runBase(sessionId)}/stop`, {
-      ...(runId === undefined ? {} : { runId }),
+      ...(terminalId === undefined ? {} : { terminalId }),
       ...(signal === undefined ? {} : { signal }),
+      ...(options.closedBy === undefined ? {} : { closedBy: options.closedBy }),
     });
   }
 
-  restartRun(sessionId: string, runId?: string): Promise<RunView> {
-    return this.request("POST", `${runBase(sessionId)}/restart`, runId === undefined ? {} : { runId });
-  }
-
-  /**
-   * Give up the project's slot for a run the engine has lost contact with.
-   * SIGNALS NOTHING — that is the point: whatever is still holding the port is
-   * the human's to deal with, and this is them saying they have checked.
-   */
-  releaseRun(sessionId: string, runId: string): Promise<RunView> {
-    return this.request("POST", `${runBase(sessionId)}/release`, { runId });
+  /** Close, then open the same recipe as a NEW terminal (a new id). */
+  restartRun(sessionId: string, terminalId?: string, options: { closedBy?: RunClosedBy } = {}): Promise<RunView> {
+    return this.request("POST", `${runBase(sessionId)}/restart`, {
+      ...(terminalId === undefined ? {} : { terminalId }),
+      ...(options.closedBy === undefined ? {} : { closedBy: options.closedBy }),
+    });
   }
 
   /** Captured output from `after`. A cursor that goes BACKWARDS means a
-   *  different run, not lost lines — see `RunOutputAnswer`. */
-  runOutput(sessionId: string, input: { runId?: string; after?: number } & RunOutputFilter = {}): Promise<RunOutputAnswer> {
+   *  different terminal, not lost lines — see `RunOutputAnswer`. */
+  runOutput(sessionId: string, input: RunTargetInput & { after?: number } & RunOutputFilter = {}): Promise<RunOutputAnswer> {
     return this.request("GET", `${runBase(sessionId)}/output${runCursor(input)}`);
   }
 
@@ -2656,8 +2674,8 @@ export class EngineClient {
    * a wait that polled the host would be the poll this milestone deleted,
    * renamed.
    */
-  runWait(sessionId: string, input: { runId?: string; pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitAnswer> {
-    return this.request("POST", `${runBase(sessionId)}/wait`, input);
+  runWait(sessionId: string, input: RunTargetInput & { pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitAnswer> {
+    return this.request("POST", `${runBase(sessionId)}/wait`, runBody(input));
   }
 
   /**
@@ -2667,12 +2685,12 @@ export class EngineClient {
    * to an agent, which is what an agent can use; this hands a terminal a
    * terminal's stream. Same cursor contract, so one poll shape serves both.
    */
-  runBytes(sessionId: string, input: { runId?: string; after?: number } = {}): Promise<RunBytesAnswer> {
+  runBytes(sessionId: string, input: RunTargetInput & { after?: number } = {}): Promise<RunBytesAnswer> {
     return this.request("GET", `${runBase(sessionId)}/bytes${runCursor(input)}`);
   }
 
   /**
-   * EVERY RUN TRANSITION FOR THIS SESSION'S PROJECT — issue #890.
+   * EVERY TERMINAL TRANSITION FOR THIS SESSION — issue #890.
    *
    * A URL AND HEADERS RATHER THAN A SUBSCRIPTION, exactly like
    * `sessionsStream`: the caller opens it, so a cockpit route can pipe the
@@ -2701,14 +2719,14 @@ export class EngineClient {
    * mode. A run that is not running refuses `conflict`; `delivered: false` is
    * the narrower fact that the bytes reached no process.
    */
-  writeRun(sessionId: string, input: { runId?: string; data: string }): Promise<RunWriteAnswer> {
-    return this.request("POST", `${runBase(sessionId)}/write`, input);
+  writeRun(sessionId: string, input: RunTargetInput & { data: string }): Promise<RunWriteAnswer> {
+    return this.request("POST", `${runBase(sessionId)}/write`, runBody(input));
   }
 
   /** The geometry the surface drawing it is using, so SIGWINCH says something
    *  true to a program that draws a full screen. */
-  resizeRun(sessionId: string, input: { runId?: string; cols: number; rows: number }): Promise<RunResizeAnswer> {
-    return this.request("POST", `${runBase(sessionId)}/resize`, input);
+  resizeRun(sessionId: string, input: RunTargetInput & { cols: number; rows: number }): Promise<RunResizeAnswer> {
+    return this.request("POST", `${runBase(sessionId)}/resize`, runBody(input));
   }
 
   /** A window of rows from a CSV, TSV or Parquet file in the session's tree. */
