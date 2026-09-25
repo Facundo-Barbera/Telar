@@ -127,3 +127,13 @@ describe("the skills menu has something to ask before a session exists", () => {
     expect(read).toBeGreaterThan(-1);
   });
 });
+
+describe("the corner button is Stop only while a running turn has nothing typed", () => {
+  test("a draft during a turn turns it back into Send, so a steer can be clicked", () => {
+    expect(composer).toContain("const stopping = busy && (escArmed || !draft.trim());");
+    // Every place that used to read `busy` for the stop gesture reads `stopping`.
+    expect(composer).toContain('type={stopping && !questionActive ? "button" : "submit"}');
+    expect(composer).toContain("onClick={stopping && !questionActive ? onStop : undefined}");
+    expect(composer).not.toContain("onClick={busy && !questionActive ? onStop : undefined}");
+  });
+});

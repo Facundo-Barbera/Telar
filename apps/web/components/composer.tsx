@@ -14,11 +14,13 @@
  * it had sent. There is no queue strip: a message sent mid-turn appears in the
  * transcript inside the run it joined. The UI never says "wait".
  *
- * SEND BECOMES STOP. One control in the corner, `↵` → spinner → `■`, never
- * moving and never duplicating: the thing you press to go is the thing you press
- * to stop. Escape twice does the same from the keyboard, and the FIRST press
- * repaints that button with the literal word ESC — an arming state nobody can
- * see is indistinguishable from a keystroke that did nothing.
+ * SEND BECOMES STOP — WHILE THE BOX IS EMPTY. One control in the corner, `↵` →
+ * spinner → `■`, never moving and never duplicating. During a turn it is Stop
+ * only while there is nothing typed; the moment there is a draft it is Send
+ * again, so a steer can be clicked as well as entered. Escape twice stops from
+ * the keyboard, and the FIRST press repaints that button with the literal word
+ * ESC — an arming state nobody can see is indistinguishable from a keystroke
+ * that did nothing.
  */
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -1418,7 +1420,8 @@ export function Composer({
   // behind it is settled, leaving the session idle. It briefly said "Pause" —
   // it paused, and a person who pressed it had to press Resume before they
   // could say anything. See the cockpit's `stop`.
-  const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
+  const stopping = busy && (escArmed || !draft.trim());
+  const submitLabel = escArmed ? "Press Escape again to stop" : stopping ? "Stop" : "Send";
   const questionSubmitLabel = isLastQuestion(qFields, qd)
     ? qFields.length === 1
       ? "Submit answer"
@@ -1925,12 +1928,12 @@ export function Composer({
               // In question mode the button SUBMITS THE FORM — the turn is
               // running (busy), but the gesture on offer is answering, not
               // stopping; the drawer keeps its own "Cancel the turn".
-              type={busy && !questionActive ? "button" : "submit"}
+              type={stopping && !questionActive ? "button" : "submit"}
               variant="default"
               size="icon-sm"
               aria-label={questionActive ? questionSubmitLabel : submitLabel}
               title={questionActive ? questionSubmitLabel : undefined}
-              onClick={busy && !questionActive ? onStop : undefined}
+              onClick={stopping && !questionActive ? onStop : undefined}
               className={cn(
                 escArmed && !questionActive && "bg-destructive text-background hover:bg-destructive",
                 !busy && !draft.trim() && "opacity-60",
@@ -1948,7 +1951,7 @@ export function Composer({
                 // pressed and the key that will finish the job, which no icon
                 // can say.
                 <span className="text-3xs leading-none font-semibold tracking-tight">ESC</span>
-              ) : busy ? (
+              ) : stopping ? (
                 <SquareIcon className="size-4" />
               ) : sending ? (
                 <Spinner />
