@@ -29,7 +29,7 @@ import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepas
 import type { LoginGrantStore } from "./secrets/login-grants";
 import { providerProcessEnv } from "./provider-instances";
 import { SteerMailbox } from "./steering";
-import { framedTurnInput } from "./attribution";
+import { framedTurnInput, withTurnNotes } from "./attribution";
 
 type WorkerClient = Pick<
   EngineClient,
@@ -89,6 +89,7 @@ type WorkerClient = Pick<
   | "removeRunConfiguration"
   | "runStatus"
   | "startRun"
+  | "openTerminal"
   | "stopRun"
   | "restartRun"
   | "runOutput"
@@ -1216,7 +1217,7 @@ export class EngineWorker {
     // the engine's own notice, never as the person's words — and a wake that
     // opens its own turn here is framed exactly as one steered mid-turn is.
     // See ./attribution.ts.
-    const prompt = framedTurnInput(claim.turn);
+    const prompt = withTurnNotes(framedTurnInput(claim.turn), claim.notes);
     /**
      * THE SAME FACT AS A FLAG, for a provider that has a provenance channel of
      * its own — see `DriverRun.promptFromHuman`. The predicate is the steer

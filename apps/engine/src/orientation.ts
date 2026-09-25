@@ -39,7 +39,7 @@ import path from "node:path";
 
 /** Bumped whenever the words below change. The skill's front matter carries it,
  *  so a file on disk says which release wrote it. */
-export const ORIENTATION_VERSION = 7;
+export const ORIENTATION_VERSION = 8;
 
 /** The skill's name, which is also its directory and the `$telar` a person or a
  *  model types. One constant so the writer, the remover and the preamble that
@@ -300,14 +300,24 @@ Tools: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
 
 - \`display_open\` — show one file from this session's checkout in the panel,
   rendered. At most once or twice a turn.
-- The Run menu — a project's saved commands, owned by the daemon so a dev
-  server outlives the conversation that started it. A project with no run
+- **Terminals** — anything that keeps running (a dev server, a watcher, a
+  long build) goes in a terminal in the panel, opened with \`terminal_open\`,
+  so the person sees it and can close it. Never start one with a background
+  shell command (\`run_in_background\`, a trailing \`&\`, \`nohup\`): the
+  person cannot see or stop what that leaves behind. Each \`terminal_open\`
+  opens a new terminal owned by this session; nothing blocks another. Wait for
+  a server with \`terminal_wait\`, never with \`sleep\`. You read and close
+  terminals, but never type into one. If the person closes a terminal, it was
+  on purpose: do not reopen it unless they ask. Tools: \`terminal_open\`,
+  \`terminal_list\`, \`terminal_output\`, \`terminal_wait\`,
+  \`terminal_kill\`.
+- The Run menu — a project's saved commands. A project with no run
   configuration can be given one rather than being told it lacks the
-  capability. Its output is a chip in the cockpit's Terminal strip, beside the
-  person's own shells. Tools: \`run_configs\`, \`run_save_config\`,
-  \`run_delete_config\`, \`run_start\`, \`run_stop\`, \`run_restart\`,
-  \`run_status\`, \`run_output\`, \`run_wait\`, \`run_release\`. Wait for a
-  server with \`run_wait\`, never with \`sleep\`.
+  capability; open one with \`terminal_open({configId})\`. Tools:
+  \`run_configs\`, \`run_save_config\`, \`run_delete_config\`. The old
+  names \`run_start\`, \`run_stop\`, \`run_restart\`, \`run_status\`,
+  \`run_output\` and \`run_wait\` still answer for one release; use the
+  terminal ones.
 
 A project may also opt into data science (\`ds_*\`, \`notebook_*\`) and LaTeX
 (\`latex_*\`). Those toolkits exist only where the project turned them on, and

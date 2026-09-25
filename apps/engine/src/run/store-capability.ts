@@ -11,7 +11,7 @@
 import type { RunCapability, RunStatusAnswer, RunTarget } from "./capability";
 import type { RunManager } from "./manager";
 import type { RunStore } from "./store";
-import { isTerminal, redactConfiguration, RunError, type RunConfigurationInput, type RunView } from "./types";
+import { isTerminal, redactConfiguration, RunConfigurationInput, RunError, type RunView } from "./types";
 
 /** Who is asking, and from where. Resolved per call: a worktree can move. */
 export type RunSessionContext = {
@@ -27,6 +27,12 @@ export type RunDeps = {
   manager: RunManager;
   context: () => RunSessionContext;
 };
+
+/** A tab title for a command with no name: its first few words, short. */
+function titleOf(command: string): string {
+  const words = command.trim().split(/\s+/).slice(0, 3).join(" ");
+  return words.length > 40 ? `${words.slice(0, 39)}…` : words;
+}
 
 export function storeRunCapability(deps: RunDeps): RunCapability {
   const { store, manager } = deps;
@@ -100,7 +106,7 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
     },
 
     // `replace` is read and dropped: every start opens a new terminal.
-    async start({ configId }) {
+    async start({ configId, openedBy }) {
       const context = deps.context();
       return await manager.start({
         projectId: context.projectId,
@@ -108,6 +114,36 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
         config: store.get(context.projectId, configId),
         worktreePath: context.worktreePath,
         ...(context.worktreeBranch ? { worktreeBranch: context.worktreeBranch } : {}),
+        ...(openedBy ? { openedBy } : {}),
+      });
+    },
+
+    /**
+     * AN AD-HOC CONFIGURATION, NEVER STORED. It has no id, so the journal
+     * re-lists it after a restart without tying it to a recipe, and nothing in
+     * the Run menu grows because an agent started a watcher.
+     */
+    async open(input) {
+      const context = deps.context();
+      // The same rules a saved recipe meets: a cwd inside the worktree, an
+      // http(s) readiness URL.
+      const parsed = RunConfigurationInput.safeParse({
+        name: input.name ?? titleOf(input.command),
+        command: input.command,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.readinessUrl ? { readinessUrl: input.readinessUrl } : {}),
+      });
+      if (!parsed.success) throw new RunError("invalid_request", parsed.error.issues[0]?.message ?? "that terminal cannot be opened as asked");
+      const at = Date.now();
+      return await manager.start({
+        projectId: context.projectId,
+        sessionId: context.sessionId,
+        config: { ...parsed.data, id: "", projectId: context.projectId, createdAt: at, updatedAt: at },
+        worktreePath: context.worktreePath,
+        ...(context.worktreeBranch ? { worktreeBranch: context.worktreeBranch } : {}),
+        origin: "agent",
+        openedBy: "agent",
+        ...(input.readyPattern ? { readyPattern: input.readyPattern } : {}),
       });
     },
 

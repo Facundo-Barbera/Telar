@@ -54,6 +54,12 @@ export type RunMount = {
   shutdown(): Promise<void>;
 };
 
+/** The one sentence an agent reads on its next turn after the person closed
+ *  one of its terminals. */
+export function personClosedNote(run: RunView): string {
+  return `The person closed terminal "${run.title}" (${run.terminalId}). Do not reopen it unless they ask.`;
+}
+
 /**
  * Build the run surface under an engine home.
  *
@@ -63,7 +69,16 @@ export type RunMount = {
  * headless deployment — a run is a detached child with pipes: multiple
  * instances, no chip, the same byte path.
  */
-export function createRunMount(options: { root: string; env?: NodeJS.ProcessEnv }): RunMount {
+export function createRunMount(options: {
+  root: string;
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Leave a note for a session's next turn. Called when the person closes a
+   * terminal its agent opened or waited on, so the agent does not reopen it
+   * thinking it crashed.
+   */
+  noteForNextTurn?: (sessionId: string, note: string) => void;
+}): RunMount {
   const dir = path.join(options.root, "run");
   fs.mkdirSync(dir, { recursive: true });
   // The liveness journal a previous build kept. Nothing reads it any more, and
@@ -75,6 +90,7 @@ export function createRunMount(options: { root: string; env?: NodeJS.ProcessEnv 
   const manager = new RunManager({
     journal: new RunJournalFile(dir),
     ...(client ? { launcher: terminalLauncher(client) } : {}),
+    ...(options.noteForNextTurn ? { personClosed: (run: RunView) => options.noteForNextTurn!(run.sessionId, personClosedNote(run)) } : {}),
   });
   const recovered = manager
     .recover({

@@ -136,6 +136,15 @@ export type StartRunInput = {
   /** `run` for a saved configuration (the default), `agent` for a command an
    *  agent opened so the person can watch it. */
   origin?: RunOrigin;
+  /** Who asked for it. An agent's terminal is one whose close by the person
+   *  the agent is told about. Default: the person. */
+  openedBy?: "person" | "agent";
+  /**
+   * READY WHEN A LINE MATCHES, for a terminal with no URL to ask — an agent's
+   * `terminal_open({ready: "Listening on"})`. Checked against every captured
+   * line; the first match makes it `ready`.
+   */
+  readyPattern?: string;
 };
 
 type LiveRun = {
@@ -164,6 +173,13 @@ type LiveRun = {
   closedBy?: RunClosedBy;
   /** Who asked for the close in flight, applied when the exit arrives. */
   closing?: RunClosedBy;
+  /**
+   * THE AGENT HAS A STAKE IN THIS TERMINAL: it opened it, or it waited on it.
+   * The person closing one of these is the one close an agent is told about
+   * on its next turn — see `RunManagerOptions.personClosed`.
+   */
+  agentWatching: boolean;
+  readyPattern?: RegExp;
   closeTask?: Promise<void>;
   /** Whatever is holding this terminal's process. NEVER A BARE PID. */
   handle?: RunHandle;
@@ -206,6 +222,11 @@ export type RunManagerOptions = {
   /** How long a finished close waits for its exit report. */
   closeSettleMs?: number;
   readyPollMs?: number;
+  /**
+   * Told when the PERSON closes a terminal the agent opened or waited on, once.
+   * The daemon turns it into a note on the session's next turn.
+   */
+  personClosed?: (run: RunView) => void;
 };
 
 const defaultProbe: RunProbe = async (url) => {
@@ -268,6 +289,7 @@ export class RunManager {
   private readonly journal: RunJournal;
   private readonly closeSettleMs: number;
   private readonly readyPollMs: number;
+  private readonly personClosed: ((run: RunView) => void) | undefined;
 
   constructor(options: RunManagerOptions = {}) {
     this.now = options.now ?? Date.now;
@@ -279,6 +301,7 @@ export class RunManager {
     this.journal = options.journal ?? nullRunJournal;
     this.closeSettleMs = options.closeSettleMs ?? CLOSE_SETTLE_MS;
     this.readyPollMs = options.readyPollMs ?? READY_POLL_MS;
+    this.personClosed = options.personClosed;
   }
 
   /**
@@ -453,7 +476,8 @@ export class RunManager {
   async wait(terminalId: string, options: { pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitOutcome> {
     const run = this.require(terminalId);
     const pattern = options.pattern === undefined ? undefined : compile(options.pattern, "pattern");
-    if (options.ready && !run.config.readinessUrl) {
+    run.agentWatching = true;
+    if (options.ready && !run.config.readinessUrl && !run.readyPattern) {
       throw new RunError(
         "invalid_request",
         `"${redactText(run.configName, run.secrets)}" has no readiness URL, so waiting for it to be ready could only ever time out. Wait for a pattern in its output instead, or give the configuration a readinessUrl.`,
@@ -471,6 +495,10 @@ export class RunManager {
       if (options.ready && run.readiness.kind === "ready") return answer("ready", seen);
       if (options.exit && isTerminal(run.status)) return answer("exit", seen);
       if (pattern && seen.some((line) => pattern.test(line.text))) return answer("pattern", seen);
+      // AN ENDED TERMINAL PRINTS NOTHING MORE AND NEVER BECOMES READY, so a
+      // wait for either is over. Said as `exit`, which is the fact — most of
+      // all when the person closed it while the agent was waiting.
+      if (isTerminal(run.status)) return answer("exit", seen);
       const left = deadline - Date.now();
       if (left <= 0) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_TICK_MS, left)));
@@ -528,6 +556,8 @@ export class RunManager {
       cwd,
       startedAt: this.now(),
       secrets: secretValues(input.config),
+      agentWatching: input.openedBy === "agent",
+      ...(input.readyPattern === undefined ? {} : { readyPattern: compile(input.readyPattern, "ready") }),
     };
     run.instance = this.nextInstance(run.sessionId, run.baseTitle);
     this.opening.add(run);
@@ -559,6 +589,8 @@ export class RunManager {
       worktreePath: run.worktreePath,
       ...(run.worktreeBranch ? { worktreeBranch: run.worktreeBranch } : {}),
       origin: run.origin,
+      ...(run.agentWatching ? { openedBy: "agent" as const } : {}),
+      ...(run.readyPattern ? { readyPattern: run.readyPattern.source } : {}),
     });
   }
 
@@ -586,6 +618,8 @@ export class RunManager {
       } else {
         run.readiness = { kind: "pending" };
       }
+    } else if (run.readyPattern) {
+      run.readiness = { kind: "pending" };
     }
     // The baseline is a network round trip, and the daemon may have been told
     // to go down during it. Opening now would leave a process nobody is left
@@ -639,7 +673,7 @@ export class RunManager {
       return;
     }
     this.announce(run);
-    if (run.readiness.kind === "pending") this.pollReadiness(run);
+    if (run.readiness.kind === "pending" && run.config.readinessUrl) this.pollReadiness(run);
     // THE NAME TAG, for a future engine re-listing this terminal. It is not
     // load-bearing — a failure costs the re-listing, not the terminal — and it
     // is only written where a host exists to keep the terminal across a
@@ -673,7 +707,9 @@ export class RunManager {
          * process that simply ended — `exit` at the prompt, a crash, a build
          * that finished — keeps `exited`/`failed` and its code.
          */
-        const by = run.closing ?? (detail.closed ? "telar" : undefined);
+        // A single close the engine did not ask for came from the cockpit's own
+        // tab or chip, which is the person; a session or quit close is Telar's.
+        const by = run.closing ?? (detail.closed === "close" ? "person" : detail.closed ? "telar" : undefined);
         const code = { ...(detail.exitCode === undefined ? {} : { exitCode: detail.exitCode }), ...(detail.signal ? { signal: detail.signal } : {}) };
         if (by) this.finish(run, "closed", { ...code, closedBy: by });
         else this.finish(run, detail.exitCode === 0 || detail.exitCode === undefined ? "exited" : "failed", code);
@@ -855,6 +891,11 @@ export class RunManager {
   private log(run: LiveRun, stream: "stdout" | "stderr", text: string): string {
     const clean = redactText(text.replace(/\r$/, ""), run.secrets).slice(0, MAX_LINE_CHARS);
     run.lines.push({ at: this.now(), stream, text: clean });
+    if (run.readyPattern && run.readiness.kind === "pending" && !isTerminal(run.status) && run.readyPattern.test(clean)) {
+      run.readiness = { kind: "ready", at: this.now() };
+      if (run.status === "running") run.status = "ready";
+      this.announce(run);
+    }
     if (run.lines.length > MAX_LINES) {
       run.dropped += run.lines.length - MAX_LINES;
       run.lines.splice(0, run.lines.length - MAX_LINES);
@@ -1055,7 +1096,7 @@ export class RunManager {
   /** The parts every record starts from. */
   private blank(): Pick<
     LiveRun,
-    "terminalId" | "status" | "readiness" | "blind" | "lines" | "dropped" | "bytes" | "byteChars" | "bytesDropped" | "secrets" | "waiters"
+    "terminalId" | "status" | "readiness" | "blind" | "lines" | "dropped" | "bytes" | "byteChars" | "bytesDropped" | "secrets" | "waiters" | "agentWatching"
   > {
     return {
       terminalId: "",
@@ -1069,6 +1110,7 @@ export class RunManager {
       bytesDropped: 0,
       secrets: [],
       waiters: [],
+      agentWatching: false,
     };
   }
 
@@ -1088,6 +1130,13 @@ export class RunManager {
     this.closeRecord(run);
     this.wake(run);
     this.announce(run);
+    if (status === "closed" && run.closedBy === "person" && run.agentWatching && this.runs.has(run.terminalId)) {
+      try {
+        this.personClosed?.(this.view(run));
+      } catch {
+        /* a note that could not be kept is not this terminal's failure */
+      }
+    }
   }
 
   private wake(run: LiveRun): void {

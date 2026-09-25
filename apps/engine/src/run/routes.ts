@@ -14,6 +14,7 @@
  * read as the same thing so a caller from before terminals keeps working.
  * `/run/release` is gone: there is no slot left to release.
  */
+import { RunOpenInput } from "@telar/engine-client";
 import { z } from "zod";
 import type { RunCapability } from "./capability";
 import { RunClosedBy, RunConfigurationInput, RunError } from "./types";
@@ -80,7 +81,15 @@ export const runRoutes: RunRoute[] = [
     pattern: /^\/run\/start$/,
     // `replace` still parses — an old caller sends it — and means nothing now.
     handle: async ({ capability, input }) =>
-      await capability.start(parse(z.object({ configId: z.string().min(1), replace: z.boolean().optional() }), input)),
+      await capability.start(
+        parse(z.object({ configId: z.string().min(1), replace: z.boolean().optional(), openedBy: z.enum(["person", "agent"]).optional() }), input),
+      ),
+  },
+  /** A terminal an agent opens with a command of its own — `terminal_open`. */
+  {
+    method: "POST",
+    pattern: /^\/run\/open$/,
+    handle: async ({ capability, input }) => await capability.open(parse(RunOpenInput, input)),
   },
   /**
    * CLOSE A TERMINAL. `signal` is a polite first word (a closed set of three),

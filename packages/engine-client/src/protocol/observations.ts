@@ -342,6 +342,13 @@ export const WorkerClaim = z.object({
    * every session did before this existed.
    */
   orientation: z.string().min(1).optional(),
+  /**
+   * THINGS THE PERSON DID SINCE THE LAST TURN THAT THE AGENT SHOULD KNOW, one
+   * short sentence each — today only "the person closed terminal …". Handed
+   * over once, at claim time, and put before the turn's own input. Absent when
+   * there is nothing to say, which is almost always.
+   */
+  notes: z.array(z.string().min(1)).optional(),
   turn: Turn,
 });
 export type WorkerClaim = z.infer<typeof WorkerClaim>;

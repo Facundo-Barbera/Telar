@@ -77,12 +77,12 @@ const route = (method: string, tail: string) => {
   return found;
 };
 
-test("every tool on this wall is run_-prefixed, and the read-only list names real tools", () => {
+test("every tool on this wall is terminal_- or run_-prefixed, and the read-only list names real tools", () => {
   const tools = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: temp("tree") })).tools;
 
-  expect(tools.size).toBe(10);
+  expect(tools.size).toBe(15);
   for (const name of tools.keys()) {
-    expect(name).toMatch(/^run_[a-z_]+$/);
+    expect(name).toMatch(/^(terminal|run)_[a-z_]+$/);
   }
   // The host reads this list to decide what may skip approval, so a typo in it
   // would either over-expose a mutation or park a harmless read forever.
@@ -97,6 +97,9 @@ test("every tool on this wall is run_-prefixed, and the read-only list names rea
   // make the deterministic path the expensive one, and an agent that cannot
   // wait sleeps and guesses instead — which is the behaviour it replaces.
   expect(RUN_READ_ONLY_TOOLS).toContain("run_wait");
+  expect(RUN_READ_ONLY_TOOLS).toContain("terminal_wait");
+  expect(RUN_READ_ONLY_TOOLS).not.toContain("terminal_open");
+  expect(RUN_READ_ONLY_TOOLS).not.toContain("terminal_kill");
 });
 
 test("a configuration saved through the route is the one the agent's tool reads back", async () => {
@@ -186,7 +189,7 @@ test("run_stop closes the terminal, records the agent as who closed it, and name
   expect(manager.run(second).status).toBe("running");
 
   // And the status an agent reads next says who closed it.
-  expect((await tools.get("run_status")!.call()).text).toContain("You closed it");
+  expect((await tools.get("run_status")!.call()).text).toContain("Closed by you");
 }, 15_000);
 
 test("a close from the cockpit is the person's, and the agent is told so", async () => {
@@ -198,7 +201,8 @@ test("a close from the cockpit is the person's, and the agent is told so", async
   // The route with no `closedBy` is the cockpit.
   const closed = (await route("POST", "/run/stop").route.handle({ params: [], input: { terminalId: id }, capability })) as { closedBy?: string };
   expect(closed.closedBy).toBe("person");
-  expect((await tools.get("run_status")!.call()).text).toContain("The person closed it — do not reopen it unless they ask");
+  expect((await tools.get("run_status")!.call()).text).toContain("Closed by the person");
+  expect((await tools.get("run_status")!.call()).text).toContain("Do not reopen it unless they ask");
 }, 15_000);
 
 test("a terminal id belonging to another session is not found rather than acted on", async () => {
@@ -224,7 +228,7 @@ test("run_release is kept only to say it is no longer needed", async () => {
   const { tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const released = await tools.get("run_release")!.call({ runId: "anything" });
   expect(released.isError).toBe(false);
-  expect(released.text).toContain("Nothing to release");
+  expect(released.text).toContain("No longer needed");
   expect(matchRunRoute("POST", "/run/release")).toBeUndefined();
 });
 
@@ -310,7 +314,7 @@ test("run_wait exit waits a build out, and fires once the terminal has ended", a
   const id = terminalIn(started.text);
 
   const waited = await tools.get("run_wait")!.call({ exit: true, timeoutMs: 10_000 });
-  expect(waited.text).toContain("EXITED");
+  expect(waited.text).toContain("ENDED");
   expect(manager.run(id).status).toBe("exited");
 }, 20_000);
 

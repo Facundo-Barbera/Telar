@@ -21,6 +21,16 @@ worth reading even if nothing else here is.
 > restarted engine re-lists the terminals the host kept (`GET /state`). The
 > headers of `manager.ts`, `launcher.ts`, `terminal-client.ts` and `journal.ts`
 > carry the current reasoning; the transport, redaction and §5 below still hold.
+>
+> **The agent's tools are `terminal_*` now.** `terminal_open` opens a new
+> terminal from a command (`origin: "agent"`) or a saved `configId`;
+> `terminal_list`, `terminal_output`, `terminal_wait` and `terminal_kill` read,
+> wait on and close one by `terminalId`. There is no `terminal_send`: the agent
+> never types into a terminal. The `run_*` names below are thin aliases for one
+> release, and `run_release` only answers that it is no longer needed. When the
+> person closes a terminal the agent opened or waited on, `terminal_wait` and
+> `terminal_output` say "Closed by the person", and the agent's next turn opens
+> with a one-line note saying so (`WorkerClaim.notes`).
 
 The three modules it spans each carry their own reasoning in a header:
 `apps/desktop/run-terminal-server.js`, `apps/engine/src/run/terminal-client.ts`,

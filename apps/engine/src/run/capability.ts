@@ -14,6 +14,7 @@
  * A TERMINAL IS NAMED BY `terminalId`. `runId` is accepted everywhere as the
  * same thing under its old name, for one release.
  */
+import type { RunOpenInput } from "@telar/engine-client";
 import type { RunOutputFilter, RunWaitOutcome } from "./manager";
 import type { RunClosedBy, RunConfigurationInput, RunConfigurationView, RunOutputLine, RunView } from "./types";
 
@@ -47,7 +48,13 @@ export type RunCapability = {
    * and worktree. Never a conflict with another terminal. `replace` is
    * accepted and ignored: there is nothing to replace any more.
    */
-  start(input: { configId: string; replace?: boolean }): Promise<RunView>;
+  start(input: { configId: string; replace?: boolean; openedBy?: "person" | "agent" }): Promise<RunView>;
+  /**
+   * Open a NEW terminal running a command the agent chose, with no saved
+   * configuration behind it — `origin: "agent"`, in the session's panel and
+   * worktree, exactly where a configuration's would open.
+   */
+  open(input: RunOpenInput): Promise<RunView>;
   /**
    * Close a terminal, which ends what runs in it. With no id, the session's
    * one open terminal — and a refusal naming them when there are several.

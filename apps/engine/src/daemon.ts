@@ -1248,7 +1248,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * terminals a previous engine opened runs in the background: nothing waits
    * on it, because nothing is blocked by it.
    */
-  const runMount = createRunMount({ root: store.paths.root });
+  const runMount = createRunMount({ root: store.paths.root, noteForNextTurn: (sessionId, note) => store.noteForNextTurn(sessionId, note) });
   const pluginStatuses = await pluginHost.startAll();
   /**
    * The host is the authority on which of its tools are reads. Installed here

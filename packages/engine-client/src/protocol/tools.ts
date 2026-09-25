@@ -98,7 +98,7 @@ export function isTelarMcpServer(server: string | undefined): boolean {
  * can be told about and then cannot use — so an entry appears in the same change
  * that ships its toolkit, never before.
  */
-export const TELAR_CORE_CAPABILITIES = ["browser", "sessions", "display", "run", "prompt"] as const;
+export const TELAR_CORE_CAPABILITIES = ["browser", "sessions", "display", "run", "terminal", "prompt"] as const;
 
 /**
  * Core capabilities plus every bundled plugin's tool prefix.

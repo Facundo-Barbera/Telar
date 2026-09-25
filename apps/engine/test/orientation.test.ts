@@ -273,8 +273,11 @@ function telarToolNames(): string[] {
 }
 
 test("the skill names every tool on the telar wall, so it cannot drift", () => {
-  const missing = telarToolNames().filter((name) => !TELAR_SKILL.includes(name));
+  // `run_release` is still registered so a model that learned it gets "no
+  // longer needed" rather than "no such tool" — and the skill must not teach it.
+  const missing = telarToolNames().filter((name) => name !== "run_release" && !TELAR_SKILL.includes(name));
   expect(missing).toEqual([]);
+  expect(TELAR_SKILL).not.toContain("run_release");
   // The loop above reaches every toolkit there is. The one tool it could NOT
   // reach was `warp` — Claude-only, with no toolkit to enumerate — and #877
   // retired it, so the skill must not name it at all. Case-folded, because the
@@ -283,6 +286,18 @@ test("the skill names every tool on the telar wall, so it cannot drift", () => {
   // The browser is a separate server with its own briefing, and the skill is
   // where its tab rules are written down in full.
   expect(TELAR_SKILL).toContain("browser_list_tabs");
+});
+
+test("the skill and the run briefing send long-running work to a terminal the person can see", () => {
+  for (const text of [TELAR_SKILL, RUN_BRIEFING]) {
+    expect(text).toContain("terminal_open");
+    expect(text).toContain("run_in_background");
+    expect(text).not.toContain("run_release");
+    expect(text).not.toContain("outlives the conversation");
+  }
+  expect(RUN_BRIEFING).toContain("terminal_wait");
+  expect(RUN_BRIEFING).toContain("terminal_kill");
+  expect(TELAR_SKILL).toContain("do not reopen it unless they ask");
 });
 
 test("the skill says the things a coordinator gets wrong", () => {
