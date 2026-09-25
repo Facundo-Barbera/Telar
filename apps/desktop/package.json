@@ -109,6 +109,7 @@
       "window-material.js",
       "window-target.js",
       "computer-use-helper.json",
+      "computer-use-stop.js",
       "package.json"
     ],
     "extraResources": [
