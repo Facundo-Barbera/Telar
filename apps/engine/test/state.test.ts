@@ -2436,6 +2436,31 @@ test("a session subscribed to one that is still going reads as waiting on it —
   expect(store.getSession("session_one").activity).not.toBe("waiting");
 });
 
+test("a running turn whose only open call is a wait reads as waiting on it", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Start the server and wait" });
+  const claimed = store.claimNextTurn("worker_one")!;
+  const token = claimed.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "item.started", item: { id: "wait", detail: { type: "mcp_tool_call", call: { name: "mcp__telar__run_wait", server: "telar" } } } },
+  ]);
+  expect(store.getSession("session_one")).toMatchObject({ activity: "working", activityDetail: { kind: "tool", waitingOn: "run" } });
+
+  // Something else open alongside it — the model still writing — is work.
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "item.started", item: { id: "text", detail: { type: "assistant_message", text: "" } } },
+  ]);
+  expect(store.getSession("session_one").activityDetail).toBeUndefined();
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "item.completed", itemId: "text", status: "completed" },
+    { kind: "item.completed", itemId: "wait", status: "completed" },
+  ]);
+  // Nothing open at all is a turn between steps, not a wait.
+  expect(store.getSession("session_one")).toMatchObject({ activity: "working" });
+  expect(store.getSession("session_one").activityDetail).toBeUndefined();
+});
+
 test("two sessions subscribed to each other fold without recursing", () => {
   const { store } = readyStore();
   store.createSession({ id: "session_two", projectId: "project_one" });

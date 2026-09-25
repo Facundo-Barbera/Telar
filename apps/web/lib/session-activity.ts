@@ -19,7 +19,7 @@
  * what a status MEANS is a decision, and a decision made inside a render
  * function is one nothing can test and two surfaces can spell differently.
  */
-import type { SessionActivity, SessionActivityDetail } from "@telar/engine-client";
+import type { SessionActivity, SessionActivityDetail, WaitingOn } from "@telar/engine-client";
 import { fmtAgo } from "@/lib/format";
 
 /**
@@ -54,6 +54,13 @@ export function activityBadge(
       // to be about the person, because they are the thing that unblocks it.
       return { label: "Waiting on you", tone: "attention", ticking: false, hint: "A question or an approval is waiting for your answer." };
     case "working":
+      /**
+       * A TURN THAT IS ONLY WAITING — on a run, a timer, a background task's
+       * output. Still the turn's time, so it still ticks, but QUIET: nothing is
+       * being generated, and the one thing a person wants to know is that
+       * looking away costs nothing.
+       */
+      if (detail?.kind === "tool") return { label: "Waiting", tone: "quiet", ticking: true, hint: WAITING_HINT[detail.waitingOn] };
       return { label: "Working", tone: "live", ticking: true, hint: "A turn is running." };
     case "queued":
       return { label: "Queued", tone: "quiet", ticking: false, hint: "A message is waiting for its turn to start." };
@@ -100,6 +107,12 @@ export function activityBadge(
       return null;
   }
 }
+
+const WAITING_HINT: Record<WaitingOn, string> = {
+  run: "The turn is running, but only waiting for a run to be ready.",
+  timer: "The turn is running, but only waiting out a timer.",
+  task: "The turn is running, but only waiting for background work to report.",
+};
 
 /** "2 agents and 1 process" — processes being shells and monitors alike. */
 function backgroundBreakdown(counts: { tasks: number; agents: number }): string {
