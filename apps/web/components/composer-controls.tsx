@@ -101,16 +101,18 @@ type ControlTriggerProps = ComponentPropsWithoutRef<"button"> & {
   label: string;
   detail?: string;
   ariaLabel: string;
+  /** The label is a default the provider applies, not a pick: drawn quieter. */
+  muted?: boolean;
 };
 
 const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>(
-  ({ open, icon, label, detail, ariaLabel, className, ...props }, ref) => (
+  ({ open, icon, label, detail, ariaLabel, muted, className, ...props }, ref) => (
     <button {...props} ref={ref} type="button" className={cn(controlClass(open, props.disabled), className)} aria-label={ariaLabel}>
       <span className="flex shrink-0 [&_svg]:size-3.5">{icon}</span>
       {/* max-w-48, was max-w-32: versioned model names ("Haiku 4.5") are the
           longest labels a pill carries, and 128px truncated them immediately.
           The other pills' labels are single words and never reach the cap. */}
-      <span className="max-w-48 truncate text-foreground">{label}</span>
+      <span className={cn("max-w-48 truncate", muted ? "text-muted-foreground" : "text-foreground")}>{label}</span>
       {/* THE SECONDARY FACT APPEARS ONLY WHILE THE ROW IS FOLDED. The donor hid
           it below `md:` — a VIEWPORT query, which is the wrong instrument: this
           pill lives in a column that the right panel narrows while the window
@@ -269,8 +271,32 @@ function selectionOf(models: readonly ProviderModel[], choice: ModelChoice) {
     /** The windows this model comes in. One entry means nothing to choose. */
     windows: windowsOf(family),
     levels: row?.efforts ?? [],
+    /** What the provider runs this model at when no level is picked, where it
+     *  said (the engine asks each CLI). Absent means unknown, never a guess. */
+    defaultEffort: row?.defaultEffort,
     fastMode: row?.fastMode === true,
   };
+}
+
+/**
+ * THE REASONING PILL'S WORDS: always a level, never the bare noun.
+ *
+ * A pick names itself. With no pick the pill names the level the model will
+ * actually run at, marked as the default rather than a choice; only when the
+ * provider has not said what that is does it fall back to "Auto".
+ */
+export function reasoningPillLabel(
+  effort: string | undefined,
+  defaultEffort: string | undefined,
+  suffix?: string,
+): { label: string; isDefault: boolean } {
+  const level = effort ? effortLabel(effort) : defaultEffort ? effortLabel(defaultEffort) : "Auto";
+  return { label: suffix ? `${level} · ${suffix}` : level, isDefault: !effort };
+}
+
+/** The menu's Auto row, carrying the level Auto resolves to where it is known. */
+export function autoRowLabel(defaultEffort: string | undefined): string {
+  return defaultEffort ? `Auto (${effortLabel(defaultEffort)})` : "Auto";
 }
 
 /**
@@ -580,7 +606,7 @@ export function AgentControl({
   // `listedFamilies` below. What this call is still for is the SELECTION: which
   // family is ticked and which window it runs in, both of which must resolve for
   // a model the reader has since hidden.
-  const { family: selectedFamily, window: activeWindow } = selectionOf(models, choice);
+  const { family: selectedFamily, window: activeWindow, defaultEffort } = selectionOf(models, choice);
   /**
    * STARS COME FROM THE ENGINE NOW, not from this browser's `localStorage`.
    *
@@ -738,7 +764,7 @@ export function AgentControl({
              * question the pill next door now asks properly.
              */
             label={label}
-            {...(effort ? { detail: effortLabel(effort) } : {})}
+            {...(effort || defaultEffort ? { detail: effortLabel(effort ?? defaultEffort) } : {})}
             ariaLabel={`Model: ${label} on ${PROVIDER_LABEL[driver]}`}
             // Shrinks rather than forcing the row to overflow: the composer
             // shares the window with the right panel and cannot assume width.
@@ -1024,23 +1050,30 @@ export function ReasoningControl({
    * does nothing is the thing this cockpit keeps refusing to ship.
    */
   const models = catalogue?.models ?? [];
-  const { family, levels, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
+  const { family, row, levels, defaultEffort, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
   const readOnly = !onChange;
-  const effort = effortLabel(choice.effort);
   const suffix = windowSuffix(activeWindow, windows);
   /**
    * `Extra high · 1M`. The window rides on the LABEL rather than in `detail`,
    * which the pill hides at anything but the narrowest width — a fact you can
    * only see by opening a menu is the thing this row exists to avoid.
    *
-   * THE NOUN STANDS IN FOR THE DEFAULT. A session that has chosen neither an
-   * effort nor an access mode — which is most of them — put two pills reading
-   * "Auto" side by side in the composer's foot, one word repeated with nothing
-   * to say which was which. A chosen level names itself; an unchosen one names
-   * the QUESTION, so the pair reads "Reasoning · Access" at rest and swaps in
-   * the answer as each is decided.
+   * ALWAYS A LEVEL. The pill used to read "Reasoning" whenever nothing was
+   * picked, which said nothing about the next turn. It now names the level the
+   * model runs at by default, drawn quieter than a pick — see
+   * `reasoningPillLabel`.
    */
-  const label = choice.effort ? (suffix ? `${effort} · ${suffix}` : effort) : suffix ? `Reasoning · ${suffix}` : "Reasoning";
+  const { label, isDefault } = reasoningPillLabel(choice.effort, defaultEffort, suffix);
+  const spoken = choice.effort ? effortLabel(choice.effort) : defaultEffort ? `${effortLabel(defaultEffort)} (default)` : "Auto";
+
+  /**
+   * NOTHING TO SET, NO PILL — once the catalogue has answered for a model that
+   * offers no level, no second window and no fast mode. Before it answers the
+   * pill stays, so it does not flicker in, and a level already on the session
+   * keeps it so that level can still be seen and cleared.
+   */
+  if (catalogue && row && levels.length === 0 && windows.length <= 1 && !fastMode && !choice.effort) return null;
+
 
   /** Every row re-sends the WHOLE choice. Picking an effort must not clear the
    *  model, and picking a window must not clear the effort. */
@@ -1057,14 +1090,16 @@ export function ReasoningControl({
             open={open}
             icon={<GaugeIcon className="size-3.5" />}
             label={label}
+            muted={isDefault}
+            {...(isDefault && defaultEffort ? { title: "The model's default. Pick a level to change it." } : {})}
             {...(choice.fastMode ? { detail: "Fast" } : {})}
-            ariaLabel={`Reasoning effort: ${effort}${suffix ? `, ${suffix} context` : ""}`}
+            ariaLabel={`Reasoning effort: ${spoken}${suffix ? `, ${suffix} context` : ""}`}
           />
         }
       />
       <PopoverContent align="start" side="top" sideOffset={8} className="max-h-[min(26rem,70vh)] w-56 gap-0 overflow-y-auto rounded-xl p-1">
         <MenuHeading>Reasoning</MenuHeading>
-        <CompactRow label="Auto" selected={!choice.effort} disabled={readOnly} onSelect={() => pick({ effort: undefined })} />
+        <CompactRow label={autoRowLabel(defaultEffort)} selected={!choice.effort} disabled={readOnly} onSelect={() => pick({ effort: undefined })} />
         {levels.map((level) => (
           <CompactRow
             key={level}
@@ -1155,9 +1190,9 @@ export function AccessControl({
 }) {
   const [open, setOpen] = useState(false);
   const mode = RUNTIME_MODE_LABELS[runtimeMode];
-  /** See ReasoningControl: the default mode is also spelled "Auto", and two
-   *  pills reading Auto side by side name neither of the two questions they
-   *  answer. The noun stands in until a mode is chosen. */
+  /** The default mode is spelled "Auto", and the reasoning pill can read Auto
+   *  too when a model's default level is unknown; two pills reading Auto side
+   *  by side name neither question. The noun stands in until a mode is chosen. */
   const label = runtimeMode === "auto" ? "Access" : mode;
   /**
    * THE USAGE-LIMIT SWITCH LIVES HERE rather than earning a pill of its own.
@@ -1283,7 +1318,7 @@ export function ComposerOverflowMenu({
   // Same per-model rules as the pill's menus, from the same function — see
   // `selectionOf`, which exists because these two drifted apart once already.
   const models = catalogue?.models ?? [];
-  const { family, levels, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
+  const { family, levels, defaultEffort, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
 
   return (
     <DropdownMenu>
@@ -1315,7 +1350,7 @@ export function ComposerOverflowMenu({
           <DropdownMenuGroup>
             <DropdownMenuLabel>Reasoning</DropdownMenuLabel>
             <DropdownMenuItem onClick={() => onChange({ ...choice, effort: undefined })}>
-              <span className="flex-1">Auto</span>
+              <span className="flex-1">{autoRowLabel(defaultEffort)}</span>
               {!choice.effort && <CheckIcon className="size-3.5 text-primary" />}
             </DropdownMenuItem>
             {levels.map((level) => (
