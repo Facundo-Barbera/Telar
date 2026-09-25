@@ -1918,29 +1918,55 @@ export function createClaudeDriver(
            * ambient entry never becomes a row, but treating its presence as
            * absence would close a real task the payload still lists.
            */
-          const live = new Set(
-            (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
-              const entry = asRecord(raw);
-              const id = str(entry.task_id);
-              if (!id) return [];
-              // The one frame that states `task_type` for a task this process
-              // never announced. Remembered so the kind is read, not inferred
-              // from `is_backgrounded` — set for sub-agents and shells alike.
-              const taskType = str(entry.task_type);
-              if (taskType) taskTypesBySdkId.set(id, taskType);
-              return [id];
-            }),
-          );
-          // LATE METADATA CORRECTS AN EARLIER GUESS: a row minted before any
-          // frame stated its type carries a defaulted kind, and this payload is
-          // the statement. Re-announced so it lands even if nothing else about
-          // the task ever arrives. Live rows only — a settled one is history.
-          for (const sdkId of live) {
-            const rowId = taskIdsBySdkId.get(sdkId);
+          const entries = (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
+            const entry = asRecord(raw);
+            const id = str(entry.task_id);
+            if (!id) return [];
+            // The one frame that states `task_type` for a task this process
+            // never announced. Remembered so the kind is read, not inferred
+            // from `is_backgrounded` — set for sub-agents and shells alike.
+            const taskType = str(entry.task_type);
+            if (taskType) taskTypesBySdkId.set(id, taskType);
+            return [{ id, ambient: entry.ambient === true }];
+          });
+          const live = new Set(entries.map((entry) => entry.id));
+          /**
+           * EVERY LIVE ROW IS RECONCILED TO ITS ENTRY — the payload is the
+           * truth about these three facts, whatever the edges said:
+           *  - KIND: a row minted before any frame stated its type carries a
+           *    defaulted kind, and this payload is the statement.
+           *  - BACKGROUNDED: being listed IS being background work. A
+           *    foreground agent sent to the background shows up here before
+           *    its `task_updated` patch; if that patch is lost, the turn-end
+           *    sweep would otherwise fail a live agent.
+           *  - AMBIENT: the SDK flips it on a live entry ("or an entry's
+           *    `ambient` flag flips"). The row keeps existing — it may still
+           *    be shown — but stops counting as activity (`countsAsActivity`).
+           * Re-announced so it lands even if nothing else about the task ever
+           * arrives. Live rows only — a settled one is history.
+           *
+           * AN ENTRY WITH NO ROW MINTS NOTHING. The payload carries ids only,
+           * and the SDK says not to correlate it with the edge stream; the
+           * level usually PRECEDES `task_started`, whose `tool_use_id` is what
+           * a row's id — and every sub-agent item filed under it — is keyed
+           * on. A row minted here under the bare SDK id would split an agent
+           * from its own work. The ambient ones are remembered as suppressed,
+           * so their edges cannot mint one either.
+           */
+          for (const entry of entries) {
+            const rowId = taskIdsBySdkId.get(entry.id);
             const row = rowId ? knownTasks.get(rowId) : undefined;
-            if (!row || isTerminalTaskState(row.state)) continue;
-            const stated = taskKindForTypeOrUndefined(taskTypesBySdkId.get(sdkId));
-            if (stated && stated !== row.kind) emitTask("task.progress", sdkId, { state: row.state, kind: stated });
+            if (!row) {
+              if (entry.ambient) suppressedTasks.add(entry.id);
+              continue;
+            }
+            if (isTerminalTaskState(row.state)) continue;
+            const stated = taskKindForTypeOrUndefined(taskTypesBySdkId.get(entry.id));
+            const kind = stated && stated !== row.kind ? { kind: stated } : {};
+            const backgrounded = isBackgroundWork(row) ? {} : { backgrounded: true };
+            const ambient = (row.ambient === true) === entry.ambient ? {} : { ambient: entry.ambient };
+            if (Object.keys({ ...kind, ...backgrounded, ...ambient }).length === 0) continue;
+            emitTask("task.progress", entry.id, { state: row.state, ...kind, ...backgrounded, ...ambient });
           }
           for (const task of [...knownTasks.values()]) {
             if (!isBackgroundWork(task) || isTerminalTaskState(task.state)) continue;
