@@ -35,7 +35,7 @@ import {
   splitRoster,
   type PanelTab,
 } from "./right-panel";
-import { emptyPanelTabs, openPanelTab } from "@/lib/right-panel-tabs";
+import { emptyPanelTabs, openPanelTab, revealPanelTab, type PanelTabState } from "@/lib/right-panel-tabs";
 
 function fileChange(overrides: {
   path: string;
@@ -310,6 +310,25 @@ describe("agentBrowserActivity", () => {
 
   test("a browser with no pages is not a reason to show one", () => {
     expect(agentBrowserActivity([browsed(4, 200, 0)], 150, 0)).toEqual({ acted: false, through: 4 });
+  });
+
+  test("a browser call the agent completed counts even when no state report followed", () => {
+    // The state report is best effort; the call's own row is always journalled.
+    const call = (id: number, status: string) =>
+      ({ id, at: 200, type: "item.completed", item: { id: `i${id}`, status, detail: { type: "browser_action", call: { name: "mcp__telar__browser_navigate" } } } }) as unknown as EngineEvent;
+    expect(agentBrowserActivity([call(6, "completed")], 150, 0)).toEqual({ acted: true, through: 6 });
+    // A refused call — the person closed the browser — must not bring the tab back.
+    expect(agentBrowserActivity([call(7, "failed")], 150, 0)).toEqual({ acted: false, through: 7 });
+  });
+
+  test("an agent's browse adds the Browser tab without changing the active tab", () => {
+    const call = { id: 8, at: 200, type: "item.completed", item: { id: "i8", status: "completed", detail: { type: "browser_action", call: { name: "mcp__telar__browser_snapshot" } } } } as unknown as EngineEvent;
+    expect(agentBrowserActivity([call], 150, 0).acted).toBe(true);
+    const state: PanelTabState<string> = { tabs: [{ id: "diff", kind: "diff", params: {} }], activeTab: "diff", open: true };
+    const next = revealPanelTab(state, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} });
+    expect(next.tabs.map((tab) => tab.id)).toEqual(["diff", LIVE_BROWSER_TAB]);
+    expect(next.activeTab).toBe("diff");
+    expect(next.open).toBe(true);
   });
 
   test("ignores everything that is not the browser", () => {

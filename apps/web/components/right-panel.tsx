@@ -893,9 +893,23 @@ export function agentBrowserActivity(events: readonly EngineEvent[], since: numb
   let acted = false;
   let through = after;
   for (const event of events) {
-    if (event.type !== "browser.state.changed" || event.at < since || event.id <= after) continue;
-    through = Math.max(through, event.id);
-    if (event.tabs.length > 0) acted = true;
+    if (event.at < since || event.id <= after) continue;
+    if (event.type === "browser.state.changed") {
+      through = Math.max(through, event.id);
+      if (event.tabs.length > 0) acted = true;
+    } else if (event.type === "item.completed" && event.item.detail.type === "browser_action") {
+      /**
+       * AND ANY BROWSER CALL THE AGENT COMPLETED. The state report above is
+       * the engine re-reading the tab list after a call, and it is best effort
+       * — a call the tab list did not change, or a report that lost the race,
+       * journals nothing, and the tab never appeared. The call's own row is
+       * always journalled. ONLY A COMPLETED ONE: after the person closes the
+       * browser every call but `browser_tabs new` is refused, and a refusal
+       * must not put back the tab they closed.
+       */
+      through = Math.max(through, event.id);
+      if (event.item.status === "completed") acted = true;
+    }
   }
   return { acted, through };
 }
