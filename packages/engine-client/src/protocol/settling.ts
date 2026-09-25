@@ -53,6 +53,7 @@
  * the durable record — a submitted turn is in `queue.json` before the response
  * returns — so "is there queued work" is answerable directly.
  */
+import type { SessionActivity } from "./entities";
 
 /**
  * ONLY WHAT THE RULE READS, rather than the engine's `Session`.
@@ -139,7 +140,7 @@ export type SettlingOptions = {
  * `working`: a person may still shelve it by hand, but nothing AUTOMATIC may.
  */
 export function settlingActivityOf(session: {
-  activity?: "idle" | "blocked" | "working" | "queued" | "monitoring";
+  activity?: SessionActivity;
   lastTurnEndedAt?: number;
   lastTurnFailed?: boolean;
 }): SettlingActivity {

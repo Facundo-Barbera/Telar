@@ -251,6 +251,14 @@ export function saveRegistration(deviceId: string, registration: MobileRegistrat
   const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, automaticStart: old?.automaticStart, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
+/**
+ * NOTHING IS RUNNING FOR THIS SESSION. `waiting` (on another session) and
+ * `scheduled` are idle here: their turn ended, which is what a "finished" alert
+ * and an ended Live Activity report. The wake that follows is a new turn.
+ */
+export function turnIsOver(activity: SessionSignal["activity"]): boolean {
+  return activity === "idle" || activity === "waiting" || activity === "scheduled";
+}
 export function signalKey(session: SessionSignal): string {
   return `${session.activity}:${session.activityAt ?? 0}:${session.lastTurnEndedAt ?? 0}:${session.lastTurnFailed === true}`;
 }
@@ -272,7 +280,7 @@ export const ALERT_BODY: Record<AlertKind, string> = {
 export function alertKind(session: SessionSignal, previous: string | undefined, completions: boolean): AlertKind | undefined {
   if (previous === undefined || previous === signalKey(session)) return;
   if (session.activity === "blocked") return "blocked";
-  if (session.activity === "idle" && session.lastTurnEndedAt && String(session.lastTurnEndedAt) !== previous.split(":")[2]) {
+  if (turnIsOver(session.activity) && session.lastTurnEndedAt && String(session.lastTurnEndedAt) !== previous.split(":")[2]) {
     if (session.lastTurnFailed) return "failed";
     if (completions) return "finished";
   }
@@ -289,8 +297,8 @@ export function notification(record: MobileRegistration, session: SessionSignal,
       category: approvable ? CATEGORY_REQUEST : CATEGORY_SESSION }, url: sessionURL(record.hostId, session.id), ...(approvable ? { request: approvable } : {}) } };
 }
 export function activityDelivery(record: MobileRegistration, follow: MobileRegistration["activities"][number], session: SessionSignal | undefined, now: number): Delivery {
-  const ended = !session || session.activity === "idle";
-  const status = !session ? "Session unavailable" : session.activity === "blocked" ? "Needs you" : ended ? session.lastTurnFailed ? "Failed" : "Finished" : session.activity === "queued" ? "Queued" : session.activity === "monitoring" ? "Monitoring" : "Working";
+  const ended = !session || turnIsOver(session.activity);
+  const status = !session ? "Session unavailable" : session.activity === "blocked" ? "Needs you" : ended ? session.lastTurnFailed ? "Failed" : "Finished" : session.activity === "queued" ? "Queued" : session.activity === "monitoring" ? "Background" : "Working";
   return { token: follow.token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", activityId: follow.sessionId,
     collapseId: crypto.createHash("sha256").update(follow.token).digest("hex"), payload: { aps: {
       timestamp: Math.floor(now), event: ended ? "end" : "update", "stale-date": Math.floor(now + ACTIVITY_STALE_S),
@@ -421,7 +429,7 @@ export function automaticActivityDelivery(record: MobileRegistration, sessions: 
   const ended = !focus;
   const state = {
     title: record.previews && active.length === 1 ? focus!.title.slice(0,160) : active.length > 1 ? `${active.length} active sessions` : ended ? "Work finished" : "Telar work",
-    status: ended ? "Finished" : focus.activity === "blocked" ? "Needs you" : focus.activity === "queued" ? "Queued" : focus.activity === "monitoring" ? "Monitoring" : "Working",
+    status: ended ? "Finished" : focus.activity === "blocked" ? "Needs you" : focus.activity === "queued" ? "Queued" : focus.activity === "monitoring" ? "Background" : "Working",
     startedAt: startedAt - 978307200, updatedAt: now - 978307200, ended,
     sessionId: focus?.id, activeCount: active.length,
   };

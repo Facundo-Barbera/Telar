@@ -230,7 +230,7 @@ const OUTCOME_TONE: Record<Outcome, PanelTone> = {
  */
 function delegateState(entry: Delegate): { label: string; tone: PanelTone } {
   if (entry.kind === "finished" && entry.outcome) return { label: OUTCOME[entry.outcome], tone: OUTCOME_TONE[entry.outcome] };
-  const badge = activityBadge(entry.session.activity);
+  const badge = activityBadge(entry.session);
   if (!badge) return { label: entry.kind === "assigned" ? "Working" : "Idle", tone: "none" };
   return { label: badge.label, tone: badge.tone === "attention" ? "attention" : badge.tone === "live" ? "active" : "none" };
 }

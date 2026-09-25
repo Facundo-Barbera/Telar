@@ -35,6 +35,7 @@ import {
   type LiveSessionRow,
   type ProjectAvailability,
   type SessionActivity,
+  type SessionActivityDetail,
   type SessionAssignment,
   type SessionPreparation,
   type ProviderDriverKind,
@@ -198,6 +199,8 @@ export type SidebarSession = {
   /** When that began — for "Working 3m". Absent on `idle`, which has no event
    *  to date. */
   activityAt?: number;
+  /** Counts, the awaited session, the wake time — what the badge label needs. */
+  activityDetail?: SessionActivityDetail;
   /** Is there an answer here nobody has read — see `hasUnreadResult`. Carried
    *  on the projection like the rest of the inbox state, because `bandOf` runs
    *  per row per render and must not go looking anything up. */
@@ -282,6 +285,7 @@ export function toSidebarSession(
     ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
     ...(session.wokeAt === undefined ? {} : { wokeAt: session.wokeAt }),
     activity: session.activity,
+    ...(session.activityDetail === undefined ? {} : { activityDetail: session.activityDetail }),
     ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
     ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
     ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),

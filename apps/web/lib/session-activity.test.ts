@@ -13,12 +13,12 @@ describe("activityBadge", () => {
   test("a session waiting for a human says so in the second person", () => {
     // The engine's word is "blocked", which is about the TURN. The row's word
     // has to be about the reader, because they are the thing that unblocks it.
-    expect(activityBadge("blocked")).toEqual({ label: "Waiting on you", tone: "attention", ticking: false });
+    expect(activityBadge({ activity: "blocked" })).toMatchObject({ label: "Waiting on you", tone: "attention", ticking: false });
   });
 
   test("the two states worth seeing across the room have their own colours", () => {
-    expect(activityBadge("working")?.tone).toBe("live");
-    expect(activityBadge("queued")?.tone).toBe("quiet");
+    expect(activityBadge({ activity: "working" })?.tone).toBe("live");
+    expect(activityBadge({ activity: "queued" })?.tone).toBe("quiet");
     // WARNING FOR "ACT", PRIMARY FOR "ALIVE" — both from globals.css's five
     // tokens, never a raw ramp. `live` was plain foreground on the first pass,
     // which made a running turn look identical to the timestamp it replaces:
@@ -34,14 +34,45 @@ describe("activityBadge", () => {
   test("a resting session gets no badge at all", () => {
     // An "Idle" pill on every quiet row is chrome that says only "this row
     // exists" — and it would push the timestamp, which IS useful, off the line.
-    expect(activityBadge("idle")).toBeNull();
+    expect(activityBadge({ activity: "idle" })).toBeNull();
   });
 
   test("only a state with a real start ticks", () => {
-    expect(activityBadge("working")?.ticking).toBe(true);
+    expect(activityBadge({ activity: "working" })?.ticking).toBe(true);
     // How long a turn has sat in the queue is not the reader's business, and a
     // ticking number implies something is happening.
-    expect(activityBadge("queued")?.ticking).toBe(false);
+    expect(activityBadge({ activity: "queued" })?.ticking).toBe(false);
+  });
+
+  test("background work is counted, and the hint says what it is", () => {
+    const badge = activityBadge({ activity: "monitoring", activityDetail: { kind: "background", tasks: 3, agents: 2 } });
+    expect(badge).toMatchObject({ label: "Background (3)", tone: "quiet", ticking: true });
+    expect(badge?.hint).toBe("The turn has ended. 2 agents and 1 process are still running in the background.");
+    // An engine that sent no counts still gets a word, never a wrong number.
+    expect(activityBadge({ activity: "monitoring" })?.label).toBe("Background");
+  });
+
+  test("a session waiting on another names it on hover, and nothing moves", () => {
+    const badge = activityBadge({ activity: "waiting", activityDetail: { kind: "session", sessionId: "s2", title: "Fix the parser", sessions: 2 } });
+    expect(badge).toMatchObject({ label: "Waiting on session", tone: "quiet", ticking: false });
+    expect(badge?.hint).toBe("Waiting on “Fix the parser” and 1 more. Its answer will wake this session.");
+  });
+
+  test("a scheduled session says when it wakes", () => {
+    const now = new Date(2026, 8, 25, 9, 0).getTime();
+    const at = new Date(2026, 8, 25, 14, 30).getTime();
+    const badge = activityBadge({ activity: "scheduled", activityDetail: { kind: "schedule", at } }, now);
+    expect(badge?.label.startsWith("Scheduled ")).toBe(true);
+    expect(badge?.hint.startsWith("A schedule will wake this session at ")).toBe(true);
+    expect(badge?.ticking).toBe(false);
+  });
+
+  test("every badge explains itself, and none names a provider", () => {
+    for (const activity of ["blocked", "working", "queued", "monitoring", "waiting", "scheduled"] as const) {
+      const hint = activityBadge({ activity })?.hint ?? "";
+      expect(hint.length).toBeGreaterThan(0);
+      expect(hint).not.toMatch(/claude|codex|sdk|cli/i);
+    }
   });
 });
 

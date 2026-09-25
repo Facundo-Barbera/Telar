@@ -126,7 +126,7 @@ describe("the project filter is back, as a set — #470", () => {
     // A filter over the rail is not an instruction about what ⌘K may find, and
     // the poll's cadence follows what is live rather than what is on screen.
     expect(sidebar).toContain("sessions={sessions}");
-    expect(sidebar).toContain("const anyLive = sessions.some((session) => session.activity !== \"idle\");");
+    expect(sidebar).toContain("const anyLive = sessions.some((session) => session.activity !== \"idle\" && session.activity !== \"waiting\" && session.activity !== \"scheduled\");");
   });
 
   test("a draft is a row in the rail, so the filter reaches it too", () => {

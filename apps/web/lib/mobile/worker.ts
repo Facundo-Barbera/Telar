@@ -3,7 +3,7 @@ import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
 import { desktopAttached, listenForDesktop, notifyDesktop } from "./desktop";
-import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
+import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, turnIsOver, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
 
 /** A phone that actually ran the start reports the activity's token within seconds: iOS delivers it
  *  on `activityUpdates` and the app re-registers straight away. A receipt still standing alone after
@@ -115,7 +115,7 @@ export async function deliverRecord(
     const changed = session && record.seen[session.id] !== signalKey(session);
     if (!changed && now - (record.activitySent[follow.token] ?? 0) < ACTIVITY_REFRESH_S) continue;
     const result = await safeSend(activityDelivery(record, follow, session, now));
-    if (isDeadToken(result) || (result.status === 200 && (!session || session.activity === "idle"))) {
+    if (isDeadToken(result) || (result.status === 200 && (!session || turnIsOver(session.activity)))) {
       next.activities = next.activities.filter(a => a.token !== follow.token);
       delete next.activitySent[follow.token];
     } else if (result.status === 200) next.activitySent[follow.token] = now;
