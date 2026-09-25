@@ -168,6 +168,24 @@ test("the router prefers a reachable desktop host and falls back when it dies", 
   expect((await router.state("s")).provider).toBe("headless");
 });
 
+test("releasing a scope closes its desktop pages too, and an older shell without the route is not an error (#883)", async () => {
+  const released: unknown[] = [];
+  const port = await fakeHost(({ method, url, body }) => {
+    if (method === "GET" && url.pathname === "/state") return { status: 200, payload: { tabs: [] } };
+    if (method === "POST" && url.pathname === "/release") {
+      released.push(body.scopeKey);
+      return { status: 200, payload: { released: true } };
+    }
+    return { status: 404, payload: { error: "Not found." } };
+  });
+  const router = new BrowserRouter(fakeHeadless([]), new DesktopBrowserClient({ port, token: "tok", probeTtlMs: 0 }));
+  expect(await router.release("session_one", "The session was settled.")).toBe(true);
+  expect(released).toEqual(["session_one"]);
+
+  const older = await fakeHost(({ url }) => (url.pathname === "/state" ? { status: 200, payload: { tabs: [] } } : { status: 404, payload: { error: "Not found." } }));
+  expect(await new DesktopBrowserClient({ port: older, token: "tok" }).release("session_one")).toBe(false);
+});
+
 test("without a desktop client the router IS the headless runtime", async () => {
   const log: string[] = [];
   const router = new BrowserRouter(fakeHeadless(log));

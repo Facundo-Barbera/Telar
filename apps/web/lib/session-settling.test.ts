@@ -9,11 +9,21 @@ import {
   isShelved,
   isSnoozed,
   raisedHandWhileSnoozed,
+  settleEndedText,
   settlingActivityOf,
   snoozePresets,
   wakeLabel,
   wokeAt,
 } from "./session-settling";
+
+describe("settleEndedText (#883)", () => {
+  test("says what settling ended, and nothing when it ended nothing", () => {
+    expect(settleEndedText({ terminals: 2, backgroundTasks: 0 })).toBe("Settling ended 2 terminals.");
+    expect(settleEndedText({ terminals: 1, backgroundTasks: 1 })).toBe("Settling ended 1 terminal and 1 background task.");
+    expect(settleEndedText({ terminals: 0, backgroundTasks: 0 })).toBeUndefined();
+    expect(settleEndedText(undefined)).toBeUndefined();
+  });
+});
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_700_000_000_000;

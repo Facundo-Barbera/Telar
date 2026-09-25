@@ -260,6 +260,14 @@ export class EngineClientError extends Error {
  *  import here is a hard Turbopack error. */
 export type FetchLike = typeof fetch;
 
+/**
+ * WHAT SETTLING A SESSION ENDED — issue #883. On the answer to a PATCH that
+ * settled it: the terminals Telar closed (the person's shells included) and the
+ * background tasks it stopped. Absent on every other PATCH, and from an engine
+ * older than this.
+ */
+export type SessionSettleEnded = { terminals: number; backgroundTasks: number };
+
 /** Where a windowed snapshot stands in the session's history. */
 export type SnapshotPage = {
   /** Oldest settled turn on this page — the `before` for the next page up. */
@@ -2342,7 +2350,7 @@ export class EngineClient {
        *  `Session.reportWindowMinutes`. */
       reportWindowMinutes?: ReportCadence | null;
     },
-  ): Promise<{ session: Session }> {
+  ): Promise<{ session: Session; ended?: SessionSettleEnded }> {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
   }
 
@@ -2352,7 +2360,7 @@ export class EngineClient {
    * with without gaining the mode, model or title of any session — see
    * `sessions_settle`.
    */
-  settleSession(sessionId: string, settled: boolean): Promise<{ session: Session }> {
+  settleSession(sessionId: string, settled: boolean): Promise<{ session: Session; ended?: SessionSettleEnded }> {
     return this.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
   }
 

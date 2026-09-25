@@ -161,6 +161,7 @@ import {
   type RuntimeMode,
   type Session,
   type SessionOrigin,
+  type SessionSettleEnded,
   type Subscription,
   type Turn,
   type TurnFailure as TurnFailureShape,
@@ -1882,6 +1883,27 @@ export type AttachedBrowser = {
 };
 
 /**
+ * The session's terminals as the STORE is allowed to see them — the run
+ * manager, narrowed. `openCount` knows only the terminals the engine opened
+ * (runs and the agent's); `closeSession` reaches the person's shells too,
+ * because the desktop host closes by session.
+ */
+export type AttachedTerminals = {
+  openCount(sessionId: string): number;
+  openSessions(): string[];
+  closeSession(sessionId: string): Promise<number>;
+};
+
+/**
+ * HOW LONG A CLOCK-SETTLED SESSION KEEPS ITS TERMINALS — issue #883. The same
+ * 30 minutes #807 gives unattended background work: long enough that a
+ * conversation which merely aged out does not lose its dev server under
+ * somebody who was still using it, short enough that a day of settled
+ * conversations does not become the machine.
+ */
+export const SETTLED_TERMINAL_GRACE_MS = 30 * 60_000;
+
+/**
  * One claim a Stop just killed — the same triple `cancellationsForWorker`
  * returns, plus the worker it belongs to, because this is PUSHED rather than
  * asked for and the receiver has to check the claim is its own.
@@ -2689,6 +2711,17 @@ export class EngineStore {
 
   attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
+  }
+
+  /**
+   * The daemon's run manager, attached like the browser and for the same
+   * reason. Absent means this store knows of no terminals: settling closes
+   * none, and nothing is held busy by one.
+   */
+  private terminals?: AttachedTerminals;
+
+  attachTerminals(terminals: AttachedTerminals): void {
+    this.terminals = terminals;
   }
 
   /**
@@ -7931,6 +7964,18 @@ export class EngineStore {
     if (session.activity !== "idle" || session.preparation !== undefined || this.setups.isRunning(sessionId)) {
       return { ok: false, refusal: "in-use" };
     }
+    /**
+     * AN OPEN TERMINAL IS A PROCESS IN THIS CHECKOUT — issue #883. Asked of the
+     * engine's own records before `lsof`, because a run whose server changed
+     * directory, or a platform `lsof` cannot read, would otherwise pass. The
+     * person closes them, or settles the session, which closes them; the
+     * release does not do it for them. A person's own shell in the checkout is
+     * the `lsof` check's to see.
+     */
+    const openTerminals = this.terminals?.openCount(sessionId) ?? 0;
+    if (openTerminals > 0) {
+      return { ok: false, refusal: "process", detail: `${openTerminals} terminal${openTerminals === 1 ? " is" : "s are"} open in this session` };
+    }
     const project = this.getProject(session.projectId);
     const workspace = session.workspace;
     const location = readWorktreesRoot(this.paths.root);
@@ -12172,7 +12217,12 @@ export class EngineStore {
         sessionId: session.id,
         worktree: session.workspace.path,
         archived: session.state === "archived",
-        live: activity.working === true || activity.waitingOnYou === true || this.hasLiveBackgroundWork(session.id),
+        live:
+          activity.working === true ||
+          activity.waitingOnYou === true ||
+          this.hasLiveBackgroundWork(session.id) ||
+          // A dev server in an open terminal is reading those node_modules.
+          (this.terminals?.openCount(session.id) ?? 0) > 0,
       });
     }
     return candidates;
@@ -12990,6 +13040,87 @@ export class EngineStore {
         message: `delegation settling was skipped: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
+  }
+
+  /**
+   * A PERSON SETTLED THIS SESSION: END WHAT IT LEFT RUNNING — issue #883.
+   *
+   * Called for an EXPLICIT settle only — the person's Settle, or an agent's
+   * `sessions_settle` — and never for the clock's, which waits
+   * `SETTLED_TERMINAL_GRACE_MS` (see `sweepSettledTerminals`). The settle itself
+   * is already written; nothing here can refuse it, and each part is
+   * best-effort so a host out of reach does not stop the rest.
+   *
+   * - Every terminal the session owns, whoever opened it, recorded as closed
+   *   by Telar — so its agent is not told the person closed them.
+   * - Its background tasks, the chip's own Stop.
+   * - Its browser pages.
+   *
+   * Un-settling brings none of it back. Answers the counts, which is what the
+   * settle reports.
+   */
+  async endSessionLeftovers(sessionId: string): Promise<SessionSettleEnded> {
+    let backgroundTasks = 0;
+    try {
+      backgroundTasks = this.stopBackgroundTasks(sessionId, "stopped when the session was settled");
+    } catch {
+      // A session that cannot be read has no tasks this can stop.
+    }
+    void this.browser?.release(sessionId, "The session was settled.").catch(() => undefined);
+    let terminals = 0;
+    try {
+      terminals = (await this.terminals?.closeSession(sessionId)) ?? 0;
+    } catch {
+      // The desktop's terminal host is out of reach. Quitting Telar closes
+      // every terminal it holds, so nothing is left for ever.
+    }
+    return { terminals, backgroundTasks };
+  }
+
+  /**
+   * THE CLOCK'S SETTLE ENDS TERMINALS TOO, LATER — issue #883.
+   *
+   * A session the inactivity clock shelved, or the delegation rule settled,
+   * was not put down by anybody, so its terminals get `SETTLED_TERMINAL_GRACE_MS`
+   * before they close: a dev server a person was still using is not taken the
+   * moment the list reshuffles. Past that, they close as an explicit settle's
+   * do. An explicit settle past the grace is covered too, for a terminal opened
+   * after it.
+   *
+   * #965'S RULE STANDS AND DOES THE REST: live background work keeps the clock
+   * from shelving a session at all, so such a session is never "settled" here
+   * and keeps its terminals for as long as that work runs.
+   *
+   * ONLY SESSIONS WITH A TERMINAL THE ENGINE OPENED ARE LOOKED AT, because
+   * those are the only ones it knows are open. Answers the sessions it closed.
+   */
+  async sweepSettledTerminals(): Promise<string[]> {
+    if (!this.terminals) return [];
+    const now = this.now();
+    const window = this.getInboxPolicy().autoSettleAfterHours;
+    const due: string[] = [];
+    for (const sessionId of this.terminals.openSessions()) {
+      try {
+        const row = indexRow(this.getSession(sessionId));
+        if (!rowIsShelved(row, { now, autoSettleAfterHours: window })) continue;
+        const since = now - SETTLED_TERMINAL_GRACE_MS;
+        const longEnough = row.settledOverride === "settled"
+          ? (row.settledAt ?? 0) <= since
+          // Shelved by the clock: it was already shelved a grace ago.
+          : rowIsShelved(row, { now: since, autoSettleAfterHours: window });
+        if (longEnough) due.push(sessionId);
+      } catch {
+        // A session that cannot be read is not closed on a guess.
+      }
+    }
+    for (const sessionId of due) {
+      try {
+        await this.terminals.closeSession(sessionId);
+      } catch {
+        // The next tick tries again.
+      }
+    }
+    return due;
   }
 
   /**
@@ -15593,9 +15724,9 @@ export class EngineStore {
    * projection (so the roster is right at once) AND queues the actual process
    * kill for the worker holding the runtime. Returns how many it stopped.
    */
-  stopBackgroundTasks(sessionId: string): number {
+  stopBackgroundTasks(sessionId: string, reason = "stopped from the cockpit"): number {
     const at = this.now();
-    const closed = this.closeLiveTasks(sessionId, at, "stopped from the cockpit", {
+    const closed = this.closeLiveTasks(sessionId, at, reason, {
       includeBackground: true,
       onlyBackground: true,
       state: "stopped",

@@ -117,6 +117,18 @@ test.if(process.platform !== "win32")("a live process in the checkout refuses th
   expect(fs.existsSync(checkout)).toBe(true);
 });
 
+test("an open terminal in the session refuses the release and says how many (#883)", async () => {
+  const { store, checkout, branch } = await worktreeSession();
+  git(checkout, "push", "-q", "origin", branch);
+  let open = 2;
+  store.attachTerminals({ openCount: (sessionId) => (sessionId === "session_one" ? open : 0), openSessions: () => ["session_one"], closeSession: async () => 0 });
+  expect(await store.releaseSessionWorktree("session_one", "manual")).toEqual({ ok: false, refusal: "process", detail: "2 terminals are open in this session" });
+  expect(fs.existsSync(checkout)).toBe(true);
+  // Closed — by the person, or by settling — and the same press goes through.
+  open = 0;
+  expect(await store.releaseSessionWorktree("session_one", "manual")).toEqual({ ok: true });
+});
+
 test("the automatic caller stands down when the platform cannot say what runs where", async () => {
   expect(await checkoutsWithProcesses(["/a"], { platform: "win32" })).toBeUndefined();
   expect(await checkoutsWithProcesses(["/a"], { platform: "linux", lsof: async () => undefined })).toBeUndefined();

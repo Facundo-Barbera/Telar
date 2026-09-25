@@ -103,6 +103,7 @@ import type {
   LiveSessionRow,
   Session,
   SessionBootstrap,
+  SessionSettleEnded,
   SessionSnapshot,
   SnapshotWindow,
   Turn,
@@ -1094,7 +1095,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
          *  `Session.reportWindowMinutes`. */
         reportWindowMinutes?: ReportCadence | null;
       },
-    ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    ) => request<{ session: Session; ended?: SessionSettleEnded }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
     /**
      * THE CADENCE, AND WHAT IT IS HOLDING — the Agents panel's own read (#723).
      *

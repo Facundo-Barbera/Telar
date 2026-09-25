@@ -186,6 +186,16 @@ test("paused or ambient background tasks are not live work: the sweep and the re
   }
 });
 
+test("an open terminal: the unchanged sweep skips the session's checkout, and the reaper counts it live (#883)", async () => {
+  const { store, checkout } = await setup();
+  store.attachTerminals({ openCount: (sessionId) => (sessionId === "session_one" ? 1 : 0), openSessions: () => ["session_one"], closeSession: async () => 1 });
+  store.cleanup.setPolicy({ unchanged: true });
+  await store.runCleanup();
+  expect(fs.existsSync(checkout)).toBe(true);
+  expect(store.cleanup.last()).toMatchObject({ released: 0, skipped: 1 });
+  expect(store.reapableWorktrees()).toEqual([expect.objectContaining({ sessionId: "session_one", live: true })]);
+});
+
 test("archiving keeps the checkout unless the switch is on", async () => {
   const off = await setup();
   off.store.archiveSession("session_one");

@@ -118,6 +118,13 @@ export type RunLauncher = {
   held?(): Promise<TerminalFacts[]>;
   /** Follow a terminal the host kept from a previous engine. */
   adopt?(facts: TerminalFacts, events: RunLaunchEvents): Promise<RunHandle>;
+  /**
+   * CLOSE EVERY TERMINAL A SESSION OWNS, WHOEVER OPENED IT — the host's
+   * `/close-session`, which also reaches the shells the person opened in that
+   * session's panel. Answers how many the host closed. Absent for pipes: the
+   * engine's own children are every terminal there is, and it closes those.
+   */
+  closeSession?(sessionId: string): Promise<number>;
   /** The engine is going down: stop listening, close nothing. */
   detach?(): void;
 };
@@ -288,6 +295,7 @@ export function terminalLauncher(client: RunTerminalClient, defaults: { cols?: n
       await client.adopt(facts.id, sinkFor(events));
       return handleFor(facts.id, facts.pid);
     },
+    closeSession: (sessionId) => client.closeSession(sessionId),
     detach: () => client.detach(),
   };
 }

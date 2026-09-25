@@ -82,7 +82,7 @@
  */
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, Subscription, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, SessionSettleEnded, Subscription, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
 import { HOLD_REPORTS, MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, STALLED_AFTER_MS } from "@telar/engine-client";
 
 /**
@@ -196,8 +196,11 @@ export type SessionsCapability = {
    * stays live and resumable, nothing is deleted, and a new message (or a
    * wake) lifts it again. It is the one housekeeping verb an orchestrator
    * needs when a peer it started has finished and is now only clutter.
+   *
+   * SETTLING ENDS WHAT THE SESSION LEFT RUNNING (#883): `ended` counts it, when
+   * the engine said.
    */
-  settle(sessionId: string, settled: boolean): Promise<Session>;
+  settle(sessionId: string, settled: boolean): Promise<Session & { ended?: SessionSettleEnded }>;
   /**
    * HOW OFTEN THIS SESSION IS TOLD ABOUT ROUTINE PEER REPORTS — issue #723.
    *
@@ -382,7 +385,17 @@ const STATUS = `Working, waiting (on a person, a session or a tool), background,
 
 const STOP = `Stop a session's work now: the running turn ends where it stands and the queue is settled. Nothing is undone — what it wrote stays written and a command it ran may have finished. Then idle, not paused.`;
 
-const SETTLE = `Shelve a session out of the active list, or settled: false to bring it back. Nothing is deleted and a new message lifts it back. Housekeeping, not acceptance.`;
+const SETTLE = `Shelve a session out of the active list, or settled: false to bring it back. Settling closes its terminals and stops its background tasks; nothing is deleted and a new message lifts it back. Housekeeping, not acceptance.`;
+
+/** " It ended 2 terminals and 1 background task." — or nothing, when it ended nothing. */
+function endedNote(ended: SessionSettleEnded | undefined): string {
+  if (!ended) return "";
+  const parts = [
+    ...(ended.terminals > 0 ? [`${ended.terminals} terminal${ended.terminals === 1 ? "" : "s"}`] : []),
+    ...(ended.backgroundTasks > 0 ? [`${ended.backgroundTasks} background task${ended.backgroundTasks === 1 ? "" : "s"}`] : []),
+  ];
+  return parts.length ? ` Settling ended what it left running: ${parts.join(" and ")}.` : "";
+}
 
 const REPORT_WINDOW = `Be told about routine reports on a clock instead of one at a time: minutes holds them and delivers the batch as one notification, null goes back to arrival. Sets YOUR OWN cadence, nobody else's. A task, a blocker and a result you subscribed to still arrive at once.`;
 
@@ -1620,8 +1633,9 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             sessionId,
             settled,
             title: session.title,
+            ...(session.ended ? { ended: session.ended } : {}),
             note: settled
-              ? "Settled. It is out of the active list but still live: a message to it, or a wake it receives, brings it back. Nothing was archived."
+              ? `Settled. It is out of the active list but still live: a message to it, or a wake it receives, brings it back. Nothing was archived.${endedNote(session.ended)}`
               : "Back in the active list.",
           });
         } catch (error) {

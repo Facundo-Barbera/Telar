@@ -515,10 +515,18 @@ export class BrowserRouter implements EngineBrowser {
     }
   }
 
-  release(scopeKey: string, reason?: string): Promise<boolean> {
-    // The desktop host owns its own tab lifecycle (hibernation, LRU); the
-    // engine releases only what it launched.
-    return this.headless.release(scopeKey, reason);
+  /**
+   * A SESSION'S BROWSER IS OVER — settled, archived or deleted. The headless
+   * Chromium this engine launched, and, since #883, the desktop's pages for the
+   * scope too: the host still owns their lifecycle (hibernation, LRU) while the
+   * session lives, but a settled session's pages are what it left running.
+   * Best-effort on the desktop side; an unreachable host keeps its pages until
+   * they hibernate, as before.
+   */
+  async release(scopeKey: string, reason?: string): Promise<boolean> {
+    const desktop = (await this.useDesktop()) ? this.desktop!.release(scopeKey).catch(() => false) : Promise.resolve(false);
+    const [headless, attached] = await Promise.all([this.headless.release(scopeKey, reason), desktop]);
+    return headless || attached;
   }
 
   close(reason?: string): Promise<void> {

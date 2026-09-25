@@ -124,3 +124,18 @@ export function wakeLabel(snoozedUntil: number, now: number): string {
   if (remaining < DAY_MS) return `${Math.ceil(remaining / HOUR_MS)}h`;
   return `${Math.ceil(remaining / DAY_MS)}d`;
 }
+
+/**
+ * WHAT SETTLING ENDED, AS THE SETTLED BANNER SAYS IT — issue #883. Settling
+ * closes the conversation's terminals and stops its background tasks, and the
+ * person who pressed Settle is told what that took. `undefined` when it ended
+ * nothing, or the engine did not say.
+ */
+export function settleEndedText(ended: { terminals: number; backgroundTasks: number } | undefined): string | undefined {
+  if (!ended) return undefined;
+  const parts = [
+    ...(ended.terminals > 0 ? [`${ended.terminals} terminal${ended.terminals === 1 ? "" : "s"}`] : []),
+    ...(ended.backgroundTasks > 0 ? [`${ended.backgroundTasks} background task${ended.backgroundTasks === 1 ? "" : "s"}`] : []),
+  ];
+  return parts.length ? `Settling ended ${parts.join(" and ")}.` : undefined;
+}
