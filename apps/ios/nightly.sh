@@ -107,6 +107,24 @@ PATH="/usr/bin:/bin:$PATH" xcodebuild \
   -authenticationKeyIssuerID "$TELAR_ASC_ISSUER_ID" \
   -authenticationKeyPath "$TELAR_ASC_KEY_PATH"
 
+# THE EXPORTED IPA MUST CARRY aps-environment=production, checked on the IPA
+# and not the archive. The archive is built with CODE_SIGNING_ALLOWED=NO and
+# carries no entitlements at all; they are only applied by the re-sign during
+# export. A build without the entitlement installs and runs, but APNs never
+# gives it a device token that the production relay can deliver to, so push
+# fails with no error anywhere. Failing here keeps that build from shipping.
+IPA_CHECK="$(mktemp -d)"
+ditto -x -k "$EXPORT_DIR/TelarMobile.ipa" "$IPA_CHECK"
+codesign -d --entitlements :- "$IPA_CHECK/Payload/TelarMobile.app" > "$IPA_CHECK/entitlements.plist" 2>/dev/null || true
+# PlistBuddy reports a missing key or file on stdout, so a failure means empty.
+APS_ENVIRONMENT="$(/usr/libexec/PlistBuddy -c "Print :aps-environment" "$IPA_CHECK/entitlements.plist" 2>/dev/null)" || APS_ENVIRONMENT=""
+rm -rf "$IPA_CHECK"
+if [[ "$APS_ENVIRONMENT" != "production" ]]; then
+  echo "exported IPA has aps-environment='${APS_ENVIRONMENT:-<missing>}', expected 'production' — push would never arrive" >&2
+  exit 1
+fi
+echo "exported IPA has aps-environment=production"
+
 if [[ "$MODE" == "--export-only" ]]; then
   # Name the IPA the upload would have taken, so the check is that the file
   # the next step needs exists — not merely that xcodebuild exited 0.
