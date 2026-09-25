@@ -85,6 +85,14 @@ export const Task = z.object({
    * red row. See `isBackgroundWork`.
    */
   backgrounded: z.boolean().optional(),
+  /**
+   * THE PROVIDER SAYS THIS IS NOT ACTIVITY — housekeeping it runs on its own
+   * (a live-update watcher, a transcript-less task). Mirrors the SDK's
+   * `ambient`, whose doc is the rule: "hosts should exclude them from
+   * activity indicators". The row may still be shown; it never makes the
+   * session read as busy. See `countsAsActivity`.
+   */
+  ambient: z.boolean().optional(),
 
   title: z.string().optional(),
   /** The agent's role/persona when the launcher named one. */
@@ -147,6 +155,34 @@ export function isBackgroundWork(task: Pick<Task, "kind" | "backgrounded">): boo
 }
 
 /**
+ * Whether a task is work in progress that a person should see as activity.
+ *
+ * NARROWER THAN "NOT FINISHED". A `waiting` task (paused, or blocked on a
+ * request of its own) is still alive in the process, but nothing is moving —
+ * its row says paused, and a session badge saying busy over it contradicts
+ * the row. An `ambient` task is the provider's housekeeping. Neither is
+ * activity. Spelled once so the rail's fold and the composer's "still
+ * working" chip count the same tasks.
+ */
+export function countsAsActivity(task: Pick<Task, "state" | "ambient">): boolean {
+  return (task.state === "pending" || task.state === "running") && task.ambient !== true;
+}
+
+/**
+ * An ending nobody stated: `completed`, with neither a result nor a failure.
+ *
+ * That is the shape of a row closed because the SDK's level signal stopped
+ * listing it — it says the task is gone, not how it went. Its own
+ * notification usually follows (the SDK says the level "in practice precedes"
+ * the bookends), and when that one states `failed` or `stopped` it is the
+ * better account. So "the first ending is the ending" yields for this shape
+ * only; an explicit ending, or one that carries a word, is never rewritten.
+ */
+export function isUnstatedEnding(task: Pick<Task, "state" | "resultText" | "failure">): boolean {
+  return task.state === "completed" && task.resultText === undefined && task.failure === undefined;
+}
+
+/**
  * Whether a session should read as "still working" when no turn is running.
  *
  * DERIVED HERE, IN THE CONTRACT, for the same reason `autoResolution` is: the
@@ -154,15 +190,17 @@ export function isBackgroundWork(task: Pick<Task, "kind" | "backgrounded">): boo
  * answer, and three independent folds over task state is three answers that
  * disagree under load.
  *
- * "monitoring" is reserved for the case where the ONLY live work is background
- * watching. Any live agent outranks it — a fan-out mid-flight reads as working
- * even if a log tail is also running.
+ * "monitoring" is every live task that OUTLIVES ITS TURN — a watch loop, and a
+ * sub-agent launched in the background too. This is only asked when no turn is
+ * running, so a backgrounded agent here is one the turn already walked away
+ * from: reading it as "working" showed a running clock over a session whose
+ * turn had ended. A live agent that is NOT backgrounded outranks it.
  */
 export function livenessOf(tasks: readonly Task[]): "working" | "monitoring" | null {
   let monitoring = false;
   for (const task of tasks) {
-    if (task.state !== "pending" && task.state !== "running" && task.state !== "waiting") continue;
-    if (task.kind === "agent") return "working";
+    if (!countsAsActivity(task)) continue;
+    if (!isBackgroundWork(task)) return "working";
     monitoring = true;
   }
   return monitoring ? "monitoring" : null;
