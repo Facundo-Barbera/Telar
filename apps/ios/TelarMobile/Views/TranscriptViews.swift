@@ -1000,15 +1000,25 @@ struct UserBubble: View {
             // Use the proposed column width. A container-relative width can
             // resolve to the whole split view and force an iPad detail underneath its sidebar.
             Spacer(minLength: 24)
-            Text(text)
-                .font(Theme.body)
-                .lineSpacing(4)
-                .foregroundStyle(Theme.text)
-                .padding(12)
-                .background(Theme.messageSurface)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusBubble))
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .fixedSize(horizontal: false, vertical: true)
+            Group {
+                // AN IMAGE-ONLY MESSAGE has no words to draw, and an empty
+                // bubble reads as a glitch. The turn does not carry its
+                // attachments here, so it is named rather than shown.
+                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Label("Image", systemImage: "photo")
+                        .foregroundStyle(Theme.textMuted)
+                } else {
+                    Text(text)
+                        .lineSpacing(4)
+                        .foregroundStyle(Theme.text)
+                }
+            }
+            .font(Theme.body)
+            .padding(12)
+            .background(Theme.messageSurface)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusBubble))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

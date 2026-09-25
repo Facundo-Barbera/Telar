@@ -385,7 +385,7 @@ struct NewSessionDraftView: View {
     }
 
     private var canStart: Bool {
-        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !submitting
+        SessionDraft.canSend(text: prompt, mediaTypes: draftAttachments.map(\.mediaType)) && !submitting
     }
 
     var body: some View {
@@ -728,7 +728,10 @@ struct NewSessionDraftView: View {
                 let session = try await api.createSession(
                     projectId: project.id,
                     input: NewSessionInput(
-                        title: SessionDraft.title(explicit: title, prompt: prompt),
+                        title: SessionDraft.title(
+                            explicit: title, prompt: prompt,
+                            imageNames: draftAttachments.filter { $0.mediaType.hasPrefix("image/") }.map(\.name)
+                        ),
                         driver: choice.driver, envMode: envMode,
                         baseRef: envMode == "worktree" ? baseRef : nil,
                         branchName: envMode == "worktree" && !branchName.isEmpty ? branchName : nil
