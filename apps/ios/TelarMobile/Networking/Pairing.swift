@@ -42,11 +42,14 @@ enum Pairing {
         var deviceToken: String
         var deviceId: String?
         var deviceName: String?
+        /// Every address the Mac answers on (#832), so a phone paired on the
+        /// LAN already knows the tailnet one. Absent from older cockpits.
+        var addresses: [String]?
     }
 
     static func exchange(
         base: URL, token: String, deviceName: String, session: URLSession = .shared
-    ) async throws -> String {
+    ) async throws -> ExchangeResponse {
         var request = URLRequest(url: base.appending(path: "api/pair"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -60,6 +63,6 @@ enum Pairing {
             }
             throw EngineAPIError.badResponse(status: status)
         }
-        return try JSONDecoder().decode(ExchangeResponse.self, from: data).deviceToken
+        return try JSONDecoder().decode(ExchangeResponse.self, from: data)
     }
 }

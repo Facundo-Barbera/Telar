@@ -11,7 +11,7 @@ import { DELETE as deviceDelete, PATCH as devicePatch } from "@/app/api/remote/d
 import { DELETE as devicesDeleteOthers } from "@/app/api/remote/devices/route";
 import { decideApiAccess } from "./gate";
 import { HOST_HEADER } from "./host-token";
-import { isTailnetIpv4, listEndpoints } from "./endpoints";
+import { dialableAddresses, isTailnetIpv4, listEndpoints } from "./endpoints";
 import { machineName } from "./observe";
 import { readRemote } from "./store";
 
@@ -89,6 +89,21 @@ describe("pairing routes", () => {
       { pathname: "/api/health", method: "GET", authorization: `Bearer ${body.deviceToken}`, deviceCookie: null },
       { ...readRemote(), requireAuth: true },
     )).toEqual({ allow: true, deviceId: body.deviceId, role: "full" });
+  });
+
+  test("the exchange hands the device every dialable address, never loopback", async () => {
+    freshHome();
+    const body = (await (await pairPost(pairRequest(await mintToken()))).json()) as { addresses: string[] };
+    expect(body.addresses).toEqual(dialableAddresses());
+    expect(body.addresses.some((url) => url.includes("127.0.0.1"))).toBe(false);
+  });
+
+  test("a refused exchange carries no addresses", async () => {
+    freshHome();
+    await mintToken();
+    const refused = await pairPost(pairRequest("12345678"));
+    expect(refused.status).toBe(401);
+    expect(JSON.stringify(await refused.json()).includes("addresses")).toBe(false);
   });
 
   test("an https-forwarded exchange marks the cookie Secure", async () => {
@@ -316,6 +331,14 @@ describe("endpoint enumeration", () => {
       qrSafe: true,
     });
     expect(listEndpoints(3000, nics, { TELAR_TAILSCALE_URL: "http://mac.tail.ts.net" }).some((endpoint) => endpoint.kind === "magicdns")).toBe(false);
+  });
+
+  test("dialable addresses are the QR-safe endpoints as bare URLs", () => {
+    expect(dialableAddresses(3000, nics, { TELAR_TAILSCALE_URL: "https://mac.tail.ts.net" })).toEqual([
+      "http://192.168.1.20:3000",
+      "http://100.110.136.102:3000",
+      "https://mac.tail.ts.net",
+    ]);
   });
 
   test("the CGNAT range is exactly 100.64/10", () => {

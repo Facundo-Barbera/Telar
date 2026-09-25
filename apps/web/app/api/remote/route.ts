@@ -1,4 +1,4 @@
-import { listEndpoints } from "@/lib/remote/endpoints";
+import { cockpitPort, listEndpoints } from "@/lib/remote/endpoints";
 import { deviceCookieHeader, readDeviceCookie } from "@/lib/remote/cookie";
 import { identifyCaller, isHostCaller } from "@/lib/remote/gate";
 import { remoteErrorResponse } from "@/lib/remote/http";
@@ -10,11 +10,6 @@ import { readServeError } from "@/lib/remote/tailscale-serve";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-function webPort(): number {
-  const raw = Number(process.env.PORT ?? process.env.TELAR_WEB_PORT ?? 3000);
-  return Number.isInteger(raw) && raw > 0 ? raw : 3000;
-}
 
 const OS_NAMES: Record<string, string> = { darwin: "macOS", win32: "Windows", linux: "Linux" };
 
@@ -79,7 +74,7 @@ export function GET(request: Request) {
       callerDeviceId: caller?.id,
       callerRole: caller?.role,
       pairing: file.pairing ? { expiresAt: file.pairing.expiresAt } : undefined,
-      endpoints: listEndpoints(webPort()),
+      endpoints: listEndpoints(cockpitPort()),
     });
   } catch (error) {
     return remoteErrorResponse(error);

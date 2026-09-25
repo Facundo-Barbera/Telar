@@ -500,10 +500,18 @@ struct HTTPEngineAPI: EngineAPI {
     /// in the Keychain (KeychainStore); nil against an open cockpit.
     let deviceToken: String?
     let session: URLSession
+    /// WHERE TO GO WHEN THIS ADDRESS STOPS ANSWERING (#832): given the base
+    /// that just failed in transport, another address of the same Mac that
+    /// answered a probe, or nil. Nil for a client bound to one address (the
+    /// pairing screen's test). Asked only after a failure, so a healthy
+    /// address costs nothing extra per request.
+    let failover: (@Sendable (URL) async -> URL?)?
 
-    init(baseURL: URL, deviceToken: String? = nil, session: URLSession? = nil) {
+    init(baseURL: URL, deviceToken: String? = nil, session: URLSession? = nil,
+         failover: (@Sendable (URL) async -> URL?)? = nil) {
         self.baseURL = baseURL
         self.deviceToken = deviceToken
+        self.failover = failover
         if let session {
             self.session = session
         } else {
@@ -621,13 +629,7 @@ struct HTTPEngineAPI: EngineAPI {
         // own, and a cache revalidating underneath it would answer from a copy
         // this code never saw.
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw EngineAPIError.transport(error)
-        }
+        let (data, response) = try await exchange(request)
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         let fresh = http?.value(forHTTPHeaderField: "Etag")
@@ -943,6 +945,62 @@ struct HTTPEngineAPI: EngineAPI {
         try await perform(makeRequest(url(path, query: query)))
     }
 
+    /// EVERY BYTE FROM THE MAC comes through here, so every route fails over
+    /// the same way (#832). A transport failure asks `failover` for another
+    /// address; the host book moves to it, so the next request — and every
+    /// client rebuilt from the book — starts there. Only a READ is replayed on
+    /// the new address: a write whose answer was lost may already have landed,
+    /// and replaying it is the caller's call (sends carry a run id for that).
+    private func exchange(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            return try await session.data(for: request)
+        } catch {
+            guard HostAddresses.isTransportFailure(error), let failover,
+                  let moved = await failover(baseURL),
+                  ["GET", "HEAD"].contains(request.httpMethod ?? "GET"),
+                  let url = request.url, let rebased = HostAddresses.rebase(url, from: baseURL, to: moved)
+            else { throw EngineAPIError.transport(error) }
+            var retry = request
+            retry.url = rebased
+            do {
+                return try await session.data(for: retry)
+            } catch {
+                throw EngineAPIError.transport(error)
+            }
+        }
+    }
+
+    /// THE CONNECTIVITY PROBE: is a Telar cockpit answering at `base`?
+    ///
+    /// THREE SECONDS. /api/ping is a few bytes with no auth and no engine
+    /// work, so a reachable Mac answers in well under a second on a LAN and in
+    /// one or two over a cold tailnet path (DERP relay setup). A dead address
+    /// is the other case: another network's LAN IP often gets no reply at all
+    /// and would sit out TCP's own timeout, which is over a minute. Three
+    /// seconds covers the slow-but-alive tailnet with margin while keeping a
+    /// full failover pass — all addresses are probed at once — at three.
+    ///
+    /// NO TOKEN rides a probe: an address is not sent the device credential
+    /// until it has answered as a cockpit and become the one in use.
+    static let probeTimeout: TimeInterval = 3
+
+    private static let probeSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = probeTimeout
+        config.timeoutIntervalForResource = probeTimeout
+        config.waitsForConnectivity = false
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: config)
+    }()
+
+    static func probe(_ base: URL) async -> Bool {
+        guard let (data, response) = try? await probeSession.data(from: base.appending(path: "api/ping")),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let pong = try? JSONDecoder().decode(Pong.self, from: data)
+        else { return false }
+        return pong.ok
+    }
+
     /// Pre-pairing reachability: the one route that answers strangers. Also
     /// the version signature — `proto`/`appVersion` are absent on cockpits
     /// older than the field (treat missing proto as 1).
@@ -964,13 +1022,7 @@ struct HTTPEngineAPI: EngineAPI {
 
     /// A raw read that keeps the response's content type.
     private func rawFile(_ request: URLRequest) async throws -> RawFile {
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw EngineAPIError.transport(error)
-        }
+        let (data, response) = try await exchange(request)
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         guard (200..<300).contains(status) else {
@@ -1006,13 +1058,7 @@ struct HTTPEngineAPI: EngineAPI {
     /// typed error. Split out so the snapshot cache can keep what the cockpit
     /// sent without parsing it.
     private func raw(_ request: URLRequest) async throws -> (Data, Int) {
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw EngineAPIError.transport(error)
-        }
+        let (data, response) = try await exchange(request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             if let body = try? JSONDecoder().decode(EngineErrorBody.self, from: data) {

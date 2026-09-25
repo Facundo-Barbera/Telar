@@ -30,7 +30,54 @@ import Observation
 
     func api(for id: HostID) -> HTTPEngineAPI? {
         guard let url = book.host(id)?.baseURL else { return nil }
-        return HTTPEngineAPI(baseURL: url, deviceToken: token(for: id))
+        return HTTPEngineAPI(baseURL: url, deviceToken: token(for: id)) { [weak self] failed in
+            await self?.failover(id, from: failed)
+        }
+    }
+
+    // MARK: addresses (#832)
+
+    /// The connectivity probe. Swappable so a test answers without a network.
+    @ObservationIgnored var probe: @Sendable (URL) async -> Bool = { await HTTPEngineAPI.probe($0) }
+    /// One probe pass per host at a time: a poll, a transcript and a panel
+    /// that all lose the Mac together share the one answer.
+    @ObservationIgnored private var probes: [HostID: Task<URL?, Never>] = [:]
+
+    /// A request to `failed` could not reach the Mac: find the address that
+    /// can. The winner becomes the host's address in use and is persisted, so
+    /// every rebuilt client — and the next launch — starts there.
+    func failover(_ id: HostID, from failed: URL) async -> URL? {
+        guard let host = book.host(id) else { return nil }
+        // Someone else already moved this host while our request was failing.
+        if let current = host.baseURL, HostBook.normalize(current.absoluteString) != HostBook.normalize(failed.absoluteString) {
+            return current
+        }
+        return await reprobe(id, order: HostAddresses.failoverOrder(host, failed: failed.absoluteString))
+    }
+
+    /// FOREGROUND: the phone may have changed network while it slept. Probe
+    /// every host's addresses, the one in use first, then ask each reachable
+    /// Mac what it answers on now. Probes carry no token; the status read is
+    /// the gated GET /api/remote, so only a paired phone learns addresses.
+    func refreshAddresses() async {
+        for host in hosts {
+            guard await reprobe(host.id, order: host.addresses) != nil,
+                  let api = api(for: host.id), let status = try? await api.remoteStatus() else { continue }
+            if book.learnAddresses(status.dialableAddresses, for: host.id) { persist() }
+        }
+    }
+
+    private func reprobe(_ id: HostID, order: [String]) async -> URL? {
+        if let running = probes[id] { return await running.value }
+        let candidates = order.compactMap(URL.init(string:))
+        guard !candidates.isEmpty else { return nil }
+        let probe = self.probe
+        let running = Task { await HostAddresses.firstReachable(candidates, probe: probe) }
+        probes[id] = running
+        let winner = await running.value
+        probes[id] = nil
+        if let winner, book.markReachable(winner.absoluteString, for: id) { persist() }
+        return winner
     }
 
     /// Changes when the host's address or credential changes — the rebuild
@@ -43,8 +90,8 @@ import Observation
     /// token and keeps its identity (and so its scoped data). Never evicts
     /// other hosts.
     @discardableResult
-    func upsert(baseURLString: String, token: String?, name: String? = nil) -> HostID {
-        let result = book.upsert(baseURLString: baseURLString, name: name)
+    func upsert(baseURLString: String, token: String?, addresses: [String] = [], name: String? = nil) -> HostID {
+        let result = book.upsert(baseURLString: baseURLString, addresses: addresses, name: name)
         let id: HostID
         switch result {
         case .added(let new): id = new

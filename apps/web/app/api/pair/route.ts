@@ -15,6 +15,7 @@ const REFUSAL: Record<PairingRefusal, string> = {
   burned: "Too many wrong tries; that pairing code has been destroyed. Generate a fresh one in Settings → Remote access.",
 };
 import { deviceCookieHeader } from "@/lib/remote/cookie";
+import { dialableAddresses } from "@/lib/remote/endpoints";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -70,7 +71,9 @@ export async function POST(request: Request) {
     const deviceToken = mintDeviceToken();
     const device = addDevice(deviceName, deviceToken, { ...(platform ? { platform } : {}), identity });
     return Response.json(
-      { deviceToken, deviceId: device.id, deviceName: device.name },
+      // `addresses` only after the code checked out: a stranger learns nothing
+      // about this Mac's interfaces that the QR it scanned did not already show.
+      { deviceToken, deviceId: device.id, deviceName: device.name, addresses: dialableAddresses() },
       {
         status: 200,
         headers: { "set-cookie": deviceCookieHeader(deviceToken, request), "cache-control": "no-store" },
