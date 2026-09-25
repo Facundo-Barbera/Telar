@@ -82,7 +82,7 @@
  */
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, Subscription, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
 import { HOLD_REPORTS, MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, STALLED_AFTER_MS } from "@telar/engine-client";
 
 /**
@@ -378,7 +378,7 @@ const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. R
  */
 const READ = `What a session has done: by default a turn-by-turn summary. runId answers ONE turn; mode: events for the raw journal, which is long. Narrower and cheaper first: sessions_outline for its turns, sessions_answer for one conclusion, sessions_steps for what a turn did.`;
 
-const STATUS = `Working, waiting on a person, or idle, and how recent turns ended. The cheap "is it finished yet", before sessions_read. Changes nothing.`;
+const STATUS = `Working, waiting (on a person, a session or a tool), background, scheduled or idle, and how recent turns ended. The cheap "is it finished yet", before sessions_read. Changes nothing.`;
 
 const STOP = `Stop a session's work now: the running turn ends where it stands and the queue is settled. Nothing is undone — what it wrote stays written and a command it ran may have finished. Then idle, not paused.`;
 
@@ -765,6 +765,36 @@ function summarise(session: LiveSessionRow, projects: Map<string, string>, optio
     ...(session.preparation ? { preparation: session.preparation } : {}),
     updatedAt: session.updatedAt,
   };
+}
+
+const WAITING_PHRASE: Record<WaitingOn, string> = {
+  run: "for a run to be ready",
+  timer: "out a timer",
+  task: "for background work to report",
+};
+
+/**
+ * WHAT A SESSION WITH NO TURN IN FLIGHT IS STILL DOING — the note for the
+ * three states that used to be "Nothing is running" and were not: background
+ * work that will report, another session whose answer will wake it, a
+ * schedule that will. Each says whether something is coming, which is the
+ * question a caller polling this is really asking.
+ */
+function quietNote(session: Session): string {
+  const detail = session.activityDetail;
+  if (session.activity === "monitoring") {
+    const count = detail?.kind === "background" ? detail : undefined;
+    const what = count ? `${count.tasks} background task${count.tasks === 1 ? "" : "s"}${count.agents > 0 ? ` (${count.agents} of them agent${count.agents === 1 ? "" : "s"})` : ""}` : "background work";
+    return `Its turn has ended, but ${what} still run${count && count.tasks === 1 ? "s" : ""}. A report from them will wake it; subscribe rather than poll.`;
+  }
+  if (session.activity === "waiting" && detail?.kind === "session") {
+    const others = detail.sessions > 1 ? ` and ${detail.sessions - 1} other session${detail.sessions === 2 ? "" : "s"}` : "";
+    return `Nothing is running. It is waiting on ${detail.title ? `“${detail.title}” (${detail.sessionId})` : detail.sessionId}${others}, and their answer will wake it.`;
+  }
+  if (session.activity === "scheduled" && detail?.kind === "schedule") {
+    return `Nothing is running. A schedule wakes it at ${new Date(detail.at).toISOString()}.`;
+  }
+  return "Nothing is running.";
 }
 
 /** One session, described on its own — `sessions_create` and `sessions_status`,
@@ -1509,6 +1539,15 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
            */
           ...(session.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: session.reportWindowMinutes }),
           /**
+           * THE FACTS BEHIND `activity` — the same ones the rail labels: how
+           * much background work, which session it waits on, when a schedule
+           * wakes it, what a running turn is only waiting for. A coordinator
+           * deciding whether to wait, poll or move on needs them as much as a
+           * person does, and without them "idle" and "waiting on my worker"
+           * were the same answer.
+           */
+          ...(session.activityDetail ? { activityDetail: session.activityDetail } : {}),
+          /**
            * AND THE NOTE NAMES THE REASON — #813. `running: false` alone reads
            * as "it finished", which is the opposite of what a failed cut means:
            * nothing started, and nothing will until a person fixes the
@@ -1532,10 +1571,10 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
                   // this issue was opened about.
                   `A turn is in flight but has journalled NOTHING for over ${Math.round(STALLED_AFTER_MS / 60_000)} minutes. That may be a long command and may be a wedge — read it with sessions_read before deciding. Nothing has been stopped.`
               : live.length > 0
-                ? `A turn is in flight. Read it with sessions_read, or stop it with sessions_stop.${pending.length > 0 ? ` ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting for it to finish.` : ""}`
+                ? `${session.activityDetail?.kind === "tool" ? `A turn is in flight, but it is only waiting ${WAITING_PHRASE[session.activityDetail.waitingOn]}.` : "A turn is in flight."} Read it with sessions_read, or stop it with sessions_stop.${pending.length > 0 ? ` ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting for it to finish.` : ""}`
                 : pending.length > 0
                   ? `Nothing is running, and ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting to be delivered${cadencePhrase(session.reportWindowMinutes)}.`
-                  : "Nothing is running.",
+                  : quietNote(session),
         });
       },
     ),
