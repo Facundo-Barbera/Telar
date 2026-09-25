@@ -190,7 +190,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_tabs",
     description:
-      "Open, close, or move to a tab in Telar's integrated browser. \"new\" opens one and moves you into it, \"select\" moves you to an existing one; neither changes what the human is looking at. List tabs first when more than one is open.",
+      "Open, close, or move to a tab in Telar's integrated browser. \"new\" opens one and moves you into it, \"select\" moves you to an existing one; neither changes what the human is looking at. List tabs first when more than one is open. If the person closes the browser, its pages close and your other browser calls say so; \"new\" opens it again, so use it only when you still need a browser.",
     input: z.object({
       action: z.enum(["list", "new", "close", "select"]),
       // Tabs are addressed positionally by Playwright MCP, so a fractional or
