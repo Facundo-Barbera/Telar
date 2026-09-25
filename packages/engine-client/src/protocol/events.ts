@@ -485,6 +485,7 @@ export type TurnModelSelection = z.infer<typeof TurnModelSelection>;
  *  the same one returns the original turn with `replayed: true`. */
 export const TurnSubmission = z.object({
   runId: Id,
+  /** May be empty when an image rides along — see `turnHasContent`. */
   input: z.string(),
   /** `compact` for the compaction gesture — see `Turn.kind`. The engine
    *  refuses a second one while one is queued or running. */
@@ -495,6 +496,29 @@ export const TurnSubmission = z.object({
   attachments: z.array(Id).max(16).optional(),
 });
 export type TurnSubmission = z.infer<typeof TurnSubmission>;
+
+/**
+ * WHETHER A MESSAGE HAS SOMETHING TO SAY: words, or a picture.
+ *
+ * A screenshot with no text is a whole message — "look at this" goes without
+ * saying. Any other file alone is not: a PDF with no words is a path the agent
+ * is handed with no idea why. One rule for every composer and for the engine's
+ * own guard, so a client can never offer Send on a message the engine refuses.
+ */
+export function turnHasContent(text: string, mediaTypes: readonly string[]): boolean {
+  return text.trim() !== "" || mediaTypes.some((type) => type.startsWith("image/"));
+}
+
+/**
+ * The placeholder title a first message seeds, before a generated one lands.
+ * An image-only message names its picture rather than leaving the title blank.
+ */
+export function seedSessionTitle(text: string, imageNames: readonly string[] = []): string {
+  const words = text.replace(/\s+/g, " ").trim().slice(0, 80).trim();
+  if (words) return words;
+  if (imageNames.length === 1) return imageNames[0]!.slice(0, 80);
+  return imageNames.length > 1 ? `${imageNames.length} images` : "";
+}
 
 export const TurnSubmissionResult = z.object({
   turn: Turn,

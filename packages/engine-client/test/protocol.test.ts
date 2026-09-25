@@ -617,3 +617,20 @@ describe("waitingToolOf — only a call that merely waits", () => {
     expect(waitingToolOf({ type: "assistant_message", text: "" })).toBeUndefined();
   });
 });
+
+describe("an image-only message", () => {
+  test("words or a picture is content; a file alone or nothing is not", () => {
+    expect(packageRoot.turnHasContent("hi", [])).toBe(true);
+    expect(packageRoot.turnHasContent("", ["image/png"])).toBe(true);
+    expect(packageRoot.turnHasContent(" \n", ["application/pdf", "image/jpeg"])).toBe(true);
+    expect(packageRoot.turnHasContent("", ["application/pdf"])).toBe(false);
+    expect(packageRoot.turnHasContent("  ", [])).toBe(false);
+  });
+
+  test("seeds a title from its picture when there are no words", () => {
+    expect(packageRoot.seedSessionTitle("fix   the\nbug", ["a.png"])).toBe("fix the bug");
+    expect(packageRoot.seedSessionTitle("", ["Screenshot.png"])).toBe("Screenshot.png");
+    expect(packageRoot.seedSessionTitle(" ", ["a.png", "b.png"])).toBe("2 images");
+    expect(packageRoot.seedSessionTitle("")).toBe("");
+  });
+});
