@@ -160,9 +160,13 @@ describe("delegationSettle — the five clauses", () => {
     for (const activity of ["blocked", "working", "queued"] as const) {
       expect(facts({ activity }).settle, activity).toBeUndefined();
     }
-    // `monitoring` is background work nobody is waiting on, and it does not
-    // block a hand settle either (`canSettle`) — so it does not block this.
-    expect(facts({ activity: "monitoring" }).settle).toBeDefined();
+  });
+
+  test("live background work keeps the row: an automatic settle never shelves a monitoring delegate", () => {
+    // A hand settle still may (`canSettle`); this one is nobody's decision.
+    expect(facts({ activity: "monitoring" })).toEqual({});
+    // The moment the work ends, the grace already served counts.
+    expect(facts({ activity: "idle" }).settle).toBeDefined();
   });
 
   test("a PIN keeps it, and an existing settle is not restamped as the engine's", () => {

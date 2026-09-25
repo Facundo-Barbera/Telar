@@ -14,7 +14,8 @@ enum Settling {
 
     /// Working means a turn is queued or running — settling a session that is
     /// about to answer you is the same mistake as settling one mid-answer.
-    /// (`monitoring` deliberately does NOT count, matching the web fold.)
+    /// (`monitoring` deliberately does NOT count, matching the web fold: it
+    /// holds off the clock in `isSettled`, but not a person's settle.)
     static func isWorking(_ session: Session) -> Bool {
         session.activity == .working || session.activity == .queued
     }
@@ -76,6 +77,10 @@ enum Settling {
         // settling a session with an unread answer in front of them means it.
         if let until = session.snoozedUntil, until > now { return false }
         if hasUnreadResult(session) { return false }
+        // LIVE BACKGROUND WORK IS SOMETHING HAPPENING — the protocol's
+        // `backgroundWork` clause. Below the pin, so a hand settle still
+        // shelves a monitoring row; above the clock, so neglect never does.
+        if session.activity == .monitoring { return false }
         guard let hours = autoSettleAfterHours else { return false }
         return idleSince(session) < Double(now) - hours * hourMs
     }

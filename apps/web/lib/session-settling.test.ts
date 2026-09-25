@@ -6,8 +6,10 @@ import {
   canSnooze,
   hasUnreadResult,
   isSettled,
+  isShelved,
   isSnoozed,
   raisedHandWhileSnoozed,
+  settlingActivityOf,
   snoozePresets,
   wakeLabel,
   wokeAt,
@@ -51,6 +53,28 @@ describe("blockers beat everything", () => {
     const stale = session({ updatedAt: NOW - 30 * DAY });
     expect(isSettled(stale, {}, options)).toBe(true);
     expect(isSettled(stale, { waitingOnYou: true }, options)).toBe(false);
+  });
+});
+
+describe("live background work", () => {
+  const stale = session({ updatedAt: NOW - 30 * DAY });
+
+  test("the clock never shelves a monitoring session, however quiet its turns", () => {
+    const activity = settlingActivityOf({ activity: "monitoring" });
+    expect(activity).toMatchObject({ working: false, waitingOnYou: false, backgroundWork: true });
+    expect(isSettled(stale, activity, options)).toBe(false);
+    // Nor does retention's zero window, which keeps every guard above the clock.
+    expect(isShelved(stale, activity, { now: NOW, autoSettleAfterHours: 0 })).toBe(false);
+  });
+
+  test("a person may still settle it: the pin wins and the button stays enabled", () => {
+    const activity = settlingActivityOf({ activity: "monitoring" });
+    expect(canSettle(activity)).toBe(true);
+    expect(isSettled(session({ settledOverride: "settled" }), activity, options)).toBe(true);
+  });
+
+  test("an idle session — which is what paused or ambient-only tasks fold to — still ages out", () => {
+    expect(isSettled(stale, settlingActivityOf({ activity: "idle" }), options)).toBe(true);
   });
 });
 
