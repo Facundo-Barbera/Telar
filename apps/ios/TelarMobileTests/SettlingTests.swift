@@ -36,8 +36,14 @@ import Testing
         #expect(!Settling.isSettled(session(#""activity":"blocked","settledOverride":"settled""#), now: now, autoSettleAfterHours: 72))
         #expect(!Settling.isSettled(session(#""activity":"working""#), now: now, autoSettleAfterHours: 72))
         #expect(!Settling.isSettled(session(#""activity":"queued""#), now: now, autoSettleAfterHours: 72))
-        // Monitoring does NOT count as working — matching the web's fold.
-        #expect(Settling.isSettled(session(#""activity":"monitoring""#), now: now, autoSettleAfterHours: 72))
+    }
+
+    @Test func backgroundWorkHoldsOffTheClockButNotThePin() {
+        // Monitoring is not a blocker, but live background work is not
+        // "nothing for hours" either — matching the protocol's `isSettled`.
+        #expect(!Settling.isSettled(session(#""activity":"monitoring""#), now: now, autoSettleAfterHours: 72))
+        #expect(Settling.isSettled(session(#""activity":"monitoring","settledOverride":"settled""#), now: now, autoSettleAfterHours: 72))
+        #expect(Settling.isSettled(session(#""activity":"idle""#), now: now, autoSettleAfterHours: 72))
     }
 
     @Test func snoozeHidesUntilWokenOrRaisedHand() {

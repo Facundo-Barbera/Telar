@@ -30,11 +30,12 @@
  *      the clock would have kept; "active" keeps one the clock would have
  *      shelved. Absent means "let the rule decide" — a third answer, which is
  *      why the engine stores an enum rather than a boolean.
- *   3. A LIVE SNOOZE, AND AN UNREAD ANSWER, BEAT THE CLOCK. Both are cases
- *      where the clock's premise — "nothing has happened here for hours" — is
- *      simply false: one is a decision that has not expired yet, the other is
- *      a result nobody has seen. Below the pin, because a human settling a
- *      session with an unread answer in front of them means it.
+ *   3. A LIVE SNOOZE, AN UNREAD ANSWER AND LIVE BACKGROUND WORK BEAT THE
+ *      CLOCK. All are cases where the clock's premise — "nothing has happened
+ *      here for hours" — is simply false: a decision that has not expired yet,
+ *      a result nobody has seen, work that is still running. Below the pin,
+ *      because a human settling a session with any of them in front of them
+ *      means it.
  *   4. THE CLOCK DECIDES THE REST, and only if the reader configured it to.
  *
  * ══ WHAT WE DELIBERATELY DID NOT PORT ══
@@ -98,6 +99,10 @@ export type SettlingActivity = {
   working?: boolean;
   /** A request is parked on a human — an approval, or a question. */
   waitingOnYou?: boolean;
+  /** No turn, but live background work — a backgrounded shell, monitor or
+   *  sub-agent that outlived its turn (`activity: "monitoring"`). Holds off the
+   *  CLOCK, not a person: see `isSettled`. */
+  backgroundWork?: boolean;
   /** When the last turn ended, for the early-wake rule. Absent when none has. */
   lastTurnEndedAt?: number;
   /** The last turn failed. A fresh failure outranks a snooze. */
@@ -126,7 +131,12 @@ export type SettlingOptions = {
  *
  * `queued` COUNTS AS WORKING. It is not running yet, but a turn is on its way,
  * and settling a session that is about to answer you is the same mistake as
- * settling one mid-answer. `monitoring` deliberately does not.
+ * settling one mid-answer.
+ *
+ * `monitoring` IS NOT WORKING, BUT IT IS NOT NOTHING EITHER. It is the engine's
+ * word for live background work and no turn (`livenessOf`, which already leaves
+ * paused and ambient tasks out), so it gets its own flag rather than joining
+ * `working`: a person may still shelve it by hand, but nothing AUTOMATIC may.
  */
 export function settlingActivityOf(session: {
   activity?: "idle" | "blocked" | "working" | "queued" | "monitoring";
@@ -136,6 +146,7 @@ export function settlingActivityOf(session: {
   return {
     working: session.activity === "working" || session.activity === "queued",
     waitingOnYou: session.activity === "blocked",
+    backgroundWork: session.activity === "monitoring",
     ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
     // A failure is dated by when the turn ended, because that IS when it
     // failed — the engine derives both from the same turn.
@@ -150,6 +161,11 @@ export function settlingActivityOf(session: {
  * partition will not call settled must also be refused as a settle TARGET, or
  * the button appears to do nothing — which reads as a broken control rather
  * than as a rule.
+ *
+ * `backgroundWork` IS NOT ON IT, and that is the same argument run backwards:
+ * `isSettled` honours a "settled" pin over background work, so the button must
+ * stay enabled. A hand settle only moves the row — it stops nothing — and the
+ * work's own wake brings the row back when it has something to say.
  */
 export function canSettle(activity: SettlingActivity): boolean {
   return !activity.waitingOnYou && !activity.working;
@@ -332,6 +348,15 @@ export function isSettled(session: SettleableSession, activity: SettlingActivity
    */
   if (session.snoozedUntil !== undefined && Number.isFinite(session.snoozedUntil) && session.snoozedUntil > options.now) return false;
   if (hasUnreadResult(session)) return false;
+  /**
+   * LIVE BACKGROUND WORK IS SOMETHING HAPPENING, so the clock's premise is
+   * false for the same reason an unread answer makes it false: a shell or a
+   * sub-agent still running is not "nothing for hours", however long ago the
+   * turn that started it ended. BELOW THE PIN, because a person shelving a row
+   * with a watcher on it means it; ABOVE THE CLOCK, which also keeps retention
+   * (`retirable`, which zeroes the window and keeps these guards) off it.
+   */
+  if (activity.backgroundWork) return false;
   // 4. The clock, if the reader wants one.
   return isStale(session, options);
 }
