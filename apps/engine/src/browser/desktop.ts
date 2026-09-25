@@ -201,6 +201,22 @@ export class DesktopBrowserClient {
     return this.parseState(response);
   }
 
+  /**
+   * CLOSE A SCOPE'S PAGES — its session is settled, archived or deleted
+   * (#883). `false` when the host did not do it: a shell older than the route
+   * answers 404, and that is not worth failing a settle over.
+   */
+  async release(scopeKey: string): Promise<boolean> {
+    const response = await this.fetchImpl(this.url("/release"), {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ scopeKey }),
+    });
+    if (!response.ok) return false;
+    const payload: unknown = await response.json().catch(() => undefined);
+    return payload !== null && typeof payload === "object" && (payload as { released?: unknown }).released === true;
+  }
+
   async state(scopeKey: string): Promise<DesktopBrowserState> {
     const response = await this.fetchImpl(this.url(`/state?scopeKey=${encodeURIComponent(scopeKey)}`), {
       headers: this.headers(),

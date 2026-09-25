@@ -239,3 +239,31 @@ describe("opening a tab for the human", () => {
     }
   });
 });
+
+describe("a session's browser is over (#883)", () => {
+  test("/release destroys the scope's pages without marking them closed by the person", async () => {
+    const released = [];
+    const control = await startBrowserControlServer({
+      port: 0,
+      token: "secret",
+      getBrowserManager: () => ({
+        releaseScope(...args) {
+          released.push(args);
+        },
+      }),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${control.port}/release`, {
+        method: "POST",
+        headers: { Authorization: "Bearer secret", "Content-Type": "application/json" },
+        body: JSON.stringify({ scopeKey: "session-a" }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ released: true });
+      // `destroy`, and no `closedByPerson`: the agent is not told the person did it.
+      expect(released).toEqual([["session-a", true]]);
+    } finally {
+      await control.close();
+    }
+  });
+});

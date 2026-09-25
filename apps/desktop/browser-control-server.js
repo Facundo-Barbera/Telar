@@ -4,7 +4,7 @@ const MAX_BODY_BYTES = 1_000_000;
 
 /** Every route this server answers. Anything else is a 404 before a body is
  *  read or a browser host is resolved. */
-const ROUTES = new Set(["GET /state", "POST /bind", "POST /tool", "POST /open", "GET /metrics"]);
+const ROUTES = new Set(["GET /state", "POST /bind", "POST /tool", "POST /open", "POST /release", "GET /metrics"]);
 
 function json(response, status, value) {
   response.writeHead(status, {
@@ -115,6 +115,17 @@ function startBrowserControlServer({ port, token, getBrowserManager, readProcess
       // the agent's tool path an opener argument it must never be able to set.
       if (route === "POST /open") {
         json(response, 200, await manager.action(scopeKey, { action: "new", url: input.url || "about:blank" }));
+        return;
+      }
+      /**
+       * A SESSION'S BROWSER IS OVER — the engine settled, archived or deleted
+       * it (#883). Its pages close, whoever opened them, exactly as closing the
+       * panel's Browser tab closes them — except that nobody is told "the
+       * person closed it": the session's next turn, if it has one, starts over.
+       */
+      if (route === "POST /release") {
+        manager.releaseScope(scopeKey, true);
+        json(response, 200, { released: true });
         return;
       }
     } catch (error) {
