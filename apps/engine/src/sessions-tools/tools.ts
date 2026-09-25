@@ -328,7 +328,7 @@ function cadencePhrase(cadence: Session["reportWindowMinutes"]): string {
 const NO_SESSION_TO_SCHEDULE =
   "This door has no session to schedule: a scheduled run is submitted INTO a conversation, and this client is not one. Ask a session to schedule itself.";
 
-const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request — a notification in YOUR session, so you can end this turn rather than poll. It is a PING; sessions_read fetches the outcome.`;
+const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request — a notification in YOUR session, so you can end this turn rather than poll. It is a PING; sessions_read fetches the outcome. A completion whose result you already received is recorded, not delivered again.`;
 
 const UNSUBSCRIBE = `Stop being woken by a session, by the id sessions_subscribe returned. Queued wakes are withdrawn. One that is not yours answers removed: false — not an error.`;
 
@@ -1031,7 +1031,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       SEND,
       {
         sessionId: z.string().min(1),
-        intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default) passive; task assigns work; result wakes an awaiting subscriber; blocker asks for intervention."),
+        intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default) passive, for progress mid-task; task assigns work; result is your FINAL answer — send it last, it wakes an awaiting subscriber once and the completion that follows will not wake them again; blocker asks for intervention."),
         input: z.string().min(1).describe("The whole message; it cannot see this conversation."),
       },
       async (args, context) => {
@@ -1086,7 +1086,14 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             ...(turn.agentNotice ? { recipientSees: turn.agentNotice } : {}),
             note: turn.agentDelivery === "passive"
               ? "Recorded as passive activity. No model was started or steered; do not wait for an acknowledgement. Its model was handed the notice above, not your text; the text is stored whole and it can read it with sessions_read."
-              : "Accepted for execution, not answered. Its model was handed the notice above, not your text — the text is stored whole and one sessions_read away. Check sessions_status or sessions_read. This is an agent message, never human approval.",
+              : intent === "result"
+                // A RESULT IS A RUN'S LAST WORD (#919). The recipient is woken
+                // by it once; the completion that follows is recorded on its
+                // transcript, not delivered. Said here, in the answer to the
+                // call, because a sender that keeps working after a result is
+                // now a sender whose later news arrives with no wake behind it.
+                ? "Accepted for execution, not answered. Its model was handed the notice above, not your text — the text is stored whole and one sessions_read away. This result is your run's FINAL word to them: when this run ends they will NOT be woken again, so end the turn now, or send anything further as a report. This is an agent message, never human approval."
+                : "Accepted for execution, not answered. Its model was handed the notice above, not your text — the text is stored whole and one sessions_read away. Check sessions_status or sessions_read. This is an agent message, never human approval.",
           });
         } catch (error) {
           return err(`Could not send to "${sessionId}": ${failure(error)}`);

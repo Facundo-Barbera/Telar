@@ -173,6 +173,42 @@ test("an interim result does not spend the one-shot, and the completion that fol
   expect(store.subscriptionsFor("session_host")).toHaveLength(0);
 });
 
+/**
+ * #919 — THE HALF #590 COULD NOT REACH. The merge above folds the completion
+ * into a result still WAITING; once the coordinator has claimed the result the
+ * turn is in front of a model and the merge misses. Measured seven times: the
+ * coordinator was then woken a second time to say "already integrated". Now a
+ * `result` is a run's final word, and the completion of a run whose result the
+ * coordinator has read is recorded on its transcript and delivered to nobody.
+ */
+test("a result the coordinator has read is that run's last word: its completion is recorded, not delivered", () => {
+  const { store, proof } = setup();
+  store.subscribe("session_host", { targetSessionId: "session_worker", once: true });
+  const result = store.submitAgentTurn("session_host", { runId: "run_result", input: "finished", intent: "result" }, proof);
+  expect(result.turn.agentDelivery).toBe("wake");
+  // The coordinator takes the result and finishes with it BEFORE the worker's
+  // run ends — the ordering in every one of the measured transcripts.
+  const token = store.claimTurn("session_host", "worker_two")!.claim!.token;
+  store.markRunning("session_host", "run_result", token);
+  store.completeTurn("session_host", "run_result", token, { text: "integrated" });
+
+  store.completeTurn("session_worker", "run_source", proof.claimToken, { text: "finished" });
+
+  // Two turns, both over: the result it read, and the record that the run
+  // ended. Nothing queued, nothing held, nothing for a worker to claim.
+  const turns = store.turns("session_host");
+  expect(turns.map((turn) => turn.state)).toEqual(["completed", "completed"]);
+  expect(turns[1]).toMatchObject({
+    agentDelivery: "passive",
+    wakeReason: { kind: "turn_completed", sessionId: "session_worker", runId: "run_source" },
+  });
+  expect(turns[1]!.notification!.body).toContain("turn run_source completed");
+  expect(store.pendingNotifications("session_host")).toHaveLength(0);
+  expect(store.claimTurn("session_host", "worker_two")).toBeUndefined();
+  // The ending spent the one-shot, exactly as a delivered wake would have.
+  expect(store.subscriptionsFor("session_host")).toHaveLength(0);
+});
+
 test("a parked request does not spend a one-shot — the target is waiting, not finished", () => {
   const { store, proof } = setup();
   store.subscribe("session_host", { targetSessionId: "session_worker", once: true });
