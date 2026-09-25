@@ -1897,8 +1897,9 @@ export function createClaudeDriver(
            * closed as `completed` with no failure and no resultText — the
            * notification that carried the summary may simply have been lost,
            * and inventing one would be fabrication. If that notification
-           * limps in later anyway, `emitTask`'s "first ending is the ending"
-           * keeps the state and still folds the summary in.
+           * limps in later anyway, `emitTask` folds its summary in, and lets
+           * a stated `failed`/`stopped` replace this bare `completed`
+           * (`isUnstatedEnding`).
            *
            * ONLY background WORK (`isBackgroundWork`), and ONLY tasks whose SDK
            * id THIS process minted or was seeded with (`taskIdsBySdkId`). A
