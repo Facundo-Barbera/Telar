@@ -3472,6 +3472,15 @@ describe("the main process holds a bounded amount (#296)", () => {
     expect(listed.isError).toBeFalsy();
   });
 
+  test("closing a Browser that had no pages leaves the agent nothing to be told", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("s", "none");
+    manager.releaseScope("s", true, { closedByPerson: true });
+
+    const result = await manager.callTool("s", "browser_tabs", { action: "list" });
+    expect(textOf(result)).not.toContain("The person closed the browser");
+  });
+
   test("a destroying release that is not the person's says nothing to the agent", async () => {
     const { manager } = makeHarness();
     manager.declareProfile("s", "none");

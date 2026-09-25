@@ -5016,12 +5016,14 @@ class DesktopBrowserManager {
    */
   releaseScope(scopeKey, destroy = false, { closedByPerson = false } = {}) {
     const scope = this.requireScope(scopeKey);
-    if (destroy && closedByPerson) {
+    const scoped = this.scopeTabs(scope);
+    // Only a browser that HAD pages was closed on anybody: a Browser tab
+    // opened and closed empty must not leave the agent an error about it.
+    if (destroy && closedByPerson && scoped.length) {
       this.scopesClosedByPerson.add(scope);
       this.agentTabIds.delete(scope);
       this.agentTabClosed.delete(scope);
     }
-    const scoped = this.scopeTabs(scope);
     // BEFORE the hibernate/remove pass empties the list: a destroyed scope's
     // tabs belong to nobody, and the idle transitions must still journal.
     if (destroy) {
