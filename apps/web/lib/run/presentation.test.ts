@@ -11,10 +11,14 @@ import {
   describeReadiness,
   isOpenTerminal,
   latestOpenTerminal,
+  openCount,
+  openTerminals,
   recentRuns,
+  runSummary,
   statusDetail,
   statusLabel,
   statusTone,
+  terminalTitle,
   worktreeLabel,
 } from "./presentation";
 import type { RunConfigurationDraft, RunStatusAnswer, RunView } from "./types";
@@ -56,6 +60,50 @@ describe("the session's terminals", () => {
     expect(latestOpenTerminal(answer({ terminals: [closed, open] }))?.terminalId).toBe("term_1");
     expect(isOpenTerminal(closed)).toBe(false);
     expect(isOpenTerminal(open)).toBe(true);
+  });
+});
+
+/**
+ * RUN = A NEW TERMINAL: a session holds a LIST, and pressing a configuration
+ * again opens another instance. What the masthead says has to be true of the
+ * whole list, not of whichever one happened to be newest.
+ */
+describe("several instances", () => {
+  const first = run({ terminalId: "term_1", title: "web dev", startedAt: 1000, status: "ready" });
+  const second = run({ terminalId: "term_2", title: "web dev #2", startedAt: 2000, status: "running" });
+  const other = run({ terminalId: "term_3", title: "api", configId: "cfg_api", configName: "api", startedAt: 3000, status: "ready" });
+  const ended = run({ terminalId: "term_0", title: "web dev", startedAt: 500, status: "exited", exitCode: 0 });
+
+  test("the open list is oldest first, the order the strip reads in, and drops the ended", () => {
+    const list = openTerminals(answer({ terminals: [other, second, ended, first] }));
+    expect(list.map((view) => view.terminalId)).toEqual(["term_1", "term_2", "term_3"]);
+    expect(openTerminals(undefined)).toEqual([]);
+    // A paired Mac on an older engine answers without the list.
+    expect(openTerminals({} as RunStatusAnswer)).toEqual([]);
+  });
+
+  test("an instance is named by the engine's title, never by a number made up here", () => {
+    expect(terminalTitle(second)).toBe("web dev #2");
+    // An engine older than titles still names it after its recipe.
+    expect(terminalTitle(run({ title: "", configName: "web dev" }))).toBe("web dev");
+  });
+
+  test("each configuration knows how many of it are open", () => {
+    const open = [first, second, other];
+    expect(openCount(open, "cfg_1")).toBe(2);
+    expect(openCount(open, "cfg_api")).toBe(1);
+    expect(openCount(open, "cfg_none")).toBe(0);
+  });
+
+  test("the masthead says Run over nothing, the one's name over one, and a count over several", () => {
+    expect(runSummary([])).toEqual({ label: "Run", tone: "idle" });
+    expect(runSummary([first])).toEqual({ label: "web dev", tone: "good", detail: "Ready" });
+    expect(runSummary([first, other]).label).toBe("2 terminals");
+  });
+
+  test("several are green only when every one is — the summary never outranks a chip", () => {
+    expect(runSummary([first, other]).tone).toBe("good");
+    expect(runSummary([first, second, other]).tone).toBe("working");
   });
 });
 

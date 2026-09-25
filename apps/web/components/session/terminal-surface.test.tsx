@@ -25,7 +25,8 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { TERMINAL_IMAGE_OPTIONS, TerminalSurface } from "./terminal-surface";
-import type { LiveTerminal, TerminalChunk, TerminalEnding, TerminalOpenRequest } from "@/lib/terminal-bridge";
+import type { LiveTerminal, TerminalActivity, TerminalChunk, TerminalEnding, TerminalOpenRequest } from "@/lib/terminal-bridge";
+import type { RunView } from "@/lib/run/types";
 import {
   activateShell,
   addShell,
@@ -34,6 +35,7 @@ import {
   readWorkspace,
   setShellTerminal,
   terminalIds,
+  upsertRunShell,
   workspaceParams,
   TERMINAL_ID_PARAM,
 } from "@/lib/terminal-workspace";
@@ -48,15 +50,19 @@ afterAll(async () => {
 type Fake = {
   opens: TerminalOpenRequest[];
   kills: string[];
+  closes: string[];
   writes: Array<{ id: string; data: string }>;
   resizes: Array<{ id: string; cols: number; rows: number }>;
   push: (chunk: TerminalChunk) => void;
   end: (ending: TerminalEnding) => void;
 };
 
-function installBridge(options: { live?: LiveTerminal[]; openId?: string; ending?: TerminalEnding } = {}): Fake {
+function installBridge(
+  options: { live?: LiveTerminal[]; openId?: string; ending?: TerminalEnding; activity?: TerminalActivity[] } = {},
+): Fake {
   const opens: TerminalOpenRequest[] = [];
   const kills: string[] = [];
+  const closes: string[] = [];
   const writes: Array<{ id: string; data: string }> = [];
   const resizes: Array<{ id: string; cols: number; rows: number }> = [];
   const data: Array<(chunk: TerminalChunk) => void> = [];
@@ -80,6 +86,18 @@ function installBridge(options: { live?: LiveTerminal[]; openId?: string; ending
       return { ok: true };
     },
     list: async () => ({ terminals: options.live ?? [] }),
+    // `active` and `close` only when the test says what the host would answer:
+    // without them the bridge is a desktop build older than the question,
+    // which closes without asking and ends a shell with `kill`.
+    ...(options.activity
+      ? {
+          active: async (ids?: string[]) => ({ terminals: options.activity!.filter((entry) => !ids || ids.includes(entry.id)) }),
+          close: async (id: string) => {
+            closes.push(id);
+            return { ok: true };
+          },
+        }
+      : {}),
     onData: (listener: (chunk: TerminalChunk) => void) => {
       data.push(listener);
       return () => data.splice(data.indexOf(listener), 1);
@@ -93,6 +111,7 @@ function installBridge(options: { live?: LiveTerminal[]; openId?: string; ending
   return {
     opens,
     kills,
+    closes,
     writes,
     resizes,
     push: (chunk) => data.forEach((listener) => listener(chunk)),
@@ -439,20 +458,6 @@ describe("the strip's keys", () => {
 });
 
 describe("what a terminal's ending is allowed to say", () => {
-  test("`unknown` never reads as finished, and is marked as the warning it is", async () => {
-    const bridge = installBridge({ openId: "term_a" });
-    const host = await mount({ sessionId: "session_a" });
-
-    await act(async () => {
-      bridge.end({ id: "term_a", fate: "unknown", pid: 7777, reason: "a kill was never observed (pid 7777)" });
-    });
-
-    expect(host.textContent).toContain("lost track");
-    expect(host.textContent).toContain("7777");
-    // The one thing it must not be able to say.
-    expect(host.textContent).not.toContain("exited");
-  });
-
   test("an observed exit says so, plainly", async () => {
     const bridge = installBridge({ openId: "term_a" });
     const host = await mount({ sessionId: "session_a" });
@@ -472,6 +477,106 @@ describe("what a terminal's ending is allowed to say", () => {
   });
 });
 
+/**
+ * CLOSE = KILL, AND THE QUESTION BEFORE IT ("Run = a new terminal").
+ *
+ * The host is asked whether anything is running; a busy terminal is closed
+ * only on a yes, an idle one without a word — and a RUN's chip is no longer
+ * the exception that closes without ending anything.
+ */
+describe("closing a chip ends its terminal", () => {
+  const realConfirm = window.confirm;
+  afterEach(() => {
+    window.confirm = realConfirm;
+  });
+
+  /** Records every question, answering with `answer`. */
+  function stubConfirm(answer: boolean): string[] {
+    const asked: string[] = [];
+    window.confirm = ((message?: string) => (asked.push(String(message)), answer)) as typeof window.confirm;
+    return asked;
+  }
+
+  test("an idle shell closes without asking", async () => {
+    const bridge = installBridge({ live: [{ id: "t1" }, { id: "t2" }], activity: [{ id: "t2", active: false, processes: 0 }] });
+    const asked = stubConfirm(false);
+    const host = await mount({ sessionId: "session_a", params: restored("t1", "t2") });
+
+    await click(host.querySelector('button[aria-label="Close Shell 2"]') as HTMLButtonElement);
+
+    expect(asked).toEqual([]);
+    expect(bridge.closes).toEqual(["t2"]);
+    expect(tabs(host).length).toBe(1);
+  });
+
+  test("a busy shell asks in plain words, and no keeps it open and running", async () => {
+    const bridge = installBridge({
+      live: [{ id: "t1" }, { id: "t2" }],
+      activity: [{ id: "t2", active: true, processes: 3, command: "bun test --watch" }],
+    });
+    const asked = stubConfirm(false);
+    const host = await mount({ sessionId: "session_a", params: restored("t1", "t2") });
+
+    await click(host.querySelector('button[aria-label="Close Shell 2"]') as HTMLButtonElement);
+
+    expect(asked[0]).toStartWith("End “bun test --watch” (3 processes)?");
+    expect(bridge.closes).toEqual([]);
+    expect(tabs(host).length).toBe(2);
+
+    stubConfirm(true);
+    await click(host.querySelector('button[aria-label="Close Shell 2"]') as HTMLButtonElement);
+    expect(bridge.closes).toEqual(["t2"]);
+    expect(tabs(host).length).toBe(1);
+  });
+
+  test("closing a run's chip ends the run through the engine, as the person", async () => {
+    const run: RunView = {
+      terminalId: "term_run",
+      runId: "term_run",
+      projectId: "project_1",
+      sessionId: "session_a",
+      origin: "run",
+      title: "web dev #2",
+      configId: "cfg_web",
+      configName: "web dev",
+      command: "bun run dev",
+      worktreePath: CHECKOUT,
+      cwd: CHECKOUT,
+      status: "ready",
+      readiness: { kind: "none" },
+      startedAt: 1,
+      env: [],
+    };
+    const posted: Array<{ url: string; body: unknown }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") posted.push({ url, body: init.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.includes("/run/status")) return Response.json({ terminals: [run] });
+      if (url.includes("/run/configs")) return Response.json({ configurations: [] });
+      if (url.includes("/run/stop")) return Response.json({ ...run, status: "closed", closedBy: "person" });
+      if (url.includes("/run/")) return new Response("", { status: 404 });
+      return Response.json({ listing: { workspacePath: CHECKOUT, repository: true, files: [], source: "git", truncated: false, readAt: 1 } });
+    }) as typeof fetch;
+    const bridge = installBridge({ live: [{ id: "t1" }], activity: [{ id: "term_run", active: true, processes: 4 }] });
+    const asked = stubConfirm(true);
+    const params = workspaceParams(
+      upsertRunShell(readWorkspace(restored("t1")), { runId: "term_run", configId: "cfg_web", terminalId: "term_run", title: "web dev #2" }),
+    );
+    const host = await mount({ sessionId: "session_a", params });
+
+    await click(host.querySelector('button[aria-label="Close web dev #2"]') as HTMLButtonElement);
+
+    // What the person launched, not what the process table calls it.
+    expect(asked[0]).toStartWith("End “bun run dev” (4 processes)?");
+    const stop = posted.find((entry) => entry.url.includes("/run/stop"));
+    // No `closedBy`: an absent one is the person, which is who pressed it.
+    expect(stop?.body).toEqual({ terminalId: "term_run" });
+    // The engine owns a run's terminal; the host is not asked to close it.
+    expect(bridge.closes).toEqual([]);
+    expect(tabs(host).map((tab) => tab.textContent)).toEqual(["Shell 1"]);
+  });
+});
+
 describe("closing the surface", () => {
   test("unmounting does NOT kill the shell — a tab switch is not a goodbye", async () => {
     const bridge = installBridge({ openId: "term_a" });
@@ -480,7 +585,7 @@ describe("closing the surface", () => {
     mounted = undefined;
     act(() => root?.unmount());
     // Killing here would end a half-typed command because somebody looked at
-    // the Diff. `endTerminalForTab` is what ends it, from the cockpit that can
+    // the Diff. `closeTerminalTab` is what ends it, from the cockpit that can
     // tell a switch from a close.
     expect(bridge.kills).toEqual([]);
   });

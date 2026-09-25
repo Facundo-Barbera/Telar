@@ -40,20 +40,19 @@ export type TerminalShell = {
    *  configuration's name here instead, because a run does not name itself. */
   title?: string;
   /**
-   * THE PROJECT'S DEPLOYMENT, WHEN THIS CHIP IS ONE (#890).
+   * A RUN, WHEN THIS CHIP IS ONE (#890; "Run = a new terminal").
    *
    * A run and a person's shell are the same kind of thing — a terminal the
-   * desktop holds — so they belong in one strip rather than in two surfaces.
-   * What is NOT the same is who owns the process: a shell belongs to whoever
-   * opened it and dies with its tab, and a run belongs to the PROJECT. That is
-   * the whole of why this field exists rather than a `kind`, and every rule
-   * that reads it is a rule about ownership:
+   * desktop holds, owned by this session — so they belong in one strip. What
+   * differs is WHO ENDS IT: a shell is ended by the host directly, a run by the
+   * engine, which started it, keeps its record and tells the agent who closed
+   * it. That is the whole of why this field exists rather than a `kind`:
    *
-   *   - `terminalIds` does not list it, so closing the Terminal tab does not
-   *     reap a deployment another session may be watching.
-   *   - closing the chip stops nothing; the chip's own stop action does.
-   *   - a live run with no chip gets one back on the next mount, because the
-   *     run outlived the surface rather than the other way round.
+   *   - closing the chip ends the run through the engine (`lib/terminal-close.ts`),
+   *     with a question first when something is still running in it;
+   *   - `terminalIds` lists the SHELLS only, the ids the host may close for the
+   *     renderer; the tab's reaper reads runs off `run` instead;
+   *   - an open run with no chip gets one back on the next mount.
    *
    * `configId` rides along with `runId` so the chip can draw the recipe's glyph
    * without a second read: the run answers which configuration it came from,
@@ -294,18 +293,14 @@ export function shellLabel(state: TerminalWorkspace, id: string): string {
 }
 
 /**
- * Every PTY this workspace is holding AND is entitled to end, in strip order —
- * what the reaper kills when the outer tab closes. Shells still waiting on a
- * spawn contribute nothing, because there is nothing yet to kill.
+ * Every SHELL's PTY in this workspace, in strip order — the ids the host lets
+ * the renderer close itself. Shells still waiting on a spawn contribute
+ * nothing, because there is nothing yet to close.
  *
- * A RUN'S TERMINAL IS NOT ON THIS LIST (#890), and that is the sharpest rule in
- * this file. A run belongs to the PROJECT: it was started from a menu or from
- * an agent's tool call, it outlives the conversation that launched it, and
- * another session may be watching it right now. Closing a Terminal tab is a
- * statement about the shells in it and about nothing else — so a reaper that
- * read this list and found a run's id would stop somebody else's dev server
- * because a person here closed a tab. Stopping a run is the chip's own action,
- * the header menu's, or `run_stop`.
+ * A RUN'S TERMINAL IS NOT ON THIS LIST, and not because it is spared: closing
+ * the Terminal tab ends runs too (`closeTerminalTab`), but through the ENGINE,
+ * which started them and records who closed them. The host would refuse a
+ * renderer's close of a terminal the engine owns.
  */
 export function terminalIds(state: TerminalWorkspace): string[] {
   return state.shells
