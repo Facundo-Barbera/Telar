@@ -24,6 +24,13 @@ export function isTailnetIpv4(address: string): boolean {
   return octets.length === 4 && octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
 }
 
+/** The port this cockpit's web server listens on — what every endpoint URL
+ *  carries. */
+export function cockpitPort(): number {
+  const raw = Number(process.env.PORT ?? process.env.TELAR_WEB_PORT ?? 3000);
+  return Number.isInteger(raw) && raw > 0 ? raw : 3000;
+}
+
 type NicMap = Record<string, Array<{ family: string | number; address: string; internal: boolean }> | undefined>;
 
 export function listEndpoints(
@@ -58,4 +65,19 @@ export function listEndpoints(
   // HTTPS beats tailnet-IP beats LAN when present.
   const rank: Record<CockpitEndpoint["kind"], number> = { loopback: 0, lan: 1, tailnet: 2, magicdns: 3 };
   return endpoints.sort((left, right) => rank[left.kind] - rank[right.kind]);
+}
+
+/**
+ * THE ADDRESS BOOK A PAIRED PHONE KEEPS (#832): every QR-safe endpoint, as a
+ * bare URL. A phone paired at the LAN IP is dead off-LAN unless it also knows
+ * the tailnet one, so it learns the whole list — in the pair exchange and from
+ * the gated GET /api/remote — and fails over between them. Loopback is left
+ * out for the same reason it is never a QR: from the phone it dials itself.
+ */
+export function dialableAddresses(
+  port: number = cockpitPort(),
+  nics?: NicMap,
+  env?: { TELAR_TAILSCALE_URL?: string },
+): string[] {
+  return listEndpoints(port, nics, env).filter((endpoint) => endpoint.qrSafe).map((endpoint) => endpoint.url);
 }

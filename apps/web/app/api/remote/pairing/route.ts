@@ -1,15 +1,10 @@
-import { listEndpoints } from "@/lib/remote/endpoints";
+import { cockpitPort, listEndpoints } from "@/lib/remote/endpoints";
 import { remoteErrorResponse } from "@/lib/remote/http";
 import { encodeQr, type QrMatrix } from "@/lib/remote/qr";
 import { clearPairing, mintPairing } from "@/lib/remote/store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-function webPort(): number {
-  const raw = Number(process.env.PORT ?? process.env.TELAR_WEB_PORT ?? 3000);
-  return Number.isInteger(raw) && raw > 0 ? raw : 3000;
-}
 
 /**
  * Mint a fresh one-time pairing code. THE ONLY RESPONSE THAT EVER CARRIES A
@@ -21,7 +16,7 @@ export function POST() {
   try {
     const { code, expiresAt } = mintPairing();
     const qrByUrl: Record<string, QrMatrix> = {};
-    for (const endpoint of listEndpoints(webPort())) {
+    for (const endpoint of listEndpoints(cockpitPort())) {
       if (!endpoint.qrSafe) continue;
       qrByUrl[endpoint.url] = encodeQr(`${endpoint.url}/pair#token=${code}`);
     }
