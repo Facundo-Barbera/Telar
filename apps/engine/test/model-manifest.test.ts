@@ -4,6 +4,7 @@ import {
   applyModelManifest,
   BUNDLED_MANIFEST,
   claudeEffortFor,
+  claudeFixedWindowOf,
   claudeProfileOf,
   longDefaultOf,
   normalizeClaudeModel,
@@ -157,6 +158,26 @@ describe("normalizeClaudeModel", () => {
   test("a session on legacy Fable 5 still resolves its profile and keeps its window", () => {
     expect(claudeProfileOf("claude-fable-5")?.defaultWindow).toBe("1m");
     expect(normalizeClaudeModel("claude-fable-5")).toBe("claude-fable-5[1m]");
+  });
+});
+
+describe("a fixed window is published, not guessed from the suffix (#914)", () => {
+  const out = applyModelManifest(CATALOGUE_2_1_280, BUNDLED_MANIFEST, "2.1.280");
+  const windowOf = (slug: string) => out.filter((model) => canonical(model) === slug).map((model) => model.contextWindow);
+
+  test("bare Opus 4.8 and 4.7 are 1M; a 200k-only model is 200k; a model with a choice says nothing", () => {
+    expect(windowOf("claude-opus-4-8")).toEqual([1_000_000]);
+    expect(windowOf("claude-opus-4-7")).toEqual([1_000_000]);
+    expect(windowOf("claude-haiku-4-5")).toEqual([200_000]);
+    expect(windowOf("claude-sonnet-5")).toEqual([undefined, undefined]);
+  });
+
+  test("claudeFixedWindowOf reads the same profile, by slug or alias", () => {
+    expect(claudeFixedWindowOf("claude-opus-4-8")).toBe(1_000_000);
+    expect(claudeFixedWindowOf("opus-4.7")).toBe(1_000_000);
+    expect(claudeFixedWindowOf("haiku")).toBe(200_000);
+    expect(claudeFixedWindowOf("opus[1m]")).toBeUndefined();
+    expect(claudeFixedWindowOf("claude-mystery-9")).toBeUndefined();
   });
 });
 

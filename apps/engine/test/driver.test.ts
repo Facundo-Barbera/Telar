@@ -1009,10 +1009,14 @@ test("the meter assumes 1M only for an explicit [1m] row, and the provider's rep
   }
 });
 
-test("selectedContextMaxFromModel assumes 1M for a [1m] Claude row only", async () => {
+test("selectedContextMaxFromModel assumes 1M for a [1m] Claude row or a fixed-1M model only", async () => {
   const { selectedContextMaxFromModel } = await import("../src/driver");
   expect(selectedContextMaxFromModel("opus[1m]")).toBe(1_000_000);
   expect(selectedContextMaxFromModel("claude-fable-5-1[1m]")).toBe(1_000_000);
+  // Opus 4.8 / 4.7 are always 1M and take no suffix (#914); Haiku is only 200k.
+  expect(selectedContextMaxFromModel("claude-opus-4-8")).toBe(1_000_000);
+  expect(selectedContextMaxFromModel("claude-opus-4-7")).toBe(1_000_000);
+  expect(selectedContextMaxFromModel("claude-haiku-4-5")).toBe(200_000);
   expect(selectedContextMaxFromModel("opus")).toBeUndefined();
   expect(selectedContextMaxFromModel("claude-opus-5")).toBeUndefined();
   expect(selectedContextMaxFromModel(undefined)).toBeUndefined();

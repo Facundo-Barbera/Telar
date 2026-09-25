@@ -42,14 +42,18 @@ export type ContextWindow = "standard" | "long";
 export const WINDOW_LABEL: Record<ContextWindow, string> = { standard: "200k", long: "1M" };
 
 /**
- * `[1m]`, AND NOTHING ELSE COUNTS.
+ * THE ROW'S OWN `contextWindow` FIRST, THEN `[1m]`.
  *
- * This is Claude Code's own spelling and the only long-window marker either
- * provider publishes today. A model that never says `[1m]` is reported as
- * standard rather than unknown, because "standard" is what every id without the
- * suffix means — including every Codex id, none of which have windows to pick.
+ * The engine publishes `contextWindow` on a model with a single window, from
+ * the model manifest — Opus 4.8 and 4.7 are always 1M and take no suffix, so
+ * their bare id would otherwise read as 200k (#914). Everywhere else `[1m]`,
+ * Claude Code's own spelling, is the marker. A model that says neither is
+ * reported as standard rather than unknown, because "standard" is what every
+ * id without the suffix means — including every Codex id, none of which have
+ * windows to pick.
  */
-export function contextWindowOf(model: Pick<ProviderModel, "id" | "resolves">): ContextWindow {
+export function contextWindowOf(model: Pick<ProviderModel, "id" | "resolves" | "contextWindow">): ContextWindow {
+  if (model.contextWindow !== undefined) return model.contextWindow >= 1_000_000 ? "long" : "standard";
   return /\[1m\]$/i.test(model.id) || /\[1m\]$/i.test(model.resolves ?? "") ? "long" : "standard";
 }
 

@@ -23,8 +23,10 @@ enum ModelFamilies {
         var rows: [ProviderModel]
     }
 
-    /// `[1m]`, and nothing else counts — Claude Code's own spelling.
+    /// The row's own `contextWindow` first (a fixed-window model), then
+    /// `[1m]` — Claude Code's own spelling.
     static func contextWindow(of model: ProviderModel) -> ContextWindow {
+        if let tokens = model.contextWindow { return tokens >= 1_000_000 ? .long : .standard }
         let id = model.id.lowercased()
         let resolves = (model.resolves ?? "").lowercased()
         return id.hasSuffix("[1m]") || resolves.hasSuffix("[1m]") ? .long : .standard
