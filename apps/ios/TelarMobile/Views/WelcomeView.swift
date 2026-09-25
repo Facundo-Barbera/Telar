@@ -147,12 +147,12 @@ struct WelcomeView: View {
         busy = true
         defer { busy = false }
         do {
-            let token = try await Pairing.exchange(
+            let paired = try await Pairing.exchange(
                 base: parsed.base, token: parsed.token,
                 deviceName: UIDevice.current.name
             )
             // ADDS a host (or refreshes a known one) — never evicts others.
-            settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
+            settings.upsert(baseURLString: parsed.base.absoluteString, token: paired.deviceToken, addresses: paired.addresses ?? [])
             // AND ASKS FOR NOTIFICATION PERMISSION, ONCE (#579) — see
             // `promptAfterPairing`. This is the first pairing on a fresh
             // install, which is the one that used to leave the app absent from

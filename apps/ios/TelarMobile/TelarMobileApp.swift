@@ -156,13 +156,16 @@ struct RootView: View {
             if phase == .active {
                 inbox.start()
                 Task { await MobileNotifications.shared.syncRegistrations() }
+                // A phone that slept at home may wake on cellular: pick the
+                // address that answers now, and learn any the Mac gained (#832).
+                Task { await settings.refreshAddresses() }
             } else { inbox.stop() }
         }
         .task {
             if let link = UserDefaults.standard.string(forKey: "addHostLink"),
                let parsed = Pairing.parsePairingURL(link),
-               let token = try? await Pairing.exchange(base: parsed.base, token: parsed.token, deviceName: UIDevice.current.name) {
-                settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
+               let paired = try? await Pairing.exchange(base: parsed.base, token: parsed.token, deviceName: UIDevice.current.name) {
+                settings.upsert(baseURLString: parsed.base.absoluteString, token: paired.deviceToken, addresses: paired.addresses ?? [])
                 // A MAC ADDED IS A MAC WORTH BEING NOTIFIED BY (#579) — the
                 // same once-per-install ask the two pairing screens make.
                 await MobileNotifications.shared.promptAfterPairing()
@@ -176,6 +179,9 @@ struct RootView: View {
                 selection = pending; preferredColumn = .detail
                 MobileNotifications.shared.destination = nil
             }
+            // The phase the app launched in never arrives as a change, so the
+            // foreground refresh above would miss a cold start.
+            await settings.refreshAddresses()
         }
     }
 }

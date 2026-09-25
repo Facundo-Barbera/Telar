@@ -73,7 +73,7 @@ final class PairingStubURLProtocol: URLProtocol {
             #expect(body?["token"] == "tlr_pairing")
             #expect(body?["deviceName"] == "Test iPhone")
             #expect(body?["platform"] == "ios")
-            return (200, Data(#"{"deviceToken":"tlr_device","deviceId":"dev_1","deviceName":"Test iPhone"}"#.utf8))
+            return (200, Data(#"{"deviceToken":"tlr_device","deviceId":"dev_1","deviceName":"Test iPhone","addresses":["http://192.168.1.20:3000","http://100.110.1.2:3000"]}"#.utf8))
         }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [PairingStubURLProtocol.self]
@@ -81,7 +81,8 @@ final class PairingStubURLProtocol: URLProtocol {
             base: URL(string: "http://stub.test:3000")!, token: "tlr_pairing",
             deviceName: "Test iPhone", session: URLSession(configuration: config)
         )
-        #expect(token == "tlr_device")
+        #expect(token.deviceToken == "tlr_device")
+        #expect(token.addresses == ["http://192.168.1.20:3000", "http://100.110.1.2:3000"])
     }
 
     @Test func exchangeNeedsOnlyTheTokenFromAnOlderOrNewerCockpit() async throws {
@@ -95,7 +96,8 @@ final class PairingStubURLProtocol: URLProtocol {
             base: URL(string: "http://stub.test:3000")!, token: "tlr_pairing",
             deviceName: "Phone", session: URLSession(configuration: config)
         )
-        #expect(token == "tlr_minimal")
+        #expect(token.deviceToken == "tlr_minimal")
+        #expect(token.addresses == nil)
     }
 
     @Test func expiredPairingSurfacesTheGateError() async {

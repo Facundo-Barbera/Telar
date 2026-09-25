@@ -231,12 +231,12 @@ struct ConnectView: View {
         probing = true
         defer { probing = false }
         do {
-            let token = try await Pairing.exchange(
+            let paired = try await Pairing.exchange(
                 base: parsed.base, token: parsed.token,
                 deviceName: UIDevice.current.name
             )
             // ADDS a host (or refreshes a known one) — never evicts others.
-            settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
+            settings.upsert(baseURLString: parsed.base.absoluteString, token: paired.deviceToken, addresses: paired.addresses ?? [])
             // AND ASKS FOR NOTIFICATION PERMISSION, ONCE (#579). Pairing is the
             // moment this app first has something to notify anybody about, and
             // it is the moment nothing used to happen: the only path to the
