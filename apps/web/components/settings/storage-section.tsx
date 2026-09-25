@@ -259,30 +259,35 @@ export function StorageSection() {
    * figures on screen are still the answer and only one row is moving.
    */
   const load = useCallback(
-    async (refresh: boolean, quiet = false) => {
-      hangUp();
-      const own = new AbortController();
-      inFlight.current = own;
-      if (!quiet) {
-        setBusy(true);
-        setFailure(undefined);
-      }
-      try {
-        const { storage } = await api.storage({ ...(refresh ? { refresh: true } : {}), signal: own.signal });
-        if (own.signal.aborted) return;
-        setReport(storage);
-        if (storage.entries.some((entry) => entry.status === "measuring")) {
-          nextPoll.current = window.setTimeout(() => void load(false, true), MEASURING_POLL_MS);
+    (refresh: boolean, quiet = false) => {
+      // Named inside, so the follow-up poll calls itself rather than reaching
+      // for `load` before it is declared.
+      const run = async (refresh: boolean, quiet: boolean): Promise<void> => {
+        hangUp();
+        const own = new AbortController();
+        inFlight.current = own;
+        if (!quiet) {
+          setBusy(true);
+          setFailure(undefined);
         }
-      } catch {
-        if (own.signal.aborted) return;
-        setFailure("Telar could not measure its own store — the engine did not answer.");
-      } finally {
-        if (inFlight.current === own) {
-          inFlight.current = undefined;
-          if (!quiet) setBusy(false);
+        try {
+          const { storage } = await api.storage({ ...(refresh ? { refresh: true } : {}), signal: own.signal });
+          if (own.signal.aborted) return;
+          setReport(storage);
+          if (storage.entries.some((entry) => entry.status === "measuring")) {
+            nextPoll.current = window.setTimeout(() => void run(false, true), MEASURING_POLL_MS);
+          }
+        } catch {
+          if (own.signal.aborted) return;
+          setFailure("Telar could not measure its own store — the engine did not answer.");
+        } finally {
+          if (inFlight.current === own) {
+            inFlight.current = undefined;
+            if (!quiet) setBusy(false);
+          }
         }
-      }
+      };
+      return run(refresh, quiet);
     },
     [hangUp],
   );
