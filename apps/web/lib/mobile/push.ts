@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http2 from "node:http2";
 import { relayConfig, relayHostId } from "./relay";
+import { parseRelayCredential } from "./relay-v2";
 import { remoteHome } from "../remote/store";
 
 export interface MobileRegistration {
@@ -18,7 +19,12 @@ export interface MobileRegistration {
   previews: boolean;
   mutedSessions: string[];
   activities: { sessionId: string; token: string; startedAt: number }[];
+  /** Relay v2: how this Mac sends to the phone without its tokens. Absent
+   *  from a phone that could not register itself, which stays on v1. */
+  relay?: RelayCredential;
 }
+/** What the phone minted for THIS Mac at the relay — see `relay-v2.ts`. */
+export type RelayCredential = { handle: string; keyId: string; sendKey: string };
 export interface SessionSignal {
   id: string; title: string; activity: string; activityAt?: number;
   lastTurnEndedAt?: number; lastTurnFailed?: boolean;
@@ -76,6 +82,9 @@ export interface PushRecord extends MobileRegistration {
    * value in both copies of the file and identifies nothing from here.
    */
   relayHostId?: string;
+  /** The test alert sent for this relay key, and what came of it: what
+   *  Settings shows as "working" or the exact reason (`relay-v2.ts`). */
+  relayTest?: { keyId: string; at: number; status: number; reason?: string; relay?: true };
   updatedAt: number;
   seen: Record<string, string>;
   activitySent: Record<string, number>;
@@ -84,7 +93,8 @@ export interface PushRecord extends MobileRegistration {
 export type PushPayload = { aps: Record<string, unknown>; url?: string; request?: string };
 /** The phone registers these (`NotificationActions.swift`): Approve + Open, or Open alone. */
 export const CATEGORY_REQUEST = "TELAR_REQUEST", CATEGORY_SESSION = "TELAR_SESSION";
-export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity"; collapseId: string; payload: PushPayload };
+/** `activityId` names a Live Activity for relay v2, which holds its token. */
+export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity"; collapseId: string; payload: PushPayload; activityId?: string };
 
 /**
  * WHAT CAME BACK FROM A SEND — issue #584.
@@ -151,7 +161,9 @@ export function parseRegistration(input: unknown): MobileRegistration {
     if (!a || typeof a.sessionId !== "string" || !a.sessionId || a.sessionId.length > 256 || typeof a.token !== "string" || !hex.test(a.token)
       || typeof a.startedAt !== "number" || !Number.isFinite(a.startedAt) || a.startedAt <= 0) throw new PushInputError("Invalid activity");
   }
+  const relay = parseRelayCredential(x.relay);
   return { ...(x.liveActivities === undefined ? {} : { liveActivities: x.liveActivities as boolean }),
+    ...(relay === undefined ? {} : { relay }),
     ...(x.pushToStartToken === undefined ? {} : { pushToStartToken: x.pushToStartToken as string }),
     ...(x.hostName === undefined ? {} : { hostName: x.hostName as string }),
     hostId: x.hostId, token: x.token, topic: x.topic as string, sandbox: x.sandbox as boolean,
@@ -229,7 +241,7 @@ export function saveRegistration(deviceId: string, registration: MobileRegistrat
   //
   // `relayRevision` is deliberately NOT carried: the revision below is new, so
   // the relay has not seen this registration and must be sent it once.
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
 export function signalKey(session: SessionSignal): string {
@@ -256,7 +268,7 @@ export function notification(record: MobileRegistration, session: SessionSignal,
 export function activityDelivery(record: MobileRegistration, follow: MobileRegistration["activities"][number], session: SessionSignal | undefined, now: number): Delivery {
   const ended = !session || session.activity === "idle";
   const status = !session ? "Session unavailable" : session.activity === "blocked" ? "Needs you" : ended ? session.lastTurnFailed ? "Failed" : "Finished" : session.activity === "queued" ? "Queued" : session.activity === "monitoring" ? "Monitoring" : "Working";
-  return { token: follow.token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity",
+  return { token: follow.token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", activityId: follow.sessionId,
     collapseId: crypto.createHash("sha256").update(follow.token).digest("hex"), payload: { aps: {
       timestamp: Math.floor(now), event: ended ? "end" : "update", "stale-date": Math.floor(now + 180),
       ...(ended ? { "dismissal-date": Math.floor(now + 300) } : {}),
@@ -272,6 +284,14 @@ export function pushConfigured(sandbox = false): boolean {
     const key = crypto.createPrivateKey(fs.readFileSync(process.env.TELAR_APNS_KEY_PATH));
     return key.asymmetricKeyType === "ec" && key.asymmetricKeyDetails?.namedCurve === "prime256v1";
   } catch { return false; }
+}
+/**
+ * WHETHER THIS MAC CAN SEND TO ANYBODY: a v1 relay or APNs key of its own, or
+ * any phone that brought a relay v2 credential — which needs nothing here.
+ */
+export function pushAvailable(): boolean {
+  if (pushConfigured()) return true;
+  try { return readPushRecords().some(record => record.relay !== undefined); } catch { return false; }
 }
 let cachedJWT: { identity: string; at: number; token: string } | undefined;
 function bearer(): string {
@@ -341,7 +361,7 @@ export function automaticActivityDelivery(record: MobileRegistration, sessions: 
     startedAt: startedAt - 978307200, updatedAt: now - 978307200, ended,
     sessionId: focus?.id, activeCount: active.length,
   };
-  return { token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity",
+  return { token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", ...(start ? {} : { activityId: AUTOMATIC_ACTIVITY }),
     collapseId: crypto.createHash("sha256").update(`automatic:${record.hostId}:${start ? startedAt : token}`).digest("hex"),
     payload: { aps: { timestamp: Math.floor(now), event: start ? "start" : ended ? "end" : "update", "content-state": state,
       "stale-date": Math.floor(now + 180), ...(ended ? {"dismissal-date":Math.floor(now + 300)} : {}),

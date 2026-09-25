@@ -1,7 +1,8 @@
 import { relayConfig, relayDelivery, relayHostId, revokeRelayDevice } from "./relay";
 import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
-import { AUTOMATIC_ACTIVITY, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
+import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
+import { AUTOMATIC_ACTIVITY, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
 
 /** A phone that actually ran the start reports the activity's token within seconds: iOS delivers it
  *  on `activityUpdates` and the app re-registers straight away. A receipt still standing alone after
@@ -370,8 +371,31 @@ function openSessionFeed(onFrame: () => void): void {
   })();
 }
 
+/**
+ * SEND THE TEST ALERT FOR A NEW RELAY KEY, AND KEEP WHAT APPLE SAID.
+ *
+ * Called when a phone registers: straight after pairing, and again whenever it
+ * mints a new key. Settings reads the answer back as "working" or the exact
+ * reason, so a phone that cannot be reached says so the moment it is paired
+ * rather than the first time something important goes missing.
+ */
+export async function sendRelayTest(deviceId: string, topic: string, send = relayV2Delivery): Promise<void> {
+  const record = readPushRecords().find(r => r.deviceId === deviceId && r.topic === topic);
+  if (!record?.relay || !needsRelayTest(record)) return;
+  let result: DeliveryResult;
+  try { result = await send(record.relay, relayTestDelivery(record)); } catch { result = { status: 0, relay: true }; }
+  const records = readPushRecords();
+  const current = records.find(r => r.deviceId === deviceId && r.topic === topic);
+  // The phone re-registered with another key while this was in flight: that key earns its own test.
+  if (!current || current.relay?.keyId !== record.relay.keyId) return;
+  const at = Date.now() / 1000;
+  current.relayTest = { keyId: record.relay.keyId, at, status: result.status, ...(result.reason === undefined ? {} : { reason: result.reason }), ...(result.relay ? { relay: true as const } : {}) };
+  if (result.status === 200 && !result.relay) current.lastDeliveryAt = at;
+  writePushRecords(records);
+}
+
 export function startMobilePushWorker(): void {
-  if (workerGlobal.telarMobilePushTimer || !pushConfigured() || process.env.TELAR_COCKPIT !== "1") return;
+  if (workerGlobal.telarMobilePushTimer || !pushAvailable() || process.env.TELAR_COCKPIT !== "1") return;
   const tick = async () => {
     try {
       const nowMs = Date.now();
@@ -389,7 +413,8 @@ export function startMobilePushWorker(): void {
       const paired = new Set(readRemote().devices.filter(d => d.role === "full").map(d => d.id));
       for (const record of ownRecords(stored, ownHostId)) {
         if (paired.has(record.deviceId)) continue;
-        if (relay) await revokeRelayDevice(relay, record.deviceId);
+        // A v2 phone revokes its own key at the relay when it unpairs; there is nothing here to revoke.
+        if (relay && !record.relay) await revokeRelayDevice(relay, record.deviceId);
         writePushRecords(readPushRecords().filter(r => r.deviceId !== record.deviceId));
       }
       const records = ownRecords(readPushRecords(), ownHostId).filter(record => !record.parked);
@@ -424,8 +449,11 @@ export function startMobilePushWorker(): void {
       }
       workerGlobal.telarMobilePushBeatAt = nowMs;
 
+      // A phone on v1 needs this Mac's own relay or APNs key; one on v2 needs nothing here.
+      const v1Ready = pushConfigured();
       for (const record of records) {
         if (pushPausedUntil(Date.now()) !== undefined) break;
+        if (!record.relay && !v1Ready) continue;
         // A RECORD THAT WAS HELD BACK GETS THE WHOLE LIST. The change set is
         // global and names what moved since the LAST PASS; a record in backoff
         // sat out several of those, so narrowing it would hide every transition
@@ -437,7 +465,7 @@ export function startMobilePushWorker(): void {
           // Recheck at delivery time: revocation and preference changes can race a slow APNs connection.
           if (!readRemote().devices.some(d => d.id === record.deviceId && d.role === "full")) return { status: 410 };
           if (!readPushRecords().some(r => r.revision === record.revision)) return { status: 409, relay: true };
-          const sent = relay ? await relayDelivery(relay, record, delivery) : await sendAPNs(delivery);
+          const sent = record.relay ? await relayV2Delivery(record.relay, delivery) : relay ? await relayDelivery(relay, record, delivery) : await sendAPNs(delivery);
           if (sent.retryAfter !== undefined) pauseHost(sent.retryAfter);
           return sent;
         }, Date.now() / 1000, narrow === undefined ? {} : { changed: narrow });

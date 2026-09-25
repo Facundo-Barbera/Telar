@@ -1,5 +1,5 @@
 import { forgetRelayConfig, relayConfig } from "@/lib/mobile/relay";
-import { pushConfigured, readPushRecords } from "@/lib/mobile/push";
+import { pushAvailable, pushConfigured, readPushRecords } from "@/lib/mobile/push";
 import { pushPausedUntil, startMobilePushWorker } from "@/lib/mobile/worker";
 import { readRemote } from "@/lib/remote/store";
 
@@ -50,11 +50,14 @@ export function GET(request: Request) {
       ...(pausedUntil === undefined ? {} : { pausedUntil }),
       // The worker's own gate. A Mac that answers `false` here sends nothing,
       // whatever else is true.
-      configured: pushConfigured(),
+      configured: pushAvailable(),
       // Whether a relay is what makes it configured, as opposed to a local APNs
       // key in the environment — the two are provisioned in different places
       // and the pane has to point at the right one.
       relay: relayConfig() !== undefined,
+      // PLUG AND PLAY: some phone registered itself with relay v2, so this Mac
+      // needs nothing provisioned to reach it.
+      v2: records.some((record) => record.relay !== undefined),
       // THE AVAILABLE APPLE KEY IS PRODUCTION-ONLY (`relayDelivery`). A debug
       // build registers `sandbox: true` and can never be delivered to through
       // the relay, which is worth saying out loud beside a phone that shows up
@@ -82,11 +85,17 @@ export function GET(request: Request) {
         // A record another Mac owns is shown as that, not as a broken one: it
         // is being served, just not from here (#584).
         mine: record.relayHostId === ownHostId,
+        // HOW it is reached, and what the test alert sent after pairing
+        // came back with. A status and Apple's word for it; never the key.
+        transport: record.relay ? "v2" : "v1",
+        ...(record.relayTest && record.relayTest.keyId === record.relay?.keyId
+          ? { test: { at: record.relayTest.at, status: record.relayTest.status, reason: record.relayTest.reason, relay: record.relayTest.relay === true } }
+          : {}),
       })),
     });
   } catch {
     // A push-records file that cannot be read is a pane that says nothing, not
     // a Settings screen that fails to load.
-    return Response.json({ configured: false, relay: false, sandbox: false, devices: [] }, { status: 200 });
+    return Response.json({ configured: false, relay: false, v2: false, sandbox: false, devices: [] }, { status: 200 });
   }
 }
