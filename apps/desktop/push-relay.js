@@ -36,13 +36,18 @@ const ACCOUNT = "host";
 
 /**
  * The same shape `parseRelayConfig` accepts, checked again at the boundary that
- * actually writes. Returns the normalised `{ url, token }` or `null` — never a
- * reason that quotes the input, since the input contains the token.
+ * actually writes. Returns the normalised `{ url, token, id? }` or `null` — never
+ * a reason that quotes the input, since the input contains the token.
+ *
+ * THE `id` IS KEPT. Dropping it made a pasted config a Mac with no relay host
+ * id, which serves only unstamped records and breaks "one sender per phone"
+ * (#584). An id that is not one is dropped, as the cockpit's parser does.
  */
 function normalizeRelayConfig(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
   const { url, token } = input;
   if (typeof url !== "string" || typeof token !== "string" || !/^[a-f0-9]{64}$/i.test(token)) return null;
+  const id = typeof input.id === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(input.id) ? input.id : undefined;
   let parsed;
   try {
     parsed = new URL(url);
@@ -50,7 +55,7 @@ function normalizeRelayConfig(input) {
     return null;
   }
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== "/") return null;
-  return { url: parsed.origin, token };
+  return { url: parsed.origin, token, ...(id === undefined ? {} : { id }) };
 }
 
 /** `security`, with the password on stdin. Separated so the test can drive the

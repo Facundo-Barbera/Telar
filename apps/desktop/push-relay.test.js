@@ -32,6 +32,10 @@ describe("what counts as a relay config", () => {
       good,
       { url: "https://relay.example.com/", token: TOKEN },
       { url: "https://relay.example.com:8443", token: TOKEN },
+      { ...good, id: "host_1-A" },
+      { ...good, id: "not an id" },
+      { ...good, id: "x".repeat(129) },
+      { ...good, id: 7 },
       // Every one of these is a plausible paste that must not be stored.
       { url: "http://relay.example.com", token: TOKEN },
       { url: "https://relay.example.com/v1", token: TOKEN },
@@ -58,6 +62,10 @@ describe("what counts as a relay config", () => {
       url: "https://relay.example.com",
       token: TOKEN,
     });
+  });
+
+  test("the host id survives the paste, so one Mac stays the sender per phone", () => {
+    expect(normalizeRelayConfig({ ...good, id: "host_1" })).toEqual({ ...good, id: "host_1" });
   });
 });
 

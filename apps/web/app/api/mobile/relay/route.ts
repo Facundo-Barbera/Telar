@@ -1,6 +1,6 @@
 import { forgetRelayConfig, relayConfig } from "@/lib/mobile/relay";
 import { pushConfigured, readPushRecords } from "@/lib/mobile/push";
-import { pushPausedUntil } from "@/lib/mobile/worker";
+import { pushPausedUntil, startMobilePushWorker } from "@/lib/mobile/worker";
 import { readRemote } from "@/lib/remote/store";
 
 /**
@@ -24,13 +24,20 @@ import { readRemote } from "@/lib/remote/store";
  * taken straight after the Keychain item was written. Without it, Settings
  * would tell somebody who has just provisioned the relay that this Mac has
  * none, for half a minute.
+ *
+ * THAT SAME READ STARTS THE WORKER. Otherwise a Mac provisioned from Settings
+ * sent nothing until a phone next registered or the app restarted. Starting is
+ * a no-op when the relay is still missing or the worker already runs.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export function GET(request: Request) {
   try {
-    if (new URL(request.url).searchParams.get("fresh") === "1") forgetRelayConfig();
+    if (new URL(request.url).searchParams.get("fresh") === "1") {
+      forgetRelayConfig();
+      startMobilePushWorker();
+    }
     const paired = new Map(readRemote().devices.map((device) => [device.id, device]));
     const records = readPushRecords();
     const ownHostId = relayConfig()?.id;

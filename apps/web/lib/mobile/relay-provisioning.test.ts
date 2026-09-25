@@ -97,6 +97,12 @@ describe("an unprovisioned Mac", () => {
     expect(body.relay).toBe(false);
     expect(body.devices).toEqual([]);
   });
+
+  test("the fresh read that follows provisioning starts nothing while there is still no relay", async () => {
+    setup();
+    await relayGET(new Request("http://localhost/api/mobile/relay?fresh=1"));
+    expect((globalThis as { telarMobilePushTimer?: unknown }).telarMobilePushTimer).toBeUndefined();
+  });
 });
 
 describe("the status route never carries a credential", () => {
