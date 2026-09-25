@@ -1471,6 +1471,13 @@ export const ProviderModel = z.object({
    */
   defaultWindow: z.boolean().optional(),
   /**
+   * THE WINDOW, IN TOKENS, OF A MODEL THAT HAS ONLY ONE — from the model
+   * manifest's profile. Opus 4.8 and 4.7 are always 1M and Claude Code takes
+   * no `[1m]` suffix on them, so their bare id alone would read as 200k.
+   * Surfaces prefer this over the id's suffix; absent means the id decides.
+   */
+  contextWindow: z.number().int().positive().optional(),
+  /**
    * The manifest says this generation is history; the picker folds it, a
    * session on it still runs. Stated per model by the model manifest (Claude
    * today), so the picker need not guess a generation from the id.

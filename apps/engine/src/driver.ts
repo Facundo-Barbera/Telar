@@ -46,7 +46,7 @@ import {
   TELAR_MCP_SERVER,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
-import { claudeEffortFor } from "./model-manifest";
+import { claudeEffortFor, claudeFixedWindowOf } from "./model-manifest";
 import { collectTelarWall, type TelarSocketLease, type TelarWallPart } from "./telar-socket";
 import { runTools } from "./run/tools";
 import { pluginToolModules } from "./plugins/bundled";
@@ -394,7 +394,8 @@ const SESSION_STATE_ENV = { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" };
  * whole family was, while the provider auto-compacted at ~166k–172k. That is
  * consistent with a standard window and inconsistent with 1M; whatever the
  * real window was, `Math.max` against the assumption could never correct the
- * meter downward. A bare id assumes nothing; the provider's own
+ * meter downward. A bare id assumes nothing — unless the model manifest gives
+ * its model a single window (`claudeFixedWindowOf`); the provider's own
  * `contextWindow` is what the meter shows from the first result on.
  */
 /** The window a Claude id SPELLS — `[1m]` or not. Absent means the provider's
@@ -404,7 +405,9 @@ function claudeWindowOf(model: string | undefined): "long" | "default" {
 }
 
 export function selectedContextMaxFromModel(model: string | undefined): number | undefined {
-  return model && /\[1m\]$/i.test(model) && isClaudeLongContextFamily(model) ? 1_000_000 : undefined;
+  if (!model) return undefined;
+  // A fixed-window model (Opus 4.8 / 4.7) has no choice to guess at.
+  return /\[1m\]$/i.test(model) && isClaudeLongContextFamily(model) ? 1_000_000 : claudeFixedWindowOf(model);
 }
 
 type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";

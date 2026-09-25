@@ -109,6 +109,23 @@ export function claudeProfileOf(id: string, manifest: ModelManifest = BUNDLED_MA
   return model ? manifest.claude?.profiles[model.profile] : undefined;
 }
 
+const WINDOW_TOKENS: Record<ContextWindow, number> = { "200k": 200_000, "1m": 1_000_000 };
+
+/**
+ * The window, in tokens, of a Claude model whose profile offers only one — Opus
+ * 4.8 and 4.7 are always 1M and take no `[1m]` suffix (the manifest's single
+ * `1m` window; T3 Code's `fixedContextWindowTokens`). Undefined where the id
+ * picks the window, or the manifest does not know it. The one rule behind the
+ * published row's `contextWindow` and the driver's first meter reading.
+ */
+export function claudeFixedWindowOf(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): number | undefined {
+  return fixedWindowOf(claudeProfileOf(id, manifest));
+}
+
+function fixedWindowOf(profile: ManifestProfile | undefined): number | undefined {
+  return profile?.windows.length === 1 ? WINDOW_TOKENS[profile.windows[0]!] : undefined;
+}
+
 /** The effort to hand the provider for a picked one — `xhigh` runs as `max` on
  *  Opus 4.7, per the profile. Unknown models and unmapped efforts pass through. */
 export function claudeEffortFor(model: string | undefined, effort: string | undefined, manifest: ModelManifest = BUNDLED_MANIFEST): string | undefined {
@@ -171,7 +188,10 @@ function rowsOf(entry: ManifestModel, profile: ManifestProfile, listed: readonly
     resolves: entry.slug,
     fastMode: profile.fastMode,
   };
-  if (profile.windows.length < 2) return [fill(standard ?? long ?? declared)];
+  if (profile.windows.length < 2) {
+    const fixed = fixedWindowOf(profile);
+    return [{ ...fill(standard ?? long ?? declared), ...(fixed ? { contextWindow: fixed } : {}) }];
+  }
   const short = standard ?? (long ? inWindow(long, false) : declared);
   const longRow = long ?? inWindow(short, true);
   const defaultLong = profile.defaultWindow === "1m";
