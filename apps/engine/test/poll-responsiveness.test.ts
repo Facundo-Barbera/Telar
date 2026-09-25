@@ -15,8 +15,8 @@ function root() {
 }
 afterEach(() => { for (const item of roots.splice(0)) fs.rmSync(item, { recursive: true, force: true }); });
 
-/** A real repository with one commit — the worktree route's own probes are
- *  synchronous by design (#496) and run against this rather than a fake. */
+/** A real repository with one commit — the worktree route's own probes run
+ *  against this rather than a fake. */
 function repo(): string {
   const directory = root();
   const git = (...args: string[]) => execFileSync("git", args, { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -133,7 +133,7 @@ test("a stalled worktree add delays neither its own route nor an unrelated one",
     models: stubModels,
     engineRoot: root(),
     // Only the cut stalls. The request-side probes (`--is-inside-work-tree`,
-    // `rev-parse`) are synchronous by design and run against the real repo.
+    // `rev-parse`) are prefetched through this same runner against the real repo.
     asyncGit: async (cwd, args, options) => {
       if (args[0] === "worktree" && args[1] === "add") { adds++; return stalled; }
       return defaultAsyncGitRunner(cwd, args, options);
@@ -176,6 +176,108 @@ test("a stalled worktree add delays neither its own route nor an unrelated one",
     released({ status: 0, stdout: "", stderr: "" });
     await daemon.close();
   }
+});
+
+/**
+ * A git the test holds: every call is recorded, and while the gate is shut it
+ * answers nobody. Answers are enough for a checkout that HEAD resolves in.
+ */
+function gatedGit() {
+  const calls: string[] = [];
+  let gate: Promise<void> = Promise.resolve();
+  let open = () => {};
+  const SHA = "a".repeat(40);
+  const answer = (args: string[]): GitResult => {
+    if (args[0] === "rev-parse" && args[1] === "--is-inside-work-tree") return { status: 0, stdout: "true\n", stderr: "" };
+    if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { status: 0, stdout: "main\n", stderr: "" };
+    if (args[0] === "rev-parse") return { status: 0, stdout: `${SHA}\n`, stderr: "" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  return {
+    SHA,
+    calls,
+    shut: () => { gate = new Promise((resolve) => { open = resolve; }); },
+    open: () => open(),
+    runner: async (_cwd: string, args: string[]): Promise<GitResult> => {
+      calls.push(args.join(" "));
+      await gate;
+      return answer(args);
+    },
+  };
+}
+
+/** One macrotask turn: every microtask queued before it has already run. */
+const macrotask = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("a pending session create, draft promotion, diff and overview leave the event loop serving", async () => {
+  const git = gatedGit();
+  const store = new EngineStore(root(), Date.now, {
+    git: () => { throw new Error("synchronous git must not run on the request path"); },
+    asyncGit: git.runner,
+  });
+  store.registerProject({ id: "project_one", name: "One", root: root() });
+  // Made while the gate is open: the session whose stream the test appends to.
+  await store.createSessionAsync({ id: "session_live", projectId: "project_one", envMode: "local" });
+  await store.createSessionAsync({ id: "session_draft", projectId: "project_one", envMode: "worktree", draft: true });
+
+  git.shut();
+  const before = git.calls.length;
+  const pending = Promise.all([
+    store.createSessionAsync({ id: "session_new", projectId: "project_one", envMode: "local" }),
+    store.createSessionAsync({ id: "session_cut", projectId: "project_one", envMode: "worktree" }),
+    store.submitTurnAsync("session_draft", { runId: "run_draft", input: "promote me" }),
+    store.sessionDiffAsync("session_live"),
+    store.projectGitAsync("project_one"),
+  ]);
+  let done = false;
+  void pending.then(() => { done = true; });
+
+  // The loop is free: a microtask, an immediate and a zero-delay timer all get
+  // their turn behind the reads. A synchronous git would have held all three.
+  await Promise.resolve();
+  await macrotask();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(done).toBe(false);
+  // Every one of them is genuinely waiting on git, not finished early.
+  expect(git.calls.length).toBeGreaterThan(before);
+  expect(git.calls.slice(before)).toContain("rev-parse --is-inside-work-tree");
+  expect(() => store.getSession("session_new")).toThrow();
+  expect(store.getSession("session_draft").draft).toBeDefined();
+
+  // …and a streaming session's event still lands while they wait.
+  store.submitTurn("session_live", { runId: "run_live", input: "still here" });
+  expect(store.turns("session_live").map((turn) => turn.runId)).toContain("run_live");
+
+  git.open();
+  const [created, cut] = await pending;
+  expect(created.workspace).toMatchObject({ mode: "local", baseRef: git.SHA });
+  expect(cut.workspace).toMatchObject({ mode: "worktree", baseRef: git.SHA });
+  const promoted = store.getSession("session_draft");
+  expect(promoted.draft).toBeUndefined();
+  expect(promoted.workspace).toMatchObject({ mode: "worktree", baseRef: git.SHA });
+});
+
+test("two concurrent identical status reads spawn one git, and the engine's own commit invalidates", async () => {
+  const git = gatedGit();
+  const store = new EngineStore(root(), () => 1, { asyncGit: git.runner });
+  store.registerProject({ id: "project_one", name: "One", root: root() });
+  await store.createSessionAsync({ id: "session_one", projectId: "project_one", envMode: "local" });
+  const statuses = () => git.calls.filter((call) => call.startsWith("status ")).length;
+
+  const start = git.calls.length;
+  await Promise.all([store.sessionDiffAsync("session_one"), store.sessionDiffAsync("session_one")]);
+  const oneRead = git.calls.length - start;
+  expect(statuses()).toBe(1);
+  // Inside the TTL (the clock does not move): served from the cache.
+  await store.sessionDiffAsync("session_one");
+  expect(git.calls.length - start).toBe(oneRead);
+
+  // A write the engine made drops the entry, whatever the clock says.
+  await store.commitSessionWork("session_one", "the engine's own write");
+  const afterCommit = git.calls.length;
+  await store.sessionDiffAsync("session_one");
+  expect(git.calls.length - afterCommit).toBe(oneRead);
+  expect(statuses()).toBe(2);
 });
 
 test("browsing many patches releases older cached results", async () => {

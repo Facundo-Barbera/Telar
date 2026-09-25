@@ -17,7 +17,10 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Database } from "bun:sqlite";
 import { EngineStore } from "../src/state";
+import { ExecutionStore, ITEM_ROWS_FOR_RUNS_SQL } from "../src/execution-store";
+import { sessionSnapshot } from "../src/session-bootstrap";
 import { arrayElementRanges, parseSpan } from "../src/document-window";
 
 const roots: string[] = [];
@@ -100,7 +103,7 @@ for (const storage of BACKENDS) {
     // THE ANSWER IS THE SAME ANSWER. The window is what it always was; only the
     // route to it changed.
     expect(window.turns.map((turn) => turn.runId)).toEqual(Array.from({ length: 10 }, (_, at) => `run_${110 + at}`));
-    expect(window.page).toEqual({ before: "run_110", more: true });
+    expect(window.page).toEqual({ before: "run_110", more: true, total: 120 });
     const chosen = new Set(window.turns.map((turn) => turn.runId));
     expect(window.items.map((item) => item.id).sort()).toEqual(everyItem.filter((item) => chosen.has(item.runId)).map((item) => item.id).sort());
     expect(window.items).toEqual(everyItem.filter((item) => chosen.has(item.runId)));
@@ -190,13 +193,64 @@ test("a windowed read still pages, and an unsettled turn still rides along", () 
 
   const first = store.snapshotWindow("session_one", { limit: 3 });
   expect(first.turns.map((turn) => turn.runId)).toEqual(["run_9", "run_10", "run_11", "run_live"]);
-  expect(first.page).toEqual({ before: "run_9", more: true });
+  expect(first.page).toEqual({ before: "run_9", more: true, total: 13 });
 
   // An older page is history: it drops the live turn rather than repeating it.
   const older = store.snapshotWindow("session_one", { limit: 3, before: "run_9" });
   expect(older.turns.map((turn) => turn.runId)).toEqual(["run_6", "run_7", "run_8"]);
   expect(older.items.every((item) => ["run_6", "run_7", "run_8"].includes(item.runId))).toBe(true);
-  expect(older.page).toEqual({ before: "run_6", more: true });
+  expect(older.page).toEqual({ before: "run_6", more: true, total: 13 });
+});
+
+for (const storage of BACKENDS) {
+  test(`paging back from the tail reaches the first turn with no gap and no repeat (${storage})`, () => {
+    const home = conversation(storage, 17, 2);
+    const store = open(home, storage);
+    store.submitTurn("session_one", { runId: "run_live", input: "Now" });
+    const whole = sessionSnapshot(store, "session_one");
+    // No window, no page: the unwindowed answer is the shape it always was.
+    expect(Object.keys(whole).sort()).toEqual(["assignments", "cursor", "items", "requests", "session", "tasks", "turns"]);
+
+    const turns: string[] = [];
+    const items: string[] = [];
+    let before: string | undefined;
+    let pages = 0;
+    for (;;) {
+      const page = sessionSnapshot(store, "session_one", { turns: 5, ...(before === undefined ? {} : { before }) });
+      pages += 1;
+      expect(page.page!.total).toBe(18);
+      // Prepended, exactly as a reader scrolling up would.
+      turns.unshift(...page.turns.map((turn) => turn.runId));
+      items.unshift(...page.items.map((item) => item.id));
+      if (!page.page!.more) { expect(page.page!.before).toBeNull(); break; }
+      before = page.page!.before!;
+    }
+    expect(pages).toBe(4);
+    expect(turns).toEqual(whole.turns.map((turn) => turn.runId));
+    expect(new Set(turns).size).toBe(turns.length);
+    expect(items).toEqual(whole.items.map((item) => item.id));
+  }, 30_000);
+}
+
+/**
+ * THE WINDOW'S ITEMS ARE AN INDEXED SEARCH, NOT A SCAN (#658). The plan of the
+ * exact statement `itemRowsForRuns` runs, against the schema the real store
+ * creates: were it ever `SCAN items`, a windowed open would cost the whole
+ * history again however few rows it returned.
+ */
+test("the windowed item read searches items_run rather than scanning the table", () => {
+  const home = root();
+  fs.mkdirSync(path.join(home, "sessions"));
+  new ExecutionStore(home).close();
+  const db = new Database(path.join(home, "execution.sqlite"), { readonly: true });
+  try {
+    const plan = db.query(`EXPLAIN QUERY PLAN ${ITEM_ROWS_FOR_RUNS_SQL}`).all("session_one", JSON.stringify(["run_1", "run_2"])) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail);
+    expect(details.some((detail) => /SEARCH items USING (COVERING )?INDEX items_run/.test(detail))).toBe(true);
+    expect(details.some((detail) => /^SCAN items\b/.test(detail))).toBe(false);
+  } finally {
+    db.close();
+  }
 });
 
 /**

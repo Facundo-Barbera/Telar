@@ -268,11 +268,12 @@ describe("git did not answer", () => {
     expect(gitOverview(runner({ "rev-parse --is-inside-work-tree": ok("false\n") }), "/plain").repository).toBe(false);
   });
 
-  test("a killed probe does not tell someone their checkout is unversioned before a commit", () => {
-    const reason = commitSessionWork(runner({ "rev-parse --is-inside-work-tree": timedOut("rev-parse") }), {
+  test("a killed probe does not tell someone their checkout is unversioned before a commit", async () => {
+    const stalled = runner({ "rev-parse --is-inside-work-tree": timedOut("rev-parse") });
+    const reason = (await commitSessionWork(async (cwd, args) => stalled(cwd, args), {
       cwd: "/repo",
       message: "x",
-    }).reason;
+    })).reason;
     expect(reason).not.toContain("not a git repository");
     expect(reason).toContain("git did not answer");
   });
@@ -716,7 +717,7 @@ describe("sessionFilePatch, ignoring whitespace", () => {
 });
 
 describe("commitSessionWork", () => {
-  test("stages everything, then commits, and reports the new commit", () => {
+  test("stages everything, then commits, and reports the new commit", async () => {
     const calls: string[][] = [];
     const git: GitRunner = (_cwd, args) => {
       calls.push(args);
@@ -729,7 +730,7 @@ describe("commitSessionWork", () => {
       if (key === "log -1") return ok(["sha1", "sha1sho", "Session work", "1700000000", "Ada"].join("\x1f") + "\x1e");
       return fail();
     };
-    const result = commitSessionWork(git, { cwd: "/repo", message: "Session work" });
+    const result = await commitSessionWork(async (cwd, args) => git(cwd, args), { cwd: "/repo", message: "Session work" });
     expect(result.committed).toBe(true);
     expect(result.commit?.shortSha).toBe("sha1sho");
     // `add -A` rather than a staging UI: you did not write these changes, so
@@ -737,7 +738,7 @@ describe("commitSessionWork", () => {
     expect(calls.some((args) => args[0] === "add" && args[1] === "-A")).toBe(true);
   });
 
-  test("a clean tree is an answer, not a failure", () => {
+  test("a clean tree is an answer, not a failure", async () => {
     // The ordinary state after a session that only read. A red error here would
     // teach the reader to distrust the button.
     const git: GitRunner = (_cwd, args) => {
@@ -747,10 +748,10 @@ describe("commitSessionWork", () => {
       if (key === "diff --cached") return ok("");
       return fail();
     };
-    expect(commitSessionWork(git, { cwd: "/repo", message: "x" })).toMatchObject({ committed: false });
+    expect(await commitSessionWork(async (cwd, args) => git(cwd, args), { cwd: "/repo", message: "x" })).toMatchObject({ committed: false });
   });
 
-  test("a hook that refuses is passed through in its own words", () => {
+  test("a hook that refuses is passed through in its own words", async () => {
     const git: GitRunner = (_cwd, args) => {
       const key = args.slice(0, 2).join(" ");
       if (key === "rev-parse --is-inside-work-tree") return ok("true\n");
@@ -761,7 +762,7 @@ describe("commitSessionWork", () => {
     };
     // Its own output is the only useful thing to show; a generic failure would
     // send the reader to a terminal to find out what this already knew.
-    expect(commitSessionWork(git, { cwd: "/repo", message: "x" }).reason).toBe("pre-commit: lint failed on 3 files");
+    expect((await commitSessionWork(async (cwd, args) => git(cwd, args), { cwd: "/repo", message: "x" })).reason).toBe("pre-commit: lint failed on 3 files");
   });
 });
 

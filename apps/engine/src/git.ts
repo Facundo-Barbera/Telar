@@ -798,12 +798,16 @@ function assemblePatch(result: GitResult, arm: { noIndex: boolean }): GitFilePat
  * NOTHING TO COMMIT IS NOT AN ERROR. A clean tree is the ordinary state after a
  * session that only read, and a red failure for it would teach the reader to
  * distrust the button.
+ *
+ * ASYNC because the engine is one thread: `add -A` plus a pre-commit hook on a
+ * cold external disk measured 10 s of a frozen daemon through the old
+ * synchronous runner — every session, every stream, every poll.
  */
-export function commitSessionWork(
-  git: GitRunner,
+export async function commitSessionWork(
+  git: AsyncGitRunner,
   input: { cwd: string; message: string },
-): { committed: boolean; commit?: GitCommitEntry; reason?: string } {
-  const inside = git(input.cwd, ["rev-parse", "--is-inside-work-tree"]);
+): Promise<{ committed: boolean; commit?: GitCommitEntry; reason?: string }> {
+  const inside = await git(input.cwd, ["rev-parse", "--is-inside-work-tree"]);
   // NOT "not a git repository" — a killed probe is a machine under load, and
   // telling someone their checkout is unversioned sends them looking for a
   // problem that is not there rather than pressing the button again.
@@ -811,23 +815,23 @@ export function commitSessionWork(
   if (inside.status !== 0 || inside.stdout.trim() !== "true") {
     return { committed: false, reason: "This session's workspace is not a git repository." };
   }
-  const staged = git(input.cwd, ["add", "-A"]);
+  const staged = await git(input.cwd, ["add", "-A"]);
   if (staged.status !== 0) {
     return { committed: false, reason: staged.stderr.trim() || "git could not stage this session's changes." };
   }
   // Checked AFTER staging, because untracked files only become visible to
   // `diff --cached` once they are added.
-  if (git(input.cwd, ["diff", "--cached", "--quiet"]).status === 0) {
+  if ((await git(input.cwd, ["diff", "--cached", "--quiet"])).status === 0) {
     return { committed: false, reason: "Nothing to commit — this session's checkout matches its last commit." };
   }
-  const committed = git(input.cwd, ["commit", "-m", input.message]);
+  const committed = await git(input.cwd, ["commit", "-m", input.message]);
   if (committed.status !== 0) {
     // A pre-commit hook that refuses is the common case here, and its own
     // output is the only useful thing to show — so it is passed through rather
     // than replaced with a generic failure.
     return { committed: false, reason: committed.stderr.trim() || committed.stdout.trim() || "git refused the commit." };
   }
-  const entry = parseGitLog(git(input.cwd, ["log", "-1", `--format=${GIT_LOG_FORMAT}`]).stdout)[0];
+  const entry = parseGitLog((await git(input.cwd, ["log", "-1", `--format=${GIT_LOG_FORMAT}`])).stdout)[0];
   return { committed: true, ...(entry ? { commit: entry } : {}) };
 }
 

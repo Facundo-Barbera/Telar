@@ -204,7 +204,7 @@ struct PushStatus: Decodable { var configured: Bool }
             var state = activity.content.state
             if !previews { state.title = activity.attributes.sessionId == "__automatic__" ? "Telar work" : "Telar session" }
             else if let host = UUID(uuidString: activity.attributes.hostId),
-                    let snapshot = try? await settings?.api(for: host)?.session(state.sessionId ?? activity.attributes.sessionId) {
+                    let snapshot = try? await settings?.api(for: host)?.session(state.sessionId ?? activity.attributes.sessionId, window: SnapshotWindow(turns: 1)) {
                 state.title = snapshot.session.title
             }
             await activity.update(ActivityContent(state: state, staleDate: activity.content.staleDate))
