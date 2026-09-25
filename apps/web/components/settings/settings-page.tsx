@@ -82,6 +82,7 @@ const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.S
 const StorageSection = dynamic(() => import("./storage-section").then((mod) => mod.StorageSection));
 const RetentionSection = dynamic(() => import("./retention-section").then((mod) => mod.RetentionSection));
 const WorktreesRootSection = dynamic(() => import("./worktrees-root-section").then((mod) => mod.WorktreesRootSection));
+const MachineWorkspaceSection = dynamic(() => import("./workspace-config-section").then((mod) => mod.MachineWorkspaceSection));
 const WorktreeListSection = dynamic(() => import("./worktree-list-section").then((mod) => mod.WorktreeListSection));
 const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
 const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
@@ -398,6 +399,9 @@ export function SettingsPage() {
                 this there was no such screen anywhere — the only mention of a
                 worktree in the whole cockpit was a count. */}
             <WorktreeListSection />
+            {/* How a new checkout is prepared, beside the rows about checkouts.
+                Each project can override these on Projects. */}
+            <MachineWorkspaceSection />
             <StoreSection />
           </>
         )}

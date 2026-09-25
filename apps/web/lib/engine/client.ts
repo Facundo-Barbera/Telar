@@ -108,6 +108,9 @@ import type {
   WorkspaceFile,
   WorkspaceListing,
   WorkspaceWriteResult,
+  WorkspaceConfig,
+  ProjectWorkspaceOverrides,
+  ProjectWorkspaceView,
   SessionAssignment,
   PluginStatus,
   ProjectPlugins,
@@ -538,6 +541,17 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
     setSessionDefaults: (patch: { envMode?: EnvMode }) =>
       request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
+    /** How worktrees are prepared — `protocol/workspace.ts`. Both writes are
+     *  whole-layer PUTs: the body IS the new layer, not a patch onto it. */
+    machineWorkspace: () => request<{ machine: WorkspaceConfig }>(fetcher, "GET", "/api/workspace"),
+    setMachineWorkspace: (machine: WorkspaceConfig) =>
+      request<{ machine: WorkspaceConfig }>(fetcher, "PUT", "/api/workspace", { machine }),
+    projectWorkspace: (projectId: string) =>
+      request<{ workspace: ProjectWorkspaceView }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/workspace`),
+    setProjectWorkspace: (projectId: string, overrides: ProjectWorkspaceOverrides) =>
+      request<{ workspace: ProjectWorkspaceView }>(fetcher, "PUT", `/api/projects/${encodeURIComponent(projectId)}/workspace`, {
+        overrides,
+      }),
     /* -------------------------------------------------------------- *
      * DICTATION — issue #544, first step.
      *

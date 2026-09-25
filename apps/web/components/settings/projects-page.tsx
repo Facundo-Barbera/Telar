@@ -85,6 +85,7 @@ import { McpSection } from "./mcp-section";
 import { PluginSettings } from "./plugin-settings";
 import { RemoveProjectSection } from "./remove-project-section";
 import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { ProjectWorkspaceSection } from "./workspace-config-section";
 
 const api = createEngineApi();
 
@@ -741,6 +742,8 @@ export function ProjectsPage() {
       {project && !project.hostId && (
         <>
           <McpSection scope={{ projectId: project.id, projectName: project.name }} />
+          {/* Keyed so one project's view never renders under another's name. */}
+          <ProjectWorkspaceSection key={project.id} projectId={project.id} />
           <ProjectPluginPanes project={project} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
         </>
       )}
