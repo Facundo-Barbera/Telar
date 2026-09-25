@@ -7536,10 +7536,15 @@ export class EngineStore {
        * it was stored against, and is silently not applied otherwise — which is
        * the honest outcome, because the reader's sentence was "conversations in
        * this project open on THIS", and this is not that conversation.
+       *
+       * ITS OPTIONS COME WITH IT, less any the model no longer offers — see
+       * `supportedOptions`.
        */
-      ...(project?.defaultModel && project.defaultModel.instanceId === (chosen?.id ?? defaultInstanceIdForDriver(driver))
-        ? { model: project.defaultModel }
-        : {}),
+      ...(() => {
+        if (!project?.defaultModel || project.defaultModel.instanceId !== (chosen?.id ?? defaultInstanceIdForDriver(driver))) return {};
+        const model = this.supportedOptions(driver, project.defaultModel);
+        return model ? { model } : {};
+      })(),
       workspace,
       // The directory is not there yet; `prepareWorktree` below clears this or
       // flips it to `failed`. Absent means ready, which is every other session.
@@ -7583,6 +7588,34 @@ export class EngineStore {
     // said it had not started.
     if (cut !== undefined && project !== undefined) this.prepareWorktree(id, project.root, cut.plan, cut.baseSha);
     return structuredClone(session);
+  }
+
+  /**
+   * A STORED SELECTION WITHOUT THE OPTIONS ITS MODEL DOES NOT OFFER.
+   *
+   * A project's default was picked off the catalogue as it stood then, and a
+   * provider can withdraw a level or fast mode from a model since. An effort the
+   * model does not list fails the turn outright, so it is dropped here rather
+   * than carried into a session nobody chose that for.
+   *
+   * SYNCHRONOUS, so it reads the in-memory catalogue only. Cold, or a model the
+   * catalogue does not list (a hand-added one has no published options to check
+   * against), the selection is trusted as stored — it was picked off that list.
+   */
+  private supportedOptions(driver: ProviderDriverKind, selection: ModelSelection): ModelSelection | undefined {
+    const cached = this.modelCache.get(driver);
+    if (!cached) return selection;
+    const listed = driver === "claude" ? applyModelManifest(cached.models, this.manifest, cached.cliVersion) : cached.models;
+    const id = selection.model ?? listed.find((row) => row.isDefault)?.id;
+    const row = listed.find((candidate) => candidate.id === id || candidate.resolves === id);
+    if (!row || row.source === "user") return selection;
+    const { effort, fastMode, ...rest } = selection;
+    const kept = {
+      ...rest,
+      ...(effort !== undefined && row.efforts.includes(effort) ? { effort } : {}),
+      ...(fastMode !== undefined && row.fastMode ? { fastMode } : {}),
+    };
+    return kept.model !== undefined || kept.effort !== undefined || kept.fastMode !== undefined ? kept : undefined;
   }
 
   /**

@@ -17,7 +17,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineClient } from "@telar/engine-client";
+import { EngineClient, type ModelCatalogue, type ProviderModel } from "@telar/engine-client";
 import { EngineStateError, EngineStore } from "../src/state";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { stubModels } from "./stub-models";
@@ -229,6 +229,84 @@ describe("a new conversation honours the project before the Mac", () => {
   test("a project with no default model leaves the session on the provider's own", () => {
     const store = readyStore();
     expect(store.createSession({ id: "session_a", projectId: "project_one" }).model).toBeUndefined();
+  });
+});
+
+/**
+ * THE MODEL'S OPTIONS — effort and fast mode — ride with the project's default,
+ * checked against what the catalogue says that model offers.
+ */
+describe("a new conversation starts with the project's model options", () => {
+  const row = (id: string, options: { efforts?: string[]; fastMode?: boolean; isDefault?: boolean } = {}): ProviderModel => ({
+    id,
+    label: id,
+    isDefault: options.isDefault ?? false,
+    hidden: false,
+    hiddenByUser: false,
+    legacy: false,
+    efforts: options.efforts ?? [],
+    fastMode: options.fastMode ?? false,
+    source: "provider",
+  });
+  const CATALOGUE = [
+    row("claude-opus-5", { efforts: ["low", "medium", "high"], fastMode: true, isDefault: true }),
+    row("claude-haiku-4-5"),
+  ];
+
+  /** A store whose catalogue is WARM, which is what the check reads. */
+  async function catalogued(): Promise<EngineStore> {
+    const catalogue = async (): Promise<ModelCatalogue> => ({ driver: "claude", instanceId: "claude", readAt: 100, models: CATALOGUE });
+    const store = new EngineStore(dir("telar-identity-home-"), () => 100, { models: catalogue, manifest: { version: 1 } });
+    await store.modelCatalogue("claude");
+    store.registerProject({ id: "project_one", name: "One", root: dir("telar-identity-checkout-") });
+    return store;
+  }
+
+  test("a new session gets the project's effort and fast mode", async () => {
+    const store = await catalogued();
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "claude-opus-5", effort: "medium", fastMode: true } });
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).model).toEqual({
+      instanceId: "claude",
+      model: "claude-opus-5",
+      effort: "medium",
+      fastMode: true,
+    });
+  });
+
+  test("options with no model apply to the provider's default model", async () => {
+    const store = await catalogued();
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", effort: "high" } });
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).model).toEqual({ instanceId: "claude", effort: "high" });
+  });
+
+  test("the composer's choice overrides them", async () => {
+    const store = await catalogued();
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "claude-opus-5", effort: "medium", fastMode: true } });
+    store.createSession({ id: "session_a", projectId: "project_one" });
+    // What the canvas does with a pick made before the first message.
+    const picked = store.updateSession("session_a", { model: { instanceId: "claude", model: "claude-opus-5", effort: "low" } });
+    expect(picked.model).toEqual({ instanceId: "claude", model: "claude-opus-5", effort: "low" });
+    // …and a turn's own choice beats the session's at claim.
+    store.submitTurn("session_a", { runId: "run_one", input: "hello", model: { model: "claude-opus-5", effort: "high" } });
+    expect(store.claimNextTurn("worker_one")?.model?.effort).toBe("high");
+  });
+
+  test("an option the model does not offer is dropped", async () => {
+    const store = await catalogued();
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "claude-haiku-4-5", effort: "high", fastMode: true } });
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).model).toEqual({ instanceId: "claude", model: "claude-haiku-4-5" });
+
+    // With nothing left to select, the session is on the provider's default.
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "claude-opus-5", effort: "ultra" } });
+    expect(store.createSession({ id: "session_b", projectId: "project_one" }).model).toEqual({ instanceId: "claude", model: "claude-opus-5" });
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", effort: "ultra" } });
+    expect(store.createSession({ id: "session_c", projectId: "project_one" }).model).toBeUndefined();
+  });
+
+  test("a cold catalogue trusts the stored options", () => {
+    const store = readyStore();
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "claude-haiku-4-5", effort: "high" } });
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).model?.effort).toBe("high");
   });
 });
 

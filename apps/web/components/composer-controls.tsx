@@ -274,6 +274,16 @@ function selectionOf(models: readonly ProviderModel[], choice: ModelChoice) {
 }
 
 /**
+ * WHAT THE MODEL A CHOICE RESOLVES TO LETS YOU SET — its effort levels and
+ * whether it has fast mode. Exported for a project's default, so Settings offers
+ * exactly what the reasoning pill offers for the same model.
+ */
+export function modelOptionsOf(models: readonly ProviderModel[], choice: ModelChoice): { efforts: readonly string[]; fastMode: boolean } {
+  const { levels, fastMode } = selectionOf(models, choice);
+  return { efforts: levels, fastMode };
+}
+
+/**
  * Move the choice to a different row, DROPPING WHAT THAT ROW CANNOT HONOUR.
  *
  * An effort a model does not list fails the turn outright; a fast-mode switch it
