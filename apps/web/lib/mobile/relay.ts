@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import type { Delivery, DeliveryResult, PushRecord } from "./push";
 import { parseRelayConfig, type RelayConfig } from "./relay-config";
+import { relayRefusal } from "./relay-v2";
 
 /** The shape lives in `relay-config.ts` so a browser can validate a pasted one
  *  without importing this module's Keychain read (#579). Re-exported here so
@@ -81,15 +82,6 @@ export async function relayDelivery(config: RelayConfig, record: PushRecord, del
   return registered ? { ...result, registered: true } : result;
 }
 
-/** A relay status, marked as the relay's own. `Retry-After` rides along on the
- *  429 that says this host's daily budget is spent (#584). */
-function relayRefusal(response: Response): DeliveryResult {
-  const after = Number(response.headers.get("retry-after"));
-  return {
-    status: response.status, relay: true,
-    ...(Number.isFinite(after) && after > 0 ? { retryAfter: Math.min(Math.floor(after), 86400) } : {}),
-  };
-}
 export async function revokeRelayDevice(config: RelayConfig, deviceId: string): Promise<void> {
   const response = await relayRequest(config, `/v1/devices/${encodeURIComponent(deviceId)}`, "DELETE");
   await response.body?.cancel();

@@ -2,7 +2,7 @@ import { readDeviceCookie } from "@/lib/remote/cookie";
 import { identifyCaller } from "@/lib/remote/gate";
 import { readRemote } from "@/lib/remote/store";
 import { parseRegistration, pushConfigured, PushInputError, saveRegistration } from "@/lib/mobile/push";
-import { startMobilePushWorker } from "@/lib/mobile/worker";
+import { sendRelayTest, startMobilePushWorker } from "@/lib/mobile/worker";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -32,7 +32,10 @@ export async function PUT(request: Request) {
     const registration = parseRegistration(JSON.parse(Buffer.concat(chunks).toString("utf8")));
     saveRegistration(device.id, registration);
     startMobilePushWorker();
-    return Response.json({ configured: pushConfigured(registration.sandbox) });
+    // Not awaited: the phone is not kept waiting on APNs to hear it registered.
+    if (registration.relay) void sendRelayTest(device.id, registration.topic);
+    // A phone that brought a relay v2 credential needs nothing from this Mac.
+    return Response.json({ configured: registration.relay !== undefined || pushConfigured(registration.sandbox) });
   } catch (error) {
     if (error instanceof PushInputError || error instanceof SyntaxError) return Response.json({ error: { message: "Invalid push registration." } }, { status: 400 });
     return Response.json({ error: { message: "Couldn't save push registration." } }, { status: 503 });

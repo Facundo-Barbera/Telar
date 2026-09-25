@@ -545,12 +545,15 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         title: "Push notifications",
         rows: [
           {
-            title: "Provision relay",
+            // NAVIGATE-ONLY. The pane is status only since relay v2: its rows
+            // are the phones themselves, values rather than copy, so there is
+            // no standing row to anchor to — the group heading is the title.
+            title: "Push notifications",
             // The words somebody types when notifications are not arriving —
             // they search for the symptom, not for "relay", which is a term
             // they have no reason to know.
-            hint: "Whether this Mac can send alerts to your phones, and the relay credential that lets it.",
-            keywords: ["notifications", "apns", "alerts", "push", "relay", "keychain", "phone", "not working"],
+            hint: "Whether this Mac can send alerts to your phones, and whether each one is actually being reached.",
+            keywords: ["notifications", "apns", "alerts", "push", "relay", "phone", "not working", "test notification"],
             icon: BellIcon,
           },
         ],
