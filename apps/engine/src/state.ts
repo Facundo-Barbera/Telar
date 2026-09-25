@@ -9355,6 +9355,8 @@ export class EngineStore {
        *  waiting in the queue — see `foldIntoWaitingMessage`. Not mail. */
       foldedIntoWaitingWake?: boolean;
       agentSourceRunId?: string;
+      /** See `Turn.corrects`. Set by `submitAgentTurn` only. */
+      corrects?: string;
       /** The short line the MODEL reads in place of `input` — minted by
        *  `submitAgentTurn` and by nothing else. See `Turn.agentNotice`. */
       agentNotice?: string;
@@ -9502,6 +9504,7 @@ export class EngineStore {
       ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
       ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
       ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
+      ...(input.corrects ? { corrects: input.corrects } : {}),
       ...(input.agentNotice ? { agentNotice: input.agentNotice } : {}),
       ...(input.notification ? { notification: input.notification } : {}),
       ...(input.assignmentScope ? { assignmentScope: input.assignmentScope } : {}),
@@ -9781,7 +9784,7 @@ export class EngineStore {
    */
   submitAgentTurn(
     sessionId: string,
-    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string },
+    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string; corrects?: string },
     proof?: SenderProof,
   ): { turn: Turn; replayed: boolean } {
     let sender: { sessionId?: string } = {};
@@ -9866,7 +9869,17 @@ export class EngineStore {
      * this session called `sessions_subscribe` to be woken for.
      */
     const windowed = shelved.reportWindowMinutes !== undefined;
-    const delivery = intent === "task" || intent === "blocker" || waiting || (wouldBeLost && !windowed) ? "wake" : "passive";
+    /**
+     * A CORRECTION — issue #784, step 3. See `Turn.corrects` for the rule and
+     * `correctionOf` for how the earlier message's state is read. A retry of
+     * this same call (its run id already accepted) changes nothing.
+     */
+    const correction = input.corrects && !this.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
+      ? this.correctionOf(sessionId, input.corrects, sender.sessionId)
+      : undefined;
+    const delivery = intent === "task" || intent === "blocker" || waiting || (wouldBeLost && !windowed) || correction === "read" || correction === "queued"
+      ? "wake"
+      : "passive";
     /**
      * THE NOTICE IS MINTED HERE, ONCE, AND STORED — see `agent-notice.ts`.
      *
@@ -9896,6 +9909,7 @@ export class EngineStore {
      */
     const notification = peerNotification({
       recipientSessionId: sessionId, runId: input.runId, body: input.input, intent,
+      ...(input.corrects ? { corrects: input.corrects } : {}),
       ...(sender.sessionId ? { sender } : {}),
       ...(scope ? { scope } : {}),
     });
@@ -9908,7 +9922,8 @@ export class EngineStore {
      * second turn is written as history. Only while the first is still
      * `queued` — once claimed it is in front of a model, and the second is news.
      */
-    const folds = delivery === "wake" && proof && sender.sessionId && FOLDING_INTENTS.has(intent)
+    // Not for a correction: it replaces an earlier message rather than joining it.
+    const folds = !correction && delivery === "wake" && proof && sender.sessionId && FOLDING_INTENTS.has(intent)
       ? this.waitingMessageFrom(sessionId, sender.sessionId, proof.runId, input.runId)
       : undefined;
     const result = this.submitTurn(sessionId, {
@@ -9925,6 +9940,7 @@ export class EngineStore {
       ...(input.attachments ? { attachments: input.attachments } : {}),
       origin: "session", sender, agentIntent: intent, agentDelivery: folds ? "passive" : delivery,
       ...(proof ? { agentSourceRunId: proof.runId } : {}),
+      ...(input.corrects ? { corrects: input.corrects } : {}),
       notification,
       agentNotice: notification.body,
       // Only a TASK carries a scope. A report that named one would read as an
@@ -9933,7 +9949,52 @@ export class EngineStore {
     });
     // A replay of a message already accepted changes nothing, folded or not.
     if (folds && !result.replayed) this.foldIntoWaitingMessage(sessionId, folds, notification);
+    // The unread version goes only once its replacement is safely accepted.
+    if (correction === "queued" || correction === "held") this.withdrawCorrected(sessionId, input.corrects!, correction);
     return result;
+  }
+
+  /**
+   * WHERE THE MESSAGE BEING CORRECTED STANDS, for this recipient.
+   *
+   *   queued  still waiting as a wake nobody has claimed — unread
+   *   held    passive, and still in the mailbox — unread
+   *   read    anything else: claimed, steered, delivered in a merged notice
+   *
+   * REFUSED, not guessed at, when it names nothing this sender sent here: a
+   * correction that could reach another sender's message would be a way to
+   * withdraw it.
+   */
+  private correctionOf(sessionId: string, correctedRunId: string, senderSessionId: string | undefined): "queued" | "held" | "read" {
+    const corrected = this.readQueue(sessionId).turns.find((turn) => turn.runId === correctedRunId);
+    if (!corrected || corrected.origin !== "session" || !senderSessionId || corrected.sender?.sessionId !== senderSessionId || corrected.notification?.kind !== "peer_message") {
+      throw new EngineStateError("invalid_request", `corrects must name an earlier message you sent to this session; ${correctedRunId} is not one`);
+    }
+    if (corrected.state === "queued") return "queued";
+    const held = this.readPendingNotifications(sessionId).some((each) => each.kind === "peer_message" && each.runId === correctedRunId);
+    return corrected.agentDelivery === "passive" && held ? "held" : "read";
+  }
+
+  /** Take an unread corrected message out of the reader's way: a queued wake is
+   *  discarded (its body stays readable on the turn), a held one leaves the
+   *  mailbox. Either way the correction is now the one the reader will meet. */
+  private withdrawCorrected(sessionId: string, correctedRunId: string, where: "queued" | "held"): void {
+    if (where === "held") {
+      const pending = this.readPendingNotifications(sessionId);
+      const kept = pending.filter((each) => !(each.kind === "peer_message" && each.runId === correctedRunId));
+      if (kept.length !== pending.length) this.writePendingNotifications(sessionId, kept, kept.length > 0 ? this.heldSince(sessionId) : undefined);
+      return;
+    }
+    const queue = this.readQueue(sessionId);
+    const turn = queue.turns.find((candidate) => candidate.runId === correctedRunId && candidate.state === "queued");
+    if (!turn) return;
+    const at = this.now();
+    turn.state = "discarded";
+    turn.completedAt = at;
+    turn.updatedAt = at;
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
   }
 
   /**

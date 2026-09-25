@@ -381,6 +381,8 @@ export const AgentTurnInput = z.object({
   runId: Id,
   input: z.string().min(1),
   attachments: z.array(Id).optional(),
+  /** The run id of an earlier message this one CORRECTS — see `Turn.corrects`. */
+  corrects: Id.optional(),
   proof: z.object({ sessionId: Id, runId: Id, claimToken: z.string().min(16) }).optional(),
 });
 export type AgentTurnInput = z.infer<typeof AgentTurnInput>;

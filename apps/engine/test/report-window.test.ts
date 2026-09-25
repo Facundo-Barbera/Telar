@@ -394,3 +394,62 @@ test("turning a hold off does not itself deliver, and it survives a restart hold
   expect(reopened.sweepReportWindows()).toEqual([]);
   expect(queued(reopened)).toHaveLength(0);
 });
+
+/**
+ * CORRECTIONS — issue #784, step 3. "The wrong version is already in his head."
+ * Declared by the sender (`corrects`), keyed on the run it corrects, and only
+ * two behaviours: unread, the earlier message is withdrawn and the correction
+ * takes its place; read, the correction arrives at once, past any window.
+ */
+const correct = (store: EngineStore, proof: Parameters<EngineStore["submitAgentTurn"]>[2], runId: string, corrects: string) =>
+  store.submitAgentTurn("session_host", { runId, input: "the figure is 12, not 21", intent: "report", corrects }, proof);
+
+test("a correction to a message still WAITING as a wake replaces it", () => {
+  const { store, proof } = setup();
+  // An idle host takes a report as a wake (#631); it has not been claimed.
+  expect(report(store, proof, "run_wrong").turn.state).toBe("queued");
+  const fixed = correct(store, proof, "run_fixed", "run_wrong");
+  expect(queued(store).map((turn) => turn.runId)).toEqual(["run_fixed"]);
+  expect(store.turns("session_host").find((turn) => turn.runId === "run_wrong")).toMatchObject({ state: "discarded", input: "progress" });
+  expect(fixed.turn).toMatchObject({ corrects: "run_wrong", agentDelivery: "wake" });
+  expect(fixed.turn.agentNotice).toContain("It CORRECTS their earlier message (run run_wrong); disregard that one.");
+});
+
+test("a correction to a message still HELD in the mailbox replaces it there", () => {
+  const { store, proof } = setup();
+  store.updateSession("session_host", { reportWindowMinutes: HOLD_REPORTS });
+  report(store, proof, "run_wrong");
+  expect(store.pendingNotifications("session_host").map((each) => each.runId)).toEqual(["run_wrong"]);
+  correct(store, proof, "run_fixed", "run_wrong");
+  // Still held — it is routine news that nobody has read yet — but only the
+  // corrected version is waiting.
+  expect(store.pendingNotifications("session_host").map((each) => each.runId)).toEqual(["run_fixed"]);
+  expect(queued(store)).toHaveLength(0);
+});
+
+test("a correction to a message already READ arrives at once, past the window", () => {
+  const { store, proof } = setup();
+  report(store, proof, "run_wrong");
+  const token = store.claimTurn("session_host", "worker_two")!.claim!.token;
+  store.markRunning("session_host", "run_wrong", token);
+  store.completeTurn("session_host", "run_wrong", token, { text: "noted 21" });
+  // Now the host holds reports for good. An ordinary report is held…
+  store.updateSession("session_host", { reportWindowMinutes: HOLD_REPORTS });
+  expect(report(store, proof, "run_routine").turn.agentDelivery).toBe("passive");
+  // …and the correction is not, because the wrong figure has already been read.
+  const fixed = correct(store, proof, "run_fixed", "run_wrong");
+  expect(fixed.turn.agentDelivery).toBe("wake");
+  expect(queued(store).map((turn) => turn.runId)).toContain("run_fixed");
+  expect(store.turns("session_host").find((turn) => turn.runId === "run_wrong")!.state).toBe("completed");
+});
+
+test("a correction can only name the sender's own earlier message to this session", () => {
+  const { store, proof } = setup();
+  store.submitTurn("session_host", { runId: "run_human", input: "a person's message" });
+  expect(() => correct(store, proof, "run_fixed", "run_human")).toThrow(EngineStateError);
+  expect(() => correct(store, proof, "run_fixed", "run_nothing")).toThrow("corrects must name an earlier message you sent to this session");
+  // A retry of an accepted correction is a replay, not a second withdrawal.
+  report(store, proof, "run_wrong");
+  correct(store, proof, "run_fixed", "run_wrong");
+  expect(correct(store, proof, "run_fixed", "run_wrong").replayed).toBe(true);
+});

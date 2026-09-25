@@ -138,7 +138,7 @@ export type SessionsCapability = {
   create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind }): Promise<Session>;
   /** Queue ONE turn. The `runId` is minted by the wall so a retry of the same
    *  tool call cannot double-submit. */
-  send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"] }): Promise<{
+  send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"]; corrects?: string }): Promise<{
     turn: Turn;
     replayed: boolean;
   }>;
@@ -1063,10 +1063,12 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         sessionId: z.string().min(1),
         intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default) passive, for progress mid-task; task assigns work; result is your FINAL answer — send it last; blocker asks for intervention. After any of these reaches a subscriber, your run completing does not wake them again."),
         input: z.string().min(1).describe("The whole message; it cannot see this conversation."),
+        corrects: z.string().min(1).optional().describe("The runId of your earlier message to them that this one corrects: unread, it is replaced; already read, this one arrives at once."),
       },
       async (args, context) => {
         const sessionId = String(args.sessionId ?? "");
         const text = String(args.input ?? "");
+        const corrects = typeof args.corrects === "string" && args.corrects.length > 0 ? args.corrects : undefined;
         const intent = args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report";
         /**
          * THE RUN ID BELONGS TO THE CALL, not to the model and not to this
@@ -1103,7 +1105,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           ? `run_${crypto.createHash("sha256").update(`sessions_send:${context.toolCallId}`).digest("hex").slice(0, 32)}`
           : `run_${crypto.randomUUID().replaceAll("-", "")}`;
         try {
-          const { turn } = await capability.send(sessionId, { runId, input: text, intent });
+          const { turn } = await capability.send(sessionId, { runId, input: text, intent, ...(corrects ? { corrects } : {}) });
           return json({
             sessionId,
             runId: turn.runId,

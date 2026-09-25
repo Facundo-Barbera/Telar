@@ -2265,6 +2265,18 @@ export const Turn = z.object({
   agentDelivery: z.enum(["passive", "wake"]).optional(),
   agentSourceRunId: Id.optional(),
   /**
+   * A CORRECTION: the run id (on this same session) of an earlier message from
+   * the same sender that this one replaces — issue #784, step 3.
+   *
+   * DECLARED BY THE SENDER, never inferred. "Is this a correction" is the
+   * judgement a model over-claims the moment it learns corrections skip the
+   * queue, so the engine acts only on a named run, from the same sender, and
+   * only in two ways: an earlier message still UNREAD is withdrawn and this one
+   * takes its place; one already READ lets this one arrive at once, past any
+   * report window, because the wrong version is already in the reader's head.
+   */
+  corrects: Id.optional(),
+  /**
    * WHAT THE MODEL IS HANDED INSTEAD OF `input`, on an agent-sent turn.
    *
    * A short notice in the wake's register — who sent it, which run holds it,
