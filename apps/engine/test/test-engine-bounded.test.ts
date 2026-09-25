@@ -49,7 +49,7 @@ afterEach(() => {
 });
 
 type Verdict = {
-  outcome: "passed" | "failed" | "hung" | "unknown";
+  outcome: "passed" | "failed" | "hung" | "unknown" | "leaked";
   exited: boolean;
   timedOut: boolean;
   pass: number | null;
@@ -182,7 +182,7 @@ test("passes", () => { expect(1).toBe(1); });
   expect(verdict.lastLine.length).toBeGreaterThan(0);
 }, 60_000);
 
-test("a run that PASSES while leaving a process behind reaps it, and says so", () => {
+test("a run that PASSES while leaving a process behind is LEAKED, not passed — and the process is reaped and named", () => {
   /**
    * #807's ORPHAN, AS REPORTED. The five processes in the incident were alive
    * after their tests had finished, which a timeout-only wrapper never sees: the
@@ -204,11 +204,20 @@ test("leaves a child running behind it, the way a leaked shell does", () => {
 `);
   const { verdict, status, output } = wrapped(root);
 
-  // The run really did pass — this is not a failure being caught by the back door.
-  expect(verdict.outcome).toBe("passed");
+  // Every test really did pass — this is not a failure being caught by the
+  // back door. The tally is clean.
   expect(verdict.pass).toBe(1);
   expect(verdict.fail).toBe(0);
-  expect(status).toBe(0);
+  /**
+   * AND THE RUN IS STILL RED — #849. Before, this asserted `passed` and exit 0:
+   * the wrapper reaped the leak, printed one sentence, and let CI go green on
+   * the exact shape the issue reports. A check that fails when a test leaks is
+   * the whole ask, so the outcome and the exit code are both asserted, and both
+   * went red against the previous wrapper (outcome `passed`, status 0).
+   */
+  expect(verdict.outcome).toBe("leaked");
+  expect(status).toBe(4);
+  expect(output).toContain("LEAKED");
 
   // AND THE LEAKED PROCESS IS GONE. Asserted FIRST, and about the pid rather
   // than about the wrapper's own account of itself: without the reap this is
@@ -244,6 +253,37 @@ test("leaves a child running behind it, the way a leaked shell does", () => {
   expect(found?.command).toContain("sleep");
   // The rows reach the log a human reads, not only the JSON a script reads.
   expect(output).toContain(`pid=${leaked} ppid=${found?.ppid}`);
+}, 60_000);
+
+test("the same child, stopped in the test's own teardown, is an ordinary PASS", () => {
+  /**
+   * THE OTHER DIRECTION, so `leaked` is not simply "any run that spawned
+   * anything". Same `sleep`, same unref — but the test kills it in `afterEach`
+   * and waits for it to exit, which is the teardown #849 asks every spawning
+   * test for. Without this case, a wrapper that called every run with a child
+   * `leaked` would pass the test above.
+   */
+  const root = workspace(`import { spawn } from "node:child_process";
+import { afterEach, test, expect } from "bun:test";
+let child;
+afterEach(async () => {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGKILL");
+  await exited;
+});
+test("spawns a child and leaves the stopping to its teardown", () => {
+  child = spawn("sleep", ["120"], { stdio: "ignore" });
+  child.unref();
+  expect(typeof child.pid).toBe("number");
+});
+`);
+  const { verdict, status } = wrapped(root);
+
+  expect(verdict.outcome).toBe("passed");
+  expect(status).toBe(0);
+  expect(verdict.reapedSurvivors).toBe(false);
+  expect(verdict.groupInspection).toBeNull();
 }, 60_000);
 
 test("a command that exits without counting anything is UNKNOWN, never passed", () => {

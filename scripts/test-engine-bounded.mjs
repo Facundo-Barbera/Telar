@@ -27,12 +27,13 @@
  *   2. THE PROCESS EXITED INSIDE A WALL-CLOCK BUDGET, measured here and never
  *      read off the child's exit code.
  *
- * Which gives four distinguishable states rather than "zero and not-zero":
+ * Which gives distinguishable states rather than "zero and not-zero":
  *
- *   passed   tally, fail = 0, exited
+ *   passed   tally, fail = 0, exited, and nothing left in its process group
  *   failed   tally, fail > 0, exited
  *   hung     NO tally, budget exceeded
  *   unknown  exited, but never counted anything
+ *   leaked   tally, fail = 0, exited — and processes still in its group (#849)
  *
  * `unknown` IS NOT COSMETIC AND MUST NOT BE FOLDED INTO `passed`. A runner that
  * died before it could count — a load failure, a killed process, a crash in a
@@ -304,6 +305,15 @@ async function main() {
    * of claiming a clean tree.
    */
   let reapedSurvivors = false;
+  /**
+   * ASKED AT ONCE, WITH NO GRACE — #849, and on purpose. The leak #849 found on
+   * a Mac is a real Claude Code CLI that a live test never shut down; it dies
+   * about 100 ms AFTER the runner does, because the runner's exit closes its
+   * stdin. A grace of even a second would have filed that as "on its way out"
+   * and gone green, which is the finding hidden. Anything still in the group
+   * when the runner has exited is something a test did not stop; a test that
+   * stopped and awaited its children leaves the group empty here, measured.
+   */
   if (group.liveness(childPid) === "alive") {
     reapedSurvivors = true;
     // NAMED BEFORE IT IS STOPPED (#849). This is the whole of the change: the
@@ -334,7 +344,36 @@ async function main() {
    * makes `hung` distinguishable from `failed` at all.
    */
   const exited = !timedOut;
-  const outcome = !exited ? "hung" : tally === undefined ? "unknown" : tally.fail > 0 ? "failed" : "passed";
+  /**
+   * A GREEN RUN THAT LEFT SOMETHING RUNNING IS NOT A PASS — #849.
+   *
+   * Until this line the wrapper reaped survivors, printed a sentence, and exited
+   * 0: the exact shape the issue reports, a clean tally and a clean exit code
+   * with processes still alive behind them. A sentence in a 3000-test log is a
+   * thing nobody reads, and an instrument that only reports is how the leak
+   * survived two green runs unexamined. So it is its own outcome with its own
+   * exit code, and CI goes red on it.
+   *
+   * ONLY WHEN SOMETHING WAS NAMED, OR COULD NOT BE LOOKED FOR. A group that was
+   * alive at the check and empty by the time `ps` ran had a process on its way
+   * out, not a leak, and a red that cannot say what leaked is worse than none.
+   * An inspection that could not run at all fails CLOSED: survivors were seen
+   * and nothing proved they were harmless.
+   *
+   * A FAILING RUN STAYS `failed`. The red test is the first thing to fix, and
+   * the rows are printed below either way.
+   */
+  const leaked =
+    reapedSurvivors && groupInspection?.phase === "survivors" && (groupInspection.rows.length > 0 || !groupInspection.supported || Boolean(groupInspection.reason));
+  const outcome = !exited
+    ? "hung"
+    : tally === undefined
+      ? "unknown"
+      : tally.fail > 0
+        ? "failed"
+        : leaked
+          ? "leaked"
+          : "passed";
   const verdict = {
     outcome,
     exited,
@@ -369,6 +408,12 @@ async function main() {
   // SAID OUT LOUD, because a run that passes while leaving processes behind is
   // exactly the shape #807 reports and the one nobody would otherwise look at.
   if (reapedSurvivors) process.stdout.write(`[test-engine-bounded] the run left processes in its group after exiting; they were stopped\n`);
+  if (outcome === "leaked") {
+    process.stdout.write(
+      `[test-engine-bounded] LEAKED: every test passed, but a test spawned something it did not stop. The rows below name it; ` +
+        `find the test that starts that command and kill it in its own teardown (#849)\n`,
+    );
+  }
   // THE ROWS, IN THE LOG AND ON SCREEN. Printed for both phases, because the
   // reader of a hung run wants the same table as the reader of a leaky one.
   // A supported inspection that found nothing says so rather than printing
@@ -391,11 +436,12 @@ async function main() {
   process.stdout.write(`[test-engine-bounded] log: ${logPath}\n`);
 
   /**
-   * FOUR OUTCOMES, FOUR EXIT CODES. A caller that only knows zero-from-not-zero
+   * ONE EXIT CODE PER OUTCOME. A caller that only knows zero-from-not-zero
    * still gets the right answer; one that wants to tell a hang from a red test
-   * no longer has to guess, which is the whole point of the file.
+   * — or a leak from either — no longer has to guess, which is the whole point
+   * of the file. `scripts/engine-shard.mjs` passes 2, 3 and 4 through unchanged.
    */
-  process.exit({ passed: 0, failed: 1, hung: 2, unknown: 3 }[outcome]);
+  process.exit({ passed: 0, failed: 1, hung: 2, unknown: 3, leaked: 4 }[outcome]);
 }
 
 await main();

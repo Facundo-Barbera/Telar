@@ -107,6 +107,23 @@ test("a hung or unknown shard keeps the wrapper's code and is not retold as an a
   expect(red).toMatchObject({ code: 1, error: null });
 });
 
+test("a leaked shard keeps the wrapper's 4, and a dropped file is still reported first", () => {
+  /**
+   * #849: A LEAK IS A RED THE SHARD MUST NOT TURN GREEN. The wrapper exits 4
+   * when every test passed and something was left in the group; a shard that
+   * read that as "non-zero, arithmetic fine, error null" would still fail the
+   * job but say nothing about why.
+   */
+  const leaked = shardVerdict({ status: 4, output: "Ran 1000 tests across 65 files.\n", handed: 65 });
+  expect(leaked.code).toBe(4);
+  expect(leaked.error).toContain("did not stop it");
+
+  // The count still runs first — it printed its tally, unlike a hang.
+  const leakedAndDropped = shardVerdict({ status: 4, output: "Ran 1000 tests across 64 files.\n", handed: 65 });
+  expect(leakedAndDropped.code).toBe(4);
+  expect(leakedAndDropped.error).toContain("handed bun 65 paths and bun ran 64 files");
+});
+
 test("a shard that drops files fails even when every test it did run passed", () => {
   // THE FAST GREEN RUN. bun exits 0 having opened 64 of the 65 paths it was
   // handed, which is what a renamed file looks like.
