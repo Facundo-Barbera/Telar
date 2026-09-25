@@ -12,6 +12,7 @@ const {
   PERMISSION_KINDS,
 } = require("./site-permissions");
 const { browserContextMenuTemplate } = require("./browser-context-menu");
+const { installDownloadHandler } = require("./browser-downloads");
 
 const CURSOR_MOVE_MS = 160;
 const CURSOR_CLICK_LEAD_MS = 40;
@@ -993,6 +994,12 @@ class DesktopBrowserManager {
      *  with no partitions to seat rather than an error worth logging. */
     this.sessionFor = dependencies.sessionFor || electronSessionFor;
     this.preparedPartitions = new Set();
+    /** Where a download lands with no dialog — the OS's Downloads folder,
+     *  read per download. Injected so the tests never touch a real one. */
+    this.downloadsPath = dependencies.downloadsPath || (() => this.electron().app.getPath("downloads"));
+    this.installDownloads = dependencies.installDownloads || installDownloadHandler;
+    /** URLs "Save Image As…" handed to Chromium: the one download that asks. */
+    this.askedDownloads = new Set();
     /**
      * THE PERSISTED TAB INVENTORY (browser-tab-store.js). The manager owns
      * every tab's lifetime — not the panel, not the renderer — so a session's
@@ -1352,6 +1359,38 @@ class DesktopBrowserManager {
     } catch (error) {
       console.error(`[telar-desktop] could not install site permission handlers on ${partition}: ${error && error.message ? error.message : error}`);
     }
+    try {
+      this.installDownloads(ses, {
+        directory: this.downloadsPath,
+        shouldAsk: (url) => this.askedDownloads.delete(url),
+        onStarted: (download) => this.reportDownload({ ...download, state: "started" }),
+        onFinished: (download) => this.reportDownload(download),
+      });
+    } catch (error) {
+      console.error(`[telar-desktop] could not install the download handler on ${partition}: ${error && error.message ? error.message : error}`);
+    }
+  }
+
+  /**
+   * A DOWNLOAD STARTED OR ENDED — told to both hands. The agent reads it as a
+   * console line on the tab that started it (browser_console_messages), which
+   * is how it learns where its file landed; the panel gets a push and shows a
+   * strip with a way to the file.
+   */
+  reportDownload({ state, path, filename, webContents }) {
+    let where = { scopeKey: this.visibleScopeKey ?? null, tabId: null };
+    try {
+      if (webContents && !webContents.isDestroyed()) where = this.locatePermission(webContents);
+    } catch {
+      // A contents gone mid-download still gets its strip, just unplaced.
+    }
+    const tab = this.tabs.find((candidate) => candidate.id === where.tabId);
+    const text =
+      state === "started" ? `Download started: ${filename} is being saved to ${path}`
+      : state === "completed" ? `Downloaded ${filename} to ${path}`
+      : `Download of ${filename} ${state === "cancelled" ? "was cancelled" : "failed"}; nothing was saved to ${path}`;
+    if (tab) pushCapped(tab.console, { level: state === "started" || state === "completed" ? "info" : "error", text });
+    if (!this.window.isDestroyed()) this.window.webContents.send("telar:browser:download", { ...where, state, path, filename });
   }
 
   /**
@@ -3387,11 +3426,15 @@ class DesktopBrowserManager {
       case "copy-image":
         wc.copyImageAt(Math.round(params?.x || 0), Math.round(params?.y || 0));
         break;
-      case "save-image-as":
-        // No `will-download` handler is installed, so Electron asks where —
-        // which is exactly what the "…" in the label promises.
-        wc.downloadURL(String(entry.value ?? ""));
+      case "save-image-as": {
+        // The one download that asks where, because the "…" in its label
+        // promises it: marked here, the handler leaves it without a save path
+        // and Electron shows its dialog. Every other download is silent.
+        const url = String(entry.value ?? "");
+        this.askedDownloads.add(url);
+        wc.downloadURL(url);
         break;
+      }
       case "replace-misspelling":
         wc.replaceMisspelling(String(entry.value ?? ""));
         break;
