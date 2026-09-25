@@ -8405,8 +8405,12 @@ export class EngineStore {
    * mistake errs the same way. Sub-agents' own rows (`taskId`) count too: a
    * foreground agent at work is work.
    *
-   * A WINDOW OF ONE RUN, not the projection: this runs on every fold of a
+   * A WINDOW OF ONE RUN, never the projection: this runs on every fold of a
    * running session, and the session's whole item history is not the question.
+   * So: the cache when it is warm (it is, on any session this engine is
+   * ingesting), the run's own rows when they are indexed, and otherwise NO
+   * ANSWER — a JSON-backed session with a cold cache reads as plain Working
+   * rather than paying a whole-document parse for a label.
    */
   private onlyWaitingOn(sessionId: string, runId: string): WaitingOn | undefined {
     const cached = this.itemsCache.get(sessionId);
@@ -8414,7 +8418,7 @@ export class EngineStore {
       ? [...cached.values()].filter((item) => item.runId === runId)
       : this.itemsOnRows(sessionId)
         ? this.itemRowsOf(sessionId, [runId])
-        : [...this.itemsById(sessionId).values()].filter((item) => item.runId === runId);
+        : [];
     const open = items.filter((item) => item.status === "inProgress");
     if (open.length === 0) return undefined;
     const waits = open.map((item) => waitingToolOf(item.detail));
