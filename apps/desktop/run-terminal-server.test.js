@@ -38,6 +38,9 @@ function fakeHost() {
     wrote: [],
     resized: [],
     listedAs: [],
+    closed: [],
+    sessionsClosed: [],
+    asked: [],
     open(request) {
       this.opened.push(request);
       return { id: `term_${this.opened.length}`, pid: 4200 + this.opened.length };
@@ -53,6 +56,18 @@ function fakeHost() {
     resize(id, cols, rows, owner) {
       this.resized.push({ id, cols, rows, owner });
       return true;
+    },
+    async close(id, owner) {
+      this.closed.push({ id, owner });
+      return id === "term_1";
+    },
+    async killBySession(sessionId) {
+      this.sessionsClosed.push(sessionId);
+      return 2;
+    },
+    async activeProcesses(options) {
+      this.asked.push(options);
+      return [{ id: "term_1", sessionId: "s_1", origin: "run", active: true, processes: 1, command: "bun run dev" }];
     },
     list(owner) {
       this.listedAs.push(owner);
@@ -120,6 +135,9 @@ test("every route needs the token, and a wrong one is refused before anything ru
   for (const [method, path] of [
     ["POST", "/open"],
     ["POST", "/kill"],
+    ["POST", "/close"],
+    ["POST", "/close-session"],
+    ["POST", "/active"],
     ["POST", "/write"],
     ["POST", "/resize"],
     ["GET", "/events"],
@@ -135,15 +153,17 @@ test("every route needs the token, and a wrong one is refused before anything ru
   expect(host.opened).toHaveLength(0);
   expect(host.killed).toHaveLength(0);
   expect(host.wrote).toHaveLength(0);
+  expect(host.closed).toHaveLength(0);
+  expect(host.sessionsClosed).toHaveLength(0);
 });
 
-test("the route set is closed: a path that is not one of the seven is a 404", async () => {
+test("the route set is closed: a path that is not one of the ten is a 404", async () => {
   const { host, url } = await serve();
   // `/write`, `/resize` and `/mirror` each moved OUT of this list when they
   // were built, so the list is kept adjacent to the positive cases below rather
   // than trusted on its own: a route set that 404'd everything would satisfy
   // this half alone.
-  for (const path of ["/", "/exec", "/open/../state", "/writes", "/resize/all", "/mirrors"]) {
+  for (const path of ["/", "/exec", "/open/../state", "/writes", "/resize/all", "/mirrors", "/closeall", "/close-sessions"]) {
     const response = await fetch(`${url}${path}`, { method: "POST", headers: auth, body: "{}" });
     expect(response.status).toBe(404);
     await response.body?.cancel();
@@ -217,6 +237,74 @@ test("kill addresses a terminal id, and the server never invents one", async () 
   // the host is the only thing entitled to decide an id means nothing.
   await (await fetch(`${url}/kill`, { method: "POST", headers: auth, body: "{}" })).json();
   expect(host.killed[1]).toEqual({ id: "", signal: "SIGTERM", owner: "engine" });
+});
+
+test("open passes the session, origin and title through, and an old engine that sends none still opens", async () => {
+  const { host, url } = await serve();
+  await (
+    await fetch(`${url}/open`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ shell: "/bin/sh", args: [], sessionId: "s_1", origin: "agent", title: "web dev" }),
+    })
+  ).json();
+  expect(host.opened[0]).toEqual(expect.objectContaining({ owner: "engine", sessionId: "s_1", origin: "agent", title: "web dev" }));
+  // The backward-compatible half: today's engine client sends none of them, and
+  // the host is left to default them — the server does not invent values.
+  await (await fetch(`${url}/open`, { method: "POST", headers: auth, body: JSON.stringify({ shell: "/bin/sh", args: [] }) })).json();
+  expect(host.opened[1].origin).toBeUndefined();
+  expect(host.opened[1].sessionId).toBeUndefined();
+});
+
+test("an origin the engine may not claim is a 400, not a terminal", async () => {
+  // The REAL host this time: the pairing rule lives there, and the wire must
+  // surface its refusal rather than swallow it.
+  const { TerminalHost } = require("./terminal-host");
+  let spawned = 0;
+  const host = new TerminalHost({
+    platform: "darwin",
+    version: "9.9.9",
+    spawnPty: () => {
+      spawned += 1;
+      return { pid: 1, onData: () => {}, onExit: () => {}, write: () => {}, resize: () => {} };
+    },
+    killTree: () => {},
+  });
+  const { url } = await serve({ host });
+  const response = await fetch(`${url}/open`, { method: "POST", headers: auth, body: JSON.stringify({ shell: "/bin/sh", origin: "user" }) });
+  expect(response.status).toBe(400);
+  expect((await response.json()).error).toContain("origin");
+  expect(spawned).toBe(0);
+});
+
+test("close is the escalating verb, by id, in the engine's scope", async () => {
+  const { host, url } = await serve();
+  expect(await (await fetch(`${url}/close`, { method: "POST", headers: auth, body: JSON.stringify({ id: "term_1" }) })).json()).toEqual({ closed: true });
+  expect(await (await fetch(`${url}/close`, { method: "POST", headers: auth, body: "{}" })).json()).toEqual({ closed: false });
+  expect(host.closed).toEqual([
+    { id: "term_1", owner: "engine" },
+    { id: "", owner: "engine" },
+  ]);
+});
+
+test("close-session closes a whole session and answers how many", async () => {
+  const { host, url } = await serve();
+  const response = await fetch(`${url}/close-session`, { method: "POST", headers: auth, body: JSON.stringify({ sessionId: "s_1" }) });
+  expect(await response.json()).toEqual({ closed: 2 });
+  // Passed as given: the host is what refuses a missing session id.
+  await (await fetch(`${url}/close-session`, { method: "POST", headers: auth, body: "{}" })).json();
+  expect(host.sessionsClosed).toEqual(["s_1", undefined]);
+});
+
+test("active answers for the engine's own terminals, narrowed by ids", async () => {
+  const { host, url } = await serve();
+  const answer = await (await fetch(`${url}/active`, { method: "POST", headers: auth, body: JSON.stringify({ ids: ["term_1"] }) })).json();
+  expect(answer.terminals[0]).toEqual(expect.objectContaining({ id: "term_1", active: true, command: "bun run dev" }));
+  await (await fetch(`${url}/active`, { method: "POST", headers: auth, body: JSON.stringify({ ids: "term_1" }) })).json();
+  expect(host.asked).toEqual([
+    { owner: "engine", ids: ["term_1"] },
+    { owner: "engine", ids: undefined },
+  ]);
 });
 
 // ── write and resize: the writable half ──────────────────────────────────────
