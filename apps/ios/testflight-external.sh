@@ -262,8 +262,12 @@ echo "build $BUILD_NUMBER has its en-US What to Test text"
 # `filter[isInternalGroup]=false` picks the external one, and the answer is
 # re-checked here rather than trusted, because a filter Apple quietly stopped
 # honouring would otherwise send the build to the wrong group without a word.
+#
+# THE TOP-LEVEL `/v1/betaGroups`, scoped by `filter[app]`. The relationship
+# route `/v1/apps/{id}/betaGroups` answers 400 PARAMETER_ERROR.ILLEGAL to both
+# filters — measured on the 25 Sep nightly, after upload had succeeded.
 encoded_group="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$GROUP_NAME")"
-asc GET "/v1/apps/$APP_ID/betaGroups?filter[name]=$encoded_group&filter[isInternalGroup]=false&fields[betaGroups]=name,isInternalGroup"
+asc GET "/v1/betaGroups?filter[app]=$APP_ID&filter[name]=$encoded_group&filter[isInternalGroup]=false&fields[betaGroups]=name,isInternalGroup"
 if [[ "$STATUS" != "200" ]]; then
   fail_with_apple_errors "could not list the beta groups of app $APP_ID"
 fi
