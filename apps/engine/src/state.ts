@@ -2661,6 +2661,31 @@ export class EngineStore {
   /** Text streamed into still-open items, by `session\nitem`. A cache over the
    *  journal's deltas — see `openItemPrefix`. */
   private readonly openPrefixes = new Map<string, { text: string; through: number; sealed: boolean }>();
+  /**
+   * WHAT THE PERSON DID THAT A SESSION'S AGENT SHOULD HEAR ABOUT, by session —
+   * today only "the person closed terminal …". IN MEMORY AND HANDED OVER ONCE:
+   * the next claim carries them before the turn's own input, and a restart
+   * loses them, which costs a sentence the terminal list still says.
+   *
+   * A NOTE, NOT A WAKE. Nothing here starts a turn: the person closing a
+   * terminal is not work for the agent, only a fact it should not contradict
+   * the next time it speaks.
+   */
+  private readonly nextTurnNotes = new Map<string, string[]>();
+
+  /** Keep a sentence for this session's next turn. A few at most, oldest
+   *  dropped, so a burst of closes cannot grow a prompt without bound. */
+  noteForNextTurn(sessionId: string, note: string): void {
+    const notes = this.nextTurnNotes.get(sessionId) ?? [];
+    if (!notes.includes(note)) notes.push(note);
+    this.nextTurnNotes.set(sessionId, notes.slice(-5));
+  }
+
+  private takeNextTurnNotes(sessionId: string): string[] {
+    const notes = this.nextTurnNotes.get(sessionId) ?? [];
+    this.nextTurnNotes.delete(sessionId);
+    return notes;
+  }
 
   attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
@@ -11148,6 +11173,10 @@ export class EngineStore {
          * nothing.
          */
         ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
+        ...(() => {
+          const notes = this.takeNextTurnNotes(session.id);
+          return notes.length > 0 ? { notes } : {};
+        })(),
         turn,
       };
     }

@@ -1,11 +1,13 @@
 /**
- * The `run_*` wall: saved launches, and the terminals they open.
+ * The `terminal_*` wall, the saved run configurations, and the `run_*` names
+ * kept as aliases for one release.
  *
- * "RUN = A NEW TERMINAL", AND THESE TOOLS KEEP THEIR NAMES FOR NOW. Each start
- * opens a new terminal in this session's panel, where the person sees it; none
- * blocks another, so there is no takeover to ask for and no lost run to
- * release. The tools are renamed to `terminal_*` later, with these kept as
- * aliases for a release — what changed here is only what they do.
+ * A TERMINAL IS WHERE ANYTHING LONG-RUNNING GOES, AND THE PERSON SEES IT. Each
+ * `terminal_open` opens a new terminal in this session's panel — from a saved
+ * configuration, or from a command the agent chose — and none blocks another.
+ * The agent reads it, waits on it and closes it; it NEVER types into it. There
+ * is no `terminal_send` on purpose: typing into a terminal is the person's act
+ * on a surface they are looking at.
  *
  * THE AGENT GETS THE SAME RULES AS THE BUTTON: the worktree capture, the
  * session ownership and the redaction all live under this wall in the manager,
@@ -14,55 +16,258 @@
  * A CLOSE FROM HERE IS RECORDED AS THE AGENT'S. Every close says who asked, so
  * a later turn can be told "the person closed it" — and the person is the
  * default everywhere else, which is why this wall always says `agent`.
+ *
+ * THE `run_*` NAMES ARE THIN ALIASES, for one release, so a model that learned
+ * them still gets an answer. Each description says which tool replaced it and
+ * nothing more: they share the handlers below, so the two names cannot come to
+ * mean different things.
  */
 import { z } from "zod";
 import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
-import type { RunCapability } from "./capability";
+import type { RunCapability, RunStopSignal, RunTarget } from "./capability";
 import { RunIcon, RunShell, type RunView } from "./types";
 
 /**
  * Tools that only read. Handed to the host, which decides the approval posture.
  *
- * `run_wait` IS ON THIS LIST, AND IT IS THE ONE WORTH ARGUING ABOUT. It blocks
- * for up to a minute, which is not what "read" usually suggests — but it
- * SIGNALS NOTHING, STARTS NOTHING AND CHANGES NOTHING, and the alternative an
- * approval prompt produces is the one this tool exists to replace: an agent
- * that cannot wait sleeps and guesses instead. Waiting behind a prompt would
- * make the deterministic path the expensive one.
+ * THE WAITS ARE ON THIS LIST, AND THEY ARE THE ONES WORTH ARGUING ABOUT. They
+ * block for up to a minute, which is not what "read" usually suggests — but
+ * they SIGNAL NOTHING, START NOTHING AND CHANGE NOTHING, and the alternative an
+ * approval prompt produces is the one they exist to replace: an agent that
+ * cannot wait sleeps and guesses instead.
  */
-export const RUN_READ_ONLY_TOOLS = ["run_configs", "run_status", "run_output", "run_wait"] as const;
+export const RUN_READ_ONLY_TOOLS = ["terminal_list", "terminal_output", "terminal_wait", "run_configs", "run_status", "run_output", "run_wait"] as const;
+
+/**
+ * HOW A TERMINAL ENDED, when somebody ended it. WHO CLOSED IT IS THE FACT THAT
+ * DECIDES WHAT THE AGENT DOES NEXT: a terminal the person closed was ended on
+ * purpose, and reopening it unasked undoes their decision.
+ */
+function closedPhrase(run: RunView): string | undefined {
+  if (run.status !== "closed") return undefined;
+  const code = run.exitCode ?? run.signal;
+  const exit = code === undefined ? "" : ` (exit ${code})`;
+  if (run.closedBy === "person") return `Closed by the person${exit}. Do not reopen it unless they ask.`;
+  if (run.closedBy === "telar") return `Closed by Telar${exit}.`;
+  return `Closed by you${exit}.`;
+}
 
 function describe(run: RunView): string {
   const where = run.worktreeBranch ? `${run.worktreePath} (${run.worktreeBranch})` : run.worktreePath;
   const readiness =
     run.readiness.kind === "ready"
-      ? ` — ${run.readinessUrl} is answering`
+      ? ` — ${run.readinessUrl ?? "its ready pattern"} ${run.readinessUrl ? "is answering" : "was printed"}`
       : run.readiness.kind === "pending"
-        ? ` — waiting for ${run.readinessUrl}`
+        ? ` — waiting for ${run.readinessUrl ?? "its ready pattern"}`
         : run.readiness.kind === "unattributable"
           ? ` — readiness cannot be attributed to this process (${run.readiness.reason})`
           : "";
-  // WHO CLOSED IT IS THE FACT THAT DECIDES WHAT THE AGENT DOES NEXT. A
-  // terminal the person closed was ended on purpose, and reopening it unasked
-  // undoes their decision.
-  const closed =
-    run.status === "closed"
-      ? run.closedBy === "person"
-        ? " The person closed it — do not reopen it unless they ask."
-        : run.closedBy === "telar"
-          ? " Telar closed it."
-          : " You closed it."
-      : "";
-  const ended = run.endedAt && run.status !== "closed" ? ` exit ${run.exitCode ?? run.signal ?? "?"}.` : "";
+  const closed = closedPhrase(run);
+  const ended = closed ? ` ${closed}` : run.endedAt ? ` exit ${run.exitCode ?? run.signal ?? "?"}.` : "";
   const warning = run.warning ? ` Warning: ${run.warning}.` : "";
-  return `"${run.title}" is ${run.status} (terminal ${run.terminalId}) from ${where}, cwd ${run.cwd}.${readiness}${ended}${closed}${warning}${run.error ? ` ${run.error}` : ""}`;
+  return `"${run.title}" is ${run.status} (terminal ${run.terminalId}) from ${where}, cwd ${run.cwd}.${readiness}${ended}${warning}${run.error ? ` ${run.error}` : ""}`;
 }
 
+const lineText = (lines: { stream: string; text: string }[]) => lines.map((line) => (line.stream === "stderr" ? `! ${line.text}` : line.text)).join("\n");
+
+const SIGNAL = z
+  .enum(["SIGTERM", "SIGINT", "SIGKILL"])
+  .optional()
+  .describe("A first signal before the close, e.g. SIGINT for a server that only stops on Ctrl-C. The close follows regardless.");
+
+const signalOf = (value: unknown): RunStopSignal | undefined => (value === "SIGTERM" || value === "SIGINT" || value === "SIGKILL" ? value : undefined);
+
 export function runTools(tool: ToolFactory, capability: RunCapability): unknown[] {
+  /**
+   * The person's close, said first when it applies. Looked up only for a
+   * terminal named by id: with no id the verb picked one itself, and naming
+   * the wrong one here would be worse than saying nothing.
+   */
+  const personClosed = async (terminalId: string | undefined): Promise<string | undefined> => {
+    if (!terminalId) return undefined;
+    try {
+      const run = (await capability.status()).terminals.find((entry) => entry.terminalId === terminalId);
+      return run?.status === "closed" && run.closedBy === "person" ? closedPhrase(run) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const idOf = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
+  const target = (terminalId: string | undefined): RunTarget => (terminalId ? { terminalId } : {});
+
+  const list = async (only?: "run") => {
+    try {
+      const status = await capability.status();
+      const terminals = only ? status.terminals.filter((run) => run.origin === only) : status.terminals;
+      const where = status.sessionWorktreePath ? `\nThis session's worktree: ${status.sessionWorktreePath}` : "";
+      if (!terminals.length) return ok(`This session has no terminals${only ? " from run configurations" : ""}.${where}`);
+      return ok(`${terminals.map((run) => `- ${describe(run)}`).join("\n")}${where}`);
+    } catch (error) {
+      return err(`Could not list the terminals: ${failure(error)}`);
+    }
+  };
+
+  const opened = (run: RunView) =>
+    ok(`Opened ${describe(run)}\nterminalId: ${run.terminalId}. Read it with terminal_output; wait on it with terminal_wait.`);
+
+  const openFromConfig = async (configId: string) => {
+    try {
+      return opened(await capability.start({ configId, openedBy: "agent" }));
+    } catch (error) {
+      return err(`Did not open: ${failure(error)}`);
+    }
+  };
+
+  const kill = async (terminalId: string | undefined, signal: unknown) => {
+    const first = signalOf(signal);
+    try {
+      const run = await capability.stop({ ...target(terminalId), ...(first ? { signal: first } : {}), closedBy: "agent" });
+      return ok(`Closed ${describe(run)}`);
+    } catch (error) {
+      return err(`Did not close: ${failure(error)}`);
+    }
+  };
+
+  const output = async (terminalId: string | undefined, args: Record<string, unknown>) => {
+    try {
+      const result = await capability.output({
+        ...target(terminalId),
+        ...(typeof args.after === "number" ? { after: args.after } : {}),
+        ...(typeof args.tail === "number" ? { tail: args.tail } : {}),
+        ...(typeof args.grep === "string" ? { grep: args.grep } : {}),
+        ...(args.stream === "stdout" || args.stream === "stderr" ? { stream: args.stream } : {}),
+      });
+      const body = lineText(result.lines);
+      const dropped = result.dropped ? `[${result.dropped} earlier line(s) dropped]\n` : "";
+      // WHICH EMPTY THIS IS. "No output yet" and "nothing matched your
+      // filter" are different facts, and a model told the first one when the
+      // second is true concludes the process is silent and restarts it.
+      const narrowed = args.tail !== undefined || args.grep !== undefined || args.stream !== undefined;
+      const empty = narrowed ? "(no line in this window matched)" : "(no output yet)";
+      const closed = await personClosed(terminalId);
+      return ok(`${closed ? `${closed}\n` : ""}${dropped}${body || empty}\n[cursor ${result.cursor}]`);
+    } catch (error) {
+      return err(`Could not read the output: ${failure(error)}`);
+    }
+  };
+
+  const wait = async (terminalId: string | undefined, args: Record<string, unknown>) => {
+    if (args.pattern === undefined && args.ready !== true && args.exit !== true) {
+      return err("Give something to wait FOR: pattern, ready or exit. Waiting for nothing is a sleep, which is what this tool replaces.");
+    }
+    try {
+      const result = await capability.wait({
+        ...target(terminalId),
+        ...(typeof args.pattern === "string" ? { pattern: args.pattern } : {}),
+        ...(args.ready === true ? { ready: true } : {}),
+        ...(args.exit === true ? { exit: true } : {}),
+        timeoutMs: Number(args.timeoutMs),
+      });
+      // THE VERDICT FIRST AND IN WORDS. `fired: "timeout"` read past in a wall
+      // of log output is how an agent convinces itself a server is up.
+      const closed = result.fired === "exit" ? await personClosed(terminalId) : undefined;
+      const verdict =
+        result.fired === "timeout"
+          ? "TIMED OUT — the condition did not happen in the time given. It may still be starting; do not assume it is up."
+          : result.fired === "ready"
+            ? "READY — it reported ready."
+            : result.fired === "exit"
+              ? closed
+                ? `ENDED — ${closed}`
+                : "ENDED — the terminal is no longer running; terminal_list says how."
+              : "MATCHED — a line matched your pattern.";
+      return ok(`${verdict}\n${lineText(result.lines) || "(nothing was printed while waiting)"}\n[cursor ${result.cursor}]`);
+    } catch (error) {
+      return err(`Could not wait on that terminal: ${failure(error)}`);
+    }
+  };
+
+  const OUTPUT_SHAPE = {
+    after: z.number().int().min(0).optional().describe("A cursor from an earlier call; only newer lines come back."),
+    tail: z.number().int().min(1).max(1000).optional().describe("Only the last N lines. The end is usually where it says what went wrong."),
+    grep: z.string().min(1).max(500).optional().describe("A regular expression; only matching lines come back. The cursor still advances over the rest."),
+    stream: z.enum(["stdout", "stderr"]).optional().describe("One stream only. A terminal has only stdout: the two are merged before Telar sees them."),
+  };
+  const WAIT_SHAPE = {
+    pattern: z.string().min(1).max(500).optional().describe("A regular expression over lines printed from now on, e.g. 'Ready in|Listening on'."),
+    ready: z.boolean().optional().describe("Wait for its readiness URL or ready pattern. Refused if it has neither."),
+    exit: z.boolean().optional().describe("Wait for it to end, e.g. a build or a test run."),
+    timeoutMs: z.number().int().min(0).max(60_000).describe("How long to wait, at most 60000. Pick a budget and handle a timeout."),
+  };
+  const RUN_ID = z.string().min(1).optional().describe("The terminalId. Default: this session's one open terminal.");
+
   return [
+    // ── terminals ───────────────────────────────────────────────────────────
+    tool(
+      "terminal_open",
+      "Open a NEW terminal in this session's panel, where the person sees it, running a command: a dev server, a watcher, a long build. Pass command (with cwd, name, ready) or a saved configId. Returns its terminalId. Use this, never a background shell or '&', for anything that keeps running.",
+      {
+        command: z.string().min(1).max(4000).optional().describe("The shell command, e.g. 'bun run dev'."),
+        cwd: z.string().max(1024).optional().describe("Directory relative to this session's worktree. Default: its root."),
+        name: z.string().min(1).max(120).optional().describe("The tab's title. Default: the start of the command."),
+        ready: z
+          .string()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe("An http(s) URL that answers once it is up, or a regular expression its output prints when it is, e.g. 'Listening on'."),
+        configId: z.string().min(1).optional().describe("Open a saved run configuration instead of a command (see run_configs)."),
+      },
+      async (args) => {
+        const configId = idOf(args.configId);
+        const command = typeof args.command === "string" ? args.command : undefined;
+        if (configId && command) return err("Give a command or a configId, not both.");
+        if (configId) return await openFromConfig(configId);
+        if (!command) return err("terminal_open needs a command, or the configId of a saved run configuration.");
+        const ready = typeof args.ready === "string" ? args.ready : undefined;
+        const url = ready !== undefined && /^https?:\/\//i.test(ready);
+        try {
+          const run = await capability.open({
+            command,
+            ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
+            ...(typeof args.name === "string" ? { name: args.name } : {}),
+            ...(ready === undefined ? {} : url ? { readinessUrl: ready } : { readyPattern: ready }),
+          });
+          return opened(run);
+        } catch (error) {
+          return err(`Did not open: ${failure(error)}`);
+        }
+      },
+    ),
+
+    tool(
+      "terminal_list",
+      "This session's terminals, newest first: open ones and recently ended, each with its terminalId, status, where it runs and who closed it. One the person closed stays closed unless they ask you to reopen it.",
+      {},
+      async () => await list(),
+    ),
+
+    tool(
+      "terminal_output",
+      "What a terminal printed, including after it ended. A bounded window; dropped lines are counted. Pass the cursor from an earlier call to read only what is new. tail, grep and stream narrow the answer without moving the cursor.",
+      { terminalId: z.string().min(1).describe("Which terminal (see terminal_list)."), ...OUTPUT_SHAPE },
+      async (args) => await output(idOf(args.terminalId), args),
+    ),
+
+    tool(
+      "terminal_wait",
+      "Wait until a terminal prints a pattern, becomes ready, or ends. This is how you wait for a server: never sleep. Give pattern, ready or exit, and timeoutMs. The answer says which fired or that it timed out, with the lines printed meanwhile and a cursor.",
+      { terminalId: z.string().min(1).describe("Which terminal (see terminal_list)."), ...WAIT_SHAPE },
+      async (args) => await wait(idOf(args.terminalId), args),
+    ),
+
+    tool(
+      "terminal_kill",
+      "Close a terminal, which ends everything running in it (the whole process group). It is recorded as closed by you. This is the only way to stop one: never pkill, killall or kill.",
+      { terminalId: z.string().min(1).describe("Which terminal (see terminal_list)."), signal: SIGNAL },
+      async (args) => await kill(idOf(args.terminalId), args.signal),
+    ),
+
+    // ── saved configurations ────────────────────────────────────────────────
     tool(
       "run_configs",
-      "The project's saved run configurations — name, icon, command, working directory and which environment variables are set. Secret values are never returned. Read this before starting anything: a project usually already has the recipe you want, and if it has none you can give it one with run_save_config.",
+      "The project's saved run configurations: name, icon, command, working directory and which environment variables are set. Secret values are never returned. A project usually already has the recipe you want; open one with terminal_open({configId}).",
       {},
       async () => {
         try {
@@ -77,7 +282,7 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
 
     tool(
       "run_save_config",
-      "Save a run configuration on the PROJECT (it outlives this conversation), or edit one by passing its configId. This is how a project with an empty Run menu gets one — you can set the menu up yourself, no human step in between. The working directory is relative to whichever worktree the run is launched from — never an absolute path. Give a readinessUrl only if the command really serves it; without one a run never claims to be ready.",
+      "Save a run configuration on the PROJECT, shown in its Run menu, or edit one by passing its configId. You can set up an empty Run menu yourself. The cwd is relative to the worktree it is opened from. Give a readinessUrl only if the command really serves it.",
       {
         configId: z.string().min(1).optional().describe("Edit this configuration instead of creating one."),
         name: z.string().min(1).max(120).optional().describe("What a human picks in the Run menu, e.g. 'web dev'."),
@@ -124,7 +329,7 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
 
     tool(
       "run_delete_config",
-      "Forget a saved run configuration. It does not close anything: a terminal already opened from it keeps its own copy of the command and keeps running.",
+      "Forget a saved run configuration. It closes nothing: a terminal already opened from it keeps its own copy of the command and keeps running.",
       { configId: z.string().min(1).describe("The configuration to remove.") },
       async (args) => {
         try {
@@ -136,73 +341,39 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       },
     ),
 
+    // ── the old names, for one release ──────────────────────────────────────
     tool(
-      "run_status",
-      "This session's terminals opened from run configurations — the open ones with the worktree each was launched from, then recently ended ones and who closed them. Each has a terminal id; pass it as runId to the other run_* tools. Call it before starting or closing anything.",
-      {},
-      async () => {
-        try {
-          const status = await capability.status();
-          const where = status.sessionWorktreePath ? `\nThis session's worktree: ${status.sessionWorktreePath}` : "";
-          if (!status.terminals.length) return ok(`This session has no terminals from run configurations.${where}`);
-          return ok(`${status.terminals.map((run) => `- ${describe(run)}`).join("\n")}${where}`);
-        } catch (error) {
-          return err(`Could not read the run status: ${failure(error)}`);
-        }
+      "run_start",
+      "Deprecated: use terminal_open({configId}). Opens a new terminal from a saved configuration; replace is ignored.",
+      {
+        configId: z.string().min(1).describe("Which saved configuration to open (see run_configs)."),
+        replace: z.boolean().optional().describe("Ignored."),
       },
+      async (args) => await openFromConfig(String(args.configId)),
     ),
 
     tool(
-      "run_start",
-      "Open a NEW terminal in this session's panel running a saved configuration, on this session's worktree. The person sees it as a tab. Starting a configuration that is already open opens another instance ('web dev #2') rather than replacing it; if its port already answers you get a warning, and the terminal is still opened.",
-      {
-        configId: z.string().min(1).describe("Which saved configuration to launch (see run_configs)."),
-        replace: z.boolean().optional().describe("Ignored. Every start opens a new terminal; close one with run_stop first if you want only one."),
-      },
-      async (args) => {
-        try {
-          const run = await capability.start({ configId: String(args.configId) });
-          return ok(`Started ${describe(run)}\nUse run_output with runId ${run.terminalId} to read what it prints.`);
-        } catch (error) {
-          return err(`Did not start: ${failure(error)}`);
-        }
-      },
+      "run_status",
+      "Deprecated: use terminal_list. Lists only this session's terminals opened from run configurations.",
+      {},
+      async () => await list("run"),
     ),
 
     tool(
       "run_stop",
-      "Close a terminal, which ends everything running in it — the whole process group, so watchers and child servers go too. Give the terminal's id when this session has more than one open. This is the ONLY way to stop a run: never use pkill, killall or kill on it.",
-      {
-        runId: z.string().min(1).optional().describe("The terminal to close (its id from run_status). Default: this session's one open terminal."),
-        signal: z
-          .enum(["SIGTERM", "SIGINT", "SIGKILL"])
-          .optional()
-          .describe(
-            "A first signal to send before closing. Use SIGINT for a server that traps SIGTERM to drain connections and only really stops on Ctrl-C. If it is ignored the terminal is closed anyway (SIGTERM, then SIGKILL), so you do not need to ask for that.",
-          ),
-      },
-      async (args) => {
-        try {
-          const run = await capability.stop({
-            ...(typeof args.runId === "string" ? { terminalId: args.runId } : {}),
-            ...(args.signal === "SIGTERM" || args.signal === "SIGINT" || args.signal === "SIGKILL" ? { signal: args.signal } : {}),
-            closedBy: "agent",
-          });
-          return ok(`Closed ${describe(run)}`);
-        } catch (error) {
-          return err(`Did not close: ${failure(error)}`);
-        }
-      },
+      "Deprecated: use terminal_kill. Closes a terminal as you; runId is its terminalId.",
+      { runId: RUN_ID, signal: SIGNAL },
+      async (args) => await kill(idOf(args.runId), args.signal),
     ),
 
     tool(
       "run_restart",
-      "Close a terminal and open the same configuration on the same worktree in a new one. The new terminal has a new id.",
-      { runId: z.string().min(1).optional().describe("The terminal to restart (its id from run_status). Default: this session's one open terminal.") },
+      "Deprecated: use terminal_kill, then terminal_open. Closes a terminal and opens the same command in a new one, with a new terminalId.",
+      { runId: RUN_ID },
       async (args) => {
         try {
-          const run = await capability.restart({ ...(typeof args.runId === "string" ? { terminalId: args.runId } : {}), closedBy: "agent" });
-          return ok(`Restarted as ${describe(run)}`);
+          const run = await capability.restart({ ...target(idOf(args.runId)), closedBy: "agent" });
+          return opened(run);
         } catch (error) {
           return err(`Did not restart: ${failure(error)}`);
         }
@@ -211,93 +382,16 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
 
     tool(
       "run_output",
-      "Captured stdout and stderr for a run, including after it exited. Output is a bounded window — the oldest lines are dropped under load and the count of dropped lines is reported. Pass the cursor from a previous call to read only what is new; tail, grep and stream narrow what comes back WITHOUT moving that cursor, so you can grep now and still resume over everything later.",
-      {
-        runId: z.string().min(1).optional().describe("The terminal to read (its id from run_status). Default: this session's one open terminal, else the one that ended last."),
-        after: z.number().int().min(0).optional().describe("A cursor from an earlier call; only newer lines come back."),
-        tail: z
-          .number()
-          .int()
-          .min(1)
-          .max(1000)
-          .optional()
-          .describe("Only the last N lines of the window. The usual way to look at a dev server: the end is where it says what went wrong."),
-        grep: z.string().min(1).max(500).optional().describe("A regular expression; only matching lines come back. The cursor still advances over the ones it hid."),
-        stream: z
-          .enum(["stdout", "stderr"])
-          .optional()
-          .describe("One stream only. A run on a terminal has only stdout — a pseudo-terminal is one device and the two were merged before Telar saw them."),
-      },
-      async (args) => {
-        try {
-          const result = await capability.output({
-            ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
-            ...(typeof args.after === "number" ? { after: args.after } : {}),
-            ...(typeof args.tail === "number" ? { tail: args.tail } : {}),
-            ...(typeof args.grep === "string" ? { grep: args.grep } : {}),
-            ...(args.stream === "stdout" || args.stream === "stderr" ? { stream: args.stream } : {}),
-          });
-          const body = result.lines.map((line) => (line.stream === "stderr" ? `! ${line.text}` : line.text)).join("\n");
-          const dropped = result.dropped ? `[${result.dropped} earlier line(s) dropped]\n` : "";
-          // WHICH EMPTY THIS IS. "No output yet" and "nothing matched your
-          // filter" are different facts, and a model told the first one when
-          // the second is true concludes the process is silent and stops
-          // looking — or worse, restarts it.
-          const narrowed = args.tail !== undefined || args.grep !== undefined || args.stream !== undefined;
-          const empty = narrowed ? "(no line in this window matched)" : "(no output yet)";
-          return ok(`${dropped}${body || empty}\n[cursor ${result.cursor}]`);
-        } catch (error) {
-          return err(`Could not read the output: ${failure(error)}`);
-        }
-      },
+      "Deprecated: use terminal_output. runId is the terminalId; without one, the open terminal or the last to end.",
+      { runId: RUN_ID, ...OUTPUT_SHAPE },
+      async (args) => await output(idOf(args.runId), args),
     ),
 
     tool(
       "run_wait",
-      "Wait until a run says something, becomes ready, or ends — then carry on. THIS IS HOW YOU WAIT FOR A SERVER: never sleep and hope. Give at least one of pattern, ready or exit; the answer says which one fired, so a timeout is distinguishable from a match and you never curl a port nothing is listening on. It returns the lines that arrived while waiting, and a cursor to resume run_output from.",
-      {
-        runId: z.string().min(1).optional().describe("The terminal to wait on (its id from run_status). Default: this session's one open terminal."),
-        pattern: z.string().min(1).max(500).optional().describe("A regular expression over lines printed from now on, e.g. 'Ready in|Listening on'."),
-        ready: z
-          .boolean()
-          .optional()
-          .describe("Wait for the configuration's readinessUrl to answer. Refused if the configuration has none, since that could only ever time out."),
-        exit: z.boolean().optional().describe("Wait for the run to finish — the way to wait out a build or a test run."),
-        timeoutMs: z
-          .number()
-          .int()
-          .min(0)
-          .max(60_000)
-          .describe("How long to wait, at most 60000. A tool call that can park for ever is a turn that can park for ever, so pick a budget and handle 'timeout'."),
-      },
-      async (args) => {
-        if (args.pattern === undefined && args.ready !== true && args.exit !== true) {
-          return err("run_wait needs something to wait FOR: pass pattern, ready or exit. Waiting for nothing is a sleep, which is what this tool exists to replace.");
-        }
-        try {
-          const result = await capability.wait({
-            ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
-            ...(typeof args.pattern === "string" ? { pattern: args.pattern } : {}),
-            ...(args.ready === true ? { ready: true } : {}),
-            ...(args.exit === true ? { exit: true } : {}),
-            timeoutMs: Number(args.timeoutMs),
-          });
-          const body = result.lines.map((line) => (line.stream === "stderr" ? `! ${line.text}` : line.text)).join("\n");
-          // THE VERDICT FIRST AND IN WORDS. `fired: "timeout"` read past in a
-          // wall of log output is how an agent convinces itself a server is up.
-          const verdict =
-            result.fired === "timeout"
-              ? "TIMED OUT — the condition did not happen in the time given. The run may still be starting; do not assume it is up."
-              : result.fired === "ready"
-                ? "READY — the readiness URL answered."
-                : result.fired === "exit"
-                  ? "EXITED — the terminal has ended; run_status says how, and who closed it if somebody did."
-                  : "MATCHED — a line matched your pattern.";
-          return ok(`${verdict}\n${body || "(nothing was printed while waiting)"}\n[cursor ${result.cursor}]`);
-        } catch (error) {
-          return err(`Could not wait on that run: ${failure(error)}`);
-        }
-      },
+      "Deprecated: use terminal_wait. runId is the terminalId; without one, this session's one open terminal.",
+      { runId: RUN_ID, ...WAIT_SHAPE },
+      async (args) => await wait(idOf(args.runId), args),
     ),
 
     /**
@@ -308,9 +402,9 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
      */
     tool(
       "run_release",
-      "No longer needed: runs are terminals now, and nothing is ever held for a run Telar lost track of. To end a run, close its terminal with run_stop.",
+      "No longer needed: nothing is ever held for a terminal. To end one, close it with terminal_kill.",
       { runId: z.string().min(1).optional().describe("Ignored.") },
-      async () => ok("Nothing to release: runs are terminals now, and nothing blocks a new start. To end one, close its terminal with run_stop."),
+      async () => ok("No longer needed: nothing is held for a terminal, and nothing blocks opening a new one. To end one, close it with terminal_kill."),
     ),
   ];
 }

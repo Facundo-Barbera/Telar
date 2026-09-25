@@ -2077,7 +2077,9 @@ test("a turn that carries the run capability registers run_* on the in-process t
     resize: async () => {},
   };
   await run(createClaudeDriver(sdk), { run: run_ as never }).result;
-  expect(names).toEqual(expect.arrayContaining(["run_configs", "run_save_config", "run_start", "run_status", "run_output", "run_stop"]));
+  expect(names).toEqual(
+    expect.arrayContaining(["terminal_open", "terminal_list", "terminal_output", "terminal_wait", "terminal_kill", "run_configs", "run_save_config", "run_start", "run_status", "run_output", "run_stop"]),
+  );
 });
 
 // ── AskUserQuestion ──────────────────────────────────────────────────────────

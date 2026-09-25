@@ -114,6 +114,17 @@ export function framedTurnInput(turn: Pick<Turn, "input" | "origin" | "sender" |
 }
 
 /**
+ * THE CLAIM'S NOTES, BEFORE THE TURN'S OWN INPUT — see `WorkerClaim.notes`.
+ *
+ * Said as Telar's, in one bracketed line each, so a model does not read "the
+ * person closed terminal …" as the person typing it. No notes, no change.
+ */
+export function withTurnNotes(prompt: string, notes: readonly string[] | undefined): string {
+  if (!notes?.length) return prompt;
+  return `${notes.map((note) => `[telar note, not typed by the person] ${note}`).join("\n")}\n\n${prompt}`;
+}
+
+/**
  * WHAT A WAKE IS, said in words on the channel that is otherwise the person's.
  *
  * A wake that arrives while the recipient is IDLE opens a turn of its own, and
