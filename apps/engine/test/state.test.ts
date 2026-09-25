@@ -1663,8 +1663,8 @@ test("a file patch cannot be asked for outside the session's own workspace", () 
   const store = new EngineStore(root(), () => 100, { git: () => ({ status: 0, stdout: "", stderr: "" }) });
   store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
   store.createSession({ id: "session_one", projectId: "project_one" });
-  expect(() => store.sessionFilePatch("session_one", "../../etc/passwd")).toThrow(EngineStateError);
-  expect(() => store.sessionFilePatch("session_one", "  ")).toThrow(EngineStateError);
+  expect(() => store.sessionFilePatchAsync("session_one", "../../etc/passwd")).toThrow(EngineStateError);
+  expect(() => store.sessionFilePatchAsync("session_one", "  ")).toThrow(EngineStateError);
 });
 
 test("a commit needs a message and the message has a ceiling", () => {
@@ -1690,39 +1690,39 @@ describe("cloneProject", () => {
     return { status: 0, stdout: "", stderr: "" };
   };
 
-  test("what landed is what gets registered, named after the folder git chose", () => {
+  test("what landed is what gets registered, named after the folder git chose", async () => {
     const parent = fs.realpathSync.native(root());
     const calls: string[][] = [];
     const store = new EngineStore(root(), () => 100, { git: cloningGit(calls) });
-    const project = store.cloneProject({ url: "https://github.com/owner/repo.git", parent });
+    const project = await store.cloneProject({ url: "https://github.com/owner/repo.git", parent });
     expect(project).toMatchObject({ name: "repo", root: path.join(parent, "repo") });
     // And it is in the registry, which is the half a two-call client could miss.
     expect(store.listProjects().map((entry) => entry.id)).toEqual([project.id]);
     expect(calls[0]).toEqual(["clone", "--", "https://github.com/owner/repo.git", path.join(parent, "repo")]);
   });
 
-  test("a name can be given, and a blank one falls back to the folder", () => {
+  test("a name can be given, and a blank one falls back to the folder", async () => {
     const parent = fs.realpathSync.native(root());
     const store = new EngineStore(root(), () => 100, { git: cloningGit() });
-    expect(store.cloneProject({ url: "https://x.test/a/one.git", parent, name: "Mine" }).name).toBe("Mine");
-    expect(store.cloneProject({ url: "https://x.test/a/two.git", parent, name: "   " }).name).toBe("two");
+    expect((await store.cloneProject({ url: "https://x.test/a/one.git", parent, name: "Mine" })).name).toBe("Mine");
+    expect((await store.cloneProject({ url: "https://x.test/a/two.git", parent, name: "   " })).name).toBe("two");
   });
 
-  test("a clone that failed registers nothing, and says why in git's own words", () => {
+  test("a clone that failed registers nothing, and says why in git's own words", async () => {
     const parent = fs.realpathSync.native(root());
     const store = new EngineStore(root(), () => 100, {
       git: () => ({ status: 128, stdout: "", stderr: "fatal: repository not found\n" }),
     });
-    expect(() => store.cloneProject({ url: "https://x.test/a/gone.git", parent })).toThrow(/repository not found/);
+    await expect(store.cloneProject({ url: "https://x.test/a/gone.git", parent })).rejects.toThrow(/repository not found/);
     expect(store.listProjects()).toEqual([]);
   });
 
-  test("a target that already exists is a conflict rather than a merge into it", () => {
+  test("a target that already exists is a conflict rather than a merge into it", async () => {
     const parent = fs.realpathSync.native(root());
     fs.mkdirSync(path.join(parent, "repo"));
     const calls: string[][] = [];
     const store = new EngineStore(root(), () => 100, { git: cloningGit(calls) });
-    expect(() => store.cloneProject({ url: "https://x.test/a/repo.git", parent })).toThrow(EngineStateError);
+    await expect(store.cloneProject({ url: "https://x.test/a/repo.git", parent })).rejects.toThrow(EngineStateError);
     // Refused before git ran, so nothing was written into somebody's folder.
     expect(calls).toEqual([]);
   });

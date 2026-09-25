@@ -385,7 +385,7 @@ export type RetitleStore = {
     driver: "claude" | "codex",
   ): { enabled: boolean; binaryPath?: string; env: { name: string; value: string }[] };
   updateSession(sessionId: string, patch: { title: string }): unknown;
-  refreshWorktreeBranchFromTitle(sessionId: string): string | undefined;
+  refreshWorktreeBranchFromTitle(sessionId: string): string | undefined | Promise<string | undefined>;
 };
 
 /**
@@ -446,7 +446,7 @@ export async function maybeRetitleSession(
   }
   if (policy.renameBranches) {
     try {
-      store.refreshWorktreeBranchFromTitle(sessionId);
+      await store.refreshWorktreeBranchFromTitle(sessionId);
     } catch {
       // The title stuck; the branch keeping its seed name is cosmetic.
     }

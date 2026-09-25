@@ -1494,12 +1494,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * person's own chat client, and a person's click has no creator to inherit
        * from. A SESSION's build (`worker.ts`) names itself as `ceilingFrom`.
        */
-      create: async (input) => store.createSession({ ...input, origin: "session" }),
+      create: async (input) => store.createSessionAsync({ ...input, origin: "session" }),
       /**
        * An agent's words, with no session to attribute them to: the caller is
        * the user's own chat client, outside any turn. Never the person's.
        */
-      send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
+      send: async (sessionId, input) => store.submitAgentTurnAsync(sessionId, input),
       read: async (sessionId, after, options) => store.readEvents(sessionId, after, options?.limit),
       // The last event id, so the wall can serve "what happened lately" from
       // one page rather than by walking a journal to reach its end (#515).
@@ -3340,7 +3340,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (request.method === "POST" && url.pathname === "/v2/projects/clone") {
         const input = await body(request);
         writeJson(response, 201, {
-          project: store.cloneProject({
+          project: await store.cloneProject({
             url: stringValue(input.url, "repository url")!,
             parent: stringValue(input.parent, "parent folder")!,
             ...(input.name === undefined ? {} : { name: stringValue(input.name, "project name")! }),
@@ -4041,7 +4041,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (request.method === "POST" && url.pathname === "/v2/sessions") {
         const input = await body(request);
         writeJson(response, 201, {
-          session: store.createSession({
+          session: await store.createSessionAsync({
             ...(input.draft === true ? { draft: true } : {}),
             id: stringValue(input.id, "session id", true),
             projectId: stringValue(input.projectId, "project id")!,
@@ -4513,7 +4513,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         if (request.method === "POST" && session.tail === "/git/commit") {
           const input = await body(request);
-          writeJson(response, 200, store.commitSessionWork(session.sessionId, stringValue(input.message, "commit message")!));
+          writeJson(response, 200, await store.commitSessionWork(session.sessionId, stringValue(input.message, "commit message")!));
           return;
         }
         if (request.method === "POST" && session.tail === "/git/push") {
@@ -4874,7 +4874,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const parsed = AgentTurnInput.safeParse(await body(request));
           if (!parsed.success) throw new HttpError(400, "invalid_request", "agent turn payload is invalid");
           const { proof, ...message } = parsed.data;
-          const result: TurnSubmissionResult = store.submitAgentTurn(session.sessionId, message, proof);
+          const result: TurnSubmissionResult = await store.submitAgentTurnAsync(session.sessionId, message, proof);
           writeJson(response, result.replayed ? 200 : 202, result);
           return;
         }
@@ -4904,7 +4904,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           if (store.claudeAdmissionNeedsCatalogue(session.sessionId, model.success ? model.data : undefined)) {
             void store.prepareClaudeCatalogue();
           }
-          const accepted = store.submitTurn(session.sessionId, {
+          const accepted = await store.submitTurnAsync(session.sessionId, {
             runId: stringValue(input.runId, "run id")!,
             input: stringValue(input.input, "turn input")!,
             ...(input.kind === "compact" ? { kind: "compact" as const } : {}),
