@@ -123,9 +123,9 @@ export const SHARD_BUDGET_MS = 8 * 60_000;
  * from a red. Both are non-zero exits, and a job killed at its own timeout
  * prints neither a tally nor a reason.
  *
- * Going through the wrapper restores four distinguishable outcomes — 0 passed,
- * 1 failed, 2 hung, 3 unknown — and, since #849's other half, a shard that
- * leaves processes behind now names them. Per shard, so the answer to "which
+ * Going through the wrapper restores distinguishable outcomes — 0 passed,
+ * 1 failed, 2 hung, 3 unknown, 4 leaked — and, since #849's other half, a shard
+ * that leaves processes behind names them and goes red. Per shard, so the answer to "which
  * third of the suite leaks" comes out of an ordinary CI run rather than a
  * bisect: 194 files narrowed to ~65 without reading any of them.
  *
@@ -235,6 +235,21 @@ export function shardVerdict({ status, output, handed, label = "this shard" }) {
         `${label} handed bun ${handed} paths and bun ran ${reported} files. A shard that drops files is a fast green ` +
         "job that tested less than it claims, which is the whole risk of splitting this suite. Check whether a path " +
         "was renamed, or whether two paths now match one another as filters.",
+    };
+  }
+  /**
+   * 4 IS `leaked` — #849. Unlike a hang it DID print its tally, so the
+   * arithmetic above has already run and a dropped file still says so first.
+   * Past that, the wrapper's code stands: every test passed and something was
+   * left running, which is a red a shard must not turn back into a green.
+   */
+  if (status === 4) {
+    return {
+      code: 4,
+      error:
+        `${label}: every test passed, but the bounded wrapper found processes still in the run's group after it ` +
+        "exited — a test that spawned something and did not stop it. Its lines above carry the pid, ppid and command line.",
+      reported,
     };
   }
   return { code: status, error: null, reported };
