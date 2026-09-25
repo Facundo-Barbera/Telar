@@ -297,9 +297,9 @@ typecheck-and-lint-only, which tonight's history shows catches nothing.
 
 **A red `main` is silent today.** No workflow in this repository has any failure
 notification at all — no `if: failure()`, no issue, no message, in any of the
-six. `.github/workflows/main-red.yml` fixes that: it opens one issue on a red
-`main`, comments on it for each subsequent break, assigns the owner, and closes
-it automatically when `Verify` next passes.
+six. `.github/workflows/main-red.yml` fixed that by opening an issue on a red
+`main`. It was removed on 2026-09-25 along with `publish-red.yml`: a red run is
+fixed when it happens, and GitHub's own failure notifications are the signal.
 
 It is the prerequisite for any post-merge tier — "verified after the fact" is
 worth nothing if nobody finds out — and it is useful immediately regardless of

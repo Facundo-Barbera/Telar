@@ -98,7 +98,7 @@ jobs:
           # The default GITHUB_TOKEN this step runs as cannot trigger other
           # workflows on the PR it opens (GitHub's own restriction, to stop a
           # workflow from recursively kicking off more workflows) — verify.yml
-          # and main-red.yml will NOT run on this PR by themselves. A human
+          # will NOT run on this PR by itself. A human
           # merging it should re-run them, or push an empty commit, first.
           gh pr create \
             --repo "$REPO" \
