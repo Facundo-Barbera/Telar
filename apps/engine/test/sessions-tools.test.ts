@@ -1815,3 +1815,38 @@ describe("the shape of the wall", () => {
     expect(names).not.toContain("warp");
   });
 });
+
+describe("sessions_status says what a session with no turn is still doing", () => {
+  test("background work is counted and will report", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    store.submitTurn(id, { runId: "run_bg", input: "Fan out" });
+    const claimed = store.claimNextTurn("worker_one")!;
+    const token = claimed.turn.claim!.token;
+    store.markRunning(id, "run_bg", token);
+    store.ingestObservations(id, "run_bg", token, [
+      { kind: "task.started", task: { id: "task_a", kind: "agent", backgrounded: true, state: "running" } },
+      { kind: "task.started", task: { id: "task_b", kind: "background", backgrounded: true, state: "running" } },
+    ]);
+    store.completeTurn(id, "run_bg", token, { text: "Launched" });
+
+    const status = await call(tools, "sessions_status", { sessionId: id });
+    expect(status.json!.running).toBe(false);
+    expect(status.json!.activityDetail).toEqual({ kind: "background", tasks: 2, agents: 1 });
+    expect(String(status.json!.note)).toBe("Its turn has ended, but 2 background tasks (1 of them agent) still run. A report from them will wake it; subscribe rather than poll.");
+  });
+
+  test("a session waiting on another names it", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const waiter = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    const worker = (await call(tools, "sessions_create", { projectId, envMode: "local", title: "port the parser" })).json!.id as string;
+    store.subscribe(waiter, { targetSessionId: worker });
+    store.submitTurn(worker, { runId: "run_w", input: "go" });
+
+    const status = await call(tools, "sessions_status", { sessionId: waiter });
+    expect(status.json!.activity).toBe("waiting");
+    expect(String(status.json!.note)).toBe(`Nothing is running. It is waiting on “port the parser” (${worker}), and their answer will wake it.`);
+  });
+});
