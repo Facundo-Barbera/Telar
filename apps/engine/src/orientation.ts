@@ -120,9 +120,11 @@ It is not this CLI's own notion of a session, and not a chat thread.
   two, it does not report back, and you learn what it did by asking.
 - **Assignment** — \`sessions_send\` with \`intent: "task"\` is what starts work;
   creating a session starts none. \`report\` is passive and is for progress
-  mid-task; \`result\` is your FINAL answer — send it last, it wakes an awaiting
-  coordinator once, and the completion that follows it will not wake them
-  again; \`blocker\` asks for intervention.
+  mid-task; \`result\` is your FINAL answer — send it last; \`blocker\` asks
+  for intervention. Once a report, result or blocker from your run has reached
+  a subscriber, your run completing does not wake them again (failing or being
+  stopped still does), and two messages from one run reach a subscriber that
+  has not started yet as one.
 - **A message arrives as a NOTICE, not as text.** The recipient is handed one
   line — who sent it, which run holds it, how long it is, its opening — and
   fetches the body with \`sessions_read\`. Put the point in the first line.
