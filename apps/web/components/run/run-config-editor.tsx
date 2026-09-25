@@ -126,6 +126,32 @@ export function visibleProblems(problems: DraftProblem[], touched: TouchedFields
   return submitted ? problems : problems.filter((problem) => touched[problem.field]);
 }
 
+/**
+ * CANCEL IS NOT "LEAVING A FIELD", and treating it as one cost a second click.
+ *
+ * The bug: on an EMPTY new form, the first press of Cancel showed "Give this
+ * configuration a name." and closed nothing; only a second press closed it.
+ * Pressing a button BLURS the focused field on mousedown, before the click
+ * exists. The blur marked Name as touched, its complaint appeared ABOVE the
+ * buttons, the row moved down under the pointer — and the mouseup landed
+ * beside Cancel, so the click was never delivered. Cancel itself ran no
+ * validation; the layout shift ate it.
+ *
+ * TWO GUARDS, BECAUSE THERE ARE TWO WAYS TO GET THERE. A pointer press on
+ * Cancel keeps focus where it is (`preventDefault` on mousedown), so nothing
+ * blurs and nothing moves. And a blur whose focus is going TO Cancel — Tab
+ * onto it, then Enter — does not count as finishing the field either, which
+ * is what this answers.
+ */
+export const CANCEL_MARK = "data-editor-cancel";
+
+export function blurMarksTouched(next: EventTarget | null): boolean {
+  // Duck-typed rather than `instanceof Element`, which is not a global where
+  // this module is also imported (the server render and the unit tests).
+  const element = next as { closest?: (selector: string) => unknown } | null;
+  return !element?.closest?.(`[${CANCEL_MARK}]`);
+}
+
 /** What to PATCH: `env` only when it changed, so an untouched secret survives
  *  the engine's shallow merge untouched. */
 export function configurationPatch(original: RunConfigurationView | undefined, draft: EditorDraft): Partial<RunConfigurationDraft> {
@@ -153,6 +179,11 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
   const problems = editorProblems(config, draft);
   const shown = visibleProblems(problems, touched, submitted);
   const touch = (field: DraftProblem["field"]) => setTouched((current) => ({ ...current, [field]: true }));
+  /** A blur counts as finishing the field unless focus is going to Cancel —
+   *  see `blurMarksTouched`. */
+  const leave = (field: DraftProblem["field"], next: EventTarget | null) => {
+    if (blurMarksTouched(next)) touch(field);
+  };
   const set = (patch: Partial<EditorDraft>) => setDraft((current) => ({ ...current, ...patch }));
   const setRow = (index: number, patch: Partial<EnvRow>) =>
     setDraft((current) => ({
@@ -179,7 +210,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
           value={draft.name}
           placeholder="Dev server"
           onChange={(event) => set({ name: event.target.value })}
-          onBlur={() => touch("name")}
+          onBlur={(event) => leave("name", event.relatedTarget)}
         />
       </label>
       {/* A radio group, not a dropdown: ten glyphs fit, and a human picking one
@@ -218,7 +249,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
           value={draft.command}
           placeholder="bun run dev"
           onChange={(event) => set({ command: event.target.value })}
-          onBlur={() => touch("command")}
+          onBlur={(event) => leave("command", event.relatedTarget)}
         />
       </label>
       {/* THE PLACEHOLDER IS THE EXPLANATION. Both of these rows carried a grey
@@ -236,7 +267,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
           placeholder="apps/web"
           title="Relative to the worktree the run is started from."
           onChange={(event) => set({ cwd: event.target.value })}
-          onBlur={() => touch("cwd")}
+          onBlur={(event) => leave("cwd", event.relatedTarget)}
         />
       </label>
       <label className="block space-y-1">
@@ -247,7 +278,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
           placeholder="http://localhost:3000 — optional"
           title="Only counted when the address was silent before the run started."
           onChange={(event) => set({ readinessUrl: event.target.value })}
-          onBlur={() => touch("readinessUrl")}
+          onBlur={(event) => leave("readinessUrl", event.relatedTarget)}
         />
       </label>
 
@@ -260,7 +291,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
               className="w-40 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
               value={row.key}
               onChange={(event) => setRow(index, { key: event.target.value })}
-              onBlur={() => touch("env")}
+              onBlur={(event) => leave("env", event.relatedTarget)}
             />
             {row.kept ? (
               <button
@@ -277,7 +308,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
                 className="flex-1 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
                 value={row.value}
                 onChange={(event) => setRow(index, { value: event.target.value })}
-                onBlur={() => touch("env")}
+                onBlur={(event) => leave("env", event.relatedTarget)}
               />
             )}
             <label className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -328,7 +359,11 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
         </button>
         <button
           type="button"
+          {...{ [CANCEL_MARK]: "" }}
           className="rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted focus-visible:outline focus-visible:outline-ring"
+          // Keep focus in the field: a blur here is what moved this button out
+          // from under the pointer before its click could land.
+          onMouseDown={(event) => event.preventDefault()}
           onClick={onCancel}
         >
           Cancel
