@@ -46,6 +46,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
 contextBridge.exposeInMainWorld("telarDesktop", {
   isDesktop: true,
+  // Settings → Links (link-routing.js): the cockpit claims this window's links
+  // while it can open them in its session's browser, and the main process
+  // hands each one it would have sent to the system browser back here instead.
+  links: {
+    setRouting: (on) => ipcRenderer.invoke("telar:links:set-routing", { on }),
+    onOpen: (listener) => on("telar:links:open", listener),
+  },
   browser: {
     suggestions: (scopeKey) => ipcRenderer.invoke("telar:browser:suggestions", scopeKey),
     removeSuggestion: (scopeKey, url) => ipcRenderer.invoke("telar:browser:remove-suggestion", { scopeKey, url }),

@@ -74,6 +74,7 @@
       "command-keys.js",
       "helper-exec.js",
       "host-header.js",
+      "link-routing.js",
       "dev-update.js",
       "dev-update-core.js",
       "dev-update-preload.js",
