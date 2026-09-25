@@ -295,6 +295,9 @@ const MAX_LEASE_MS = 120_000;
  *  after these it is retained and retried per healthy tick instead. */
 const SETTLE_ATTEMPTS = 5;
 const SETTLE_BACKOFF_MS = 250;
+/** How many settled turns `sessions_read { runId }` looks through before it
+ *  falls back to reading a session's whole history over HTTP. */
+const RECENT_TURN_LOOKUP = 20;
 /** How many consecutive failed HEARTBEATS make an exempt worker's connection
  *  lost. Attempts, not seconds: see `heartbeatFailures`. */
 const EXEMPT_FAILURE_LIMIT = 5;
@@ -1434,9 +1437,30 @@ export class EngineWorker {
          * before this existed, rather than a wrong end.
          */
         cursor: async (id) => (await this.options.client.session(id, { turns: 1 })).cursor ?? 0,
-        status: async (id) => {
+        /**
+         * A WINDOW, NOT THE WHOLE HISTORY. An unwindowed snapshot carries every
+         * item the session ever produced — 39 MB on a 1,200-turn session, for a
+         * tool that reads `session` and the newest few turns. The window holds
+         * the newest `recent` settled turns plus every unsettled one, which is a
+         * superset of "the last N by position, plus the live ones" the wall
+         * takes from it; `page.total` keeps the count whole. An engine too old
+         * to stamp `total` gets the unwindowed read it always had.
+         */
+        status: async (id, options) => {
+          if (options?.recent !== undefined) {
+            const window = await this.options.client.session(id, { turns: options.recent });
+            if (window.page?.total !== undefined) return { session: window.session, turns: window.turns, turnCount: window.page.total };
+          }
           const snapshot = await this.options.client.session(id);
           return { session: snapshot.session, turns: snapshot.turns };
+        },
+        // The newest page first, where a turn being read nearly always is; the
+        // whole history only for a turn older than that.
+        turn: async (id, runId) => {
+          const window = await this.options.client.session(id, { turns: RECENT_TURN_LOOKUP });
+          const found = window.turns.find((candidate) => candidate.runId === runId);
+          if (found || window.page?.more === false) return found;
+          return (await this.options.client.session(id)).turns.find((candidate) => candidate.runId === runId);
         },
         // STOP IS STOP, whoever presses it: the peer's live turn ends and what
         // was queued behind it is settled, leaving it idle. `stopTurn` would
@@ -1450,7 +1474,9 @@ export class EngineWorker {
         subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,
         unsubscribe: async (id, subscriber) => (await this.options.client.unsubscribe(id, { subscriberSessionId: subscriber })).removed,
         subscriptions: async (subscriber) => (await this.options.client.subscriptions(subscriber)).subscriptions,
-        requests: async (id) => (await this.options.client.session(id)).requests,
+        // Every OPEN request rides every windowed page wherever its turn sits,
+        // and open ones are all the wall reads — so one turn is enough.
+        requests: async (id) => (await this.options.client.session(id, { turns: 1 })).requests,
         resolveRequest: async (id, requestId, input) =>
           (await this.options.client.resolveRequest(id, requestId, { ...input, resolvedBy: "session" })).request,
         /**

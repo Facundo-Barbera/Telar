@@ -362,7 +362,7 @@ test("the worker cannot archive, delete or accept anything — the client it hol
     // member that writes for one to be misfiled as.
     // The verb that addressed the built-in Agent came and went with it (#784, #908).
     expect(surface).toEqual([
-      "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "turn", "unsubscribe",
     ]);
     expect(Object.keys(sessions.query).sort()).toEqual(["answer", "find", "grep", "outline", "step", "steps"]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
@@ -424,6 +424,46 @@ test("the six queries reach the engine's routes from an out-of-process turn", as
   // as the store's own sentence rather than as silence.
   expect(String(seen.step)).toContain("no such step");
   expect(String(seen.answer)).toContain("answered turn");
+});
+
+/**
+ * NO WHOLE-HISTORY SNAPSHOT FOR A STATUS, A TURN OR THE OPEN REQUESTS.
+ *
+ * An unwindowed `GET /v2/sessions/:id` carries every item a session ever
+ * produced — 39 MB on a 1,200-turn one — and the worker used to spend one on
+ * every `sessions_status`. Each read here must ask for a window, and the window
+ * must still carry the count and the live turn the wall reports.
+ */
+test("the worker reads status, a turn and requests through a window, never the whole history", async () => {
+  const windows: unknown[] = [];
+  const seen: Record<string, unknown> = {};
+  const original = EngineClient.prototype.session;
+  let recording = false;
+  EngineClient.prototype.session = function (this: EngineClient, ...args: Parameters<typeof original>) {
+    if (recording) windows.push(args[1] ?? "whole");
+    return original.apply(this, args);
+  };
+  try {
+    await turnWith(async (sessions) => {
+      const self = sessions.self!.sessionId;
+      recording = true;
+      seen.status = await sessions.status(self, { recent: 3 });
+      seen.turn = await sessions.turn!(self, "run_one");
+      seen.missing = await sessions.turn!(self, "run_nope");
+      seen.requests = await sessions.requests(self);
+      recording = false;
+    });
+  } finally {
+    EngineClient.prototype.session = original;
+  }
+  expect(windows).toEqual([{ turns: 3 }, { turns: 20 }, { turns: 20 }, { turns: 1 }]);
+  const status = seen.status as { turns: Array<{ runId: string; state: string }>; turnCount: number };
+  expect(status.turnCount).toBe(1);
+  expect(status.turns.map((turn) => [turn.runId, turn.state])).toEqual([["run_one", "running"]]);
+  expect((seen.turn as { runId: string }).runId).toBe("run_one");
+  // A window that reached the session's first turn is a definitive "no".
+  expect(seen.missing).toBeUndefined();
+  expect(seen.requests).toEqual([]);
 });
 
 test("a turn's capability knows who it is, and a subscription made mid-turn wakes the host over the wire", async () => {

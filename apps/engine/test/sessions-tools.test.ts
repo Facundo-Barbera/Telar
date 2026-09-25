@@ -931,6 +931,57 @@ describe("sessions_read is bounded", () => {
   });
 
   /**
+   * THE WINDOWED CAPABILITY ANSWERS EXACTLY WHAT THE WHOLE ONE DOES.
+   *
+   * An out-of-process worker reads `status` as a windowed snapshot (newest
+   * `recent` settled turns + every unsettled one, `page.total` for the count)
+   * instead of the whole history. The wall's answers must not be able to tell.
+   */
+  test("status, summary and a run read answer identically from a window as from the whole history", async () => {
+    const { store, projectId } = engine();
+    const whole = wall(store);
+    const asked: Array<number | undefined> = [];
+    const windowed = new Map<string, Registered>();
+    sessionsTools(
+      (name, description, shape, run) => {
+        windowed.set(name, { name, description, shape, run });
+        return { name };
+      },
+      {
+        ...capabilityOver(store),
+        status: async (sessionId, options) => {
+          asked.push(options?.recent);
+          if (options?.recent === undefined) return { session: store.getSession(sessionId), turns: store.turns(sessionId) };
+          const window = store.snapshotWindow(sessionId, { limit: options.recent });
+          return { session: store.getSession(sessionId), turns: window.turns, turnCount: window.page.total, pendingNotifications: store.pendingNotifications(sessionId) };
+        },
+        turn: async (sessionId, runId) => store.snapshotWindow(sessionId, { limit: 2 }).turns.find((turn) => turn.runId === runId),
+      },
+    );
+    const id = (await call(whole, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    for (let lap = 0; lap < 9; lap++) {
+      await call(whole, "sessions_send", { intent: "task", sessionId: id, input: `lap ${lap}` });
+      store.stopTurn(id);
+    }
+    await call(whole, "sessions_send", { intent: "task", sessionId: id, input: "still queued" });
+    const live = store.turns(id).at(-1)!.runId;
+
+    for (const [name, args] of [
+      ["sessions_status", { sessionId: id, turns: 3 }],
+      ["sessions_status", { sessionId: id }],
+      ["sessions_read", { sessionId: id, mode: "summary", turns: 4 }],
+      ["sessions_read", { sessionId: id, runId: live }],
+    ] as const) {
+      expect((await call(windowed, name, args)).json).toEqual((await call(whole, name, args)).json!);
+    }
+    // It really was a window: every read named how many turns it wanted.
+    expect(asked).toEqual([3, 5, 4]);
+    const status = (await call(windowed, "sessions_status", { sessionId: id, turns: 3 })).json!;
+    expect(status.turnCount).toBe(10);
+    expect(status.turnsNotShown).toBe(7);
+  });
+
+  /**
    * ── AND THE FOLD IS WHAT A BARE CALL GETS (#608) ──────────────────────────
    *
    * Measured: 8,568 characters of raw events on one turn, 9,107 and 12,953 on

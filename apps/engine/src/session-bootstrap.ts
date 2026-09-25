@@ -49,7 +49,7 @@ export type SessionBootstrapStore = {
   snapshotWindow(
     sessionId: string,
     window: { limit: number; before?: string },
-  ): { turns: Turn[]; items: Item[]; tasks: Task[]; requests: EngineRequest[]; page: { before: string | null; more: boolean } };
+  ): { turns: Turn[]; items: Item[]; tasks: Task[]; requests: EngineRequest[]; page: { before: string | null; more: boolean; total?: number } };
   openItemPrefix(sessionId: string, itemId: string, through: number): { streamed: string; streamedThrough: number } | undefined;
   sessionAssignments(sessionId: string): SessionAssignment[];
   subscriptionsFor(subscriberSessionId: string): Subscription[];

@@ -158,7 +158,26 @@ export type SessionsCapability = {
    * lately" costs one page instead of walking 61,933 events to reach the end.
    */
   cursor?(sessionId: string): Promise<number>;
-  status(sessionId: string): Promise<{ session: Session; turns: Turn[]; pendingNotifications?: NotificationDetail[] }>;
+  /**
+   * THE SESSION AND ITS TURNS — AT LEAST THE NEWEST `recent` AND EVERY LIVE ONE.
+   *
+   * `recent` is a floor, not a filter: an implementation may hand back every
+   * turn (the in-process store does; it pays no serialisation), and one reached
+   * over HTTP reads a windowed snapshot instead of the whole history, which on a
+   * 1,200-turn session is 0.3 MB rather than 39 MB. `turnCount` is the session's
+   * whole count when `turns` may be a window; absent, `turns.length` is it.
+   * Omit `recent` to ask for every turn.
+   */
+  status(
+    sessionId: string,
+    options?: { recent?: number },
+  ): Promise<{ session: Session; turns: Turn[]; turnCount?: number; pendingNotifications?: NotificationDetail[] }>;
+  /**
+   * ONE TURN BY ITS RUN ID. Optional: without it the wall looks the turn up in
+   * `status`. A remote capability answers the recent case from a window and
+   * only falls back to the whole history for a turn older than that.
+   */
+  turn?(sessionId: string, runId: string): Promise<Turn | undefined>;
   /**
    * PAUSE, NOT A ONE-TURN STOP — `EngineStore.pauseSession`, stamped
    * `by: "session"`. A stop of one turn lets the worker take the next queued
@@ -206,7 +225,8 @@ export type SessionsCapability = {
   ): Promise<Subscription>;
   unsubscribe(subscriptionId: string, subscriberSessionId: string): Promise<boolean>;
   subscriptions(subscriberSessionId: string): Promise<Subscription[]>;
-  /** Every request a session has, open or resolved; the wall keeps the open ones. */
+  /** Every OPEN request a session has, plus possibly some resolved ones; the
+   *  wall keeps the open ones. */
   requests(sessionId: string): Promise<EngineRequest[]>;
   /** The implementation stamps `resolvedBy: "session"`; no shape carries it. */
   resolveRequest(
@@ -1191,7 +1211,9 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           const quiet = scoped.length - mine.length;
           let turn: Turn | undefined;
           try {
-            turn = (await capability.status(sessionId)).turns.find((candidate) => candidate.runId === runId);
+            turn = capability.turn
+              ? await capability.turn(sessionId, runId)
+              : (await capability.status(sessionId)).turns.find((candidate) => candidate.runId === runId);
           } catch {
             turn = undefined;
           }
@@ -1329,8 +1351,11 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               ? Math.min(args.turns, SUMMARY_TURNS_MAX)
               : SUMMARY_TURNS_DEFAULT;
           let turns: Turn[];
+          let turnCount: number;
           try {
-            turns = (await capability.status(sessionId)).turns;
+            const status = await capability.status(sessionId, { recent: wanted });
+            turns = status.turns;
+            turnCount = status.turnCount ?? turns.length;
           } catch (error) {
             return err(`Could not summarise "${sessionId}": ${failure(error)}`);
           }
@@ -1338,13 +1363,13 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           return json({
             sessionId,
             mode: "summary",
-            turnCount: turns.length,
+            turnCount,
             turns: summary,
             cursor: events.at(-1)?.id ?? 0,
             note:
-              turns.length === 0
+              turnCount === 0
                 ? "This session has taken no turns."
-                : `The last ${summary.length} of ${turns.length} turns. "did" lists what a turn's items were called, for turns inside the page this read covered. For a turn's whole answer or its events, call sessions_read with its runId; for raw events, mode: "events".`,
+                : `The last ${summary.length} of ${turnCount} turns. "did" lists what a turn's items were called, for turns inside the page this read covered. For a turn's whole answer or its events, call sessions_read with its runId; for raw events, mode: "events".`,
           });
         }
         /**
@@ -1407,9 +1432,9 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           typeof args.turns === "number" && Number.isSafeInteger(args.turns) && args.turns >= 1
             ? Math.min(args.turns, STATUS_TURNS_MAX)
             : STATUS_TURNS_DEFAULT;
-        let answer: { session: Session; turns: Turn[]; pendingNotifications?: NotificationDetail[] };
+        let answer: { session: Session; turns: Turn[]; turnCount?: number; pendingNotifications?: NotificationDetail[] };
         try {
-          answer = await capability.status(sessionId);
+          answer = await capability.status(sessionId, { recent: wanted });
         } catch (error) {
           return err(`Could not read the status of "${sessionId}": ${failure(error)}`);
         }
@@ -1428,7 +1453,8 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         const withLive = turns.slice(-wanted);
         for (const turn of live) if (!withLive.some((candidate) => candidate.runId === turn.runId)) withLive.push(turn);
         withLive.sort((left, right) => left.sequence - right.sequence);
-        const dropped = turns.length - withLive.length;
+        const turnCount = answer.turnCount ?? turns.length;
+        const dropped = turnCount - withLive.length;
         /**
          * A SESSION WITH NO CHECKOUT IS NOT RUNNING, WHATEVER ITS QUEUE SAYS —
          * issue #813.
@@ -1453,7 +1479,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           // THE TOTAL IS STATED WHETHER OR NOT THE LIST IS COMPLETE. A caller
           // handed five rows of a 685-turn session and no count will report
           // five as the session's whole life.
-          turnCount: turns.length,
+          turnCount,
           turns: withLive.map(turnLine),
           ...(dropped > 0 ? { turnsNotShown: dropped } : {}),
           /**

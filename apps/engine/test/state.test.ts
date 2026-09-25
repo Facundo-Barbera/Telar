@@ -147,22 +147,22 @@ test("a windowed snapshot is the newest settled turns plus everything unsettled,
 
   const first = store.snapshotWindow("session_one", { limit: 2 });
   expect(first.turns.map((turn) => turn.runId)).toEqual(["run_4", "run_5", "run_live"]);
-  expect(first.page).toEqual({ before: "run_4", more: true });
+  expect(first.page).toEqual({ before: "run_4", more: true, total: 6 });
   // Items follow their turns — the window is what makes the read small.
   expect(first.items.map((item) => item.id).sort()).toEqual(["i_4", "i_5"]);
 
   const older = store.snapshotWindow("session_one", { limit: 2, before: "run_4" });
   expect(older.turns.map((turn) => turn.runId)).toEqual(["run_2", "run_3"]);
-  expect(older.page).toEqual({ before: "run_2", more: true });
+  expect(older.page).toEqual({ before: "run_2", more: true, total: 6 });
 
   const oldest = store.snapshotWindow("session_one", { limit: 2, before: "run_2" });
   expect(oldest.turns.map((turn) => turn.runId)).toEqual(["run_1"]);
-  expect(oldest.page).toEqual({ before: null, more: false });
+  expect(oldest.page).toEqual({ before: null, more: false, total: 6 });
 
   // A limit past the start is the whole history, first page, no cursor.
   const whole = store.snapshotWindow("session_one", { limit: 50 });
   expect(whole.turns).toHaveLength(6);
-  expect(whole.page).toEqual({ before: null, more: false });
+  expect(whole.page).toEqual({ before: null, more: false, total: 6 });
 
   expect(() => store.snapshotWindow("session_one", { limit: 2, before: "run_nope" })).toThrow(EngineStateError);
 });
