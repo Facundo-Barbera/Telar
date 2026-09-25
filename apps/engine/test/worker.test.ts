@@ -123,6 +123,25 @@ test("a fake driver streams engine-owned text and completes a scheduled turn", a
   ]);
 });
 
+test("a turn's effort, fast mode, service tier and ultracode reach the driver from the claim", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const driver: TurnDriver = {
+    async run({ model, effort, fastMode, serviceTier, ultracode }) {
+      seen.push({ model, effort, fastMode, serviceTier, ultracode });
+      return { text: "done" };
+    },
+  };
+  const { client, sessionId, worker } = await setup(driver);
+  await client.submitTurn(sessionId, {
+    runId: "run_one",
+    input: "Hello",
+    model: { model: "claude-opus-5[1m]", effort: "xhigh", fastMode: true, serviceTier: "priority", ultracode: true },
+  });
+  await worker.tick();
+  await eventually(async () => expect(seen).toHaveLength(1));
+  expect(seen[0]).toEqual({ model: "claude-opus-5[1m]", effort: "xhigh", fastMode: true, serviceTier: "priority", ultracode: true });
+});
+
 test("a whitespace-only provider delta is a valid stream observation, not an invalid user prompt", async () => {
   const driver: TurnDriver = {
     async run({ onObservations }) {

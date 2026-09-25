@@ -475,10 +475,14 @@ export const TurnModelSelection = z
     model: z.string().min(1).optional(),
     effort: Effort.optional(),
     fastMode: z.boolean().optional(),
+    serviceTier: z.string().min(1).optional(),
+    ultracode: z.boolean().optional(),
   })
-  .refine((value) => value.model !== undefined || value.effort !== undefined || value.fastMode !== undefined, {
-    message: "a turn's model selection must name at least one of model, effort or fast mode",
-  });
+  .refine(
+    (value) =>
+      value.model !== undefined || value.effort !== undefined || value.fastMode !== undefined || value.serviceTier !== undefined || value.ultracode !== undefined,
+    { message: "a turn's model selection must name at least one of model, effort, fast mode, service tier or ultracode" },
+  );
 export type TurnModelSelection = z.infer<typeof TurnModelSelection>;
 
 /** Submitting a turn. `runId` is the client's idempotency key — resubmitting

@@ -7880,13 +7880,17 @@ export class EngineStore {
     const id = selection.model ?? listed.find((row) => row.isDefault)?.id;
     const row = listed.find((candidate) => candidate.id === id || candidate.resolves === id);
     if (!row || row.source === "user") return selection;
-    const { effort, fastMode, ...rest } = selection;
-    const kept = {
+    const { effort, fastMode, serviceTier, ultracode, ...rest } = selection;
+    const kept: ModelSelection = {
       ...rest,
       ...(effort !== undefined && row.efforts.includes(effort) ? { effort } : {}),
       ...(fastMode !== undefined && row.fastMode ? { fastMode } : {}),
+      ...(serviceTier !== undefined && row.serviceTiers?.some((tier) => tier.id === serviceTier) ? { serviceTier } : {}),
+      // Ultracode runs at xhigh, so it needs a model that offers that level.
+      ...(ultracode !== undefined && row.efforts.includes("xhigh") ? { ultracode } : {}),
     };
-    return kept.model !== undefined || kept.effort !== undefined || kept.fastMode !== undefined ? kept : undefined;
+    const named = [kept.model, kept.effort, kept.fastMode, kept.serviceTier, kept.ultracode].some((value) => value !== undefined);
+    return named ? kept : undefined;
   }
 
   /**
@@ -9795,6 +9799,8 @@ export class EngineStore {
               ...(input.model.model ? { model: input.model.model } : {}),
               ...(input.model.effort ? { effort: input.model.effort } : {}),
               ...(input.model.fastMode === undefined ? {} : { fastMode: input.model.fastMode }),
+              ...(input.model.serviceTier ? { serviceTier: input.model.serviceTier } : {}),
+              ...(input.model.ultracode === undefined ? {} : { ultracode: input.model.ultracode }),
             },
           }
         : {}),

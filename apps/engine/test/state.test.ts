@@ -2091,6 +2091,12 @@ test("a model selection can be cleared, which `undefined` could never express", 
   expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5");
 });
 
+test("a turn's service tier and ultracode reach the claim beside its model", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "hi", model: { model: "claude-opus-5[1m]", ultracode: true, serviceTier: "priority" } });
+  expect(store.claimNextTurn("worker_one")?.model).toMatchObject({ model: "claude-opus-5[1m]", ultracode: true, serviceTier: "priority" });
+});
+
 test("fast mode survives a selection that names no model", () => {
   // A Claude-side switch the composer offers on the provider default, so it has
   // to survive a selection that names no model at all — and it travels beside

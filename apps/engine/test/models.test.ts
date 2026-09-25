@@ -12,6 +12,30 @@ import { describe, expect, test } from "bun:test";
 import { parseClaudeModels, parseCodexModels, readClaudeModels, readModelCatalogue, stripPricing } from "../src/models";
 
 describe("parseCodexModels", () => {
+  test("reads each model's service tiers and its default tier", () => {
+    const [row] = parseCodexModels({
+      data: [
+        {
+          id: "gpt-6-astra",
+          displayName: "GPT-6 Astra",
+          defaultServiceTier: "default",
+          serviceTiers: [
+            { id: "default", name: "Standard", description: "Standard speed" },
+            { id: "priority", name: "Fast", description: "Faster, at a higher rate" },
+            { id: "", name: "nameless" },
+          ],
+        },
+      ],
+    });
+    expect(row?.serviceTiers).toEqual([
+      { id: "default", name: "Standard", description: "Standard speed" },
+      { id: "priority", name: "Fast", description: "Faster, at a higher rate" },
+    ]);
+    expect(row?.defaultServiceTier).toBe("default");
+    // No tiers published, no field.
+    expect(parseCodexModels({ data: [{ id: "gpt-5-codex" }] })[0]?.serviceTiers).toBeUndefined();
+  });
+
   test("reads `model/list`'s real shape, per-model efforts and all", () => {
     const models = parseCodexModels({
       data: [

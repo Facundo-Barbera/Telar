@@ -1707,6 +1707,8 @@ export class EngineWorker {
         ...(model?.model ? { model: model.model } : {}),
         ...(model?.effort ? { effort: model.effort } : {}),
         ...(model?.fastMode === undefined ? {} : { fastMode: model.fastMode }),
+        ...(model?.serviceTier ? { serviceTier: model.serviceTier } : {}),
+        ...(model?.ultracode === undefined ? {} : { ultracode: model.ultracode }),
         // Both arrive ON THE CLAIM, resolved by the engine, for the same reason
         // everything else here does: the worker holds no store handle and must
         // not look anything up between claim and execution.
