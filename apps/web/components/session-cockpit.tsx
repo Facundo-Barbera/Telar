@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, Minimize2Icon, ShieldCheckIcon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 import {
+  countsAsActivity,
   isBackgroundWork,
   type EngineEvent,
   type ClaudeConversation,
@@ -3913,8 +3914,9 @@ export function SessionCockpit({
   const providerInstance = useProviderInstance(session?.providerInstanceId, session?.driver);
   const contextNoticePercent = normaliseContextNoticePercent(providerInstance?.contextNoticePercent);
   /** Background work outlives the turn that started it, so it is counted over
-   *  every task rather than over the active turn's. */
-  const backgroundTasks = tasks.filter((task) => isBackgroundWork(task) && (task.state === "running" || task.state === "pending")).length;
+   *  every task rather than over the active turn's. `countsAsActivity` is the
+   *  rail's own predicate, so the chip and the row badge count the same tasks. */
+  const backgroundTasks = tasks.filter((task) => isBackgroundWork(task) && countsAsActivity(task)).length;
 
   /**
    * THE ROW GESTURES THAT END IN THE RIGHT PANEL, withheld on the solo route.

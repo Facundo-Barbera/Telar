@@ -39,6 +39,7 @@ import {
   displayToolName,
   isBackgroundWork,
   isTelarMcpServer,
+  isUnstatedEnding,
   parseToolName,
   qualifyTelarTool,
   TELAR_BROWSER_MCP_SERVER,
@@ -1619,7 +1620,10 @@ export function createClaudeDriver(
          * stated. Everything else on the patch is still folded in, so the
          * summary and the usage arrive either way.
          */
-        const state = known && isTerminalTaskState(known.state) ? known.state : patch.state;
+        // …except an ending nobody stated, which a stated worse one corrects —
+        // see `isUnstatedEnding`, and the store's copy of this rule.
+        const corrected = known !== undefined && isUnstatedEnding(known) && (patch.state === "failed" || patch.state === "stopped");
+        const state = known && isTerminalTaskState(known.state) && !corrected ? known.state : patch.state;
         const task: TaskSeed = {
           ...known,
           ...patch,
@@ -1893,13 +1897,20 @@ export function createClaudeDriver(
            * closed as `completed` with no failure and no resultText — the
            * notification that carried the summary may simply have been lost,
            * and inventing one would be fabrication. If that notification
-           * limps in later anyway, `emitTask`'s "first ending is the ending"
-           * keeps the state and still folds the summary in.
+           * limps in later anyway, `emitTask` folds its summary in, and lets
+           * a stated `failed`/`stopped` replace this bare `completed`
+           * (`isUnstatedEnding`).
            *
-           * ONLY background, and ONLY tasks whose SDK id THIS process minted
-           * or was seeded with (`taskIdsBySdkId`): an agent missing from a
-           * background-membership list means nothing — closing agents is the
-           * turn-end sweep's job. The SDK says the level is per-process ("reset to
+           * ONLY background WORK (`isBackgroundWork`), and ONLY tasks whose SDK
+           * id THIS process minted or was seeded with (`taskIdsBySdkId`). A
+           * FOREGROUND agent missing from a background-membership list means
+           * nothing — closing it is the turn-end sweep's job. A BACKGROUNDED
+           * agent is different: the SDK lists it ("a foreground agent being
+           * backgrounded" is one of the changes it announces), and the sweep
+           * spares it on purpose, so a lost notification left it running for
+           * ever with nothing else able to close it. If its notification does
+           * arrive and says it failed, `isUnstatedEnding` lets that stand.
+           * The SDK says the level is per-process ("reset to
            * the empty set whenever the session's CLI process (re)starts"),
            * which is exactly the memory's lifetime.
            *
@@ -1932,7 +1943,7 @@ export function createClaudeDriver(
             if (stated && stated !== row.kind) emitTask("task.progress", sdkId, { state: row.state, kind: stated });
           }
           for (const task of [...knownTasks.values()]) {
-            if (task.kind !== "background" || isTerminalTaskState(task.state)) continue;
+            if (!isBackgroundWork(task) || isTerminalTaskState(task.state)) continue;
             const sdkId = task.providerTaskId;
             if (!sdkId || !taskIdsBySdkId.has(sdkId) || live.has(sdkId)) continue;
             emitTask("task.completed", sdkId, { state: "completed" });

@@ -2366,6 +2366,34 @@ test("the level signal closes only background work; a missing agent is the turn-
   });
 });
 
+test("a BACKGROUNDED agent missing from the level signal is closed, and its late failure still lands", async () => {
+  /**
+   * The sweep spares a backgrounded agent (it outlives its turn), so before
+   * this the only thing that could close one was its own notification — and
+   * when that was lost the session read as busy for ever. The SDK lists
+   * backgrounded agents in the level, so its absence is the ending.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "a1", tool_use_id: "toolu_a1", description: "Explore", task_type: "local_agent", is_backgrounded: true };
+      yield { type: "system", subtype: "task_started", task_id: "a2", tool_use_id: "toolu_a2", description: "Audit", task_type: "local_agent", is_backgrounded: true };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a1", task_type: "local_agent", description: "Explore" }, { task_id: "a2", task_type: "local_agent", description: "Audit" }] };
+      // Both end. a1's notification is LOST; a2's arrives after the level and
+      // says it failed.
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [] };
+      yield { type: "system", subtype: "task_notification", task_id: "a2", tool_use_id: "toolu_a2", status: "failed", summary: "rate limited" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const last = new Map(
+    sink.observations.flatMap((o) => (o.kind === "task.completed" ? [[o.task.id, o.task] as const] : [])),
+  );
+  expect(last.get("task_toolu_a1")).toMatchObject({ kind: "agent", state: "completed" });
+  expect(last.get("task_toolu_a2")).toMatchObject({ kind: "agent", state: "failed", resultText: "rate limited" });
+});
+
 test("an ambient task is the CLI's housekeeping and never becomes a row", async () => {
   // The SDK marks its own auto-started watchers `ambient` and says "hosts
   // should exclude them from activity indicators". Suppressed at the start
