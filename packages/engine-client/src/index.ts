@@ -37,6 +37,9 @@ import {
   type InboxPolicy,
   type RememberedLogin,
   type SessionDefaults,
+  type WorkspaceConfig,
+  type ProjectWorkspaceOverrides,
+  type ProjectWorkspaceView,
   type SidebarLayout,
   type StorageReport,
   type JournalReclaim,
@@ -1117,6 +1120,26 @@ export class EngineClient {
 
   setSessionDefaults(patch: { envMode?: EnvMode }): Promise<{ sessionDefaults: SessionDefaults }> {
     return this.request("PATCH", "/v2/session-defaults", patch);
+  }
+
+  /** This Mac's workspace defaults — see `protocol/workspace.ts`. */
+  machineWorkspace(): Promise<{ machine: WorkspaceConfig }> {
+    return this.request("GET", "/v2/workspace");
+  }
+
+  /** Replaces the whole machine layer; the engine validates and answers with what it kept. */
+  setMachineWorkspace(machine: WorkspaceConfig): Promise<{ machine: WorkspaceConfig }> {
+    return this.request("PUT", "/v2/workspace", { machine });
+  }
+
+  /** One project's overrides, the repo's proposal, and what they resolve to. */
+  projectWorkspace(projectId: string): Promise<{ workspace: ProjectWorkspaceView }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/workspace`);
+  }
+
+  /** Replaces the project's overrides: absent inherits, `null` turns a field off. */
+  setProjectWorkspace(projectId: string, overrides: ProjectWorkspaceOverrides): Promise<{ workspace: ProjectWorkspaceView }> {
+    return this.request("PUT", `/v2/projects/${encodeURIComponent(projectId)}/workspace`, { overrides });
   }
 
   /**
