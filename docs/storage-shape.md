@@ -284,36 +284,6 @@ Settings ▸ Storage is that one.
 
 ---
 
-## `@telar/env` — a second root convention, not shipped
-
-`packages/env/src/paths.ts`:
-
-```ts
-export function telarHome(): string {
-  return process.env.TELAR_HOME ?? join(homedir(), ".telar");
-}
-```
-
-It writes `<TELAR_HOME>/env/state.json`, `<TELAR_HOME>/projects/<id>/env.yaml`
-and `<TELAR_HOME>/config.yaml` — **directly at `TELAR_HOME`, not under
-`engine/`** — and its fallback is `~/.telar`, which is exactly the path
-`engineRootFromEnv` refuses as legacy state.
-
-**Nothing in the shipped product imports or runs it.** It is not a dependency of
-`apps/engine`, `apps/web` or `apps/desktop`; the only repository-level
-references are CI's own `typecheck` and `test:env` scripts. Its README describes
-it as standalone and Telar-optional.
-
-It is therefore **a separate, unshipped convention**, documented here rather
-than deleted, and it must not be adopted into the product without first adopting
-`<TELAR_HOME>/engine`'s convention — otherwise it drops three paths into
-`userData` beside `engine/` and `remote/`, which is the exact "two owners of one
-directory" that `LEGACY_ROOT_NAME` exists to prevent. Tracked in **#861**, which
-lays out the three ways out and the one of them that is worth doing whichever is
-chosen.
-
----
-
 ## How the invariant test sees every writer
 
 `apps/engine/test/store-shape.test.ts` asserts that a representative workload
@@ -357,7 +327,6 @@ store grows directories it did not sanction. So:
   each mean two different things at two levels. Renaming one of each would end
   it; nothing here does.
 - **Telar renaming files inside `~/.claude/projects`** — the one tier-4 write.
-- **`@telar/env`'s second root**, above.
 - **Windows and Linux.** `volumeSupportOn()` now reports what each platform can
   actually answer, and both consumers surface it as a named state rather than
   as a confident wrong one. What is not known is whether Windows is a target at

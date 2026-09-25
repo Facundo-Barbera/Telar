@@ -50,7 +50,6 @@ and version that will answer you.
 | `apps/desktop` | The Electron shell. Forks the engine, then the cockpit's standalone server; owns auto-update and the browser host. |
 | `apps/ios` | The iPhone client. Polling, with Mac-initiated push. |
 | `packages/engine-client` | Dependency-free engine protocol types + HTTP client. |
-| `packages/env` | Environment lease scheduler — five-verb contract, sidecar config, MCP server + CLI. Standalone; Telar-optional. |
 
 ## Getting started
 

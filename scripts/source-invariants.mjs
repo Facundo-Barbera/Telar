@@ -1797,8 +1797,8 @@ const CHECKS = [
    *     a substitute for the flag on a multi-file suite; it is the cover for the
    *     single-file run a flag on a script cannot reach.
    *
-   * THE THIRD CASE #740 ASKED THIS TO NOTICE: packages/env and
-   * packages/engine-client set no ceiling at all, which is consistent rather than
+   * THE THIRD CASE #740 ASKED THIS TO NOTICE: packages/engine-client
+   * sets no ceiling at all, which is consistent rather than
    * a trap — until someone adds `--timeout` to one of them for a good reason
    * without knowing any of this. The second rule is what has something to say
    * then, and it says it at the moment the flag is added rather than months later
