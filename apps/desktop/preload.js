@@ -86,7 +86,10 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // THEN put the view down, so the panel can keep showing the page while
     // the menu is up. One call because that order is the whole point.
     freezeView: (scopeKey) => ipcRenderer.invoke("telar:browser:freeze-view", { scopeKey }),
-    releaseScope: (scopeKey, destroy = false) => ipcRenderer.invoke("telar:browser:release-scope", { scopeKey, destroy }),
+    // `closedByPerson`: the panel's Browser tab was closed — the agent's next
+    // call is told so, and the scope keeps its profile binding for a reopen.
+    releaseScope: (scopeKey, destroy = false, { closedByPerson = false } = {}) =>
+      ipcRenderer.invoke("telar:browser:release-scope", { scopeKey, destroy, closedByPerson }),
     adoptScope: (fromScopeKey, toScopeKey) => ipcRenderer.invoke("telar:browser:adopt-scope", { fromScopeKey, toScopeKey }),
     onState: (listener) => on("telar:browser:state", listener),
     onPointer: (listener) => on("telar:browser:pointer", listener),
