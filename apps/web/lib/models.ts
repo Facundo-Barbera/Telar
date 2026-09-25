@@ -13,7 +13,7 @@
  * REGARDLESS of which models exist: how to name an effort level, and how to
  * label a model the catalogue has not loaded yet.
  */
-import type { ProviderModel, ModelSelection } from "@telar/engine-client";
+import { defaultInstanceIdForDriver, type ModelSelection, type ProviderDriverKind, type ProviderModel } from "@telar/engine-client";
 
 /** Effort levels, where the provider has the concept. Absent means the model
  *  chooses — which is not the same as any level named here. */
@@ -128,5 +128,29 @@ export function sessionModelSelection(instanceId: string, choice: ModelChoice): 
     ...(choice.model ? { model: choice.model } : {}),
     ...(choice.effort ? { effort: choice.effort } : {}),
     ...(choice.fastMode === undefined ? {} : { fastMode: choice.fastMode }),
+  };
+}
+
+/**
+ * WHERE A NEW CONVERSATION'S COMPOSER STARTS: the project's default model and
+ * options, so the composer shows what the first message will actually run on and
+ * a change to one knob keeps the rest.
+ *
+ * ONLY A DEFAULT STORED AGAINST A PROVIDER'S BUILT-IN LOGIN. The canvas creates a
+ * session by driver, which lands on that login, and the engine applies a
+ * project's default only to a session on the login it names — so a default for
+ * another login would never run from here, and showing it would be a lie.
+ */
+export function projectDraftModel(selection: ModelSelection | undefined): { driver: ProviderDriverKind; choice: ModelChoice } | undefined {
+  if (!selection) return undefined;
+  const driver = (["claude", "codex", "opencode"] as const).find((option) => defaultInstanceIdForDriver(option) === selection.instanceId);
+  if (!driver) return undefined;
+  return {
+    driver,
+    choice: {
+      ...(selection.model ? { model: selection.model } : {}),
+      ...(selection.effort ? { effort: selection.effort } : {}),
+      ...(selection.fastMode === undefined ? {} : { fastMode: selection.fastMode }),
+    },
   };
 }
