@@ -65,6 +65,24 @@ private func stubAPI() -> HTTPEngineAPI {
         #expect(status.devices[2].platform == nil)
     }
 
+    /// Where a paired phone refreshes its failover list (#832): the Mac's
+    /// endpoints minus loopback, one alien row skipped, and an older cockpit
+    /// that sends none is simply an empty list.
+    @Test func statusYieldsTheDialableEndpoints() throws {
+        let json = """
+        {"requireAuth":true,"devices":[],"endpoints":[
+          {"kind":"loopback","label":"This machine","url":"http://127.0.0.1:3000","qrSafe":false},
+          {"kind":"lan","label":"Local network","url":"http://192.168.1.5:3000","qrSafe":true},
+          {"kind":"tailnet","label":"Tailscale IP","url":"http://100.70.1.2:3000","qrSafe":true},
+          {"kind":"future","url":"http://x:3000"},
+          {"bogus":true}]}
+        """
+        let status = try JSONDecoder().decode(RemoteStatus.self, from: Data(json.utf8))
+        #expect(status.dialableAddresses == ["http://192.168.1.5:3000", "http://100.70.1.2:3000"])
+        let old = try JSONDecoder().decode(RemoteStatus.self, from: Data(#"{"requireAuth":true,"devices":[]}"#.utf8))
+        #expect(old.endpoints.isEmpty)
+    }
+
     @Test func renameAndRolePatchTheDeviceRoute() async throws {
         let device = #"{"device":{"id":"dev_1","name":"Pocket","createdAt":1,"role":"observer"}}"#
         RemoteStubURLProtocol.handler = { request in

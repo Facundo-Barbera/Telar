@@ -15,16 +15,27 @@ struct RemoteStatus: Decodable, Equatable {
     var devices: [RemoteDevice]
     var callerDeviceId: String?
     var callerRole: String?
+    /// Every address the Mac answers on, as the Remote access panel lists
+    /// them — where a paired phone refreshes its failover list (#832).
+    var endpoints: [RemoteEndpoint]
 
     enum CodingKeys: String, CodingKey {
-        case requireAuth, devices, callerDeviceId, callerRole
+        case requireAuth, devices, callerDeviceId, callerRole, endpoints
     }
 
-    init(requireAuth: Bool, devices: [RemoteDevice], callerDeviceId: String? = nil, callerRole: String? = nil) {
+    init(requireAuth: Bool, devices: [RemoteDevice], callerDeviceId: String? = nil, callerRole: String? = nil,
+         endpoints: [RemoteEndpoint] = []) {
         self.requireAuth = requireAuth
         self.devices = devices
         self.callerDeviceId = callerDeviceId
         self.callerRole = callerRole
+        self.endpoints = endpoints
+    }
+
+    /// The addresses worth keeping: never one the Mac marks unsafe to hand a
+    /// phone (loopback — from here it dials the phone itself).
+    var dialableAddresses: [String] {
+        endpoints.filter { $0.qrSafe && $0.kind != "loopback" }.map(\.url)
     }
 
     init(from decoder: Decoder) throws {
@@ -36,6 +47,31 @@ struct RemoteStatus: Decodable, Equatable {
             .compactMap(\.value) ?? []
         callerDeviceId = try container.decodeIfPresent(String.self, forKey: .callerDeviceId)
         callerRole = try container.decodeIfPresent(String.self, forKey: .callerRole)
+        endpoints = try container.decodeIfPresent([Skippable<RemoteEndpoint>].self, forKey: .endpoints)?
+            .compactMap(\.value) ?? []
+    }
+}
+
+/// One row of the cockpit's `listEndpoints`: "loopback" | "lan" | "tailnet" |
+/// "magicdns". `qrSafe` missing reads as unsafe — fail closed.
+struct RemoteEndpoint: Decodable, Equatable {
+    var kind: String
+    var url: String
+    var qrSafe: Bool
+
+    enum CodingKeys: String, CodingKey { case kind, url, qrSafe }
+
+    init(kind: String, url: String, qrSafe: Bool) {
+        self.kind = kind
+        self.url = url
+        self.qrSafe = qrSafe
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(String.self, forKey: .kind)
+        url = try container.decode(String.self, forKey: .url)
+        qrSafe = try container.decodeIfPresent(Bool.self, forKey: .qrSafe) ?? false
     }
 }
 
