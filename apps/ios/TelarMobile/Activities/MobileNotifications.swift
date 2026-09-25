@@ -25,7 +25,11 @@ struct PushRegistration: Encodable {
     /// An older Mac ignores it and keeps using the fields above.
     var relay: RelayCredential? = nil
 }
-struct PushStatus: Decodable { var configured: Bool }
+struct PushStatus: Decodable {
+    var configured: Bool
+    /// Absent from a Mac older than the field.
+    var activity: ActivityReport?
+}
 
 @MainActor @Observable final class MobileNotifications {
     static let shared = MobileNotifications()
@@ -43,6 +47,8 @@ struct PushStatus: Decodable { var configured: Bool }
     var readiness = PushReadiness()
     var activityError: String?
     var followed: Set<ScopedSessionID> = []
+    /// Each Mac's word on this phone's automatic Live Activity, from the last sync.
+    var activityReports: [HostID: ActivityReport] = [:]
     private var token: String? = UserDefaults.standard.string(forKey: "telar.apns.token")
     private var activityTokens: [String: String] = [:]
     private var watchers: [String: Task<Void, Never>] = [:]
@@ -81,6 +87,12 @@ struct PushStatus: Decodable { var configured: Bool }
     private func saveStartToken(_ data: Data) {
         startToken = data.map { String(format: "%02x", $0) }.joined()
         defaults.set(startToken, forKey: "telar.activity.startToken")
+    }
+    /// The Live Activities status lines for Settings — see `LiveActivityDiagnosis`.
+    var liveActivityDiagnosis: [String] {
+        LiveActivityDiagnosis.lines(systemAllowed: ActivityAuthorizationInfo().areActivitiesEnabled, toggle: liveActivities,
+                                    hasStartToken: startToken != nil,
+                                    macs: (settings?.hosts ?? []).map { ($0.name, activityReports[$0.id]) })
     }
     func setLiveActivities(_ enabled: Bool) async {
         liveActivities = enabled
@@ -150,6 +162,7 @@ struct PushStatus: Decodable { var configured: Bool }
         let authorization = await UNUserNotificationCenter.current().notificationSettings()
         let allowed = authorization.authorizationStatus == .authorized || authorization.authorizationStatus == .provisional
         var next = PushReadiness()
+        var reports: [HostID: ActivityReport] = [:]
         let relayTokens = currentRelayTokens(token)
         for host in settings.hosts {
             guard let api = settings.api(for: host.id) else { continue }
@@ -176,9 +189,11 @@ struct PushStatus: Decodable { var configured: Bool }
                 // phone's token and no relay to send with; that is a fact about
                 // the Mac, and the banner says which one.
                 if !reply.configured { next.missingRelay.insert(host.id) }
+                if let report = reply.activity { reports[host.id] = report }
             } catch { next.unreachable.insert(host.id) }
         }
         readiness = next
+        activityReports = reports
         status = next.statusLine(enabled: enabled, allowed: allowed)
     }
 

@@ -48,7 +48,16 @@ struct NotificationSettingsView: View {
                 Toggle("Automatic Live Activities", isOn: $liveActivities)
                     .onChange(of: liveActivities) { _, value in Task { await notifications.setLiveActivities(value) } }
                 Text("A Live Activity starts automatically when a Mac has active agent work, highlights sessions that need you, and finishes when the work is done. Updates appear on the Lock Screen and Dynamic Island, including while Telar is in the background.")
+                // WHY THERE IS NO CARD, when there is none: this phone's side
+                // first, then what each Mac says happened to its last start.
+                ForEach(notifications.liveActivityDiagnosis, id: \.self) { line in
+                    Text(line).font(.footnote).foregroundStyle(.secondary)
+                }
             }
-        }.navigationTitle("Notifications & activities")
+        }
+        .navigationTitle("Notifications & activities")
+        // Each Mac's Live Activity report rides on the registration reply, so
+        // opening this screen asks again rather than showing an old answer.
+        .task { await notifications.syncRegistrations() }
     }
 }
