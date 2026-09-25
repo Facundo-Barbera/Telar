@@ -790,6 +790,16 @@ struct HTTPEngineAPI: EngineAPI {
         return wrapped.session
     }
 
+    /// WHICH OF THESE SESSIONS' ALERTS ARE STALE on this Mac, by the engine's
+    /// own read state — the launch reconcile (`ReadSync.reconcile`). Ids in,
+    /// ids out. A Mac too old to serve the route throws, and the phone keeps
+    /// its alerts.
+    func readState(_ ids: [EngineID]) async throws -> [EngineID] {
+        struct Answer: Decodable { var cleared: [EngineID] }
+        let answer: Answer = try await get("api/mobile/read-state", query: [URLQueryItem(name: "ids", value: ids.joined(separator: ","))])
+        return answer.cleared
+    }
+
     func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session {
         struct Created: Decodable { var session: Session }
         let created: Created = try await send("POST", "api/projects/\(escape(projectId))/sessions", body: input)

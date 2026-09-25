@@ -83,6 +83,9 @@ struct PushStatus: Decodable {
         }
         restoreActivities()
         Task { await syncRegistrations() }
+        // The read-sync safety net: alerts for sessions the Mac already has as
+        // read, which a throttled or missed silent push left behind.
+        Task { await ReadSync.reconcile(settings: settings) }
     }
     private func saveStartToken(_ data: Data) {
         startToken = data.map { String(format: "%02x", $0) }.joined()
@@ -380,8 +383,25 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         }
         let url = (response.notification.request.content.userInfo["url"] as? String).flatMap(URL.init(string:))
         Task { @MainActor in
-            if let url { MobileNotifications.shared.destination = ScopedSessionID(url: url) }
+            let ref = url.flatMap(ScopedSessionID.init(url:))
+            if let ref { MobileNotifications.shared.destination = ref }
             completionHandler()
+            // OPENING ONE IS LOOKING AT ALL OF THEM: the session's older alerts
+            // come down with the one tapped. The Mac hears of it through the
+            // ordinary receipt once the answer is actually on screen
+            // (`ReadReceiptCourier`) — never from the tap alone, which is the
+            // "marking on appear" `ReadReceipt.swift` refuses.
+            if let ref { await ReadSync.clearDelivered([ref]) }
+        }
+    }
+    /// THE SILENT READ-SYNC PUSH: the Mac saw these sessions read. Take their
+    /// alerts down and answer at once — iOS allows about thirty seconds and
+    /// budgets future wakes on how promptly this returns.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        let reads = Set(ReadSync.reads(from: userInfo))
+        guard !reads.isEmpty else { completionHandler(.noData); return }
+        Task {
+            completionHandler(await ReadSync.clearDelivered(reads) ? .newData : .noData)
         }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {

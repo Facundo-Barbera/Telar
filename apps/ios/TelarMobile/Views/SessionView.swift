@@ -427,9 +427,13 @@ struct SessionView: View {
                         // BOTH SURFACES, from the one answer. The transcript's own
                         // copy stops the gate re-firing; the report is what puts the
                         // sidebar's row right without waiting for its poll.
-                        onRead: { _, session in
+                        onRead: { identity, session in
                             sync.applyRead(session)
                             report?(session)
+                            // Read here, so its alerts on this phone are stale too.
+                            if let host = identity.hostId {
+                                Task { await ReadSync.clearDelivered([ScopedSessionID(hostId: host, sessionId: identity.sessionId)]) }
+                            }
                         }
                     )
                     sendReceiptIfEarned()

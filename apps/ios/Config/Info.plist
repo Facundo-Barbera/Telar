@@ -4,6 +4,10 @@
 <dict>
     <key>NSUserActivityTypes</key><array><string>com.telar.session</string></array>
     <key>NSSupportsLiveActivities</key><true/>
+    <!-- Read sync: a silent push from a Mac (`content-available`, push type
+         `background`) names sessions read there, and the app wakes briefly to
+         take their alerts down. Without this mode iOS never delivers it. -->
+    <key>UIBackgroundModes</key><array><string>remote-notification</string></array>
     <key>CFBundleURLTypes</key><array><dict>
         <key>CFBundleURLName</key><string>com.telar.session</string>
         <key>CFBundleURLSchemes</key><array><string>telar</string></array>
