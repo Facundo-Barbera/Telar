@@ -63,6 +63,8 @@ export type EngineStatePaths = {
    * place in a menu must not rewrite the routing registry.
    */
   modelOverlays: string;
+  /** The last good catalogue per provider — see `EngineStore.modelCatalogue`. */
+  modelCatalogues: string;
   /**
    * Completed MCP OAuth grants — access token, refresh token, the resolved
    * authorization server and the client they were minted for.
@@ -251,6 +253,7 @@ export function statePaths(root: string): EngineStatePaths {
     providerInstances: path.join(resolved, "provider-instances.json"),
     providerSecrets: path.join(resolved, "provider-secrets.json"),
     modelOverlays: path.join(resolved, "model-overlays.json"),
+    modelCatalogues: path.join(resolved, "model-catalogues.json"),
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),

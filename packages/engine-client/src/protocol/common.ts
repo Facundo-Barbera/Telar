@@ -1558,6 +1558,13 @@ export const ModelCatalogue = z.object({
    *  model manifest's `minVersion` is checked against. Cached with the list
    *  it describes. */
   cliVersion: z.string().min(1).optional(),
+  /**
+   * THIS ANSWER IS THE LAST GOOD ONE, AND A NEWER ONE IS BEING READ. The engine
+   * answers from the catalogue it persisted and asks the provider in the
+   * background; a client that sees this reads again shortly to pick the result
+   * up. Absent means nothing is on its way.
+   */
+  refreshing: z.boolean().optional(),
 });
 export type ModelCatalogue = z.infer<typeof ModelCatalogue>;
 
