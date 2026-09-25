@@ -36,6 +36,14 @@ import Testing
         #expect(try JSONDecoder().decode(ProviderModel.self, from: Data(older.utf8)).legacy == nil)
     }
 
+    @Test func aFixedWindowBeatsTheSuffix() throws {
+        // Opus 4.8 is always 1M and publishes its bare slug (#914).
+        let fixed = #"{"id":"claude-opus-4-8","label":"Opus 4.8","isDefault":false,"hidden":false,"efforts":[],"fastMode":true,"contextWindow":1000000}"#
+        #expect(ModelFamilies.contextWindow(of: try JSONDecoder().decode(ProviderModel.self, from: Data(fixed.utf8))) == .long)
+        #expect(ModelFamilies.contextWindow(of: model("haiku", label: "Haiku")) == .standard)
+        #expect(ModelFamilies.contextWindow(of: model("opus[1m]", label: "Opus")) == .long)
+    }
+
     @Test func datedBuildsFoldToo() {
         let models = [model("haiku", label: "Haiku", resolves: "claude-haiku-4-5-20251001")]
         #expect(ModelFamilies.group(models)[0].label == "Haiku 4.5")

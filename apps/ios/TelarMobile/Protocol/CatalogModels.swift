@@ -19,6 +19,9 @@ struct ProviderModel: Decodable, Identifiable, Equatable {
     /// never a choice made for you. Optional: absent on every row written
     /// before the model manifest existed.
     var defaultWindow: Bool?
+    /// The window in tokens of a model that has only one (Opus 4.8 / 4.7 are
+    /// always 1M, with no `[1m]` suffix). Optional: older engines omit it.
+    var contextWindow: Int?
     /// The manifest says this generation is history. Decoded only — this
     /// picker does not fold generations. Optional: older engines omit it.
     var legacy: Bool?

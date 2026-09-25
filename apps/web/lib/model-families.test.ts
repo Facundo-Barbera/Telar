@@ -110,12 +110,21 @@ describe("a new point release arrives (Fable 5.1)", () => {
 });
 
 describe("contextWindowOf", () => {
-  test("`[1m]` and nothing else", () => {
+  test("`[1m]` where the row states no window", () => {
     expect(contextWindowOf(CLAUDE[0]!)).toBe("long");
     expect(contextWindowOf(CLAUDE[2]!)).toBe("standard");
     // The alias hides the suffix; what it resolves to does not.
     expect(contextWindowOf(model("some-alias", { resolves: "claude-sonnet-5[1m]" }))).toBe("long");
     expect(contextWindowOf(model("gpt-5.6-sol"))).toBe("standard");
+  });
+
+  test("a fixed window the engine published wins over the bare slug (#914)", () => {
+    const opus48 = model("claude-opus-4-8", { resolves: "claude-opus-4-8", contextWindow: 1_000_000 });
+    const opus47 = model("claude-opus-4-7", { resolves: "claude-opus-4-7", contextWindow: 1_000_000 });
+    expect(contextWindowOf(opus48)).toBe("long");
+    expect(contextWindowOf(opus47)).toBe("long");
+    expect(contextWindowOf({ ...CLAUDE[4]!, contextWindow: 200_000 })).toBe("standard");
+    expect(windowsOf(groupFamilies([opus48])[0])).toEqual(["long"]);
   });
 });
 
