@@ -183,8 +183,12 @@ test("streamed deltas are coalesced per block, and a second block never joins th
     { type: "assistant_message", text: "abcd" },
     { type: "reasoning", text: "hmmm" },
   ]);
-  // …and six chunks cost the engine far fewer commands than six.
-  expect(sink.batches.length).toBeLessThanOrEqual(4);
+  // …and six chunks cost the engine far fewer commands than six. The bound
+  // counts each block's opening as its own command: a block start is flushed
+  // at once, so a thought with no text deltas is still visible while it runs.
+  expect(sink.batches.length).toBeLessThanOrEqual(5);
+  const deltaBatches = sink.batches.filter((batch) => batch.some((o) => o.kind === "content.delta"));
+  expect(deltaBatches.length).toBeLessThanOrEqual(2);
 });
 
 test("a closed block carries its ACCUMULATED text, so a reloaded session is not empty", async () => {
@@ -249,6 +253,84 @@ test("thinking blocks are captured as reasoning, which v1 discarded entirely", a
   expect(delta?.kind === "content.delta" && delta.stream).toBe("reasoning_text");
   // Reasoning must NOT contribute to the turn's final text.
   await expect(result).resolves.toMatchObject({ text: "" });
+});
+
+test("a thought with its text withheld still reaches the engine while it runs, with its size", async () => {
+  /**
+   * THE 6m50s OF NOTHING. Claude Code in Telar mode sends no thinking text —
+   * an empty block, deltas carrying only `estimated_tokens`, a signature, and
+   * `system/thinking_tokens`. The row used to be buffered until the block
+   * stopped, so the engine saw `turn.started` and then silence. Parked mid-
+   * thought here: everything asserted below arrived BEFORE the release.
+   */
+  let release!: () => void;
+  const parked = new Promise<void>((resolve) => (release = resolve));
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "stream_event", event: { type: "message_start", message: {} } };
+      yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "", estimated_tokens: 900 } } };
+      yield { type: "system", subtype: "thinking_tokens", estimated_tokens: 1200, estimated_tokens_delta: 300 };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } } };
+      await parked;
+      yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  const tokensReported = () =>
+    sink.observations.flatMap((o) => (o.kind === "item.updated" && o.item.detail.type === "reasoning" ? [o.item.detail.estimatedTokens] : []));
+  await until("the running estimate reached the sink", () => tokensReported().includes(1200));
+  const started = sink.observations.find((o) => o.kind === "item.started");
+  expect(started?.kind === "item.started" && started.item.detail.type).toBe("reasoning");
+  // One report per 500-token step crossed, not one per frame.
+  expect(tokensReported()).toEqual([900, 1200]);
+  expect(sink.observations.some((o) => o.kind === "item.completed")).toBeFalse();
+
+  release();
+  await result;
+  const closed = sink.observations.find((o) => o.kind === "item.completed");
+  // The final count rides the close, which is what a later reader sees.
+  expect(closed?.kind === "item.completed" && closed.detail).toEqual({ type: "reasoning", text: "", estimatedTokens: 1200 });
+});
+
+test("a tool row opens as the model starts writing the call, and the envelope updates it", async () => {
+  /**
+   * EIGHTEEN WRITES IN ONE BURST. The row used to open only from the assistant
+   * envelope, which the CLI sends once the WHOLE input is generated — so a long
+   * Write was invisible for as long as the model spent writing it.
+   */
+  let release!: () => void;
+  const parked = new Promise<void>((resolve) => (release = resolve));
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "stream_event", event: { type: "message_start", message: {} } };
+      yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "Write", input: {} } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"file_path":"/tmp/a.ts","content":"xx' } } };
+      await parked;
+      yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_1", name: "Write", input: { file_path: "/tmp/a.ts", content: "xx" } }] } };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  const startedFor = () => sink.observations.filter((o) => o.kind === "item.started" && o.item.id === "item_toolu_1");
+  await until("the tool row reached the sink", () => startedFor().length > 0);
+  const early = startedFor()[0];
+  expect(early?.kind === "item.started" && early.item).toMatchObject({ title: "Write", providerRefs: { itemId: "toolu_1" } });
+
+  release();
+  await result;
+  // Still ONE row: the envelope updates it rather than opening another.
+  expect(startedFor()).toHaveLength(1);
+  const updated = sink.observations.find((o) => o.kind === "item.updated" && o.item.id === "item_toolu_1");
+  expect(updated?.kind === "item.updated" && updated.item).toMatchObject({
+    title: "/tmp/a.ts",
+    detail: { type: "file_change", change: { path: "/tmp/a.ts", kind: "create" } },
+  });
+  const closed = sink.observations.find((o) => o.kind === "item.completed" && o.itemId === "item_toolu_1");
+  expect(closed?.kind === "item.completed" && closed.status).toBe("completed");
 });
 
 test("a tool call opens a row and its result closes the SAME row", async () => {
@@ -2417,6 +2499,30 @@ test("fast mode stays explicit, and Claude turns keep 1M enabled", async () => {
   expect(seen[0]).toMatchObject({ model: "claude-fable-5-1[1m]", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: { fastMode: true } });
   expect(seen[1]).toMatchObject({ model: "claude-opus-5", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
   expect(seen[2]).toMatchObject({ model: undefined, env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
+});
+
+test("MCP tool schemas are deferred behind tool search unless the environment says otherwise", async () => {
+  // 142 tools / ~38k tokens rode every request in the 24 Sep benchmark because
+  // Claude Code never switched tool search on by itself.
+  const seen: (Record<string, unknown> | undefined)[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      seen.push(input.options.env);
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const saved = process.env.ENABLE_TOOL_SEARCH;
+  try {
+    delete process.env.ENABLE_TOOL_SEARCH;
+    await run(driver, { model: "claude-opus-5-5[1m]" }).result;
+    process.env.ENABLE_TOOL_SEARCH = "false";
+    await run(driver, { model: "claude-opus-5-5[1m]", sessionId: "s-optout" }).result;
+  } finally {
+    if (saved === undefined) delete process.env.ENABLE_TOOL_SEARCH;
+    else process.env.ENABLE_TOOL_SEARCH = saved;
+  }
+  expect(seen[0]).toMatchObject({ ENABLE_TOOL_SEARCH: "true" });
+  expect(seen[1]).toMatchObject({ ENABLE_TOOL_SEARCH: "false" });
 });
 
 /**

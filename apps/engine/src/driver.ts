@@ -362,6 +362,20 @@ function claudeContextEnvForModel(model: string | undefined): Record<string, str
 }
 
 /**
+ * DEFER MCP TOOL SCHEMAS. Measured on the 24 Sep benchmark: Telar's first
+ * request carried 142 tools (321 kB) against the terminal's 33 — computer use
+ * alone 136 kB — about 38k tokens more context on every call. Claude Code only
+ * turns tool search on by itself past ~10% of the window (100k tokens on 1M)
+ * and not at all behind a custom base URL, so it never did. Forced on here so
+ * the model sees tool NAMES and loads a schema when it needs one. An explicit
+ * `ENABLE_TOOL_SEARCH` in the engine's environment or the session's env patch
+ * wins — the patch is applied after this one.
+ */
+function claudeToolSearchEnv(base: Record<string, string | undefined>): Record<string, string> | undefined {
+  return base.ENABLE_TOOL_SEARCH === undefined ? { ENABLE_TOOL_SEARCH: "true" } : undefined;
+}
+
+/**
  * What the meter may ASSUME before the provider has said anything — and only
  * for a row that explicitly asks for the long window. Measured on the dogfood
  * app: a session configured as bare `opus` was assumed 1M here because the
@@ -1307,6 +1321,7 @@ export function createClaudeDriver(
       const sdkEffort = claudeEffort(claudeEffortFor(model, effort));
       const userServers = claudeMcpServers(userMcpServers);
       const contextEnv = claudeContextEnvForModel(model);
+      const toolSearchEnv = claudeToolSearchEnv(process.env);
 
       let finalText = "";
       let receivedPartialText = false;
@@ -1430,13 +1445,13 @@ export function createClaudeDriver(
        * empty reasoning and empty assistant messages from the snapshot. Found
        * by running it, not by a test; the test now exists.
        */
-      const openBlocks = new Map<string, { id: string; kind: "text" | "thinking"; text: string }>();
+      const openBlocks = new Map<string, OpenBlock>();
 
-      const closeBlock = (block: { id: string; kind: "text" | "thinking"; text: string }): TurnObservation => ({
+      const closeBlock = (block: OpenBlock): TurnObservation => ({
         kind: "item.completed",
         itemId: block.id,
         status: "completed",
-        detail: block.kind === "text" ? { type: "assistant_message", text: block.text } : { type: "reasoning", text: block.text },
+        detail: block.kind === "text" ? { type: "assistant_message", text: block.text } : reasoningDetail(block),
       });
       /** Tool rows keyed by `tool_use_id`, so a later `tool_result` closes the
        *  row its call opened rather than opening a second one. */
@@ -1701,11 +1716,16 @@ export function createClaudeDriver(
         ttft_ms?: number;
         num_turns?: number;
         patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
+        /** `system/thinking_tokens` only: the open thought's running size. */
+        estimated_tokens?: number;
         event?: {
           type?: string;
           index?: number;
-          content_block?: { type?: string };
-          delta?: { type?: string; text?: string; thinking?: string };
+          /** `id`/`name` on a `tool_use` block only. */
+          content_block?: { type?: string; id?: string; name?: string };
+          /** `estimated_tokens` rides `thinking_delta` when the CLI omits the
+           *  thinking text itself — a running total, not an increment. */
+          delta?: { type?: string; text?: string; thinking?: string; estimated_tokens?: number };
           /** `message_delta` only: the response's FINAL output token count.
            *  Every earlier report of it is a placeholder — see the pump. */
           usage?: unknown;
@@ -2521,7 +2541,7 @@ export function createClaudeDriver(
          * as one — see `canonicalEnvPatch`. `{}` and `{ KEY: undefined }` are
          * opposite instructions that `JSON.stringify` rendered identically.
          */
-        env: canonicalEnvPatch(env, contextEnv),
+        env: canonicalEnvPatch(toolSearchEnv, env, contextEnv),
         effort: sdkEffort ?? null,
         fastMode: fastMode ?? null,
         executable: executable ?? null,
@@ -2592,7 +2612,7 @@ export function createClaudeDriver(
 
       /** The child's environment with the patch's deletions APPLIED, resolved
        *  once so the query options and the fingerprint cannot disagree. */
-      const childEnv = resolveChildEnv(process.env, env, contextEnv);
+      const childEnv = resolveChildEnv(process.env, toolSearchEnv, env, contextEnv);
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
@@ -3663,6 +3683,20 @@ export function createClaudeDriver(
             continue;
           }
 
+          // ── a silent thought, still going ─────────────────────────────
+          // The CLI's own running estimate for the open thinking block, sent
+          // when it withholds the text. Names no block, so the owner's newest
+          // open thought is the one it is about.
+          if (item.type === "system" && item.subtype === "thinking_tokens") {
+            const open = openThinkingOf(openBlocks, parentToolUseId);
+            const progress = open ? noteThinkingTokens(open, item.estimated_tokens) : undefined;
+            if (progress) {
+              emit(progress);
+              flushSoon();
+            }
+            continue;
+          }
+
           // ── streaming text and reasoning ───────────────────────────────
           if (item.type === "stream_event") {
             const event = item.event ?? {};
@@ -3680,14 +3714,9 @@ export function createClaudeDriver(
 
             if (event.type === "content_block_start") {
               const blockType = event.content_block?.type;
-              // TOOL BLOCKS ARE DELIBERATELY NOT OPENED HERE. Their input
-              // arrives as `input_json_delta` fragments that are only valid
-              // JSON once complete, and the assistant envelope below repeats
-              // every tool_use with its input already parsed. Opening in both
-              // places is how a row gets emitted twice.
               if (blockType === "text" || blockType === "thinking") {
                 const id = itemId();
-                openBlocks.set(index, { id, kind: blockType, text: "" });
+                openBlocks.set(index, { id, kind: blockType, text: "", ...(ownerTaskId ? { taskId: ownerTaskId } : {}) });
                 emit({
                   kind: "item.started",
                   item: {
@@ -3696,6 +3725,33 @@ export function createClaudeDriver(
                     ...(ownerTaskId ? { taskId: ownerTaskId } : {}),
                   },
                 });
+                // FLUSHED NOW, not with the first delta. A thought whose text
+                // the CLI omits has no text deltas at all, and waiting for one
+                // left minutes of a turn with nothing but `turn.started`.
+                await flush();
+                continue;
+              }
+              /**
+               * A TOOL ROW OPENS WHEN THE MODEL STARTS WRITING THE CALL, not
+               * when it has finished. The input streams as `input_json_delta`
+               * fragments and the assistant envelope only repeats the call once
+               * the WHOLE input exists — so a long Write was invisible for as
+               * long as the model spent writing it, and a response of eighteen
+               * of them arrived as one burst. Opened here with no input, under
+               * the id the envelope derives (`item_${id}`); the envelope then
+               * UPDATES the row rather than opening a second one.
+               *
+               * TodoWrite stays with the envelope: it is the plan row, keyed by
+               * turn, not a tool row keyed by call.
+               */
+              const useId = str(event.content_block?.id);
+              const name = str(event.content_block?.name);
+              if (blockType === "tool_use" && useId && name && name !== "TodoWrite" && !openTools.has(useId)) {
+                const seed = streamingToolSeed(useId, name, ownerTaskId);
+                openTools.set(useId, { id: seed.id, detail: seed.detail });
+                if (ours) openTopLevelTools.add(useId);
+                emit({ kind: "item.started", item: seed });
+                await flush();
               }
               continue;
             }
@@ -3703,6 +3759,11 @@ export function createClaudeDriver(
             if (event.type === "content_block_delta") {
               const open = openBlocks.get(index);
               if (!open) continue;
+              const progress = noteThinkingTokens(open, event.delta?.estimated_tokens);
+              if (progress) {
+                emit(progress);
+                flushSoon();
+              }
               const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
               if (typeof text !== "string" || text.length === 0) continue;
               open.text += text;
@@ -3852,9 +3913,12 @@ export function createClaudeDriver(
                   ...(ownerTaskId ? { taskId: ownerTaskId } : {}),
                   providerRefs: { itemId: useId },
                 };
+                // Already opened by its `content_block_start`: this is the
+                // same row, now with its input — an update, never a second row.
+                const streamed = openTools.has(useId);
                 openTools.set(useId, { id: seed.id, detail });
                 if (ours) openTopLevelTools.add(useId);
-                emit({ kind: "item.started", item: seed });
+                emit({ kind: streamed ? "item.updated" : "item.started", item: seed });
                 continue;
               }
               // With partial messages enabled the envelope REPEATS its text.
@@ -4039,7 +4103,7 @@ export function createClaudeDriver(
                 text: string;
                 usage: UsageSnapshot | undefined;
                 gate: SdkCanUseTool | undefined;
-                blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>;
+                blocks: Map<string, OpenBlock>;
                 tools: Map<string, { id: string; detail: ItemDetail }>;
                 /** The open provider-wait row, exactly as a human turn keeps one. */
                 waitItemId: string | undefined;
@@ -4363,23 +4427,42 @@ export function createClaudeDriver(
       async function pumpFrame(
         item: SdkFrame,
         ownerTaskId: string | undefined,
-        wake: { blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined,
+        wake: { blocks: Map<string, OpenBlock>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined,
       ): Promise<string> {
-        const blocks = wake?.blocks ?? new Map<string, { id: string; kind: "text" | "thinking"; text: string }>();
+        const blocks = wake?.blocks ?? new Map<string, OpenBlock>();
         const tools = wake?.tools ?? new Map<string, { id: string; detail: ItemDetail }>();
         let added = "";
+        // The silent thought's running size — see the turn pump's copy. The
+        // idle pump flushes after every frame, so there is nothing to schedule.
+        if (item.type === "system" && item.subtype === "thinking_tokens") {
+          const open = openThinkingOf(blocks, ownerTaskId);
+          const progress = open ? noteThinkingTokens(open, item.estimated_tokens) : undefined;
+          if (progress) emit(progress);
+          return added;
+        }
         if (item.type === "stream_event") {
           const event = item.event ?? {};
           const index = `${ownerTaskId ?? ""}#${typeof event.index === "number" ? event.index : -1}`;
           if (event.type === "content_block_start") {
             const blockType = event.content_block?.type;
+            const useId = str(event.content_block?.id);
+            const name = str(event.content_block?.name);
             if (blockType === "text" || blockType === "thinking") {
               const id = itemId();
-              blocks.set(index, { id, kind: blockType, text: "" });
+              blocks.set(index, { id, kind: blockType, text: "", ...(ownerTaskId ? { taskId: ownerTaskId } : {}) });
               emit({ kind: "item.started", item: { id, detail: blockType === "text" ? { type: "assistant_message", text: "" } : { type: "reasoning", text: "" }, ...(ownerTaskId ? { taskId: ownerTaskId } : {}) } });
+            } else if (wake && blockType === "tool_use" && useId && name && name !== "TodoWrite" && !tools.has(useId)) {
+              // Opened as the model starts writing the call — see the turn pump.
+              // Only inside a wake-up: with no turn the map is this frame's
+              // alone, so the envelope could not tell it had been opened.
+              const seed = streamingToolSeed(useId, name, ownerTaskId);
+              tools.set(useId, { id: seed.id, detail: seed.detail });
+              emit({ kind: "item.started", item: seed });
             }
           } else if (event.type === "content_block_delta") {
             const open = blocks.get(index);
+            const progress = open ? noteThinkingTokens(open, event.delta?.estimated_tokens) : undefined;
+            if (progress) emit(progress);
             const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
             if (open && typeof text === "string" && text.length > 0) {
               open.text += text;
@@ -4404,8 +4487,9 @@ export function createClaudeDriver(
             const isTask = name === "Task" || name === "Agent";
             const detail: ItemDetail = isTask ? { type: "task", taskId: `task_${useId}` } : itemDetailForToolCall(name, block.input);
             const title = isTask ? oneLine(str(asRecord(block.input).description) ?? str(asRecord(block.input).subagent_type) ?? name) : titleForToolCall(name, detail);
+            const streamed = tools.has(useId);
             tools.set(useId, { id: `item_${useId}`, detail });
-            emit({ kind: "item.started", item: { id: `item_${useId}`, detail, title, ...(ownerTaskId ? { taskId: ownerTaskId } : {}), providerRefs: { itemId: useId } } });
+            emit({ kind: streamed ? "item.updated" : "item.started", item: { id: `item_${useId}`, detail, title, ...(ownerTaskId ? { taskId: ownerTaskId } : {}), providerRefs: { itemId: useId } } });
           }
           return added;
         }
@@ -4425,6 +4509,82 @@ export function createClaudeDriver(
       }
     },
   };
+}
+
+/** A streamed text or thinking block between its start and stop. */
+type OpenBlock = {
+  id: string;
+  kind: "text" | "thinking";
+  text: string;
+  /** The task the row is filed under, repeated on every update — an
+   *  `item.updated` replaces the whole stored item. */
+  taskId?: string;
+  /** Thinking only: the provider's running size estimate, and the last value
+   *  actually reported (see `THINKING_TOKEN_STEP`). */
+  estimatedTokens?: number;
+  reportedTokens?: number;
+};
+
+/**
+ * HOW OFTEN A SILENT THOUGHT SAYS IT IS STILL GOING. Claude Code in Telar mode
+ * sends no thinking text at all — only a token estimate, on every delta — so
+ * without this a long thought is minutes of nothing reaching the engine. Each
+ * report is an engine command, so it moves by token STEP rather than per frame:
+ * one row rewrite per 500 tokens, and a step count a test can predict.
+ */
+const THINKING_TOKEN_STEP = 500;
+
+function reasoningDetail(block: OpenBlock): ItemDetail {
+  return {
+    type: "reasoning",
+    text: block.text,
+    ...(block.estimatedTokens === undefined ? {} : { estimatedTokens: block.estimatedTokens }),
+  };
+}
+
+/**
+ * Fold a running token estimate into an open thinking block. Returns the
+ * `item.updated` to emit when the estimate crossed a step boundary since the
+ * last report, and nothing otherwise.
+ */
+function noteThinkingTokens(block: OpenBlock, tokens: unknown): TurnObservation | undefined {
+  if (block.kind !== "thinking" || typeof tokens !== "number" || !Number.isFinite(tokens)) return undefined;
+  const rounded = Math.floor(tokens);
+  if (rounded <= (block.estimatedTokens ?? 0)) return undefined;
+  block.estimatedTokens = rounded;
+  if (Math.floor(rounded / THINKING_TOKEN_STEP) <= Math.floor((block.reportedTokens ?? 0) / THINKING_TOKEN_STEP)) return undefined;
+  block.reportedTokens = rounded;
+  return {
+    kind: "item.updated",
+    item: { id: block.id, detail: reasoningDetail(block), ...(block.taskId ? { taskId: block.taskId } : {}) },
+  };
+}
+
+/**
+ * The row a `tool_use` block opens before its input exists. Same id, detail
+ * shape and task filing the assistant envelope derives, so the envelope's
+ * `item.updated` lands on it. Titled by the tool until the input can say more.
+ */
+function streamingToolSeed(useId: string, name: string, ownerTaskId: string | undefined): ItemSeed {
+  const isTask = name === "Task" || name === "Agent";
+  const detail: ItemDetail = isTask ? { type: "task", taskId: `task_${useId}` } : itemDetailForToolCall(name, {});
+  const derived = isTask ? name : titleForToolCall(name, detail);
+  return {
+    id: `item_${useId}`,
+    detail,
+    title: derived === "(unknown)" ? name : derived,
+    ...(ownerTaskId ? { taskId: ownerTaskId } : {}),
+    providerRefs: { itemId: useId },
+  };
+}
+
+/** The newest open thinking block of one owner — what `system/thinking_tokens`,
+ *  which names no block index, is about. */
+function openThinkingOf(blocks: Map<string, OpenBlock>, owner: string | undefined): OpenBlock | undefined {
+  const prefix = `${owner ?? ""}#`;
+  let found: OpenBlock | undefined;
+  for (const [key, block] of blocks) if (block.kind === "thinking" && key.startsWith(prefix)) found = block;
+  return found;
 }
 
 /** The plain text of a user message's content — the CLI's own injected

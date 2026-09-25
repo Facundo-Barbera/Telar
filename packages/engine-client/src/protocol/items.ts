@@ -411,7 +411,17 @@ export const ItemDetail = z.discriminatedUnion("type", [
    */
   z.object({ type: z.literal("notification"), notification: NotificationDetail }),
   z.object({ type: z.literal("assistant_message"), text: z.string() }),
-  z.object({ type: z.literal("reasoning"), text: z.string() }),
+  z.object({
+    type: z.literal("reasoning"),
+    text: z.string(),
+    /**
+     * THE PROVIDER'S RUNNING ESTIMATE of how long the thought is, in tokens.
+     * Claude Code omits the thinking text itself in Telar mode and reports only
+     * this, so without it a six-minute thought is an empty row. Absent means
+     * nobody said, not zero.
+     */
+    estimatedTokens: z.number().int().nonnegative().optional(),
+  }),
   z.object({ type: z.literal("plan"), plan: PlanDetail }),
   z.object({ type: z.literal("command_execution"), command: CommandExecutionDetail }),
   z.object({ type: z.literal("file_change"), change: FileChangeDetail }),
