@@ -239,6 +239,14 @@ export type ClaudeSessionRuntime<T = unknown, Seed extends { id: string; provide
    * that never says. Learned per process, never assumed.
    */
   echoesUserMessageUuid: boolean;
+  /**
+   * This process has sent `session_state_changed` at least once, so its
+   * `idle` is the turn's end and a `result` is only a sign that one is near.
+   * Learned per process for the same reason as the flag above: the CLI sends
+   * the frame only when `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` is set, and an
+   * older one never does.
+   */
+  reportsSessionState: boolean;
   /** A turn is pumping right now — never evict. */
   busy: boolean;
   /**

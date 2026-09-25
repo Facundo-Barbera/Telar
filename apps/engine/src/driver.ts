@@ -377,6 +377,15 @@ function claudeToolSearchEnv(base: Record<string, string | undefined>): Record<s
 }
 
 /**
+ * ASK THE CLI TO SAY WHEN THE TURN IS OVER. `session_state_changed` is the
+ * SDK's "authoritative turn-over signal", but the CLI only sends it with this
+ * set (read off CLI 0.3.270: `if (env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS)
+ * emit(...)`). Carried in the same patch as tool search, so the session's own
+ * env patch still wins.
+ */
+const SESSION_STATE_ENV = { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" };
+
+/**
  * What the meter may ASSUME before the provider has said anything — and only
  * for a row that explicitly asks for the long window. Measured on the dogfood
  * app: a session configured as bare `opus` was assumed 1M here because the
@@ -1322,7 +1331,7 @@ export function createClaudeDriver(
       const sdkEffort = claudeEffort(claudeEffortFor(model, effort));
       const userServers = claudeMcpServers(userMcpServers);
       const contextEnv = claudeContextEnvForModel(model);
-      const toolSearchEnv = claudeToolSearchEnv(process.env);
+      const defaultEnv = { ...SESSION_STATE_ENV, ...claudeToolSearchEnv(process.env) };
 
       let finalText = "";
       let receivedPartialText = false;
@@ -1384,6 +1393,9 @@ export function createClaudeDriver(
        * waiting forever on a `result` that measurably does not always come.
        */
       let endTurnSeenAt: number | undefined;
+      /** Our main loop's successful `result` has been read — on a process that
+       *  reports session state, that is when an `idle` can be ours. */
+      let ownResultRead = false;
       let silenceTimer: ReturnType<typeof setTimeout> | undefined;
       const disarmProviderSilence = (): void => {
         if (silenceTimer === undefined) return;
@@ -1724,6 +1736,8 @@ export function createClaudeDriver(
         patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
         /** `system/thinking_tokens` only: the open thought's running size. */
         estimated_tokens?: number;
+        /** `session_state_changed` only: `idle | running | requires_action`. */
+        state?: string;
         event?: {
           type?: string;
           index?: number;
@@ -2580,7 +2594,7 @@ export function createClaudeDriver(
          * as one — see `canonicalEnvPatch`. `{}` and `{ KEY: undefined }` are
          * opposite instructions that `JSON.stringify` rendered identically.
          */
-        env: canonicalEnvPatch(toolSearchEnv, env, contextEnv),
+        env: canonicalEnvPatch(defaultEnv, env, contextEnv),
         effort: sdkEffort ?? null,
         fastMode: fastMode ?? null,
         executable: executable ?? null,
@@ -2651,7 +2665,7 @@ export function createClaudeDriver(
 
       /** The child's environment with the patch's deletions APPLIED, resolved
        *  once so the query options and the fingerprint cannot disagree. */
-      const childEnv = resolveChildEnv(process.env, toolSearchEnv, env, contextEnv);
+      const childEnv = resolveChildEnv(process.env, defaultEnv, env, contextEnv);
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
@@ -2902,6 +2916,7 @@ export function createClaudeDriver(
           wakeActive: false,
           lastUsedAt: Date.now(),
           echoesUserMessageUuid: false,
+          reportsSessionState: false,
         };
       };
 
@@ -3571,6 +3586,37 @@ export function createClaudeDriver(
             continue;
           }
 
+          // ── the CLI's own word on whether the turn is over ────────────
+          if (item.type === "system" && item.subtype === "session_state_changed") {
+            runtime.reportsSessionState = true;
+            /**
+             * `idle` ENDS THE TURN — once the turn is demonstrably ours: our
+             * reply has begun, or our result was read (a `/compact` answers
+             * with a result and no message start). An `idle` read before
+             * either is the tail of something earlier, such as the CLI's own
+             * wake-up, and ends nothing. Nor does one while a person's steer
+             * is unanswered: interrupting to deliver it can idle the CLI for
+             * a moment before it takes the steer, so once a steer went in,
+             * only an `idle` after a result counts.
+             *
+             * It comes after the result, so usage and text are already in.
+             * With the input stream open (as it always is here) the CLI sends
+             * it while BACKGROUNDED agents still run — read off the CLI: its
+             * "waiting_for_agents" phase notifies idle — and they are the
+             * tasks' business, not the turn's.
+             *
+             * `running` and `requires_action` change nothing here: the first
+             * is what the turn already is, and the second is a permission
+             * request the engine already holds as an open request.
+             */
+            if (str(item.state) === "idle" && foreignTurn === undefined && outstandingSteerCuts.size === 0 && (ownResultRead || (ownTurnOpen && !steerSent))) {
+              completed = true;
+              await flush();
+              if (persistent) break;
+            }
+            continue;
+          }
+
           if (item.type === "result") {
             /**
              * A SUB-AGENT'S RESULT IS THE SUB-AGENT'S, NEVER THE TURN'S. The
@@ -3707,6 +3753,25 @@ export function createClaudeDriver(
                 await flush();
                 continue;
               }
+            }
+            /**
+             * ON A PROCESS THAT REPORTS SESSION STATE, THE RESULT IS NOT THE END.
+             * `idle` is ("authoritative turn-over signal"), and it follows the
+             * result at once when the turn is really over. So the result only
+             * arms the end-turn grace: our main loop speaking again (a tool
+             * result, a new message) disarms it and the turn goes on, and
+             * `idle` ends it. If `idle` never comes — the CLI may hold it while
+             * background agents run — the grace settles the turn as a result
+             * always did, so this can end a turn later but never hold one.
+             */
+            if (persistent && runtime.reportsSessionState) {
+              ownResultRead = true;
+              // Steering stops here, as it did when the result ended the turn:
+              // a message arriving after it is the engine's to requeue.
+              turnDone = true;
+              endTurnSeenAt = Date.now();
+              await flush();
+              continue;
             }
             completed = true;
             await flush();
