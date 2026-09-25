@@ -603,6 +603,124 @@ describe("the end-turn grace (#465)", () => {
   });
 });
 
+describe("session_state_changed is the turn's end where the CLI sends it", () => {
+  // A grace far longer than any test: if a turn below ends, `idle` ended it.
+  const NEVER = { endTurnGraceMs: 600_000 };
+  const state = (value: string) => ({ type: "system", subtype: "session_state_changed", state: value });
+
+  test("the child is asked to send it", async () => {
+    let env: Record<string, string | undefined> | undefined;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ options }: { options: { env?: Record<string, string | undefined> } }) {
+        env = options.env;
+        yield { type: "result", subtype: "success" };
+      },
+    }) as never);
+    await run(driver).result;
+    expect(env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS).toBe("1");
+  });
+
+  test("a result the CLI sends before it is done does not end the turn; idle does", async () => {
+    /**
+     * The shape the SDK describes: a result can come out while the turn is
+     * still going (a held-back result flushed, a continuation behind it). With
+     * the CLI reporting state, that result is not the end — the continuation
+     * is still this turn's, and `idle` closes it.
+     */
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield state("running");
+          yield { type: "stream_event", event: { type: "message_start" } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "first part" }], stop_reason: "end_turn" } };
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+          // More of OUR main loop — it disarms the grace the result armed.
+          yield { type: "stream_event", event: { type: "message_start" } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: " and the rest" }], stop_reason: "end_turn" } };
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+          yield state("idle");
+          await new Promise(() => undefined);
+        },
+      }),
+      NEVER,
+    );
+    const { sink, result } = run(driver);
+    const resolved = await result;
+    expect(resolved.text).toContain("and the rest");
+    const texts = sink.observations.flatMap((o) => (o.kind === "item.started" && o.item.detail.type === "assistant_message" ? [o.item.id] : []));
+    expect(texts.length).toBe(2);
+  });
+
+  test("idle ends a turn whose result never came, without waiting out the grace", async () => {
+    // #465's stall, closed by the CLI's own word instead of by a timer. The
+    // reply's first frame echoes our send's uuid, as the CLI does: that is
+    // what makes a result-less `idle` provably ours.
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+          const first = await prompt[Symbol.asyncIterator]().next();
+          yield state("running");
+          yield { type: "stream_event", event: { type: "message_start" }, user_message_uuid: first.value!.uuid };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "the answer" }], stop_reason: "end_turn" } };
+          yield state("idle");
+          await new Promise(() => undefined);
+        },
+      }),
+      NEVER,
+    );
+    await expect(run(driver).result).resolves.toMatchObject({ text: "the answer" });
+  });
+
+  test("idle while a backgrounded agent runs ends the turn and leaves the agent alive", async () => {
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield state("running");
+          yield { type: "stream_event", event: { type: "message_start" } };
+          yield { type: "system", subtype: "task_started", task_id: "a1", tool_use_id: "toolu_a1", description: "Explore", task_type: "local_agent", is_backgrounded: true };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "launched it" }], stop_reason: "end_turn" } };
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+          yield state("idle");
+          await new Promise(() => undefined);
+        },
+      }),
+      NEVER,
+    );
+    const { sink, result } = run(driver);
+    await result;
+    expect(sink.observations.filter((o) => o.kind === "task.completed")).toHaveLength(0);
+  });
+
+  test("an idle before our reply has begun is someone else's, and ends nothing", async () => {
+    let release: (() => void) | undefined;
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          // The tail of an earlier turn, read first by this one.
+          yield state("idle");
+          yield state("running");
+          yield { type: "stream_event", event: { type: "message_start" } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "ours" }], stop_reason: "end_turn" } };
+          release?.();
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+          yield state("idle");
+          await new Promise(() => undefined);
+        },
+      }),
+      NEVER,
+    );
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const { result } = run(driver);
+    let settled = false;
+    void result.then(() => { settled = true; });
+    await released;
+    // The stray idle came before our text: had it ended the turn, the result
+    // would already be settled with nothing in it.
+    expect(settled).toBe(false);
+    await expect(result).resolves.toMatchObject({ text: "ours" });
+  });
+});
+
 test("a result echoing the person's own `origin: human` is OURS and ends the turn (#465)", async () => {
   /**
    * THE ACTUAL CAUSE OF #465. #241 began stamping a person's send with
