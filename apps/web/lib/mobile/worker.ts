@@ -243,6 +243,31 @@ export function changedSessions(sessions: SessionSignal[], previous: SessionSign
   return changed;
 }
 
+/**
+ * WHICH BLOCKED SESSIONS CAN BE APPROVED FROM THE NOTIFICATION ITSELF.
+ *
+ * Only when exactly one request is open and it is an approval (a command, an
+ * edit, a read, a tool call). A question needs an answer typed on the phone,
+ * and a secret is never released from a lock screen, so both keep Open only.
+ * The alert names THAT request; the phone resolves it and nothing else, so a
+ * tap on a stale notification cannot approve something newer. Read only for
+ * sessions whose signal moved, which is when an alert can go at all.
+ */
+const APPROVABLE = new Set(["command_execution", "file_change", "file_read", "tool_call"]);
+export async function markApprovable(
+  sessions: SessionSignal[],
+  changed: ReadonlySet<string> | undefined,
+  read: (sessionId: string) => Promise<{ requests: ReadonlyArray<{ id: string; state: string; detail: { kind: string } }> }>,
+): Promise<void> {
+  for (const session of sessions) {
+    if (session.activity !== "blocked" || (changed && !changed.has(session.id))) continue;
+    try {
+      const open = (await read(session.id)).requests.filter(request => request.state === "open");
+      if (open.length === 1 && APPROVABLE.has(open[0].detail.kind)) session.approvable = open[0].id;
+    } catch { /* The alert still goes, with Open only. */ }
+  }
+}
+
 /** Only the fields a notification is made of. Keeping the engine's whole row in
  *  a module global would hold a copy of every session's state for ever. */
 function signals(sessions: readonly SessionSignal[]): SessionSignal[] {
@@ -394,6 +419,7 @@ export function startMobilePushWorker(): void {
         if (answer.etag !== undefined) workerGlobal.telarMobilePushETag = answer.etag;
         changed = reconcile ? undefined : changedSessions(sessions, workerGlobal.telarMobilePushSnapshot);
         workerGlobal.telarMobilePushSnapshot = sessions;
+        await markApprovable(sessions, changed, id => api.session(id, { turns: 1 }));
         if (changed && changed.size === 0 && !heartbeatDue(records, sessions, workerGlobal.telarMobilePushBeatAt, nowMs)) return;
       }
       workerGlobal.telarMobilePushBeatAt = nowMs;

@@ -22,6 +22,9 @@ export interface MobileRegistration {
 export interface SessionSignal {
   id: string; title: string; activity: string; activityAt?: number;
   lastTurnEndedAt?: number; lastTurnFailed?: boolean;
+  /** The one open request a notification may offer to approve, when there is
+   *  exactly one and it is an approval rather than a question or a secret. */
+  approvable?: string;
 }
 export interface PushRecord extends MobileRegistration {
   deviceId: string;
@@ -77,7 +80,10 @@ export interface PushRecord extends MobileRegistration {
   seen: Record<string, string>;
   activitySent: Record<string, number>;
 }
-export type PushPayload = { aps: Record<string, unknown>; url?: string };
+/** `request` names the request an alert's Approve action resolves: that one, never whatever is open by then. */
+export type PushPayload = { aps: Record<string, unknown>; url?: string; request?: string };
+/** The phone registers these (`NotificationActions.swift`): Approve + Open, or Open alone. */
+export const CATEGORY_REQUEST = "TELAR_REQUEST", CATEGORY_SESSION = "TELAR_SESSION";
 export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity"; collapseId: string; payload: PushPayload };
 
 /**
@@ -241,9 +247,11 @@ export function notification(record: MobileRegistration, session: SessionSignal,
     else if (record.completions) body = "A session finished. Its result is ready to review.";
   }
   if (!body) return;
+  const approvable = session.activity === "blocked" ? session.approvable : undefined;
   const collapseId = crypto.createHash("sha256").update(session.id).digest("hex");
   return { token: record.token, topic: record.topic, sandbox: record.sandbox, kind: "alert", collapseId,
-    payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, sound: "default", "thread-id": `${record.hostId}:${session.id}` }, url: sessionURL(record.hostId, session.id) } };
+    payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, sound: "default", "thread-id": `${record.hostId}:${session.id}`,
+      category: approvable ? CATEGORY_REQUEST : CATEGORY_SESSION }, url: sessionURL(record.hostId, session.id), ...(approvable ? { request: approvable } : {}) } };
 }
 export function activityDelivery(record: MobileRegistration, follow: MobileRegistration["activities"][number], session: SessionSignal | undefined, now: number): Delivery {
   const ended = !session || session.activity === "idle";
