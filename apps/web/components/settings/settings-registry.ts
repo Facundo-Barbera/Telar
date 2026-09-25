@@ -54,6 +54,7 @@ import {
   ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
+  GaugeIcon,
   GitPullRequestIcon,
   GlobeIcon,
   HardDriveIcon,
@@ -333,6 +334,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Which model a conversation in this project opens on.",
             keywords: ["model", "per project", "default"],
             icon: SparklesIcon,
+          },
+          {
+            title: "Model options",
+            hint: "New conversations in this project start with this model and these options.",
+            keywords: ["effort", "reasoning", "fast mode", "per project"],
+            icon: GaugeIcon,
           },
           {
             title: "Where new conversations start",
