@@ -329,9 +329,35 @@ export const RunResizeAnswer = z.object({ resized: z.boolean() });
 export type RunResizeAnswer = z.infer<typeof RunResizeAnswer>;
 
 /** `replace` is still accepted and means nothing: every start opens a new
- *  terminal, and there is no deployment left to take over. */
-export const RunStartInput = z.object({ configId: z.string().min(1), replace: z.boolean().optional() });
+ *  terminal, and there is no deployment left to take over.
+ *
+ *  `openedBy: "agent"` marks a terminal the agent opened, so a person closing
+ *  it is told to the agent on its next turn. Absent means the person. */
+export const RunStartInput = z.object({
+  configId: z.string().min(1),
+  replace: z.boolean().optional(),
+  openedBy: z.enum(["person", "agent"]).optional(),
+});
 export type RunStartInput = z.infer<typeof RunStartInput>;
+
+/**
+ * A terminal an AGENT opens with a command of its own rather than a saved
+ * configuration (`terminal_open`). It is recorded with `origin: "agent"` and
+ * opens in the session's panel like any other.
+ *
+ * READINESS IS ONE OF TWO THINGS: a URL that answers once it is up (the same
+ * rule as a configuration's), or a pattern its output prints when it is.
+ */
+export const RunOpenInput = z.object({
+  command: z.string().min(1).max(4000),
+  /** Relative to the session's worktree. Default: its root. */
+  cwd: z.string().max(1024).optional(),
+  /** The tab's title. Default: the start of the command. */
+  name: z.string().min(1).max(120).optional(),
+  readinessUrl: z.string().url().optional(),
+  readyPattern: z.string().min(1).max(500).optional(),
+});
+export type RunOpenInput = z.infer<typeof RunOpenInput>;
 
 export const RunConfigurationsAnswer = z.object({ configurations: z.array(RunConfigurationView) });
 export type RunConfigurationsAnswer = z.infer<typeof RunConfigurationsAnswer>;

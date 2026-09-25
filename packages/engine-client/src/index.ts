@@ -152,6 +152,7 @@ import {
   type RunWriteAnswer,
   type RunResizeAnswer,
   type RunStartInput,
+  type RunOpenInput,
   type RunStatusAnswer,
   type SessionAssignment,
   type PluginStatus,
@@ -2635,6 +2636,14 @@ export class EngineClient {
    */
   startRun(sessionId: string, input: RunStartInput): Promise<RunView> {
     return this.request("POST", `${runBase(sessionId)}/start`, input);
+  }
+
+  /**
+   * Open a NEW terminal running a command the AGENT chose, with no saved
+   * configuration behind it (`terminal_open`). Recorded as `origin: "agent"`.
+   */
+  openTerminal(sessionId: string, input: RunOpenInput): Promise<RunView> {
+    return this.request("POST", `${runBase(sessionId)}/open`, input);
   }
 
   /**

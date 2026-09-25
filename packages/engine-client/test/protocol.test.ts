@@ -602,6 +602,7 @@ describe("waitingToolOf — only a call that merely waits", () => {
 
   test("the three known waits", () => {
     expect(waitingToolOf(call("mcp__telar__run_wait"))).toBe("run");
+    expect(waitingToolOf(call("mcp__telar__terminal_wait"))).toBe("run");
     expect(waitingToolOf(shell("sleep 30"))).toBe("timer");
     expect(waitingToolOf(shell("  sleep 2m"))).toBe("timer");
     expect(waitingToolOf({ type: "dynamic_tool_call", call: { name: "TaskOutput", input: { task_id: "b1", block: true } } })).toBe("task");

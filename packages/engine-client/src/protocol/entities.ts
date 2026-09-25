@@ -625,7 +625,7 @@ export type SessionActivity = z.infer<typeof SessionActivity>;
 /**
  * WHAT A BLOCKING CALL IS WAITING FOR, in words that are not a tool name.
  *
- *   run     a run to become ready, or to finish (`run_wait`)
+ *   run     a terminal to become ready, or to finish (`terminal_wait`, `run_wait`)
  *   timer   a foreground `sleep N`
  *   task    background work to report (a blocking read of a task's output)
  */
@@ -673,7 +673,7 @@ export function waitingToolOf(detail: ItemDetail): WaitingOn | undefined {
   }
   if (detail.type === "mcp_tool_call" || detail.type === "dynamic_tool_call") {
     const { tool } = parseToolName(detail.call.name);
-    if (tool === "run_wait") return "run";
+    if (tool === "run_wait" || tool === "terminal_wait") return "run";
     if (tool === "TaskOutput" || tool === "BashOutput") {
       const input = detail.call.input as { block?: unknown } | undefined;
       return input?.block === true ? "task" : undefined;

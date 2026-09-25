@@ -174,13 +174,14 @@ describe("the capability list", () => {
     // is CORE rather than a plugin and joins the list in the same change that
     // mounts its toolkit. `spool` LEFT in #501, with the toolkit it named —
     // the same rule read the other way. `prompt` joined in #87 under the same
-    // rule as `run`: core, and listed in the change that mounts its wall.
+    // rule as `run`: core, and listed in the change that mounts its wall. So
+    // did `terminal`, with the toolkit that opens terminals for an agent.
     for (const capability of ["browser", "sessions", "notebook", "ds", "latex", "display"]) {
       expect(TELAR_CAPABILITIES).toContain(capability);
     }
     expect(TELAR_CAPABILITIES).not.toContain("spool");
     expect([...TELAR_CAPABILITIES].sort()).toEqual(
-      ["browser", "sessions", "notebook", "ds", "latex", "display", "run", "prompt", "hello"].sort(),
+      ["browser", "sessions", "notebook", "ds", "latex", "display", "run", "terminal", "prompt", "hello"].sort(),
     );
   });
 
