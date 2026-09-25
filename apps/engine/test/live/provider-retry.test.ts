@@ -27,6 +27,7 @@ import path from "node:path";
 import { createServer, type Server } from "node:http";
 import type { TurnObservation } from "@telar/engine-client";
 import { createClaudeDriver } from "../../src/driver";
+import type { TurnDriver } from "../../src/provider-contract";
 import { cliUsable, resolveCli } from "../../src/cli-resolution";
 
 /** Skipped where there is no Claude Code — CI has none, and this test is about
@@ -36,8 +37,60 @@ const CLI = cliUsable(claude) ? claude.path : undefined;
 
 const servers: Server[] = [];
 const directories: string[] = [];
+const drivers: TurnDriver[] = [];
 
+/** Long enough for a real CLI to take SIGTERM and exit; a CLI that needs more is a finding, not a wait. */
+const CLI_EXIT_CEILING_MS = 10_000;
+
+/**
+ * The CLIs THIS process started from `executable` — its direct children, read
+ * off `ps`, because the SDK spawns them and hands the driver no pid.
+ */
+function cliChildren(executable: string): number[] {
+  const ps = Bun.spawnSync(["ps", "-Ao", "pid=,ppid=,command="], { timeout: 5_000, killSignal: "SIGKILL" });
+  return (ps.stdout?.toString() ?? "")
+    .split("\n")
+    .map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null && Number(match[2]) === process.pid && match[3]!.startsWith(executable))
+    .map((match) => Number(match[1]));
+}
+
+const running = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+};
+
+/**
+ * THE CLI IS STOPPED AND ITS EXIT AWAITED BEFORE THE TEST IS OVER — #849.
+ *
+ * `driver.run` resolving is NOT the process ending. The Claude driver keeps a
+ * live runtime per session, CLI included, so the next turn does not cold-start
+ * — which is right for the daemon and means this test used to finish with the
+ * real `claude` still running. Nothing ever stopped it: it died only when the
+ * whole `bun test` process exited and its stdin closed, about 100 ms after the
+ * runner — the one survivor the bounded wrapper found in the engine suite on a
+ * Mac, `pid=… ppid=1 … (2.1.282)`. CI never saw it because CI has no Claude Code
+ * and skips this file, which is why #849 reproduced on a developer machine and
+ * not on `ubuntu-latest`.
+ *
+ * `dispose` is what the worker calls on stop, so it is what the test calls too;
+ * it SIGNALS and returns, so the pids are read before it and waited on after.
+ * A CLI still alive at the ceiling is killed — it is ours, by pid — and the
+ * test fails saying so, rather than leaving it for the next run to find.
+ */
 afterEach(async () => {
+  const pids = CLI ? cliChildren(CLI) : [];
+  for (const driver of drivers.splice(0)) driver.dispose?.();
+  const deadline = Date.now() + CLI_EXIT_CEILING_MS;
+  while (pids.some(running) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+  const stuck = pids.filter(running);
+  for (const pid of stuck) process.kill(pid, "SIGKILL");
+  expect(stuck, `the Claude CLI did not exit within ${CLI_EXIT_CEILING_MS}ms of dispose, so it was killed`).toEqual([]);
+
   for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
   for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -134,6 +187,7 @@ describe.skipIf(!CLI)("a provider retry reaches the transcript, measured against
 
       const observations: TurnObservation[] = [];
       const driver = createClaudeDriver(undefined, { resolveExecutable: () => CLI });
+      drivers.push(driver);
       const started = Date.now();
       const result = await driver.run({
         prompt: "Reply with the single word ok.",
