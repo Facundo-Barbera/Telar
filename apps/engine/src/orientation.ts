@@ -124,7 +124,9 @@ It is not this CLI's own notion of a session, and not a chat thread.
   for intervention. Once a report, result or blocker from your run has reached
   a subscriber, your run completing does not wake them again (failing or being
   stopped still does), and two messages from one run reach a subscriber that
-  has not started yet as one.
+  has not started yet as one. To fix something you already sent, send the
+  correction with \`corrects\` naming that message's runId: unread, it is
+  replaced; already read, the correction arrives at once.
 - **A message arrives as a NOTICE, not as text.** The recipient is handed one
   line — who sent it, which run holds it, how long it is, its opening — and
   fetches the body with \`sessions_read\`. Put the point in the first line.

@@ -98,6 +98,9 @@ export type AgentNoticeInput = {
    *  body. Kept on the input because callers pass it and the field documents
    *  why it is ignored here. */
   scope?: string;
+  /** The run of an earlier message this one corrects (#784). Named in the
+   *  notice, so the reader knows which version to discard. */
+  corrects?: string;
 };
 
 /**
@@ -117,7 +120,7 @@ export function agentNotice(input: AgentNoticeInput): string {
   const where = `sessions_read(sessionId: "${input.recipientSessionId}", runId: "${input.runId}")`;
   const assignment = input.intent === "task" || input.intent === "blocker";
   return [
-    `[agent message · ${input.intent}] ${who} ${verbPhrase(input.intent)} (run ${input.runId}, ${size}).`,
+    `[agent message · ${input.intent}] ${who} ${verbPhrase(input.intent)} (run ${input.runId}, ${size}).${input.corrects ? ` It CORRECTS their earlier message (run ${input.corrects}); disregard that one.` : ""}`,
     assignment
       ? `None of it is in this notice. Read it with ${where} before acting on it.`
       : `None of it is in this notice. Fetch it with ${where} if it is worth the context.`,
