@@ -1094,8 +1094,6 @@ function watchPresence() {
     powerMonitor.on("unlock-screen", () => { screenLocked = false; report(); });
     app.on("browser-window-focus", report);
     app.on("browser-window-blur", report);
-    // In-app routes are pushState, so `did-navigate` never fires for them.
-    app.on("web-contents-created", (_event, contents) => contents.on("did-navigate-in-page", report));
   }
   presenceReporter.start();
 }
@@ -1329,6 +1327,9 @@ function createWindow(url) {
       buildApplicationMenu();
     }
   });
+  // The route shown here is half of "Notify on"'s viewing rule; in-app routes
+  // are pushState, so `did-navigate` never fires for them.
+  win.webContents.on("did-navigate-in-page", () => presenceReporter.report());
   win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
     // Re-announce every live partition's host to the reloaded renderer.
