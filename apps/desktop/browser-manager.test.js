@@ -4,6 +4,7 @@ const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
 const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress, zoomStep, ZOOM_STEPS, TAB_SELECT_CHORDS } = require("./browser-manager");
+const { installDownloadHandler } = require("./browser-downloads");
 
 class FakeDebugger extends EventEmitter {
   constructor() {
@@ -339,6 +340,10 @@ function makeHarness(options = {}) {
         setPermissionCheckHandler() {},
         setDisplayMediaRequestHandler() {},
         setDevicePermissionHandler() {},
+        // The download handler's one event; `download` fires it as Chromium would.
+        downloadListeners: [],
+        on(event, listener) { if (event === "will-download") this.downloadListeners.push(listener); },
+        download(item, webContents) { for (const listener of this.downloadListeners) listener({}, item, webContents); },
       });
     }
     return sessions.get(partition);
@@ -411,6 +416,10 @@ function makeHarness(options = {}) {
     ...(options.onLoginEntryFinished ? { onLoginEntryFinished: options.onLoginEntryFinished } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
     ...(options.sessions ? { sessionFor } : {}),
+    // A fixture folder and an empty in-memory disk: no test reaches the real
+    // Downloads folder or writes anything.
+    downloadsPath: () => "/fixture/Downloads",
+    installDownloads: (ses, handlers) => installDownloadHandler(ses, { ...handlers, fs: { existsSync: () => false, mkdirSync() {} } }),
   });
   // Most tests do not care about profiles; a scope auto-binds the explicit
   // `none` profile on first tab so they exercise the rest of the manager.
@@ -3779,6 +3788,77 @@ describe("the page's context menu and its DevTools (#423)", () => {
     expect(tab.controller).not.toBe("human");
     rightClick(harness, harness.views[0]);
     expect(harness.manager.state("session-a").tabs[0].controller).toBe("human");
+  });
+});
+
+/**
+ * DOWNLOADS LAND WITH NO DIALOG — for the person and for the agent, which
+ * could never answer a native Save dialog. The handler's naming rules are
+ * browser-downloads.test.js's; these are the manager's half: it is seated on
+ * every partition, it tells both hands where a file went, and "Save Image As…"
+ * is the one download that still asks.
+ */
+describe("downloads save straight to the Downloads folder", () => {
+  function downloadItem(url, filename) {
+    const done = [];
+    return {
+      savePath: null,
+      getURL: () => url,
+      getFilename: () => filename,
+      setSavePath(target) { this.savePath = target; },
+      getSavePath() { return this.savePath ?? ""; },
+      once(event, listener) { if (event === "done") done.push(listener); },
+      finish(state) { for (const listener of done) listener({}, state); },
+    };
+  }
+
+  async function withTab() {
+    const harness = makeHarness({ sessions: true });
+    await harness.manager.createTab("session-a", "https://example.com");
+    const tab = harness.manager.scopeTabs("session-a")[0];
+    const wc = harness.views[0].webContents;
+    wc.id = 41;
+    return { ...harness, tab, wc, ses: harness.sessions.get(tab.partition) };
+  }
+
+  test("a link's download gets a path with no dialog, and the agent's console says where it landed", async () => {
+    const { messages, tab, wc, ses } = await withTab();
+    const item = downloadItem("https://example.com/report.pdf", "report.pdf");
+    ses.download(item, wc);
+    expect(item.savePath).toBe("/fixture/Downloads/report.pdf");
+    item.finish("completed");
+    expect(tab.console).toEqual([
+      { level: "info", text: "Download started: report.pdf is being saved to /fixture/Downloads/report.pdf" },
+      { level: "info", text: "Downloaded report.pdf to /fixture/Downloads/report.pdf" },
+    ]);
+    const pushed = messages.filter((message) => message.channel === "telar:browser:download").map((message) => message.payload);
+    expect(pushed).toEqual([
+      { scopeKey: "session-a", tabId: tab.id, state: "started", path: "/fixture/Downloads/report.pdf", filename: "report.pdf" },
+      { scopeKey: "session-a", tabId: tab.id, state: "completed", path: "/fixture/Downloads/report.pdf", filename: "report.pdf" },
+    ]);
+  });
+
+  test("a failed download is an error line, never a claim that a file is there", async () => {
+    const { tab, wc, ses } = await withTab();
+    const item = downloadItem("https://example.com/big.zip", "big.zip");
+    ses.download(item, wc);
+    item.finish("interrupted");
+    expect(tab.console.at(-1)).toEqual({ level: "error", text: "Download of big.zip failed; nothing was saved to /fixture/Downloads/big.zip" });
+  });
+
+  test("Save Image As… still prompts — and only that once", async () => {
+    const harness = await withTab();
+    const cat = "https://example.com/cat.png";
+    pick(rightClick(harness, harness.views[0], { hasImageContents: true, srcURL: cat }), "Save Image As…");
+    expect(harness.wc.downloads).toEqual([cat]);
+    const asked = downloadItem(cat, "cat.png");
+    harness.ses.download(asked, harness.wc);
+    // No save path is exactly the case Electron shows its Save dialog for.
+    expect(asked.savePath).toBeNull();
+    // The same image clicked as a plain link later is an ordinary download.
+    const plain = downloadItem(cat, "cat.png");
+    harness.ses.download(plain, harness.wc);
+    expect(plain.savePath).toBe("/fixture/Downloads/cat.png");
   });
 });
 
