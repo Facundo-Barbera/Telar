@@ -436,6 +436,7 @@ export function Composer({
   usage,
   backgroundTasks,
   settled,
+  settledEnded,
   onUnsettle,
   snoozeWakeIn,
   onWake,
@@ -519,6 +520,9 @@ export function Composer({
    *  on is what tells the reader they are inside history — the shelf itself no
    *  longer springs open to say so. */
   settled?: boolean;
+  /** What settling it just ended — "Settling ended 2 terminals." — said once
+   *  on the banner, by the screen that pressed Settle (#883). */
+  settledEnded?: string;
   /** Return it to the list. Absent hides the button, never the banner. */
   onUnsettle?: () => void;
   /**
@@ -1524,7 +1528,7 @@ export function Composer({
         <ComposerBanner
           icon={<CircleCheckIcon className="size-4 shrink-0 text-muted-foreground" />}
           title="This conversation is settled"
-          detail="Sending a message returns it to the list in the sidebar."
+          detail={`${settledEnded ? `${settledEnded} ` : ""}Sending a message returns it to the list in the sidebar.`}
           {...(onUnsettle ? { action: onUnsettle, actionLabel: "Un-settle" } : {})}
         />
       )}

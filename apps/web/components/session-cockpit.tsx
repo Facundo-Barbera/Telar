@@ -41,7 +41,7 @@ import { sessionLink } from "@/lib/session-link";
 import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { projectLabel } from "@/lib/hosts/host-projects";
-import { isSettled, isSnoozed, settlingActivityOf, wakeLabel, type SettleableSession, type SettlingActivity } from "@/lib/session-settling";
+import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, wakeLabel, type SettleableSession, type SettlingActivity } from "@/lib/session-settling";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "@/lib/session-read-receipt";
 import { ReadReceiptMarker, useReadReceipt } from "./session/read-receipt";
 import { useInboxPolicy } from "@/lib/inbox-policy";
@@ -3769,6 +3769,13 @@ export function SessionCockpit({
    *  title menu carries "Open in a new window". */
   const shell = desktopApp();
   const menuApi = createEngineApi(hostFetcher(hostId));
+  /**
+   * WHAT THE SETTLE PRESSED HERE ENDED — issue #883. Settling closes the
+   * conversation's terminals and stops its background tasks; the engine answers
+   * the counts and the settled banner says them. Keyed by session so it never
+   * speaks for another conversation, and shown only while this one is settled.
+   */
+  const [settleEnded, setSettleEnded] = useState<{ sessionId: string; text: string }>();
   /** `snoozedUntil` IS NO LONGER SPELLABLE HERE. Snooze has one path on this
    *  screen now (`snoozeFromMenu` below) and it is the optimistic one; leaving
    *  the field in this signature would leave the slow path reachable by
@@ -3778,6 +3785,8 @@ export function SessionCockpit({
     try {
       const next = await menuApi.updateSession(sessionId, patch);
       setSession(next.session);
+      const ended = settleEndedText(next.ended);
+      setSettleEnded(ended ? { sessionId, text: ended } : undefined);
       setError(undefined);
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", failure));
@@ -4265,6 +4274,7 @@ export function SessionCockpit({
           {...(newestUsage ? { usage: newestUsage } : {})}
           backgroundTasks={backgroundTasks}
           settled={settled}
+          {...(settled && settleEnded && settleEnded.sessionId === sessionId ? { settledEnded: settleEnded.text } : {})}
           onUnsettle={() => void unsettle()}
           {...(snoozedUntil === undefined
             ? {}

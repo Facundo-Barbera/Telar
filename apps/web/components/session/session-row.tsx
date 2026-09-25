@@ -1016,7 +1016,9 @@ export function SessionRow({
               variant="ghost"
               size="icon-xs"
               aria-label={unsettles ? "Return to the list" : "Settle session"}
-              title={unsettles ? "Return to the list" : "Settle"}
+              // Warned in place, never asked (#883): settling ends what the
+              // conversation left running, and returning it brings none of that back.
+              title={unsettles ? "Return to the list" : "Settle — closes its terminals and stops its background tasks"}
               disabled={!unsettles && !canSettle(sessionActivity)}
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
