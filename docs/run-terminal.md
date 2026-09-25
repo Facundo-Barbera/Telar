@@ -287,12 +287,12 @@ its configuration's glyph and a state dot.
 
 Everything that follows is that one difference, made enforceable:
 
-- **`terminalIds` does not list a run's terminal.** That list is what
-  `endTerminalForTab` kills when a Terminal tab closes. A run's id on it would
-  stop another session's dev server because somebody here closed a tab.
-- **Closing the chip stops nothing**, and its label says so
-  (*"Close this chip — the run keeps going"*). The chip has its own stop and
-  restart; the header menu keeps its own.
+- **Superseded by "Run = a new terminal".** A run now belongs to the SESSION,
+  and closing its chip ENDS it through the engine (`closedBy: person`). Closing
+  the Terminal tab ends every terminal in it, runs included
+  (`closeTerminalTab`). Either close asks first only when the host says
+  something is running (`terminal.active`). `terminalIds` still lists only
+  shells, because a run's terminal is closed by the engine, not the host.
 - **The active run always has a chip.** That is how a run an agent started
   appears, and how a live one you closed comes back on the next visit. An exited
   one stays closable and gone.

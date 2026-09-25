@@ -100,7 +100,8 @@ import {
   type PanelTabParams,
   type PanelTabState,
 } from "@/lib/right-panel-tabs";
-import { endTerminalForTab } from "@/lib/terminal-bridge";
+import { closeTerminalTab } from "@/lib/terminal-close";
+import { createRunApi } from "@/lib/run/api";
 import { foldTerminalParams } from "@/lib/terminal-workspace";
 import {
   editorFileForPath,
@@ -4288,16 +4289,25 @@ export function SessionCockpit({
           onOpenFileInNewTab={openFileInNewPanelTab}
           onInsertReference={insertIntoComposer}
           onAttach={attachFromPanel}
-          /* CLOSING A TERMINAL TAB ENDS EVERY SHELL IN IT, and this is the only place
-             that can say so: the surface unmounts on every tab switch, so it
-             cannot tell "you looked at the Diff" from "you are done with this
-             shell". Anything that is not a terminal answers undefined and this
-             is a no-op (lib/terminal-bridge.ts). */
+          /* CLOSING A TERMINAL TAB ENDS EVERY TERMINAL IN IT — shells and runs,
+             with one question if any is busy — and this is the only place that
+             can say so: the surface unmounts on every tab switch, so it cannot
+             tell "you looked at the Diff" from "you are done with these". */
           onCloseTab={(id) => {
             // Outside the reducer on purpose: a reducer runs twice under
-            // StrictMode, and killing a shell is not something to do twice.
+            // StrictMode, and killing a process is not something to do twice.
             const closing = findPanelTab(panel, id);
-            if (closing?.kind === "terminal") endTerminalForTab(closing.params);
+            if (closing?.kind === "terminal") {
+              // The tab stays until the person has answered — "no" keeps it,
+              // and everything in it, running.
+              const runApi = createRunApi(hostFetcher(hostId));
+              void closeTerminalTab(closing.params, {
+                ...(sessionId ? { stopRun: (terminalId: string) => runApi.stop(sessionId, terminalId) } : {}),
+              }).then((closed) => {
+                if (closed) updatePanel((current) => closePanelTab(current, id));
+              });
+              return;
+            }
             // CLOSING A BROWSER TAB CLOSES ITS PAGES, the agent's included, and
             // tells the agent the person did it. Same reason for being out here.
             const releasing = sessionId ? browserScopeToRelease(sessionId, closing) : undefined;

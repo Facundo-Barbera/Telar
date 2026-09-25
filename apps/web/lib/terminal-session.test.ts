@@ -242,8 +242,8 @@ describe("bytes from the PTY reach the emulator's buffer", () => {
     const detach = attachTerminal(term, bridge, "t1", (ending) => seen.push(ending));
 
     bridge.end({ id: "other", fate: "exited", exitCode: 0 });
-    bridge.end({ id: "t1", fate: "unknown", pid: 42, reason: "not vouched for" });
-    expect(seen).toEqual([{ id: "t1", fate: "unknown", pid: 42, reason: "not vouched for" }]);
+    bridge.end({ id: "t1", fate: "exited", pid: 42, exitCode: 0, closed: "close" });
+    expect(seen).toEqual([{ id: "t1", fate: "exited", pid: 42, exitCode: 0, closed: "close" }]);
 
     detach();
   });

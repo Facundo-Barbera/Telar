@@ -156,10 +156,12 @@ lifecycle:
 
 - **Unmount does not kill.** A `cd` and a half-typed command are not something
   to throw away because of a glance.
-- **Closing the tab does.** `endTerminalForTab` is called from
-  `session-cockpit.tsx`'s `onCloseTab`, which is the only place that can tell a
-  switch from a close, and it runs *outside* the reducer because a reducer runs
-  twice under StrictMode.
+- **Closing the tab does.** `closeTerminalTab` (`lib/terminal-close.ts`) is
+  called from `session-cockpit.tsx`'s `onCloseTab`, which is the only place that
+  can tell a switch from a close, and it runs *outside* the reducer because a
+  reducer runs twice under StrictMode. It ends every terminal in the tab, shells
+  through the host and runs through the engine. It asks once first, but only if
+  the host says something is still running in one of them.
 
 Between those two, a remount **re-adopts**: the PTY's id round-trips through the
 tab's own params (the trip the Diff's filter and the Editor's open file already

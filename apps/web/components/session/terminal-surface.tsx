@@ -32,7 +32,7 @@
  * emulator, not a shell configurator — docs/terminal-host.md §1.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CircleStopIcon, PlusIcon, RotateCwIcon, XIcon } from "lucide-react";
+import { PlusIcon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon, type IImageAddonOptions } from "@xterm/addon-image";
@@ -44,10 +44,11 @@ import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { createRunApi } from "@/lib/run/api";
 import { RunGlyph } from "@/lib/run/icons";
-import { isOpenTerminal, statusLabel, statusTone, type RunTone } from "@/lib/run/presentation";
+import { isOpenTerminal, statusDetail, statusLabel, statusTone, type RunTone } from "@/lib/run/presentation";
 import { useRunStatusFeed } from "@/lib/run/status-stream";
 import type { RunConfigurationView, RunView } from "@/lib/run/types";
 import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type TerminalEnding } from "@/lib/terminal-bridge";
+import { endTerminal, mayClose } from "@/lib/terminal-close";
 export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
 import { attachTerminal, gridMeasurer, terminalKeyHandler } from "@/lib/terminal-session";
@@ -243,9 +244,13 @@ export function TerminalSurface({
    *  re-rendered with a new callback identity would be noise. */
   const write = useRef(onParams);
   const dismiss = useRef(onCloseSelf);
+  /** The strip as last rendered — read by a close that resumes after an
+   *  asynchronous question, when the render it started in may be stale. */
+  const latest = useRef(workspace);
   useEffect(() => {
     write.current = onParams;
     dismiss.current = onCloseSelf;
+    latest.current = workspace;
   });
   useEffect(() => {
     write.current?.(workspaceParams(workspace));
@@ -372,32 +377,52 @@ export function TerminalSurface({
   }, [hasKeys]);
 
   /**
-   * CLOSING A SHELL ENDS IT. Outside any reducer on purpose: a reducer runs
-   * twice under StrictMode, and killing a shell is not something to do twice —
-   * the cockpit's own `onCloseTab` keeps the kill outside `updatePanel` for
-   * exactly this reason.
+   * CLOSING A CHIP ENDS ITS TERMINAL — a shell or a run alike, since the
+   * terminal owns its process ("Run = a new terminal"). Outside any reducer on
+   * purpose: a reducer runs twice under StrictMode, and killing a process is
+   * not something to do twice.
+   *
+   * ASK FIRST ONLY IF SOMETHING IS RUNNING. `mayClose` puts one question to the
+   * host — is anything running in this terminal — and confirms in plain words
+   * ("End “bun run dev” (4 processes)?") when there is. An idle shell at its
+   * prompt, or a run that already ended, closes without a word.
+   *
+   * THE OLD EXCEPTION IS GONE. A run's chip used to close without stopping
+   * anything, because a run belonged to the project and outlived the chip. It
+   * belongs to the session now, and the chip is where it lives: closing it and
+   * leaving the process behind with nothing on screen is the orphan this model
+   * exists to remove.
+   *
+   * ONE CLOSE AT A TIME PER CHIP. The question is asynchronous, and a second
+   * ⌘W or click while it is pending must not ask twice or kill twice.
    */
-  const closeOne = (id: string) => {
+  const closing = useRef(new Set<string>());
+  const closeOne = async (id: string) => {
     const shell = workspace.shells.find((entry) => entry.id === id);
-    /**
-     * CLOSING A RUN'S CHIP STOPS NOTHING (#890), and this is the one branch
-     * where that is enforced rather than stated. A run belongs to the project:
-     * it outlives the conversation that started it and another session may be
-     * watching it. The chip has its own stop button for when stopping is what
-     * you meant — and the host would refuse this kill anyway, since a renderer
-     * may not address a terminal the engine owns, so the guard is here to keep
-     * the INTENT legible rather than to prevent a 403.
-     */
-    if (shell?.terminalId && !shell.run) {
-      void Promise.resolve(terminalBridge()?.kill(shell.terminalId, "SIGTERM")).catch(() => {
-        // A shell that already exited is the normal case, not an error.
-      });
+    if (!shell || closing.current.has(id)) return;
+    closing.current.add(id);
+    try {
+      const run = shell.run ? runsById.get(shell.run.runId) : undefined;
+      // What there is to end: a run while its terminal is open, a shell once
+      // its PTY has answered.
+      const terminalId = shell.run ? (isOpenTerminal(run) ? shell.run.runId : undefined) : shell.terminalId;
+      if (terminalId) {
+        const target = { id: run?.terminalId ?? terminalId, label: shellLabel(workspace, id), ...(run?.command ? { command: run.command } : {}) };
+        if (!(await mayClose([target]))) return;
+        await endTerminal({ terminalId, run: Boolean(shell.run) }, { stopRun: (runId) => runApi.stop(sessionId!, runId) });
+        if (shell.run) runs.refresh();
+      }
+      // From the LATEST strip, because it may have moved while the person read
+      // the question — a status frame, another chip opening.
+      const next = closeShell(latest.current, id);
+      latest.current = next;
+      setWorkspace(next);
+      // AN EMPTY TERMINAL CLOSES. Its outer tab is the thing that was holding
+      // shells, and one holding none is a blank pane with a `+` in it.
+      if (next.shells.length === 0) dismiss.current?.();
+    } finally {
+      closing.current.delete(id);
     }
-    const next = closeShell(workspace, id);
-    setWorkspace(next);
-    // AN EMPTY TERMINAL CLOSES. Its outer tab is the thing that was holding
-    // shells, and one holding none is a blank pane with a `+` in it.
-    if (next.shells.length === 0) dismiss.current?.();
   };
 
   /**
@@ -437,7 +462,7 @@ export function TerminalSurface({
     if (letter === "w") {
       take();
       // Closing the LAST shell closes the outer tab — `closeOne` says so.
-      if (workspace.active) closeOne(workspace.active);
+      if (workspace.active) void closeOne(workspace.active);
       return;
     }
     if (/^[1-9]$/.test(letter)) {
@@ -478,12 +503,12 @@ export function TerminalSurface({
                 "flex min-w-0 max-w-44 shrink-0 items-center gap-1 rounded-md px-2 py-1",
                 on ? "bg-muted" : "hover:bg-muted/50",
               )}
-              // Middle-click closes, the way every strip in this app does. On a
-              // run that is CLOSING THE CHIP and not stopping anything.
+              // Middle-click closes, the way every strip in this app does — and
+              // on a run, as on a shell, closing ends what runs in it.
               onAuxClick={(event) => {
                 if (event.button !== 1) return;
                 event.preventDefault();
-                closeOne(shell.id);
+                void closeOne(shell.id);
               }}
             >
               {shell.run && (
@@ -509,56 +534,54 @@ export function TerminalSurface({
                 className="min-w-0 flex-1 truncate text-left text-xs"
                 // The status is in the TITLE rather than in the chip, which has
                 // room for a name or for a state and not for both.
-                title={run ? `${label} — ${statusLabel(run)}` : label}
+                title={run ? `${label} — ${statusLabel(run)}${run.command ? ` · ${run.command}` : ""}` : label}
                 onClick={() => setWorkspace(activateShell(workspace, shell.id))}
               >
                 {label}
               </button>
-              {shell.run && (
+              {run?.warning && isOpenTerminal(run) && (
                 /**
-                 * STOP AND RESTART, ON THE CHIP. The header menu keeps its own
-                 * — it is the launcher — but a person looking at a run's output
-                 * should not have to go back up to the masthead to stop it.
-                 * Both go through the engine, where the project's singleton is.
+                 * A BUSY PORT WARNS, IT NEVER BLOCKS. The engine opened this
+                 * terminal anyway and says why its readiness check proves
+                 * nothing; the sign is here so a person looking at a chip that
+                 * never turns green is not left guessing, and the engine's
+                 * sentence is its own explanation, on hover and to a reader.
                  */
-                <>
-                  <button
-                    type="button"
-                    aria-label={`Restart ${label}`}
-                    title="Restart"
-                    className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      actOnRun(() => runApi.restart(sessionId!, shell.run!.runId));
-                    }}
-                  >
-                    <RotateCwIcon className="size-3" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Stop ${label}`}
-                    title="Stop"
-                    className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      actOnRun(() => runApi.stop(sessionId!, shell.run!.runId));
-                    }}
-                  >
-                    <CircleStopIcon className="size-3" />
-                  </button>
-                </>
+                <span role="img" aria-label={statusDetail(run)} title={statusDetail(run)} className="shrink-0 text-warning">
+                  <TriangleAlertIcon className="size-3" />
+                </span>
+              )}
+              {shell.run && run && (
+                /**
+                 * RESTART, ON THE CHIP. It ends this terminal and opens a fresh
+                 * one from the same configuration — what a person watching a
+                 * server's output reaches for, without going back up to the
+                 * masthead. There is no separate Stop any more: the close
+                 * beside it IS the stop.
+                 */
+                <button
+                  type="button"
+                  aria-label={`Restart ${label}`}
+                  title="Restart — end this and start the same command again"
+                  className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    actOnRun(() => runApi.restart(sessionId!, shell.run!.runId));
+                  }}
+                >
+                  <RotateCwIcon className="size-3" />
+                </button>
               )}
               <button
                 type="button"
-                // NAMED FOR WHAT IT DOES, and on a run that is not "stop". A
-                // close that read as a stop is the exact misunderstanding this
-                // chip's whole arrangement is built to avoid.
-                aria-label={shell.run ? `Close ${label} (the run keeps going)` : `Close ${label}`}
-                title={shell.run ? "Close this chip — the run keeps going" : "Close"}
+                // NAMED FOR WHAT IT DOES: a close ends what runs in the
+                // terminal, a run's server as much as a shell's editor.
+                aria-label={`Close ${label}`}
+                title="Close — ends what is running in it"
                 className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                 onClick={(event) => {
                   event.stopPropagation();
-                  closeOne(shell.id);
+                  void closeOne(shell.id);
                 }}
               >
                 <XIcon className="size-3" />
@@ -834,6 +857,8 @@ function TerminalPane({
       try {
         const opened = await bridge.open({
           ...(cwd === undefined ? {} : { cwd }),
+          // The session this shell belongs to, so settling it can close it.
+          ...(sessionId ? { sessionId } : {}),
           cols: term.cols,
           rows: term.rows,
         });
@@ -929,7 +954,7 @@ function TerminalPane({
          outer tab switch, and a `cd` and a half-typed command are not something
          to throw away because somebody looked at the Diff. Closing the CHIP is
          what ends one shell (`closeOne` above); closing the outer tab ends them
-         all — see `endTerminalForTab`, called from the cockpit that owns tabs. */
+         all — see `closeTerminalTab`, called from the cockpit that owns tabs. */
       // Already disposed (and refs cleared) by `openShell` when the host
       // refused the cwd — disposing it twice is not something xterm promises
       // to tolerate.
@@ -971,23 +996,7 @@ function TerminalPane({
       className={cn("absolute inset-0 flex flex-col", !active && "hidden")}
     >
       {phase.kind === "ended" && (
-        /**
-         * `unknown` IS NOT "FINISHED" and this line must never read as if it
-         * were — `describeTerminalEnding` is where that distinction is written
-         * down. A shell Telar lost track of very likely still has a process on
-         * the other end of it.
-         */
-        <p
-          className={cn(
-            "shrink-0 border-b px-3 py-1.5 text-xs",
-            // `--warning` on the state vocabulary, not a raw ramp: a shell
-            // Telar cannot vouch for is the same KIND of fact as a blocked
-            // session, and the palette's note says not to add a sixth colour
-            // (app/globals.css). `tint-warning` is the sanctioned wash.
-            phase.ending.fate === "unknown" ? "tint-warning text-warning" : "text-muted-foreground",
-          )}
-          role="status"
-        >
+        <p className="shrink-0 border-b px-3 py-1.5 text-xs text-muted-foreground" role="status">
           {describeTerminalEnding(phase.ending)}
         </p>
       )}

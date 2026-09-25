@@ -230,7 +230,7 @@ describe("a Terminal you have opened stays mounted behind the tab you look at ne
     expect(await until(() => opened > 0)).toBe(true);
 
     // Kept means kept for as long as the tab exists — not for ever. The shells
-    // themselves are ended by the cockpit's own close (`endTerminalForTab`),
+    // themselves are ended by the cockpit's own close (`closeTerminalTab`),
     // which is the only place that can tell a close from a switch.
     show([tab("diff", "diff")], "diff");
     await until(() => emulators().length === 0, 1_000);
