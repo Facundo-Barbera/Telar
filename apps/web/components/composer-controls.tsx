@@ -1,10 +1,10 @@
 "use client";
 
-import { forwardRef, useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { Fragment, forwardRef, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, Minimize2Icon, MoreHorizontalIcon, SearchIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
-import { effortLabel, modelLabel, type ModelChoice } from "@/lib/models";
+import { choiceOf, effortLabel, modelLabel, type ModelChoice } from "@/lib/models";
 import { keepStarredVisible, orderByFavorite } from "@/lib/model-favorites";
 import { defaultModelId, splitGenerations } from "@/lib/model-generations";
 import {
@@ -38,6 +38,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -281,32 +282,180 @@ function selectionOf(models: readonly ProviderModel[], choice: ModelChoice) {
 /**
  * THE REASONING PILL'S WORDS: always a level, never the bare noun.
  *
- * A pick names itself. With no pick the pill names the level the model will
- * actually run at, marked as the default rather than a choice; only when the
- * provider has not said what that is does it fall back to "Auto".
+ * A pick names itself, and ultracode is a pick. With no pick the pill names the
+ * level the model will actually run at, marked as the default rather than a
+ * choice; only when the provider has not said what that is does it fall back to
+ * "Auto".
  */
 export function reasoningPillLabel(
   effort: string | undefined,
   defaultEffort: string | undefined,
   suffix?: string,
+  ultracode?: boolean,
 ): { label: string; isDefault: boolean } {
-  const level = effort ? effortLabel(effort) : defaultEffort ? effortLabel(defaultEffort) : "Auto";
-  return { label: suffix ? `${level} · ${suffix}` : level, isDefault: !effort };
+  const level = ultracode ? "Ultracode" : effort ? effortLabel(effort) : defaultEffort ? effortLabel(defaultEffort) : "Auto";
+  return { label: suffix ? `${level} · ${suffix}` : level, isDefault: !effort && !ultracode };
 }
 
-/** The menu's Auto row, carrying the level Auto resolves to where it is known. */
-export function autoRowLabel(defaultEffort: string | undefined): string {
-  return defaultEffort ? `Auto (${effortLabel(defaultEffort)})` : "Auto";
+/** The word that asks Claude Code to reason harder on one turn. It is a keyword
+ *  the CLI reads in the message itself — there is no setting behind it. */
+export const ULTRATHINK = "ultrathink";
+
+/** Whether a draft already carries the keyword, matched the way the CLI does. */
+export function hasUltrathink(draft: string): boolean {
+  return /\bultrathink\b/i.test(draft);
+}
+
+/** The draft with the keyword added or taken out — the one edit the Ultrathink
+ *  row makes, visibly, to text the person is still writing. */
+export function toggleUltrathink(draft: string): string {
+  if (hasUltrathink(draft)) return draft.replace(/\s*\bultrathink\b\s*/gi, " ").trim();
+  return draft.trim() ? `${draft.trimEnd()} ${ULTRATHINK}` : ULTRATHINK;
+}
+
+/** One option in the model-options menu. `apply` returns the whole next choice;
+ *  `ultrathink` rows edit the draft instead. */
+export type ModelOptionRow = {
+  key: string;
+  label: string;
+  description?: string;
+  isDefault: boolean;
+  selected: boolean;
+  disabled?: boolean;
+  apply?: (choice: ModelChoice) => ModelChoice;
+  ultrathink?: true;
+};
+
+export type ModelOptionSection = { id: "reasoning" | "window" | "fast" | "tier"; title: string; rows: ModelOptionRow[] };
+
+const ULTRACODE_DESCRIPTION = "Extra-high reasoning that can also plan and run multi-step workflows on its own.";
+const ULTRATHINK_DESCRIPTION = "Adds the word ultrathink to your message, asking for deeper reasoning on this one turn.";
+
+/**
+ * EVERY SECTION THE CHOSEN MODEL SUPPORTS, and nothing it does not.
+ *
+ * One list, read by the pill's popover, the narrow window's overflow menu and a
+ * project's default row, so the three offer the same thing. Each option is a
+ * plain row; the provider's own default carries `isDefault`, and picking it
+ * CLEARS the pick rather than storing the default's value, so the session keeps
+ * following the provider if that default moves.
+ *
+ * - Reasoning: the model's levels. Claude adds Ultracode on a model with xhigh
+ *   (`settings.ultracode`, xhigh plus workflow orchestration) and, where the
+ *   draft can be edited, Ultrathink — a word the CLI reads in the message, so
+ *   the row adds it to the draft where it can be seen and removed.
+ * - Context window: 200k and 1M, where the model comes in both.
+ * - Fast mode: Off and On, where the model offers it.
+ * - Service tier: the tiers the provider sells the model at (Codex).
+ */
+export function modelOptionSections(
+  driver: ProviderDriverKind,
+  models: readonly ProviderModel[],
+  choice: ModelChoice,
+  options: { ultrathink?: { active: boolean } } = {},
+): ModelOptionSection[] {
+  const { family, row, levels, defaultEffort, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
+  const sections: ModelOptionSection[] = [];
+  const clearReasoning = { effort: undefined, ultracode: undefined };
+
+  const reasoning: ModelOptionRow[] = [];
+  if (!defaultEffort && (levels.length > 0 || choice.effort)) {
+    reasoning.push({ key: "auto", label: "Auto", isDefault: true, selected: !choice.effort && !choice.ultracode, apply: (from) => ({ ...from, ...clearReasoning }) });
+  }
+  for (const level of levels) {
+    const isDefault = level === defaultEffort;
+    reasoning.push({
+      key: `effort:${level}`,
+      label: effortLabel(level),
+      isDefault,
+      selected: !choice.ultracode && (choice.effort === level || (!choice.effort && isDefault)),
+      apply: (from) => ({ ...from, ...clearReasoning, ...(isDefault ? {} : { effort: level }) }),
+    });
+  }
+  // A level this list does not offer — another client's, or one this provider
+  // spells differently. `Effort` is open in the contract, so it is shown.
+  if (choice.effort && !levels.includes(choice.effort)) {
+    reasoning.push({ key: `effort:${choice.effort}`, label: choice.effort, description: "Set elsewhere", isDefault: false, selected: true, disabled: true });
+  }
+  if (driver === "claude" && levels.includes("xhigh")) {
+    reasoning.push({
+      key: "ultracode",
+      label: "Ultracode",
+      description: ULTRACODE_DESCRIPTION,
+      isDefault: false,
+      selected: choice.ultracode === true,
+      apply: (from) => ({ ...from, effort: undefined, ultracode: true }),
+    });
+  }
+  if (driver === "claude" && levels.length > 0 && options.ultrathink) {
+    reasoning.push({ key: "ultrathink", label: "Ultrathink", description: ULTRATHINK_DESCRIPTION, isDefault: false, selected: options.ultrathink.active, ultrathink: true });
+  }
+  if (reasoning.length > 0) sections.push({ id: "reasoning", title: "Reasoning", rows: reasoning });
+
+  if (windows.length > 1 && family) {
+    sections.push({
+      id: "window",
+      title: "Context window",
+      rows: windows.map((option) => {
+        const target = rowFor(family, option);
+        return {
+          key: `window:${option}`,
+          label: WINDOW_LABEL[option],
+          isDefault: target?.defaultWindow === true,
+          selected: activeWindow === option,
+          disabled: !target,
+          ...(target ? { apply: (from: ModelChoice) => withModel(from, target) } : {}),
+        };
+      }),
+    });
+  }
+
+  if (fastMode) {
+    sections.push({
+      id: "fast",
+      title: "Fast mode",
+      rows: [
+        { key: "fast:on", label: "On", isDefault: false, selected: choice.fastMode === true, apply: (from) => ({ ...from, fastMode: true }) },
+        { key: "fast:off", label: "Off", isDefault: true, selected: choice.fastMode !== true, apply: (from) => ({ ...from, fastMode: undefined }) },
+      ],
+    });
+  }
+
+  const tiers = row?.serviceTiers ?? [];
+  if (tiers.length > 0) {
+    const defaultTier = row?.defaultServiceTier;
+    const rows: ModelOptionRow[] = [];
+    // A provider that did not name its default still has one: no tier at all.
+    if (!defaultTier || !tiers.some((tier) => tier.id === defaultTier)) {
+      rows.push({ key: "tier:standard", label: "Standard", isDefault: true, selected: !choice.serviceTier, apply: (from) => ({ ...from, serviceTier: undefined }) });
+    }
+    for (const tier of tiers) {
+      const isDefault = tier.id === defaultTier;
+      rows.push({
+        key: `tier:${tier.id}`,
+        label: tier.name,
+        ...(tier.description ? { description: tier.description } : {}),
+        isDefault,
+        selected: choice.serviceTier === tier.id || (!choice.serviceTier && isDefault),
+        apply: (from) => ({ ...from, serviceTier: isDefault ? undefined : tier.id }),
+      });
+    }
+    sections.push({ id: "tier", title: "Service tier", rows });
+  }
+  return sections;
 }
 
 /**
- * WHAT THE MODEL A CHOICE RESOLVES TO LETS YOU SET — its effort levels and
- * whether it has fast mode. Exported for a project's default, so Settings offers
- * exactly what the reasoning pill offers for the same model.
+ * WHAT THE MODEL A CHOICE RESOLVES TO LETS YOU SET. Exported for a project's
+ * default, so Settings offers exactly what the composer offers for the model.
  */
-export function modelOptionsOf(models: readonly ProviderModel[], choice: ModelChoice): { efforts: readonly string[]; fastMode: boolean } {
-  const { levels, fastMode } = selectionOf(models, choice);
-  return { efforts: levels, fastMode };
+export function modelOptionsOf(
+  models: readonly ProviderModel[],
+  choice: ModelChoice,
+  driver: ProviderDriverKind = "claude",
+): { efforts: readonly string[]; fastMode: boolean; serviceTiers: readonly { id: string; name: string }[]; ultracode: boolean } {
+  const { row, levels, fastMode } = selectionOf(models, choice);
+  return { efforts: levels, fastMode, serviceTiers: row?.serviceTiers ?? [], ultracode: driver === "claude" && levels.includes("xhigh") };
 }
 
 /**
@@ -1001,85 +1150,89 @@ export function AgentControl({
 }
 
 /**
- * HOW HARD TO THINK — the donor's reasoning pill, on the vocabulary the engine
- * can actually carry.
+ * THE MODEL'S OPTIONS, ONE POPOVER — reasoning, context window, fast mode and
+ * service tier, each section present only where the chosen model has it. See
+ * `modelOptionSections` for what each provider gets.
  *
- * The donor drove a per-turn option matrix the engine contract does not have, so
- * this is the honest subset: `ModelSelection.effort`, which the engine stores on
- * the session and hands to the driver at claim time. Both drivers read it —
- * Codex forwards it to the app-server, Claude passes it to the Agent SDK's
- * `effort` — so the pill is a control rather than a label.
+ * The pill names the level the next turn runs at (#959): a pick, Ultracode, or
+ * the model's default drawn quieter than a pick. Everything here is sent on the
+ * session's `ModelSelection` and applies from the next turn, except Ultrathink,
+ * which is a word in the message and applies to the one it is in.
  *
- * IT NO LONGER NEEDS A MODEL, and that was a real defect rather than a
- * limitation. `ModelSelection` used to require a model in order to carry an
- * effort, so a session on the provider default — which is the DEFAULT — could
- * not be told to think harder: this popover said "pick a model first" and the
- * feature read as missing. Both providers take the two independently, so the
- * contract now does too.
- *
- * AND IT CARRIES THE CONTEXT WINDOW, which is what the pill's `Extra high · 1M`
- * is. The window used to be part of the model's NAME, because the provider
- * publishes it as a separate model — but a name is not a control, and "which
- * model" and "how much of it can I fill" are two questions that were being
- * answered in one list. The reference cockpit reads them exactly this way round.
+ * KEYBOARD: focus lands on the selected row, the arrow keys, Home and End move
+ * between rows, and Enter or Space picks — the rows are buttons.
  */
 export function ReasoningControl({
   driver,
   choice,
   instanceId,
   onChange,
+  ultrathink,
 }: {
   driver: ProviderDriverKind;
   choice: ModelChoice;
   /** Whose login's curated list to read. Absent means the built-in slot. */
   instanceId?: string;
   onChange?: (next: ModelChoice) => void;
+  /** The draft's keyword, where this control sits beside one. Absent — a
+   *  project's default has no message — and the Ultrathink row is not offered. */
+  ultrathink?: { active: boolean; toggle: () => void };
 }) {
   const [open, setOpen] = useState(false);
+  const list = useRef<HTMLDivElement>(null);
   const catalogue = useModelCatalogue(driver, instanceId);
-  /**
-   * PER MODEL, not per provider. Codex reports six levels for its newest model
-   * and four for an older one, and offering a level a model does not have fails
-   * the whole turn. `selectionOf` resolves the model the next turn will run —
-   * including through an alias — and everything below is that row's own answer.
-   *
-   * FAST MODE IS PER MODEL TOO, AND THE MODEL SAYS SO. It used to be gated on
-   * `driver === "claude"` — right that Codex has no equivalent, wrong that every
-   * Claude model does. Of the rows the installed Claude Code reports, two
-   * support it; the group is absent on the rest, because a switch that silently
-   * does nothing is the thing this cockpit keeps refusing to ship.
-   */
   const models = catalogue?.models ?? [];
-  const { family, row, levels, defaultEffort, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
+  const { row, defaultEffort, window: activeWindow, windows } = selectionOf(models, choice);
+  const sections = modelOptionSections(driver, models, choice, ultrathink ? { ultrathink: { active: ultrathink.active } } : {});
   const readOnly = !onChange;
   const suffix = windowSuffix(activeWindow, windows);
-  /**
-   * `Extra high · 1M`. The window rides on the LABEL rather than in `detail`,
-   * which the pill hides at anything but the narrowest width — a fact you can
-   * only see by opening a menu is the thing this row exists to avoid.
-   *
-   * ALWAYS A LEVEL. The pill used to read "Reasoning" whenever nothing was
-   * picked, which said nothing about the next turn. It now names the level the
-   * model runs at by default, drawn quieter than a pick — see
-   * `reasoningPillLabel`.
-   */
-  const { label, isDefault } = reasoningPillLabel(choice.effort, defaultEffort, suffix);
-  const spoken = choice.effort ? effortLabel(choice.effort) : defaultEffort ? `${effortLabel(defaultEffort)} (default)` : "Auto";
+  const { label, isDefault } = reasoningPillLabel(choice.effort, defaultEffort, suffix, choice.ultracode);
+  const spoken = choice.ultracode
+    ? "Ultracode"
+    : choice.effort
+      ? effortLabel(choice.effort)
+      : defaultEffort
+        ? `${effortLabel(defaultEffort)} (default)`
+        : "Auto";
+  const tier = choice.serviceTier ? row?.serviceTiers?.find((entry) => entry.id === choice.serviceTier)?.name ?? choice.serviceTier : undefined;
+  const detail = [choice.fastMode ? "Fast" : undefined, tier].filter(Boolean).join(" · ");
+
+  // Focus the selected row once the popup has painted.
+  useEffect(() => {
+    if (!open) return;
+    const task = window.setTimeout(() => {
+      const rows = [...(list.current?.querySelectorAll<HTMLButtonElement>("[data-option-row]:not([disabled])") ?? [])];
+      (rows.find((button) => button.dataset.selected === "true") ?? rows[0])?.focus();
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, [open]);
 
   /**
    * NOTHING TO SET, NO PILL — once the catalogue has answered for a model that
-   * offers no level, no second window and no fast mode. Before it answers the
-   * pill stays, so it does not flicker in, and a level already on the session
-   * keeps it so that level can still be seen and cleared.
+   * offers no section. Before it answers the pill stays, so it does not flicker
+   * in, and an option already on the session keeps it so it can be cleared.
    */
-  if (catalogue && row && levels.length === 0 && windows.length <= 1 && !fastMode && !choice.effort) return null;
+  const picked = Object.keys(choiceOf(choice)).some((key) => key !== "model");
+  if (catalogue && row && sections.length === 0 && !picked) return null;
 
-
-  /** Every row re-sends the WHOLE choice. Picking an effort must not clear the
-   *  model, and picking a window must not clear the effort. */
-  const pick = (next: Partial<ModelChoice>) => {
-    onChange?.({ ...choice, ...next });
+  const choose = (option: ModelOptionRow) => {
+    if (option.ultrathink) ultrathink?.toggle();
+    else if (option.apply) onChange?.(option.apply(choice));
     setOpen(false);
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const rows = [...(list.current?.querySelectorAll<HTMLButtonElement>("[data-option-row]:not([disabled])") ?? [])];
+    const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+    const to =
+      event.key === "ArrowDown" ? (at + 1) % rows.length
+      : event.key === "ArrowUp" ? (at - 1 + rows.length) % rows.length
+      : event.key === "Home" ? 0
+      : event.key === "End" ? rows.length - 1
+      : undefined;
+    if (to === undefined || rows.length === 0) return;
+    event.preventDefault();
+    rows[to]?.focus();
   };
 
   return (
@@ -1092,82 +1245,60 @@ export function ReasoningControl({
             label={label}
             muted={isDefault}
             {...(isDefault && defaultEffort ? { title: "The model's default. Pick a level to change it." } : {})}
-            {...(choice.fastMode ? { detail: "Fast" } : {})}
+            {...(detail ? { detail } : {})}
             ariaLabel={`Reasoning effort: ${spoken}${suffix ? `, ${suffix} context` : ""}`}
           />
         }
       />
-      <PopoverContent align="start" side="top" sideOffset={8} className="max-h-[min(26rem,70vh)] w-56 gap-0 overflow-y-auto rounded-xl p-1">
-        <MenuHeading>Reasoning</MenuHeading>
-        <CompactRow label={autoRowLabel(defaultEffort)} selected={!choice.effort} disabled={readOnly} onSelect={() => pick({ effort: undefined })} />
-        {levels.map((level) => (
-          <CompactRow
-            key={level}
-            label={effortLabel(level)}
-            selected={choice.effort === level}
-            disabled={readOnly}
-            onSelect={() => pick({ effort: level })}
-          />
-        ))}
-        {/* A level this list does not offer — another client's, or one this
-            provider spells differently. `Effort` is an open string in the
-            contract, so it is shown rather than silently replaced. */}
-        {choice.effort && !levels.some((level) => level === choice.effort) && (
-          <CompactRow label={choice.effort} hint="external" selected disabled onSelect={() => undefined} />
-        )}
-        {/* NO HAND-WRITTEN FALLBACK LIST. There used to be one, per provider, and
-            it was wrong: it offered Haiku three levels, which supports none. Auto
-            is the honest floor until the provider answers — and if it could not
-            be asked, its own words say why. */}
-        {levels.length === 0 && catalogue?.message && (
-          <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">{catalogue.message}</p>
-        )}
-
-        {/**
-         * THE CONTEXT WINDOW, WHERE THE MODEL HAS MORE THAN ONE.
-         *
-         * Absent otherwise, and that is the whole reason this is derived from
-         * the catalogue rather than from a flag: the switch this replaces was a
-         * hand-kept `long` per model, and it offered a 1M window on models that
-         * do not have one. Opus is 1M-only today and Haiku standard-only, so
-         * neither shows a choice — the pill still says which, so nothing about
-         * the next turn is hidden.
-         *
-         * PICKING ONE PICKS A MODEL — `sonnet` or `sonnet[1m]` — which is how
-         * the provider publishes it. `withModel` drops anything the other row
-         * cannot honour.
-         */}
-        {windows.length > 1 && family && (
-          <div className="mt-1 border-t border-border pt-1">
-            <MenuHeading>Context window</MenuHeading>
-            {windows.map((option) => {
-              const row = rowFor(family, option);
-              return (
-                <CompactRow
-                  key={option}
-                  label={WINDOW_LABEL[option]}
-                  // The provider's own default window for this model — a fact
-                  // to read, never a choice made for you: picking the model
-                  // still sends the row you pick.
-                  {...(row?.defaultWindow ? { hint: "Default" } : {})}
-                  selected={activeWindow === option}
-                  disabled={readOnly || !row}
-                  onSelect={() => row && pick(withModel(choice, row))}
-                />
-              );
-            })}
-          </div>
-        )}
-
-        {fastMode && (
-          <div className="mt-1 border-t border-border pt-1">
-            <MenuHeading>Fast mode</MenuHeading>
-            <CompactRow label="Off" selected={choice.fastMode !== true} disabled={readOnly} onSelect={() => pick({ fastMode: undefined })} />
-            <CompactRow label="On" selected={choice.fastMode === true} disabled={readOnly} onSelect={() => pick({ fastMode: true })} />
-          </div>
-        )}
+      <PopoverContent align="start" side="top" sideOffset={8} className="max-h-[min(30rem,70vh)] w-72 gap-0 overflow-y-auto rounded-xl p-1">
+        <div ref={list} role="group" aria-label="Model options" onKeyDown={onKeyDown}>
+          {sections.map((section, index) => (
+            <div key={section.id} className={cn(index > 0 && "mt-1 border-t border-border pt-1")} role="group" aria-label={section.title}>
+              <MenuHeading>{section.title}</MenuHeading>
+              {section.rows.map((option) => (
+                <OptionRow key={option.key} option={option} disabled={readOnly || option.disabled === true} onSelect={() => choose(option)} />
+              ))}
+            </div>
+          ))}
+          {/* NO HAND-WRITTEN FALLBACK LIST. If the provider could not be asked,
+              its own words say why. */}
+          {sections.length === 0 && catalogue?.message && (
+            <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">{catalogue.message}</p>
+          )}
+        </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** One option: its name, a line under it where it needs one, a Default badge on
+ *  the provider's own default, and a tick when it is what the next turn runs. */
+function OptionRow({ option, disabled, onSelect }: { option: ModelOptionRow; disabled: boolean; onSelect: () => void }) {
+  return (
+    <button
+      type="button"
+      data-option-row=""
+      data-selected={option.selected ? "true" : "false"}
+      aria-pressed={option.selected}
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-start gap-2 rounded-md px-2.5 py-1.5 text-left text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+        option.selected ? "bg-accent" : "hover:bg-accent/60 focus-visible:bg-accent/60",
+        disabled && "cursor-default opacity-60",
+      )}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className="truncate">{option.label}</span>
+          {option.isDefault && <Badge variant="outline" className="h-4 px-1 text-3xs font-normal text-muted-foreground">Default</Badge>}
+        </span>
+        {option.description && <span className="mt-0.5 block text-2xs leading-snug text-muted-foreground">{option.description}</span>}
+      </span>
+      <span className="flex size-3.5 shrink-0 items-center justify-center pt-0.5">
+        {option.selected && <CheckIcon className="size-3.5 text-primary" />}
+      </span>
+    </button>
   );
 }
 
@@ -1295,9 +1426,12 @@ export function ComposerOverflowMenu({
   onResumeAfterRateLimit,
   resumeAfterRateLimit,
   instanceId,
+  ultrathink,
 }: {
   driver: ProviderDriverKind;
   choice: ModelChoice;
+  /** The draft's keyword — see `ReasoningControl`. */
+  ultrathink?: { active: boolean; toggle: () => void };
   /** Whose login's curated list to read. Absent means the built-in slot. */
   instanceId?: string;
   /** The session's own answer, or absent for the driver's default — which is
@@ -1318,7 +1452,7 @@ export function ComposerOverflowMenu({
   // Same per-model rules as the pill's menus, from the same function — see
   // `selectionOf`, which exists because these two drifted apart once already.
   const models = catalogue?.models ?? [];
-  const { family, levels, defaultEffort, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
+  const sections = modelOptionSections(driver, models, choice, ultrathink ? { ultrathink: { active: ultrathink.active } } : {});
 
   return (
     <DropdownMenu>
@@ -1346,60 +1480,29 @@ export function ComposerOverflowMenu({
          * `MenuGroupContext` and THROWS without a `Menu.Group` above it — a bare
          * label does not degrade, it takes the page down when the menu opens.
          */}
-        {onChange && (
-          <DropdownMenuGroup>
-            <DropdownMenuLabel>Reasoning</DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => onChange({ ...choice, effort: undefined })}>
-              <span className="flex-1">{autoRowLabel(defaultEffort)}</span>
-              {!choice.effort && <CheckIcon className="size-3.5 text-primary" />}
-            </DropdownMenuItem>
-            {levels.map((level) => (
-              <DropdownMenuItem key={level} onClick={() => onChange({ ...choice, effort: level })}>
-                <span className="flex-1">{effortLabel(level)}</span>
-                {choice.effort === level && <CheckIcon className="size-3.5 text-primary" />}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuGroup>
-        )}
-
-        {/* The window is a pill setting too, so it is here for the same reason
-            everything else is: a narrow composer must not take a control away. */}
-        {onChange && windows.length > 1 && family && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>Context window</DropdownMenuLabel>
-              {windows.map((option) => {
-                const row = rowFor(family, option);
-                return (
-                  <DropdownMenuItem key={option} onClick={() => row && onChange(withModel(choice, row))}>
-                    <span className="flex-1">{WINDOW_LABEL[option]}</span>
-                    {row?.defaultWindow && <span className="shrink-0 text-3xs text-muted-foreground">Default</span>}
-                    {activeWindow === option && <CheckIcon className="size-3.5 text-primary" />}
+        {/* The same sections as the pill's popover, from the same function, so a
+            narrow composer never takes a control away. Ultrathink is offered
+            here too when the composer passes its draft. */}
+        {onChange &&
+          sections.map((section, index) => (
+            <Fragment key={section.id}>
+              {index > 0 && <DropdownMenuSeparator />}
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>{section.title}</DropdownMenuLabel>
+                {section.rows.map((option) => (
+                  <DropdownMenuItem
+                    key={option.key}
+                    disabled={option.disabled === true}
+                    onClick={() => (option.ultrathink ? ultrathink?.toggle() : option.apply && onChange(option.apply(choice)))}
+                  >
+                    <span className="flex-1">{option.label}</span>
+                    {option.isDefault && <span className="shrink-0 text-3xs text-muted-foreground">Default</span>}
+                    {option.selected && <CheckIcon className="size-3.5 text-primary" />}
                   </DropdownMenuItem>
-                );
-              })}
-            </DropdownMenuGroup>
-          </>
-        )}
-
-        {onChange && fastMode && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>Fast mode</DropdownMenuLabel>
-              {[
-                { on: false, label: "Off" },
-                { on: true, label: "On" },
-              ].map((option) => (
-                <DropdownMenuItem key={option.label} onClick={() => onChange({ ...choice, fastMode: option.on ? true : undefined })}>
-                  <span className="flex-1">{option.label}</span>
-                  {(choice.fastMode === true) === option.on && <CheckIcon className="size-3.5 text-primary" />}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuGroup>
-          </>
-        )}
+                ))}
+              </DropdownMenuGroup>
+            </Fragment>
+          ))}
 
         {/**
          * SIT OUT A USAGE LIMIT — Claude only, because it is the only provider

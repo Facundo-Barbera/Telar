@@ -55,7 +55,7 @@ import {
   type QuestionDraft,
 } from "@/lib/question-drawer";
 import { ComposerQuestionDrawer } from "./composer-question-drawer";
-import type { ModelChoice } from "@/lib/models";
+import { choiceOf, type ModelChoice } from "@/lib/models";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS } from "./composer-controls";
 import { Spinner } from "@/components/ui/spinner";
@@ -64,6 +64,8 @@ import {
   AgentControl,
   BackgroundPresence,
   ComposerOverflowMenu,
+  hasUltrathink,
+  toggleUltrathink,
   ContextPill,
   ControlDivider,
   ReasoningControl,
@@ -130,12 +132,7 @@ export const MAX_ATTACHMENTS = 16;
  * about to run" is exactly how the two came to disagree last time.
  */
 function modelChoiceOf(session: Session | undefined, pending: ModelChoice | undefined): ModelChoice {
-  const stored = session?.model ?? pending;
-  return {
-    ...(stored?.model ? { model: stored.model } : {}),
-    ...(stored?.effort ? { effort: stored.effort } : {}),
-    ...(stored?.fastMode === undefined ? {} : { fastMode: stored.fastMode }),
-  };
+  return choiceOf(session?.model ?? pending);
 }
 
 function activeDriverOf(session: Session | undefined, driver: ProviderDriverKind | undefined): ProviderDriverKind {
@@ -1450,6 +1447,9 @@ export function Composer({
    *  to when nobody names one. */
   const activeInstanceId = session?.providerInstanceId;
   const choice = modelChoiceOf(session, pendingModel);
+  /** Ultrathink is a word in the message, so the options menu edits the draft
+   *  in view rather than sending anything the person cannot see. */
+  const ultrathink = { active: hasUltrathink(draft), toggle: () => onDraftChange(toggleUltrathink(draft)) };
 
   return (
     /**
@@ -1877,6 +1877,7 @@ export function Composer({
                       choice={choice}
                       {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
                       {...(onModelChange ? { onChange: onModelChange } : {})}
+                      ultrathink={ultrathink}
                     />
                     {runtimeMode && (
                       <>
@@ -1899,6 +1900,7 @@ export function Composer({
                     <ComposerOverflowMenu
                       driver={activeDriver}
                       choice={choice}
+                      ultrathink={ultrathink}
                       {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
                       fresh={fresh}
                       {...(runtimeMode ? { runtimeMode } : {})}

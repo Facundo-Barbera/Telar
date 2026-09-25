@@ -66,10 +66,10 @@ import {
   MonitorIcon,
   SparklesIcon,
 } from "lucide-react";
-import type { EnvMode, ModelSelection, PluginStatus, Project, ProviderDriverKind, ProviderInstance, ProviderModel } from "@telar/engine-client";
+import type { EnvMode, PluginStatus, Project, ProviderDriverKind, ProviderInstance, ProviderModel } from "@telar/engine-client";
 import { defaultInstanceIdForDriver, pluginEnabled, readProjectPlugins } from "@telar/engine-client";
 import type { PublicHost } from "@/lib/hosts/store";
-import type { ModelChoice } from "@/lib/models";
+import { choiceNamesAnything, choiceOf, sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher } from "@/lib/hosts/client";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
@@ -284,9 +284,10 @@ export function ProjectModelOptionsRow({
   error?: string;
   unavailable?: string;
 }) {
-  const offered = modelOptionsOf(models ?? [], choice);
-  if (offered.efforts.length === 0 && !offered.fastMode) return null;
-  const set = choice.effort !== undefined || choice.fastMode !== undefined;
+  const offered = modelOptionsOf(models ?? [], choice, driver);
+  if (offered.efforts.length === 0 && !offered.fastMode && offered.serviceTiers.length === 0) return null;
+  const { model, ...options } = choiceOf(choice);
+  const set = Object.keys(options).length > 0;
   return (
     <Row
       label="Model options"
@@ -296,7 +297,7 @@ export function ProjectModelOptionsRow({
       {...(status ? { status } : {})}
       {...(error ? { error } : {})}
       // CLEARS THE OPTIONS AND KEEPS THE MODEL; the model row's revert clears both.
-      {...(set ? { onRevert: () => onChange(choice.model ? { model: choice.model } : {}) } : {})}
+      {...(set ? { onRevert: () => onChange(model ? { model } : {}) } : {})}
       control={<ReasoningControl driver={driver} choice={choice} {...(instanceId ? { instanceId } : {})} onChange={onChange} />}
       {...(unavailable ? { unavailable: { reason: unavailable } } : {})}
     />
@@ -340,11 +341,7 @@ export function ProjectConversationRows({
   const storedDriver = instances?.find((instance) => instance.id === stored?.instanceId)?.driver;
   const [picked, setPicked] = useState<ProviderDriverKind>();
   const driver = picked ?? storedDriver ?? "claude";
-  const choice: ModelChoice = {
-    ...(stored?.model ? { model: stored.model } : {}),
-    ...(stored?.effort ? { effort: stored.effort } : {}),
-    ...(stored?.fastMode !== undefined ? { fastMode: stored.fastMode } : {}),
-  };
+  const choice = choiceOf(stored);
 
   /**
    * A SELECTION THAT SELECTS NOTHING IS AN ABSENT SELECTION — the contract says
@@ -352,18 +349,11 @@ export function ProjectConversationRows({
    * same sentence the revert arrow writes.
    */
   const commitModel = (next: ModelChoice, field = "defaultModel") => {
-    const named = next.model !== undefined || next.effort !== undefined || next.fastMode !== undefined;
-    if (!named) return writer?.save(field, { defaultModel: null });
+    if (!choiceNamesAnything(next)) return writer?.save(field, { defaultModel: null });
     // The stored login when it is still this driver's, else this driver's own
     // default slot — a Claude selection must never keep a Codex instance id.
     const instanceId = storedDriver === driver && stored ? stored.instanceId : defaultInstanceIdForDriver(driver);
-    const selection = {
-      instanceId,
-      ...(next.model !== undefined ? { model: next.model } : {}),
-      ...(next.effort !== undefined ? { effort: next.effort } : {}),
-      ...(next.fastMode !== undefined ? { fastMode: next.fastMode } : {}),
-    } as ModelSelection;
-    writer?.save(field, { defaultModel: selection });
+    writer?.save(field, { defaultModel: sessionModelSelection(instanceId, next)! });
   };
 
   const errorFor = (field: string) => (writer?.error?.field === field ? writer.error.message : undefined);

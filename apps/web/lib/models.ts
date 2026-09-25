@@ -69,17 +69,29 @@ export type ModelChoice = {
   /** Latency over quality. Offered only on the models whose catalogue row says
    *  the provider supports it — two of Claude Code's six, and none of Codex's. */
   fastMode?: boolean;
+  /** The service tier, by the provider's own id. Offered only on a model whose
+   *  row lists `serviceTiers` — Codex's today. */
+  serviceTier?: string;
+  /** Xhigh reasoning plus workflow orchestration, on a Claude model with xhigh. */
+  ultracode?: boolean;
 };
 
-/**
- * THERE IS NO CONTEXT-WINDOW CONTROL, and its absence came from the provider.
- *
- * A `Standard | 1M` switch used to sit in the reasoning menu, gated by a
- * hand-kept `long` flag per model. Claude Code offers `claude-opus-5[1m]` and
- * `sonnet[1m]` as MODELS in its own list — so the long window is a row in the
- * model picker, chosen the way every other model is, and a second control for it
- * was a translation of something that needed none.
- */
+/** Every field a choice carries, from anything shaped like one — a stored
+ *  selection, a turn's, a project default. The one copy of the field list. */
+export function choiceOf(from: ModelChoice | undefined): ModelChoice {
+  return {
+    ...(from?.model ? { model: from.model } : {}),
+    ...(from?.effort ? { effort: from.effort } : {}),
+    ...(from?.fastMode === undefined ? {} : { fastMode: from.fastMode }),
+    ...(from?.serviceTier ? { serviceTier: from.serviceTier } : {}),
+    ...(from?.ultracode === undefined ? {} : { ultracode: from.ultracode }),
+  };
+}
+
+/** Whether a choice selects anything — an empty one is the provider default. */
+export function choiceNamesAnything(choice: ModelChoice | undefined): boolean {
+  return Object.keys(choiceOf(choice)).length > 0;
+}
 
 /** What the reasoning pill reads. Unset is AUTO — the provider's own default,
  *  which is a real state and not the same as any level above. An unrecognised
@@ -122,13 +134,8 @@ export function modelLabel(models: readonly ProviderModel[], id: string | undefi
 
 /** Provider defaults are represented by no selection, never an instance-only object. */
 export function sessionModelSelection(instanceId: string, choice: ModelChoice): ModelSelection | undefined {
-  if (!choice.model && !choice.effort && choice.fastMode === undefined) return undefined;
-  return {
-    instanceId,
-    ...(choice.model ? { model: choice.model } : {}),
-    ...(choice.effort ? { effort: choice.effort } : {}),
-    ...(choice.fastMode === undefined ? {} : { fastMode: choice.fastMode }),
-  };
+  if (!choiceNamesAnything(choice)) return undefined;
+  return { instanceId, ...choiceOf(choice) } as ModelSelection;
 }
 
 /**
@@ -147,10 +154,6 @@ export function projectDraftModel(selection: ModelSelection | undefined): { driv
   if (!driver) return undefined;
   return {
     driver,
-    choice: {
-      ...(selection.model ? { model: selection.model } : {}),
-      ...(selection.effort ? { effort: selection.effort } : {}),
-      ...(selection.fastMode === undefined ? {} : { fastMode: selection.fastMode }),
-    },
+    choice: choiceOf(selection),
   };
 }

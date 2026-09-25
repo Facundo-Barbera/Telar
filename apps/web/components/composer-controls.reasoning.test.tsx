@@ -12,7 +12,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ModelCatalogue, ProviderModel } from "@telar/engine-client";
-import { autoRowLabel, ReasoningControl, reasoningPillLabel } from "./composer-controls";
+import { ReasoningControl, reasoningPillLabel } from "./composer-controls";
 import { forgetModelCatalogues } from "@/lib/model-catalogue-cache";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
@@ -54,6 +54,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  // The catalogue cache is module-scoped; a later file must not read this one's rows.
+  forgetModelCatalogues();
 });
 
 async function mount(choice: { model?: string; effort?: string }): Promise<HTMLButtonElement | null> {
@@ -97,10 +99,7 @@ describe("the words", () => {
     expect(reasoningPillLabel("low", "high")).toEqual({ label: "Low", isDefault: false });
     expect(reasoningPillLabel(undefined, "high", "1M")).toEqual({ label: "High · 1M", isDefault: true });
     expect(reasoningPillLabel(undefined, undefined)).toEqual({ label: "Auto", isDefault: true });
-  });
-
-  test("the menu's Auto row says what Auto resolves to", () => {
-    expect(autoRowLabel("high")).toBe("Auto (High)");
-    expect(autoRowLabel(undefined)).toBe("Auto");
+    // Ultracode is a pick, and names itself.
+    expect(reasoningPillLabel(undefined, "high", undefined, true)).toEqual({ label: "Ultracode", isDefault: false });
   });
 });
