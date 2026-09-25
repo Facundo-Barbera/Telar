@@ -28,6 +28,9 @@ export type RelayCredential = { handle: string; keyId: string; sendKey: string }
 export interface SessionSignal {
   id: string; title: string; activity: string; activityAt?: number;
   lastTurnEndedAt?: number; lastTurnFailed?: boolean;
+  /** Where the cockpit shows it (`sessionHref`). Not part of `signalKey`: a
+   *  session moving project is not something to be told about. */
+  projectId?: string;
   /** The one open request a notification may offer to approve, when there is
    *  exactly one and it is an approval rather than a question or a secret. */
   approvable?: string;

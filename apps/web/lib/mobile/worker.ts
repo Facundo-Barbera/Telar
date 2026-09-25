@@ -2,6 +2,7 @@ import { relayConfig, relayDelivery, relayHostId, revokeRelayDevice } from "./re
 import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
+import { desktopAttached, listenForDesktop, notifyDesktop } from "./desktop";
 import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
 
 /** A phone that actually ran the start reports the activity's token within seconds: iOS delivers it
@@ -271,8 +272,9 @@ export async function markApprovable(
 /** Only the fields a notification is made of. Keeping the engine's whole row in
  *  a module global would hold a copy of every session's state for ever. */
 function signals(sessions: readonly SessionSignal[]): SessionSignal[] {
-  return sessions.map(({ id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed }) => ({
+  return sessions.map(({ id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed, projectId }) => ({
     id, title, activity,
+    ...(projectId === undefined ? {} : { projectId }),
     ...(activityAt === undefined ? {} : { activityAt }),
     ...(lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt }),
     ...(lastTurnFailed === undefined ? {} : { lastTurnFailed }),
@@ -404,32 +406,36 @@ export async function sendRelayTest(deviceId: string, topic: string, send = rela
 }
 
 export function startMobilePushWorker(): void {
-  if (workerGlobal.telarMobilePushTimer || !pushAvailable() || process.env.TELAR_COCKPIT !== "1") return;
+  // THE MAC'S OWN NOTIFICATIONS RIDE THIS PASS (`desktop.ts`): the same feed,
+  // the same diff, the same `markApprovable` — so a Mac with no phone still
+  // runs it when the shell asked for desktop notices.
+  const desktop = desktopAttached();
+  if (workerGlobal.telarMobilePushTimer || (!pushAvailable() && !desktop) || process.env.TELAR_COCKPIT !== "1") return;
+  if (desktop) listenForDesktop(async (sessionId, requestId, input) => (await engineClient()).resolveRequest(sessionId, requestId, input));
   const tick = async () => {
     // Recomputed every pass; any early return below leaves the ordinary cadence.
     workerGlobal.telarMobilePushHeartbeat = false;
     try {
       const nowMs = Date.now();
-      // PAUSED MEANS PAUSED. Not a cheaper tick, not the activities only: the
-      // relay has said this host is over its daily budget, and the one useful
-      // thing to do with that is stop until it says otherwise.
-      if (pushPausedUntil(nowMs) !== undefined) return;
       const relay = relayConfig();
       const ownHostId = relayHostId();
-      const stored = readPushRecords();
-      if (!stored.length) return;
+      // PAUSED MEANS PAUSED — for the phones. Not a cheaper tick, not the
+      // activities only: the relay has said this host is over its daily
+      // budget, and the one useful thing to do with that is stop until it says
+      // otherwise. The Mac's own notices spend no relay budget and carry on.
+      const stored = pushPausedUntil(nowMs) === undefined ? readPushRecords() : [];
 
       // Sweep revoked devices first — it is the one thing that must happen
       // whether or not a session moved, and it touches only this Mac's records.
-      const paired = new Set(readRemote().devices.filter(d => d.role === "full").map(d => d.id));
+      const paired = new Set(stored.length ? readRemote().devices.filter(d => d.role === "full").map(d => d.id) : []);
       for (const record of ownRecords(stored, ownHostId)) {
         if (paired.has(record.deviceId)) continue;
         // A v2 phone revokes its own key at the relay when it unpairs; there is nothing here to revoke.
         if (relay && !record.relay) await revokeRelayDevice(relay, record.deviceId);
         writePushRecords(readPushRecords().filter(r => r.deviceId !== record.deviceId));
       }
-      const records = ownRecords(readPushRecords(), ownHostId).filter(record => !record.parked);
-      if (!records.length) return;
+      const records = stored.length ? ownRecords(readPushRecords(), ownHostId).filter(record => !record.parked) : [];
+      if (!records.length && !desktop) return;
 
       const reconcile = nowMs - (workerGlobal.telarMobilePushReconciledAt ?? 0) >= RECONCILE_INTERVAL;
       const api = await engineClient();
@@ -457,6 +463,7 @@ export function startMobilePushWorker(): void {
         changed = reconcile ? undefined : changedSessions(sessions, workerGlobal.telarMobilePushSnapshot);
         workerGlobal.telarMobilePushSnapshot = sessions;
         await markApprovable(sessions, changed, id => api.session(id, { turns: 1 }));
+        if (desktop) notifyDesktop(sessions, changed);
         workerGlobal.telarMobilePushHeartbeat = heartbeatWanted(records, sessions);
         if (changed && changed.size === 0 && !heartbeatDue(records, sessions, workerGlobal.telarMobilePushBeatAt, nowMs)) return;
       }
