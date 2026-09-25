@@ -370,20 +370,25 @@ function parseWorkspace(raw: string): TerminalWorkspace | undefined {
 }
 
 /**
- * A stored `run`, validated — BOTH IDS OR NEITHER.
+ * A stored `run`, validated — THE RUN ID IS WHAT MAKES IT ONE.
  *
- * A half-written pair is not a run chip that is missing a field, it is a chip
- * nothing can address: with no `runId` there is no deployment to stop and no
- * status to follow, so it would draw as a permanently blank run. Refusing it
- * here restores it as an ordinary (empty) shell instead, which a person can
- * close.
+ * A chip with no `runId` is not a run missing a field, it is a chip nothing can
+ * address: there is no terminal to end and no status to follow, so it would
+ * draw as a permanently blank run. Refusing it here restores it as an ordinary
+ * (empty) shell instead, which a person can close.
+ *
+ * AN EMPTY `configId` IS A REAL RUN, NOT A HALF-WRITTEN ONE. A terminal the
+ * agent opened with a command of its own (`terminal_open`) came from no recipe,
+ * and its chip is written with `""` there. Refusing that used to restore it as
+ * a person's shell holding the ENGINE's terminal id — which the host will not
+ * let the renderer drive — and the next status read then gave the same
+ * terminal a second chip beside it.
  */
 function runOf(value: unknown): { runId: string; configId: string } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const run = value as { runId?: unknown; configId?: unknown };
   if (typeof run.runId !== "string" || !run.runId) return undefined;
-  if (typeof run.configId !== "string" || !run.configId) return undefined;
-  return { runId: run.runId, configId: run.configId };
+  return { runId: run.runId, configId: typeof run.configId === "string" ? run.configId : "" };
 }
 
 /** Every PTY a terminal tab's params name, whichever vocabulary they were
