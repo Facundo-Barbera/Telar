@@ -1692,58 +1692,48 @@ describe("per-project browser profiles", () => {
   });
 
   /**
-   * WHAT DELETE MAY REFUSE ON (#430). The Delete button in Settings did
-   * nothing on any machine that had been used: the shell refused whenever any
-   * scope NAMED the profile, and every open session names one from the moment
-   * it opens. The rule is a fact about tabs, and it lives here now because the
-   * manager is what holds them.
+   * DELETE NEVER STRANDS A SESSION (#430). On a machine used before shared
+   * profiles, every old profile had tabs somewhere, so refusing on a tab meant
+   * Delete could never succeed. It moves the tabs instead.
    */
-  describe("whyProfileIsInUse — the live half of the delete rule", () => {
-    test("a session bound to the profile with nothing open does not block it", () => {
+  describe("deleteProfile — forgetting a profile moves what was browsing in it", () => {
+    test("a session with tabs in the profile moves to the default, and its tabs sleep there with their URLs", async () => {
       const { manager } = makeHarness();
-      const profile = manager.profiles.create({ label: "Spare" });
+      const fallback = manager.profiles.get(manager.profiles.defaultProfileId);
+      const work = manager.profiles.create({ label: "Work" });
       manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-      manager.setScopeProfile("s", profile.id);
-      // The binding is real — this is exactly the state that used to refuse.
-      expect(manager.scopeProfiles.get("s")).toBe(profile.id);
-      expect(manager.whyProfileIsInUse(profile.id)).toBeNull();
-      // And nothing at all points at a profile no session ever chose.
-      expect(manager.whyProfileIsInUse(manager.profiles.create({ label: "Untouched" }).id)).toBeNull();
-    });
-
-    test("a session with tabs open in it is refused, with a sentence naming the profile and the way out", async () => {
-      const { manager } = makeHarness();
-      const profile = manager.profiles.create({ label: "Work" });
-      manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-      manager.setScopeProfile("s", profile.id);
+      manager.setScopeProfile("s", work.id);
       await manager.createTab("s", "https://one.example");
-      expect(manager.whyProfileIsInUse(profile.id)).toBe(
-        "A session has a tab open in “Work”. Close it, or switch that session to another profile, first.",
-      );
       await manager.createTab("s", "https://two.example");
-      expect(manager.whyProfileIsInUse(profile.id)).toContain("2 tabs open in “Work”");
-      // Closing them gives the way out the sentence promised.
-      manager.closeTab("s", 1, "human");
-      manager.closeTab("s", 0, "human");
-      expect(manager.whyProfileIsInUse(profile.id)).toBeNull();
+
+      const removed = manager.deleteProfile(work.id);
+
+      expect(removed).toMatchObject({ id: work.id, label: "Work", sessions: 1, tabs: 2 });
+      expect(manager.profiles.get(work.id)).toBeNull();
+      expect(manager.scopeProfiles.get("s")).toBe(fallback.id);
+      expect(manager.scopeProfileOverrides.has("s")).toBe(false);
+      const tabs = manager.scopeTabs("s");
+      expect(tabs.map((tab) => tab.view)).toEqual([null, null]);
+      expect(tabs.every((tab) => tab.profileId === fallback.id && tab.partition === fallback.partition)).toBe(true);
+      expect(tabs.map((tab) => tab.url)).toEqual(["https://one.example/", "https://two.example/"]);
     });
 
-    test("a tab left behind by a session that switched profiles still holds the profile it was signed into", async () => {
+    test("a tab left in the profile after its session switched away is re-homed in the session's current profile", async () => {
       const { manager } = makeHarness();
       const old = manager.profiles.create({ label: "Old" });
       const next = manager.profiles.create({ label: "Next" });
       manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
       manager.setScopeProfile("s", old.id);
       await manager.createTab("s", "https://one.example");
-      // The switch moves the BINDING; the open page keeps its jar.
       manager.setScopeProfile("s", next.id);
-      expect(manager.whyProfileIsInUse(old.id)).toContain("“Old”");
-      // And the profile the session is now pointed at counts that same tab: a
-      // restore drops a whole scope whose profile the registry has forgotten.
-      expect(manager.whyProfileIsInUse(next.id)).toContain("“Next”");
+
+      expect(manager.deleteProfile(old.id)).toMatchObject({ sessions: 1, tabs: 1 });
+      expect(manager.scopeProfiles.get("s")).toBe(next.id);
+      expect(manager.scopeTabs("s")[0]).toMatchObject({ profileId: next.id, partition: next.partition, view: null });
     });
 
-    test("a remembered session's hibernated tabs count — they are what a delete would throw away", () => {
+    test("a remembered session's hibernated tabs move too, and the saved inventory names a profile that exists", () => {
+      let saved;
       const { manager } = makeHarness({
         tabStore: {
           load: () => ({
@@ -1757,21 +1747,29 @@ describe("per-project browser profiles", () => {
               },
             },
           }),
-          save: () => {},
+          save: (inventory) => { saved = inventory; },
           flushSync: () => {},
         },
       });
-      const restored = manager.profiles.get(manager.profiles.defaultProfileId);
-      expect(manager.scopeTabs("s1")).toHaveLength(1);
-      expect(manager.scopeTabs("s1")[0].view).toBeNull();
-      expect(manager.whyProfileIsInUse(restored.id)).toContain("a tab open in");
+      const spare = manager.profiles.create({ label: "Spare" });
+      manager.profiles.setDefault(spare.id);
+      const restored = manager.scopeTabs("s1")[0].profileId;
+
+      expect(manager.deleteProfile(restored)).toMatchObject({ sessions: 1, tabs: 1 });
+      expect(manager.scopeTabs("s1")[0].profileId).toBe(spare.id);
+      expect(manager.scopeProfiles.get("s1")).toBe(spare.id);
+      return Promise.resolve().then(() => {
+        expect(JSON.stringify(saved)).not.toContain(restored);
+      });
     });
 
-    test("nothing is refused for a blank or unknown profile id", () => {
+    test("the default is still refused, and nothing moves", async () => {
       const { manager } = makeHarness();
-      expect(manager.whyProfileIsInUse("")).toBeNull();
-      expect(manager.whyProfileIsInUse(undefined)).toBeNull();
-      expect(manager.whyProfileIsInUse("bp_00000000000000ff")).toBeNull();
+      const fallback = manager.profiles.get(manager.profiles.defaultProfileId);
+      manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+      await manager.createTab("s", "https://one.example");
+      expect(() => manager.deleteProfile(fallback.id)).toThrow("Make another profile the default first.");
+      expect(manager.scopeTabs("s")[0].view).not.toBeNull();
     });
   });
 

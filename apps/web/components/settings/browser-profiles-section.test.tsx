@@ -143,12 +143,12 @@ describe("browser profiles — deleting one", () => {
 
     // Refused at the dialog: nothing is asked of the shell, and the row stays.
     await press(deleteButton(view.row("Work")));
-    expect(asked).toEqual(['Delete "Work"? 1 project will use "Default" instead. Its cookies stay on disk.']);
+    expect(asked).toEqual(['Delete "Work"? 1 project will use "Default" instead. Sessions browsing in it move over, and its open tabs reload signed out. Its cookies stay on disk.']);
     expect(view.row("Work")).toBeTruthy();
 
     // A profile nothing is assigned to has no move to report, only the jar.
     await press(deleteButton(view.row("Spare")));
-    expect(asked[1]).toBe('Delete "Spare"? Its cookies stay on disk.');
+    expect(asked[1]).toBe('Delete "Spare"? Sessions browsing in it move over, and its open tabs reload signed out. Its cookies stay on disk.');
     view.unmount();
   });
 
