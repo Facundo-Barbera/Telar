@@ -35,11 +35,12 @@
  *
  * ── THE CONFIRM NAMES SESSIONS, NOT GIGABYTES ─────────────────────────────
  *
- * Giving back a settled session's checkout ARCHIVES THAT SESSION — the only
- * supported way, because settling deliberately does not release a checkout and
- * nothing re-cuts a missing worktree. So the press ends conversations, and the
- * confirm says "archive" in those words. A confirm that named the space and
- * hid the session is the kind people click and regret.
+ * Giving back a settled session's checkout RELEASES it by default: the
+ * directory goes, the session and its branch stay, and the next message
+ * re-cuts the checkout where it was. Archiving the session instead is a
+ * separate, explicit choice on the confirm, and the confirm says which in
+ * those words. A confirm that named the space and hid the session is the kind
+ * people click and regret.
  *
  * ── AND A DRIVE THAT IS OUT IS A STATE, NOT AN EMPTY LIST ─────────────────
  *
@@ -112,14 +113,17 @@ export function ownerLabel(row: WorktreeRow): { label: string; tone: "outline" |
  * checkouts nothing is holding" is not. Merging them into "give back 5" would
  * hide the half worth thinking about behind the half that is obvious.
  */
-export function confirmSentence(rows: readonly WorktreeRow[]): string {
-  const archives = rows.filter((row) => row.owner.kind === "session" && row.owner.lifecycle === "settled");
+export function confirmSentence(rows: readonly WorktreeRow[], archiveSettled = false): string {
+  const settled = rows.filter((row) => row.owner.kind === "session" && row.owner.lifecycle === "settled");
   const removals = rows.filter((row) => !(row.owner.kind === "session" && row.owner.lifecycle === "settled"));
   const bytes = rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
   const parts: string[] = [];
-  if (archives.length > 0) {
+  const n = settled.length;
+  if (n > 0 && archiveSettled) {
+    parts.push(`Archive ${n} session${n === 1 ? "" : "s"} and give back ${n === 1 ? "its" : "their"} checkout${n === 1 ? "" : "s"}.`);
+  } else if (n > 0) {
     parts.push(
-      `Archive ${archives.length} session${archives.length === 1 ? "" : "s"} and give back ${archives.length === 1 ? "its" : "their"} checkout${archives.length === 1 ? "" : "s"}.`,
+      `Release ${n} checkout${n === 1 ? "" : "s"}. ${n === 1 ? "Its session stays and comes" : "Their sessions stay and come"} back on the next message.`,
     );
   }
   if (removals.length > 0) {
@@ -172,10 +176,15 @@ export function armedRows(
  * elsewhere, and attaching it to a reclaimable row would make a proven-safe
  * checkout look like one somebody forced.
  */
-export function reclaimPayload(rows: readonly WorktreeRow[], typed: Readonly<Record<string, string>>): { path: string; confirm?: string }[] {
+export function reclaimPayload(
+  rows: readonly WorktreeRow[],
+  typed: Readonly<Record<string, string>>,
+  archiveSettled = false,
+): { path: string; confirm?: string; settled?: "release" | "archive" }[] {
   return rows.map((row) => ({
     path: row.path,
     ...(row.verdict.kind === "needs-force" ? { confirm: typed[row.path] ?? "" } : {}),
+    ...(row.owner.kind === "session" && row.owner.lifecycle === "settled" ? { settled: archiveSettled ? "archive" : "release" } : {}),
   }));
 }
 
@@ -206,6 +215,7 @@ export function WorktreeListSection() {
   const [cleared, setCleared] = useState<Set<string>>(new Set());
   const [typed, setTyped] = useState<Record<string, string>>({});
   const [confirming, setConfirming] = useState(false);
+  const [archiveSettled, setArchiveSettled] = useState(false);
   const [results, setResults] = useState<WorktreeReclaimResult[]>();
   const [summary, setSummary] = useState<string>();
 
@@ -269,7 +279,7 @@ export function WorktreeListSection() {
     setResults(undefined);
     setSummary(undefined);
     try {
-      const outcome = (await api.reclaimWorktrees(reclaimPayload(selected, typed))).reclaim;
+      const outcome = (await api.reclaimWorktrees(reclaimPayload(selected, typed, archiveSettled))).reclaim;
       setResults(outcome.results);
       setSummary(outcome.summary);
       setConfirming(false);
@@ -364,12 +374,18 @@ export function WorktreeListSection() {
       */}
       {confirming ? (
         <div className="space-y-3 py-3">
-          <p className="text-xs text-foreground">{confirmSentence(selected)}</p>
+          <p className="text-xs text-foreground">{confirmSentence(selected, archiveSettled)}</p>
+          {selected.some((row) => row.owner.kind === "session" && row.owner.lifecycle === "settled") && (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input type="checkbox" checked={archiveSettled} onChange={(event) => setArchiveSettled(event.target.checked)} />
+              Archive those sessions instead
+            </label>
+          )}
           <ul className="max-h-40 space-y-0.5 overflow-auto text-xs text-muted-foreground">
             {selected.map((row) => (
               <li key={row.path} className="font-mono">
                 {row.basename}
-                {row.owner.kind === "session" && row.owner.lifecycle === "settled" ? " — archives its session" : ""}
+                {row.owner.kind === "session" && row.owner.lifecycle === "settled" ? (archiveSettled ? " — archives its session" : " — released, session kept") : ""}
               </li>
             ))}
           </ul>

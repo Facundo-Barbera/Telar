@@ -2393,7 +2393,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           if (typeof item.path !== "string" || !item.path.trim()) {
             throw new HttpError(400, "invalid_request", "each item needs the checkout's path");
           }
-          return { path: item.path, ...(typeof item.confirm === "string" ? { confirm: item.confirm } : {}) };
+          return {
+            path: item.path,
+            ...(typeof item.confirm === "string" ? { confirm: item.confirm } : {}),
+            ...((item as { settled?: unknown }).settled === "archive" || (item as { settled?: unknown }).settled === "release"
+              ? { settled: (item as { settled: "archive" | "release" }).settled }
+              : {}),
+          };
         });
         const results = await store.reclaimWorktrees(items);
         // Gigabytes just moved, so the pane above this one must measure rather
@@ -2742,6 +2748,36 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const projectGit = /^\/v2\/projects\/([^/]+)\/git$/.exec(url.pathname);
       if (request.method === "GET" && projectGit) {
         writeJson(response, 200, { git: await store.projectGitAsync(decodeURIComponent(projectGit[1])) });
+        return;
+      }
+      /**
+       * A SESSION'S CHECKOUT: release it (delete the directory, keep the branch
+       * and the conversation), bring it back, or read its setup's log — see
+       * `worktree-release.ts` and `worktree-setup.ts`.
+       */
+      const sessionWorktree = /^\/v2\/sessions\/([^/]+)\/worktree\/(release|restore)$/.exec(url.pathname);
+      if (sessionWorktree && request.method === "POST") {
+        const sessionId = decodeURIComponent(sessionWorktree[1]!);
+        if (sessionWorktree[2] === "restore") {
+          writeJson(response, 200, { session: store.restoreSessionWorktree(sessionId) });
+          return;
+        }
+        const released = await store.releaseSessionWorktree(sessionId, "manual");
+        if (!released.ok) {
+          throw new HttpError(409, "conflict", `the checkout was not released: ${released.refusal}${released.detail ? ` (${released.detail})` : ""}`);
+        }
+        writeJson(response, 200, { session: store.getSession(sessionId) });
+        return;
+      }
+      const sessionSetup = /^\/v2\/sessions\/([^/]+)\/setup$/.exec(url.pathname);
+      if (sessionSetup && request.method === "GET") {
+        const sessionId = decodeURIComponent(sessionSetup[1]!);
+        store.getSession(sessionId);
+        const after = Number(url.searchParams.get("after") ?? 0);
+        writeJson(response, 200, {
+          setup: store.setups.status(sessionId) ?? null,
+          ...store.setups.output(sessionId, Number.isFinite(after) && after > 0 ? after : 0),
+        });
         return;
       }
       /**
@@ -4467,6 +4503,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          * for every path once and a viewer asks for one file at a time.
          */
         if (request.method === "GET" && session.tail === "/files") {
+          // OPENING A RELEASED SESSION'S FILES BRINGS ITS CHECKOUT BACK, the way
+          // a message does; the listing answers once the re-cut lands.
+          store.restoreSessionWorktree(session.sessionId);
           const target = url.searchParams.get("path");
           if (target) {
             writeJson(response, 200, { file: await store.sessionFileAsync(session.sessionId, target) });
@@ -5380,6 +5419,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // `closeExecutionStore` and the process ending would be a write against
         // a store that has gone. The others only read or queue.
         clearInterval(requestDeadlineSweeper);
+        // No worktree setup outlives the engine that started it.
+        store.setups.stopAll();
         removeOwnDiscovery(store, daemonId);
         store.closeExecutionStore();
         lock.release();

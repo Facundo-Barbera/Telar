@@ -247,6 +247,10 @@ import type { ScheduleRow } from "./execution-store";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, type GitResult, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
+import { checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal } from "./worktree-release";
+import { WorktreeSetups } from "./worktree-setup";
+import { pipeLauncher } from "./run/launcher";
+import { processGroupFor } from "./run/platform";
 import { CheckoutSizes, type CheckoutSizesOptions } from "./checkout-sizes";
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./worktrees-move";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
@@ -2425,6 +2429,8 @@ export class EngineStore {
   readonly paths: EngineStatePaths;
   /** How each project's worktrees are prepared — see `workspace-config.ts`. */
   readonly workspace: WorkspaceConfigStore;
+  /** Each worktree's `setup.command`, run in the background after a cut. */
+  readonly setups: WorktreeSetups;
   private readonly notifier?: EngineNotifier;
   /** See the constructor: the daemon's in-process nudge to its embedded worker,
    *  absent unless the daemon injected it. */
@@ -4576,6 +4582,11 @@ export class EngineStore {
     this.ambientEnv = options.ambientEnv ?? process.env;
     this.paths = statePaths(root);
     this.workspace = new WorkspaceConfigStore(this.paths.workspace);
+    this.setups = new WorktreeSetups({
+      directoryOf: (sessionId) => sessionDir(this.paths, sessionId),
+      launcher: pipeLauncher(processGroupFor(process.platform, (pid, signal) => process.kill(pid, signal))),
+      now: () => this.now(),
+    });
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
     const migrated = fs.existsSync(this.paths.executionStore) || fs.existsSync(path.join(root, "execution.sqlite"));
@@ -7592,6 +7603,7 @@ export class EngineStore {
       try {
         await createSessionWorktreeAsync(this.worktreeGit, { engineRoot: this.paths.root, projectRoot, plan, baseSha });
         this.settleWorktree(sessionId, undefined);
+        void this.startWorktreeSetup(sessionId, plan.path);
       } catch (error) {
         // Git's own words, not ours — see `SessionPreparation.error`.
         this.settleWorktree(sessionId, error instanceof Error ? error.message : String(error));
@@ -7601,6 +7613,119 @@ export class EngineStore {
         this.forgetGitReadsUnder(plan.path);
       }
     });
+  }
+
+  /**
+   * THE PROJECT'S `setup.command`, IN THE BACKGROUND — never inside the
+   * per-project queue, which would hold every other cut for as long as an
+   * install takes. Best-effort: a setup that cannot start is in its own log.
+   */
+  private async startWorktreeSetup(sessionId: string, worktree: string): Promise<void> {
+    try {
+      const session = this.getSession(sessionId);
+      if (!session.projectId) return;
+      const project = this.getProject(session.projectId);
+      const { effective } = await this.workspace.view(project);
+      await this.setups.start(sessionId, { worktree, config: effective, env: { TELAR_WORKTREE: worktree } });
+    } catch {
+      // A session deleted in the meantime has nothing to set up.
+    }
+  }
+
+  /**
+   * DELETE A SESSION'S CHECKOUT, KEEP ITS BRANCH AND CONVERSATION — see
+   * `worktree-release.ts`. Refused, and nothing touched, for a turn in
+   * flight, uncommitted changes, unpushed commits, a live process, or a
+   * checkout outside Telar's worktrees root. `strict` is the automatic
+   * sweep's: it also refuses when the platform cannot say what runs where.
+   */
+  async releaseSessionWorktree(
+    sessionId: string,
+    reason: "manual" | "inactive" | "merged" | "archived",
+    options: { strict?: boolean } = {},
+  ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
+    const session = this.getSession(sessionId);
+    if (session.workspace.mode !== "worktree" || !session.projectId) return { ok: false, refusal: "not-worktree" };
+    if (session.workspace.released) return { ok: true };
+    if (session.activity !== "idle" || session.preparation !== undefined || this.setups.isRunning(sessionId)) {
+      return { ok: false, refusal: "in-use" };
+    }
+    const project = this.getProject(session.projectId);
+    const workspace = session.workspace;
+    const location = readWorktreesRoot(this.paths.root);
+    const configured = rootOf(location);
+    const roots = [defaultWorktreesRoot(this.paths.root), ...(configured ? [configured] : [])];
+    const processes = await checkoutsWithProcesses([workspace.path]);
+    const checked = await releaseRefusal(this.worktreeGit, {
+      projectRoot: project.root,
+      worktreesRoots: roots,
+      path: workspace.path,
+      branch: workspace.branch,
+      process: processes === undefined ? undefined : processes.has(workspace.path),
+      strict: options.strict === true,
+    });
+    if (checked.refusal) return { ok: false, refusal: checked.refusal, ...(checked.detail ? { detail: checked.detail } : {}) };
+
+    const removed = await this.worktreeQueue(project.root, () =>
+      removeSessionWorktreeAsync(this.worktreeGit, project.root, workspace.path, this.projectAvailability(project)),
+    );
+    this.forgetGitReadsUnder(project.root);
+    this.forgetGitReadsUnder(workspace.path);
+    if (!removed) return { ok: false, refusal: "not-found", detail: "the checkout is still there" };
+
+    // Re-read: seconds passed while git ran.
+    const current = this.getSession(sessionId);
+    if (current.workspace.mode !== "worktree") return { ok: true };
+    const updated: Session = {
+      ...current,
+      workspace: { ...current.workspace, released: { at: this.now(), reason } },
+      updatedAt: this.now(),
+    };
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.appendEvent(sessionId, { type: "session.updated", session: updated });
+    return { ok: true };
+  }
+
+  /**
+   * BRING A RELEASED CHECKOUT BACK — at the same path, from the same branch,
+   * then the setup in the background. Idempotent: a session that is not
+   * released, or is already being restored, is left alone. While it runs the
+   * session is `preparing`, so a queued turn waits for the directory the same
+   * way it waits for a first cut.
+   */
+  restoreSessionWorktree(sessionId: string): Session {
+    const session = this.getSession(sessionId);
+    if (session.workspace.mode !== "worktree" || !session.workspace.released || session.preparation?.state === "preparing") {
+      return session;
+    }
+    if (!session.projectId) return session;
+    const project = this.getProject(session.projectId);
+    const { released: _released, ...workspace } = session.workspace;
+    const updated: Session = {
+      ...session,
+      workspace,
+      preparation: { state: "preparing", at: this.now() },
+      updatedAt: this.now(),
+    };
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.appendEvent(sessionId, { type: "session.updated", session: updated });
+    void this.worktreeQueue(project.root, async () => {
+      try {
+        await reattachSessionWorktreeAsync(this.worktreeGit, {
+          projectRoot: project.root,
+          path: workspace.path,
+          branch: workspace.branch,
+        });
+        this.settleWorktree(sessionId, undefined);
+        void this.startWorktreeSetup(sessionId, workspace.path);
+      } catch (error) {
+        this.settleWorktree(sessionId, error instanceof Error ? error.message : String(error));
+      } finally {
+        this.forgetGitReadsUnder(project.root);
+        this.forgetGitReadsUnder(workspace.path);
+      }
+    });
+    return updated;
   }
 
   /**
@@ -9018,6 +9143,10 @@ export class EngineStore {
     }
     const kind = input.kind === "compact" ? "compact" : undefined;
     const session = this.getSession(sessionId);
+    // A MESSAGE TO A RELEASED SESSION BRINGS ITS CHECKOUT BACK; the turn waits
+    // on `preparing` like it does for a first cut. Checked on the read already
+    // made, so an ordinary message costs no extra parse of the queue.
+    if (session.workspace.mode === "worktree" && session.workspace.released) this.restoreSessionWorktree(sessionId);
     if (kind === "compact" && !PROVIDER_CAPABILITIES[session.driver].compaction)
       throw new EngineStateError("conflict", "this provider does not support manual compaction");
     const queue = this.readQueue(sessionId);
@@ -10247,6 +10376,9 @@ export class EngineStore {
        * resolved, carrying git's own sentence about what went wrong.
        */
       if (session.preparation?.state === "preparing") continue;
+      // Released with a turn queued: the restore `submitTurn` started is on its
+      // way, and a turn must never run in a directory that is not there.
+      if (session.workspace.mode === "worktree" && session.workspace.released) continue;
       if (session.preparation?.state === "failed") {
         // Writes, so it takes a queue of its own rather than editing the copy
         // every other reader is sharing — see the `selection === "failed"`
@@ -11641,6 +11773,25 @@ export class EngineStore {
 
       const bytes = row.bytes;
       try {
+        if (row.owner.kind === "session" && row.owner.lifecycle === "settled" && item.settled !== "archive") {
+          // RELEASE IS THE DEFAULT: the checkout goes, the
+          // session and its branch stay, and the next message brings it back.
+          const released = await this.releaseSessionWorktree(row.owner.sessionId, "manual");
+          results.push(
+            released.ok
+              ? { path: row.path, ok: true, action: "released", sessionId: row.owner.sessionId, ...(bytes === undefined ? {} : { bytes }) }
+              : {
+                  path: row.path,
+                  ok: false,
+                  refusal:
+                    released.refusal === "in-use" || released.refusal === "dirty" || released.refusal === "unpushed" || released.refusal === "process" || released.refusal === "not-found"
+                      ? released.refusal
+                      : "failed",
+                  ...(released.detail ? { detail: released.detail } : {}),
+                },
+          );
+          continue;
+        }
         if (row.owner.kind === "session" && row.owner.lifecycle === "settled") {
           // The supported path, which releases the checkout on the project
           // queue as part of putting the session down.

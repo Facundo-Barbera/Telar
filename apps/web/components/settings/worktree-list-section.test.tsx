@@ -191,8 +191,9 @@ describe("Settings ▸ Storage ▸ Checkouts", () => {
       view.button("Give back")!.click();
       await settle();
     });
-    expect(view.host.textContent).toContain("Archive 1 session");
-    expect(view.host.textContent).toContain("archives its session");
+    expect(view.host.textContent).toContain("Release 1 checkout");
+    expect(view.host.textContent).toContain("released, session kept");
+    expect(view.host.textContent).toContain("Archive those sessions instead");
     view.unmount();
   });
 
@@ -278,9 +279,12 @@ describe("the row's words", () => {
       row({ basename: "a", owner: { kind: "session", sessionId: "s1", lifecycle: "settled" }, bytes: 1024 ** 3 }),
       row({ basename: "b", bytes: 1024 ** 3 }),
     ]);
-    expect(sentence).toContain("Archive 1 session");
+    expect(sentence).toContain("Release 1 checkout");
     expect(sentence).toContain("Remove 1 checkout");
     expect(sentence).toContain("Branches are kept.");
+    expect(confirmSentence([row({ basename: "a", owner: { kind: "session", sessionId: "s1", lifecycle: "settled" } })], true)).toContain(
+      "Archive 1 session",
+    );
   });
 });
 
