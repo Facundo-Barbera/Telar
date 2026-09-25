@@ -1043,6 +1043,52 @@ export class RunManager {
     if (!isTerminal(run.status)) this.finish(run, "closed", { closedBy: run.closing ?? "person" });
   }
 
+  /** How many of this session's terminals are open right now. */
+  openCount(sessionId: string): number {
+    let count = 0;
+    for (const run of this.runs.values()) if (run.sessionId === sessionId && !isTerminal(run.status)) count += 1;
+    return count;
+  }
+
+  /** Every session with at least one open terminal. */
+  openSessions(): string[] {
+    return [...new Set([...this.runs.values()].filter((run) => !isTerminal(run.status)).map((run) => run.sessionId))];
+  }
+
+  /**
+   * CLOSE EVERYTHING A SESSION HAS OPEN, AS TELAR — settling it (#883).
+   *
+   * On the desktop this is ONE call to the host's `/close-session`, because the
+   * session's terminals include the shells the person opened in its panel, and
+   * only the host knows those. The engine's own records are stamped `telar`
+   * first, so the endings the host reports are recorded as Telar's rather than
+   * the person's — which is also why the agent gets no "closed by the person"
+   * note for them. The pipe fallback has no host; its children are all there is.
+   *
+   * Answers how many terminals were closed, the person's shells included.
+   */
+  async closeSession(sessionId: string): Promise<number> {
+    const open = [...this.runs.values()].filter((run) => run.sessionId === sessionId && !isTerminal(run.status));
+    if (!this.launcher.closeSession) {
+      await Promise.allSettled(open.map((run) => this.close(run.terminalId, "telar")));
+      return open.length;
+    }
+    const stamped = open.filter((run) => !run.closeTask);
+    for (const run of stamped) run.closing = "telar";
+    let closed: number;
+    try {
+      closed = await this.launcher.closeSession(sessionId);
+    } catch (error) {
+      for (const run of stamped) run.closing = undefined;
+      throw error;
+    }
+    // Same rule as a single close: once the host's escalation is over, an exit
+    // report that has not arrived is not waited on for ever.
+    await Promise.all(open.map((run) => this.ended(run, this.closeSettleMs)));
+    for (const run of open) if (!isTerminal(run.status)) this.finish(run, "closed", { closedBy: run.closing ?? "telar" });
+    return Math.max(closed, open.length);
+  }
+
   /** Resolves true once the terminal has ended, false after `ms`. */
   private ended(run: LiveRun, ms: number): Promise<boolean> {
     if (isTerminal(run.status)) return Promise.resolve(true);

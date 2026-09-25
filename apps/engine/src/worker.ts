@@ -1466,7 +1466,10 @@ export class EngineWorker {
         // was queued behind it is settled, leaving it idle. `stopTurn` would
         // let this worker claim the peer's next message a heartbeat later.
         stop: (id) => this.options.client.stopSession(id, "agent"),
-        settle: async (id, settled) => (await this.options.client.settleSession(id, settled)).session,
+        settle: async (id, settled) => {
+          const answer = await this.options.client.settleSession(id, settled);
+          return answer.ended ? { ...answer.session, ended: answer.ended } : answer.session;
+        },
         // The wall passes `self` and nothing else, so the only cadence a turn can
         // set through here is its own — see `SessionsCapability` (#723).
         setReportWindow: async (id, minutes) => (await this.options.client.setSessionReportWindow(id, minutes)).session,

@@ -109,7 +109,12 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     }),
     // The same wiring the daemon uses: an agent's stop IS a stop.
     stop: async (sessionId) => store.stopSession(sessionId, "agent"),
-    settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
+    settle: async (sessionId, settled) => {
+      const session = store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
+      if (!settled) return session;
+      const ended = await store.endSessionLeftovers(sessionId);
+      return { ...store.getSession(sessionId), ended };
+    },
     setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
     diff: async (sessionId) => store.sessionDiffAsync(sessionId),
     subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
@@ -455,6 +460,23 @@ describe("driving a session", () => {
 
     const missing = await call(tools, "sessions_settle", { sessionId: "session_nope" });
     expect(missing.isError).toBe(true);
+  });
+
+  test("settle says what it ended: the session's terminals, closed as Telar (#883)", async () => {
+    const { store, projectId } = engine();
+    const closed: string[] = [];
+    store.attachTerminals({ openCount: () => 0, openSessions: () => [], closeSession: async (sessionId) => (closed.push(sessionId), 2) });
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+
+    const settled = await call(tools, "sessions_settle", { sessionId: id });
+    expect(closed).toEqual([id]);
+    expect(settled.json).toMatchObject({ ended: { terminals: 2, backgroundTasks: 0 } });
+    expect(String(settled.json!.note)).toContain("Settling ended what it left running: 2 terminals.");
+
+    // Bringing it back closes nothing and reopens nothing.
+    await call(tools, "sessions_settle", { sessionId: id, settled: false });
+    expect(closed).toEqual([id]);
   });
 
   /**

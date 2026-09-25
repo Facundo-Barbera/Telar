@@ -177,6 +177,12 @@ export type EngineDaemonOptions = {
    */
   delegationSweepIntervalMs?: number;
   /**
+   * Testable cadence for closing a clock-settled session's terminals once its
+   * grace is over — issue #883. As slow as the delegation sweep: the grace is
+   * half an hour, and a few minutes either side of it is not a difference.
+   */
+  settledTerminalSweepIntervalMs?: number;
+  /**
    * Testable cadence for the report-window sweep — issue #723.
    *
    * FASTER THAN THE SWEEP ABOVE, because the shortest window a person may set is
@@ -1249,6 +1255,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * on it, because nothing is blocked by it.
    */
   const runMount = createRunMount({ root: store.paths.root, noteForNextTurn: (sessionId, note) => store.noteForNextTurn(sessionId, note) });
+  // Settling closes a session's terminals and an open one holds its checkout
+  // busy (#883), and both of those are the store's rules.
+  store.attachTerminals(runMount.manager);
   const pluginStatuses = await pluginHost.startAll();
   /**
    * The host is the authority on which of its tools are reads. Installed here
@@ -1362,6 +1371,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
   }, options.delegationSweepIntervalMs ?? 5 * 60_000);
   delegationSweeper.unref();
+  /**
+   * AND A CLOCK-SETTLED SESSION'S TERMINALS NEED ONE — issue #883. Nothing
+   * writes when the inactivity window passes, and nothing when the grace after
+   * it does; see `sweepSettledTerminals`. Its own promise catches, so a tick
+   * that fails waits for the next.
+   */
+  const settledTerminalSweeper = setInterval(() => {
+    void store.sweepSettledTerminals().catch(() => undefined);
+  }, options.settledTerminalSweepIntervalMs ?? 5 * 60_000);
+  settledTerminalSweeper.unref();
   /**
    * AND A REPORT WINDOW NEEDS ONE TOO — issue #723.
    *
@@ -1574,7 +1593,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // same work a person's Stop ends, and leaves the session idle rather
       // than latched — see `stopSession`.
       stop: async (sessionId) => store.stopSession(sessionId, "agent"),
-      settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
+      settle: async (sessionId, settled) => {
+        const session = store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
+        if (!settled) return session;
+        // #883: an explicit settle ends what the session left running.
+        const ended = await store.endSessionLeftovers(sessionId);
+        return { ...store.getSession(sessionId), ended };
+      },
       // The bounds are the store's, like every member here — see #723.
       setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
       // #543. Present only in-process; a worker reaching the wall over HTTP has
@@ -5074,8 +5099,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         if (request.method === "PATCH" && session.tail === "") {
           const input = await body(request);
-          writeJson(response, 200, {
-            session: store.updateSession(session.sessionId, {
+          const updated = store.updateSession(session.sessionId, {
               ...(input.title === undefined ? {} : { title: stringValue(input.title, "session title")! }),
               // Validated in the store against the contract's own list, so the
               // HTTP surface and an in-process caller refuse the same set.
@@ -5095,8 +5119,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               // store's, so an in-process caller cannot set a window this hop
               // would have refused (#723).
               ...(input.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: input.reportWindowMinutes as ReportCadence | null }),
-            }),
-          });
+            });
+          /**
+           * AN EXPLICIT SETTLE ENDS WHAT THE SESSION LEFT RUNNING — issue #883.
+           * After the settle is written, and answered with the counts so the
+           * surface that settled it can say what ended. The clock's settle never
+           * comes through here; `sweepSettledTerminals` gives it a grace.
+           */
+          if (input.settledOverride === "settled") {
+            const ended = await store.endSessionLeftovers(session.sessionId);
+            writeJson(response, 200, { session: store.getSession(session.sessionId), ended });
+            return;
+          }
+          writeJson(response, 200, { session: updated });
           return;
         }
         /**
@@ -5470,6 +5505,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         await closeServer(server);
         clearInterval(workerPruner);
         clearInterval(delegationSweeper);
+        clearInterval(settledTerminalSweeper);
         store.checkoutSizes.stop();
         // CLEARED RATHER THAN ONLY UNREF'D, unlike the two sweeps beside it,
         // because this one RESOLVES REQUESTS: a tick that landed between
@@ -5490,6 +5526,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   } catch (error) {
     clearInterval(workerPruner);
     clearInterval(delegationSweeper);
+    clearInterval(settledTerminalSweeper);
     clearInterval(requestDeadlineSweeper);
     clearTimeout(cleanupFirst);
     if (modelPrefetch) clearTimeout(modelPrefetch);
