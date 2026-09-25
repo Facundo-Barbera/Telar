@@ -594,7 +594,8 @@ export function SessionRow({
       ) : null}
       {/* `role="status"` on the LABEL alone. Wrapping the ticking duration in
           one would make a screen reader announce every tick. */}
-      <span role="status">{badge.label}</span>
+      {/* The hint on the LABEL: a state explains itself on hover. */}
+      <span role="status" title={badge.hint}>{badge.label}</span>
       {badge.ticking && session.activityAt !== undefined ? <TickingDuration startedAt={session.activityAt} /> : null}
     </span>
   ) : (

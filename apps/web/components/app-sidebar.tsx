@@ -941,7 +941,9 @@ function SidebarBody() {
    * cadence is therefore about LATENCY now — how soon a badge appears — rather
    * than about how much the rail is willing to spend.
    */
-  const anyLive = sessions.some((session) => session.activity !== "idle");
+  // `waiting` and `scheduled` are not live here: nothing of theirs moves until
+  // something else does, and a row that did would already have made this true.
+  const anyLive = sessions.some((session) => session.activity !== "idle" && session.activity !== "waiting" && session.activity !== "scheduled");
   useEffect(() => {
     const timer = window.setInterval(() => void loadAll(), anyLive ? 3_000 : 10_000);
     return () => window.clearInterval(timer);

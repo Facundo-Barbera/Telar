@@ -70,6 +70,15 @@ describe("mobile push delivery", () => {
     const ended = await deliverRecord(r, [{ ...working, activity: "idle" }], async()=>({status:200}), 1800000060);
     expect(ended?.activities).toEqual([]);
   });
+  test("a turn that ended into waiting or a schedule is finished; background work is named as such", async () => {
+    const follow = { sessionId: working.id, token: "b".repeat(64), startedAt: 1800000000 };
+    const r = { ...record(), activities: [follow] };
+    for (const activity of ["waiting", "scheduled"] as const) {
+      expect(activityDelivery(r, follow, { ...working, activity }, 1800000060).payload.aps.event).toBe("end");
+      expect((await deliverRecord(r, [{ ...working, activity }], async()=>({status:200}), 1800000060))?.activities).toEqual([]);
+    }
+    expect(activityDelivery(r, follow, { ...working, activity: "monitoring" }, 1800000060).payload.aps["content-state"]).toMatchObject({ status: "Background", ended: false });
+  });
   test("registrations are device scoped, private on disk, and preserve checkpoints", () => {
     const folder = mkdtempSync(path.join(os.tmpdir(), "telar-push-")); const file = path.join(folder, "push.json");
     try {
