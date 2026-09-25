@@ -30,7 +30,7 @@ import path from "node:path";
 import { assertTelarToolNames, parseToolName, qualifyTelarTool, STALLED_AFTER_MS, TELAR_CAPABILITIES } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
 import { sessionDiff } from "../src/git";
-import { GIT_TIMEOUT_STATUS, type AsyncGitRunner, type GitRunner } from "../src/worktree";
+import { defaultAsyncGitRunner, GIT_TIMEOUT_STATUS, type AsyncGitRunner, type GitRunner } from "../src/worktree";
 import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessions-tools/tools";
 import { TELAR_SKILL } from "../src/orientation";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
@@ -96,8 +96,8 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
   return {
     ...(self ? { self } : {}),
     list: async () => store.liveSessions(),
-    create: async (input) => store.createSession({ ...input, origin: "session" }),
-    send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
+    create: async (input) => store.createSessionAsync({ ...input, origin: "session" }),
+    send: async (sessionId, input) => store.submitAgentTurnAsync(sessionId, input),
     read: async (sessionId, after) => store.readEvents(sessionId, after),
     status: async (sessionId) => ({
       session: store.getSession(sessionId),
@@ -111,7 +111,7 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     stop: async (sessionId) => store.stopSession(sessionId, "agent"),
     settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
     setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
-    diff: async (sessionId) => store.sessionDiff(sessionId),
+    diff: async (sessionId) => store.sessionDiffAsync(sessionId),
     subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
     unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
     subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
@@ -649,15 +649,16 @@ describe("driving a session", () => {
  * on waiting 45 minutes for an answer that could not come.
  *
  * `worktree add` IS THE ONLY COMMAND THE FIXTURE REFUSES, deliberately: the
- * request-side probes still run against the real repository, so what this
+ * request-side probes (prefetched through this same runner) still run against
+ * the real repository, so what this
  * produces is a session that EXISTS and has no checkout — not a refusal.
  */
 describe("a session whose checkout failed", () => {
   const CUT_FAILURE = "fatal: could not create work tree dir: No space left on device";
-  const refusingCut: AsyncGitRunner = async (_cwd, args) =>
+  const refusingCut: AsyncGitRunner = async (cwd, args, options) =>
     args[0] === "worktree" && args[1] === "add"
       ? { status: GIT_TIMEOUT_STATUS, stdout: "", stderr: CUT_FAILURE, timedOut: true }
-      : { status: 0, stdout: "", stderr: "" };
+      : defaultAsyncGitRunner(cwd, args, options);
 
   /** A worktree session whose cut has already failed, and one queued message. */
   async function broken() {
@@ -710,8 +711,8 @@ describe("a session whose checkout failed", () => {
 
   test("a cut still in flight is reported as not running either, and says which of the two it is", async () => {
     // A cut that never answers, so the row stays `preparing` for the whole test.
-    const hanging: AsyncGitRunner = (_cwd, args) =>
-      args[0] === "worktree" && args[1] === "add" ? new Promise(() => {}) : Promise.resolve({ status: 0, stdout: "", stderr: "" });
+    const hanging: AsyncGitRunner = (cwd, args, options) =>
+      args[0] === "worktree" && args[1] === "add" ? new Promise(() => {}) : defaultAsyncGitRunner(cwd, args, options);
     const { store, projectId } = engine({ asyncGit: hanging });
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "worktree" })).json!.id as string;
@@ -927,6 +928,57 @@ describe("sessions_read is bounded", () => {
     expect(summary.json!.events).toBeUndefined();
     // Smaller than the events it stands in for, which is the entire point.
     expect(summary.text.length).toBeLessThan((await call(tools, "sessions_read", { sessionId: id, mode: "events" })).text.length);
+  });
+
+  /**
+   * THE WINDOWED CAPABILITY ANSWERS EXACTLY WHAT THE WHOLE ONE DOES.
+   *
+   * An out-of-process worker reads `status` as a windowed snapshot (newest
+   * `recent` settled turns + every unsettled one, `page.total` for the count)
+   * instead of the whole history. The wall's answers must not be able to tell.
+   */
+  test("status, summary and a run read answer identically from a window as from the whole history", async () => {
+    const { store, projectId } = engine();
+    const whole = wall(store);
+    const asked: Array<number | undefined> = [];
+    const windowed = new Map<string, Registered>();
+    sessionsTools(
+      (name, description, shape, run) => {
+        windowed.set(name, { name, description, shape, run });
+        return { name };
+      },
+      {
+        ...capabilityOver(store),
+        status: async (sessionId, options) => {
+          asked.push(options?.recent);
+          if (options?.recent === undefined) return { session: store.getSession(sessionId), turns: store.turns(sessionId) };
+          const window = store.snapshotWindow(sessionId, { limit: options.recent });
+          return { session: store.getSession(sessionId), turns: window.turns, turnCount: window.page.total, pendingNotifications: store.pendingNotifications(sessionId) };
+        },
+        turn: async (sessionId, runId) => store.snapshotWindow(sessionId, { limit: 2 }).turns.find((turn) => turn.runId === runId),
+      },
+    );
+    const id = (await call(whole, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    for (let lap = 0; lap < 9; lap++) {
+      await call(whole, "sessions_send", { intent: "task", sessionId: id, input: `lap ${lap}` });
+      store.stopTurn(id);
+    }
+    await call(whole, "sessions_send", { intent: "task", sessionId: id, input: "still queued" });
+    const live = store.turns(id).at(-1)!.runId;
+
+    for (const [name, args] of [
+      ["sessions_status", { sessionId: id, turns: 3 }],
+      ["sessions_status", { sessionId: id }],
+      ["sessions_read", { sessionId: id, mode: "summary", turns: 4 }],
+      ["sessions_read", { sessionId: id, runId: live }],
+    ] as const) {
+      expect((await call(windowed, name, args)).json).toEqual((await call(whole, name, args)).json!);
+    }
+    // It really was a window: every read named how many turns it wanted.
+    expect(asked).toEqual([3, 5, 4]);
+    const status = (await call(windowed, "sessions_status", { sessionId: id, turns: 3 })).json!;
+    expect(status.turnCount).toBe(10);
+    expect(status.turnsNotShown).toBe(7);
   });
 
   /**

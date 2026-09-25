@@ -201,21 +201,18 @@ import type { DictationContext } from "./dictation/keyterms";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
-import { listWorkspaceFiles, listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
+import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import {
   commitSessionWork,
   defaultRemoteBaseAsync,
-  gitOverview,
   gitOverviewAsync,
   listGitRefsAsync,
   projectRemoteAsync,
   pullRequestBlockedBy,
   pushSessionBranch,
   sessionBranchFacts,
-  sessionDiff,
   sessionDiffAsync,
-  sessionFilePatch,
   sessionFilePatchAsync,
   type GitOverview,
 } from "./git";
@@ -638,7 +635,7 @@ function coalesceByKey(rows: Array<{ key: string; tag?: string }>, ranges: Array
 function planWindow(
   rows: Array<{ key: string; tag?: string }>,
   window: { limit: number; before?: string },
-): { chosen: Set<string>; page: { before: string | null; more: boolean } } {
+): { chosen: Set<string>; page: { before: string | null; more: boolean; total: number } } {
   let end = rows.length;
   if (window.before !== undefined) {
     end = rows.findIndex((row) => row.key === window.before);
@@ -653,7 +650,7 @@ function planWindow(
   const unsettled = window.before === undefined ? rows.filter(active) : [];
   return {
     chosen: new Set([...paged, ...unsettled].map((row) => row.key)),
-    page: { before: start > 0 ? (paged[0]?.key ?? null) : null, more: start > 0 },
+    page: { before: start > 0 ? (paged[0]?.key ?? null) : null, more: start > 0, total: rows.length },
   };
 }
 
@@ -1889,6 +1886,15 @@ function resolveRequestedBase(options: DiffBaseOption, recorded: string | undefi
   return options.base === null ? undefined : options.base;
 }
 
+/** One git question, as `EngineStore.prefetchedGit` keys it. */
+const prefetchKey = (cwd: string, args: string[]): string => JSON.stringify([cwd, args]);
+
+/** What `resolveWorktreeBase` would pass to `rev-parse` — and only a ref the
+ *  store's own validation would let through, so a prefetch never puts an
+ *  unvalidated argument on a git command line. */
+const prefetchableRef = (ref: string | undefined): string | undefined =>
+  ref === undefined ? "HEAD" : /^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(ref) ? ref : undefined;
+
 export class EngineStore {
   private executionStore?: ExecutionStore;
   private commandDepth = 0;
@@ -2434,7 +2440,21 @@ export class EngineStore {
    *  otherwise. */
   private readonly readModels: typeof readModelCatalogue;
   private readonly manifest: ModelManifest;
-  private readonly git: GitRunner;
+  /** The injected SYNCHRONOUS runner. Reached only through `git` below. */
+  private readonly syncGit: GitRunner;
+  /**
+   * ANSWERS ALREADY READ OFF THE POOL, for the one synchronous call in flight.
+   *
+   * `createSession` and a draft's promotion in `submitTurn` stay synchronous —
+   * they are sqlite commands, and a command cannot span an await — but the few
+   * `rev-parse`s they ask are refusals the caller must hear, so they cannot move
+   * behind the response either. `withPrefetchedGit` reads them through the pool
+   * FIRST and sets this for exactly the synchronous call that follows; only a
+   * question nobody prefetched falls through to the blocking runner.
+   */
+  private prefetchedGit: Map<string, GitResult> | undefined;
+  private readonly git: GitRunner = (cwd, args, options) =>
+    this.prefetchedGit?.get(prefetchKey(cwd, args)) ?? this.syncGit(cwd, args, options);
   private readonly asyncGit: AsyncGitRunner;
   /** The cuts and removals, on a pool the rail's polls do not share — see
    *  `defaultWorktreeGitRunner`. The same runner when a caller injected one. */
@@ -4534,7 +4554,7 @@ export class EngineStore {
     this.readModels = options.models ?? readModelCatalogue;
     this.manifest = options.manifest ?? BUNDLED_MANIFEST;
     this.computerUse = options.computerUse;
-    this.git = options.git ?? defaultGitRunner;
+    this.syncGit = options.git ?? defaultGitRunner;
     this.asyncGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultAsyncGitRunner);
     // A POOL OF ITS OWN FOR THE CUTS, so the slowest git child cannot hold a
     // slot the rail's polls need — see `defaultWorktreeGitRunner`. An INJECTED
@@ -4930,9 +4950,13 @@ export class EngineStore {
     // `gitReadCache` is keyed by PATH rather than by project — the overview, the
     // diff and every file patch under this root — so the root is what identifies
     // the entries to drop.
-    const prefix = `${project.root}`;
+    this.forgetGitReadsUnder(project.root);
+  }
+
+  /** Every cached git read that names `root` — see `forgetProjectReads`. */
+  private forgetGitReadsUnder(root: string): void {
     for (const key of [...this.gitReadCache.keys()]) {
-      if (key.includes(prefix)) this.gitReadCache.delete(key);
+      if (key.includes(root)) this.gitReadCache.delete(key);
     }
   }
 
@@ -6231,6 +6255,10 @@ export class EngineStore {
       return;
     }
     if (cwd === undefined) return;
+    // A TURN THAT ENDED HAS JUST WRITTEN TO THIS CHECKOUT. Every terminal
+    // transition passes here, so the review surfaces' cached reads of it are
+    // dropped rather than served for up to another two seconds.
+    if (side === "after") this.forgetGitReadsUnder(cwd);
     void this.asyncGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], { timeoutMs: ANCHOR_PROBE_MS })
       .then((result) => this.stampAnchor(sessionId, runId, side, result))
       .catch(() => {
@@ -6405,10 +6433,6 @@ export class EngineStore {
     const resolved = path.resolve(cwd, candidate);
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the workspace");
     return path.relative(cwd, resolved);
-  }
-
-  projectGit(projectId: string): GitOverview {
-    return gitOverview(this.git, this.getProject(projectId).root);
   }
 
   /**
@@ -6686,8 +6710,10 @@ export class EngineStore {
    * and deleting somebody's fresh clone to tidy up after that would be the worst
    * possible reading of the error.
    */
-  cloneProject(input: { url: string; parent: string; name?: string }): Project {
-    const outcome = cloneRepository(this.git, { url: input.url, parent: input.parent });
+  async cloneProject(input: { url: string; parent: string; name?: string }): Promise<Project> {
+    // The MUTATION pool: a clone is minutes at worst, and it must neither hold
+    // the thread nor a slot the rail's reads need.
+    const outcome = await cloneRepository(this.worktreeGit, { url: input.url, parent: input.parent });
     if (isCloneFailure(outcome)) {
       throw new EngineStateError(outcome.code === "failed" ? "invalid_request" : outcome.code, outcome.message);
     }
@@ -6815,97 +6841,26 @@ export class EngineStore {
   }
 
   /**
-   * What is uncommitted in a PROJECT right now.
-   *
-   * FOR A CONVERSATION THAT DOES NOT EXIST YET. The new-conversation canvas is
-   * scoped to a project and to nothing else, and "the tree already has twelve
-   * uncommitted files" is exactly the thing worth knowing BEFORE you point an
-   * agent at it. Same reader as `sessionDiff` with no base, so it answers
-   * `HEAD…worktree` and the surface says which question it answered.
-   */
-  projectDiff(projectId: string): SessionDiff {
-    return sessionDiff(this.git, { cwd: this.getProject(projectId).root });
-  }
-
-  /** One file's patch in a project's own checkout, for the same surface. */
-  projectFilePatch(projectId: string, target: string, options: FilePatchOptions = {}): GitFilePatch {
-    const project = this.getProject(projectId);
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    // Fenced exactly as the session read is: a pathspec is a file read, and a
-    // client that could name the directory could name anything on the machine.
-    const resolved = path.resolve(project.root, target);
-    const prefix = project.root.endsWith(path.sep) ? project.root : `${project.root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the project");
-    const renamedFrom = EngineStore.insideWorkspace(project.root, prefix, options.renamedFrom);
-    return sessionFilePatch(this.git, {
-      cwd: project.root,
-      path: path.relative(project.root, resolved),
-      ...(options.untracked ? { untracked: true } : {}),
-      ...(options.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-      ...(renamedFrom ? { renamedFrom } : {}),
-    });
-  }
-
-  /**
-   * What this session has done to the repository, from where it started.
-   *
-   * READ AGAINST THE SESSION'S OWN CHECKOUT and its own recorded base, both of
-   * which come from the session record rather than from the caller — a client
-   * that could name the directory could ask the engine to diff anything on the
-   * machine.
-   */
-  sessionDiff(sessionId: string): SessionDiff {
-    const session = this.getSession(sessionId);
-    return EngineStore.sharedCheckout(
-      sessionDiff(this.git, {
-        cwd: workspaceRootOf(session),
-        ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
-      }),
-      session,
-    );
-  }
-
-  /** One file's patch, on demand — see `sessionFilePatch` for why it is not
-   *  carried on the review itself. */
-  sessionFilePatch(sessionId: string, target: string, options: { untracked?: boolean; renamedFrom?: string } = {}): GitFilePatch {
-    const session = this.getSession(sessionId);
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    /**
-     * THE PATH IS RESOLVED AND FENCED INSIDE THE WORKSPACE.
-     *
-     * `git diff -- <path>` treats its argument as a pathspec relative to the
-     * repository, and `../../` in one is how a client asks to read a file it was
-     * never offered. The fence is here rather than at the route because an
-     * in-process caller must not be able to walk past a check that only ran on
-     * the socket.
-     */
-    const resolved = path.resolve(workspaceRootOf(session), target);
-    const prefix = workspaceRootOf(session).endsWith(path.sep) ? workspaceRootOf(session) : `${workspaceRootOf(session)}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the session workspace");
-    const renamedFrom = EngineStore.insideWorkspace(workspaceRootOf(session), prefix, options.renamedFrom);
-    return sessionFilePatch(this.git, {
-      cwd: workspaceRootOf(session),
-      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
-      path: path.relative(workspaceRootOf(session), resolved),
-      ...(options.untracked ? { untracked: true } : {}),
-      ...(renamedFrom ? { renamedFrom } : {}),
-    });
-  }
-
-  /**
    * Snapshot the session's work as one commit.
    *
    * THE ONE GIT MUTATION THE ENGINE OFFERS. It is additive and reversible, a
    * human pressed it, and it runs in the session's own checkout — see
    * `commitSessionWork` for why staging, branch switching and discarding are
    * deliberately absent rather than pending.
+   *
+   * NOT `async`, so a bad message is refused before the first await. On the
+   * MUTATION pool, like a cut: `add -A` and a pre-commit hook are seconds, and
+   * the rail's reads must not queue behind them. What the commit changed is
+   * dropped from the read cache — this is a write the store KNOWS about, and a
+   * two-second-old "3 changed" beside a fresh commit is the badge lying.
    */
-  commitSessionWork(sessionId: string, message: string): { committed: boolean; commit?: GitCommitEntry; reason?: string } {
+  commitSessionWork(sessionId: string, message: string): Promise<{ committed: boolean; commit?: GitCommitEntry; reason?: string }> {
     const session = this.getSession(sessionId);
     const text = message.trim();
     if (!text) throw new EngineStateError("invalid_request", "a commit message is required");
     if (text.length > 2_000) throw new EngineStateError("invalid_request", "commit message is too long");
-    return commitSessionWork(this.git, { cwd: workspaceRootOf(session), message: text });
+    const cwd = workspaceRootOf(session);
+    return commitSessionWork(this.worktreeGit, { cwd, message: text }).finally(() => this.forgetGitReadsUnder(cwd));
   }
 
   /**
@@ -6929,13 +6884,19 @@ export class EngineStore {
     const session = this.getSession(sessionId);
     const workspace = session.workspace;
     if (workspace.mode === "none") throw new EngineStateError("invalid_request", "this session has no working directory");
-    return structuredClone(
-      await pushSessionBranch(this.worktreeGit, {
-        cwd: workspaceRootOf(session),
-        mode: workspace.mode,
-        ...(workspace.mode === "worktree" ? { branch: workspace.branch } : {}),
-      }),
-    );
+    const cwd = workspaceRootOf(session);
+    try {
+      return structuredClone(
+        await pushSessionBranch(this.worktreeGit, {
+          cwd,
+          mode: workspace.mode,
+          ...(workspace.mode === "worktree" ? { branch: workspace.branch } : {}),
+        }),
+      );
+    } finally {
+      // Ahead/behind in the overview moved with the push.
+      this.forgetGitReadsUnder(cwd);
+    }
   }
 
   /**
@@ -7057,15 +7018,6 @@ export class EngineStore {
     return this.readFencedBytes(workspaceRootOf(this.getSession(sessionId)), target, "session workspace");
   }
 
-  projectFiles(projectId: string): WorkspaceListing {
-    return listWorkspaceFiles(this.git, { cwd: this.getProject(projectId).root, now: this.now() });
-  }
-
-  /** Every file in a session's own checkout — its worktree, when it cut one. */
-  sessionFiles(sessionId: string): WorkspaceListing {
-    return listWorkspaceFiles(this.git, { cwd: workspaceRootOf(this.getSession(sessionId)), now: this.now() });
-  }
-
   projectFile(projectId: string, target: string): WorkspaceFile {
     const project = this.getProject(projectId);
     return this.readFenced(project.root, target, "project");
@@ -7176,6 +7128,93 @@ export class EngineStore {
     const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
     return writeWorkspaceFile({ cwd: root, path: path.relative(root, resolved), text, expected, ...(maxBytes ? { maxBytes } : {}) });
+  }
+
+  /**
+   * Run a synchronous store command with its git questions already answered
+   * off the pool — see `prefetchedGit`. The answers live for exactly `work`:
+   * it is synchronous, so nothing else can run while they are set.
+   */
+  private async withPrefetchedGit<T>(cwd: string, questions: string[][], work: () => T): Promise<T> {
+    // De-duplicated BEFORE spawning: a default base is `rev-parse HEAD`, which a
+    // local session's own base asks too.
+    const unique = new Map(questions.map((args) => [prefetchKey(cwd, args), args]));
+    const answers = new Map<string, GitResult>(
+      await Promise.all([...unique].map(async ([key, args]) => [key, await this.asyncGit(cwd, args)] as const)),
+    );
+    this.prefetchedGit = answers;
+    try {
+      return work();
+    } finally {
+      this.prefetchedGit = undefined;
+    }
+  }
+
+  /** The `rev-parse`s a worktree cut's refusals ask (`prepareSessionWorktree`). */
+  private static cutQuestions(baseRef: string | undefined): string[][] {
+    const base = prefetchableRef(baseRef);
+    return [["rev-parse", "--is-inside-work-tree"], ...(base ? [["rev-parse", base]] : [])];
+  }
+
+  /**
+   * `createSession` FOR THE REQUEST PATH — the same command, with its git
+   * questions (`isGitWorkTree`, the cut's base, a local session's HEAD) read
+   * through the pool first instead of on the engine's only thread. Measured on
+   * an external disk: 2.4 s of a frozen daemon per new session, before this.
+   *
+   * A project that is not there skips the prefetch: `createSession` refuses it
+   * before asking git anything, and asking git about an unplugged drive is the
+   * thing #534 took out.
+   */
+  async createSessionAsync(input: Parameters<EngineStore["createSession"]>[0]): Promise<Session> {
+    let project: Project | undefined;
+    try {
+      project = input.projectId === undefined ? undefined : this.getProject(input.projectId);
+    } catch {
+      // `createSession` refuses this itself, in its own order and words.
+      return this.createSession(input);
+    }
+    if (project === undefined || this.projectAvailability(project) !== "available") return this.createSession(input);
+    const questions = [...EngineStore.cutQuestions(input.baseRef), ["rev-parse", "HEAD"]];
+    return this.withPrefetchedGit(project.root, questions, () => this.createSession(input));
+  }
+
+  /**
+   * `submitTurn` FOR THE REQUEST PATH. Only the first send to a WORKTREE DRAFT
+   * asks git anything — it promotes the draft and plans its cut — so every
+   * other send is the synchronous command exactly as it was.
+   */
+  async submitTurnAsync(...args: Parameters<EngineStore["submitTurn"]>): Promise<ReturnType<EngineStore["submitTurn"]>> {
+    return this.promotingDraft(args[0], () => this.submitTurn(...args));
+  }
+
+  /** `submitAgentTurn` for the request path and the `sessions` tools — an
+   *  agent's message to a worktree draft promotes it exactly as a person's does. */
+  async submitAgentTurnAsync(...args: Parameters<EngineStore["submitAgentTurn"]>): Promise<ReturnType<EngineStore["submitAgentTurn"]>> {
+    return this.promotingDraft(args[0], () => this.submitAgentTurn(...args));
+  }
+
+  /**
+   * Prefetch a worktree draft's cut questions, then run `work`. Anything that
+   * is not a promotable draft — including a session that does not resolve — is
+   * handed straight to `work`, so every refusal keeps its original order.
+   */
+  private async promotingDraft<T>(sessionId: string, work: () => T): Promise<T> {
+    let root: string | undefined;
+    let baseRef: string | undefined;
+    try {
+      const session = this.requireSession(sessionId);
+      if (session.draft && session.envMode === "worktree" && session.projectId) {
+        const project = this.getProject(session.projectId);
+        if (this.projectAvailability(project) === "available") {
+          root = project.root;
+          baseRef = session.draft.baseRef;
+        }
+      }
+    } catch {
+      // Refused by `work` below, in its own words.
+    }
+    return root === undefined ? work() : this.withPrefetchedGit(root, EngineStore.cutQuestions(baseRef), work);
   }
 
   createSession(input: {
@@ -7546,6 +7585,10 @@ export class EngineStore {
       } catch (error) {
         // Git's own words, not ours — see `SessionPreparation.error`.
         this.settleWorktree(sessionId, error instanceof Error ? error.message : String(error));
+      } finally {
+        // A cut adds a branch and a worktree the project's overview lists.
+        this.forgetGitReadsUnder(projectRoot);
+        this.forgetGitReadsUnder(plan.path);
       }
     });
   }
@@ -7805,16 +7848,24 @@ export class EngineStore {
    * session document already holds, and moving a directory a provider process
    * may be running in is how checkouts get corrupted.
    */
-  refreshWorktreeBranchFromTitle(sessionId: string): string | undefined {
+  async refreshWorktreeBranchFromTitle(sessionId: string): Promise<string | undefined> {
     const session = this.getSession(sessionId);
     if (session.state === "archived" || session.workspace.mode !== "worktree") return undefined;
     const current = session.workspace.branch;
     if (!current.startsWith("telar/")) return undefined;
     const next = derivedBranchFor(session.title, sessionId);
     if (next === undefined || next === current) return undefined;
-    const renamed = this.git(session.workspace.path, ["branch", "-m", current, next]);
+    // On the mutation pool, never the thread: this runs behind every first turn.
+    const renamed = await this.worktreeGit(session.workspace.path, ["branch", "-m", current, next]);
     if (renamed.status !== 0) return undefined;
-    const updated: Session = { ...session, workspace: { ...session.workspace, branch: next }, updatedAt: this.now() };
+    this.forgetGitReadsUnder(session.workspace.path);
+    const projectRoot = this.projectOfSession(session)?.root;
+    if (projectRoot) this.forgetGitReadsUnder(projectRoot);
+    // RE-READ after the await: the record moved on while git ran, and writing
+    // the copy from before it would undo whatever happened in between.
+    const latest = this.getSession(sessionId);
+    if (latest.workspace.mode !== "worktree" || latest.workspace.branch !== current) return undefined;
+    const updated: Session = { ...latest, workspace: { ...latest.workspace, branch: next }, updatedAt: this.now() };
     this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
     this.appendEvent(sessionId, { type: "session.updated", session: updated });
     return next;
@@ -8765,7 +8816,7 @@ export class EngineStore {
     items: Item[];
     tasks: Task[];
     requests: EngineRequest[];
-    page: { before: string | null; more: boolean };
+    page: { before: string | null; more: boolean; total: number };
   } {
     this.requireSession(sessionId);
     const plan = this.windowedTurns(sessionId, window);
@@ -8788,7 +8839,7 @@ export class EngineStore {
    * index (a queue written by an older engine, or edited behind the store's
    * back) this is the fold it has always been, over a document parsed whole.
    */
-  private windowedTurns(sessionId: string, window: { limit: number; before?: string }): { turns: Turn[]; page: { before: string | null; more: boolean } } {
+  private windowedTurns(sessionId: string, window: { limit: number; before?: string }): { turns: Turn[]; page: { before: string | null; more: boolean; total: number } } {
     const file = sessionQueueFile(this.paths, sessionId);
     const index = this.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
     if (!index) {
@@ -11298,7 +11349,10 @@ export class EngineStore {
      * header for why `prune` in particular must not run on a stale answer.
      */
     void this.worktreeQueue(project.root, () =>
-      removeSessionWorktreeAsync(this.worktreeGit, project.root, worktreePath, this.projectAvailability(project)),
+      removeSessionWorktreeAsync(this.worktreeGit, project.root, worktreePath, this.projectAvailability(project)).finally(() => {
+        this.forgetGitReadsUnder(project.root);
+        this.forgetGitReadsUnder(worktreePath);
+      }),
     );
   }
 

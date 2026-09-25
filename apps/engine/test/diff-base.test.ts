@@ -79,7 +79,7 @@ test("a diff can be asked for a base other than the session's own, or for none a
   // A commit the session made, so `base…worktree` and `HEAD…worktree` differ:
   // the first contains this file and the second does not.
   fs.writeFileSync(path.join(checkout, "committed.ts"), "export const a = 1;\n");
-  store.commitSessionWork("session_cut", "add a file");
+  await store.commitSessionWork("session_cut", "add a file");
   // ...and something uncommitted, which both comparisons must see.
   fs.writeFileSync(path.join(checkout, "dirty.ts"), "export const b = 2;\n");
 

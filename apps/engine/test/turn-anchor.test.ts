@@ -114,7 +114,7 @@ test("a turn that commits is anchored to a range git can be asked about (#741)",
   // The turn commits, which is what makes `before..after` a range rather than
   // a pair of equal shas.
   fs.writeFileSync(path.join(checkout, "written.ts"), "export const a = 1;\n");
-  store.commitSessionWork("session_cut", "the turn's own commit");
+  await store.commitSessionWork("session_cut", "the turn's own commit");
 
   store.completeTurn("session_cut", "run_1", token, { text: "done" });
   const ended = await anchored(store, "session_cut", "run_1", "after");

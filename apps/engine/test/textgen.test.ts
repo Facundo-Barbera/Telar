@@ -123,7 +123,7 @@ describe("refreshWorktreeBranchFromTitle", () => {
   test("a generated title renames the engine-cut branch, on disk and on the record", async () => {
     const { store, id } = await worktreeSession("please fix the queue refill race in the work");
     store.updateSession(id, { title: "Queue refill race" });
-    expect(store.refreshWorktreeBranchFromTitle(id)).toBe("telar/queue-refill-race-abcdef");
+    expect(await store.refreshWorktreeBranchFromTitle(id)).toBe("telar/queue-refill-race-abcdef");
     const session = store.getSession(id);
     if (session.workspace.mode !== "worktree") throw new Error("expected a worktree session");
     expect(session.workspace.branch).toBe("telar/queue-refill-race-abcdef");
@@ -133,7 +133,7 @@ describe("refreshWorktreeBranchFromTitle", () => {
 
   test("declines when nothing would change, and never twice", async () => {
     const { store, id } = await worktreeSession("same title");
-    expect(store.refreshWorktreeBranchFromTitle(id)).toBeUndefined();
+    expect(await store.refreshWorktreeBranchFromTitle(id)).toBeUndefined();
   });
 });
 

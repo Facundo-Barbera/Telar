@@ -262,6 +262,12 @@ export type SnapshotPage = {
   before: string | null;
   /** Are there settled turns above this page? */
   more: boolean;
+  /**
+   * How many turns the WHOLE session has, settled or not — what a windowed
+   * reader would otherwise have to fetch every turn to count. Absent from an
+   * engine older than this field.
+   */
+  total?: number;
 };
 
 /** How much of a session to read. Omit for the whole thing. */
