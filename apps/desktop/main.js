@@ -17,7 +17,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomBytes, randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, session, shell, webContents } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, powerMonitor, session, shell, webContents } = require("electron");
 const { autoUpdater, CancellationToken } = require("electron-updater");
 const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 const { attachHostHeader } = require("./host-header");
@@ -32,6 +32,7 @@ const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
 const { provisionPushRelay } = require("./push-relay");
+const { DESKTOP_NOTIFICATIONS_ENV, createDesktopNotifier, routeOf } = require("./desktop-notifications");
 const { watchVolumes } = require("./volume-watch");
 const { awaitStore } = require("./store-gate");
 const { createStoreGateWindow } = require("./store-gate-window");
@@ -1035,9 +1036,13 @@ function startServer(port, home) {
       // engine-server.ts), which is what keeps a stray `next start` from
       // pointing at somebody's store. The shell IS a launcher, so it says so.
       TELAR_COCKPIT: "1",
+      // The server may send this shell its notices over the IPC channel below —
+      // see desktop-notifications.js. Without it the server never uses the pipe.
+      [DESKTOP_NOTIFICATIONS_ENV]: "1",
     },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
+  serverChild.on("message", (message) => desktopNotifier.handleServerMessage(message));
   serverChild.on("exit", (code, signal) => {
     serverChild = null;
     // If the server dies unexpectedly while the app is up, don't leave a
@@ -1048,6 +1053,44 @@ function startServer(port, home) {
     }
   });
   return serverChild;
+}
+
+/**
+ * THE MAC'S OWN NOTIFICATIONS (desktop-notifications.js). The server decides
+ * which transitions deserve one and says so over the fork channel; this side
+ * shows the banner, skips the session already on screen, and answers Approve
+ * by handing the SAME request id back to the server, which resolves it.
+ */
+const desktopNotifier = createDesktopNotifier({
+  Notification,
+  send: (message) => {
+    if (serverChild?.connected) serverChild.send(message);
+  },
+  context: () => {
+    const focused = BrowserWindow.getFocusedWindow();
+    const cockpit = focused && [...browserManagers].some((manager) => manager.window === focused);
+    return { focused: Boolean(cockpit), viewingPath: cockpit ? routeOf(focused.webContents.getURL()) : null };
+  },
+  open: openNotificationPath,
+});
+
+/**
+ * Show a route in the cockpit window the person was last in. A live window is
+ * told to navigate in place (`telar:notifications:open`, lib/use-command-keys.ts)
+ * rather than reloaded, so its panels and drafts survive; with none open, a
+ * fresh window is built on the route.
+ */
+function openNotificationPath(route) {
+  const win = [browserManager, ...browserManagers].map((manager) => manager?.window).find((w) => w && !w.isDestroyed());
+  if (!win) {
+    const target = windowTargetUrl(lastWindowUrl, route);
+    if (target) createWindow(target);
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  win.webContents.send("telar:notifications:open", route);
 }
 
 // --- (d) Poll the port until it answers 200 ---------------------------------

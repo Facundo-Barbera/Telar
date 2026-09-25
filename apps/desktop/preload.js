@@ -314,6 +314,11 @@ contextBridge.exposeInMainWorld("telarDesktop", {
   commandKeys: {
     onInvoke: (listener) => on("telar:command-keys:invoke", listener),
   },
+  // A click on one of the Mac's own notifications (desktop-notifications.js):
+  // the shell names a cockpit PATH and the renderer navigates to it in place.
+  notifications: {
+    onOpen: (listener) => on("telar:notifications:open", listener),
+  },
   // Issue #367: the chords are the cockpit's to edit, and the shell's to mirror.
   // `set` is what makes the application menu rebuild its accelerators — the
   // blocker the old settings copy named. `get` is the recovery path for a
