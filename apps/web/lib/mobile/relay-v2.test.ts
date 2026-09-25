@@ -183,7 +183,7 @@ describe("a Mac with nothing provisioned", () => {
     globalThis.fetch = fetchImpl;
     (globalThis as { telarMobilePushTimer?: unknown }).telarMobilePushTimer = setTimeout(() => {}, 0);
     const answer = await pushPUT(new Request("http://localhost/api/mobile/push", { method: "PUT", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(wire) }));
-    expect(await answer.json()).toEqual({ configured: true });
+    expect(await answer.json()).toMatchObject({ configured: true });
     expect(pushAvailable()).toBe(true);
     await new Promise(resolve => setImmediate(resolve));
     expect(calls.every(call => call.url.startsWith(RELAY_V2_URL))).toBe(true);

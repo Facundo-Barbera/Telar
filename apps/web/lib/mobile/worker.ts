@@ -2,17 +2,13 @@ import { relayConfig, relayDelivery, relayHostId, revokeRelayDevice } from "./re
 import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
-import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
+import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
 
 /** A phone that actually ran the start reports the activity's token within seconds: iOS delivers it
  *  on `activityUpdates` and the app re-registers straight away. A receipt still standing alone after
  *  300s therefore means the start never landed — Apple accepted it for a token from a previous
  *  install, or Live Activities are off in Settings — so the receipt is dropped and the start retried. */
 const AUTOMATIC_START_STALE = 300;
-/** But a phone that can never start one must not be pushed every 5 minutes forever: at most 3
- *  accepted starts per push-to-start token. The count resets when the token changes (a reinstall)
- *  and when work goes idle, so recovering never needs a reinstall. */
-const AUTOMATIC_START_ATTEMPTS = 3;
 
 /**
  * BACKOFF FOR A BAD HOUR, NOT FOR A DEAD PHONE — issue #584.
@@ -98,6 +94,7 @@ export async function deliverRecord(
   if (record.liveActivities && active.length && !automatic.length && (!record.automaticStartedAt || staleStart)
       && record.pushToStartToken && (record.automaticStarts ?? 0) < AUTOMATIC_START_ATTEMPTS) {
     const result = await safeSend(automaticActivityDelivery(record, sessions, record.pushToStartToken, now, now, true));
+    next.automaticStart = { at: now, status: result.status, ...(result.reason ? { reason: result.reason } : {}), ...(result.relay ? { relay: true as const } : {}) };
     if (result.status === 200) { next.automaticStartedAt = now; next.automaticStarts = (record.automaticStarts ?? 0) + 1; }
     // Expiration of a start token must never unregister ordinary phone notifications.
     if (isDeadToken(result)) next.pushToStartToken = undefined;
