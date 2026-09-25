@@ -7713,6 +7713,9 @@ export class EngineStore {
      * `monitoring` here and is refused like a running turn — the same line the
      * settling clock and the delegation settle draw. This is also the #943
      * sweep's idle check: it releases through here and nowhere else.
+     * `waiting` and `scheduled` are refused too, and must be: either can be
+     * woken into this checkout at any moment — by its worker answering, or its
+     * schedule firing.
      */
     if (session.activity !== "idle" || session.preparation !== undefined || this.setups.isRunning(sessionId)) {
       return { ok: false, refusal: "in-use" };
