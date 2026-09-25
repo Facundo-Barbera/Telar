@@ -35,3 +35,4 @@ export * from "./github";
 export * from "./events";
 export * from "./observations";
 export * from "./workspace";
+export * from "./cleanup";

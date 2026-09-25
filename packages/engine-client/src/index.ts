@@ -37,6 +37,8 @@ import {
   type InboxPolicy,
   type RememberedLogin,
   type SessionDefaults,
+  type CleanupPolicy,
+  type CleanupState,
   type WorkspaceConfig,
   type ProjectWorkspaceOverrides,
   type ProjectWorkspaceView,
@@ -1531,6 +1533,20 @@ export class EngineClient {
   reclaimWorktrees(items: readonly WorktreeReclaimItem[]): Promise<{ reclaim: WorktreeReclaimOutcome }> {
     return this.request("POST", "/v2/worktrees/reclaim", { items });
   }
+  /** The automatic cleanup's four switches and its last result — see `protocol/cleanup.ts`. */
+  cleanup(): Promise<{ cleanup: CleanupState }> {
+    return this.request("GET", "/v2/cleanup");
+  }
+
+  setCleanupPolicy(patch: Partial<CleanupPolicy>): Promise<{ cleanup: CleanupState }> {
+    return this.request("PUT", "/v2/cleanup", patch);
+  }
+
+  /** Sweep now with the current switches; answers when it is done. */
+  runCleanup(): Promise<{ cleanup: CleanupState }> {
+    return this.request("POST", "/v2/cleanup/run", {});
+  }
+
   /** Delete a session's checkout and keep its branch and conversation. 409 with the reason when it is not safe. */
   releaseSessionWorktree(sessionId: string): Promise<{ session: Session }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/worktree/release`, {});
