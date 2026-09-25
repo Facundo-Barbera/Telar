@@ -33,11 +33,47 @@ const temp = (label: string) => track(fs.mkdtempSync(path.join(os.tmpdir(), `tel
 const mounts: RunMount[] = [];
 const tempDirs: string[] = [];
 
+/**
+ * THE ENVIRONMENT A MOUNT SEES, WITHOUT THE DESKTOP'S TERMINAL CHANNEL.
+ *
+ * `createRunMount` reads `TELAR_DESKTOP_RUN_TERMINAL_PORT` / `_TOKEN` from the
+ * environment and, when they are there, launches every run on the desktop
+ * shell's PTY host. A suite started from inside a Telar session INHERITS both
+ * from the running app — so these tests were opening real terminal sessions in
+ * the live app, and asserting pipe behaviour (`«redacted»`) against the PTY
+ * redactor, which masks cell for cell instead (`pty-stream.ts`). On CI neither
+ * variable exists, which is why it only ever failed on a Mac running Telar.
+ * Every mount here is the pipe launcher, on purpose, wherever the suite runs.
+ */
+function hermeticEnv(): NodeJS.ProcessEnv {
+  const { TELAR_DESKTOP_RUN_TERMINAL_PORT: _port, TELAR_DESKTOP_RUN_TERMINAL_TOKEN: _token, ...rest } = process.env;
+  return rest;
+}
+
 function mountRun(options: { root: string }): RunMount {
-  const mount = createRunMount(options);
+  const mount = createRunMount({ ...options, env: hermeticEnv() });
   mounts.push(mount);
   return mount;
 }
+
+test("a mount in this suite never reaches a live desktop's terminal, even when the environment names one", () => {
+  const saved = { port: process.env.TELAR_DESKTOP_RUN_TERMINAL_PORT, token: process.env.TELAR_DESKTOP_RUN_TERMINAL_TOKEN };
+  process.env.TELAR_DESKTOP_RUN_TERMINAL_PORT = "59999";
+  process.env.TELAR_DESKTOP_RUN_TERMINAL_TOKEN = "fixture-token";
+  try {
+    expect(mountRun({ root: temp("home") }).terminalChannel).toBe(false);
+    // …and the channel IS what a bare mount would have taken, so the guard is
+    // doing the work rather than the variables being ignored anyway.
+    const bare = createRunMount({ root: temp("home"), env: process.env });
+    mounts.push(bare);
+    expect(bare.terminalChannel).toBe(true);
+  } finally {
+    for (const [key, value] of [["TELAR_DESKTOP_RUN_TERMINAL_PORT", saved.port], ["TELAR_DESKTOP_RUN_TERMINAL_TOKEN", saved.token]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
 
 afterEach(async () => {
   while (mounts.length) {
