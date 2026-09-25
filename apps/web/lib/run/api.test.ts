@@ -37,24 +37,18 @@ describe("runPath", () => {
 });
 
 describe("createRunApi", () => {
-  test("start does not ask for a takeover unless told to", () => {
-    // `replace` absent is the whole guard: without it the engine refuses rather
-    // than stopping whatever is deployed.
+  test("start names only the configuration — every start opens a new terminal", () => {
     const { calls, api } = recorder();
     void api.start("sess_1", "cfg_1");
     expect(calls[0]).toEqual({ url: "/api/sessions/sess_1/run/start", method: "POST", body: { configId: "cfg_1" } });
-
-    const takeover = recorder();
-    void takeover.api.start("sess_1", "cfg_1", true);
-    expect(takeover.calls[0]!.body).toEqual({ configId: "cfg_1", replace: true });
   });
 
-  test("stop and restart default to the project's active run", () => {
+  test("stop and restart name the terminal, or leave it to the session's one open terminal", () => {
     const { calls, api } = recorder();
     void api.stop("sess_1");
-    void api.restart("sess_1", "run_9");
+    void api.restart("sess_1", "term_9");
     expect(calls[0]).toEqual({ url: "/api/sessions/sess_1/run/stop", method: "POST", body: {} });
-    expect(calls[1]!.body).toEqual({ runId: "run_9" });
+    expect(calls[1]!.body).toEqual({ terminalId: "term_9" });
   });
 
   test("output carries the cursor as a query parameter", () => {

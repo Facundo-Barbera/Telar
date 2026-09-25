@@ -12,14 +12,18 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { headerMode, RunHeaderControl } from "./run-header-control";
 import { RunConfigEditor } from "./run-config-editor";
-import { runAction, statusLabel, statusTone } from "@/lib/run/presentation";
+import { latestOpenTerminal, statusLabel, statusTone } from "@/lib/run/presentation";
 import { RunGlyph } from "@/lib/run/icons";
 import type { RunApi } from "@/lib/run/api";
 import type { RunConfigurationView, RunStatusAnswer, RunView } from "@/lib/run/types";
 
 const view = (over: Partial<RunView> = {}): RunView => ({
-  runId: "run_1",
+  terminalId: "term_1",
+  runId: "term_1",
   projectId: "project_1",
+  sessionId: "session_1",
+  origin: "run",
+  title: "dev server",
   configId: "config_dev",
   configName: "dev server",
   command: "bun dev",
@@ -38,10 +42,9 @@ function recordingApi(status: RunStatusAnswer) {
   const api = {
     configurations: async () => ({ configurations: [{ id: "config_dev", name: "dev server" }] }),
     status: async () => status,
-    start: async (_s: string, configId: string, replace?: boolean) => (calls.push(`start:${configId}${replace ? ":replace" : ""}`), view()),
-    stop: async (_s: string, runId?: string) => (calls.push(`stop:${runId}`), view({ status: "exited" })),
-    restart: async (_s: string, runId?: string) => (calls.push(`restart:${runId}`), view()),
-    release: async (_s: string, runId: string) => (calls.push(`release:${runId}`), view({ status: "exited" })),
+    start: async (_s: string, configId: string) => (calls.push(`start:${configId}`), view()),
+    stop: async (_s: string, terminalId?: string) => (calls.push(`stop:${terminalId}`), view({ status: "closed", closedBy: "person" })),
+    restart: async (_s: string, terminalId?: string) => (calls.push(`restart:${terminalId}`), view()),
   } as unknown as RunApi;
   return { api, calls };
 }
@@ -49,8 +52,8 @@ function recordingApi(status: RunStatusAnswer) {
 const render = (api: RunApi) => renderToStaticMarkup(<RunHeaderControl sessionId="session_1" api={api} onWatchOutput={() => {}} />);
 
 describe("the pill", () => {
-  test("says Run when nothing is deployed", () => {
-    const { api } = recordingApi({ history: [] });
+  test("says Run when nothing is open", () => {
+    const { api } = recordingApi({ terminals: [] });
     const html = render(api);
     expect(html).toContain("Run this project");
   });
@@ -119,44 +122,24 @@ describe("an iconed row", () => {
 });
 
 describe("what pressing a configuration means", () => {
-  test("nothing deployed → a plain start, never a replace", async () => {
-    const { api, calls } = recordingApi({ history: [] });
-    const answer: RunStatusAnswer = { history: [] };
-    expect(runAction(answer).kind).toBe("start");
-    await api.start("session_1", "config_dev", runAction(answer).kind === "replace");
+  test("a start names only the configuration — there is no takeover to ask for", async () => {
+    const { api, calls } = recordingApi({ terminals: [] });
+    await api.start("session_1", "config_dev");
     expect(calls).toEqual(["start:config_dev"]);
   });
 
-  test("our own deployment → replace is sent, because stopping it is the ordinary way to restart", async () => {
-    const answer: RunStatusAnswer = { active: view(), history: [view()], sessionWorktreePath: "/Users/x/code/telar" };
-    const { api, calls } = recordingApi(answer);
-    expect(runAction(answer).kind).toBe("replace");
-    await api.start("session_1", "config_other", runAction(answer).kind === "replace");
-    expect(calls).toEqual(["start:config_other:replace"]);
+  test("the pill summarises the newest OPEN terminal, and ignores ones that ended", () => {
+    const answer: RunStatusAnswer = {
+      terminals: [view({ terminalId: "term_2", status: "closed", closedBy: "person", startedAt: 2 }), view()],
+      sessionWorktreePath: "/Users/x/code/telar",
+    };
+    expect(latestOpenTerminal(answer)?.terminalId).toBe("term_1");
   });
 
-  test("ANOTHER tree's deployment → the control must not send replace unasked", async () => {
-    // `runAction` reports `switch`, which the header renders as a warning
-    // sentence; the start below therefore carries no `replace`.
-    const answer: RunStatusAnswer = { active: view({ worktreePath: "/Users/x/other" }), history: [], sessionWorktreePath: "/Users/x/code/telar" };
-    const { api, calls } = recordingApi(answer);
-    expect(runAction(answer).kind).toBe("switch");
-    await api.start("session_1", "config_dev", runAction(answer).kind === "replace");
-    expect(calls).toEqual(["start:config_dev"]);
-  });
-
-  test("a lost run is released by the human, never signalled", async () => {
-    const answer: RunStatusAnswer = { active: view({ status: "unknown" }), history: [] };
-    const { api, calls } = recordingApi(answer);
-    expect(runAction(answer).kind).toBe("release");
-    await api.release("session_1", "run_1");
-    expect(calls).toEqual(["release:run_1"]);
-  });
-
-  test("stop and restart address the run by its own id", async () => {
-    const { api, calls } = recordingApi({ active: view(), history: [] });
-    await api.stop("session_1", "run_1");
-    await api.restart("session_1", "run_1");
-    expect(calls).toEqual(["stop:run_1", "restart:run_1"]);
+  test("stop and restart address the terminal by its own id", async () => {
+    const { api, calls } = recordingApi({ terminals: [view()] });
+    await api.stop("session_1", "term_1");
+    await api.restart("session_1", "term_1");
+    expect(calls).toEqual(["stop:term_1", "restart:term_1"]);
   });
 });

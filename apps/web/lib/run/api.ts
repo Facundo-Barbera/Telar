@@ -8,11 +8,11 @@
  * module does — and because every caller imports `runApi` rather than
  * constructing anything, moving it later is a re-export, not a rewrite.
  *
- * ERRORS ARE `EngineApiError`, deliberately, and not a local class: components
- * already branch on `error.code === "conflict"`, and a run refusal is the same
- * kind of fact as any other engine refusal. `conflict` is the one a caller must
- * actually handle — it is how "this project is already deployed" and "Telar lost
- * contact with the last one" both arrive.
+ * ERRORS ARE `EngineApiError`, deliberately, and not a local class: a run
+ * refusal is the same kind of fact as any other engine refusal. There is no
+ * "already deployed" conflict any more — every start opens a new terminal —
+ * so `conflict` now means the terminal host could not be reached or a
+ * terminal has already ended.
  */
 
 import { EngineApiError } from "@/lib/engine/client";
@@ -82,20 +82,17 @@ export function createRunApi(fetcher: Fetcher = pathnameFetcher) {
     removeConfiguration: (sessionId: string, configId: string) =>
       request<{ removed: string }>(fetcher, "DELETE", runPath(sessionId, `/configs/${encodeURIComponent(configId)}`)),
 
+    /** The session's terminals, newest first. */
     status: (sessionId: string) => request<RunStatusAnswer>(fetcher, "GET", runPath(sessionId, "/status")),
-    /** `replace` is the human saying "yes, take over the running one". Never
-     *  sent by default: a silent takeover of somebody else's deployment is the
-     *  failure this whole feature is shaped around. */
-    start: (sessionId: string, configId: string, replace?: boolean) =>
-      request<RunView>(fetcher, "POST", runPath(sessionId, "/start"), { configId, ...(replace ? { replace: true } : {}) }),
-    stop: (sessionId: string, runId?: string) =>
-      request<RunView>(fetcher, "POST", runPath(sessionId, "/stop"), runId ? { runId } : {}),
-    restart: (sessionId: string, runId?: string) =>
-      request<RunView>(fetcher, "POST", runPath(sessionId, "/restart"), runId ? { runId } : {}),
-    /** Frees a slot Telar cannot vouch for. Signals nothing — the human has
-     *  checked, and this only records that they did. */
-    release: (sessionId: string, runId: string) =>
-      request<RunView>(fetcher, "POST", runPath(sessionId, "/release"), { runId }),
+    /** Opens a NEW terminal from the configuration. Never a conflict with one
+     *  already open; a busy port comes back as `warning`. */
+    start: (sessionId: string, configId: string) => request<RunView>(fetcher, "POST", runPath(sessionId, "/start"), { configId }),
+    /** Closes a terminal, which ends what runs in it. From the cockpit, so the
+     *  engine records the person as who closed it. */
+    stop: (sessionId: string, terminalId?: string) =>
+      request<RunView>(fetcher, "POST", runPath(sessionId, "/stop"), terminalId ? { terminalId } : {}),
+    restart: (sessionId: string, terminalId?: string) =>
+      request<RunView>(fetcher, "POST", runPath(sessionId, "/restart"), terminalId ? { terminalId } : {}),
     output: (sessionId: string, options: { runId?: string; after?: number } = {}) =>
       request<RunOutputAnswer>(fetcher, "GET", runPath(sessionId, "/output", { runId: options.runId, after: options.after })),
     /**

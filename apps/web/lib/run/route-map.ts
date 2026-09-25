@@ -17,13 +17,12 @@ export type RunEngineVerbs = {
   removeRunConfiguration(sessionId: string, configId: string): Promise<unknown>;
   runStatus(sessionId: string): Promise<unknown>;
   startRun(sessionId: string, input: RunStartInput): Promise<unknown>;
-  stopRun(sessionId: string, runId?: string): Promise<unknown>;
-  restartRun(sessionId: string, runId?: string): Promise<unknown>;
-  releaseRun(sessionId: string, runId: string): Promise<unknown>;
-  runOutput(sessionId: string, input: { runId?: string; after?: number }): Promise<unknown>;
-  runBytes(sessionId: string, input: { runId?: string; after?: number }): Promise<unknown>;
-  writeRun(sessionId: string, input: { runId?: string; data: string }): Promise<unknown>;
-  resizeRun(sessionId: string, input: { runId?: string; cols: number; rows: number }): Promise<unknown>;
+  stopRun(sessionId: string, terminalId?: string): Promise<unknown>;
+  restartRun(sessionId: string, terminalId?: string): Promise<unknown>;
+  runOutput(sessionId: string, input: { terminalId?: string; after?: number }): Promise<unknown>;
+  runBytes(sessionId: string, input: { terminalId?: string; after?: number }): Promise<unknown>;
+  writeRun(sessionId: string, input: { terminalId?: string; data: string }): Promise<unknown>;
+  resizeRun(sessionId: string, input: { terminalId?: string; cols: number; rows: number }): Promise<unknown>;
 };
 
 export type RunRequestParts = {
@@ -56,6 +55,13 @@ type Entry = {
 
 const string = (value: unknown): string | undefined => (typeof value === "string" && value.length > 0 ? value : undefined);
 
+/** Which terminal a body names: `terminalId`, or the same thing under its old
+ *  name `runId`, which a caller from before terminals still sends. */
+const targetOf = (body: Record<string, unknown>): { terminalId?: string } => {
+  const terminalId = string(body.terminalId) ?? string(body.runId);
+  return terminalId ? { terminalId } : {};
+};
+
 export const RUN_ROUTE_TABLE: readonly Entry[] = [
   { method: "GET", segments: ["configs"], call: (client, { sessionId }) => client.runConfigurations(sessionId) },
   {
@@ -76,19 +82,8 @@ export const RUN_ROUTE_TABLE: readonly Entry[] = [
   { method: "DELETE", segments: ["configs", "*"], call: (client, { sessionId, tail }) => client.removeRunConfiguration(sessionId, tail[1]!) },
   { method: "GET", segments: ["status"], call: (client, { sessionId }) => client.runStatus(sessionId) },
   { method: "POST", segments: ["start"], call: (client, { sessionId, body }) => client.startRun(sessionId, body as unknown as RunStartInput) },
-  { method: "POST", segments: ["stop"], call: (client, { sessionId, body }) => client.stopRun(sessionId, string(body.runId)) },
-  { method: "POST", segments: ["restart"], call: (client, { sessionId, body }) => client.restartRun(sessionId, string(body.runId)) },
-  {
-    method: "POST",
-    segments: ["release"],
-    call: (client, { sessionId, body }) => {
-      const runId = string(body.runId);
-      // Releasing names the run being given up: defaulting to "whatever is
-      // active" would free a slot the human never looked at.
-      if (!runId) throw new RunRouteRefusal("invalid_request", "Releasing a slot names the run being given up.", 400);
-      return client.releaseRun(sessionId, runId);
-    },
-  },
+  { method: "POST", segments: ["stop"], call: (client, { sessionId, body }) => client.stopRun(sessionId, targetOf(body).terminalId) },
+  { method: "POST", segments: ["restart"], call: (client, { sessionId, body }) => client.restartRun(sessionId, targetOf(body).terminalId) },
   {
     method: "GET",
     segments: ["output"],
@@ -116,7 +111,7 @@ export const RUN_ROUTE_TABLE: readonly Entry[] = [
       // refuses the same shape for the same reason, and this catches it a hop
       // earlier with a sentence about the shape rather than about the run.
       if (typeof body.data !== "string") throw new RunRouteRefusal("invalid_request", "Typing into a run names the bytes to send.", 400);
-      return client.writeRun(sessionId, { ...(string(body.runId) ? { runId: String(body.runId) } : {}), data: body.data });
+      return client.writeRun(sessionId, { ...targetOf(body), data: body.data });
     },
   },
   {
@@ -130,20 +125,21 @@ export const RUN_ROUTE_TABLE: readonly Entry[] = [
       if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) {
         throw new RunRouteRefusal("invalid_request", "Resizing a run's terminal names a positive number of columns and rows.", 400);
       }
-      return client.resizeRun(sessionId, { ...(string(body.runId) ? { runId: String(body.runId) } : {}), cols, rows });
+      return client.resizeRun(sessionId, { ...targetOf(body), cols, rows });
     },
   },
 ];
 
-/** `runId` and `after` off a query string, for the two windows that share a
- *  cursor contract. A non-numeric cursor is DROPPED rather than sent as NaN:
- *  every answer carries its own cursor, so starting from the top is
- *  recoverable and a 400 here would strand a poll instead. */
-function cursorFrom(query: URLSearchParams): { runId?: string; after?: number } {
-  const runId = query.get("runId");
+/** The terminal (`terminalId`, or `runId` by its old name) and `after` off a
+ *  query string, for the two windows that share a cursor contract. A
+ *  non-numeric cursor is DROPPED rather than sent as NaN: every answer carries
+ *  its own cursor, so starting from the top is recoverable and a 400 here would
+ *  strand a poll instead. */
+function cursorFrom(query: URLSearchParams): { terminalId?: string; after?: number } {
+  const terminalId = query.get("terminalId") || query.get("runId");
   const after = query.get("after");
   return {
-    ...(runId ? { runId } : {}),
+    ...(terminalId ? { terminalId } : {}),
     ...(after !== null && after !== "" && Number.isFinite(Number(after)) ? { after: Number(after) } : {}),
   };
 }
