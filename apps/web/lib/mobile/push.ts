@@ -4,6 +4,7 @@ import path from "node:path";
 import http2 from "node:http2";
 import { relayConfig, relayHostId } from "./relay";
 import { parseRelayCredential } from "./relay-v2";
+import type { ReadSyncState } from "./read-sync";
 import { remoteHome } from "../remote/store";
 
 export interface MobileRegistration {
@@ -31,6 +32,8 @@ export interface SessionSignal {
   /** Where the cockpit shows it (`sessionHref`). Not part of `signalKey`: a
    *  session moving project is not something to be told about. */
   projectId?: string;
+  /** The engine's unread pair — what read sync decides on (`read-sync.ts`). */
+  lastTurnSequence?: number; lastReadTurnSequence?: number;
   /** The one open request a notification may offer to approve, when there is
    *  exactly one and it is an approval rather than a question or a secret. */
   approvable?: string;
@@ -93,15 +96,19 @@ export interface PushRecord extends MobileRegistration {
    *  together with whether a card was registered afterwards (`activityReport`). */
   automaticStart?: { at: number; status: number; reason?: string; relay?: true };
   updatedAt: number;
+  /** Which alerts this phone holds and which reads it has not yet been told
+   *  about — see `read-sync.ts`. Ids only. */
+  readSync?: ReadSyncState;
   seen: Record<string, string>;
   activitySent: Record<string, number>;
 }
 /** `request` names the request an alert's Approve action resolves: that one, never whatever is open by then. */
-export type PushPayload = { aps: Record<string, unknown>; url?: string; request?: string };
+export type PushPayload = { aps: Record<string, unknown>; url?: string; request?: string; read?: { host: string; sessions: string[] } };
 /** The phone registers these (`NotificationActions.swift`): Approve + Open, or Open alone. */
 export const CATEGORY_REQUEST = "TELAR_REQUEST", CATEGORY_SESSION = "TELAR_SESSION";
-/** `activityId` names a Live Activity for relay v2, which holds its token. */
-export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity"; collapseId: string; payload: PushPayload; activityId?: string };
+/** `activityId` names a Live Activity for relay v2, which holds its token.
+ *  `background` is the silent read-sync push (`read-sync.ts`). */
+export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity" | "background"; collapseId: string; payload: PushPayload; activityId?: string };
 
 /**
  * WHAT CAME BACK FROM A SEND — issue #584.
@@ -248,7 +255,7 @@ export function saveRegistration(deviceId: string, registration: MobileRegistrat
   //
   // `relayRevision` is deliberately NOT carried: the revision below is new, so
   // the relay has not seen this registration and must be sent it once.
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, automaticStart: old?.automaticStart, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, automaticStart: old?.automaticStart, readSync: old?.readSync, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
 /**
@@ -360,7 +367,8 @@ export async function sendAPNs(delivery: Delivery): Promise<DeliveryResult> {
     client.on("error", fail);
     const request = client.request({ ":method": "POST", ":path": `/3/device/${delivery.token}`, authorization,
       "apns-topic": delivery.topic, "apns-push-type": delivery.kind, "apns-priority": delivery.kind === "alert" || ["start", "end"].includes(String(delivery.payload.aps.event)) ? "10" : "5",
-      "apns-expiration": String(Math.floor(Date.now() / 1000) + 3600), "apns-collapse-id": delivery.collapseId });
+      // A background push is never displayed, so it has nothing to collapse.
+      "apns-expiration": String(Math.floor(Date.now() / 1000) + 3600), ...(delivery.kind === "background" ? {} : { "apns-collapse-id": delivery.collapseId }) });
     let status = 0;
     // BOUNDED: Apple's rejection body is a few dozen bytes. Anything past the
     // bound is dropped rather than buffered, and never logged either way.
