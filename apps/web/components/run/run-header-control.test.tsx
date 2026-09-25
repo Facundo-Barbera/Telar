@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { headerMode, RunHeaderControl } from "./run-header-control";
 import { RunConfigEditor } from "./run-config-editor";
-import { latestOpenTerminal, statusLabel, statusTone } from "@/lib/run/presentation";
+import { latestOpenTerminal, openTerminals, runSummary, statusLabel, statusTone } from "@/lib/run/presentation";
 import { RunGlyph } from "@/lib/run/icons";
 import type { RunApi } from "@/lib/run/api";
 import type { RunConfigurationView, RunStatusAnswer, RunView } from "@/lib/run/types";
@@ -128,12 +128,24 @@ describe("what pressing a configuration means", () => {
     expect(calls).toEqual(["start:config_dev"]);
   });
 
-  test("the pill summarises the newest OPEN terminal, and ignores ones that ended", () => {
+  test("the pill reads the whole OPEN list, and ignores ones that ended", () => {
     const answer: RunStatusAnswer = {
-      terminals: [view({ terminalId: "term_2", status: "closed", closedBy: "person", startedAt: 2 }), view()],
+      terminals: [
+        view({ terminalId: "term_3", title: "dev server #2", startedAt: 3 }),
+        view({ terminalId: "term_2", status: "closed", closedBy: "person", startedAt: 2 }),
+        view(),
+      ],
       sessionWorktreePath: "/Users/x/code/telar",
     };
-    expect(latestOpenTerminal(answer)?.terminalId).toBe("term_1");
+    expect(latestOpenTerminal(answer)?.terminalId).toBe("term_3");
+    // Two instances of one recipe are two terminals, and the pill counts both.
+    expect(runSummary(openTerminals(answer)).label).toBe("2 terminals");
+  });
+
+  test("the first paint names no deployment slot to replace, switch or release", () => {
+    const { api } = recordingApi({ terminals: [] });
+    const html = render(api);
+    for (const word of ["Replace", "Switch", "Release", "Restart"]) expect(html).not.toContain(word);
   });
 
   test("stop and restart address the terminal by its own id", async () => {

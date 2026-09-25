@@ -77,13 +77,57 @@ export function isOpenTerminal(view: RunView | undefined): boolean {
 }
 
 /**
- * THE NEWEST OPEN TERMINAL, which is what the masthead summarises until the
- * Run control is redesigned around the whole list. `undefined` when none is
- * open.
+ * THE NEWEST OPEN TERMINAL. `undefined` when none is open. The masthead reads
+ * the whole list (`openTerminals`); this is for a caller that wants one.
  */
 export function latestOpenTerminal(answer: RunStatusAnswer | undefined): RunView | undefined {
   // `?? []`: a paired Mac on an older engine answers without the list.
   return (answer?.terminals ?? []).find((run) => isOpenTerminal(run));
+}
+
+/**
+ * EVERY OPEN TERMINAL OF THE SESSION, OLDEST FIRST — the order the Terminal
+ * strip reads in, so the masthead's list and the chips name them in the same
+ * order. The engine answers newest first; this does not depend on that.
+ */
+export function openTerminals(answer: RunStatusAnswer | undefined): RunView[] {
+  return (answer?.terminals ?? []).filter((run) => isOpenTerminal(run)).sort((a, b) => a.startedAt - b.startedAt);
+}
+
+/**
+ * A TERMINAL'S NAME: the title the engine gave it at launch — "web dev", then
+ * "web dev #2" for a second one open at once. The engine numbers them (the
+ * lowest free number among the session's open terminals), because only it sees
+ * two presses in the same tick; this never invents a number. An engine older
+ * than titles falls back to the configuration's name.
+ */
+export function terminalTitle(view: RunView): string {
+  return view.title?.trim() || view.configName;
+}
+
+/** How many terminals of this configuration are open — the "2 open" beside
+ *  its Start row, so pressing it again is visibly "another one". */
+export function openCount(open: readonly RunView[], configId: string): number {
+  return open.filter((run) => run.configId === configId).length;
+}
+
+/**
+ * WHAT THE MASTHEAD'S RUN BUTTON SAYS, over the whole list.
+ *
+ * None open: "Run". One: its name, with its own status dot. Several: how many,
+ * because naming one of three would say the other two are not there. The dot
+ * of several is amber if any chip's dot is amber (running, no readiness answer
+ * yet) and green only when every one of them answered — a green masthead over
+ * an amber chip would be the summary disagreeing with what it summarises.
+ */
+export function runSummary(open: readonly RunView[]): { label: string; tone: RunTone; detail?: string } {
+  if (open.length === 0) return { label: "Run", tone: "idle" };
+  if (open.length === 1) {
+    const only = open[0]!;
+    return { label: terminalTitle(only), tone: statusTone(only.status), detail: statusLabel(only) };
+  }
+  const starting = open.some((run) => run.status === "running");
+  return { label: `${open.length} terminals`, tone: starting ? "working" : "good" };
 }
 
 export function describeReadiness(readiness: RunReadiness, url?: string): string | undefined {

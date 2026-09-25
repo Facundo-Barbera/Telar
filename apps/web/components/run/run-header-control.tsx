@@ -1,10 +1,16 @@
 "use client";
 
 /**
- * The masthead's run control: SETUP and start/stop live here, monitoring lives
- * in the right panel's Terminal tab, where a run is a chip beside the session's
- * shells (#890). The same `RunConfigEditor` that tab's editor uses is rendered
- * inline, so there is one configuration form, not two.
+ * The masthead's run control: SETUP, starting and ending live here, monitoring
+ * lives in the right panel's Terminal tab, where a run is a chip beside the
+ * session's shells (#890). The same `RunConfigEditor` that tab's editor uses is
+ * rendered inline, so there is one configuration form, not two.
+ *
+ * BUILT AROUND THE SESSION'S LIST OF TERMINALS ("Run = a new terminal"). A
+ * run is a terminal, a session may have any number of them open, and pressing
+ * a configuration opens ANOTHER one — "web dev", then "web dev #2". There is
+ * no deployment slot, so nothing here restarts, replaces or switches: the menu
+ * is what is open (each with End) above what can be started.
  *
  * THIS PILL DOES NOT POLL ANY MORE, and that is the second half of #890. It
  * asked `/run/status` every four seconds while something was live and every
@@ -20,11 +26,21 @@
  * same session id.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDownIcon, CircleStopIcon, Loader2Icon, PlusIcon, RotateCwIcon, SlidersHorizontalIcon } from "lucide-react";
+import { ChevronDownIcon, CircleStopIcon, Loader2Icon, PlusIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { createRunApi, type RunApi } from "@/lib/run/api";
 import { RunGlyph } from "@/lib/run/icons";
-import { latestOpenTerminal, statusLabel, statusTone, type RunTone } from "@/lib/run/presentation";
+import {
+  openCount,
+  openTerminals,
+  runSummary,
+  statusDetail,
+  statusLabel,
+  statusTone,
+  terminalTitle,
+  type RunTone,
+} from "@/lib/run/presentation";
+import { mayClose } from "@/lib/terminal-close";
 import { useRunStatusFeed } from "@/lib/run/status-stream";
 import type { RunConfigurationDraft, RunConfigurationView, RunView } from "@/lib/run/types";
 import { Button } from "@/components/ui/button";
@@ -90,14 +106,76 @@ export type ReadGuard = ReturnType<typeof createReadGuard>;
  * TWO STATES ARE DELIBERATELY NOT `setup`. A list that has not been READ yet
  * (`undefined`) is unknown, not empty — offering Setup over a project that
  * turns out to have three configurations is worse than a moment of "Run". And
- * a live run wins over an empty list, because a deployment whose recipe was
- * deleted mid-flight is still the thing a human needs to see and stop.
+ * an open terminal wins over an empty list, because one whose recipe was
+ * deleted mid-flight is still the thing a human needs to see and end.
  *
  * Exported because this is the rule worth testing directly; the component
  * below is its only caller.
  */
 export function headerMode(configs: RunConfigurationView[] | undefined, active: RunView | undefined): "setup" | "run" {
   return configs?.length === 0 && !active ? "setup" : "run";
+}
+
+/**
+ * ONE ROW OF THE OPEN LIST: which terminal, how it is doing, and End.
+ *
+ * THE WARNING IS SHOWN IN FULL HERE, because this is the one place with room
+ * for a sentence. A busy port does not block anything — the engine opened the
+ * terminal anyway — but a person wondering why it never turned green deserves
+ * the engine's own explanation ("port 3000 already answers, so something else
+ * may be serving it …") rather than a symbol to decode.
+ */
+function OpenTerminalRow({
+  view,
+  config,
+  busy,
+  onEnd,
+}: {
+  view: RunView;
+  config: RunConfigurationView | undefined;
+  busy: boolean;
+  onEnd: () => void;
+}) {
+  const title = terminalTitle(view);
+  return (
+    <div className="flex flex-col gap-0.5 rounded-md px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[statusTone(view.status)])} />
+        <RunGlyph icon={config?.icon} className="size-3.5 shrink-0 opacity-80" />
+        <span className="min-w-0 flex-1 truncate text-sm" title={view.command}>
+          {title}
+        </span>
+        <span className="shrink-0 text-3xs text-muted-foreground">{statusLabel(view)}</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`End ${title}`}
+          title="End — stops it and closes its terminal"
+          disabled={busy}
+          onClick={onEnd}
+        >
+          <CircleStopIcon />
+        </Button>
+      </div>
+      {view.warning && (
+        <p className="flex items-start gap-1 pl-3.5 text-2xs leading-snug text-warning">
+          <TriangleAlertIcon aria-hidden className="mt-px size-3 shrink-0" />
+          <span>{statusDetail(view)}</span>
+        </p>
+      )}
+      {view.readinessUrl && !view.warning && (
+        <a
+          href={view.readinessUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="truncate pl-3.5 text-2xs text-muted-foreground underline-offset-2 hover:underline"
+        >
+          {view.readinessUrl}
+        </a>
+      )}
+    </div>
+  );
 }
 
 export function RunHeaderControl({
@@ -111,7 +189,7 @@ export function RunHeaderControl({
   hostId?: string;
   /** Injected by tests and the fixture; production builds a pinned client. */
   api?: RunApi;
-  /** Opens the right panel's Run tab — monitoring stays there. */
+  /** Opens the right panel's Terminal tab — monitoring stays there. */
   onWatchOutput?: () => void;
 }) {
   const api = useMemo(() => injected ?? createRunApi(hostFetcher(hostId ?? LOCAL_HOST_ID)), [injected, hostId]);
@@ -137,11 +215,13 @@ export function RunHeaderControl({
    * unpressed while its own round trip finishes. Nothing calls it on a timer.
    */
   const feed = useRunStatusFeed({ sessionId, ...(hostId ? { hostId } : {}), api });
-  const status = feed.status;
   const refresh = feed.refresh;
-  /** The newest open terminal. A session may have several; this pill shows
-   *  one until the control is redesigned around the whole list. */
-  const active = latestOpenTerminal(status);
+  /**
+   * THE WHOLE LIST, NOT THE NEWEST ONE. A session may have any number of
+   * terminals open at once ("web dev", "web dev #2"), and a control that
+   * summarised one of them would hide the others behind it.
+   */
+  const terminals = openTerminals(feed.status);
 
   /** Read on every open: a configuration added or renamed in the panel must
    *  not be invisible here until the page reloads. */
@@ -178,8 +258,7 @@ export function RunHeaderControl({
     try {
       await work();
       // A mutation invalidates every read already in flight — the list and
-      // the status they would restore both predate this change — and frees
-      // the latch so the re-read below always runs.
+      // the status they would restore both predate this change.
       guard.invalidate();
       refresh();
       loadConfigs();
@@ -197,13 +276,25 @@ export function RunHeaderControl({
       setEditing(undefined);
     });
 
-  const tone = active ? statusTone(active.status) : "idle";
-  const label = active ? statusLabel(active) : "Run";
+  /**
+   * END = CLOSE THE TERMINAL, asking first only if something is running in it
+   * — the same question, in the same words, a close on its chip asks
+   * (`lib/terminal-close.ts`). "No" leaves it exactly as it was.
+   */
+  const end = (view: RunView) =>
+    void (async () => {
+      const target = { id: view.terminalId, label: terminalTitle(view), command: view.command };
+      if (!(await mayClose([target]))) return;
+      await run(() => api.stop(sessionId, view.terminalId));
+    })();
 
-  const setup = headerMode(configs, active) === "setup";
-  /** The configuration this deployment came from, when the list has been read
-   *  and still holds it — a recipe deleted mid-run simply has no glyph. */
-  const activeConfig = active ? configs?.find((config) => config.id === active.configId) : undefined;
+  const summary = runSummary(terminals);
+  const setup = headerMode(configs, terminals[0]) === "setup";
+  /** One open terminal wears its recipe's glyph in the masthead; several do not
+   *  share one. A recipe deleted mid-run simply has no glyph. */
+  const only = terminals.length === 1 ? terminals[0] : undefined;
+  const onlyConfig = only ? configs?.find((config) => config.id === only.configId) : undefined;
+  const warned = terminals.some((view) => view.warning);
 
   return (
     <Popover
@@ -228,26 +319,30 @@ export function RunHeaderControl({
             // being popover triggers — actually have.
             variant="outline"
             size="sm"
-            aria-label={setup ? "Run — set up a configuration" : active ? `Run: ${label}` : "Run this project"}
+            aria-label={
+              setup
+                ? "Run — set up a configuration"
+                : terminals.length === 0
+                  ? "Run this project"
+                  : `Run: ${summary.label}${summary.detail ? `, ${summary.detail}` : ""}${warned ? ", with a warning" : ""}`
+            }
             className="h-7 gap-1.5 px-2 text-xs font-medium"
           >
             {setup ? (
               // THE WORD IS "RUN" IN BOTH STATES, and the glyph carries the
-              // difference. "Setup" named the CONSEQUENCE of pressing an empty
-              // control rather than the thing the control is for, so the one
-              // button in the masthead that runs this project was the one
-              // button that never said run. The plus still says a form is what
-              // opens; no dot, because there is no run to have a status, and no
-              // chevron, because this is not a menu.
+              // difference. The plus says a form is what opens; no dot, because
+              // there is no run to have a status, and no chevron, because this
+              // is not a menu.
               <>
                 <PlusIcon className="size-3.5 shrink-0" />
                 <span className="max-w-32 truncate">Run</span>
               </>
             ) : (
               <>
-                <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[tone])} />
-                {activeConfig && <RunGlyph icon={activeConfig.icon} className="size-3.5 shrink-0 opacity-80" />}
-                <span className="max-w-32 truncate">{label}</span>
+                <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[summary.tone])} />
+                {onlyConfig && <RunGlyph icon={onlyConfig.icon} className="size-3.5 shrink-0 opacity-80" />}
+                <span className="max-w-32 truncate">{summary.label}</span>
+                {warned && <TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-warning" />}
                 <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
               </>
             )}
@@ -290,26 +385,34 @@ export function RunHeaderControl({
           </div>
         ) : (
           <>
-            <div className="flex flex-col gap-1 border-b border-border px-3 py-2.5">
-              <div className="flex items-center gap-2">
-                <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[tone])} />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">{label}</span>
-                {busy && <Loader2Icon className="size-3.5 shrink-0 animate-spin text-muted-foreground" />}
-              </div>
-              {active?.warning && <p className="text-2xs leading-snug text-warning">{active.warning}</p>}
-              {active?.readinessUrl && (
-                <a
-                  href={active.readinessUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="truncate text-2xs text-muted-foreground underline-offset-2 hover:underline"
-                >
-                  {active.readinessUrl}
-                </a>
-              )}
-            </div>
+            {/*
+             * TWO LISTS, AND THEY ANSWER DIFFERENT QUESTIONS. "Open" is what
+             * this session has running right now — each one a terminal in the
+             * panel, each with its own End. "Start" is the recipes, and
+             * pressing one ALWAYS opens another terminal: it never restarts or
+             * replaces one already open, which is what "2 open" beside it is
+             * there to make obvious before the press rather than after.
+             */}
+            {terminals.length > 0 && (
+              <section aria-label="Open terminals" className="flex max-h-56 flex-col gap-0.5 overflow-y-auto border-b border-border p-1">
+                <h3 className="flex items-center gap-2 px-2 pt-1 text-3xs font-medium tracking-wide text-muted-foreground uppercase">
+                  Open
+                  {busy && <Loader2Icon className="size-3 animate-spin" />}
+                </h3>
+                {terminals.map((view) => (
+                  <OpenTerminalRow
+                    key={view.terminalId}
+                    view={view}
+                    config={configs?.find((config) => config.id === view.configId)}
+                    busy={busy}
+                    onEnd={() => end(view)}
+                  />
+                ))}
+              </section>
+            )}
 
-            <div className="flex min-h-0 max-h-72 flex-col gap-0.5 overflow-y-auto p-1">
+            <section aria-label="Start a terminal" className="flex min-h-0 max-h-72 flex-col gap-0.5 overflow-y-auto p-1">
+              <h3 className="px-2 pt-1 text-3xs font-medium tracking-wide text-muted-foreground uppercase">Start</h3>
               {configs === undefined ? (
                 <p className="px-2 py-1.5 text-2xs text-muted-foreground">Reading configurations…</p>
               ) : configs.length === 0 ? (
@@ -318,27 +421,23 @@ export function RunHeaderControl({
                 </p>
               ) : (
                 configs.map((config) => {
-                  const live = active?.configId === config.id;
+                  const count = openCount(terminals, config.id);
                   return (
                     <div key={config.id} className="group/run flex items-center gap-1">
                       <button
                         type="button"
                         disabled={busy}
-                        // Start a terminal, or restart the open one.
-                        onClick={() => void run(() => (live ? api.restart(sessionId, active?.terminalId) : api.start(sessionId, config.id)))}
+                        aria-label={count > 0 ? `Start another ${config.name}` : `Start ${config.name}`}
+                        title={count > 0 ? "Opens one more terminal running this; the open ones keep going" : "Opens a new terminal running this"}
+                        onClick={() => void run(() => api.start(sessionId, config.id))}
                         className={cn(
-                          "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-                          live ? "bg-accent" : "hover:bg-accent/60",
+                          "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/60",
                           busy && "opacity-60",
                         )}
                       >
-                        {/* The configuration's own glyph, except on the one
-                            that is live: there the slot carries what pressing
-                            it DOES, and "restart" is worth more than a second
-                            copy of the icon already up in the masthead. */}
-                        {live ? <RotateCwIcon className="size-3.5 shrink-0" /> : <RunGlyph icon={config.icon} className="size-3.5 shrink-0" />}
+                        <RunGlyph icon={config.icon} className="size-3.5 shrink-0" />
                         <span className="min-w-0 flex-1 truncate">{config.name}</span>
-                        {live && <span className="shrink-0 text-3xs text-muted-foreground">running</span>}
+                        {count > 0 && <span className="shrink-0 text-3xs text-muted-foreground">{count} open</span>}
                       </button>
                       <Button
                         type="button"
@@ -352,24 +451,11 @@ export function RunHeaderControl({
                       >
                         <SlidersHorizontalIcon />
                       </Button>
-                      {live && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={`Stop ${config.name}`}
-                          title="Stop"
-                          disabled={busy}
-                          onClick={() => void run(() => api.stop(sessionId, active?.terminalId))}
-                        >
-                          <CircleStopIcon />
-                        </Button>
-                      )}
                     </div>
                   );
                 })
               )}
-            </div>
+            </section>
 
             {error && <p className="border-t border-border px-3 py-1.5 text-2xs leading-snug text-destructive">{error}</p>}
 
@@ -379,7 +465,7 @@ export function RunHeaderControl({
                 New configuration
               </Button>
               <div className="flex-1" />
-              {/* The door to the monitor, not a second copy of it. */}
+              {/* The door to the terminals, not a second copy of them. */}
               {onWatchOutput && (
                 <Button
                   type="button"
@@ -391,7 +477,7 @@ export function RunHeaderControl({
                     onWatchOutput();
                   }}
                 >
-                  Watch output
+                  Show terminals
                 </Button>
               )}
             </div>
