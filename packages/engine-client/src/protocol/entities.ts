@@ -582,8 +582,12 @@ export type SessionOrigin = z.infer<typeof SessionOrigin>;
  *   blocked     a request is open and nobody has answered it — it wants YOU
  *   working     a turn is running, or a sub-agent is; it wants nothing, it is busy
  *   queued      a turn is waiting for a worker to pick it up
- *   monitoring  no turn, no agent — but a watch loop or long shell is alive
- *   idle        nothing in flight
+ *   monitoring  no turn, but background work outlives it — shells, monitors,
+ *               sub-agents launched in the background ("Background (N)")
+ *   waiting     no turn, no background work — but a session it subscribed to
+ *               is still going, and its answer will wake this one
+ *   scheduled   none of the above — but a schedule will wake it at a known time
+ *   idle        nothing in flight and nothing due
  *
  * THE ORDER IS THE POINT and it is not the order of severity — `blocked` is not
  * worse than `working`, it is more ACTIONABLE, and a sidebar exists to answer
@@ -600,9 +604,42 @@ export type SessionOrigin = z.infer<typeof SessionOrigin>;
  * IT IS BELOW `queued` AND ABOVE `idle` on purpose: background watching is real
  * work and deserves a badge, but it is nobody's turn and it can run for hours,
  * so it must not outrank a turn that is actually about to answer you.
+ *
+ * `waiting` AND `scheduled` ARE QUIETER STILL, and exist for the same reason
+ * `monitoring` did: each is a session that reported `idle` while something was
+ * coming for it. A coordinator waiting on its workers, or a session with a wake
+ * set for 14:30, looked exactly like one that was finished. Neither is work in
+ * flight here, so both sit below it.
+ *
+ * APPENDED, NOT RENAMED. `monitoring` keeps its wire name though the rail now
+ * says "Background": a phone app decodes this enum, reads a value it does not
+ * know as `idle`, and is released on its own schedule. The two new values
+ * degrade to exactly what such a client showed before; a renamed one would
+ * have turned a live session idle on it.
  */
-export const SessionActivity = z.enum(["blocked", "working", "queued", "monitoring", "idle"]);
+export const SessionActivity = z.enum(["blocked", "working", "queued", "monitoring", "idle", "waiting", "scheduled"]);
 export type SessionActivity = z.infer<typeof SessionActivity>;
+
+/**
+ * THE FACTS A LABEL NEEDS BEYOND THE STATE ITSELF, one shape per state that
+ * has any. Absent for the states that say everything by their name.
+ *
+ * SEPARATE FROM THE ENUM rather than folded into more enum values, because a
+ * count or a time is not a state: "Background (3)" and "Background (4)" are the
+ * same thing to every rule that reads `activity` (settling, push, sorting), and
+ * only the label wants the number.
+ */
+export const SessionActivityDetail = z.discriminatedUnion("kind", [
+  /** `monitoring`: how much is running, and how much of it is sub-agents —
+   *  the rest are shells and monitors. */
+  z.object({ kind: z.literal("background"), tasks: z.number().int().min(1), agents: z.number().int().min(0) }),
+  /** `waiting`: the session whose answer this one is waiting for — the one
+   *  that has been going longest when there are several — and how many. */
+  z.object({ kind: z.literal("session"), sessionId: Id, title: z.string().optional(), sessions: z.number().int().min(1) }),
+  /** `scheduled`: the soonest wake. */
+  z.object({ kind: z.literal("schedule"), at: Timestamp }),
+]);
+export type SessionActivityDetail = z.infer<typeof SessionActivityDetail>;
 
 /**
  * Where a session's work lands on disk. `worktree` sessions get a checkout of
@@ -937,6 +974,8 @@ export const Session = z.object({
    * `updatedAt` already says.
    */
   activityAt: Timestamp.optional(),
+  /** The facts behind `activity` that a label needs — see `SessionActivityDetail`. */
+  activityDetail: SessionActivityDetail.optional(),
 
   /**
    * WHEN THE LAST TURN ENDED, AND WHETHER IT ENDED BADLY.

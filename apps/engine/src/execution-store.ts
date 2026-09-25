@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { EngineEvent, idleSince, isShelved, settlingActivityOf } from "@telar/engine-client";
+import { EngineEvent, idleSince, isShelved, settlingActivityOf, type SessionActivity } from "@telar/engine-client";
 import type { ScheduleRule } from "./schedules";
 import { atomicWrite } from "./atomic";
 import { statePaths } from "./state-paths";
@@ -271,7 +271,7 @@ export type SessionIndexRow = {
   lastReadTurnSequence?: number;
   lastTurnEndedAt?: number;
   lastTurnFailed?: boolean;
-  activity: "idle" | "blocked" | "working" | "queued" | "monitoring";
+  activity: SessionActivity;
   activityAt?: number;
   /**
    * WHAT THIS CONVERSATION IS CALLED, AND THE BRANCH IT CUT — issue #516.
