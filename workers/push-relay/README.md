@@ -22,7 +22,7 @@ the App Attest capability enabled.
 | Phone | `POST /v2/devices` `{keyId, attestation, challenge, bundle, sandbox, token, pushToStartToken?, activities:[{id, token}]}` → `201 {handle}` | App Attest attestation over `SHA256(challenge)` |
 | Phone | `PUT /v2/devices/:handle` (refresh tokens), `DELETE` (forget everything) | `x-telar-assertion` over `"<METHOD> <path>\n<body>"` |
 | Phone | `POST /v2/devices/:handle/keys` `{pairing}` → `201 {keyId, sendKey}`; `DELETE …/keys/:keyId` | assertion as above |
-| Mac | `POST /v2/devices/:handle/push` `{kind:"alert"\|"liveactivity", start?, activity?, collapseId, payload}` → `{status, reason?}` | `x-telar-key`, `x-telar-timestamp` (ms), `x-telar-signature` = hex HMAC-SHA256(sendKey, `"<ts>\nPOST\n<path>\n<body>"`) |
+| Mac | `POST /v2/devices/:handle/push` `{kind:"alert"\|"liveactivity"\|"background", start?, activity?, collapseId, payload}` → `{status, reason?}` | `x-telar-key`, `x-telar-timestamp` (ms), `x-telar-signature` = hex HMAC-SHA256(sendKey, `"<ts>\nPOST\n<path>\n<body>"`) |
 
 - **Tokens stay in the relay.** The Mac names a kind and, for a Live
   Activity, the activity id the phone registered. The relay picks the token,
@@ -37,7 +37,10 @@ the App Attest capability enabled.
 - **Limits:**
   - per IP (IPv6 by /64): 30 challenges, 10 registrations, 240 phone requests
     and 3,000 sends an hour;
-  - per handle: 120 sends a minute and 5,000 a day;
+  - per handle: 120 sends a minute and 5,000 a day; `background` (silent
+    read-sync, `aps` exactly `{"content-available":1}`, priority 5, the
+    phone's own bundle as topic) may only spend the first 4,000, answering
+    429 `background_budget` with no `Retry-After` past that;
   - across all of v2: 40,000 requests a day, answered with `503` and
     `Retry-After`.
 - **Dead tokens:** a token Apple disowns is dropped. The handle and its keys
