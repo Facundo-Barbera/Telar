@@ -343,11 +343,13 @@ async function main() {
   assert(entered.out.split(/\r?\n/)[0].trim() === usable, `the shell says it is in ${JSON.stringify(entered.out.trim())}, not ${JSON.stringify(usable)}`);
   pass("a usable cwd is entered, not refused", `the shell's own pwd is ${usable}`);
 
-  /* 11. THE ONE THE FATE MODEL EXISTS FOR. The host goes away with a terminal
-   *     still running: `unknown`, never `exited`, with the pid named — so
-   *     nothing downstream frees a slot for a process that is still alive.
-   *     Id-matched like `runOnPty`, and for the same reason (#845): `dispose`
-   *     settles EVERY live terminal, so a stray one would answer first. */
+  /* 11. THE HOST GOES AWAY WITH A TERMINAL STILL RUNNING, AND ENDS IT.
+   *     This case used to pin the opposite — `unknown`, nothing signalled —
+   *     until "Run = a new terminal" decided a terminal owns its process and
+   *     quitting closes it. What is pinned now: the process is signalled, and
+   *     the ending is the REAL one node-pty reports, `exited` with the signal,
+   *     never an ending the host made up. Id-matched like `runOnPty`, and for
+   *     the same reason (#845): `dispose` reaches EVERY live terminal. */
   const orphan = await new Promise((resolve) => {
     let ours = null;
     host.onData = () => {};
@@ -355,20 +357,19 @@ async function main() {
       if (id === ours) resolve({ id, ending });
     };
     ours = host.open({ shell: "/bin/sh", args: ["-c", "sleep 20"], env: dirty }).id;
-    setTimeout(() => host.dispose("Telar quit"), 300);
+    setTimeout(() => host.dispose(), 300);
   });
   report.dispose = orphan.ending;
-  assert(orphan.ending.fate === TerminalFate.UNKNOWN, `a live terminal at shutdown reported ${orphan.ending.fate} — it must never claim an exit it did not see`);
-  assert(orphan.ending.exitCode === undefined, "an unknown ending carried an exit code, which is a claim we cannot make");
-  assert(String(orphan.ending.reason).includes(String(orphan.ending.pid)), `the unknown reason does not name the pid: ${orphan.ending.reason}`);
-  // dispose() deliberately does not kill. This test started it, so this test
-  // ends it — nothing is left running behind the suite.
-  try {
-    killTerminalTree(orphan.ending.pid, "SIGKILL", { platform: "darwin" });
-  } catch {
-    /* already gone */
-  }
-  pass("dispose with a terminal still live", `fate=${orphan.ending.fate}, pid named, no exit claimed`);
+  assert(orphan.ending.fate === TerminalFate.EXITED, `a live terminal at shutdown reported ${JSON.stringify(orphan.ending)} — dispose must end it and report the real exit`);
+  // SIGHUP (1) goes first and ends a plain `sleep`; SIGTERM (15) is the next
+  // step. Either is dispose's own signal — what must not appear is no signal.
+  assert(
+    orphan.ending.signal === "1" || orphan.ending.signal === "15",
+    `dispose's hangup/SIGTERM came back as signal ${JSON.stringify(orphan.ending.signal)}, not "1" or "15"`,
+  );
+  for (let attempt = 0; attempt < 50 && !isGone(orphan.ending.pid); attempt += 1) await sleep(100);
+  assert(isGone(orphan.ending.pid), `pid ${orphan.ending.pid} survived dispose — the host went away and left it running`);
+  pass("dispose with a terminal still live", `fate=${orphan.ending.fate} signal=${orphan.ending.signal}, the process is gone`);
 
   /* Checks that need no process at all, folded in rather than counted: they
    * hold for the win32 branch this Mac cannot run, and are the reason the

@@ -10,11 +10,16 @@
 // The other half — that it is a REAL pty — cannot be asserted here at all, and
 // is not attempted. `test -t 1` under real Electron lives in
 // pty-host.electron-test.js, which the `electron` CI job gates on.
-const { describe, expect, test } = require("bun:test");
+const { afterAll, describe, expect, test } = require("bun:test");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const {
   TerminalHost,
   TerminalFate,
+  CLOSE_GRACE_MS,
+  parseProcessTable,
+  terminalActivity,
+  decideQuit,
   TERM,
   TERM_PROGRAM,
   terminalEnv,
@@ -28,11 +33,12 @@ const { verifyPackagedPty, UNPACKED } = require("./after-pack");
 
 /** A stand-in for node-pty's terminal: records what it was told, and lets a
  *  test decide when — and whether — it ever reports an exit. */
-function fakePty(pid = 4242) {
+function fakePty(pid = 4242, ptsName) {
   const calls = { writes: [], resizes: [] };
   const handlers = {};
   return {
     pid,
+    ptsName,
     calls,
     write: (data) => calls.writes.push(data),
     resize: (cols, rows) => calls.resizes.push([cols, rows]),
@@ -63,16 +69,52 @@ const anyCwdIsFine = {
   accessSync: () => {},
 };
 
+/**
+ * A clock the test turns by hand. The close escalation is "SIGKILL one second
+ * after SIGTERM", and asserting that against the wall would mean a test that
+ * sleeps a second — or one that races it.
+ */
+function fakeClock() {
+  let now = 0;
+  const timers = [];
+  return {
+    setTimeout: (fn, ms) => {
+      const timer = { fn, at: now + ms, done: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => {
+      if (timer) timer.done = true;
+    },
+    advance(ms) {
+      now += ms;
+      for (const timer of timers) {
+        if (!timer.done && timer.at <= now) {
+          timer.done = true;
+          timer.fn();
+        }
+      }
+    },
+    pending: () => timers.filter((timer) => !timer.done).length,
+  };
+}
+
 /** A host whose spawner hands back `pty` and records the options it got. */
 function hostWith(pty, options = {}) {
   const spawned = [];
   const endings = [];
   const data = [];
+  const clock = fakeClock();
   const host = new TerminalHost({
     platform: "darwin",
     version: "9.9.9",
     fs: options.fs ?? anyCwdIsFine,
     killTree: options.killTree ?? (() => {}),
+    // An empty table unless the case is ABOUT the table: every close then
+    // signals the shell's own group, which is what the older cases assume.
+    listProcesses: options.listProcesses ?? (async () => []),
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
     spawnPty: (file, args, opts) => {
       spawned.push({ file, args, opts });
       if (options.throws) throw options.throws;
@@ -82,7 +124,7 @@ function hostWith(pty, options = {}) {
     onExit: (id, ending) => endings.push([id, ending]),
     ...options.host,
   });
-  return { host, spawned, endings, data };
+  return { host, spawned, endings, data, clock };
 }
 
 describe("the environment a Telar terminal starts in", () => {
@@ -214,27 +256,48 @@ describe("what the host will say about a terminal that is no longer running", ()
    * for a dev server that is still listening on the port.
    */
   describe("`unknown` is never rounded to `exited`", () => {
-    test("the host shut down with a terminal still live", () => {
-      const pty = fakePty(77);
-      const { host, endings } = hostWith(pty);
-      host.open({ shell: "/bin/zsh", env: {} });
-      host.dispose("Telar quit");
-      expect(endings).toHaveLength(1);
-      const [, ending] = endings[0];
-      expect(ending.fate).toBe(TerminalFate.UNKNOWN);
-      expect(ending.exitCode).toBeUndefined();
-      // The pid is in the sentence so a human can go and look for the process.
-      expect(ending.reason).toContain("77");
-      expect(ending.reason).toContain("Telar quit");
-    });
-
-    test("dispose does NOT kill — deciding that is the engine's job", () => {
+    /**
+     * THE HOST GOING AWAY IS A CLOSE, NOT A SHRUG ("Run = a new terminal").
+     *
+     * This pair used to pin the opposite: dispose marked every live terminal
+     * `unknown` and signalled nothing. A terminal now owns its process, so
+     * the host going away ends it — and invents no ending while doing so: the
+     * terminal settles when the pty reports its exit, like any other.
+     */
+    test("dispose ends a live terminal's group and invents no ending", () => {
       const killed = [];
-      const pty = fakePty(78);
-      const { host } = hostWith(pty, { killTree: (pid) => killed.push(pid) });
+      const pty = fakePty(77);
+      const { host, endings } = hostWith(pty, { killTree: (pid, signal) => killed.push([pid, signal]) });
       host.open({ shell: "/bin/zsh", env: {} });
       host.dispose();
-      expect(killed).toEqual([]);
+      expect(killed).toEqual([
+        [77, "SIGHUP"],
+        [77, "SIGTERM"],
+      ]);
+      expect(endings).toEqual([]);
+      pty.emitExit({ exitCode: 0, signal: 15 });
+      expect(endings).toHaveLength(1);
+      expect(endings[0][1].fate).toBe(TerminalFate.EXITED);
+      expect(endings[0][1].signal).toBe("15");
+    });
+
+    test("dispose escalates to SIGKILL when the group outlives the grace", () => {
+      const killed = [];
+      const pty = fakePty(78);
+      const { host, clock } = hostWith(pty, { killTree: (pid, signal) => killed.push([pid, signal]) });
+      host.open({ shell: "/bin/zsh", env: {} });
+      host.dispose();
+      clock.advance(999);
+      expect(killed).toEqual([
+        [78, "SIGHUP"],
+        [78, "SIGTERM"],
+      ]);
+      clock.advance(1);
+      expect(killed).toEqual([
+        [78, "SIGHUP"],
+        [78, "SIGTERM"],
+        [78, "SIGKILL"],
+      ]);
     });
 
     test("a kill we could not deliver", () => {
@@ -532,7 +595,18 @@ describe("driving a live terminal", () => {
     const { host } = hostWith(pty);
     const { id } = host.open({ shell: "/bin/zsh", cwd: "/work", cols: 90, rows: 20, env: {} });
     expect(host.list()).toEqual([
-      { id, pid: 91, shell: "/bin/zsh", cwd: "/work", cols: 90, rows: 20, startedAt: expect.any(Number) },
+      {
+        id,
+        pid: 91,
+        sessionId: undefined,
+        origin: "user",
+        title: undefined,
+        shell: "/bin/zsh",
+        cwd: "/work",
+        cols: 90,
+        rows: 20,
+        startedAt: expect.any(Number),
+      },
     ]);
     expect(JSON.stringify(host.list())).not.toContain("pty");
   });
@@ -638,21 +712,580 @@ describe("a terminal has an owner, and only its owner may reach it", () => {
     expect(() => host.list("agent")).toThrow(/owner/);
   });
 
-  test("dispose settles every terminal, whoever opened it", () => {
+  test("dispose ends every terminal, whoever opened it", () => {
     // The one place ownership deliberately does not apply: the host going away
-    // is about every handle it holds. A run left un-settled here would free its
-    // project's slot for a dev server that is still listening.
-    const endings = [];
+    // is about every handle it holds. A run left running here would outlive
+    // Telar with nothing left that can reach it.
+    const killed = [];
+    let pid = 700;
     const host = new TerminalHost({
       platform: "darwin",
       version: "9.9.9",
-      spawnPty: () => fakePty(700),
-      onExit: (id, ending) => endings.push(ending.fate),
+      fs: anyCwdIsFine,
+      spawnPty: () => fakePty((pid += 1)),
+      killTree: (target, signal) => killed.push([target, signal]),
+      setTimeout: () => null,
+      clearTimeout: () => {},
     });
     host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
     host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
     host.dispose();
-    expect(endings).toEqual(["unknown", "unknown"]);
+    expect(killed).toEqual([
+      [701, "SIGHUP"],
+      [701, "SIGTERM"],
+      [702, "SIGHUP"],
+      [702, "SIGTERM"],
+    ]);
+  });
+});
+
+/**
+ * A TERMINAL BELONGS TO A SESSION, AND SAYS WHY IT EXISTS.
+ *
+ * `sessionId` is what settling a session will close by; `origin` is what the
+ * tab will say. Both are recorded at open and never change.
+ */
+describe("a terminal's session and origin", () => {
+  function sessionHost() {
+    let pid = 500;
+    const killed = [];
+    const clock = fakeClock();
+    const host = new TerminalHost({
+      platform: "darwin",
+      version: "9.9.9",
+      fs: anyCwdIsFine,
+      spawnPty: () => fakePty((pid += 1)),
+      killTree: (target, signal) => killed.push([target, signal]),
+      listProcesses: async () => [],
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    });
+    /** Run a close to completion on the hand-turned clock. */
+    const finished = async (closing) => {
+      for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+      clock.advance(CLOSE_GRACE_MS);
+      return closing;
+    };
+    return { host, killed, clock, finished };
+  }
+
+  test("each owner gets the only origin it ever had when it does not say", () => {
+    // The engine client on main sends no origin today; its terminals must
+    // still read as runs, or this change is not backward compatible.
+    const { host } = sessionHost();
+    const shell = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
+    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
+    expect(host.describe(shell.id, "renderer").origin).toBe("user");
+    expect(host.describe(run.id, "engine").origin).toBe("run");
+  });
+
+  test("session, origin and title are recorded and listed", () => {
+    const { host } = sessionHost();
+    const { id } = host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "agent", sessionId: " s_1 ", title: "web dev" });
+    expect(host.list("engine")).toEqual([
+      expect.objectContaining({ id, sessionId: "s_1", origin: "agent", title: "web dev" }),
+    ]);
+    expect(host.describe(id, "engine")).toEqual(expect.objectContaining({ sessionId: "s_1", origin: "agent", title: "web dev" }));
+  });
+
+  test("describe is scoped like every verb — the other owner's id is not there", () => {
+    const { host } = sessionHost();
+    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
+    const shell = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
+    expect(host.describe(run.id, "renderer")).toBeUndefined();
+    expect(host.describe(shell.id, "renderer")).toBeDefined();
+  });
+
+  test("an origin the owner could not have is refused, in both directions", () => {
+    // A renderer labelling its shell `agent`, or the engine claiming a person
+    // typed a command, is a lie on screen. Both throw; the control arms open.
+    const { host } = sessionHost();
+    expect(() => host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", origin: "agent" })).toThrow(/origin/);
+    expect(() => host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", origin: "run" })).toThrow(/origin/);
+    expect(() => host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "user" })).toThrow(/origin/);
+    expect(() => host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "bogus" })).toThrow(/origin/);
+    expect(host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "run" }).pid).toBeDefined();
+    expect(host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", origin: "user" }).pid).toBeDefined();
+  });
+
+  test("a session id that is not a string is dropped, not coerced", () => {
+    const { host } = sessionHost();
+    const { id } = host.open({ shell: "/bin/zsh", env: {}, sessionId: { toString: () => "s_1" } });
+    expect(host.describe(id).sessionId).toBeUndefined();
+  });
+
+  test("killBySession closes that session's terminals, every owner, and nobody else's", async () => {
+    const { host, killed, finished } = sessionHost();
+    const shell = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });
+    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_a" });
+    const other = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_b" });
+    expect(await finished(host.killBySession("s_a"))).toBe(2);
+    expect(killed.filter(([, signal]) => signal === "SIGTERM")).toEqual([
+      [shell.pid, "SIGTERM"],
+      [run.pid, "SIGTERM"],
+    ]);
+    // The control arm: the other session's terminal was not touched.
+    expect(killed.some(([pid]) => pid === other.pid)).toBe(false);
+  });
+
+  test("killBySession can be narrowed to one owner", async () => {
+    const { host, killed, finished } = sessionHost();
+    host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });
+    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_a" });
+    expect(await finished(host.killBySession("s_a", { owner: "engine" }))).toBe(1);
+    expect(killed).toEqual([
+      [run.pid, "SIGHUP"],
+      [run.pid, "SIGTERM"],
+      [run.pid, "SIGKILL"],
+    ]);
+  });
+
+  test("no session never matches no session", async () => {
+    // A settle that passed `undefined` must close nothing — not every
+    // terminal nobody labelled.
+    const { host, killed } = sessionHost();
+    host.open({ shell: "/bin/zsh", env: {} });
+    for (const missing of [undefined, null, "", "   ", 7]) {
+      expect(await host.killBySession(missing)).toBe(0);
+    }
+    expect(killed).toEqual([]);
+  });
+
+  test("killBySession escalates like any close", async () => {
+    const { host, killed, finished } = sessionHost();
+    const { pid } = host.open({ shell: "/bin/zsh", env: {}, sessionId: "s_a" });
+    expect(await finished(host.killBySession("s_a"))).toBe(1);
+    expect(killed).toEqual([
+      [pid, "SIGHUP"],
+      [pid, "SIGTERM"],
+      [pid, "SIGKILL"],
+    ]);
+  });
+});
+
+/**
+ * CLOSE = KILL, WITH ESCALATION.
+ *
+ * The contract a person relies on when they close a tab: SIGTERM to every
+ * process group in the terminal, and SIGKILL a second later to whatever did not
+ * go. Told against a hand-turned clock and a process table the test wrote.
+ */
+describe("closing a terminal ends what runs in it", () => {
+  /** A table for a terminal at /dev/ttys009 whose shell (pid 900) has started
+   *  `bun run dev` as a job in its OWN group (910), which is what an
+   *  interactive shell does — plus that job's child. */
+  const busyTable = [
+    { pid: 900, ppid: 1, pgid: 900, tpgid: 910, tty: "ttys009", command: "-zsh" },
+    { pid: 910, ppid: 900, pgid: 910, tpgid: 910, tty: "ttys009", command: "bun run dev" },
+    { pid: 911, ppid: 910, pgid: 910, tpgid: 910, tty: "ttys009", command: "node vite" },
+    { pid: 1200, ppid: 1, pgid: 1200, tpgid: 0, tty: "??", command: "unrelated" },
+  ];
+
+  function closeHost(table = busyTable, killTree) {
+    const killed = [];
+    const pty = fakePty(900, "/dev/ttys009");
+    const made = hostWith(pty, {
+      listProcesses: async () => table,
+      killTree: killTree ?? ((pid, signal) => killed.push([pid, signal])),
+    });
+    const { id } = made.host.open({ shell: "/bin/zsh", env: {} });
+    return { ...made, pty, id, killed };
+  }
+
+  /** Let `close`'s awaited snapshot resolve before the clock is turned. */
+  const settle = async () => {
+    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+  };
+
+  test("SIGTERM reaches the job's group too, not just the shell's", async () => {
+    // Signalling -900 alone would leave `bun run dev` (group 910) running
+    // behind a closed tab — an interactive shell puts each job in its own group.
+    const { host, id, killed, clock } = closeHost();
+    const closing = host.close(id);
+    await settle();
+    // The hangup goes to the SHELL's group only — it is what lets an idle
+    // interactive shell, which ignores TERM, end without waiting for KILL.
+    expect(killed).toEqual([
+      [900, "SIGHUP"],
+      [900, "SIGTERM"],
+      [910, "SIGTERM"],
+    ]);
+    // The unrelated process on no tty is nobody's business here.
+    expect(killed.some(([pid]) => pid === 1200)).toBe(false);
+    clock.advance(CLOSE_GRACE_MS);
+    expect(await closing).toBe(true);
+  });
+
+  test("SIGKILL follows after the grace, and not a moment before", async () => {
+    const { host, id, killed, clock } = closeHost();
+    const closing = host.close(id);
+    await settle();
+    clock.advance(CLOSE_GRACE_MS - 1);
+    expect(killed.filter(([, signal]) => signal === "SIGKILL")).toEqual([]);
+    clock.advance(1);
+    expect(killed.filter(([, signal]) => signal === "SIGKILL")).toEqual([
+      [900, "SIGKILL"],
+      [910, "SIGKILL"],
+    ]);
+    expect(await closing).toBe(true);
+  });
+
+  test("a close that ended cleanly stops early and signals nothing more", async () => {
+    // The shell's exit is the ONE moment we look: every group probes ESRCH, so
+    // the close is over and no SIGKILL is ever aimed at a group id we have
+    // seen go empty.
+    const signals = [];
+    const gone = Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+    const { host, id, pty, clock, endings } = closeHost(busyTable, (pid, signal) => {
+      signals.push([pid, signal]);
+      if (signal === 0) throw gone;
+    });
+    const closing = host.close(id);
+    await settle();
+    pty.emitExit({ exitCode: 0, signal: 15 });
+    expect(await closing).toBe(true);
+    expect(clock.pending()).toBe(0);
+    clock.advance(CLOSE_GRACE_MS * 5);
+    expect(signals.filter(([, signal]) => signal === "SIGKILL")).toEqual([]);
+    expect(endings[0][1].fate).toBe(TerminalFate.EXITED);
+  });
+
+  test("the shell exiting is NOT the end when something in the terminal ignored TERM", async () => {
+    // Group 910 answers the probe — something in it is still alive — so the
+    // SIGKILL still goes, to that group only.
+    const signals = [];
+    const gone = Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+    const { host, id, pty, clock } = closeHost(busyTable, (pid, signal) => {
+      signals.push([pid, signal]);
+      if (signal === 0 && pid === 900) throw gone;
+    });
+    const closing = host.close(id);
+    await settle();
+    pty.emitExit({ exitCode: 0, signal: 15 });
+    clock.advance(CLOSE_GRACE_MS);
+    expect(await closing).toBe(true);
+    expect(signals.filter(([, signal]) => signal === "SIGKILL")).toEqual([[910, "SIGKILL"]]);
+  });
+
+  test("a table that cannot be read still closes the shell's own group", async () => {
+    const { host, id, killed, clock } = closeHost(null);
+    host.listProcesses = async () => {
+      throw new Error("ps: not found");
+    };
+    const closing = host.close(id);
+    await settle();
+    clock.advance(CLOSE_GRACE_MS);
+    await closing;
+    expect(killed).toEqual([
+      [900, "SIGHUP"],
+      [900, "SIGTERM"],
+      [900, "SIGKILL"],
+    ]);
+  });
+
+  test("closing somebody else's terminal is the same silence as writing to it", async () => {
+    const { host, id, killed } = closeHost();
+    expect(await host.close(id, "engine")).toBe(false);
+    expect(await host.close("term_nope")).toBe(false);
+    expect(killed).toEqual([]);
+  });
+
+  test("closing twice is one close", async () => {
+    const { host, id, killed, clock } = closeHost();
+    const first = host.close(id);
+    const second = host.close(id);
+    await settle();
+    clock.advance(CLOSE_GRACE_MS);
+    await Promise.all([first, second]);
+    expect(killed.filter(([, signal]) => signal === "SIGTERM")).toHaveLength(2);
+    expect(killed.filter(([, signal]) => signal === "SIGKILL")).toHaveLength(2);
+  });
+
+  test("closeAll({ final }) refuses a new shell before it reads the table", async () => {
+    // A terminal opened during the second a quit takes would be its one survivor.
+    const { host, clock } = closeHost();
+    const closing = host.closeAll({ final: true });
+    expect(() => host.open({ shell: "/bin/zsh", env: {} })).toThrow(/shutting down/);
+    await settle();
+    clock.advance(CLOSE_GRACE_MS);
+    expect(await closing).toBe(1);
+  });
+
+  test("win32 has no gentler first step, so nothing is escalated", async () => {
+    const killed = [];
+    const pty = fakePty(42);
+    const { host, clock } = hostWith(pty, { killTree: (pid, signal) => killed.push([pid, signal]), host: { platform: "win32" } });
+    const { id } = host.open({ shell: "cmd.exe", env: {} });
+    expect(await host.close(id)).toBe(true);
+    expect(clock.pending()).toBe(0);
+    expect(killed).toEqual([[42, "SIGTERM"]]);
+  });
+});
+
+/**
+ * IS SOMETHING RUNNING? — asked once, when a person is about to be asked.
+ */
+describe("whether a terminal has an active process", () => {
+  test("an idle shell at its prompt is not active", () => {
+    const rows = [{ pid: 300, ppid: 1, pgid: 300, tpgid: 300, tty: "ttys001", command: "-zsh" }];
+    expect(terminalActivity({ pid: 300, tty: "/dev/ttys001" }, rows)).toEqual({
+      active: false,
+      processes: 0,
+      command: undefined,
+      groups: [300],
+    });
+  });
+
+  test("a command holding the prompt is active, and named", () => {
+    const rows = [
+      { pid: 300, ppid: 1, pgid: 300, tpgid: 310, tty: "ttys001", command: "-zsh" },
+      { pid: 310, ppid: 300, pgid: 310, tpgid: 310, tty: "ttys001", command: "bun run dev" },
+      { pid: 311, ppid: 310, pgid: 310, tpgid: 310, tty: "ttys001", command: "next dev" },
+    ];
+    const activity = terminalActivity({ pid: 300, tty: "/dev/ttys001" }, rows);
+    expect(activity.active).toBe(true);
+    expect(activity.processes).toBe(2);
+    expect(activity.command).toBe("bun run dev");
+    expect(activity.groups).toEqual([300, 310]);
+  });
+
+  test("a backgrounded child makes a shell at its prompt active", () => {
+    // `server &` then back at the prompt: the foreground is the shell again,
+    // and closing would still end the server.
+    const rows = [
+      { pid: 300, ppid: 1, pgid: 300, tpgid: 300, tty: "ttys001", command: "-zsh" },
+      { pid: 320, ppid: 300, pgid: 320, tpgid: 300, tty: "ttys001", command: "python -m http.server" },
+    ];
+    const activity = terminalActivity({ pid: 300, tty: "/dev/ttys001" }, rows);
+    expect(activity.active).toBe(true);
+    expect(activity.command).toBe("python -m http.server");
+  });
+
+  test("a run's `sh -c` with no tty known is judged by its group and children", () => {
+    const rows = [
+      { pid: 400, ppid: 1, pgid: 400, tpgid: 400, tty: "ttys002", command: "sh -c bun run dev" },
+      { pid: 401, ppid: 400, pgid: 400, tpgid: 400, tty: "ttys002", command: "bun run dev" },
+    ];
+    expect(terminalActivity({ pid: 400 }, rows).active).toBe(true);
+  });
+
+  test("never names group 1 or 0 as something to signal", () => {
+    // kill(-1) is every process this user owns; kill(-0) is Telar's own group.
+    const rows = [
+      { pid: 300, ppid: 1, pgid: 300, tpgid: 300, tty: "ttys001", command: "-zsh" },
+      { pid: 330, ppid: 300, pgid: 1, tpgid: 300, tty: "ttys001", command: "odd" },
+      { pid: 331, ppid: 300, pgid: 0, tpgid: 300, tty: "ttys001", command: "odder" },
+    ];
+    expect(terminalActivity({ pid: 300, tty: "ttys001" }, rows).groups).toEqual([300]);
+  });
+
+  test("parses ps's columns, including a command line with spaces", () => {
+    const text = [
+      "    1     0     1    0 ??       /sbin/launchd",
+      "23273 23272 23273 23273 ttys000  -/bin/zsh",
+      "86190 68985 86190 86190 ttys010  bun run dev --port 3000",
+      "  777   1   777   -1 ?        linux-style",
+      "not a row",
+    ].join("\n");
+    expect(parseProcessTable(text)).toEqual([
+      { pid: 1, ppid: 0, pgid: 1, tpgid: 0, tty: "??", command: "/sbin/launchd" },
+      { pid: 23273, ppid: 23272, pgid: 23273, tpgid: 23273, tty: "ttys000", command: "-/bin/zsh" },
+      { pid: 86190, ppid: 68985, pgid: 86190, tpgid: 86190, tty: "ttys010", command: "bun run dev --port 3000" },
+      { pid: 777, ppid: 1, pgid: 777, tpgid: -1, tty: "?", command: "linux-style" },
+    ]);
+  });
+
+  test("the host answers from ONE table for every terminal asked about, scoped by owner", async () => {
+    let reads = 0;
+    let pid = 600;
+    const host = new TerminalHost({
+      platform: "darwin",
+      version: "9.9.9",
+      fs: anyCwdIsFine,
+      spawnPty: () => fakePty((pid += 1)),
+      killTree: () => {},
+      listProcesses: async () => {
+        reads += 1;
+        return [
+          { pid: 601, ppid: 1, pgid: 601, tpgid: 601, tty: "??", command: "zsh" },
+          { pid: 602, ppid: 1, pgid: 602, tpgid: 602, tty: "??", command: "sh -c bun run dev" },
+          { pid: 603, ppid: 602, pgid: 602, tpgid: 602, tty: "??", command: "bun run dev" },
+        ];
+      },
+    });
+    const shell = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_1" });
+    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_1", title: "web dev" });
+    const all = await host.activeProcesses();
+    expect(reads).toBe(1);
+    expect(all).toEqual([
+      { id: shell.id, sessionId: "s_1", origin: "user", title: undefined, active: false, processes: 0, command: undefined },
+      { id: run.id, sessionId: "s_1", origin: "run", title: "web dev", active: true, processes: 1, command: "bun run dev" },
+    ]);
+    expect((await host.activeProcesses({ owner: "renderer" })).map((entry) => entry.id)).toEqual([shell.id]);
+    expect((await host.activeProcesses({ ids: [run.id] })).map((entry) => entry.id)).toEqual([run.id]);
+    // Nothing asked about, nothing read.
+    reads = 0;
+    expect(await host.activeProcesses({ ids: [] })).toEqual([]);
+    expect(reads).toBe(0);
+  });
+
+  test("a table that cannot be read answers `active` — ask rather than lose a server", async () => {
+    const { host } = hostWith(fakePty(1), {
+      listProcesses: async () => {
+        throw new Error("ps exploded");
+      },
+    });
+    host.open({ shell: "/bin/zsh", env: {} });
+    const [entry] = await host.activeProcesses();
+    expect(entry.active).toBe(true);
+  });
+});
+
+/**
+ * QUIT, OR ASK FIRST. The pure half of main.js's `before-quit`.
+ */
+describe("deciding whether quitting has to ask", () => {
+  test("nothing active: quit, and say how many idle terminals will close", () => {
+    expect(decideQuit([])).toEqual({ action: "quit", closing: 0 });
+    expect(decideQuit([{ active: false }, { active: false }])).toEqual({ action: "quit", closing: 2 });
+  });
+
+  test("anything active: ONE question, counting only what is running", () => {
+    const plan = decideQuit([
+      { active: true, command: "bun run dev" },
+      { active: false },
+      { active: true, command: "pytest -x" },
+    ]);
+    expect(plan.action).toBe("confirm");
+    expect(plan.count).toBe(2);
+    expect(plan.closing).toBe(3);
+    expect(plan.dialog.message).toBe("2 processes are still running in Telar's terminals");
+    expect(plan.dialog.detail).toContain("• bun run dev");
+    expect(plan.dialog.detail).toContain("• pytest -x");
+    expect(plan.dialog.detail).toContain("ends everything running in them");
+    expect(plan.dialog.buttons).toEqual(["End them and quit", "Cancel"]);
+    expect(plan.dialog.defaultId).toBe(0);
+    expect(plan.dialog.cancelId).toBe(1);
+  });
+
+  test("one process reads as one, and a long list is cut with a count", () => {
+    expect(decideQuit([{ active: true, command: "x" }]).dialog.message).toBe("1 process is still running in Telar's terminals");
+    const many = Array.from({ length: 8 }, (_, index) => ({ active: true, command: `job ${index}` }));
+    const detail = decideQuit(many).dialog.detail;
+    expect(detail).toContain("• job 4");
+    expect(detail).not.toContain("• job 5");
+    expect(detail).toContain("…and 3 more");
+  });
+
+  test("a command with no name still reads as something", () => {
+    expect(decideQuit([{ active: true }]).dialog.detail).toContain("• a command");
+  });
+
+  test("names no other product", () => {
+    const plan = decideQuit([{ active: true, command: "bun run dev" }]);
+    const copy = [plan.dialog.message, plan.dialog.detail.replace("bun run dev", ""), ...plan.dialog.buttons].join(" ");
+    expect(copy).not.toMatch(/claude|codex|opencode|electron|node-pty|macos/i);
+  });
+});
+
+/**
+ * THE REAL THING, WITHOUT A PTY: a process group that ignores SIGTERM.
+ *
+ * node-pty has no linux prebuild, so the escalation is proven here on a plain
+ * `detached` child — which, like node-pty's, leads its own process group —
+ * wrapped in the shape the host expects. The shell ignores HUP and TERM, and so
+ * does the `sleep` it starts (an ignored signal is inherited), so nothing in
+ * the group ends until SIGKILL. The grace is 150 ms rather than a second; the escalation
+ * is the same code either way.
+ */
+describe("closing a real process group that ignores SIGTERM", () => {
+  const spawnedGroups = [];
+  afterAll(() => {
+    // Only groups this file started, by pgid. Nothing survives the suite.
+    for (const pgid of spawnedGroups) {
+      try {
+        process.kill(-pgid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
+  function childAsPty(script) {
+    const child = spawn("/bin/sh", ["-c", script], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    spawnedGroups.push(child.pid);
+    return {
+      pid: child.pid,
+      write: () => {},
+      resize: () => {},
+      onData: (handler) => child.stdout.on("data", (chunk) => handler(chunk.toString())),
+      onExit: (handler) => child.on("exit", (code, signal) => handler({ exitCode: code ?? 0, signal })),
+    };
+  }
+
+  function isGone(pid) {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      return error.code === "ESRCH";
+    }
+  }
+
+  test.skipIf(process.platform === "win32")("SIGTERM is ignored, SIGKILL ends the whole group", async () => {
+    let out = "";
+    let ending = null;
+    let announced;
+    const ready = new Promise((resolve) => (announced = resolve));
+    const exited = new Promise((resolve) => {
+      const host = new TerminalHost({
+        version: "9.9.9",
+        closeGraceMs: 150,
+        spawnPty: () => childAsPty("trap '' HUP TERM; sleep 30 & echo CHILD=$!; wait; wait"),
+        onData: (_id, data) => {
+          out += data;
+          if (/CHILD=\d+/.test(out)) announced();
+        },
+        onExit: (_id, end) => {
+          ending = end;
+          resolve(end);
+        },
+      });
+      runCase(host).catch((error) => resolve({ error }));
+    });
+
+    let grandchild;
+    let active;
+    async function runCase(host) {
+      const { id } = host.open({ shell: "/bin/sh", env: {}, sessionId: "s_fixture" });
+      await ready;
+      grandchild = Number(/CHILD=(\d+)/.exec(out)[1]);
+      [active] = await host.activeProcesses();
+      const started = Date.now();
+      await host.killBySession("s_fixture");
+      // The escalation waited for the grace: TERM alone did not end it.
+      expect(Date.now() - started).toBeGreaterThanOrEqual(140);
+    }
+
+    const end = await exited;
+    expect(end.error).toBeUndefined();
+    // The real table saw the backgrounded sleep, so the close had a reason to ask.
+    expect(active.active).toBe(true);
+    expect(active.processes).toBeGreaterThanOrEqual(1);
+    expect(ending.fate).toBe(TerminalFate.EXITED);
+    expect(ending.signal).toBe("SIGKILL");
+    // The grandchild was in the group, and it is gone too. Reaped by init,
+    // which can lag a moment behind the shell's own exit.
+    for (let attempt = 0; attempt < 40 && !isGone(grandchild); attempt += 1) await new Promise((r) => setTimeout(r, 25));
+    expect(isGone(grandchild)).toBe(true);
+  });
+
+  test.skipIf(process.platform === "win32")("a lone process with nothing under it is not active", async () => {
+    const host = new TerminalHost({ version: "9.9.9", closeGraceMs: 150, spawnPty: () => childAsPty("exec sleep 30") });
+    host.open({ shell: "/bin/sh", env: {} });
+    const [entry] = await host.activeProcesses();
+    expect(entry.active).toBe(false);
+    await host.closeAll();
   });
 });
 
