@@ -1529,9 +1529,8 @@ test("a turn with no model of its own falls back to the session's", () => {
   const session = store.getSession("session_one");
   store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
   store.submitTurn("session_one", { runId: "run_one", input: "Hi" });
-  // NORMALISED AT THE CLAIM: Telar publishes only the long-window row for
-  // this family, so a bare id runs as the row the picker would have offered.
-  expect(store.claimNextTurn("worker_one")?.model?.model).toBe("claude-opus-5[1m]");
+  // As named: a bare id is the standard-window row, a choice in its own right.
+  expect(store.claimNextTurn("worker_one")?.model?.model).toBe("claude-opus-5");
 });
 
 test("only enabled MCP servers ride the claim, and disabling one keeps its configuration", () => {
@@ -2089,14 +2088,13 @@ test("a model selection can be cleared, which `undefined` could never express", 
   // And an absent key still means "leave it alone", which is the other half of
   // the distinction.
   store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
-  expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5[1m]");
+  expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5");
 });
 
 test("fast mode survives a selection that names no model", () => {
   // A Claude-side switch the composer offers on the provider default, so it has
-  // to survive a selection that names no model at all — and it now travels
-  // beside the long-window default the claim supplies, because Telar publishes
-  // no short Claude rows for a turn to fall back to.
+  // to survive a selection that names no model at all — and it travels beside
+  // the long-window default the claim supplies for a session that named none.
   const { store } = readyStore();
   const session = store.getSession("session_one");
   store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, fastMode: true } });
@@ -4104,40 +4102,24 @@ describe("an agent's message is attributed, never the person's", () => {
   });
 });
 
-describe("a Claude model is stored and claimed in the spelling Telar offers", () => {
-  test("a bare family id or alias becomes its default-window row at every door; a custom, dated or short-window id is left alone", () => {
+describe("a Claude model is stored and claimed as named — both windows are choices", () => {
+  test("a bare id is its standard window and a `[1m]` id its long one, at every door", () => {
     const { store } = readyStore();
     const session = store.getSession("session_one");
     const instanceId = session.providerInstanceId;
-    // The session patch.
-    expect(store.updateSession("session_one", { model: { instanceId, model: "opus", effort: "medium" } }).model).toEqual({ instanceId, model: "opus[1m]", effort: "medium" });
-    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-opus-5" } }).model?.model).toBe("claude-opus-5[1m]");
-    // Already long: untouched, no double suffix.
+    // The session patch keeps the 200k pick rather than rewriting it to 1M.
+    expect(store.updateSession("session_one", { model: { instanceId, model: "opus", effort: "medium" } }).model).toEqual({ instanceId, model: "opus", effort: "medium" });
     expect(store.updateSession("session_one", { model: { instanceId, model: "claude-fable-5-1[1m]" } }).model?.model).toBe("claude-fable-5-1[1m]");
-    // Nothing is invented: a custom id, a dated build and Haiku stay as typed.
-    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-mystery-9" } }).model?.model).toBe("claude-mystery-9");
-    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-opus-5-20260101" } }).model?.model).toBe("claude-opus-5-20260101");
-    expect(store.updateSession("session_one", { model: { instanceId, model: "haiku" } }).model?.model).toBe("haiku");
-    // Sonnet's default window is 200k, so its bare alias already is it.
-    expect(store.updateSession("session_one", { model: { instanceId, model: "sonnet" } }).model?.model).toBe("sonnet");
-    // The per-turn choice.
+    // The per-turn choice and the claim.
     const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "Hi", model: { model: "fable" } });
-    expect(turn.model?.model).toBe("fable[1m]");
-    expect(store.claimNextTurn("worker_one")?.model?.model).toBe("fable[1m]");
+    expect(turn.model?.model).toBe("fable");
+    expect(store.claimNextTurn("worker_one")?.model?.model).toBe("fable");
   });
 
-  test("a record saved before the window was a control is corrected at the claim, without a patch", () => {
-    const { store, root: stateRoot } = readyStore();
-    const file = path.join(stateRoot, "sessions", "session_one", "session.json");
-    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
-    saved.model = { instanceId: store.getSession("session_one").providerInstanceId, model: "opus", effort: "medium" };
-    fs.writeFileSync(file, JSON.stringify(saved), "utf8");
-    const booted = new EngineStore(stateRoot, () => 200);
-    // The record still says what was saved…
-    expect(booted.getSession("session_one").model?.model).toBe("opus");
-    booted.submitTurn("session_one", { runId: "run_one", input: "Hi" });
-    // …and the claim — what actually runs — says the row Telar offers.
-    expect(booted.claimNextTurn("worker_one")?.model).toMatchObject({ model: "opus[1m]", effort: "medium" });
+  test("a session that named no model still claims the long-window default", () => {
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+    expect(store.claimNextTurn("worker_one")?.model?.model).toMatch(/\[1m\]$/);
   });
 
   test("a Codex id is never touched", () => {

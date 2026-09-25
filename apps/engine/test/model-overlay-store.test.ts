@@ -168,8 +168,9 @@ test("a manifest model pre-empts a hand-typed custom row for the same id, or an 
   return (async () => {
     const { models } = await engine.modelCatalogue("claude");
     const rows = models.filter((model) => /fable/.test(model.id));
-    expect(rows.map((model) => model.id)).toEqual(["claude-fable-5-1[1m]"]);
-    expect(rows[0]).toMatchObject({ label: "Fable 5.1", source: "provider", efforts: ["high"] });
+    // Both windows are the manifest's rows; neither custom entry survives.
+    expect(rows.map((model) => model.id)).toEqual(["claude-fable-5-1", "claude-fable-5-1[1m]"]);
+    for (const row of rows) expect(row).toMatchObject({ label: "Fable 5.1", source: "provider", efforts: ["high"] });
   })();
 });
 

@@ -248,7 +248,7 @@ import { inheritedOwnedEnv, providerEnvIsCredential, providerOwnsEnv, providerPr
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
 import type { ClaudeConversation, ForkCut } from "./claude-fork";
 import { describeImport } from "./claude-transcript";
-import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
+import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay, chosenDefault } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
@@ -8251,7 +8251,7 @@ export class EngineStore {
         if (parsed.data.instanceId !== session.providerInstanceId) {
           throw new EngineStateError("invalid_request", "model must belong to the session's provider instance");
         }
-        next.model = this.normalizeModelSelection(session.driver, parsed.data);
+        next.model = parsed.data;
       }
     }
     /**
@@ -9786,7 +9786,7 @@ export class EngineStore {
        */
       ...(input.model
         ? {
-            model: this.normalizeModelSelection(session.driver, {
+            model: {
               instanceId: session.providerInstanceId,
               // EITHER MAY BE ABSENT. "The provider's default model, at maximum
               // effort" is an ordinary thing to ask for, and spreading rather
@@ -9795,7 +9795,7 @@ export class EngineStore {
               ...(input.model.model ? { model: input.model.model } : {}),
               ...(input.model.effort ? { effort: input.model.effort } : {}),
               ...(input.model.fastMode === undefined ? {} : { fastMode: input.model.fastMode }),
-            }),
+            },
           }
         : {}),
     };
@@ -11294,17 +11294,6 @@ export class EngineStore {
   }
 
   /**
-   * A Claude selection in the spelling Telar offers — see `normalizeClaudeModel`.
-   * Other drivers are never touched; there is no window to spell. Absent stays
-   * absent here: filling one in is the CLAIM's job, not a patch's.
-   */
-  private normalizeModelSelection<T extends ModelSelection | undefined>(driver: ProviderDriverKind, selection: T): T {
-    if (!selection || driver !== "claude" || !selection.model) return selection;
-    const model = normalizeClaudeModel(selection.model, this.manifest);
-    return model === selection.model ? selection : { ...selection, model };
-  }
-
-  /**
    * WHAT THE WORKER IS ACTUALLY HANDED, model-wise.
    *
    * An absent Claude model reaches the SDK as no `model` option at all, so the
@@ -11315,13 +11304,17 @@ export class EngineStore {
    *
    * An effort-only or fastMode-only selection keeps what it named and gains the
    * model, so "the default model at maximum effort" still means that.
+   *
+   * A NAMED MODEL RUNS AS NAMED. A bare Claude id used to be rewritten to its
+   * `[1m]` spelling here and at every patch, because the picker offered no 200k
+   * row and a bare id could only be an old record. Both windows are rows again,
+   * so a bare id is a pick of the standard window and is honoured.
    */
   private claimModelSelection(
     driver: ProviderDriverKind,
-    selection: ModelSelection | undefined,
+    normalized: ModelSelection | undefined,
     instanceId: string,
   ): ModelSelection | undefined {
-    const normalized = this.normalizeModelSelection(driver, selection);
     if (driver !== "claude" || normalized?.model) return normalized;
     const model = this.defaultClaudeModelId(normalized?.instanceId ?? instanceId);
     // Nothing known: unchanged. A guess here would be the 200k bug wearing a

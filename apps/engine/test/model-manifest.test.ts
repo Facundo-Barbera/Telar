@@ -7,7 +7,6 @@ import {
   claudeFixedWindowOf,
   claudeProfileOf,
   longDefaultOf,
-  normalizeClaudeModel,
   type ModelManifest,
 } from "../src/model-manifest";
 
@@ -60,8 +59,11 @@ describe("T3 Code's list, applied to the 2.1.280 catalogue", () => {
   });
 
   test("Opus 5.5 carries the CLI's row and label, and the `new` badge", () => {
-    expect(bySlug("claude-opus-5-5")).toMatchObject([{ id: "opus[1m]", label: "Opus (1M context)", badge: "new", defaultWindow: true, isDefault: false }]);
-    expect(out.filter((model) => model.badge).map(canonical)).toEqual(["claude-opus-5-5"]);
+    expect(bySlug("claude-opus-5-5")).toMatchObject([
+      { id: "opus", badge: "new", isDefault: false },
+      { id: "opus[1m]", label: "Opus (1M context)", badge: "new", defaultWindow: true, isDefault: false },
+    ]);
+    expect(new Set(out.filter((model) => model.badge).map(canonical))).toEqual(new Set(["claude-opus-5-5"]));
   });
 
   test("Sonnet 5 publishes BOTH windows, 200k marked as its default", () => {
@@ -71,9 +73,10 @@ describe("T3 Code's list, applied to the 2.1.280 catalogue", () => {
     ]);
   });
 
-  test("a model the CLI does not list is still a row, named from the manifest, on its default window", () => {
+  test("a model the CLI does not list is still a row per window, named from the manifest, 1M marked default", () => {
     expect(bySlug("claude-opus-5")).toMatchObject([
-      { id: "claude-opus-5[1m]", label: "Opus 5", resolves: "claude-opus-5[1m]", source: "provider", fastMode: true },
+      { id: "claude-opus-5", label: "Opus 5", resolves: "claude-opus-5", source: "provider", fastMode: true },
+      { id: "claude-opus-5[1m]", label: "Opus 5", resolves: "claude-opus-5[1m]", source: "provider", fastMode: true, defaultWindow: true },
     ]);
     expect(bySlug("claude-opus-5")[0]!.efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
     // A fixed-1M profile takes no suffix; a 200k-only one has one row.
@@ -82,7 +85,8 @@ describe("T3 Code's list, applied to the 2.1.280 catalogue", () => {
   });
 
   test("Fable 5 is kept, under Legacy, rather than dropped", () => {
-    expect(bySlug("claude-fable-5")).toMatchObject([{ id: "claude-fable-5[1m]", label: "Fable", legacy: true }]);
+    expect(bySlug("claude-fable-5").map((model) => model.id)).toEqual(["claude-fable-5", "claude-fable-5[1m]"]);
+    expect(bySlug("claude-fable-5")[1]).toMatchObject({ label: "Fable", legacy: true, defaultWindow: true });
   });
 
   test("a listed row keeps its own efforts; an empty list is filled from the profile", () => {
@@ -98,7 +102,8 @@ describe("T3 Code's list, applied to the 2.1.280 catalogue", () => {
 describe("minVersion", () => {
   test("hides Opus 5.5 under 2.1.279, and the default stays Fable 5.1", () => {
     const out = applyModelManifest(CATALOGUE_2_1_280, BUNDLED_MANIFEST, "2.1.279");
-    expect(out.filter((model) => model.hidden).map(canonical)).toEqual(["claude-opus-5-5"]);
+    // Both of its window rows.
+    expect(out.filter((model) => model.hidden).map(canonical)).toEqual(["claude-opus-5-5", "claude-opus-5-5"]);
     expect(longDefaultOf(out)).toBe("claude-fable-5-1[1m]");
   });
 
@@ -120,7 +125,7 @@ describe("the CLI wins what it states", () => {
   test("a listed Fable 5.1 row — even under an alias — replaces the manifest's", () => {
     const out = applyModelManifest([row("fable", { label: "Fable (live)" })], BUNDLED_MANIFEST);
     const fable = out.filter((model) => model.label === "Fable (live)");
-    expect(fable.map((model) => model.id)).toEqual(["fable[1m]"]);
+    expect(fable.map((model) => model.id)).toEqual(["fable", "fable[1m]"]);
     expect(out.some((model) => model.id === "claude-fable-5-1[1m]")).toBe(false);
   });
 
@@ -134,30 +139,9 @@ describe("the CLI wins what it states", () => {
   });
 });
 
-describe("normalizeClaudeModel", () => {
-  test("gives an id its profile's default window", () => {
-    expect(normalizeClaudeModel("opus")).toBe("opus[1m]");
-    expect(normalizeClaudeModel("claude-opus-5-5")).toBe("claude-opus-5-5[1m]");
-    expect(normalizeClaudeModel("Fable")).toBe("Fable[1m]");
-    expect(normalizeClaudeModel("claude-fable-5-1")).toBe("claude-fable-5-1[1m]");
-    // Sonnet's default window is 200k: the bare id already is it.
-    expect(normalizeClaudeModel("sonnet")).toBe("sonnet");
-    expect(normalizeClaudeModel("claude-sonnet-5")).toBe("claude-sonnet-5");
-    expect(normalizeClaudeModel("haiku")).toBe("haiku");
-    expect(normalizeClaudeModel("claude-opus-4-8")).toBe("claude-opus-4-8");
-  });
-
-  test("never invents: already-long, dated, custom and unknown ids come back as they went in", () => {
-    expect(normalizeClaudeModel("opus[1m]")).toBe("opus[1m]");
-    expect(normalizeClaudeModel("claude-opus-5[1M]")).toBe("claude-opus-5[1M]");
-    expect(normalizeClaudeModel("claude-opus-5-20260101")).toBe("claude-opus-5-20260101");
-    expect(normalizeClaudeModel("claude-mystery-9")).toBe("claude-mystery-9");
-    expect(normalizeClaudeModel("opus", { version: 2 })).toBe("opus");
-  });
-
-  test("a session on legacy Fable 5 still resolves its profile and keeps its window", () => {
+describe("a legacy profile", () => {
+  test("a session on legacy Fable 5 still resolves its profile", () => {
     expect(claudeProfileOf("claude-fable-5")?.defaultWindow).toBe("1m");
-    expect(normalizeClaudeModel("claude-fable-5")).toBe("claude-fable-5[1m]");
   });
 });
 
