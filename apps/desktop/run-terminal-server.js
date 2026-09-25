@@ -16,17 +16,19 @@
  * tokens, two ports, two route sets; the cost is the twenty lines of wiring in
  * main.js and it buys that the blast radius of each is what its name says.
  *
- * `unknown` IS NOT A ROUNDING OF `exited`, AND THAT SURVIVES THE WIRE. The host
- * already refuses to report an exit it did not observe; what this adds is the
- * second half, which only exists once there are two processes: IF THE ENGINE
- * LOSES THIS CHANNEL, EVERY RUN ON IT IS `unknown` AND KEEPS ITS SLOT. That is
- * the engine's side of the bargain (`terminal-client.ts`), and this side holds
- * it up by two rules:
+ * ONLY THE HOST SAYS HOW A TERMINAL ENDED, AND THAT SURVIVES THE WIRE. The
+ * host reports only exits node-pty observed; the engine records what it is
+ * told and tracks no liveness of its own ("Run = a new terminal"). If the
+ * engine loses this channel it re-attaches and asks `GET /state` which
+ * terminals are still held, rather than inventing a state for them. This side
+ * holds that up by two rules:
  *
  *   - THE EVENT STREAM HEARTBEATS. A TCP connection can stay open through a
  *     process that has stopped answering, so silence must be distinguishable
  *     from health. A comment frame every `heartbeatMs` is what makes a dead
- *     host look dead instead of looking idle.
+ *     host look dead — and the engine reconnect — instead of looking idle.
+ *     Frames produced while nobody is attached are kept (bounded) and
+ *     replayed on the next attach, so an exit is not lost to the gap.
  *   - A TERMINAL IS ADDRESSED BY ITS ID, NEVER BY ITS PID. The id is minted by
  *     the host and is not reused; a pid is reused by the kernel. That is the
  *     same guarantee `manager.ts` used to get from holding its own

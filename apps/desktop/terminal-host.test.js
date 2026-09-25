@@ -300,30 +300,48 @@ describe("what the host will say about a terminal that is no longer running", ()
       ]);
     });
 
-    test("a kill we could not deliver", () => {
+    /**
+     * A SIGNAL THAT CANNOT BE DELIVERED ENDS NOTHING. This used to settle the
+     * terminal `unknown` and drop it from the table — while its process might
+     * still be running, with nothing left able to close it. Now the terminal
+     * stays open and closable, and `kill` answers that nothing was sent.
+     */
+    test("a kill we could not deliver leaves the terminal open and closable", () => {
       const pty = fakePty(79);
       const { host, endings } = hostWith(pty, {
         killTree: () => {
-          throw new Error("EPERM");
+          throw Object.assign(new Error("EPERM"), { code: "EPERM" });
         },
       });
       const { id } = host.open({ shell: "/bin/zsh", env: {} });
-      host.kill(id);
-      expect(endings[0][1].fate).toBe(TerminalFate.UNKNOWN);
-      expect(endings[0][1].reason).toContain("79");
-      expect(endings[0][1].reason).toContain("EPERM");
+      expect(host.kill(id)).toBe(false);
+      expect(endings).toEqual([]);
+      expect(host.describe(id, "renderer")?.id).toBe(id);
     });
 
-    test("a kill that was delivered and never reported an exit", async () => {
+    test("a kill whose group is already empty counts as sent", () => {
+      const pty = fakePty(79);
+      const { host } = hostWith(pty, {
+        killTree: () => {
+          throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+        },
+      });
+      const { id } = host.open({ shell: "/bin/zsh", env: {} });
+      expect(host.kill(id)).toBe(true);
+    });
+
+    /**
+     * NO CLOCK ON A SIGNAL. A kill that is ignored used to become `unknown`
+     * after five seconds; now nothing is invented, however long the wait.
+     */
+    test("a kill that was delivered and never reported an exit invents no ending", () => {
       const pty = fakePty(80);
-      const { host, endings } = hostWith(pty, { host: { killObserveMs: 10 } });
+      const { host, endings, clock } = hostWith(pty);
       const { id } = host.open({ shell: "/bin/zsh", env: {} });
       host.kill(id, "SIGTERM");
+      clock.advance(60_000);
       expect(endings).toEqual([]);
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(endings).toHaveLength(1);
-      expect(endings[0][1].fate).toBe(TerminalFate.UNKNOWN);
-      expect(endings[0][1].reason).toContain("may still be running");
+      expect(host.describe(id, "renderer")?.id).toBe(id);
     });
 
     /**
@@ -339,26 +357,66 @@ describe("what the host will say about a terminal that is no longer running", ()
      */
     test("a kill that DID land is an honest `exited` — code 0 WITH a signal", async () => {
       const pty = fakePty(81);
-      const { host, endings } = hostWith(pty, { host: { killObserveMs: 10 } });
+      const { host, endings } = hostWith(pty);
       const { id } = host.open({ shell: "/bin/zsh", env: {} });
       host.kill(id, "SIGKILL");
       pty.emitExit({ exitCode: 0, signal: 9 });
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      // One ending, and it is the observed one — the pending timer must not
-      // fire a second, contradictory verdict afterwards.
+      // One ending, and it is the observed one. A kill is not a close, so the
+      // ending does not claim the host was closing it.
       expect(endings).toHaveLength(1);
       expect(endings[0][1].fate).toBe(TerminalFate.EXITED);
       expect(endings[0][1].signal).toBe("9");
       expect(endings[0][1].exitCode).toBe(0);
+      expect(endings[0][1].closed).toBeUndefined();
     });
 
-    test("a pty whose fd raised an error", () => {
+    test("a pty whose fd raised an error is not an ending — the exit that follows is", () => {
       const pty = fakePty(82);
       const { host, endings } = hostWith(pty);
-      host.open({ shell: "/bin/zsh", env: {} });
+      const { id } = host.open({ shell: "/bin/zsh", env: {} });
       pty.emitError(new Error("read EIO"));
-      expect(endings[0][1].fate).toBe(TerminalFate.UNKNOWN);
-      expect(endings[0][1].reason).toContain("EIO");
+      expect(endings).toEqual([]);
+      expect(host.describe(id, "renderer")?.id).toBe(id);
+      pty.emitExit({ exitCode: 1 });
+      expect(endings).toHaveLength(1);
+      expect(endings[0][1].fate).toBe(TerminalFate.EXITED);
+    });
+
+    /**
+     * WHY THE HOST WAS ENDING IT RIDES ON THE ENDING, so the engine can record
+     * who closed a terminal: a single close, a whole session, or Telar quitting.
+     */
+    test("an ending says why the host was closing it, and says nothing when it was not", async () => {
+      const cases = [
+        ["close", (host, id) => host.close(id, "renderer")],
+        ["session", (host) => host.killBySession("sess_1")],
+        ["quit", (host) => host.closeAll()],
+        ["quit", (host) => host.dispose()],
+      ];
+      for (const [reason, close] of cases) {
+        const pty = fakePty(83);
+        const signals = [];
+        const { host, endings } = hostWith(pty, {
+          // The shell's group is gone by the time it is probed, so the close
+          // finishes on the exit rather than on the grace timer.
+          killTree: (_pid, signal) => {
+            if (signal === 0) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+            signals.push(signal);
+          },
+        });
+        const { id } = host.open({ shell: "/bin/zsh", env: {}, sessionId: "sess_1" });
+        const closing = close(host, id);
+        // The process table is read before any signal; the exit comes after.
+        while (!signals.includes("SIGTERM")) await new Promise((resolve) => setTimeout(resolve, 0));
+        pty.emitExit({ exitCode: 0, signal: 1 });
+        await closing;
+        expect(endings[0][1].closed).toBe(reason);
+      }
+      const pty = fakePty(84);
+      const { host, endings } = hostWith(pty);
+      host.open({ shell: "/bin/zsh", env: {} });
+      pty.emitExit({ exitCode: 0 });
+      expect(endings[0][1].closed).toBeUndefined();
     });
 
     /**

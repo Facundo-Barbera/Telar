@@ -435,11 +435,11 @@ test("a live frame reaches an attached listener", async () => {
   const next = frameReader(response);
   const first = await next(1);
   expect(first[0]).toContain("event: attached");
-  server.onExit("term_7", { id: "term_7", fate: "unknown", reason: "could not be signalled" });
+  server.onExit("term_7", { id: "term_7", fate: "exited", exitCode: 0, signal: "1", closed: "close" });
   // The backlog is only for frames with nobody attached; with a listener the
   // frame goes straight out, so asking for one more must produce the exit
-  // rather than a heartbeat.
+  // rather than a heartbeat — carrying why the host was closing it.
   const more = await next(1);
   expect(more[0]).toContain("event: exit");
-  expect(more[0]).toContain("unknown");
+  expect(more[0]).toContain('"closed":"close"');
 });

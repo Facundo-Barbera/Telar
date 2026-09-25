@@ -9,30 +9,28 @@
  * is one ABI, and the browser host already lives in this process.
  *
  * POLICY STAYS IN THE ENGINE; THIS MODULE HOLDS THE HANDLE. It owns PTYs and
- * reports facts about them. It does not decide what a dead PTY means for a
- * project's deployment slot — apps/engine/src/run/ does, and the difference
- * matters most in the one case below.
+ * reports facts about them — their bytes, how they ended, and whether it was
+ * this host that was closing them. apps/engine/src/run/ decides what that
+ * means for the terminal's record.
  *
- * `unknown` IS NOT A ROUNDING OF `exited`. In apps/engine/src/run/types.ts the
- * status `unknown` means "we cannot vouch that this is dead", and an `unknown`
- * run KEEPS HOLDING ITS PROJECT'S SLOT. So this host never reports a clean exit
- * it did not observe: the only thing that produces `exited` is node-pty's own
- * exit event, carrying a code. Everything else — a kill we issued and never
- * saw land, a handle that threw — is `unknown`, with the pid in the message so
- * a human can go and look. (The host being torn down is no longer on that
- * list: it now ENDS its terminals, and their real exits settle them.)
- * The failure being designed against is the quiet one: this process dies, and
- * something downstream frees a slot for a server that is still listening.
+ * ONLY node-pty SAYS HOW A TERMINAL ENDED. The one producer of `exited` is
+ * node-pty's own exit event, carrying a code. There used to be a third fate,
+ * `unknown`, for a kill that was not seen to land within five seconds or a pty
+ * whose fd raised an error; it existed to hold a project's one deployment slot
+ * while Telar could not vouch for a process. "Run = a new terminal" removed
+ * the slot and all liveness tracking with it, so this host no longer invents
+ * an ending: a terminal stays in the table — still closable, still killable —
+ * until node-pty reports its exit.
  *
- * A TERMINAL OWNS ITS PROCESS, AND CLOSING IT ENDS IT ("Run = a new terminal",
- * PR 1). Every PTY belongs to a SESSION and says who opened it (`origin`), and
+ * A TERMINAL OWNS ITS PROCESS, AND CLOSING IT ENDS IT ("Run = a new terminal").
+ * Every PTY belongs to a SESSION and says who opened it (`origin`), and
  * closing one — or every one of a session, or every one at quit — signals its
- * process groups SIGTERM and, a second later, SIGKILL. The host going away is
- * a close like any other, so it no longer marks live terminals `unknown`: it
- * ends them, and the exit node-pty then reports is the one that settles them.
- * THERE IS NO LIVENESS POLLING HERE, deliberately: "is something running in
- * this terminal" is asked once, when a person is about to be asked to confirm,
- * and answered from one `ps` snapshot — see `activeProcesses`.
+ * process groups SIGTERM and, a second later, SIGKILL. The ending node-pty
+ * then reports carries `closed` — `close`, `session` or `quit` — so the engine
+ * can record who ended it. THERE IS NO LIVENESS POLLING HERE, deliberately:
+ * "is something running in this terminal" is asked once, when a person is
+ * about to be asked to confirm, and answered from one `ps` snapshot — see
+ * `activeProcesses`.
  *
  * WHAT WE PUT IN THE ENVIRONMENT, AND NOTHING ELSE. Telar is a terminal
  * emulator, not a shell configurator. We contribute the window, the tabs, the
@@ -53,10 +51,8 @@ const path = require("node:path");
 /**
  * WHAT WE CAN HONESTLY SAY ABOUT A TERMINAL THAT IS NO LONGER RUNNING.
  *
- * Exported as a vocabulary rather than three string literals because the engine
- * has to map these onto `RunStatus` and the mapping is not symmetric: `exited`
- * and `failed` are terminal and release the slot, `unknown` is terminal for us
- * and NOT terminal for the engine.
+ * Exported as a vocabulary rather than string literals because the engine and
+ * the renderer both map these onto what they show.
  */
 const TerminalFate = Object.freeze({
   /** node-pty reported an exit and we have its code. The only clean claim. */
@@ -65,8 +61,18 @@ const TerminalFate = Object.freeze({
    *  before spawning because the request could not have run (`unusableCwd`).
    *  There is no exit code here, because nothing ever exited. */
   FAILED: "failed",
-  /** We stopped being able to vouch. The slot stays held; nobody is signalled. */
-  UNKNOWN: "unknown",
+});
+
+/**
+ * WHY THIS HOST WAS ENDING A TERMINAL, carried on its `exited` ending so the
+ * engine can say who closed it: one terminal closed (`close`), a whole session
+ * closed (`session`), or Telar quitting (`quit`). Absent when the process ended
+ * by itself.
+ */
+const CloseReason = Object.freeze({
+  CLOSE: "close",
+  SESSION: "session",
+  QUIT: "quit",
 });
 
 /**
@@ -160,10 +166,6 @@ const COLORTERM = "truecolor";
  * release note, not a refactor.
  */
 const TERM_PROGRAM = "Telar";
-
-/** How long a killed terminal has to actually report its exit before we stop
- *  vouching for it. Past this we say `unknown` rather than guess `exited`. */
-const KILL_OBSERVE_MS = 5_000;
 
 /**
  * HOW LONG A CLOSED TERMINAL'S PROCESSES GET TO END ON THEIR OWN.
@@ -566,7 +568,6 @@ class TerminalHost {
     this.version = options.version ?? require("./package.json").version;
     this.onData = options.onData ?? (() => {});
     this.onExit = options.onExit ?? (() => {});
-    this.killObserveMs = options.killObserveMs ?? KILL_OBSERVE_MS;
     this.closeGraceMs = options.closeGraceMs ?? CLOSE_GRACE_MS;
     this.killTree = options.killTree ?? ((pid, signal) => killTerminalTree(pid, signal, { platform: this.platform }));
     // Injected so a test reads a table it wrote and runs the SIGKILL second on
@@ -645,8 +646,8 @@ class TerminalHost {
         env,
       });
     } catch (error) {
-      // NEVER STARTED IS NOT UNKNOWN. There is no process to be uncertain
-      // about, so this is the one failure a caller may treat as terminal.
+      // NEVER STARTED: there is no process at all, so this is the one ending
+      // this host reports without node-pty.
       const ending = { id, fate: TerminalFate.FAILED, error: messageOf(error), at: this.now() };
       this.onExit(id, ending);
       return { id, pid: undefined, ending };
@@ -669,8 +670,10 @@ class TerminalHost {
       cols,
       rows,
       startedAt: this.now(),
-      killTimer: null,
       closing: null,
+      // Why a close is in flight — see `CloseReason`. Set once, by the first
+      // close to reach this terminal.
+      closeReason: null,
       onLeaderExit: null,
     };
     this.terminals.set(id, record);
@@ -681,13 +684,17 @@ class TerminalHost {
      * (`lib/unixTerminal.js:123`, again at `:206`), and that throw comes out of
      * a stream callback in the MAIN process — uncatchable by any caller, so it
      * takes Electron with it and loses every other terminal's fate at once.
-     * Handled here as `unknown`, which is what "we can no longer vouch for it"
-     * means.
+     *
+     * AN ERROR IS NOT AN ENDING. This used to settle the terminal `unknown` and
+     * drop it from the table — without signalling anything, so whatever ran in
+     * it kept running with nothing left able to close it. The terminal owns its
+     * process, so it stays: still in the table, still closable, and settled
+     * when node-pty reports the exit, which on an EIO is usually right behind.
      *
      * TWO LISTENERS BECAUSE NODE-PTY COUNTS THEM: it rethrows while
      * `listeners('error').length < 2`, and `Terminal._forwardEvents`
      * (`lib/terminal.js:90`) registers only `data` and `exit`, so reaching two
-     * is ours to do. The second handler is deliberately empty.
+     * is ours to do. Both are deliberately empty.
      *
      * HONEST LIMIT, because this was measured and the obvious reading is wrong:
      * reaching two listeners did NOT stop the `Napi::Error` abort seen at
@@ -698,12 +705,7 @@ class TerminalHost {
      * genuinely covers, and its comment says what it does not cover.
      */
     if (typeof pty.on === "function") {
-      pty.on("error", (error) => {
-        this._settle(record, {
-          fate: TerminalFate.UNKNOWN,
-          reason: `this terminal's pseudo-terminal raised ${messageOf(error)} (pid ${record.pid}); Telar cannot vouch that its process group has ended`,
-        });
-      });
+      pty.on("error", () => {});
       pty.on("error", () => {});
     }
     pty.onData((data) => {
@@ -715,6 +717,7 @@ class TerminalHost {
         fate: TerminalFate.EXITED,
         exitCode: typeof ending?.exitCode === "number" ? ending.exitCode : undefined,
         signal: ending?.signal ? String(ending.signal) : undefined,
+        ...(record.closeReason ? { closed: record.closeReason } : {}),
       });
       // A terminal being closed learns here that its shell is gone, which is
       // the moment to find out whether anything else in it still is.
@@ -749,13 +752,20 @@ class TerminalHost {
   }
 
   /**
-   * Signal a terminal's whole tree, and START A CLOCK ON OUR OWN CLAIM.
+   * ONE SIGNAL TO A TERMINAL'S WHOLE TREE — a Ctrl-C-shaped first word before
+   * a close, not a close. A signal that lands produces node-pty's exit and the
+   * terminal settles through the normal path; one that is ignored leaves the
+   * terminal exactly where it was, open and closable.
    *
-   * A kill that lands produces a real exit event and the terminal settles
-   * `exited` through the normal path. A kill that does not land leaves a
-   * process we asked to die and never saw die — so after `killObserveMs` this
-   * settles `unknown` rather than letting the record sit open forever or
-   * reporting an exit nobody observed.
+   * NO CLOCK ON IT ANY MORE. This used to settle the terminal `unknown` if no
+   * exit arrived within five seconds, and on a signal that threw — both to
+   * hold a project's deployment slot, and both by dropping the terminal from
+   * the table while its process might still be running, so nothing could
+   * close it afterwards. With no slot and no liveness tracking, an ignored
+   * signal is simply ignored, and `close` is what ends a terminal for sure.
+   *
+   * Answers whether the signal was sent. `ESRCH` counts: the group is already
+   * empty, and the exit is on its way.
    */
   kill(id, signal = "SIGTERM", owner) {
     const record = this._owned(id, owner);
@@ -763,21 +773,7 @@ class TerminalHost {
     try {
       this.killTree(record.pid, signal);
     } catch (error) {
-      this._settle(record, {
-        fate: TerminalFate.UNKNOWN,
-        reason: `Telar could not signal this terminal's process group (pid ${record.pid}): ${messageOf(error)}`,
-      });
-      return true;
-    }
-    if (!record.killTimer) {
-      record.killTimer = setTimeout(() => {
-        this._settle(record, {
-          fate: TerminalFate.UNKNOWN,
-          reason: `this terminal did not report an exit within ${this.killObserveMs}ms of being signalled; its process group (pid ${record.pid}) may still be running`,
-        });
-      }, this.killObserveMs);
-      // A pending kill must not be the reason the app cannot quit.
-      if (typeof record.killTimer.unref === "function") record.killTimer.unref();
+      return Boolean(error && error.code === "ESRCH");
     }
     return true;
   }
@@ -823,7 +819,7 @@ class TerminalHost {
   async close(id, owner, options = {}) {
     const record = this._owned(id, owner);
     if (!record) return false;
-    await this._close([record], options);
+    await this._close([record], { ...options, reason: CloseReason.CLOSE });
     return true;
   }
 
@@ -849,7 +845,7 @@ class TerminalHost {
     const records = [...this.terminals.values()].filter(
       (record) => record.sessionId === wanted && (scope === undefined || record.owner === scope),
     );
-    await this._close(records, options);
+    await this._close(records, { ...options, reason: CloseReason.SESSION });
     return records.length;
   }
 
@@ -863,7 +859,7 @@ class TerminalHost {
   async closeAll(options = {}) {
     if (options.final) this.disposed = true;
     const records = [...this.terminals.values()];
-    await this._close(records, options);
+    await this._close(records, { ...options, reason: CloseReason.QUIT });
     return records.length;
   }
 
@@ -945,7 +941,7 @@ class TerminalHost {
   dispose() {
     this.disposed = true;
     const records = [...this.terminals.values()];
-    return Promise.all(records.map((record) => this._closeRecord(record, null, {})));
+    return Promise.all(records.map((record) => this._closeRecord(record, null, { reason: CloseReason.QUIT })));
   }
 
   /** One snapshot for a batch of closes, or `null` when there is none to be
@@ -990,6 +986,7 @@ class TerminalHost {
    */
   _closeRecord(record, rows, options) {
     if (record.closing) return record.closing;
+    record.closeReason = options.reason ?? CloseReason.CLOSE;
     const graceMs = options.graceMs ?? this.closeGraceMs;
     const groups = rows ? terminalActivity(record, rows).groups : [record.pid];
     record.closing = new Promise((resolve) => {
@@ -1102,10 +1099,6 @@ class TerminalHost {
   _settle(record, ending) {
     if (!this.terminals.has(record.id) || this.terminals.get(record.id) !== record) return;
     this.terminals.delete(record.id);
-    if (record.killTimer) {
-      clearTimeout(record.killTimer);
-      record.killTimer = null;
-    }
     this.onExit(record.id, { id: record.id, pid: record.pid, at: this.now(), ...ending });
   }
 }
@@ -1150,6 +1143,7 @@ function messageOf(error) {
 module.exports = {
   TerminalHost,
   TerminalFate,
+  CloseReason,
   TerminalOwner,
   TerminalOrigin,
   TERM,
