@@ -285,18 +285,91 @@ function placeCaret(root: HTMLElement, offset: number): void {
 }
 
 /**
+ * The caret's rect where the layout can actually answer, or nothing.
+ *
+ *   1. the collapsed range itself, which is right whenever there is text;
+ *   2. the character BEFORE it, whose right edge is where the caret stands;
+ *   3. the character AFTER it, whose left edge is — the case of a caret at the
+ *      start of a line that follows a `<br>`.
+ */
+function measuredCaretRect(root: HTMLElement): DOMRect | undefined {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return undefined;
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer)) return undefined;
+
+  const own = range.getBoundingClientRect();
+  if (own.height > 0) return own;
+
+  const measure = (node: Node, offset: number, side: "left" | "right"): DOMRect | undefined => {
+    const one = document.createRange();
+    one.setStart(node, offset);
+    one.setEnd(node, offset + 1);
+    const rect = one.getBoundingClientRect();
+    return rect.height > 0 ? new DOMRect(rect[side], rect.top, 0, rect.height) : undefined;
+  };
+
+  const { startContainer: node, startOffset: offset } = range;
+  if (node.nodeType === Node.TEXT_NODE) {
+    if (offset > 0) {
+      const previous = measure(node, offset - 1, "right");
+      if (previous) return previous;
+    }
+    if (offset < (node.nodeValue ?? "").length) return measure(node, offset, "left");
+    return undefined;
+  }
+  const next = node.childNodes[offset];
+  if (next?.nodeType === Node.TEXT_NODE && (next.nodeValue ?? "").length > 0) return measure(next, 0, "left");
+  return undefined;
+}
+
+/**
+ * KEEP THE CARET INSIDE THIS BOX'S OWN SCROLL AREA, after any write.
+ *
+ * THE BOX IS ITS OWN SCROLL CONTAINER (`max-h-48 overflow-y-auto` below), and
+ * the browser only scrolls it to the caret for edits the browser made itself.
+ * Every write here is ours — `paint` swaps the children and `placeCaret` sets
+ * the selection through the Selection API, and neither scrolls anything — so a
+ * dictated sentence or a paste that wrapped past the last visible line stayed
+ * below it. Shift+Enter is the browser's own edit, but the caret it leaves on a
+ * fresh line after a `<br>` has no rect, so the browser has nothing to scroll to.
+ *
+ * `scrollTop` BY HAND, NOT `scrollIntoView`: that would also scroll every
+ * scrollable ancestor — the transcript, the page — and this must move nothing
+ * but the box. The arithmetic is `block: "nearest"`: no movement when the
+ * caret is already visible, and the smallest one that makes it so otherwise.
+ *
+ * A CARET NOTHING CAN MEASURE AT THE END OF THE DRAFT goes to the bottom. That
+ * is the empty last line after a Shift+Enter or a dictated line break, and the
+ * bottom is exactly where it is.
+ */
+export function revealCaret(root: HTMLElement): void {
+  if (root.scrollHeight <= root.clientHeight) return;
+  const caret = measuredCaretRect(root);
+  if (!caret) {
+    const at = selectionRange(root);
+    if (at && at.end >= serialize(root).length) root.scrollTop = root.scrollHeight;
+    return;
+  }
+  const style = window.getComputedStyle(root);
+  const box = root.getBoundingClientRect();
+  const top = box.top + root.clientTop + (Number.parseFloat(style.paddingTop) || 0);
+  const bottom = box.top + root.clientTop + root.clientHeight - (Number.parseFloat(style.paddingBottom) || 0);
+  if (caret.bottom > bottom) root.scrollTop += caret.bottom - bottom;
+  else if (caret.top < top) root.scrollTop -= top - caret.top;
+}
+
+/**
  * WHERE THE CARET IS ON THE SCREEN (#561), in viewport coordinates.
  *
  * `Range.getBoundingClientRect()` ON A COLLAPSED RANGE IS EMPTY IN SOME
  * PLACES, and they are the ordinary ones: the caret sitting in the empty text
  * node `paint` leaves at the end, or in a box nobody has typed in yet. A rect
  * of zeros would put the pill in the corner of the window, so the fallbacks
- * are tried in the order that keeps it nearest the truth:
- *
- *   1. the collapsed range itself, which is right whenever there is text;
- *   2. the character BEFORE it, whose right edge is where the caret stands —
- *      this is the empty-trailing-node case, and it is the common one;
- *   3. the box's own first line, for a box with nothing in it at all.
+ * are tried in the order that keeps it nearest the truth: whatever
+ * `measuredCaretRect` can measure (the range, then its neighbouring
+ * characters), and then the box's own first line, for a box with nothing in
+ * it at all.
  *
  * VIEWPORT COORDINATES, NOT THE BOX'S, because the pill is drawn in a portal on
  * `body` — see `dictation-caret-pill.tsx`. Anchoring it inside the composer
@@ -306,20 +379,10 @@ function placeCaret(root: HTMLElement, offset: number): void {
 function caretRectIn(root: HTMLElement): DOMRect | undefined {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) return undefined;
-  const range = selection.getRangeAt(0);
-  if (!root.contains(range.startContainer)) return undefined;
+  if (!root.contains(selection.getRangeAt(0).startContainer)) return undefined;
 
-  const own = range.getBoundingClientRect();
-  if (own.height > 0) return own;
-
-  if (range.startContainer.nodeType === Node.TEXT_NODE && range.startOffset > 0) {
-    const back = document.createRange();
-    back.setStart(range.startContainer, range.startOffset - 1);
-    back.setEnd(range.startContainer, range.startOffset);
-    const previous = back.getBoundingClientRect();
-    // Its RIGHT edge, collapsed: that is the side the caret is on.
-    if (previous.height > 0) return new DOMRect(previous.right, previous.top, 0, previous.height);
-  }
+  const measured = measuredCaretRect(root);
+  if (measured) return measured;
 
   const box = root.getBoundingClientRect();
   if (box.height <= 0) return undefined;
@@ -438,6 +501,7 @@ export const ComposerEditor = forwardRef<
       commit(text);
       box.focus();
       placeCaret(box, caret);
+      revealCaret(box);
     },
     [commit],
   );
@@ -465,7 +529,9 @@ export const ComposerEditor = forwardRef<
     paint(box, value);
     painted.current = value;
     setEmpty(value.length === 0);
-    if (document.activeElement === box) placeCaret(box, value.length);
+    if (document.activeElement !== box) return;
+    placeCaret(box, value.length);
+    revealCaret(box);
   }, [value]);
 
   useImperativeHandle(
@@ -491,7 +557,9 @@ export const ComposerEditor = forwardRef<
         // just heard, which is where the next ones go.
         const at = selectionRange(box)?.end ?? painted.current.length;
         paint(box, painted.current, interim.current ?? undefined);
-        if (document.activeElement === box) placeCaret(box, at);
+        if (document.activeElement !== box) return;
+        placeCaret(box, at);
+        revealCaret(box);
       },
       caret: () => {
         const box = root.current;
@@ -543,7 +611,10 @@ export const ComposerEditor = forwardRef<
         )}
         onInput={() => {
           const box = root.current;
-          if (box) commit(serialize(box));
+          if (!box) return;
+          commit(serialize(box));
+          // Typing, and OS-level dictation, which arrives as ordinary input.
+          revealCaret(box);
         }}
         onKeyDown={(event) => {
           onKeyDown?.(event);
@@ -558,7 +629,9 @@ export const ComposerEditor = forwardRef<
             event.preventDefault();
             document.execCommand("insertLineBreak");
             const box = root.current;
-            if (box) commit(serialize(box));
+            if (!box) return;
+            commit(serialize(box));
+            revealCaret(box);
           }
         }}
         onFocus={() => onFocus?.()}
