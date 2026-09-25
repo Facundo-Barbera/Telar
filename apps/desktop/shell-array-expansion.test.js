@@ -35,13 +35,44 @@
 const { describe, expect, test } = require("bun:test");
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const SCRIPTS = path.join(__dirname, "..", "..", "scripts");
 const WORKFLOWS = path.join(__dirname, "..", "..", ".github", "workflows");
 
-// /bin/bash, and the path is the point — see (1) above.
-const systemBash = (body) => spawnSync("/bin/bash", ["-c", body], { encoding: "utf8", timeout: 15_000 });
+/**
+ * Run `body` under /bin/bash — the path is the point, see (1) above — with its
+ * stdout and stderr going to FILES, read back once it has exited.
+ *
+ * Not pipes (#879). Bun's `spawnSync` can return a pipe's contents before it
+ * has drained them when the child exits straight after writing: on a loaded
+ * Mac a stub that printed all four of its `ARG:` lines, and exited 0, came back
+ * with only the first two — the stub's argument list, cut short by the reader
+ * and not by the line under test. A file has no reader to lose the race; by the
+ * time the child has exited, every write it made is in it.
+ */
+const systemBash = (body) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-shell-array-"));
+  const outPath = path.join(dir, "stdout");
+  const errPath = path.join(dir, "stderr");
+  const out = fs.openSync(outPath, "w");
+  const err = fs.openSync(errPath, "w");
+  try {
+    const result = spawnSync("/bin/bash", ["-c", body], { stdio: ["ignore", out, err], timeout: 15_000 });
+    return {
+      status: result.status,
+      signal: result.signal,
+      error: result.error,
+      stdout: fs.readFileSync(outPath, "utf8"),
+      stderr: fs.readFileSync(errPath, "utf8"),
+    };
+  } finally {
+    fs.closeSync(out);
+    fs.closeSync(err);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
 
 /**
  * Does THIS /bin/bash have the behaviour the guards exist for?
@@ -301,6 +332,17 @@ describe("this file can tell whether it proved anything", () => {
   test("on macOS, /bin/bash is a bash that can actually reproduce #808", () => {
     if (process.platform !== "darwin") return;
     expect(emptyArrayIsUnbound).toBe(true);
+  });
+
+  /**
+   * WHAT A STUB PRINTED IS READ FROM A FILE, NEVER A PIPE (#879). The race this
+   * rules out needs a loaded runner to show, so the mechanism is what is pinned:
+   * a `systemBash` that went back to pipes fails here on every run, not once a
+   * week on CI as a stub that seemed to receive half its arguments.
+   */
+  test("the child's stdout and stderr are files, so nothing it wrote can be left unread", () => {
+    const fds = systemBash("[ -f /dev/fd/1 ] && [ -f /dev/fd/2 ]");
+    expect(fds.status).toBe(0);
   });
 
   test("the probe is measuring the system bash, not whatever PATH offers", () => {
