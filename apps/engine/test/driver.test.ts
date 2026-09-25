@@ -2699,6 +2699,25 @@ test("an image attachment reaches Claude as pixels; anything else reaches it as 
   expect(String((content[1] as { text: string }).text)).toContain("notes.md (text/markdown) at /tmp/notes.md");
 });
 
+test("an image-only message reaches Claude as the image and a note naming it — never an empty text block", async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telar-attach-")), "shot.png");
+  fs.writeFileSync(file, Buffer.from([137, 80, 78, 71]));
+  let prompt: unknown;
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      prompt = input.prompt;
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  await run(driver, { prompt: "", attachments: [{ id: "att_1", name: "shot.png", mediaType: "image/png", bytes: 4, path: file }] }).result;
+  const first = await (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]().next();
+  const content = (first.value as { message: { content: Array<Record<string, unknown>> } }).message.content;
+  expect(content[0]).toMatchObject({ type: "image" });
+  // Verified against the SDK: [image, this note] is accepted and the model
+  // describes the picture.
+  expect(content[1]).toEqual({ type: "text", text: "Attached files:\n- shot.png (image, shown above)" });
+});
+
 test("the user's MCP servers reach the SDK, and Telar's own key wins a collision", async () => {
   let servers: Record<string, unknown> | undefined;
   const driver = createClaudeDriver(async () => ({

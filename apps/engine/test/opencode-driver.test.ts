@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createOpencodeClient, type QuestionInfo } from "@opencode-ai/sdk/v2";
 import { TurnObservation, type TurnObservation as Observation } from "@telar/engine-client";
 import { createOpenCodeDriver } from "../src/opencode/driver";
@@ -317,6 +320,18 @@ const NOTIFICATION = {
   fetch: { sessionId: "session_one", runId: "run_one" },
   body: "[agent message · report] from session session_peer (run run_x, 9 chars)",
 };
+
+test("an image-only message sends the file part and no text part", async () => {
+  // Verified against OpenCode 1.18.31: a prompt of one file part is admitted
+  // and the model describes the image.
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telar-oc-")), "shot.png");
+  fs.writeFileSync(file, Buffer.from([137, 80, 78, 71]));
+  const f = fixture();
+  await f.driver.run({ ...f.input, prompt: "", attachments: [{ id: "att_1", name: "shot.png", mediaType: "image/png", bytes: 4, path: file }] });
+  const parts = f.calls.find((c) => c.path.endsWith("/prompt_async"))?.body.parts as Array<Record<string, unknown>>;
+  expect(parts).toEqual([{ type: "file", mime: "image/png", filename: "shot.png", url: "data:image/png;base64,iVBORw==" }]);
+  f.driver.dispose?.();
+});
 
 test("a notification's part is marked synthetic; a person's is not", async () => {
   const f = fixture();

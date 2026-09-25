@@ -406,6 +406,9 @@ export async function maybeRetitleSession(
 ): Promise<void> {
   const policy = effectiveTextGenPolicy(store.getTextGenPolicy());
   if (!policy.titles || policy.driver === "opencode") return;
+  // AN IMAGE-ONLY FIRST MESSAGE KEEPS ITS SEED. The title model reads text and
+  // would be titling nothing; the picture's name is the better placeholder.
+  if (!firstMessage.trim()) return;
   let session: ReturnType<RetitleStore["getSession"]>;
   try {
     session = store.getSession(sessionId);

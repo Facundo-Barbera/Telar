@@ -178,6 +178,8 @@ import {
   type WorktreeInventory,
   type WorktreeReclaimItem,
   type WorktreeReclaimResult,
+  seedSessionTitle,
+  turnHasContent,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
 import { atomicWrite, atomicWriteText } from "./atomic";
@@ -9370,7 +9372,11 @@ export class EngineStore {
     },
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
-    assertText(input.input);
+    // A BLANK MESSAGE WITH SOMETHING ATTACHED is judged below, once the
+    // attachments are resolved and their types known — see `turnHasContent`.
+    const blankWithFiles =
+      typeof input.input === "string" && input.input.trim() === "" && input.kind !== "compact" && (input.attachments?.length ?? 0) > 0;
+    if (!blankWithFiles) assertText(input.input);
     /**
      * EXACTLY ONE COMPANION, AND NOW THERE ARE THREE OF THEM — issue #543.
      *
@@ -9535,6 +9541,9 @@ export class EngineStore {
           }
         : {}),
     };
+    if (!turnHasContent(turn.input, (turn.attachments ?? []).map((attachment) => attachment.mediaType))) {
+      throw new EngineStateError("invalid_request", "a message needs text or an image");
+    }
     /** Scheduled after the document is written, never before — see `createSession`. */
     let cut: { projectRoot: string; plan: WorktreePlan; baseSha: string } | undefined;
     if (session.draft) {
@@ -9561,7 +9570,10 @@ export class EngineStore {
         session.preparation = { state: "preparing", at };
         cut = { projectRoot: project.root, ...planned };
       }
-      if (session.title === "Browser draft") session.title = input.input.replace(/\s+/g, " ").slice(0, 80);
+      if (session.title === "Browser draft") {
+        const images = (turn.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
+        session.title = seedSessionTitle(input.input, images.map((attachment) => attachment.name)) || session.title;
+      }
       delete session.draft;
       this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
       if (cut) this.prepareWorktree(sessionId, cut.projectRoot, cut.plan, cut.baseSha);

@@ -181,6 +181,14 @@ test("an image attachment becomes a localImage element; anything else is named i
   expect(input[0]).toMatchObject({ type: "text", text_elements: [] });
 });
 
+test("an image-only message is one localImage and no text item", () => {
+  // Verified against codex-cli 0.155.1: a turn of a lone `localImage`
+  // completes and the model describes the picture.
+  const shot = { id: "att_1", name: "shot.png", mediaType: "image/png", bytes: 4, path: "/tmp/shot.png" };
+  expect(codexTurnInput("", [shot])).toEqual([{ type: "localImage", path: "/tmp/shot.png" }]);
+  expect(codexTurnInput(" \n", [shot])).toEqual([{ type: "localImage", path: "/tmp/shot.png" }]);
+});
+
 test("the app-server is launched with exactly one argument and told everything else in params", async () => {
   await runTurn("plain").result;
   // Config on an argv is world-readable through `ps` to every process running
@@ -793,6 +801,16 @@ test("a steered message rides turn/steer with the expected turn id, and is journ
   // direction must have a visible cause.
   const row = started(observations).find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
   expect(row?.kind === "item.started" && row.item.detail.type === "user_message" && row.item.detail.text).toBe("change course");
+});
+
+test("a steered image with no words rides turn/steer as pixels, and its row still shows the file", async () => {
+  const steer = new SteerMailbox();
+  const { result, observations } = runTurn("steer", { steer });
+  steer.push({ text: "", attachments: [{ id: "att_1", name: "shot.png", mediaType: "image/png", bytes: 4, path: "/tmp/shot.png" }] });
+  await expect(result).resolves.toMatchObject({ text: "steered" });
+  expect(sent("turn/steer")).toMatchObject({ input: [{ type: "localImage", path: "/tmp/shot.png" }] });
+  const row = started(observations).find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
+  expect(row?.kind === "item.started" && row.item.detail.type === "user_message" ? row.item.detail.attachments?.[0]?.name : undefined).toBe("shot.png");
 });
 
 test("a steered WAKE rides turn/steer framed as the engine's notice, and its row is a wake — not the person's (#194)", async () => {
