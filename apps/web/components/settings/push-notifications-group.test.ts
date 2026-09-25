@@ -1,6 +1,24 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { deviceLine, pausedLine, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
+import { readFileSync } from "node:fs";
+import { deviceLine, NOTIFY_ON_LABELS, pausedLine, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
+import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES } from "@/lib/mobile/desktop";
+import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
+
+describe("Notify on", () => {
+  test("offers exactly the server's three answers, in the owner's words, default first", () => {
+    expect(Object.keys(NOTIFY_ON_LABELS)).toEqual([...NOTIFY_ON_VALUES]);
+    expect(Object.values(NOTIFY_ON_LABELS)).toEqual(["This Mac when active", "iPhone only", "Both"]);
+    expect(NOTIFY_ON_LABELS[DEFAULT_NOTIFY_ON]).toBe("This Mac when active");
+  });
+
+  test("the row is on the Push notifications group and search finds it there", () => {
+    const source = readFileSync(new URL("./push-notifications-group.tsx", import.meta.url), "utf8");
+    expect(source).toContain('label="Notify on"');
+    expect(source).toContain('fetch("/api/mobile/notify"');
+    expect(SETTINGS_SEARCH_INDEX.entries.find((entry) => entry.title === "Notify on")?.id).toBe("settings-row-remote-push-notifications-notify-on");
+  });
+});
 
 /**
  * WHAT THE PANE SAYS ABOUT A PHONE THAT IS NOT RINGING — issues #579 and #584.

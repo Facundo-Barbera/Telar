@@ -21,6 +21,10 @@
  * instead is the proof: the test alert sent straight after pairing, reported
  * as "working" or Apple's exact reason. No credential is shown or stored in
  * state; the route sends none.
+ *
+ * ── ONE SETTING: "NOTIFY ON" ────────────────────────────────────────────────
+ * With the Mac's own banners on, every alert could arrive on both devices. The
+ * row picks which one; the rule itself is `notifyRoute` (lib/mobile/desktop.ts).
  */
 
 import { useEffect, useState } from "react";
@@ -28,7 +32,8 @@ import { BellIcon, SmartphoneIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { fmtAgo } from "@/lib/format";
 import type { ActivityReport } from "@/lib/mobile/push";
-import { Row, SettingsGroup } from "./settings-shell";
+import type { NotifyOn } from "@/lib/mobile/desktop";
+import { Dropdown, Row, SettingsGroup } from "./settings-shell";
 
 export interface PushRelayStatus {
   /** The worker's own gate. False here means this Mac sends nothing. */
@@ -147,14 +152,31 @@ export function pausedLine(pausedUntil: number): string {
   return `Push paused until ${new Date(pausedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+/**
+ * "NOTIFY ON", in the order a person weighs it. The values are the server's
+ * (`NotifyOn`, lib/mobile/desktop.ts); only the type crosses, because that
+ * module reads the store and must not be bundled into the page.
+ */
+export const NOTIFY_ON_LABELS: Record<NotifyOn, string> = {
+  mac: "This Mac when active",
+  iphone: "iPhone only",
+  both: "Both",
+};
+
 export function PushNotificationsGroup() {
   const [status, setStatus] = useState<PushRelayStatus>();
+  const [notifyOn, setNotifyOn] = useState<NotifyOn>();
+  const [notifyError, setNotifyError] = useState<string>();
 
   useEffect(() => {
     const task = window.setTimeout(async () => {
       try {
-        const response = await fetch("/api/mobile/relay", { cache: "no-store" });
-        if (response.ok) setStatus((await response.json()) as PushRelayStatus);
+        const [relay, notify] = await Promise.all([
+          fetch("/api/mobile/relay", { cache: "no-store" }),
+          fetch("/api/mobile/notify", { cache: "no-store" }),
+        ]);
+        if (relay.ok) setStatus((await relay.json()) as PushRelayStatus);
+        if (notify.ok) setNotifyOn(((await notify.json()) as { notifyOn: NotifyOn }).notifyOn);
       } catch {
         // A Mac that did not answer leaves the pane as it was; Settings does not
         // fail to load over a status read.
@@ -162,6 +184,20 @@ export function PushNotificationsGroup() {
     }, 0);
     return () => window.clearTimeout(task);
   }, []);
+
+  const saveNotifyOn = async (next: NotifyOn) => {
+    const before = notifyOn;
+    setNotifyOn(next);
+    setNotifyError(undefined);
+    try {
+      const response = await fetch("/api/mobile/notify", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ notifyOn: next }) });
+      if (!response.ok) throw new Error();
+    } catch {
+      // The stored value is the state: a refused write shows it again, and says so.
+      setNotifyOn(before);
+      setNotifyError("Couldn't save. Try again.");
+    }
+  };
 
   if (!status) return null;
   const headline = relayHeadline(status);
@@ -172,6 +208,24 @@ export function PushNotificationsGroup() {
       description="Whether this Mac can send alerts to your phones, and whether each one is actually being reached."
       action={<Badge variant={headline.ok ? "outline" : "destructive"}>{headline.label}</Badge>}
     >
+      {notifyOn && (
+        <Row
+          label="Notify on"
+          icon={BellIcon}
+          hint="Each alert goes to one device: this Mac while you're using it, your iPhone once you step away. A session you're looking at alerts neither."
+          {...(notifyError ? { error: notifyError } : {})}
+          {...(notifyOn === "mac" ? {} : { onRevert: () => void saveNotifyOn("mac") })}
+          control={
+            <Dropdown
+              value={notifyOn}
+              onChange={(next) => void saveNotifyOn(next)}
+              options={(Object.keys(NOTIFY_ON_LABELS) as NotifyOn[]).map((value) => ({ value, label: NOTIFY_ON_LABELS[value] }))}
+              className="w-48"
+              label="Notify on"
+            />
+          }
+        />
+      )}
       {!status.configured && (
         <Row
           label="No phone can be reached yet"

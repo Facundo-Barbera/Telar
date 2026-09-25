@@ -556,6 +556,13 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             keywords: ["notifications", "apns", "alerts", "push", "relay", "phone", "not working", "test notification"],
             icon: BellIcon,
           },
+          {
+            // The one standing row: which device an alert goes to.
+            title: "Notify on",
+            hint: "Each alert goes to one device: this Mac while you're using it, your iPhone once you step away.",
+            keywords: ["duplicate", "twice", "desktop notifications", "banner", "iphone", "mac", "idle", "away"],
+            icon: BellIcon,
+          },
         ],
       },
       {
