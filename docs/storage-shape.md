@@ -121,8 +121,10 @@ consequence to write down rather than to fix by re-merging them.
 ### At `TELAR_HOME` itself
 
 `store.json` — the stamp (`storeId`, `createdAt`), minted once, carried by a
-migration, never regenerated. `remote/remote.json`, `remote/hosts.json`, and
-`remote/mobile-push.json`.
+migration, never regenerated. `remote/remote.json`, `remote/hosts.json`,
+`remote/mobile-push.json`, and `remote/notify-on.json` (Settings ▸ Remote access
+▸ "Notify on": which device an alert goes to; absent means "This Mac when
+active").
 
 > **`remote/remote/mobile-push.json` was a real path until #665.** `remoteHome()`
 > already returns `<TELAR_HOME>/remote` and `pushFile()` joined `"remote"` onto it

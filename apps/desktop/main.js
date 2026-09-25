@@ -32,7 +32,7 @@ const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
 const { provisionPushRelay } = require("./push-relay");
-const { DESKTOP_NOTIFICATIONS_ENV, createDesktopNotifier, routeOf } = require("./desktop-notifications");
+const { ACTIVE_IDLE_SECONDS, DESKTOP_NOTIFICATIONS_ENV, createDesktopNotifier, createPresenceReporter, routeOf } = require("./desktop-notifications");
 const { watchVolumes } = require("./volume-watch");
 const { awaitStore } = require("./store-gate");
 const { createStoreGateWindow } = require("./store-gate-window");
@@ -1043,8 +1043,10 @@ function startServer(port, home) {
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
   serverChild.on("message", (message) => desktopNotifier.handleServerMessage(message));
+  watchPresence();
   serverChild.on("exit", (code, signal) => {
     serverChild = null;
+    presenceReporter.stop();
     // If the server dies unexpectedly while the app is up, don't leave a
     // half-dead window — quit so nothing is orphaned.
     if (!SMOKE && !app.isQuitting) {
@@ -1061,18 +1063,40 @@ function startServer(port, home) {
  * shows the banner, skips the session already on screen, and answers Approve
  * by handing the SAME request id back to the server, which resolves it.
  */
-const desktopNotifier = createDesktopNotifier({
-  Notification,
-  send: (message) => {
-    if (serverChild?.connected) serverChild.send(message);
-  },
-  context: () => {
-    const focused = BrowserWindow.getFocusedWindow();
-    const cockpit = focused && [...browserManagers].some((manager) => manager.window === focused);
-    return { focused: Boolean(cockpit), viewingPath: cockpit ? routeOf(focused.webContents.getURL()) : null };
-  },
-  open: openNotificationPath,
+const sendToServer = (message) => {
+  if (serverChild?.connected) serverChild.send(message);
+};
+function cockpitFocus() {
+  const focused = BrowserWindow.getFocusedWindow();
+  const cockpit = focused && [...browserManagers].some((manager) => manager.window === focused);
+  return { focused: Boolean(cockpit), viewingPath: cockpit ? routeOf(focused.webContents.getURL()) : null };
+}
+const desktopNotifier = createDesktopNotifier({ Notification, send: sendToServer, context: cockpitFocus, open: openNotificationPath });
+
+/**
+ * WHETHER THE PERSON IS AT THIS MAC, for the server's "Notify on" decision
+ * (`notifyRoute`, apps/web/lib/mobile/desktop.ts). Sent on the edges this
+ * process sees — lock, unlock, focus, an in-app navigation — and on a beat,
+ * because going idle has no event. `lock-screen` is kept as well as the idle
+ * state's own "locked": either one alone has been known to lag the other.
+ */
+let screenLocked = false;
+const presenceReporter = createPresenceReporter({
+  sample: () => ({ idleState: powerMonitor.getSystemIdleState(ACTIVE_IDLE_SECONDS), locked: screenLocked, ...cockpitFocus() }),
+  send: sendToServer,
 });
+let presenceWatched = false;
+function watchPresence() {
+  if (!presenceWatched) {
+    presenceWatched = true;
+    const report = () => presenceReporter.report();
+    powerMonitor.on("lock-screen", () => { screenLocked = true; report(); });
+    powerMonitor.on("unlock-screen", () => { screenLocked = false; report(); });
+    app.on("browser-window-focus", report);
+    app.on("browser-window-blur", report);
+  }
+  presenceReporter.start();
+}
 
 /**
  * Show a route in the cockpit window the person was last in. A live window is
@@ -1303,6 +1327,9 @@ function createWindow(url) {
       buildApplicationMenu();
     }
   });
+  // The route shown here is half of "Notify on"'s viewing rule; in-app routes
+  // are pushState, so `did-navigate` never fires for them.
+  win.webContents.on("did-navigate-in-page", () => presenceReporter.report());
   win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
     // Re-announce every live partition's host to the reloaded renderer.

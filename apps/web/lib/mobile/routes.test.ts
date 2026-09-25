@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { addDevice, mintDeviceToken, revokeDevice, setDeviceRole } from "../remote/store";
 import { GET, PUT } from "../../app/api/mobile/push/route";
+import { GET as notifyGET, PUT as notifyPUT } from "../../app/api/mobile/notify/route";
 import { readPushRecords } from "./push";
 
 const oldHome = process.env.TELAR_HOME, oldCockpit = process.env.TELAR_COCKPIT, oldKey = process.env.TELAR_APNS_KEY_ID;
@@ -48,5 +49,21 @@ describe("paired mobile push registration", () => {
     expect((await PUT(request(token, { ...input, topic: "other.app" }))).status).toBe(400);
     expect((await PUT(request(token, { padding: "x".repeat(40000) }))).status).toBe(413);
     expect(readPushRecords()).toEqual([]);
+  });
+});
+
+describe("Notify on, persisted beside the phones", () => {
+  const put = (body: unknown) => new Request("http://localhost/api/mobile/notify", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  test("defaults to This Mac when active, and a valid choice lands in remote/notify-on.json", async () => {
+    setup();
+    expect(await (notifyGET()).json()).toEqual({ notifyOn: "mac" });
+    expect((await notifyPUT(put({ notifyOn: "both" }))).status).toBe(200);
+    expect(await (notifyGET()).json()).toEqual({ notifyOn: "both" });
+    expect(JSON.parse(fs.readFileSync(path.join(folder!, "remote", "notify-on.json"), "utf8"))).toEqual({ notifyOn: "both" });
+  });
+  test("anything else is refused and changes nothing", async () => {
+    setup();
+    for (const body of [{ notifyOn: "watch" }, {}, "both"]) expect((await notifyPUT(put(body))).status).toBe(400);
+    expect(await (notifyGET()).json()).toEqual({ notifyOn: "mac" });
   });
 });

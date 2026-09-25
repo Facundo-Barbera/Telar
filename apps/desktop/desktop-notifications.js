@@ -11,6 +11,11 @@
  * checks the shape anyway, because a notice becomes a native banner and a path
  * the cockpit navigates to.
  *
+ * PRESENCE GOES THE OTHER WAY DOWN THE SAME PIPE. Whether the person is at this
+ * Mac lives here, in the main process; whether the phone is pushed is decided
+ * in the server's worker. So the shell reports it (`createPresenceReporter`)
+ * and the server makes the one decision for both devices.
+ *
  * Pure and Electron-free, like window-target.js: main.js hands in the
  * Notification class, so the test drives a fake one.
  */
@@ -21,6 +26,7 @@ const DESKTOP_NOTIFICATIONS_ENV = "TELAR_DESKTOP_NOTIFICATIONS";
 const DESKTOP_NOTICE = "telar:desktop-notification";
 const DESKTOP_APPROVE = "telar:desktop-notification:approve";
 const DESKTOP_APPROVED = "telar:desktop-notification:approved";
+const DESKTOP_PRESENCE = "telar:desktop-presence";
 const KINDS = new Set(["blocked", "finished", "failed"]);
 
 const text = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max;
@@ -47,11 +53,14 @@ function routeOf(url) {
 }
 
 /**
- * THE ONE PLACE THAT DECIDES WHETHER THIS MAC SHOWS A NOTICE.
+ * THE LAST LOOK BEFORE A BANNER, NOT A SECOND RULE.
  *
- * Today: not for the session on screen in the window the person is looking at
- * — they are already there. PR 2b ("Notify on: This Mac when active / iPhone
- * only / Both") extends `context` and adds its rule here, and nowhere else.
+ * WHETHER the Mac or the phone gets an alert is decided once, on the server, by
+ * `notifyRoute` (apps/web/lib/mobile/desktop.ts), from the presence this shell
+ * reports below and the "Notify on" setting — a notice arrives here only when
+ * that answer included the Mac. What remains is the one clause of that rule
+ * this process can see fresher than the last presence beat: the session is on
+ * screen in the focused window right now, so nobody needs telling.
  *
  * @param {{ path: string }} notice
  * @param {{ focused?: boolean, viewingPath?: string | null }} context
@@ -59,6 +68,55 @@ function routeOf(url) {
 function shouldNotifyDesktop(notice, context = {}) {
   if (context.focused && context.viewingPath === notice.path) return false;
   return true;
+}
+
+/**
+ * ACTIVE MEANS INPUT IN THE LAST TWO MINUTES AND THE SCREEN UNLOCKED. Long
+ * enough to read a diff without touching anything; short enough that a person
+ * who walked away gets the phone alert rather than a banner on an empty desk.
+ */
+const ACTIVE_IDLE_SECONDS = 120;
+/**
+ * A BEAT, NOT JUST EDGES. Idle has no event — input resuming says nothing — so
+ * the shell re-reads and resends on a timer. The server treats presence older
+ * than three beats as absent (`PRESENCE_STALE_MS`), which is what makes a hung
+ * or departed shell fall back to the phone instead of swallowing its alerts.
+ */
+const PRESENCE_BEAT_MS = 15_000;
+
+/**
+ * What this Mac tells the server about the person in front of it. `viewingPath`
+ * only while active: a window left focused on a session when somebody walked
+ * away is not them looking at it, and must not silence the phone.
+ *
+ * @param {{ idleState?: string, locked?: boolean, focused?: boolean, viewingPath?: string | null }} sample
+ */
+function presenceMessage({ idleState, locked, focused, viewingPath }) {
+  const active = !locked && idleState === "active";
+  return { type: DESKTOP_PRESENCE, active, viewingPath: active && focused && appPath(viewingPath) ? viewingPath : null };
+}
+
+/**
+ * @param {object} deps
+ * @param {() => object} deps.sample - the live idle/lock/focus reading (main.js).
+ * @param {(message: object) => void} deps.send - to the server child.
+ */
+function createPresenceReporter({ sample, send, setInterval: every = setInterval, clearInterval: stopEvery = clearInterval }) {
+  let timer = null;
+  const report = () => send(presenceMessage(sample()));
+  return {
+    report,
+    start() {
+      if (timer) return;
+      report();
+      timer = every(report, PRESENCE_BEAT_MS);
+      timer?.unref?.();
+    },
+    stop() {
+      if (timer) stopEvery(timer);
+      timer = null;
+    },
+  };
 }
 
 /**
@@ -130,6 +188,11 @@ module.exports = {
   DESKTOP_NOTICE,
   DESKTOP_APPROVE,
   DESKTOP_APPROVED,
+  DESKTOP_PRESENCE,
+  ACTIVE_IDLE_SECONDS,
+  PRESENCE_BEAT_MS,
+  presenceMessage,
+  createPresenceReporter,
   parseNotice,
   routeOf,
   shouldNotifyDesktop,
