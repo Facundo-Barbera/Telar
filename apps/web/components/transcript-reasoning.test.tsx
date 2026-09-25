@@ -50,6 +50,10 @@ describe("a reasoning row with no text", () => {
     const group = (item: JournalItem, live: boolean) =>
       renderToStaticMarkup(<ActivityGroup items={[item]} live={live} tasks={[]} />).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
     expect(group(thought("inProgress", 1_200), true)).toContain("Thinking · ~1.2k tokens");
-    expect(group(thought("completed", 44_000), false)).toContain("Thought · 44.0k tokens");
+    // A settled run collapses to its summary like every other run; the count
+    // is on the row, shown when the run is opened (tested above). What the
+    // filter owes the summary is the step itself.
+    expect(group(thought("completed", 44_000), false)).toContain("1 step · Thought");
+    expect(group(thought("completed"), false)).not.toContain("Thought");
   });
 });
