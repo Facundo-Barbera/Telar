@@ -218,6 +218,18 @@ struct PushStatus: Decodable { var configured: Bool }
         await enable()
     }
 
+    /// The Approve action on an alert: accept exactly the request it named.
+    /// False when that Mac is unknown here or refused, so the caller can say so.
+    func approve(_ approval: NotificationActions.Approval) async -> Bool {
+        guard let api = settings?.api(for: approval.ref.hostId) else { return false }
+        do {
+            try await api.resolveRequest(approval.ref.sessionId, requestId: approval.requestId, decision: .accept, reason: nil, answers: nil)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func refreshActivityPrivacy() async {
         for activity in Activity<SessionActivityAttributes>.activities {
             var state = activity.content.state
@@ -333,6 +345,7 @@ struct PushStatus: Decodable { var configured: Bool }
 final class MobileAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().setNotificationCategories(NotificationActions.categories)
         return true
     }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -342,6 +355,14 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         Task { @MainActor in MobileNotifications.shared.status = "Push registration failed. Check network and signing." }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        if response.actionIdentifier == NotificationActions.approve,
+           let approval = NotificationActions.approval(from: response.notification.request.content.userInfo) {
+            Task { @MainActor in
+                if !(await MobileNotifications.shared.approve(approval)) { await NotificationActions.reportFailure(approval) }
+                completionHandler()
+            }
+            return
+        }
         let url = (response.notification.request.content.userInfo["url"] as? String).flatMap(URL.init(string:))
         Task { @MainActor in
             if let url { MobileNotifications.shared.destination = ScopedSessionID(url: url) }
