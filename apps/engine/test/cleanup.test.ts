@@ -148,6 +148,44 @@ test("unchanged never releases a session that is not idle", async () => {
   expect(store.cleanup.last()).toMatchObject({ released: 0, skipped: 1 });
 });
 
+/** A turn that backgrounds one task and ends, leaving the task in `state`. */
+function backgroundTask(store: EngineStore, state: "running" | "waiting", options: { ambient?: boolean } = {}) {
+  store.submitTurn("session_one", { runId: "run_bg", input: "Watch the build" });
+  const claimed = store.claimNextTurn("worker_one")!;
+  const token = claimed.turn.claim!.token;
+  store.markRunning("session_one", "run_bg", token);
+  store.ingestObservations("session_one", "run_bg", token, [
+    { kind: "task.started", task: { id: "task_bg", providerTaskId: "bg1", kind: "background", backgrounded: true, state, title: "Tail the log", ...options } },
+  ]);
+  store.completeTurn("session_one", "run_bg", token, { text: "Watching" });
+}
+
+test("live background work: the sweep leaves a monitoring session's checkout alone, and the reaper counts it live", async () => {
+  const { store, checkout, advance } = await setup();
+  backgroundTask(store, "running");
+  expect(store.getSession("session_one").activity).toBe("monitoring");
+  store.cleanup.setPolicy({ unchanged: true, inactiveDays: 7 });
+  advance(30 * DAY);
+  await store.runCleanup();
+  expect(fs.existsSync(checkout)).toBe(true);
+  expect(store.cleanup.last()).toMatchObject({ released: 0 });
+  // Even archived: a shell running in there is using its `node_modules`.
+  store.archiveSession("session_one");
+  expect(store.reapableWorktrees()).toEqual([expect.objectContaining({ sessionId: "session_one", archived: true, live: true })]);
+});
+
+test("paused or ambient background tasks are not live work: the sweep and the reaper may take the checkout", async () => {
+  for (const [state, ambient] of [["waiting", false], ["running", true]] as const) {
+    const { store, checkout } = await setup();
+    backgroundTask(store, state, ambient ? { ambient } : {});
+    expect(store.getSession("session_one").activity).toBe("idle");
+    expect(store.reapableWorktrees()).toEqual([expect.objectContaining({ sessionId: "session_one", live: false })]);
+    store.cleanup.setPolicy({ unchanged: true });
+    await store.runCleanup();
+    expect(fs.existsSync(checkout), `${state}${ambient ? " ambient" : ""}`).toBe(false);
+  }
+});
+
 test("archiving keeps the checkout unless the switch is on", async () => {
   const off = await setup();
   off.store.archiveSession("session_one");

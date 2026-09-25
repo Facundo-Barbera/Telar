@@ -5435,6 +5435,12 @@ export class EngineStore {
     return [...this.readTasks(sessionId).values()].some(isLiveTask);
   }
 
+  /** Background work still moving: `livenessOf`'s "monitoring" half, asked of
+   *  the tasks directly by callers that must not trust a stale index row. */
+  private hasLiveBackgroundWork(sessionId: string): boolean {
+    return [...this.readTasks(sessionId).values()].some((task) => countsAsActivity(task) && isBackgroundWork(task));
+  }
+
   /**
    * REFUSE TO START NEW WORK ON A PUT-AWAY PROJECT.
    *
@@ -7686,6 +7692,13 @@ export class EngineStore {
     const session = this.getSession(sessionId);
     if (session.workspace.mode !== "worktree" || !session.projectId) return { ok: false, refusal: "not-worktree" };
     if (session.workspace.released) return { ok: true };
+    /**
+     * `idle` AND NOTHING WEAKER. `getSession` folds the tasks in, so a session
+     * whose only activity is a backgrounded shell or sub-agent reads
+     * `monitoring` here and is refused like a running turn — the same line the
+     * settling clock and the delegation settle draw. This is also the #943
+     * sweep's idle check: it releases through here and nowhere else.
+     */
     if (session.activity !== "idle" || session.preparation !== undefined || this.setups.isRunning(sessionId)) {
       return { ok: false, refusal: "in-use" };
     }
@@ -11666,6 +11679,13 @@ export class EngineStore {
    * opinion about it — a turn queued, claimed or running is a turn holding that
    * directory right now.
    *
+   * AND LIVE BACKGROUND WORK IS LIVE, read off the TASKS rather than the index
+   * row's `monitoring`, because this is the one caller holding both and the
+   * tasks are the fact the row is folded from. A backgrounded shell running
+   * `bun test` in an archived session is using that `node_modules` exactly as
+   * much as a turn would. Paused and ambient tasks do not count, on
+   * `countsAsActivity`'s terms.
+   *
    * A PROJECT WHOSE DRIVE IS OUT IS DROPPED ENTIRELY, on `releaseWorktree`'s
    * argument: a filesystem question asked of a disk nobody can read answers
    * about a disk nobody can read, and on the recreated-empty-mountpoint case it
@@ -11685,7 +11705,7 @@ export class EngineStore {
         sessionId: session.id,
         worktree: session.workspace.path,
         archived: session.state === "archived",
-        live: activity.working === true || activity.waitingOnYou === true,
+        live: activity.working === true || activity.waitingOnYou === true || this.hasLiveBackgroundWork(session.id),
       });
     }
     return candidates;

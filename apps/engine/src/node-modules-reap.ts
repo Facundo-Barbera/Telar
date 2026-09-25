@@ -81,7 +81,8 @@ export type ReapCandidate = {
   /** Somebody decided this conversation is over. The ONLY signal that licenses
    *  a delete here — see the header on why "settled" does not. */
   archived: boolean;
-  /** A turn is queued, claimed or running. Refused whatever `archived` says. */
+  /** A turn is queued, claimed or running, a request is parked, or background
+   *  work is still going. Refused whatever `archived` says. */
   live: boolean;
 };
 
