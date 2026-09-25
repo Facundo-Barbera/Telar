@@ -73,8 +73,16 @@ type ClaudeModelInfo = {
   supportsFastMode?: unknown;
 };
 
-/** The one control method this module needs, on the object `query()` returns. */
-type ClaudeModelQuery = { supportedModels(): Promise<unknown> };
+/**
+ * The control methods this module needs, on the object `query()` returns.
+ * `setModel` and `getSettings` are optional because an older SDK lacks the
+ * second, and the model list must not depend on it.
+ */
+type ClaudeModelQuery = {
+  supportedModels(): Promise<unknown>;
+  setModel?(model?: string): Promise<void>;
+  getSettings?(): Promise<unknown>;
+};
 export type ClaudeModelSdk = {
   query(input: { prompt: AsyncIterable<never>; options: Record<string, unknown> }): ClaudeModelQuery;
 };
@@ -232,15 +240,61 @@ export async function readClaudeModels(
         timer = setTimeout(() => reject(new Error("claude did not answer with its models in time")), timeoutMs);
       }),
     ]);
+    const rows = await withClaudeDefaultEfforts(session, parseClaudeModels(models), timeoutMs);
     // Cached by `cli-resolution` per binary, so this is one spawn per update.
     const cliVersion = await readVersion();
-    return { models: parseClaudeModels(models), ...(cliVersion ? { cliVersion } : {}) };
+    return { models: rows, ...(cliVersion ? { cliVersion } : {}) };
   } catch (error) {
     return { models: [], message: error instanceof Error ? error.message : "claude did not answer with its models" };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     controller.abort();
   }
+}
+
+/**
+ * THE EFFORT EACH MODEL RUNS AT WHEN NONE IS PASSED, as the CLI itself resolves
+ * it — so the reasoning pill can name a level instead of saying "Auto".
+ *
+ * `supportedModels()` carries no default, and it is not one fixed number: the
+ * CLI resolves it per model from the user's settings (`effortLevel`,
+ * `modelSettings`), `CLAUDE_CODE_EFFORT_LEVEL`, organisation caps and what the
+ * model supports. Rather than re-implement that, this asks the same handshake
+ * for each model in turn: `setModel`, then `getSettings().applied.effort`, which
+ * the SDK documents as the effort the session will send on its next request.
+ * Turns load the same settings sources, so it is the level a turn runs at.
+ *
+ * BEST EFFORT, INSIDE THE SAME DEADLINE. A model the CLI will not switch to, an
+ * SDK without `getSettings`, or a `null` answer leaves that row without a
+ * default, and the pill says "Auto" — never a guessed level.
+ */
+async function withClaudeDefaultEfforts(session: ClaudeModelQuery, rows: ProviderModel[], timeoutMs: number): Promise<ProviderModel[]> {
+  if (!session.setModel || !session.getSettings) return rows;
+  const deadline = Date.now() + timeoutMs;
+  const out: ProviderModel[] = [];
+  for (const row of rows) {
+    const left = deadline - Date.now();
+    if (row.efforts.length === 0 || left <= 0) {
+      out.push(row);
+      continue;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const settings = await Promise.race([
+        session.setModel(row.id).then(() => session.getSettings!()),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), left);
+        }),
+      ]);
+      const effort = (settings as { applied?: { effort?: unknown } } | undefined)?.applied?.effort;
+      out.push(typeof effort === "string" && CLAUDE_EFFORTS.has(effort) ? { ...row, defaultEffort: effort } : row);
+    } catch {
+      out.push(row);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+  return out;
 }
 
 /**
