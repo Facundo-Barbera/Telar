@@ -4,8 +4,17 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { searchSettings } from "@/lib/settings-search";
-import { isTelarIcon, TELAR_ICONS } from "@telar/engine-client";
-import { ProjectConversationRows, ProjectIdentityRows, ProjectPluginRows, ProjectsPage, type ScopedProject } from "./projects-page";
+import { isTelarIcon, TELAR_ICONS, type ProviderModel } from "@telar/engine-client";
+import type { ModelChoice } from "@/lib/models";
+import { modelOptionsOf } from "@/components/composer-controls";
+import {
+  ProjectConversationRows,
+  ProjectIdentityRows,
+  ProjectModelOptionsRow,
+  ProjectPluginRows,
+  ProjectsPage,
+  type ScopedProject,
+} from "./projects-page";
 
 /**
  * THE ONE THING THIS PANE HAS TO GET RIGHT is the difference between its two
@@ -278,6 +287,41 @@ test("clearing a per-project answer writes null, which is what removes it", () =
   // may carry a typed mark, and leaving it would answer for a row that now says
   // it is auto-detecting.
   expect(source).toContain('next === null ? { iconName: null, iconEmoji: null } : { iconName: next }');
+});
+
+/** Two catalogue rows: one with effort levels and fast mode, one with neither. */
+function modelRow(id: string, options: { efforts?: string[]; fastMode?: boolean } = {}): ProviderModel {
+  return { id, label: id, isDefault: false, hidden: false, hiddenByUser: false, legacy: false, efforts: options.efforts ?? [], fastMode: options.fastMode ?? false, source: "provider" };
+}
+const MODELS = [modelRow("opus", { efforts: ["low", "medium", "high"], fastMode: true }), modelRow("haiku")];
+
+test("the options row shows effort and fast mode only for a model that has them", () => {
+  const render = (choice: ModelChoice) =>
+    renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={choice} models={MODELS} onChange={() => undefined} />);
+  const opus = render({ model: "opus", effort: "medium", fastMode: true });
+  expect(opus).toContain("Model options");
+  expect(opus).toContain("New conversations in this project start with this model and these options.");
+  expect(opus).toContain("Medium");
+  expect(opus).toContain("Fast");
+  // A model with neither has nothing to set, so there is no row at all.
+  expect(render({ model: "haiku" })).toBe("");
+  // Nor before the catalogue has answered: no guessed list of levels.
+  expect(renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={{ model: "opus" }} onChange={() => undefined} />)).toBe("");
+});
+
+test("the options row reverts to the bare model, and the model row's revert clears both", () => {
+  const revert = (choice: ModelChoice) =>
+    renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={choice} models={MODELS} onChange={() => undefined} />).includes("Revert to the default");
+  expect(revert({ model: "opus", effort: "high" })).toBe(true);
+  expect(revert({ model: "opus" })).toBe(false);
+  expect(source).toContain("onChange(choice.model ? { model: choice.model } : {})");
+  // The model row's revert writes `null`, which takes the options with it.
+  expect(source).toContain('{...(stored ? { onRevert: () => writer?.save("defaultModel", { defaultModel: null }) } : {})}');
+});
+
+test("the options on offer are the composer's own, per model", () => {
+  expect(modelOptionsOf(MODELS, { model: "opus" })).toEqual({ efforts: ["low", "medium", "high"], fastMode: true });
+  expect(modelOptionsOf(MODELS, { model: "haiku" })).toEqual({ efforts: [], fastMode: false });
 });
 
 test("a remote Mac's registry is read when it is asked for, not on mount", () => {

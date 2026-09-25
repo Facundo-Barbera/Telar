@@ -10,8 +10,7 @@
  *
  * So each `Composer` says it is here, and says when the caret entered it. THE
  * ACTIVE ONE IS THE MOST RECENTLY FOCUSED, falling back to the only one mounted
- * — which is the usual case, because a session screen and the Agent screen are
- * different routes and only one of them is ever on screen.
+ * — which is the usual case.
  *
  * ══ WHY THIS IS NOT IN composer.tsx ══
  * The registry has to be readable from `lib/page-api.ts`, which the app shell
@@ -26,7 +25,7 @@
  * second opinion here about whether a draft may be sent.
  */
 
-export type ComposerKind = "session" | "agent";
+export type ComposerKind = "session";
 
 /** Why a composer would not do what it was asked. A sentence, because an
  *  external client's only move is to show it to a person. */
@@ -39,8 +38,8 @@ export type ComposerWrite = { ok: true; draft: string } | ComposerRefusal;
 export type ComposerSubmit = { ok: true } | ComposerRefusal;
 
 export type ComposerEntry = {
-  /** The editable root's DOM id — `turn-prompt` on a session, `agent-prompt` on
-   *  the Agent screen. Stable for external clients; see docs/page-api.md. */
+  /** The editable root's DOM id — `turn-prompt`. Stable for external clients;
+   *  see docs/page-api.md. */
   id: string;
   kind: ComposerKind;
   /** What the box holds right now, exactly as it would be sent. */

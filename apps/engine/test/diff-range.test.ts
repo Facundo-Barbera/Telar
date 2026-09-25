@@ -63,13 +63,13 @@ test("a range answers about two commits, and the working tree cannot change it (
 
   const before = sha("rev-parse", "HEAD");
   fs.writeFileSync(path.join(checkout, "inside.ts"), "export const a = 1;\n");
-  store.commitSessionWork("session_cut", "inside the range");
+  await store.commitSessionWork("session_cut", "inside the range");
   const after = sha("rev-parse", "HEAD");
   expect(after).not.toBe(before);
 
   // ...and then the world moves on, which is exactly what a range must ignore.
   fs.writeFileSync(path.join(checkout, "outside.ts"), "export const b = 2;\n");
-  store.commitSessionWork("session_cut", "after the range closed");
+  await store.commitSessionWork("session_cut", "after the range closed");
   fs.writeFileSync(path.join(checkout, "dirty.ts"), "export const c = 3;\n");
 
   const ranged = await store.sessionDiffAsync("session_cut", { base: before, to: after });
@@ -100,7 +100,7 @@ test("an untracked file is in no commit, so it is in no range (#741)", async () 
   const checkout = workspace.path;
   const before = execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim();
   fs.writeFileSync(path.join(checkout, "committed.ts"), "export const a = 1;\n");
-  store.commitSessionWork("session_cut", "one commit");
+  await store.commitSessionWork("session_cut", "one commit");
   const after = execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim();
   fs.writeFileSync(path.join(checkout, "never-committed.ts"), "export const d = 4;\n");
 
@@ -128,7 +128,7 @@ test("a row's patch over a range is the range's patch (#741)", async () => {
   const checkout = workspace.path;
   const before = execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim();
   fs.writeFileSync(path.join(checkout, "moving.ts"), "export const inRange = 1;\n");
-  store.commitSessionWork("session_cut", "in range");
+  await store.commitSessionWork("session_cut", "in range");
   const after = execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim();
 
   // Changed again afterwards, on the disk. A patch read against the working

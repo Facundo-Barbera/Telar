@@ -20,7 +20,18 @@ import { claudeSlugOf } from "./model-manifest";
 
 /** The overlay fields that change a LIST. `favorites` is not here: it reorders a
  *  menu in the cockpit and never changes which rows exist. */
-type ListOverlay = Pick<ModelOverlay, "hidden" | "order" | "custom">;
+type ListOverlay = Pick<ModelOverlay, "hidden" | "order" | "custom" | "default">;
+
+/**
+ * The reader's default, when the list carries it. A provider-hidden row does not
+ * qualify (the CLI refuses it), and neither does a hand-typed one: `isDefault`
+ * is what runs when nobody chose, and a typed id is only as good as the person's
+ * spelling. Anything else leaves Telar's own pick standing.
+ */
+export function chosenDefault(models: readonly ProviderModel[], chosen: string | undefined): ProviderModel | undefined {
+  if (!chosen) return undefined;
+  return models.find((model) => model.id === chosen && !model.hidden && model.source !== "user");
+}
 
 /**
  * Does the provider already cover this hand-typed id?
@@ -105,7 +116,12 @@ function customRow(entry: CustomProviderModel, models: readonly ProviderModel[])
  */
 export function applyModelOverlay(models: readonly ProviderModel[], overlay: ListOverlay): ProviderModel[] {
   const hidden = new Set(overlay.hidden);
-  const marked: ProviderModel[] = models.map((model) => ({ ...model, hiddenByUser: hidden.has(model.id) }));
+  const chosen = chosenDefault(models, overlay.default);
+  const marked: ProviderModel[] = models.map((model) => ({
+    ...model,
+    hiddenByUser: hidden.has(model.id),
+    ...(chosen ? { isDefault: model.id === chosen.id } : {}),
+  }));
 
   for (const entry of overlay.custom) {
     if (published(models, entry.id)) continue;

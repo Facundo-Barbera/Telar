@@ -195,7 +195,7 @@ jobs:
           /tmp/actionlint -shellcheck= -pyflakes= .github/workflows/*.yml
 
   typecheck:
-    name: Typecheck engine-client, env, engine, and web
+    name: Typecheck engine-client, engine, and web
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 15
@@ -250,7 +250,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [web, desktop, env, engine-client, workers]
+        suite: [web, desktop, engine-client, workers]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -418,7 +418,7 @@ jobs:
 
   # THE ELECTRON SUITE, WHICH NOTHING RAN UNTIL NOW (#622).
   #
-  # Thirteen `*.electron-test.js` files drive a REAL Electron against real pages,
+  # Fourteen `*.electron-test.js` files drive a REAL Electron against real pages,
   # the real OS clipboard, real popups and a real pseudo-terminal. They are the
   # only proof of several
   # browser behaviours — #618 and #621 both landed verified by nothing else —
@@ -500,6 +500,7 @@ jobs:
           run_case browser         BROWSER_REGRESSION_OK
           run_case popup           BROWSER_POPUP_OK
           run_case fit-zoom        BROWSER_FIT_ZOOM_OK
+          run_case canvas-control  BROWSER_CANVAS_CONTROL_OK
           run_case persistence     BROWSER_PERSISTENCE_OK
           run_case profile-cookies PROFILE_COOKIES_OK
           run_case host-header     HOST_HEADER_OK
@@ -912,7 +913,8 @@ jobs:
               | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
-      # THE 661 TESTS CI HAS NEVER RUN (#755, and #675 is why they exist).
+      # THE 562 TESTS CI HAD NEVER RUN (#755, and #675 is why they exist; 661
+      # until #908 removed the integrated Agent's iOS suites).
       # `apps/ios/TelarMobileTests` has been green only as often as someone
       # remembered to run it by hand: `nightly-ios-tests.yml` carried the only
       # `xcodebuild test` in this repository and its scheduler window was 8½
@@ -1002,8 +1004,10 @@ jobs:
       # A FLOOR ON `passedTests`, NOT `totalTestCount > 0`. The step this is
       # lifted from failed on `total == 0` and on `failed`, and so exited 0 when
       # every test was SKIPPED and none failed — the same wound in a new
-      # costume. 661 is the count of `@Test` cases at the time of writing (662
-      # in the tree today, none parameterised, so one case per declaration), and
+      # costume. 562 is the count of `@Test` cases in the tree (none
+      # parameterised, so one case per declaration). It was 661 when written and
+      # was LOWERED ONCE, deliberately, by #908: removing the integrated Agent
+      # deleted its iOS suites, about a hundred cases that test nothing left. And
       # a floor rather than an equality so that adding tests never reddens this
       # and removing a suite always does. It also makes it irrelevant whether
       # `totalTestCount` counts skipped cases, which is the more robust
@@ -1026,7 +1030,7 @@ jobs:
         run: |
           set -euo pipefail
           RESULT_BUNDLE="$RUNNER_TEMP/TelarMobileTests.xcresult"
-          FLOOR=661
+          FLOOR=562
 
           if [ ! -e "$RESULT_BUNDLE" ]; then
             echo "::error::xcodebuild produced no result bundle at $RESULT_BUNDLE, so no test was executed. If the archive or the test build failed above, that is the cause; if neither did, the destination resolved to nothing."

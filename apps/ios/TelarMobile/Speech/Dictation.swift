@@ -427,6 +427,9 @@ enum DeepgramListen {
             URLQueryItem(name: "model", value: "nova-3"),
             URLQueryItem(name: "interim_results", value: "true"),
             URLQueryItem(name: "smart_format", value: "true"),
+            // Digits rather than words ("900", not "novecientos"); the web
+            // client sends the same, see `deepgram.ts`.
+            URLQueryItem(name: "numerals", value: "true"),
             URLQueryItem(name: "language", value: language),
             URLQueryItem(name: "endpointing", value: "300"),
             URLQueryItem(name: "encoding", value: "linear16"),

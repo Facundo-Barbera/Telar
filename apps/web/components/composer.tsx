@@ -14,11 +14,13 @@
  * it had sent. There is no queue strip: a message sent mid-turn appears in the
  * transcript inside the run it joined. The UI never says "wait".
  *
- * SEND BECOMES STOP. One control in the corner, `↵` → spinner → `■`, never
- * moving and never duplicating: the thing you press to go is the thing you press
- * to stop. Escape twice does the same from the keyboard, and the FIRST press
- * repaints that button with the literal word ESC — an arming state nobody can
- * see is indistinguishable from a keystroke that did nothing.
+ * SEND BECOMES STOP — WHILE THE BOX IS EMPTY. One control in the corner, `↵` →
+ * spinner → `■`, never moving and never duplicating. During a turn it is Stop
+ * only while there is nothing typed; the moment there is a draft it is Send
+ * again, so a steer can be clicked as well as entered. Escape twice stops from
+ * the keyboard, and the FIRST press repaints that button with the literal word
+ * ESC — an arming state nobody can see is indistinguishable from a keystroke
+ * that did nothing.
  */
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -429,7 +431,6 @@ export function Composer({
   sending,
   runtimeMode,
   session,
-  controls,
   projectId,
   projectName,
   usage,
@@ -456,14 +457,9 @@ export function Composer({
   draft: string;
   ready: boolean;
   /**
-   * WHICH OF THE TWO MESSAGE BOXES THIS IS (#548).
-   *
-   * The Agent screen renders this same component, and until now nothing on the
-   * page said which one you were looking at. It names the editable root — `id`
-   * and `data-composer` — and it is what the page API reports to an external
-   * client that has to choose before it speaks into one. Not derived from
-   * `session` or `controls`: a composer's identity should not be a side effect
-   * of which props a caller happened to pass.
+   * WHICH MESSAGE BOX THIS IS (#548). It names the editable root — `id` and
+   * `data-composer` — and it is what the page API reports to an external
+   * client. There is one kind today.
    */
   kind?: ComposerKind;
   /** Files picked but not yet sent. Owned by the cockpit because sending them
@@ -501,15 +497,6 @@ export function Composer({
   sending: boolean;
   runtimeMode?: RuntimeMode;
   session?: Session;
-  /**
-   * THE CALLER'S OWN CONTROL PILLS, INSTEAD OF THIS COMPOSER'S (#539).
-   *
-   * One caller passes them: the Agent screen, whose three settings are the same
-   * three questions but none of the same sources — no provider catalogue, no
-   * per-model effort list, no session runtime mode. Given, the pills below are
-   * not rendered at all; absent, nothing changes for anybody.
-   */
-  controls?: React.ReactNode;
   /**
    * ABSENT MEANS THIS CONVERSATION HAS NO PROJECT, and that is a positive
    * statement rather than a missing value — see `Session.projectId`'s own note.
@@ -738,10 +725,9 @@ export function Composer({
    * THE PAGE API'S SIDE OF THE COMPOSER (#548) — see lib/page-api.ts.
    * ---------------------------------------------------------------- */
 
-  /** The DOM id of the editable root. `turn-prompt` is the session composer's
-   *  and stays: it is in the app's own label, and external clients already
-   *  reach for it. */
-  const editorId = kind === "agent" ? "agent-prompt" : "turn-prompt";
+  /** The DOM id of the editable root. `turn-prompt` stays: it is in the app's
+   *  own label, and external clients already reach for it. */
+  const editorId = "turn-prompt";
   /** Registered under React's own instance key rather than the DOM id, so a
    *  second composer of the same kind is a duplicate-id bug and not also an
    *  unregistration of the first. */
@@ -1434,7 +1420,8 @@ export function Composer({
   // behind it is settled, leaving the session idle. It briefly said "Pause" —
   // it paused, and a person who pressed it had to press Resume before they
   // could say anything. See the cockpit's `stop`.
-  const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
+  const stopping = busy && (escArmed || !draft.trim());
+  const submitLabel = escArmed ? "Press Escape again to stop" : stopping ? "Stop" : "Send";
   const questionSubmitLabel = isLastQuestion(qFields, qd)
     ? qFields.length === 1
       ? "Submit answer"
@@ -1792,12 +1779,10 @@ export function Composer({
                   the row's shape is the one it will keep. */}
               <AddContextMenu onPick={addFiles} />
               {/**
-               * THE MIC (#544), and mounting it HERE is what puts it on both
-               * composers at once: the Agent screen renders this same
-               * component with `kind="agent"`, so one button cannot drift into
-               * two. It inserts through `window.telar.dictate`, which is the
-               * same door the headset already speaks through (#548) — the
-               * registry is what decides which box that is, not this row.
+               * THE MIC (#544). It inserts through `window.telar.dictate`,
+               * which is the same door the headset already speaks through
+               * (#548) — the registry is what decides which box that is, not
+               * this row.
                *
                * IN THE LEFT CLUSTER because that cluster is already "things
                * that go into this message". The right one is send and turn
@@ -1865,19 +1850,7 @@ export function Composer({
                * the access mode without opening anything, which is the point —
                * a menu that is always closed is state you cannot see.
                */}
-              {/**
-               * THE AGENT BRINGS ITS OWN THREE (#539).
-               *
-               * The controls below are gated on a session, and the gate is real
-               * rather than an oversight: they read a provider catalogue, a
-               * per-model effort list and one of the engine's session runtime
-               * modes, and the Agent has none of the three. Rendering the
-               * caller's row here rather than teaching this one about the Agent
-               * keeps `composer.tsx` about sessions and keeps the Agent's pills
-               * next to the state they write.
-               */}
-              {controls}
-              {!controls && (session || (fresh && driver)) && (
+              {(session || (fresh && driver)) && (
                 <>
                   <AgentControl
                     driver={activeDriver}
@@ -1955,12 +1928,12 @@ export function Composer({
               // In question mode the button SUBMITS THE FORM — the turn is
               // running (busy), but the gesture on offer is answering, not
               // stopping; the drawer keeps its own "Cancel the turn".
-              type={busy && !questionActive ? "button" : "submit"}
+              type={stopping && !questionActive ? "button" : "submit"}
               variant="default"
               size="icon-sm"
               aria-label={questionActive ? questionSubmitLabel : submitLabel}
               title={questionActive ? questionSubmitLabel : undefined}
-              onClick={busy && !questionActive ? onStop : undefined}
+              onClick={stopping && !questionActive ? onStop : undefined}
               className={cn(
                 escArmed && !questionActive && "bg-destructive text-background hover:bg-destructive",
                 !busy && !draft.trim() && "opacity-60",
@@ -1978,7 +1951,7 @@ export function Composer({
                 // pressed and the key that will finish the job, which no icon
                 // can say.
                 <span className="text-3xs leading-none font-semibold tracking-tight">ESC</span>
-              ) : busy ? (
+              ) : stopping ? (
                 <SquareIcon className="size-4" />
               ) : sending ? (
                 <Spinner />

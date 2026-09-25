@@ -27,6 +27,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CodeXmlIcon,
+  DownloadIcon,
   EllipsisIcon,
   FlipHorizontalIcon,
   KeyRoundIcon,
@@ -265,6 +266,23 @@ export function describeExtensionHealth(extension: DesktopExtensionStatus): { to
   return { tone: "warn", text: "Loaded; 1Password app helper not seen yet." };
 }
 
+/** One download as the shell reports it. `scopeKey` is null when the page that
+ *  started it is gone; the panel in front of the person shows it then. */
+export type DesktopBrowserDownload = {
+  scopeKey: string | null;
+  tabId: string | null;
+  state: "started" | "completed" | "cancelled" | "interrupted";
+  path: string;
+  filename: string;
+};
+
+/** The strip's sentence for one download. */
+export function describeDownload(download: DesktopBrowserDownload): string {
+  if (download.state === "started") return `Downloading ${download.filename}…`;
+  if (download.state === "completed") return `Downloaded ${download.filename} to ${download.path.slice(0, download.path.length - download.filename.length - 1) || "/"}`;
+  return download.state === "cancelled" ? `Download of ${download.filename} was cancelled.` : `Download of ${download.filename} failed.`;
+}
+
 export type DesktopBrowserBridge = {
   getState(scopeKey: string): Promise<DesktopBrowserPanelState>;
   action(scopeKey: string, action: Record<string, unknown>): Promise<DesktopBrowserPanelState>;
@@ -337,6 +355,11 @@ export type DesktopBrowserBridge = {
    *  never saw, or an automatic offer that was dismissed. Opening only asks;
    *  the answer happens inside the shell's own window, never here. */
   offerLoginMemory?(scopeKey: string): Promise<{ ok: boolean; error?: string }>;
+  /** A download started or ended. Downloads save straight to the Downloads
+   *  folder with no dialog, so this push is how the panel shows where one went.
+   *  Optional: an older shell still asks with its own dialog. */
+  onDownload?(listener: (download: DesktopBrowserDownload) => void): () => void;
+  revealDownload?(path: string): Promise<{ ok: boolean; error?: string }>;
   onExtension?(listener: (status: DesktopExtensionStatus) => void): () => void;
   /**
    * SITE PERMISSIONS (#422) — camera, microphone, notifications, location,
@@ -1050,6 +1073,7 @@ export function DesktopBrowserSurface({
   const [sitePermissions, setSitePermissions] = useState<SitePermissionRecord[]>([]);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionDenial, setPermissionDenial] = useState<string>();
+  const [download, setDownload] = useState<DesktopBrowserDownload>();
   const firstScopeRef = useRef(true);
   const partitionRef = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -1074,6 +1098,7 @@ export function DesktopBrowserSurface({
     setDismissedPrompts([]);
     setSitePermissions([]);
     setPermissionDenial(undefined);
+    setDownload(undefined);
   }, [scope, scopeKey, projectId]);
 
   // Typing an address is the human's hands on the tab BEFORE submit; the
@@ -1239,7 +1264,7 @@ export function DesktopBrowserSurface({
     bridge,
     scopeKey,
     hostRef,
-    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), Boolean(permissionDenial), activeTab?.sleeping, activeTab?.preview].join("|"),
+    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), Boolean(permissionDenial), Boolean(download), activeTab?.sleeping, activeTab?.preview].join("|"),
     viewportMode,
     overlayRef,
   );
@@ -1361,6 +1386,13 @@ export function DesktopBrowserSurface({
       window.clearInterval(timer);
     };
   }, [bridge, readPrompts, scopeKey]);
+
+  // Downloads land with no dialog, so this strip is where a person learns one
+  // happened and where the file went. Another session's download is not ours.
+  useEffect(
+    () => bridge.onDownload?.((next) => { if (!next.scopeKey || next.scopeKey === scopeKey) setDownload(next); }),
+    [bridge, scopeKey],
+  );
 
   /**
    * What this session's profile remembers about the page in front of the person.
@@ -2517,6 +2549,16 @@ export function DesktopBrowserSurface({
           <TriangleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-warning" />
           <span className="min-w-0 flex-1">{permissionDenial}</span>
           <button type="button" onClick={() => setPermissionDenial(undefined)} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-warning/20">Dismiss</button>
+        </div>
+      )}
+      {download && (
+        <div role="status" className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-1.5 text-2xs text-foreground">
+          <DownloadIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate" title={download.path}>{describeDownload(download)}</span>
+          {download.state === "completed" && bridge.revealDownload && (
+            <button type="button" onClick={() => void bridge.revealDownload?.(download.path)} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-muted">Show in folder</button>
+          )}
+          <button type="button" onClick={() => setDownload(undefined)} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-muted">Dismiss</button>
         </div>
       )}
 

@@ -21,7 +21,7 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   try {
     const bytes = new URL(request.url).searchParams.get("bytes") === "1";
-    return Response.json(await (await engineClient()).retention(bytes ? { bytes: true } : {}));
+    return Response.json(await (await engineClient()).retention({ ...(bytes ? { bytes: true } : {}), signal: request.signal }));
   } catch (error) {
     return engineErrorResponse(error);
   }

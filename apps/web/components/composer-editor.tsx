@@ -395,7 +395,7 @@ export const ComposerEditor = forwardRef<
     id?: string;
     /** WHICH COMPOSER THIS IS, ON THE EDITABLE ROOT ITSELF. Documented as
      *  stable for external clients in `docs/page-api.md`, beside `data-slot`. */
-    "data-composer"?: "session" | "agent";
+    "data-composer"?: "session";
     className?: string;
   }
 >(function ComposerEditor(

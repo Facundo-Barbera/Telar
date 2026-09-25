@@ -17,8 +17,8 @@
  * NOTHING HERE DELETES A COOKIE JAR. Delete forgets a record; the partition on
  * disk is never removed, by anything. Every profile but the default is
  * deletable, and the projects assigned to one fall back to the default with it
- * (#476) — the shell still refuses while a live session has a tab open in it,
- * which is a thing this pane cannot see and only learns from the refusal.
+ * (#476). Sessions and tabs browsing in it move there too; the tabs wake
+ * signed out.
  */
 
 import { useCallback, useEffect, useState } from "react";

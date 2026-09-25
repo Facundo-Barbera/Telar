@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, Minimize2Icon, ShieldCheckIcon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 import {
+  countsAsActivity,
   isBackgroundWork,
   type EngineEvent,
   type ClaudeConversation,
@@ -26,7 +27,7 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { rememberedProjectName, writeFrontDoorNote } from "@/lib/composer-project";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -50,7 +51,7 @@ import { normaliseContextNoticePercent } from "@/lib/context-notice";
 import { useProviderInstance } from "@/lib/provider-instance-cache";
 import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
 import { insertReference } from "@/lib/drag-reference";
-import { sessionModelSelection, type ModelChoice } from "@/lib/models";
+import { projectDraftModel, sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/lib/engine/session-connection";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/lib/engine/session-sync";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
@@ -66,9 +67,10 @@ import { Composer, MAX_ATTACHMENTS } from "./composer";
 import { ActivityGroup, groupNotificationTurns, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
-import { openLinksInSessionBrowser } from "@/lib/link-policy";
+import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
+import { SessionSchedules } from "./session/session-schedules";
 import { RunHeaderControl } from "./run/run-header-control";
 import { OpenWorkspaceButton } from "./session/open-workspace-button";
 import { PromptText } from "./session/prompt-text";
@@ -1518,14 +1520,44 @@ export function SessionCockpit({
    * default", the picker SHOWS which one that is, and nothing has to be written
    * for the two to agree. Seeding an id here would have meant guessing — and
    * the guess for Codex was wrong by two generations.
+   *
+   * EXCEPT FROM THE PROJECT'S OWN DEFAULT, which is not a guess — see
+   * `projectDraftModel`. Seeded when the project record answers, and never over
+   * a pick: `modelTouched` is the envMode seed's `touched`, for the same reason.
    */
   const [draftModel, setDraftModel] = useState<ModelChoice>({});
+  const [modelTouched, setModelTouched] = useState(false);
+  const [projectModel, setProjectModel] = useState<{ projectId: string; seed: ReturnType<typeof projectDraftModel> }>();
+  const [seededModelFor, setSeededModelFor] = useState<string>();
+  // Render-phase, like the envMode seed above. Keyed by project, so a canvas
+  // that moves to another project starts from THAT project's default.
+  if (!sessionId && !modelTouched && projectModel && projectModel.projectId === projectId && seededModelFor !== projectId) {
+    setSeededModelFor(projectId);
+    if (projectModel.seed) {
+      setDraftDriver(projectModel.seed.driver);
+      setDraftModel(projectModel.seed.choice);
+    }
+  }
+  /** EVERY human pick of a model knob goes through here, so the seed can never
+   *  overwrite one. Each control sends the WHOLE choice, so changing one knob
+   *  keeps the rest of the project's default. */
+  const chooseDraftModel = useCallback((next: ModelChoice) => {
+    setModelTouched(true);
+    setDraftModel(next);
+  }, []);
+  /**
+   * WHAT CREATION SENDS: the person's pick, and nothing for an untouched seed.
+   * The engine applies the project's default itself and drops any option the
+   * model no longer offers; re-sending the seed would skip that check.
+   */
+  const draftPick: ModelChoice = modelTouched ? draftModel : {};
   /**
    * Switching provider clears the choice, because a Claude id is not a thing
    * Codex can run — and neither are its effort levels or its Claude-only
    * switches.
    */
   const chooseDriver = useCallback((next: ProviderDriverKind) => {
+    setModelTouched(true);
     setDraftDriver(next);
     setDraftModel({});
   }, [setDraftModel]);
@@ -2435,21 +2467,9 @@ export function SessionCockpit({
    * a surface that queries THIS project's issue 12 would show the wrong thing.
    */
   const projectRepo = useRef<Promise<string | undefined> | undefined>(undefined);
-  const onConversationClick = useCallback(
-    (event: React.MouseEvent) => {
-      // ON THE SOLO ROUTE A LINK IS JUST A LINK (#576). Both destinations this
-      // policy has — a forge tab and the session browser's tab — are surfaces
-      // of the right panel, which is not mounted here, so intercepting the
-      // click would swallow it. Left alone, the anchor does what an anchor does.
-      if (solo) return;
-      if (!openLinksInSessionBrowser()) return;
-      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      const anchor = (event.target as HTMLElement).closest?.("a[href]");
-      if (!anchor) return;
-      const href = anchor.getAttribute("href") ?? "";
-      if (!/^https?:\/\//i.test(href)) return;
-      event.preventDefault();
-      const forge = parseForgeLink(href);
+  const routeLink = useCallback(
+    (href: string, fromConversation = true) => {
+      const forge = fromConversation ? parseForgeLink(href) : undefined;
       void (async () => {
         if (forge && projectId) {
           projectRepo.current ??= createEngineApi(hostFetcher(hostId))
@@ -2472,11 +2492,36 @@ export function SessionCockpit({
           updatePanel((current) => ({ ...current, open: true }));
           return;
         }
-        window.open(href, "_blank", "noopener,noreferrer");
+        openInSystemBrowser(href);
       })();
     },
-    [solo, hostId, projectId, sessionId, showPanelTab, showSessionBrowser, updatePanel],
+    [hostId, projectId, sessionId, showPanelTab, showSessionBrowser, updatePanel],
   );
+  const onConversationClick = useCallback(
+    (event: React.MouseEvent) => {
+      // ON THE SOLO ROUTE A LINK IS JUST A LINK (#576). Both destinations this
+      // policy has — a forge tab and the session browser's tab — are surfaces
+      // of the right panel, which is not mounted here, so intercepting the
+      // click would swallow it. Left alone, the anchor does what an anchor does.
+      if (solo) return;
+      if (!openLinksInSessionBrowser()) return;
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = (event.target as HTMLElement).closest?.("a[href]");
+      if (!anchor) return;
+      const href = anchor.getAttribute("href") ?? "";
+      if (!/^https?:\/\//i.test(href)) return;
+      event.preventDefault();
+      routeLink(href);
+    },
+    [solo, routeLink],
+  );
+  // THE LINKS THIS HANDLER NEVER SEES — the right panel's, a modified click, a
+  // `window.open` — reach the desktop shell as popups; claiming them is what
+  // lets the shell hand them back here instead of to the system browser. They
+  // go to the session's browser only: most come from the panel, and an issue
+  // surface's "Open on GitHub" routed to the issue surface would do nothing.
+  // Not on the solo route, for the reason above.
+  useEffect(() => (solo ? undefined : claimLinks((href) => routeLink(href, false))), [solo, routeLink]);
 
   /**
    * Launch the session's browser by hand. The engine journals what it opened,
@@ -2620,7 +2665,7 @@ export function SessionCockpit({
         id, draft: true, title: "Browser draft", driver: draftDriver, envMode: draftEnvMode,
         ...(draftEnvMode === "worktree" ? draftBase : {}),
       });
-      const model = sessionModelSelection(created.session.providerInstanceId, draftModel);
+      const model = sessionModelSelection(created.session.providerInstanceId, draftPick);
       const patched = await draftApi.updateSession(id, {
         runtimeMode: draftRuntimeMode,
         ...(model ? { model } : {}),
@@ -2857,6 +2902,8 @@ export function SessionCockpit({
         // between "the name has not arrived" and "this project is not on this
         // Mac", and only the second is worth saying out loud.
         setProjectResolved(true);
+        // Where a new conversation's composer starts; see `draftModel`.
+        if (projectId !== undefined) setProjectModel({ projectId, seed: projectDraftModel(found?.defaultModel) });
         const plugins = cockpitPlugins(found);
         setDataScience(plugins.dataScience);
         setLatex(plugins.latex);
@@ -2987,7 +3034,9 @@ export function SessionCockpit({
    * this it painted the whole of it under a fresh greeting.
    */
   const transcript = useMemo(
-    () => (sessionId ? projectTranscript(turns, items, events, tasks) : []),
+    // A peer's passive report is drawn inside the turn it arrived during — see
+    // `hostPassiveArrivals`.
+    () => (sessionId ? hostPassiveArrivals(projectTranscript(turns, items, events, tasks)) : []),
     [sessionId, turns, items, events, tasks, projectTranscript],
   );
   /**
@@ -3377,7 +3426,7 @@ export function SessionCockpit({
         // ONE PATCH FOR EVERY CREATE-TIME CHOICE. Two round trips to set two
         // fields on a session that was created a moment ago is two chances for
         // the second to fail after the first landed.
-        const model = sessionModelSelection(created.session.providerInstanceId, draftModel);
+        const model = sessionModelSelection(created.session.providerInstanceId, draftPick);
         const creationPatch = {
           ...(draftRuntimeMode === "auto" ? {} : { runtimeMode: draftRuntimeMode }),
           ...(model ? { model } : {}),
@@ -3437,7 +3486,7 @@ export function SessionCockpit({
        * were written under. It cannot name a provider — `TurnModelSelection` has
        * no field for it — so the session's provider stays fixed for its life.
        */
-      const pending = session?.model ?? draftModel;
+      const pending = session?.model ?? draftPick;
       await api.submitTurn(target, {
         runId,
         input: text,
@@ -3878,8 +3927,9 @@ export function SessionCockpit({
   const providerInstance = useProviderInstance(session?.providerInstanceId, session?.driver);
   const contextNoticePercent = normaliseContextNoticePercent(providerInstance?.contextNoticePercent);
   /** Background work outlives the turn that started it, so it is counted over
-   *  every task rather than over the active turn's. */
-  const backgroundTasks = tasks.filter((task) => isBackgroundWork(task) && (task.state === "running" || task.state === "pending")).length;
+   *  every task rather than over the active turn's. `countsAsActivity` is the
+   *  rail's own predicate, so the chip and the row badge count the same tasks. */
+  const backgroundTasks = tasks.filter((task) => isBackgroundWork(task) && countsAsActivity(task)).length;
 
   /**
    * THE ROW GESTURES THAT END IN THE RIGHT PANEL, withheld on the solo route.
@@ -3965,6 +4015,17 @@ export function SessionCockpit({
             onWatchRun={() => showPanelTab("terminal")}
             panel={
               <>
+                {/* Keyed by host and session, like Run: a different machine is a
+                    different mount. The last turn's state is the refresh cue —
+                    a schedule is set by a turn and fires as one. */}
+                {session && (
+                  <SessionSchedules
+                    key={`${hostId}:${session.id}`}
+                    sessionId={session.id}
+                    hostId={hostId}
+                    refreshKey={`${turns.at(-1)?.runId}:${turns.at(-1)?.state}`}
+                  />
+                )}
                 {/* THE CHECKOUT INSPECTOR NEEDS A CHECKOUT. Absent rather than
                     empty: a panel reporting "no changes" about a repository this
                     conversation does not have would be answering a question
@@ -4158,7 +4219,7 @@ export function SessionCockpit({
           // are held locally and applied by the one patch that follows creation.
           onRuntimeMode={fresh ? setDraftRuntimeMode : (mode) => void setRuntimeMode(mode)}
           {...(fresh ? {} : { onResumeAfterRateLimit: (next: boolean) => void setResumeAfterRateLimit(next) })}
-          onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
+          onModelChange={fresh ? chooseDraftModel : (next) => void setModel(next)}
           // The composer's foot links its change count to the Diff surface —
           // a right-panel tab, so on the solo route the count stays a count
           // rather than becoming a link to nowhere.

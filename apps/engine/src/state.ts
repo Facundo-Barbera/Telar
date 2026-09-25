@@ -16,7 +16,9 @@ import {
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
   defaultInstanceIdForDriver,
+  countsAsActivity,
   isBackgroundWork,
+  isUnstatedEnding,
   livenessOf,
   AgentOrientation as AgentOrientationSchema,
   DEFAULT_AGENT_ORIENTATION,
@@ -175,6 +177,7 @@ import {
   type WorktreeReclaimItem,
   type WorktreeReclaimResult,
 } from "@telar/engine-client";
+import { WorkspaceConfigStore } from "./workspace-config";
 import { atomicWrite, atomicWriteText } from "./atomic";
 import { arrayElementRanges, parseSpan, type DocumentIndex } from "./document-window";
 import {
@@ -192,39 +195,32 @@ import {
   type OutlineRow,
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
-import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
 import { lastKeytermFit, type KeytermFit } from "./dictation/fit";
 import { dictationLanguages, isDictationLanguage, isDictationProviderId, type DictationLanguage, type DictationProviderId } from "./dictation/provider";
 import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings } from "./dictation/settings";
 import type { DictationContext } from "./dictation/keyterms";
-import { AGENT_IS_NOT_A_SESSION, AGENT_SELF_ID, isAgentSelf, type AgentSenderProof } from "./agent/identity";
-import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
-import { listWorkspaceFiles, listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
+import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import {
   commitSessionWork,
   defaultRemoteBaseAsync,
-  gitOverview,
   gitOverviewAsync,
   listGitRefsAsync,
   projectRemoteAsync,
   pullRequestBlockedBy,
   pushSessionBranch,
   sessionBranchFacts,
-  sessionDiff,
   sessionDiffAsync,
-  sessionFilePatch,
   sessionFilePatchAsync,
   type GitOverview,
 } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { agentInboxNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, timeoutNotification, wakeNotification } from "./notification";
-import type { AgentInboxKind, AgentInboxRow } from "./agent/inbox";
+import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
 import {
   commentOn,
   DEFAULT_ISSUE_FILTER,
@@ -245,7 +241,7 @@ import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, 
 import type { ClaudeConversation, ForkCut } from "./claude-fork";
 import { describeImport } from "./claude-transcript";
 import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
-import { applyModelOverlay } from "./model-overlay";
+import { applyModelOverlay, chosenDefault } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./schedules";
@@ -253,7 +249,12 @@ import type { ScheduleRow } from "./execution-store";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, type GitResult, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
-import { measureDirectory } from "./storage";
+import { checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal } from "./worktree-release";
+import { WorktreeSetups } from "./worktree-setup";
+import { CleanupStore, diskUsage, planWorktreeCleanup, sweepLogs } from "./cleanup";
+import { pipeLauncher } from "./run/launcher";
+import { processGroupFor } from "./run/platform";
+import { CheckoutSizes, type CheckoutSizesOptions } from "./checkout-sizes";
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./worktrees-move";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
@@ -654,7 +655,7 @@ function coalesceByKey(rows: Array<{ key: string; tag?: string }>, ranges: Array
 function planWindow(
   rows: Array<{ key: string; tag?: string }>,
   window: { limit: number; before?: string },
-): { chosen: Set<string>; page: { before: string | null; more: boolean } } {
+): { chosen: Set<string>; page: { before: string | null; more: boolean; total: number } } {
   let end = rows.length;
   if (window.before !== undefined) {
     end = rows.findIndex((row) => row.key === window.before);
@@ -669,7 +670,7 @@ function planWindow(
   const unsettled = window.before === undefined ? rows.filter(active) : [];
   return {
     chosen: new Set([...paged, ...unsettled].map((row) => row.key)),
-    page: { before: start > 0 ? (paged[0]?.key ?? null) : null, more: start > 0 },
+    page: { before: start > 0 ? (paged[0]?.key ?? null) : null, more: start > 0, total: rows.length },
   };
 }
 
@@ -1428,11 +1429,10 @@ function releaseDelegationSettle(session: Session): void {
  * which is finish order.
  */
 /**
- * The states `livenessOf` counts as alive, spelled once beside it.
- *
- * The contract decides WHETHER a session is live; this only has to date it, and
- * dating it off a different set of states than the one that classified it is
- * how `activityAt` ends up describing a task that already finished.
+ * A task that has not ended — still inside the process, whether or not it is
+ * moving. Wider than the contract's `countsAsActivity`, on purpose: a paused
+ * task is not activity, but it is still work in flight and still a row a cold
+ * provider process must be seeded with.
  */
 function isLiveTask(task: Task): boolean {
   return task.state === "pending" || task.state === "running" || task.state === "waiting";
@@ -1876,28 +1876,9 @@ function isDeltaOnlyBatch(observations: unknown[]): boolean {
   return true;
 }
 
-/**
- * ONE WAKE, ON ITS WAY TO THE BUILT-IN AGENT (#531, reshaped by #541 A).
- *
- * THE NOTIFICATION IS THE WHOLE OF IT NOW. It used to be the notice text plus a
- * `WakeReason`, because the runtime turned both into a TURN — the text was the
- * model's input and the reason was the row's provenance. Nothing on the far side
- * starts a turn any more: the wake becomes one INBOX ROW (`agent/inbox.ts`) that
- * the next human-started turn opens with. `NotificationDetail` already carries
- * every field that row needs, minted once in `notification.ts` (#550), so
- * handing over the notification rather than its two halves is what keeps the
- * Agent's row and a session's notification item the same fact.
- *
- * STILL NO TURN AROUND IT: the Agent's runtime decides what a wake costs, which
- * is now an INSERT rather than a conversation. See `setAgentWakeSink`.
- *
- * `inboxKind` IS THE ONE THING THE NOTIFICATION CANNOT SAY (#541 D). A deadline
- * taking a request's default is not one of `NotificationKind`'s three, and
- * minting a fourth would have rippled through every surface that draws a
- * SESSION's notification item to express a distinction only the Agent's inbox
- * ranks on. Absent, the row's kind is derived exactly as it always was.
- */
-export type AgentWake = { notification: NotificationDetail; inboxKind?: AgentInboxKind };
+/** WHO IS SENDING A `sessions_send`, PROVEN: the sending turn's own live claim.
+ *  The store reads the sender off the claim, never off the caller's word. */
+export type SenderProof = { sessionId: string; runId: string; claimToken: string };
 
 /**
  * How to read ONE file's patch — the two questions that change what git prints
@@ -1923,6 +1904,15 @@ function resolveRequestedBase(options: DiffBaseOption, recorded: string | undefi
   if (options.base === undefined) return recorded;
   return options.base === null ? undefined : options.base;
 }
+
+/** One git question, as `EngineStore.prefetchedGit` keys it. */
+const prefetchKey = (cwd: string, args: string[]): string => JSON.stringify([cwd, args]);
+
+/** What `resolveWorktreeBase` would pass to `rev-parse` — and only a ref the
+ *  store's own validation would let through, so a prefetch never puts an
+ *  unvalidated argument on a git command line. */
+const prefetchableRef = (ref: string | undefined): string | undefined =>
+  ref === undefined ? "HEAD" : /^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(ref) ? ref : undefined;
 
 export class EngineStore {
   private executionStore?: ExecutionStore;
@@ -2452,6 +2442,13 @@ export class EngineStore {
   }
 
   readonly paths: EngineStatePaths;
+  /** How each project's worktrees are prepared — see `workspace-config.ts`. */
+  readonly workspace: WorkspaceConfigStore;
+  /** Each worktree's `setup.command`, run in the background after a cut. */
+  readonly setups: WorktreeSetups;
+  /** Settings → Storage's automatic cleanup — see `cleanup.ts`. */
+  readonly cleanup: CleanupStore;
+  private cleanupRunning = false;
   private readonly notifier?: EngineNotifier;
   /** See the constructor: the daemon's in-process nudge to its embedded worker,
    *  absent unless the daemon injected it. */
@@ -2467,11 +2464,31 @@ export class EngineStore {
    *  otherwise. */
   private readonly readModels: typeof readModelCatalogue;
   private readonly manifest: ModelManifest;
-  private readonly git: GitRunner;
+  /** The injected SYNCHRONOUS runner. Reached only through `git` below. */
+  private readonly syncGit: GitRunner;
+  /**
+   * ANSWERS ALREADY READ OFF THE POOL, for the one synchronous call in flight.
+   *
+   * `createSession` and a draft's promotion in `submitTurn` stay synchronous —
+   * they are sqlite commands, and a command cannot span an await — but the few
+   * `rev-parse`s they ask are refusals the caller must hear, so they cannot move
+   * behind the response either. `withPrefetchedGit` reads them through the pool
+   * FIRST and sets this for exactly the synchronous call that follows; only a
+   * question nobody prefetched falls through to the blocking runner.
+   */
+  private prefetchedGit: Map<string, GitResult> | undefined;
+  private readonly git: GitRunner = (cwd, args, options) =>
+    this.prefetchedGit?.get(prefetchKey(cwd, args)) ?? this.syncGit(cwd, args, options);
   private readonly asyncGit: AsyncGitRunner;
   /** The cuts and removals, on a pool the rail's polls do not share — see
    *  `defaultWorktreeGitRunner`. The same runner when a caller injected one. */
   private readonly worktreeGit: AsyncGitRunner;
+  /**
+   * EVERY CHECKOUT'S SIZE, MEASURED IN THE BACKGROUND and shared by the two
+   * surfaces that show one — the storage row and the inventory's rows — so they
+   * cannot disagree and a checkout is never walked twice.
+   */
+  readonly checkoutSizes: CheckoutSizes;
   /**
    * One worktree mutation at a time per project — the ordering the synchronous
    * runner used to buy by blocking the daemon (#496). In memory, like
@@ -3360,62 +3377,10 @@ export class EngineStore {
   }
 
   /* ---------------------------------------------------------------- *
-   * THE AGENT'S KEY — issue #531.
-   *
-   * `MainSession` and its designation stood here. What is left of that feature
-   * in this file is the one thing that was never about a session: where the
-   * OpenCode Go key comes from, and whether there is one.
-   * ---------------------------------------------------------------- */
-
-  /** `<engineRoot>/agent`, for the rungs and the store that live in it. */
-  private get agentDir(): string {
-    return path.join(this.paths.root, "agent");
-  }
-
-  /**
-   * WHICH RUNG ANSWERED, AND WHETHER A KEY IS SET HERE — the two facts a
-   * settings pane needs to decide between a field and a setup prompt.
-   *
-   * NEVER THE KEY, not even redacted, not even its length: all three are how a
-   * secret ends up in a log one pass later. `set` is whether THIS machine's own
-   * rung holds one, which is the only rung a person can clear from the pane;
-   * `source` says which rung the next call would actually spend, which is what
-   * explains a surprising bill. See `agent/credentials.ts`.
-   */
-  agentCredential(): { source?: GoKeySource; set: boolean } {
-    const found = resolveGoCredential({ agentDir: this.agentDir });
-    return { ...(found ? { source: found.source } : {}), set: readAgentKey(this.agentDir) !== undefined };
-  }
-
-  /** Store the pasted key, or clear it with an empty string. The one write, so
-   *  the 0600 file has exactly one author. */
-  setAgentKey(key: unknown): { source?: GoKeySource; set: boolean } {
-    if (typeof key !== "string") throw new EngineStateError("invalid_request", "the Agent's key must be text");
-    if (key.length > 4096) throw new EngineStateError("invalid_request", "that key is too long");
-    writeAgentKey(this.agentDir, key);
-    return this.agentCredential();
-  }
-
-  /**
-   * CARRY A #526 KEY ACROSS, ONCE — see `carryOverLegacyKey`.
-   *
-   * Read from where the old pane put it: a sensitive `OPENCODE_API_KEY` on the
-   * `telar` provider login, which no longer exists as a driver and whose row is
-   * swept away at startup. Reading the secret store directly rather than
-   * through `resolveProviderInstance` is deliberate — that path is typed by
-   * `ProviderDriverKind`, and the whole point is that `telar` is no longer one.
-   */
-  carryOverAgentKey(): boolean {
-    const legacy = this.readProviderSecrets()[secretKey("telar", "OPENCODE_API_KEY")];
-    return carryOverLegacyKey(this.agentDir, legacy);
-  }
-
-  /* ---------------------------------------------------------------- *
    * THE DICTATION KEY — issue #544.
    *
-   * Beside the Agent's rather than on it: same 0600 pattern, same
-   * write-only rule, different vendor and its own directory. See
-   * `dictation/credentials.ts` for why sharing one file would be wrong.
+   * A 0600, write-only key in its own directory. See
+   * `dictation/credentials.ts`.
    * ---------------------------------------------------------------- */
 
   /** `<engineRoot>/dictation` — the key lives in it, and nothing else does
@@ -3568,35 +3533,6 @@ export class EngineStore {
    */
   dictationKey(): string | undefined {
     return readDictationKey(this.dictationDir);
-  }
-
-  /**
-   * AND THEN DROP WHAT THE CARRY LEFT BEHIND — see `carryOverAgentKey`.
-   *
-   * `readProviderInstances` removes the retired `telar` ROW but deliberately
-   * will not touch a credential, because it runs from anywhere and could beat
-   * the carry to it. This is the other half, and it has exactly one safe
-   * caller: the startup sweep, one step after the key has been moved.
-   *
-   * KEYED ON A RETIRED DRIVER, NOT ON `telar` THE STRING. Any secret whose
-   * instance id no longer appears in the registry is a secret nothing can ever
-   * present again — the row it belonged to is gone by the time this runs.
-   */
-  removeRetiredProviderSecrets(): boolean {
-    const secrets = this.readProviderSecrets();
-    const live = new Set(this.listProviderInstances().map((instance) => instance.id));
-    // A key with no separator is not one `secretKey` could have minted, so it is
-    // not this sweep's to judge — `indexOf` would return -1 and `slice(0, -1)`
-    // would hand the set a plausible-looking prefix that never matches, which is
-    // a silent delete dressed up as a lookup. Left alone, like a malformed row.
-    const orphaned = Object.keys(secrets).filter((key) => {
-      const separator = key.indexOf(SECRET_KEY_SEPARATOR);
-      return separator > 0 && !live.has(key.slice(0, separator));
-    });
-    if (orphaned.length === 0) return false;
-    for (const key of orphaned) delete secrets[key];
-    this.writeDocument(this.paths.providerSecrets, { version: STATE_VERSION, secrets });
-    return true;
   }
 
   /**
@@ -4301,14 +4237,11 @@ export class EngineStore {
      * session. A registry that outlives a driver is an ordinary consequence of
      * shipping, and it must cost the user nothing but the row.
      *
-     * THE ROW GOES; THE SECRET IS LEFT EXACTLY WHERE IT IS. This is the half of
-     * the rule that matters, and it is the opposite of `removeProviderInstance`,
-     * which takes both. `carryOverAgentKey` still has to find that #526 key to
-     * move it into the Agent's own store, and this read runs from anywhere —
-     * a worker, a test, any route that lands before the daemon's startup sweep.
-     * A lazy read that deleted credentials would be a coin flip on whether the
-     * upgrade kept somebody's key. `agent/main-sweep.ts` removes the orphaned
-     * secret instead, one step AFTER the carry, where the order is guaranteed.
+     * THE ROW GOES; THE SECRET IS LEFT EXACTLY WHERE IT IS. This is the opposite
+     * of `removeProviderInstance`, which takes both: this read runs from
+     * anywhere — a worker, a test, any route — and a lazy read that deleted
+     * credentials is not one a person would expect. (The built-in Agent that
+     * used to carry the #526 key across and then drop it is gone, #908.)
      *
      * THE PRUNE IS NARROW ON PURPOSE. Only an unknown `driver` is forgiven here;
      * every other malformed row still throws below, because that is corruption
@@ -4611,12 +4544,16 @@ export class EngineStore {
        * absent by default, so a store on its own tells nobody anything.
        */
       onTurnsStopped?: (cancellations: StoppedClaim[]) => void;
+      /** The background checkout sizer's seams — see `checkout-sizes.ts`.
+       *  INJECTED BY TESTS ONLY; the default walks the real disk. */
+      checkoutSizing?: CheckoutSizesOptions;
       git?: GitRunner;
       asyncGit?: AsyncGitRunner;
       gh?: GhRunner;
-      /** Resolves Telar's computer-use backend (cua-driver, or Sky). INJECTED
-       *  BY THE DAEMON, absent by default — so tests never read the real
-       *  machine's installs, and a store without it simply has no computer use. */
+      /** The daemon's computer-use gate: resolves cua-driver only while the
+       *  last probe answered `granted`. INJECTED BY THE DAEMON, absent by
+       *  default — so tests never read the real machine's installs, and a
+       *  store without it simply has no computer use. */
       computerUse?: () => ResolvedComputerUse | undefined;
       /** Asks the installed harnesses what they can run. INJECTED BY TESTS ONLY
        *  — the default is the real subprocess handshake, and a store test that
@@ -4650,17 +4587,25 @@ export class EngineStore {
     this.readModels = options.models ?? readModelCatalogue;
     this.manifest = options.manifest ?? BUNDLED_MANIFEST;
     this.computerUse = options.computerUse;
-    this.git = options.git ?? defaultGitRunner;
+    this.syncGit = options.git ?? defaultGitRunner;
     this.asyncGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultAsyncGitRunner);
     // A POOL OF ITS OWN FOR THE CUTS, so the slowest git child cannot hold a
     // slot the rail's polls need — see `defaultWorktreeGitRunner`. An INJECTED
     // runner still wins, and wins for both: a test that fakes git is faking the
     // whole of git, and two seams would let a fake apply to half of it.
     this.worktreeGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultWorktreeGitRunner);
+    this.checkoutSizes = new CheckoutSizes(options.checkoutSizing);
     this.gh = options.gh ?? defaultGhRunner;
     this.volumes = options.volumes ?? {};
     this.ambientEnv = options.ambientEnv ?? process.env;
     this.paths = statePaths(root);
+    this.workspace = new WorkspaceConfigStore(this.paths.workspace);
+    this.cleanup = new CleanupStore(this.paths.cleanup);
+    this.setups = new WorktreeSetups({
+      directoryOf: (sessionId) => sessionDir(this.paths, sessionId),
+      launcher: pipeLauncher(processGroupFor(process.platform, (pid, signal) => process.kill(pid, signal))),
+      now: () => this.now(),
+    });
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
     const migrated = fs.existsSync(this.paths.executionStore) || fs.existsSync(path.join(root, "execution.sqlite"));
@@ -5045,9 +4990,13 @@ export class EngineStore {
     // `gitReadCache` is keyed by PATH rather than by project — the overview, the
     // diff and every file patch under this root — so the root is what identifies
     // the entries to drop.
-    const prefix = `${project.root}`;
+    this.forgetGitReadsUnder(project.root);
+  }
+
+  /** Every cached git read that names `root` — see `forgetProjectReads`. */
+  private forgetGitReadsUnder(root: string): void {
     for (const key of [...this.gitReadCache.keys()]) {
-      if (key.includes(prefix)) this.gitReadCache.delete(key);
+      if (key.includes(root)) this.gitReadCache.delete(key);
     }
   }
 
@@ -6346,6 +6295,10 @@ export class EngineStore {
       return;
     }
     if (cwd === undefined) return;
+    // A TURN THAT ENDED HAS JUST WRITTEN TO THIS CHECKOUT. Every terminal
+    // transition passes here, so the review surfaces' cached reads of it are
+    // dropped rather than served for up to another two seconds.
+    if (side === "after") this.forgetGitReadsUnder(cwd);
     void this.asyncGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], { timeoutMs: ANCHOR_PROBE_MS })
       .then((result) => this.stampAnchor(sessionId, runId, side, result))
       .catch(() => {
@@ -6522,10 +6475,6 @@ export class EngineStore {
     return path.relative(cwd, resolved);
   }
 
-  projectGit(projectId: string): GitOverview {
-    return gitOverview(this.git, this.getProject(projectId).root);
-  }
-
   /**
    * A project's issues and pull requests.
    *
@@ -6629,7 +6578,7 @@ export class EngineStore {
    */
   setModelOverlay(
     instanceId: string,
-    patch: { favorites?: unknown; hidden?: unknown; order?: unknown; custom?: unknown },
+    patch: { favorites?: unknown; hidden?: unknown; order?: unknown; custom?: unknown; default?: unknown },
   ): ModelOverlay {
     assertInstanceId(instanceId);
     const next: ModelOverlay = { ...this.getModelOverlay(instanceId), updatedAt: this.now() };
@@ -6638,6 +6587,9 @@ export class EngineStore {
       next[key] = readModelIds(patch[key], key);
     }
     if (patch.custom !== undefined) next.custom = readCustomModels(patch.custom);
+    // `null` returns to Telar's own pick; a string must be a model id.
+    if (patch.default === null) delete next.default;
+    else if (patch.default !== undefined) next.default = readModelIds([patch.default], "default")[0]!;
 
     const stored = (() => {
       try {
@@ -6798,8 +6750,10 @@ export class EngineStore {
    * and deleting somebody's fresh clone to tidy up after that would be the worst
    * possible reading of the error.
    */
-  cloneProject(input: { url: string; parent: string; name?: string }): Project {
-    const outcome = cloneRepository(this.git, { url: input.url, parent: input.parent });
+  async cloneProject(input: { url: string; parent: string; name?: string }): Promise<Project> {
+    // The MUTATION pool: a clone is minutes at worst, and it must neither hold
+    // the thread nor a slot the rail's reads need.
+    const outcome = await cloneRepository(this.worktreeGit, { url: input.url, parent: input.parent });
     if (isCloneFailure(outcome)) {
       throw new EngineStateError(outcome.code === "failed" ? "invalid_request" : outcome.code, outcome.message);
     }
@@ -6913,16 +6867,6 @@ export class EngineStore {
     const project = this.getProject(projectId);
     const target = this.forgeNumber(input.number);
     assertId(proof.sessionId, "sender session id");
-    /**
-     * THE BUILT-IN AGENT CANNOT COMMENT, and the refusal is the same one
-     * `submitAgentTurn` gives for the same reason: the Agent is a LangGraph
-     * thread with no session document, so `agent` in a marker would be a
-     * permanent link on github.com to a conversation `sessions_read` cannot
-     * open. A dead link is worse than no attribution.
-     */
-    if (isAgentSelf(proof.sessionId)) {
-      throw new EngineStateError("invalid_request", "the built-in Agent has no session a comment could link to");
-    }
     // Throws unless the claim is live and really is this session's. The id below
     // is the store's finding, not the caller's claim.
     const claimed = this.requireSenderClaim(proof);
@@ -6937,97 +6881,26 @@ export class EngineStore {
   }
 
   /**
-   * What is uncommitted in a PROJECT right now.
-   *
-   * FOR A CONVERSATION THAT DOES NOT EXIST YET. The new-conversation canvas is
-   * scoped to a project and to nothing else, and "the tree already has twelve
-   * uncommitted files" is exactly the thing worth knowing BEFORE you point an
-   * agent at it. Same reader as `sessionDiff` with no base, so it answers
-   * `HEAD…worktree` and the surface says which question it answered.
-   */
-  projectDiff(projectId: string): SessionDiff {
-    return sessionDiff(this.git, { cwd: this.getProject(projectId).root });
-  }
-
-  /** One file's patch in a project's own checkout, for the same surface. */
-  projectFilePatch(projectId: string, target: string, options: FilePatchOptions = {}): GitFilePatch {
-    const project = this.getProject(projectId);
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    // Fenced exactly as the session read is: a pathspec is a file read, and a
-    // client that could name the directory could name anything on the machine.
-    const resolved = path.resolve(project.root, target);
-    const prefix = project.root.endsWith(path.sep) ? project.root : `${project.root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the project");
-    const renamedFrom = EngineStore.insideWorkspace(project.root, prefix, options.renamedFrom);
-    return sessionFilePatch(this.git, {
-      cwd: project.root,
-      path: path.relative(project.root, resolved),
-      ...(options.untracked ? { untracked: true } : {}),
-      ...(options.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-      ...(renamedFrom ? { renamedFrom } : {}),
-    });
-  }
-
-  /**
-   * What this session has done to the repository, from where it started.
-   *
-   * READ AGAINST THE SESSION'S OWN CHECKOUT and its own recorded base, both of
-   * which come from the session record rather than from the caller — a client
-   * that could name the directory could ask the engine to diff anything on the
-   * machine.
-   */
-  sessionDiff(sessionId: string): SessionDiff {
-    const session = this.getSession(sessionId);
-    return EngineStore.sharedCheckout(
-      sessionDiff(this.git, {
-        cwd: workspaceRootOf(session),
-        ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
-      }),
-      session,
-    );
-  }
-
-  /** One file's patch, on demand — see `sessionFilePatch` for why it is not
-   *  carried on the review itself. */
-  sessionFilePatch(sessionId: string, target: string, options: { untracked?: boolean; renamedFrom?: string } = {}): GitFilePatch {
-    const session = this.getSession(sessionId);
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    /**
-     * THE PATH IS RESOLVED AND FENCED INSIDE THE WORKSPACE.
-     *
-     * `git diff -- <path>` treats its argument as a pathspec relative to the
-     * repository, and `../../` in one is how a client asks to read a file it was
-     * never offered. The fence is here rather than at the route because an
-     * in-process caller must not be able to walk past a check that only ran on
-     * the socket.
-     */
-    const resolved = path.resolve(workspaceRootOf(session), target);
-    const prefix = workspaceRootOf(session).endsWith(path.sep) ? workspaceRootOf(session) : `${workspaceRootOf(session)}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the session workspace");
-    const renamedFrom = EngineStore.insideWorkspace(workspaceRootOf(session), prefix, options.renamedFrom);
-    return sessionFilePatch(this.git, {
-      cwd: workspaceRootOf(session),
-      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
-      path: path.relative(workspaceRootOf(session), resolved),
-      ...(options.untracked ? { untracked: true } : {}),
-      ...(renamedFrom ? { renamedFrom } : {}),
-    });
-  }
-
-  /**
    * Snapshot the session's work as one commit.
    *
    * THE ONE GIT MUTATION THE ENGINE OFFERS. It is additive and reversible, a
    * human pressed it, and it runs in the session's own checkout — see
    * `commitSessionWork` for why staging, branch switching and discarding are
    * deliberately absent rather than pending.
+   *
+   * NOT `async`, so a bad message is refused before the first await. On the
+   * MUTATION pool, like a cut: `add -A` and a pre-commit hook are seconds, and
+   * the rail's reads must not queue behind them. What the commit changed is
+   * dropped from the read cache — this is a write the store KNOWS about, and a
+   * two-second-old "3 changed" beside a fresh commit is the badge lying.
    */
-  commitSessionWork(sessionId: string, message: string): { committed: boolean; commit?: GitCommitEntry; reason?: string } {
+  commitSessionWork(sessionId: string, message: string): Promise<{ committed: boolean; commit?: GitCommitEntry; reason?: string }> {
     const session = this.getSession(sessionId);
     const text = message.trim();
     if (!text) throw new EngineStateError("invalid_request", "a commit message is required");
     if (text.length > 2_000) throw new EngineStateError("invalid_request", "commit message is too long");
-    return commitSessionWork(this.git, { cwd: workspaceRootOf(session), message: text });
+    const cwd = workspaceRootOf(session);
+    return commitSessionWork(this.worktreeGit, { cwd, message: text }).finally(() => this.forgetGitReadsUnder(cwd));
   }
 
   /**
@@ -7051,13 +6924,19 @@ export class EngineStore {
     const session = this.getSession(sessionId);
     const workspace = session.workspace;
     if (workspace.mode === "none") throw new EngineStateError("invalid_request", "this session has no working directory");
-    return structuredClone(
-      await pushSessionBranch(this.worktreeGit, {
-        cwd: workspaceRootOf(session),
-        mode: workspace.mode,
-        ...(workspace.mode === "worktree" ? { branch: workspace.branch } : {}),
-      }),
-    );
+    const cwd = workspaceRootOf(session);
+    try {
+      return structuredClone(
+        await pushSessionBranch(this.worktreeGit, {
+          cwd,
+          mode: workspace.mode,
+          ...(workspace.mode === "worktree" ? { branch: workspace.branch } : {}),
+        }),
+      );
+    } finally {
+      // Ahead/behind in the overview moved with the push.
+      this.forgetGitReadsUnder(cwd);
+    }
   }
 
   /**
@@ -7179,15 +7058,6 @@ export class EngineStore {
     return this.readFencedBytes(workspaceRootOf(this.getSession(sessionId)), target, "session workspace");
   }
 
-  projectFiles(projectId: string): WorkspaceListing {
-    return listWorkspaceFiles(this.git, { cwd: this.getProject(projectId).root, now: this.now() });
-  }
-
-  /** Every file in a session's own checkout — its worktree, when it cut one. */
-  sessionFiles(sessionId: string): WorkspaceListing {
-    return listWorkspaceFiles(this.git, { cwd: workspaceRootOf(this.getSession(sessionId)), now: this.now() });
-  }
-
   projectFile(projectId: string, target: string): WorkspaceFile {
     const project = this.getProject(projectId);
     return this.readFenced(project.root, target, "project");
@@ -7298,6 +7168,93 @@ export class EngineStore {
     const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
     return writeWorkspaceFile({ cwd: root, path: path.relative(root, resolved), text, expected, ...(maxBytes ? { maxBytes } : {}) });
+  }
+
+  /**
+   * Run a synchronous store command with its git questions already answered
+   * off the pool — see `prefetchedGit`. The answers live for exactly `work`:
+   * it is synchronous, so nothing else can run while they are set.
+   */
+  private async withPrefetchedGit<T>(cwd: string, questions: string[][], work: () => T): Promise<T> {
+    // De-duplicated BEFORE spawning: a default base is `rev-parse HEAD`, which a
+    // local session's own base asks too.
+    const unique = new Map(questions.map((args) => [prefetchKey(cwd, args), args]));
+    const answers = new Map<string, GitResult>(
+      await Promise.all([...unique].map(async ([key, args]) => [key, await this.asyncGit(cwd, args)] as const)),
+    );
+    this.prefetchedGit = answers;
+    try {
+      return work();
+    } finally {
+      this.prefetchedGit = undefined;
+    }
+  }
+
+  /** The `rev-parse`s a worktree cut's refusals ask (`prepareSessionWorktree`). */
+  private static cutQuestions(baseRef: string | undefined): string[][] {
+    const base = prefetchableRef(baseRef);
+    return [["rev-parse", "--is-inside-work-tree"], ...(base ? [["rev-parse", base]] : [])];
+  }
+
+  /**
+   * `createSession` FOR THE REQUEST PATH — the same command, with its git
+   * questions (`isGitWorkTree`, the cut's base, a local session's HEAD) read
+   * through the pool first instead of on the engine's only thread. Measured on
+   * an external disk: 2.4 s of a frozen daemon per new session, before this.
+   *
+   * A project that is not there skips the prefetch: `createSession` refuses it
+   * before asking git anything, and asking git about an unplugged drive is the
+   * thing #534 took out.
+   */
+  async createSessionAsync(input: Parameters<EngineStore["createSession"]>[0]): Promise<Session> {
+    let project: Project | undefined;
+    try {
+      project = input.projectId === undefined ? undefined : this.getProject(input.projectId);
+    } catch {
+      // `createSession` refuses this itself, in its own order and words.
+      return this.createSession(input);
+    }
+    if (project === undefined || this.projectAvailability(project) !== "available") return this.createSession(input);
+    const questions = [...EngineStore.cutQuestions(input.baseRef), ["rev-parse", "HEAD"]];
+    return this.withPrefetchedGit(project.root, questions, () => this.createSession(input));
+  }
+
+  /**
+   * `submitTurn` FOR THE REQUEST PATH. Only the first send to a WORKTREE DRAFT
+   * asks git anything — it promotes the draft and plans its cut — so every
+   * other send is the synchronous command exactly as it was.
+   */
+  async submitTurnAsync(...args: Parameters<EngineStore["submitTurn"]>): Promise<ReturnType<EngineStore["submitTurn"]>> {
+    return this.promotingDraft(args[0], () => this.submitTurn(...args));
+  }
+
+  /** `submitAgentTurn` for the request path and the `sessions` tools — an
+   *  agent's message to a worktree draft promotes it exactly as a person's does. */
+  async submitAgentTurnAsync(...args: Parameters<EngineStore["submitAgentTurn"]>): Promise<ReturnType<EngineStore["submitAgentTurn"]>> {
+    return this.promotingDraft(args[0], () => this.submitAgentTurn(...args));
+  }
+
+  /**
+   * Prefetch a worktree draft's cut questions, then run `work`. Anything that
+   * is not a promotable draft — including a session that does not resolve — is
+   * handed straight to `work`, so every refusal keeps its original order.
+   */
+  private async promotingDraft<T>(sessionId: string, work: () => T): Promise<T> {
+    let root: string | undefined;
+    let baseRef: string | undefined;
+    try {
+      const session = this.requireSession(sessionId);
+      if (session.draft && session.envMode === "worktree" && session.projectId) {
+        const project = this.getProject(session.projectId);
+        if (this.projectAvailability(project) === "available") {
+          root = project.root;
+          baseRef = session.draft.baseRef;
+        }
+      }
+    } catch {
+      // Refused by `work` below, in its own words.
+    }
+    return root === undefined ? work() : this.withPrefetchedGit(root, EngineStore.cutQuestions(baseRef), work);
   }
 
   createSession(input: {
@@ -7598,10 +7555,15 @@ export class EngineStore {
        * it was stored against, and is silently not applied otherwise — which is
        * the honest outcome, because the reader's sentence was "conversations in
        * this project open on THIS", and this is not that conversation.
+       *
+       * ITS OPTIONS COME WITH IT, less any the model no longer offers — see
+       * `supportedOptions`.
        */
-      ...(project?.defaultModel && project.defaultModel.instanceId === (chosen?.id ?? defaultInstanceIdForDriver(driver))
-        ? { model: project.defaultModel }
-        : {}),
+      ...(() => {
+        if (!project?.defaultModel || project.defaultModel.instanceId !== (chosen?.id ?? defaultInstanceIdForDriver(driver))) return {};
+        const model = this.supportedOptions(driver, project.defaultModel);
+        return model ? { model } : {};
+      })(),
       workspace,
       // The directory is not there yet; `prepareWorktree` below clears this or
       // flips it to `failed`. Absent means ready, which is every other session.
@@ -7622,8 +7584,7 @@ export class EngineStore {
        * auto-accepted — regardless of what its creator was allowed to do.
        *
        * WITH NO CEILING THIS IS EXACTLY THE LINE IT WAS. A human's own click
-       * has no creator to inherit from, and neither does the built-in Agent,
-       * which is a thread rather than a session and has no runtime mode to read.
+       * has no creator to inherit from.
        */
       runtimeMode: (() => {
         const posture = detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE;
@@ -7649,6 +7610,34 @@ export class EngineStore {
   }
 
   /**
+   * A STORED SELECTION WITHOUT THE OPTIONS ITS MODEL DOES NOT OFFER.
+   *
+   * A project's default was picked off the catalogue as it stood then, and a
+   * provider can withdraw a level or fast mode from a model since. An effort the
+   * model does not list fails the turn outright, so it is dropped here rather
+   * than carried into a session nobody chose that for.
+   *
+   * SYNCHRONOUS, so it reads the in-memory catalogue only. Cold, or a model the
+   * catalogue does not list (a hand-added one has no published options to check
+   * against), the selection is trusted as stored — it was picked off that list.
+   */
+  private supportedOptions(driver: ProviderDriverKind, selection: ModelSelection): ModelSelection | undefined {
+    const cached = this.modelCache.get(driver);
+    if (!cached) return selection;
+    const listed = driver === "claude" ? applyModelManifest(cached.models, this.manifest, cached.cliVersion) : cached.models;
+    const id = selection.model ?? listed.find((row) => row.isDefault)?.id;
+    const row = listed.find((candidate) => candidate.id === id || candidate.resolves === id);
+    if (!row || row.source === "user") return selection;
+    const { effort, fastMode, ...rest } = selection;
+    const kept = {
+      ...rest,
+      ...(effort !== undefined && row.efforts.includes(effort) ? { effort } : {}),
+      ...(fastMode !== undefined && row.fastMode ? { fastMode } : {}),
+    };
+    return kept.model !== undefined || kept.effort !== undefined || kept.fastMode !== undefined ? kept : undefined;
+  }
+
+  /**
    * Cut the checkout a `preparing` session is waiting for, then flip its row.
    *
    * NOT AWAITED BY ITS CALLER, which is the entire point of #496: `createSession`
@@ -7666,11 +7655,211 @@ export class EngineStore {
       try {
         await createSessionWorktreeAsync(this.worktreeGit, { engineRoot: this.paths.root, projectRoot, plan, baseSha });
         this.settleWorktree(sessionId, undefined);
+        void this.startWorktreeSetup(sessionId, plan.path);
       } catch (error) {
         // Git's own words, not ours — see `SessionPreparation.error`.
         this.settleWorktree(sessionId, error instanceof Error ? error.message : String(error));
+      } finally {
+        // A cut adds a branch and a worktree the project's overview lists.
+        this.forgetGitReadsUnder(projectRoot);
+        this.forgetGitReadsUnder(plan.path);
       }
     });
+  }
+
+  /**
+   * THE PROJECT'S `setup.command`, IN THE BACKGROUND — never inside the
+   * per-project queue, which would hold every other cut for as long as an
+   * install takes. Best-effort: a setup that cannot start is in its own log.
+   */
+  private async startWorktreeSetup(sessionId: string, worktree: string): Promise<void> {
+    try {
+      const session = this.getSession(sessionId);
+      if (!session.projectId) return;
+      const project = this.getProject(session.projectId);
+      const { effective } = await this.workspace.view(project);
+      await this.setups.start(sessionId, { worktree, config: effective, env: { TELAR_WORKTREE: worktree } });
+    } catch {
+      // A session deleted in the meantime has nothing to set up.
+    }
+  }
+
+  /**
+   * DELETE A SESSION'S CHECKOUT, KEEP ITS BRANCH AND CONVERSATION — see
+   * `worktree-release.ts`. Refused, and nothing touched, for a turn in
+   * flight, uncommitted changes, unpushed commits, a live process, or a
+   * checkout outside Telar's worktrees root. `strict` is the automatic
+   * sweep's: it also refuses when the platform cannot say what runs where.
+   */
+  async releaseSessionWorktree(
+    sessionId: string,
+    reason: "manual" | "inactive" | "unchanged" | "archived",
+    options: { strict?: boolean } = {},
+  ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
+    const session = this.getSession(sessionId);
+    if (session.workspace.mode !== "worktree" || !session.projectId) return { ok: false, refusal: "not-worktree" };
+    if (session.workspace.released) return { ok: true };
+    if (session.activity !== "idle" || session.preparation !== undefined || this.setups.isRunning(sessionId)) {
+      return { ok: false, refusal: "in-use" };
+    }
+    const project = this.getProject(session.projectId);
+    const workspace = session.workspace;
+    const location = readWorktreesRoot(this.paths.root);
+    const configured = rootOf(location);
+    const roots = [defaultWorktreesRoot(this.paths.root), ...(configured ? [configured] : [])];
+    const processes = await checkoutsWithProcesses([workspace.path]);
+    const checked = await releaseRefusal(this.worktreeGit, {
+      projectRoot: project.root,
+      worktreesRoots: roots,
+      path: workspace.path,
+      branch: workspace.branch,
+      process: processes === undefined ? undefined : processes.has(workspace.path),
+      strict: options.strict === true,
+    });
+    if (checked.refusal) return { ok: false, refusal: checked.refusal, ...(checked.detail ? { detail: checked.detail } : {}) };
+
+    const removed = await this.worktreeQueue(project.root, () =>
+      removeSessionWorktreeAsync(this.worktreeGit, project.root, workspace.path, this.projectAvailability(project)),
+    );
+    this.forgetGitReadsUnder(project.root);
+    this.forgetGitReadsUnder(workspace.path);
+    if (!removed) return { ok: false, refusal: "not-found", detail: "the checkout is still there" };
+
+    // Re-read: seconds passed while git ran.
+    const current = this.getSession(sessionId);
+    if (current.workspace.mode !== "worktree") return { ok: true };
+    const updated: Session = {
+      ...current,
+      workspace: { ...current.workspace, released: { at: this.now(), reason } },
+      updatedAt: this.now(),
+    };
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.appendEvent(sessionId, { type: "session.updated", session: updated });
+    return { ok: true };
+  }
+
+  /**
+   * ONE CLEANUP SWEEP — Settings → Storage's switches (`cleanup.ts`). One at a
+   * time: a second call while one runs answers the state and does nothing.
+   * Every worktree goes through `releaseSessionWorktree` in strict mode, so the
+   * fixed rules hold whatever the switches say.
+   */
+  async runCleanup(): Promise<void> {
+    if (this.cleanupRunning) return;
+    this.cleanupRunning = true;
+    try {
+      const policy = this.cleanup.policy();
+      const now = this.now();
+      const sessions = this.readSessions();
+      const candidates = sessions.flatMap((session) =>
+        session.workspace.mode === "worktree" && session.projectId
+          ? [
+              {
+                sessionId: session.id,
+                archived: session.state === "archived",
+                released: session.workspace.released !== undefined,
+                lastActiveAt: Math.max(session.updatedAt, session.lastTurnEndedAt ?? 0, session.activityAt ?? 0),
+              },
+            ]
+          : [],
+      );
+      let freedBytes = 0;
+      let released = 0;
+      let skipped = 0;
+      for (const { sessionId, reason } of planWorktreeCleanup(candidates, policy, now)) {
+        const session = this.getSession(sessionId);
+        if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+        if (reason === "unchanged" && !(await this.branchUnchanged(session.projectId, session.workspace.branch))) continue;
+        if (!fs.existsSync(session.workspace.path)) continue;
+        const bytes = await diskUsage(session.workspace.path);
+        const result = await this.releaseSessionWorktree(sessionId, reason, { strict: true });
+        if (result.ok) {
+          released += 1;
+          freedBytes += bytes;
+        } else {
+          skipped += 1;
+        }
+      }
+      let logs = 0;
+      if (policy.logsDays !== null) {
+        const gone = new Set(
+          sessions.filter((session) => session.workspace.mode === "worktree" && session.workspace.released).map((session) => session.id),
+        );
+        const swept = await sweepLogs({
+          logDirectories: [this.paths.diagnostics],
+          setupLogs: [...gone].map((sessionId) => path.join(sessionDir(this.paths, sessionId), "setup.log")),
+          days: policy.logsDays,
+          now,
+        });
+        logs = swept.count;
+        freedBytes += swept.bytes;
+      }
+      this.cleanup.record({ at: this.now(), freedBytes, released, logs, skipped });
+    } finally {
+      this.cleanupRunning = false;
+    }
+  }
+
+  isCleanupRunning(): boolean {
+    return this.cleanupRunning;
+  }
+
+  /**
+   * DOES THIS BRANCH HOLD ANYTHING THE DEFAULT BRANCH DOES NOT? Unchanged
+   * means zero commits in `<default>..<branch>`. A git read that did not
+   * answer is "changed" — the safe side, since this licenses a delete.
+   */
+  private async branchUnchanged(projectId: string, branch: string): Promise<boolean> {
+    const project = this.getProject(projectId);
+    for (const base of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"]) {
+      const exists = await this.worktreeGit(project.root, ["rev-parse", "--verify", "--quiet", base]);
+      if (exists.status !== 0) continue;
+      const ahead = await this.worktreeGit(project.root, ["rev-list", "--count", `${base}..refs/heads/${branch}`]);
+      return ahead.status === 0 && !ahead.timedOut && ahead.stdout.trim() === "0";
+    }
+    return false;
+  }
+
+  /**
+   * BRING A RELEASED CHECKOUT BACK — at the same path, from the same branch,
+   * then the setup in the background. Idempotent: a session that is not
+   * released, or is already being restored, is left alone. While it runs the
+   * session is `preparing`, so a queued turn waits for the directory the same
+   * way it waits for a first cut.
+   */
+  restoreSessionWorktree(sessionId: string): Session {
+    const session = this.getSession(sessionId);
+    if (session.workspace.mode !== "worktree" || !session.workspace.released || session.preparation?.state === "preparing") {
+      return session;
+    }
+    if (!session.projectId) return session;
+    const project = this.getProject(session.projectId);
+    const { released: _released, ...workspace } = session.workspace;
+    const updated: Session = {
+      ...session,
+      workspace,
+      preparation: { state: "preparing", at: this.now() },
+      updatedAt: this.now(),
+    };
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.appendEvent(sessionId, { type: "session.updated", session: updated });
+    void this.worktreeQueue(project.root, async () => {
+      try {
+        await reattachSessionWorktreeAsync(this.worktreeGit, {
+          projectRoot: project.root,
+          path: workspace.path,
+          branch: workspace.branch,
+        });
+        this.settleWorktree(sessionId, undefined);
+        void this.startWorktreeSetup(sessionId, workspace.path);
+      } catch (error) {
+        this.settleWorktree(sessionId, error instanceof Error ? error.message : String(error));
+      } finally {
+        this.forgetGitReadsUnder(project.root);
+        this.forgetGitReadsUnder(workspace.path);
+      }
+    });
+    return updated;
   }
 
   /**
@@ -7928,16 +8117,24 @@ export class EngineStore {
    * session document already holds, and moving a directory a provider process
    * may be running in is how checkouts get corrupted.
    */
-  refreshWorktreeBranchFromTitle(sessionId: string): string | undefined {
+  async refreshWorktreeBranchFromTitle(sessionId: string): Promise<string | undefined> {
     const session = this.getSession(sessionId);
     if (session.state === "archived" || session.workspace.mode !== "worktree") return undefined;
     const current = session.workspace.branch;
     if (!current.startsWith("telar/")) return undefined;
     const next = derivedBranchFor(session.title, sessionId);
     if (next === undefined || next === current) return undefined;
-    const renamed = this.git(session.workspace.path, ["branch", "-m", current, next]);
+    // On the mutation pool, never the thread: this runs behind every first turn.
+    const renamed = await this.worktreeGit(session.workspace.path, ["branch", "-m", current, next]);
     if (renamed.status !== 0) return undefined;
-    const updated: Session = { ...session, workspace: { ...session.workspace, branch: next }, updatedAt: this.now() };
+    this.forgetGitReadsUnder(session.workspace.path);
+    const projectRoot = this.projectOfSession(session)?.root;
+    if (projectRoot) this.forgetGitReadsUnder(projectRoot);
+    // RE-READ after the await: the record moved on while git ran, and writing
+    // the copy from before it would undo whatever happened in between.
+    const latest = this.getSession(sessionId);
+    if (latest.workspace.mode !== "worktree" || latest.workspace.branch !== current) return undefined;
+    const updated: Session = { ...latest, workspace: { ...latest.workspace, branch: next }, updatedAt: this.now() };
     this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
     this.appendEvent(sessionId, { type: "session.updated", session: updated });
     return next;
@@ -8017,29 +8214,6 @@ export class EngineStore {
    * is gone, and only where its result was discarded.
    */
   private requireSession(sessionId: string): Session {
-    /**
-     * THE RESERVED AGENT ID IS REFUSED HERE, IN WORDS — issue #784.
-     *
-     * WRITTEN BEFORE THE HAPPY PATH, and this is the one line that makes the
-     * reserved target affordable. `agent` passes `assertId` (letters only) and
-     * names no session document, so every read of it fell through to
-     * `not_found` — "session does not exist" for the one id in this engine that
-     * deliberately does not, which tells a caller nothing and invites it to
-     * create one. Fifteen-odd callers validate a session id by asking this
-     * method for one; a refusal here is a refusal at all of them, in one
-     * sentence, rather than a rule each door writes for itself and one door
-     * forgets.
-     *
-     * `invalid_request` RATHER THAN `not_found`, because the id is not missing.
-     * It names something real that is not a session, and the two are different
-     * answers to a caller deciding whether to retry.
-     *
-     * `sessions_send` IS THE ONE VERB THAT TAKES IT, and it never arrives here:
-     * it branches on the id before it asks for a session at all. Everything
-     * else — read, status, stop, settle, diff, requests, subscribe-to — is a
-     * thing there is no Agent to do it to.
-     */
-    if (isAgentSelf(sessionId)) throw new EngineStateError("invalid_request", AGENT_IS_NOT_A_SESSION);
     const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
     return parseSession(stored);
@@ -8142,8 +8316,9 @@ export class EngineStore {
     if (live) {
       // Dated by the OLDEST live task, matching the blocked path above: the
       // number worth showing is how long this has been going, not when the most
-      // recent thing joined it.
-      const since = Math.min(...tasks.filter(isLiveTask).map((task) => task.startedAt));
+      // recent thing joined it. Dated off the SAME predicate that classified it,
+      // or `activityAt` describes a paused task the badge did not count.
+      const since = Math.min(...tasks.filter(countsAsActivity).map((task) => task.startedAt));
       return { ...base, activity: live === "working" ? "working" : "monitoring", activityAt: since };
     }
     // `activityAt` is deliberately absent on idle: there is no event to date.
@@ -8453,19 +8628,6 @@ export class EngineStore {
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
     inbox: InboxPolicy;
-    /**
-     * WHETHER THIS MAC HAS AN AGENT (#531) — one flag, on the one read every
-     * rail already makes.
-     *
-     * IT RIDES THIS ANSWER for `inbox`'s reason: it is the one read every rail
-     * already makes, so the entry costs no request of its own. A FLAG rather
-     * than the whole document because the rail draws an entry, and an entry
-     * needs to know whether to exist and nothing else. The thread id, the model and the
-     * pending request are `/v2/agent`'s business, which is the pane's read
-     * rather than the sidebar's — putting them here would cost every poll on
-     * every client for a row that only shows a label.
-     */
-    agent: { enabled: boolean };
     revision: number;
     settledCount: number;
   } {
@@ -8477,18 +8639,14 @@ export class EngineStore {
      */
     const revision = this.sessionsRevision({ all: options.all === true });
     const inbox = this.getInboxPolicy();
-    // Read once and spread into both arms below, like `inbox`: the two paths
-    // differ in how they find the ROWS, never in what rides beside them.
-    const agent = { enabled: readAgentSettings(agentPaths(this.paths.root)).enabled };
     /**
      * NOTHING IS EXEMPTED FROM THE SHELF ANY MORE (#531).
      *
      * #522 kept the designated conversation on this list whatever the settling
      * clock said, because the rail drew its Main entry from a ROW here and a
-     * time rule would have made that entry vanish on a Tuesday. The Agent has
-     * no row: its entry is drawn from the flag above and exists whether or not
-     * any session does. So the exemption goes with the designation, and every
-     * conversation now settles by the same rule.
+     * time rule would have made that entry vanish on a Tuesday. The exemption
+     * went with the designation, and every conversation now settles by the same
+     * rule.
      */
     const indexed = this.shelfFromIndex(inbox, options.all === true);
     if (indexed) {
@@ -8515,7 +8673,6 @@ export class EngineStore {
         ...full,
         sessions: full.sessions.map(liveRow),
         inbox,
-        agent,
         revision,
         settledCount: indexed.settledCount,
       };
@@ -8552,7 +8709,6 @@ export class EngineStore {
         ? full.assignments
         : Object.fromEntries(Object.entries(full.assignments).filter(([id]) => !shelved.has(id))),
       inbox,
-      agent,
       revision,
       settledCount: shelved.size,
     };
@@ -8930,7 +9086,7 @@ export class EngineStore {
     items: Item[];
     tasks: Task[];
     requests: EngineRequest[];
-    page: { before: string | null; more: boolean };
+    page: { before: string | null; more: boolean; total: number };
   } {
     this.requireSession(sessionId);
     const plan = this.windowedTurns(sessionId, window);
@@ -8953,7 +9109,7 @@ export class EngineStore {
    * index (a queue written by an older engine, or edited behind the store's
    * back) this is the fold it has always been, over a document parsed whole.
    */
-  private windowedTurns(sessionId: string, window: { limit: number; before?: string }): { turns: Turn[]; page: { before: string | null; more: boolean } } {
+  private windowedTurns(sessionId: string, window: { limit: number; before?: string }): { turns: Turn[]; page: { before: string | null; more: boolean; total: number } } {
     const file = sessionQueueFile(this.paths, sessionId);
     const index = this.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
     if (!index) {
@@ -9098,12 +9254,6 @@ export class EngineStore {
       sender?: { sessionId?: string };
       /** A CLOCK started this turn — issue #543. See the origin enum. */
       scheduleOrigin?: { scheduleId: string; dueAt: number };
-      /**
-       * THE ONE SENDER A HUMAN STOP DOES NOT LATCH OUT — set by
-       * `submitAgentTurn` from the built-in Agent's proof and by nothing else.
-       * See the latch below for the argument.
-       */
-      fromBuiltInAgent?: true;
     },
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
@@ -9128,6 +9278,10 @@ export class EngineStore {
     }
     const kind = input.kind === "compact" ? "compact" : undefined;
     const session = this.getSession(sessionId);
+    // A MESSAGE TO A RELEASED SESSION BRINGS ITS CHECKOUT BACK; the turn waits
+    // on `preparing` like it does for a first cut. Checked on the read already
+    // made, so an ordinary message costs no extra parse of the queue.
+    if (session.workspace.mode === "worktree" && session.workspace.released) this.restoreSessionWorktree(sessionId);
     if (kind === "compact" && !PROVIDER_CAPABILITIES[session.driver].compaction)
       throw new EngineStateError("conflict", "this provider does not support manual compaction");
     const queue = this.readQueue(sessionId);
@@ -9137,29 +9291,13 @@ export class EngineStore {
       return { turn: structuredClone(known), replayed: true };
     }
     /**
-     * A HUMAN STOP LATCHES OUT PEERS, NOT THE THING THE HUMAN IS TYPING AT
-     * (#539).
-     *
-     * The latch was written for a runaway orchestrator: a person presses Stop, a
-     * coordinator two rooms away has not noticed, and its next `sessions_send`
-     * restarts exactly the work that was just ended. Nobody decided that, which
-     * is why it refuses.
-     *
-     * The built-in Agent is the opposite case and the owner met it on day one.
-     * It has no errand of its own: every send it makes is one a person asked for
-     * in the composer, seconds earlier, in front of them. Refusing that one is
-     * the machine telling the human they may not do the thing they are doing —
-     * and the only way round it was to go to the stopped session and type
-     * something there, which is the Stop undone by hand.
-     *
-     * SO THE EXEMPTION IS THE SENDER, NOT THE INTENT. `fromBuiltInAgent` comes
-     * from a proof only the in-process Agent capability can build (see
-     * `submitAgentTurn`); a peer session's send carries a claim instead and is
-     * still refused here, wake included. And the latch is NOT cleared by the
-     * Agent going through it — only a human message on the session itself does
-     * that, below — so the next peer that tries is still turned away.
+     * A HUMAN STOP LATCHES OUT PEERS. The latch was written for a runaway
+     * orchestrator: a person presses Stop, a coordinator two rooms away has not
+     * noticed, and its next `sessions_send` restarts exactly the work that was
+     * just ended. Nobody decided that, which is why it refuses — wake included.
+     * Only a human message on the session itself clears it, below.
      */
-    if (input.origin === "session" && session.agentMessagesBlocked && !input.fromBuiltInAgent) {
+    if (input.origin === "session" && session.agentMessagesBlocked) {
       throw new EngineStateError("conflict", "this session was stopped by its user; agent messages cannot restart it. Wait for a new human message.");
     }
     /**
@@ -9514,55 +9652,13 @@ export class EngineStore {
   submitAgentTurn(
     sessionId: string,
     input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string },
-    proof?: AgentSenderProof,
-  ): { turn: Turn; replayed: boolean; stoppedByUser?: { at?: number } } {
-    /**
-     * THE AGENT IS NOT A RECIPIENT OF A TURN — issue #784, and the refusal is
-     * here rather than only in `requireSession` because this is the method that
-     * would have written something first.
-     *
-     * A message TO the Agent has its own verb (`sendToAgent`) and leaves one
-     * inbox row. Reaching this one with the reserved id would mean queueing a
-     * turn on a session document that does not exist — the store would refuse a
-     * few lines down, but by then the run id is spoken for and the caller has
-     * been told about a session rather than about the Agent.
-     */
-    if (isAgentSelf(sessionId)) throw new EngineStateError("invalid_request", AGENT_IS_NOT_A_SESSION);
+    proof?: SenderProof,
+  ): { turn: Turn; replayed: boolean } {
     let sender: { sessionId?: string } = {};
-    let fromBuiltInAgent = false;
     if (proof) {
       assertId(proof.sessionId, "sender session id");
-      if (proof.claimToken === undefined) {
-        /**
-         * THE AGENT'S PROOF IS ITS OWN NAME, and it is claimless because there
-         * is nothing to claim: the Agent is a LangGraph thread, not a session,
-         * so it has no queue, no run and no token the engine could check — the
-         * same reason `subscribe` knows it by name (see `agent/identity.ts`).
-         *
-         * WHAT MAKES THAT SAFE IS THE SHAPE, not a check. `AgentTurnInput`, the
-         * only wire form of this argument, requires a run id and a token, so no
-         * HTTP body can produce a claimless proof at all — and the guard below
-         * stops a body from reaching this branch by NAMING `agent` with a forged
-         * claim instead. In-process, `buildSessionsCapability` builds it from
-         * the `self` it was constructed with, which the daemon supplies.
-         *
-         * IT STAMPS NO SENDER. The Agent has no session page to link to and no
-         * id a `sessions_read` would resolve, so a turn attributed to `agent`
-         * would be a dead link in the transcript and a lie in the notice. It
-         * stays what it is today — an agent's words, with no session behind
-         * them — and the exemption below is the only thing the proof buys.
-         */
-        if (!isAgentSelf(proof.sessionId)) {
-          throw new EngineStateError("invalid_request", "a claimless sender proof belongs to the built-in Agent alone");
-        }
-        fromBuiltInAgent = true;
-      } else {
-        if (isAgentSelf(proof.sessionId)) {
-          throw new EngineStateError("invalid_request", "the built-in Agent has no claim to send with; this proof is not its own");
-        }
-        const claimed = this.requireSenderClaim(proof);
-        sender = { sessionId: claimed.sessionId };
-      }
+      const claimed = this.requireSenderClaim(proof);
+      sender = { sessionId: claimed.sessionId };
     }
     const intent = input.intent ?? "report";
     /**
@@ -9659,17 +9755,6 @@ export class EngineStore {
      */
     const scope = intent === "task" ? input.scope : undefined;
     /**
-     * READ BEFORE THE SUBMIT, because the submit is what may clear it — and
-     * reported even though the send SUCCEEDED. The Agent going through a latch
-     * it is exempt from is the one case where a person's Stop is silently
-     * stepped over, so the tool answer says whose Stop it was and when. The
-     * caller decides what to do with that; nothing here refuses.
-     */
-    const latched = fromBuiltInAgent ? this.getSession(sessionId) : undefined;
-    const stoppedByUser = latched?.agentMessagesBlocked
-      ? { ...(latched.agentMessagesBlockedAt !== undefined ? { at: latched.agentMessagesBlockedAt } : {}) }
-      : undefined;
-    /**
      * THE NOTICE AND THE NOTIFICATION ARE ONE STRING NOW (#550).
      *
      * `agentNotice` used to be minted here and the row, the prompt and a later
@@ -9696,102 +9781,14 @@ export class EngineStore {
       input: input.input,
       ...(input.attachments ? { attachments: input.attachments } : {}),
       origin: "session", sender, agentIntent: intent, agentDelivery: delivery,
-      // The Agent's proof names no run — it has none — so there is no source
-      // run to carry. A session sender's always does.
-      ...(proof?.runId ? { agentSourceRunId: proof.runId } : {}),
-      ...(fromBuiltInAgent ? { fromBuiltInAgent: true as const } : {}),
+      ...(proof ? { agentSourceRunId: proof.runId } : {}),
       notification,
       agentNotice: notification.body,
       // Only a TASK carries a scope. A report that named one would read as an
       // assignment in every surface that folds these turns.
       ...(scope ? { assignmentScope: scope } : {}),
     });
-    return { ...result, ...(stoppedByUser ? { stoppedByUser } : {}) };
-  }
-
-  /**
-   * ══ A SESSION ADDRESSES THE BUILT-IN AGENT — issue #784, step 1 ══
-   *
-   * `agent/inbox.ts` has declared this seam and its own absence since #541:
-   * *"`peer_message` IS THE FIFTH, and it has no producer yet … the day
-   * something CAN address the Agent, the row it writes should not need a
-   * migration to exist."* This is that producer, and the row needs no migration.
-   *
-   * ── WHY THIS IS NOT `submitAgentTurn` WITH A BRANCH ─────────────────────────
-   * Everything that method does is a TURN on a session: a run id the queue owns,
-   * a backlog cap, a mailbox, a cohort merge, a delivery decision. The Agent has
-   * none of that and wants none of it. A report reaching the person used to cost
-   * a turn in an ordinary session — a model call, a row in a conversation they
-   * were reading, a provider bill — and #784's finding is that a flush *changes
-   * the count and not the kind*: forty wakes becoming eight is a smaller version
-   * of the thing that was asked to stop. So this writes ONE ROW and starts
-   * nothing. `agent/digest.ts` renders it at the top of the next turn a PERSON
-   * begins, which is the only moment a report costs anything at all.
-   *
-   * ── IT IS PULL, AND THAT IS WHAT ANSWERS THE HARD CASES ─────────────────────
-   * Asleep: nothing arrives, and the digest is there at breakfast, capped at
-   * `DIGEST_MAX_CHARS` however long the night was. In a meeting: the same. On a
-   * phone: the same, and the phone's own alerts are untouched because they ride
-   * session activity and this touches none. One session rather than fifteen: a
-   * person with no orchestrator has nothing writing rows and nothing to opt out
-   * of.
-   *
-   * ── THE SENDER MUST BE A SESSION IN A LIVE TURN ─────────────────────────────
-   * THREE REFUSALS, AND EACH IS A DIFFERENT SENDER (`agent/identity.ts` holds
-   * the two ways there are to prove who is sending):
-   *
-   *   - NO PROOF AT ALL is the outward sessions socket — a chat client the
-   *     person is typing at. It is not a session, it has no run, and a person
-   *     with a keyboard does not need an inbox row to reach their own Agent.
-   *   - A CLAIMLESS PROOF is the Agent itself, and it may not address itself: a
-   *     conversation that could write its own inbox would open its next turn
-   *     reading a digest of what it had already said.
-   *   - A CLAIM THAT IS NOT LIVE is refused by `requireSenderClaim`, exactly as
-   *     it is for every other send.
-   *
-   * What is left is a session inside a running turn, which is the orchestrator
-   * this issue is about — and it always has the run id the row's fetch call
-   * needs, which is what makes the body retrievable with nothing stored twice.
-   *
-   * ── AND IT ANSWERS WHETHER ANYTHING KEPT IT ─────────────────────────────────
-   * `undefined` when the Agent is switched off or has no thread yet. The sink is
-   * optional and a miss is silent for a WAKE, because a wake happens to a turn
-   * that is ending and there is nobody to tell; this is a call somebody made,
-   * and a sender told "sent" about a message nothing kept is the "held and lost
-   * look identical" failure one layer up.
-   */
-  sendToAgent(input: { input: string; intent?: Turn["agentIntent"] }, proof?: AgentSenderProof): { row?: AgentInboxRow; notice: string } {
-    if (!proof) {
-      throw new EngineStateError(
-        "invalid_request",
-        "only a session inside a turn can address the Agent; this caller is an agent outside any session (the sessions socket), and the person it is talking to already has the Agent in front of them",
-      );
-    }
-    assertId(proof.sessionId, "sender session id");
-    if (proof.claimToken === undefined) {
-      throw new EngineStateError(
-        "invalid_request",
-        isAgentSelf(proof.sessionId)
-          ? "the built-in Agent cannot address itself"
-          : "a claimless sender proof belongs to the built-in Agent alone",
-      );
-    }
-    const claimed = this.requireSenderClaim(proof);
-    const intent = input.intent ?? "report";
-    const notification = agentInboxNotification({
-      senderSessionId: claimed.sessionId,
-      senderRunId: proof.runId,
-      body: input.input,
-      intent,
-    });
-    /**
-     * NO try/catch, UNLIKE EVERY OTHER SINK CALL IN THIS FILE. The others are
-     * inside a turn that is ending and must not be failed by the Agent refusing
-     * a row; this one IS the call, and a sender is entitled to hear that its
-     * message did not land rather than to be told it did.
-     */
-    const row = this.agentWakeSink?.({ notification });
-    return { ...(row ? { row } : {}), notice: notification.body };
+    return result;
   }
 
   /**
@@ -10522,6 +10519,9 @@ export class EngineStore {
        * resolved, carrying git's own sentence about what went wrong.
        */
       if (session.preparation?.state === "preparing") continue;
+      // Released with a turn queued: the restore `submitTurn` started is on its
+      // way, and a turn must never run in a directory that is not there.
+      if (session.workspace.mode === "worktree" && session.workspace.released) continue;
       if (session.preparation?.state === "failed") {
         // Writes, so it takes a queue of its own rather than editing the copy
         // every other reader is sharing — see the `selection === "failed"`
@@ -10622,10 +10622,11 @@ export class EngineStore {
        */
       const registered = resolveMcpServers(this.listMcpServers(), session.projectId);
       /**
-       * TELAR'S OWN COMPUTER USE (cua-driver, or Sky as a fallback). Injected
-       * at claim time like everything else here, and re-resolved per claim so
-       * installing or removing the driver applies to the next turn rather than
-       * the next daemon. Goes to every provider Telar drives — Codex included
+       * TELAR'S OWN COMPUTER USE (cua-driver). A claim asks the daemon's gate,
+       * but the answer comes from the LAST PROBE, never one run here: only a
+       * measured `granted` resolves. Removing the driver applies to the next
+       * turn; a newly installed one is not injected until it is measured (the
+       * settings pane, or Test access). Goes to every provider Telar drives — Codex included
        * since #521, where withholding it turned out to leave those sessions
        * with no desktop at all rather than with their own — see
        * `withComputerUse`.
@@ -10717,10 +10718,6 @@ export class EngineStore {
          * nothing.
          */
         ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
-        // THE COORDINATOR BRIEFING IS GONE FROM HERE (#531). It was resolved at
-        // claim time because the coordinator was a session; the Agent is not
-        // one, so its briefing is a constant in its own runtime and no claim
-        // carries it. See `agent/briefing.ts`.
         turn,
       };
     }
@@ -10739,15 +10736,28 @@ export class EngineStore {
    * this reads the in-memory catalogue and nothing else. Cold yields
    * `undefined` — `prepareClaudeCatalogue` is what makes it warm in time.
    */
-  private defaultClaudeModelId(): string | undefined {
+  private defaultClaudeModelId(instanceId: string = defaultInstanceIdForDriver("claude")): string | undefined {
+    // THE READER'S CHOICE FIRST (Settings → Providers → Models). Checked against
+    // the list when there is one, so a withdrawn model falls back to Telar's
+    // pick; trusted as stored when cold, because it was picked off that list.
+    const chosen = (() => {
+      try {
+        return this.getModelOverlay(instanceId).default;
+      } catch {
+        return undefined;
+      }
+    })();
     const cached = this.modelCache.get("claude");
-    if (cached) return longDefaultOf(applyModelManifest(cached.models, this.manifest, cached.cliVersion));
+    if (cached) {
+      const listed = applyModelManifest(cached.models, this.manifest, cached.cliVersion);
+      return chosenDefault(listed, chosen)?.id ?? longDefaultOf(listed);
+    }
     // COLD MEMORY, WARM DISK. Reading the list spawns the provider's CLI, which
     // a synchronous claim cannot do and a user's first message must not wait
     // for. The last list this machine actually read is remembered instead, so a
     // restart is covered from its very first turn; the background refresh on
     // admission keeps it current.
-    return this.rememberedClaudeDefault();
+    return chosen ?? this.rememberedClaudeDefault();
   }
 
   /** The remembered default, or nothing. Never throws: a damaged record costs
@@ -10809,7 +10819,7 @@ export class EngineStore {
   ): ModelSelection | undefined {
     const normalized = this.normalizeModelSelection(driver, selection);
     if (driver !== "claude" || normalized?.model) return normalized;
-    const model = this.defaultClaudeModelId();
+    const model = this.defaultClaudeModelId(normalized?.instanceId ?? instanceId);
     // Nothing known: unchanged. A guess here would be the 200k bug wearing a
     // different hat.
     if (!model) return normalized;
@@ -11213,8 +11223,6 @@ export class EngineStore {
     if (stopped.length > 0) this.writeQueue(sessionId, queue);
     // A peer must not undo a human Stop by immediately sending another turn.
     // A fresh human message clears this gate; no discarded work is replayed.
-    // The stamp rides with it so the one exempt sender — the built-in Agent,
-    // see `submitAgentTurn` — can say WHEN the person stopped this.
     if (by === "user") {
       session.agentMessagesBlocked = true;
       session.agentMessagesBlockedAt = at;
@@ -11533,7 +11541,7 @@ export class EngineStore {
    * Refuses while work is in flight: archiving under a running turn would
    * pull the checkout out from under a live provider process.
    */
-  archiveSession(sessionId: string): Session {
+  archiveSession(sessionId: string, options: { releaseCheckout?: boolean } = {}): Session {
     const session = this.getSession(sessionId);
     if (session.state === "archived") return session;
     const active = this.readQueue(sessionId).turns.find(
@@ -11553,7 +11561,15 @@ export class EngineStore {
     // none. Reading the pair together means a future project-less session that
     // somehow carried a worktree degrades to "leave the directory" instead of
     // throwing on a lookup that cannot succeed.
-    if (session.workspace.mode === "worktree" && session.projectId) {
+    // ONLY WHEN ASKED: Storage's "Delete worktrees of archived sessions", or
+    // a caller that is archiving precisely to give the checkout back. Off, the
+    // checkout stays, and the branch and directory are the person's to keep.
+    if (
+      session.workspace.mode === "worktree" &&
+      session.projectId &&
+      !session.workspace.released &&
+      (options.releaseCheckout ?? this.cleanup.policy().archived)
+    ) {
       const project = this.getProject(session.projectId);
       // Best-effort. A leaked directory is bounded inside the engine's own
       // root and is reapable later; refusing to archive because git was
@@ -11626,7 +11642,10 @@ export class EngineStore {
      * header for why `prune` in particular must not run on a stale answer.
      */
     void this.worktreeQueue(project.root, () =>
-      removeSessionWorktreeAsync(this.worktreeGit, project.root, worktreePath, this.projectAvailability(project)),
+      removeSessionWorktreeAsync(this.worktreeGit, project.root, worktreePath, this.projectAvailability(project)).finally(() => {
+        this.forgetGitReadsUnder(project.root);
+        this.forgetGitReadsUnder(worktreePath);
+      }),
     );
   }
 
@@ -11796,6 +11815,7 @@ export class EngineStore {
     const location = readWorktreesRoot(this.paths.root);
     const configured = rootOf(location);
     const fallback = defaultWorktreesRoot(this.paths.root);
+    const roots = configured && configured !== fallback ? [configured, fallback] : [fallback];
     const at = { now: this.now(), autoSettleAfterHours: this.getInboxPolicy().autoSettleAfterHours };
 
     const projects: InventoryProject[] = this.listProjects().map((project) => ({
@@ -11828,14 +11848,16 @@ export class EngineStore {
     return buildInventory(
       {
         git: this.worktreeGit,
-        // The storage pane's own walker, so a row and the "Session checkouts"
-        // figure that sent somebody here can never disagree by a gigabyte.
-        measure: (target) => measureDirectory(target),
+        // The storage pane's own background sizer, so a row and the "Session
+        // checkouts" figure that sent somebody here can never disagree by a
+        // gigabyte — and so this read never walks a checkout itself. A row
+        // not sized yet has no `bytes`, and the inventory says `measuring`.
+        measure: async (target) => this.checkoutSizes.peek(target, roots),
       },
       {
         // Both roots while a #642 move is half-done — `readStorage`'s reason,
         // and the same pair it passes.
-        roots: configured && configured !== fallback ? [configured, fallback] : [fallback],
+        roots,
         rootsReadable: location.kind !== "absent" && location.kind !== "unreadable",
         ...(worktreesRootBlocker(location) ? { blocker: worktreesRootBlocker(location)! } : {}),
         sessions,
@@ -11902,10 +11924,29 @@ export class EngineStore {
 
       const bytes = row.bytes;
       try {
+        if (row.owner.kind === "session" && row.owner.lifecycle === "settled" && item.settled !== "archive") {
+          // RELEASE IS THE DEFAULT: the checkout goes, the
+          // session and its branch stay, and the next message brings it back.
+          const released = await this.releaseSessionWorktree(row.owner.sessionId, "manual");
+          results.push(
+            released.ok
+              ? { path: row.path, ok: true, action: "released", sessionId: row.owner.sessionId, ...(bytes === undefined ? {} : { bytes }) }
+              : {
+                  path: row.path,
+                  ok: false,
+                  refusal:
+                    released.refusal === "in-use" || released.refusal === "dirty" || released.refusal === "unpushed" || released.refusal === "process" || released.refusal === "not-found"
+                      ? released.refusal
+                      : "failed",
+                  ...(released.detail ? { detail: released.detail } : {}),
+                },
+          );
+          continue;
+        }
         if (row.owner.kind === "session" && row.owner.lifecycle === "settled") {
           // The supported path, which releases the checkout on the project
           // queue as part of putting the session down.
-          this.archiveSession(row.owner.sessionId);
+          this.archiveSession(row.owner.sessionId, { releaseCheckout: true });
           results.push({
             path: row.path,
             ok: true,
@@ -12032,19 +12073,8 @@ export class EngineStore {
     if (subscriberSessionId === input.targetSessionId) {
       throw new EngineStateError("invalid_request", "a session cannot subscribe to itself");
     }
-    /**
-     * THE BUILT-IN AGENT IS A SUBSCRIBER THAT IS NOT A SESSION (#531).
-     *
-     * Both subscriber-side checks below ask the session store about it — does
-     * it exist, is it archived — and neither has an answer for the Agent: it
-     * has no session document and cannot be archived. So they are skipped by
-     * name, and every TARGET-side check still runs unchanged, which is the half
-     * that protects the other session.
-     */
-    if (!isAgentSelf(subscriberSessionId)) {
-      const subscriber = this.getSession(subscriberSessionId);
-      if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
-    }
+    const subscriber = this.getSession(subscriberSessionId);
+    if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
     const target = this.getSession(input.targetSessionId);
     if (target.state !== "active") throw new EngineStateError("conflict", "an archived session will do nothing worth waking for");
     const events = input.events && input.events.length > 0 ? [...new Set(input.events)] : [...ALL_WAKE_KINDS];
@@ -12086,26 +12116,6 @@ export class EngineStore {
     return structuredClone(subscription);
   }
 
-  /**
-   * WHERE A WAKE FOR THE BUILT-IN AGENT GOES (#531).
-   *
-   * Registered by the daemon when the Agent's runtime is built, cleared when it
-   * is torn down. A function rather than an import because the direction has to
-   * be this way round: the runtime knows about the store, and the store must
-   * not know about a graph.
-   *
-   * IT ANSWERS THE ROW IT WROTE, OR NOTHING — added by #784. Every caller before
-   * this one fired and forgot, because a wake happens to a turn that is ending
-   * and there is nobody to tell. `sendToAgent` is a CALL somebody made, and its
-   * answer is the difference between "your message is in the Agent's inbox" and
-   * "the Agent is switched off, so nothing kept it" — which a sender that has
-   * just reported a finding needs to know and cannot find out any other way.
-   * `undefined` stays the honest answer for both of those misses.
-   */
-  setAgentWakeSink(sink: ((wake: AgentWake) => AgentInboxRow | undefined) | undefined): void {
-    this.agentWakeSink = sink;
-  }
-  private agentWakeSink?: (wake: AgentWake) => AgentInboxRow | undefined;
   /** Sessions already refused for running on the removed `telar` driver, so the
    *  refusal is one log line rather than one per worker poll (#531). */
   private readonly warnedLegacyDriver = new Set<string>();
@@ -12128,10 +12138,9 @@ export class EngineStore {
     return true;
   }
 
-  /** What this session — or the built-in Agent — has asked to be woken by. */
+  /** What this session has asked to be woken by. */
   subscriptionsFor(subscriberSessionId: string): Subscription[] {
-    // The existence check is the session store's, and the Agent is not in it.
-    if (!isAgentSelf(subscriberSessionId)) this.getSession(subscriberSessionId);
+    this.getSession(subscriberSessionId);
     return structuredClone(this.readSubscriptions().filter((each) => each.subscriberSessionId === subscriberSessionId));
   }
 
@@ -12232,10 +12241,6 @@ export class EngineStore {
      * prevent, one level up. It is read and never written (`holdNotification`
      * stores it, `mergeNotifications` builds new ones), so sharing it is safe.
      *
-     * AND IT IS WHAT THE AGENT'S BRANCH HANDS OVER TOO (#541 A), so an inbox row
-     * and a session's notification item cannot describe the same completion
-     * differently.
-     *
      * THE WAKE TEXT IS ITS BODY, NOT A TURN'S INPUT (#550). Same sentence, same
      * author — what changed is where it sits. On `input` it was engine prose in
      * the slot a person's words occupy, and every reader downstream had to be
@@ -12252,33 +12257,6 @@ export class EngineStore {
     for (const subscription of hits) {
       const subscriberId = subscription.subscriberSessionId;
       if (subscriberId === targetSessionId) continue;
-      /**
-       * THE AGENT'S WAKE STARTS NOTHING (#531, changed by #541 A).
-       *
-       * Everything below is a turn on a SESSION — a queue, a backlog cap, a
-       * mailbox, a coalesce against what is already queued there. The Agent has
-       * none of that machinery in this store, and as of #541 it wants none: a
-       * wake becomes an INBOX ROW on its thread and the next turn a PERSON
-       * begins opens with a digest of what is unread. So the notification is
-       * handed over and the runtime writes a row; the one-shot is still spent
-       * here, on the same rule as every other subscription.
-       *
-       * THE SINK IS OPTIONAL AND A MISS IS SILENT. An engine whose Agent is
-       * switched off has no sink registered, and a wake for a subscription it
-       * has not taken out yet is a wake with nowhere to go — which is not a
-       * fault of the turn that just ended.
-       */
-      if (isAgentSelf(subscriberId)) {
-        try {
-          this.agentWakeSink?.({ notification });
-        } catch {
-          // The Agent's own runtime refusing a wake must not fail the turn
-          // whose ending caused it — `fireSubscriptions`' contract, applied to
-          // the one subscriber that is not a session.
-        }
-        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
-        continue;
-      }
       let subscriber: Session | undefined;
       try {
         subscriber = this.getSession(subscriberId);
@@ -12863,7 +12841,7 @@ export class EngineStore {
        * reindexes inside it — so resolving mid-iteration would be walking a map
        * that moves underneath.
        */
-      let due: Array<{ request: EngineRequest; answer: RequestDefault; deadlineMs: number }>;
+      let due: Array<{ request: EngineRequest; answer: RequestDefault }>;
       try {
         due = [...this.liveRequests(sessionId).values()].flatMap((request) => {
           /**
@@ -12877,13 +12855,13 @@ export class EngineStore {
            */
           const answer = deadlineResolution(request, now);
           if (answer === null || request.deadlineMs === undefined) return [];
-          return [{ request, answer, deadlineMs: request.deadlineMs }];
+          return [{ request, answer }];
         });
       } catch {
         // One unreadable session must not stop the sweep for the rest.
         continue;
       }
-      for (const { request, answer, deadlineMs } of due) {
+      for (const { request, answer } of due) {
         try {
           this.resolveRequest(sessionId, request.id, {
             decision: answer.decision,
@@ -12904,46 +12882,9 @@ export class EngineStore {
           continue;
         }
         resolved.push(request.id);
-        this.announceTimeout(sessionId, request, answer.decision, deadlineMs);
       }
     }
     return resolved;
-  }
-
-  /**
-   * ONE INBOX ROW FOR A DECISION TAKEN IN SOMEBODY'S ABSENCE — #541 D.
-   *
-   * AFTER THE RESOLUTION AND OUTSIDE ITS TRANSACTION, on `openRequest`'s own
-   * argument: the durable fact is the resolution, and an Agent that is switched
-   * off, reset, or simply absent must not be able to undo one by refusing to
-   * hear about it.
-   *
-   * IT IS NOT GATED ON A SUBSCRIPTION, and that is the difference from every
-   * other row in that inbox. A wake is news about work somebody asked to be told
-   * about; this is a decision made on the person's behalf, and "nobody had
-   * subscribed" is not a reason to keep that from them.
-   */
-  private announceTimeout(sessionId: string, request: EngineRequest, decision: "accept" | "decline", deadlineMs: number): void {
-    if (!this.agentWakeSink) return;
-    try {
-      const session = this.getSession(sessionId);
-      this.agentWakeSink({
-        notification: timeoutNotification({
-          sessionId,
-          sessionTitle: session.title,
-          runId: request.runId,
-          requestId: request.id,
-          requestKind: request.detail.kind,
-          title: clampWake(requestTitle(request.detail)),
-          decision,
-          deadlineMs,
-        }),
-        inboxKind: "request_timeout",
-      });
-    } catch {
-      // The Agent's runtime refusing a row must not undo a resolution that has
-      // already committed — `fireSubscriptions`' contract, one sweep over.
-    }
   }
 
   /**
@@ -15486,7 +15427,12 @@ export class EngineStore {
        * AND carried a failure — red, spinning, and wrong twice.
        */
       const settled = known !== undefined && (known.state === "completed" || known.state === "failed" || known.state === "stopped");
-      const state = settled ? known.state : seed.state;
+      // …except an ending nobody stated (`isUnstatedEnding`): the level signal
+      // closed it, and the notification behind it saying how it went is the
+      // better account. Only a worse outcome may replace it.
+      const corrected = settled && isUnstatedEnding(known) && (seed.state === "failed" || seed.state === "stopped");
+      const kept = settled && !corrected;
+      const state = kept ? known.state : seed.state;
       const terminal = state === "completed" || state === "failed" || state === "stopped";
       /**
        * A SETTLED TASK THAT LEARNS NOTHING NEW IS NOT RE-ANNOUNCED. The fold
@@ -15499,7 +15445,7 @@ export class EngineStore {
        * summary arriving after a sweep already closed the row) is worth a
        * row; a bare restatement of the ending is dropped here.
        */
-      if (settled) {
+      if (kept) {
         const additions = definedOnly(seed);
         const changed = Object.entries(additions)
           .filter(([key, value]) => !(key === "id" || key === "state" || key === "kind" || key === "providerTaskId") && JSON.stringify(known[key as keyof Task]) !== JSON.stringify(value))
@@ -15679,10 +15625,9 @@ export class EngineStore {
    * than one that is behind, because a reader cannot recover from it by asking
    * again.
    *
-   * A THROWING WATCHER MUST NOT TAKE DOWN THE TURN THAT WAS TALKING TO IT.
-   * Same guarantee `agentRuntime.push` makes, for the same reason: the socket
-   * on the other end is allowed to have gone, and its own route is what tidies
-   * up when it notices.
+   * A THROWING WATCHER MUST NOT TAKE DOWN THE TURN THAT WAS TALKING TO IT. The
+   * socket on the other end is allowed to have gone, and its own route is what
+   * tidies up when it notices.
    */
   private publish(event: EngineEvent): void {
     if (this.watchers.size === 0) return;
@@ -15703,9 +15648,6 @@ export class EngineStore {
    * writer. That is what makes this feed COMPLETE and TOTALLY ORDERED without
    * anybody having to remember to emit: a second call site would be a frame
    * that exists for some writes and not others, which is worse than no feed.
-   *
-   * THE SAME SIGNATURE AS `agentRuntime.watch`, deliberately, so the engine's
-   * two streams are one pattern rather than two things to learn.
    *
    * A FRAME IS NEVER THE RECORD. Every frame here names a fact the reader can
    * re-derive from a cursor'd read of `/events` — which is what makes the feed

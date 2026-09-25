@@ -94,9 +94,8 @@ test("a session event reaches a watcher as a thin frame, and the daemon still cl
 
 test("a watcher whose socket has gone does not take down the write that found it (#586)", async () => {
   /**
-   * `publish` SWALLOWS A THROWING WATCHER, the guarantee `agentRuntime.push`
-   * makes for the same reason: the socket on the other end is allowed to have
-   * gone, and its own route unsubscribes when it notices. The way this fails
+   * `publish` SWALLOWS A THROWING WATCHER: the socket on the other end is
+   * allowed to have gone, and its own route unsubscribes when it notices. The way this fails
    * without that is the worst kind — a turn that cannot be journalled because
    * somebody closed a tab.
    *

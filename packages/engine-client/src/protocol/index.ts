@@ -16,6 +16,7 @@
  *   notes     the project notebook — quick notes per project, and its socket
  *   prompts   prepared prompts: unsent messages kept by name, either hand's
  *   github    issues and pull requests, as the `gh` CLI reports them
+ *   workspace how a project's worktrees are prepared: machine → project config
  *   events    the journal: one discriminated union, plus transport shapes
  */
 export * from "./common";
@@ -33,3 +34,5 @@ export * from "./prompts";
 export * from "./github";
 export * from "./events";
 export * from "./observations";
+export * from "./workspace";
+export * from "./cleanup";

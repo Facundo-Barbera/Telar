@@ -1,21 +1,13 @@
 /**
  * THE DICTATION KEY — one file, 0600, written and never read back out (#544).
  *
- * ── WHY IT IS NOT THE AGENT'S FILE ──────────────────────────────────────────
- * `agent/credentials.ts` holds an OpenCode Go key and has a three-rung ladder
- * under it: the pasted key, `OPENCODE_API_KEY`, then the OpenCode CLI's own
- * sign-in. None of those rungs is a Deepgram key. Sharing the file would mean
- * one `{ key }` field standing for two different accounts at two different
- * vendors, and the first person to paste a Deepgram key into the Agent's row
- * would switch their Agent off without being told why.
- *
- * So dictation gets `<engineRoot>/dictation/credentials.json`, the same shape
- * and the same mode, and exactly one rung. There is no environment fallback
+ * Dictation keeps `<engineRoot>/dictation/credentials.json`, its own file at
+ * 0600 with exactly one rung. There is no environment fallback
  * on purpose: a Deepgram key in the engine's environment is not something
  * anybody has already exported for another tool, so a rung for it would be a
  * place for a key to come from that nobody could find when it surprised them.
  *
- * ── THE RULES, WHICH ARE THE AGENT'S ────────────────────────────────────────
+ * ── THE RULES ───────────────────────────────────────────────────────────────
  * NEVER ECHOED, not even redacted, not even its length. The only thing a
  * client is told is whether one is CONFIGURED — there is no round trip to
  * preserve, because the only field is one a person retypes.

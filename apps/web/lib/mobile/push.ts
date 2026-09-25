@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http2 from "node:http2";
 import { relayConfig, relayHostId } from "./relay";
+import { parseRelayCredential } from "./relay-v2";
 import { remoteHome } from "../remote/store";
 
 export interface MobileRegistration {
@@ -18,10 +19,18 @@ export interface MobileRegistration {
   previews: boolean;
   mutedSessions: string[];
   activities: { sessionId: string; token: string; startedAt: number }[];
+  /** Relay v2: how this Mac sends to the phone without its tokens. Absent
+   *  from a phone that could not register itself, which stays on v1. */
+  relay?: RelayCredential;
 }
+/** What the phone minted for THIS Mac at the relay — see `relay-v2.ts`. */
+export type RelayCredential = { handle: string; keyId: string; sendKey: string };
 export interface SessionSignal {
   id: string; title: string; activity: string; activityAt?: number;
   lastTurnEndedAt?: number; lastTurnFailed?: boolean;
+  /** The one open request a notification may offer to approve, when there is
+   *  exactly one and it is an approval rather than a question or a secret. */
+  approvable?: string;
 }
 export interface PushRecord extends MobileRegistration {
   deviceId: string;
@@ -73,12 +82,19 @@ export interface PushRecord extends MobileRegistration {
    * value in both copies of the file and identifies nothing from here.
    */
   relayHostId?: string;
+  /** The test alert sent for this relay key, and what came of it: what
+   *  Settings shows as "working" or the exact reason (`relay-v2.ts`). */
+  relayTest?: { keyId: string; at: number; status: number; reason?: string; relay?: true };
   updatedAt: number;
   seen: Record<string, string>;
   activitySent: Record<string, number>;
 }
-export type PushPayload = { aps: Record<string, unknown>; url?: string };
-export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity"; collapseId: string; payload: PushPayload };
+/** `request` names the request an alert's Approve action resolves: that one, never whatever is open by then. */
+export type PushPayload = { aps: Record<string, unknown>; url?: string; request?: string };
+/** The phone registers these (`NotificationActions.swift`): Approve + Open, or Open alone. */
+export const CATEGORY_REQUEST = "TELAR_REQUEST", CATEGORY_SESSION = "TELAR_SESSION";
+/** `activityId` names a Live Activity for relay v2, which holds its token. */
+export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity"; collapseId: string; payload: PushPayload; activityId?: string };
 
 /**
  * WHAT CAME BACK FROM A SEND — issue #584.
@@ -145,7 +161,9 @@ export function parseRegistration(input: unknown): MobileRegistration {
     if (!a || typeof a.sessionId !== "string" || !a.sessionId || a.sessionId.length > 256 || typeof a.token !== "string" || !hex.test(a.token)
       || typeof a.startedAt !== "number" || !Number.isFinite(a.startedAt) || a.startedAt <= 0) throw new PushInputError("Invalid activity");
   }
+  const relay = parseRelayCredential(x.relay);
   return { ...(x.liveActivities === undefined ? {} : { liveActivities: x.liveActivities as boolean }),
+    ...(relay === undefined ? {} : { relay }),
     ...(x.pushToStartToken === undefined ? {} : { pushToStartToken: x.pushToStartToken as string }),
     ...(x.hostName === undefined ? {} : { hostName: x.hostName as string }),
     hostId: x.hostId, token: x.token, topic: x.topic as string, sandbox: x.sandbox as boolean,
@@ -223,7 +241,7 @@ export function saveRegistration(deviceId: string, registration: MobileRegistrat
   //
   // `relayRevision` is deliberately NOT carried: the revision below is new, so
   // the relay has not seen this registration and must be sent it once.
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
 export function signalKey(session: SessionSignal): string {
@@ -241,16 +259,18 @@ export function notification(record: MobileRegistration, session: SessionSignal,
     else if (record.completions) body = "A session finished. Its result is ready to review.";
   }
   if (!body) return;
+  const approvable = session.activity === "blocked" ? session.approvable : undefined;
   const collapseId = crypto.createHash("sha256").update(session.id).digest("hex");
   return { token: record.token, topic: record.topic, sandbox: record.sandbox, kind: "alert", collapseId,
-    payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, sound: "default", "thread-id": `${record.hostId}:${session.id}` }, url: sessionURL(record.hostId, session.id) } };
+    payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, sound: "default", "thread-id": `${record.hostId}:${session.id}`,
+      category: approvable ? CATEGORY_REQUEST : CATEGORY_SESSION }, url: sessionURL(record.hostId, session.id), ...(approvable ? { request: approvable } : {}) } };
 }
 export function activityDelivery(record: MobileRegistration, follow: MobileRegistration["activities"][number], session: SessionSignal | undefined, now: number): Delivery {
   const ended = !session || session.activity === "idle";
   const status = !session ? "Session unavailable" : session.activity === "blocked" ? "Needs you" : ended ? session.lastTurnFailed ? "Failed" : "Finished" : session.activity === "queued" ? "Queued" : session.activity === "monitoring" ? "Monitoring" : "Working";
-  return { token: follow.token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity",
+  return { token: follow.token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", activityId: follow.sessionId,
     collapseId: crypto.createHash("sha256").update(follow.token).digest("hex"), payload: { aps: {
-      timestamp: Math.floor(now), event: ended ? "end" : "update", "stale-date": Math.floor(now + 180),
+      timestamp: Math.floor(now), event: ended ? "end" : "update", "stale-date": Math.floor(now + ACTIVITY_STALE_S),
       ...(ended ? { "dismissal-date": Math.floor(now + 300) } : {}),
       // Swift's default Date Codable representation uses the 2001 reference epoch.
       "content-state": { title: record.previews ? (session?.title ?? "Telar session").slice(0, 160) : "Telar session", status, updatedAt: now - 978307200, startedAt: follow.startedAt - 978307200, ended },
@@ -264,6 +284,14 @@ export function pushConfigured(sandbox = false): boolean {
     const key = crypto.createPrivateKey(fs.readFileSync(process.env.TELAR_APNS_KEY_PATH));
     return key.asymmetricKeyType === "ec" && key.asymmetricKeyDetails?.namedCurve === "prime256v1";
   } catch { return false; }
+}
+/**
+ * WHETHER THIS MAC CAN SEND TO ANYBODY: a v1 relay or APNs key of its own, or
+ * any phone that brought a relay v2 credential — which needs nothing here.
+ */
+export function pushAvailable(): boolean {
+  if (pushConfigured()) return true;
+  try { return readPushRecords().some(record => record.relay !== undefined); } catch { return false; }
 }
 let cachedJWT: { identity: string; at: number; token: string } | undefined;
 function bearer(): string {
@@ -319,6 +347,19 @@ export async function sendAPNs(delivery: Delivery): Promise<DeliveryResult> {
 }
 
 export const AUTOMATIC_ACTIVITY = "__automatic__";
+/**
+ * HOW OFTEN A LIVE ACTIVITY IS REFRESHED WITH NOTHING NEW TO SAY, AND WHEN IT
+ * GOES STALE WITHOUT ONE — in seconds.
+ *
+ * A card whose `stale-date` passes reads "Waiting for an update" on the lock
+ * screen, so a session that is quietly working, or blocked on you, still gets
+ * a push before then. The refresh sits well inside the stale window, so one
+ * late tick does not grey the card. Every refresh is a relay call against the
+ * phone's 5,000-a-day budget, which alerts share; at one a minute, a few cards
+ * spent most of it.
+ */
+export const ACTIVITY_REFRESH_S = 120;
+export const ACTIVITY_STALE_S = 300;
 export function automaticSessions(sessions: SessionSignal[]): SessionSignal[] {
   const rank: Record<string, number> = { blocked: 0, working: 1, queued: 2, monitoring: 3 };
   return sessions.filter(s => s.activity in rank).sort((a,b) => rank[a.activity]! - rank[b.activity]! || a.id.localeCompare(b.id));
@@ -333,10 +374,10 @@ export function automaticActivityDelivery(record: MobileRegistration, sessions: 
     startedAt: startedAt - 978307200, updatedAt: now - 978307200, ended,
     sessionId: focus?.id, activeCount: active.length,
   };
-  return { token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity",
+  return { token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", ...(start ? {} : { activityId: AUTOMATIC_ACTIVITY }),
     collapseId: crypto.createHash("sha256").update(`automatic:${record.hostId}:${start ? startedAt : token}`).digest("hex"),
     payload: { aps: { timestamp: Math.floor(now), event: start ? "start" : ended ? "end" : "update", "content-state": state,
-      "stale-date": Math.floor(now + 180), ...(ended ? {"dismissal-date":Math.floor(now + 300)} : {}),
+      "stale-date": Math.floor(now + ACTIVITY_STALE_S), ...(ended ? {"dismissal-date":Math.floor(now + 300)} : {}),
       ...(start ? { "attributes-type":"SessionActivityAttributes", attributes:{hostId:record.hostId,sessionId:AUTOMATIC_ACTIVITY,hostName:record.hostName ?? "Mac"},
         "input-push-token":1, alert:{title:"Telar",body:"Agent work in progress"} } : {}),
     } } };

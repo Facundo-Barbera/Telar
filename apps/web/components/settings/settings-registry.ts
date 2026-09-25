@@ -43,17 +43,21 @@
  */
 
 import {
+  ArchiveIcon,
   AudioLinesIcon,
   BellIcon,
   BlocksIcon,
   BookMarkedIcon,
   CameraIcon,
   CircleUserRoundIcon,
+  ClockIcon,
+  CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
   GaugeIcon,
+  GitBranchIcon,
   GitPullRequestIcon,
   GlobeIcon,
   HardDriveIcon,
@@ -61,24 +65,61 @@ import {
   InfoIcon,
   KeyboardIcon,
   KeyRoundIcon,
-  RotateCcwIcon,
   LayersIcon,
   MicIcon,
   LockIcon,
   MonitorIcon,
+  NetworkIcon,
+  PackageIcon,
   PaletteIcon,
   PlugIcon,
   PlugZapIcon,
+  ScrollTextIcon,
   ServerIcon,
-  ShieldCheckIcon,
   SlidersHorizontalIcon,
   SmartphoneIcon,
   SparklesIcon,
+  TerminalIcon,
   TimerIcon,
   TypeIcon,
+  VariableIcon,
   WrenchIcon,
 } from "lucide-react";
 import { indexSettings, type SettingsPageSpec } from "@/lib/settings-search";
+
+/** HOW A NEW WORKTREE IS PREPARED — one project's answer, on Projects. */
+const WORKTREE_PREPARATION_ROWS: SettingsPageSpec["groups"][number]["rows"] = [
+  {
+    title: "Setup",
+    hint: "A command run in each new worktree, optionally holding the first turn until it finishes.",
+    keywords: ["install", "bootstrap", "prepare", "script", "timeout"],
+    icon: TerminalIcon,
+  },
+  {
+    title: "Environment",
+    hint: "Variables exported to the setup command.",
+    keywords: ["env", "variables", "export"],
+    icon: VariableIcon,
+  },
+  {
+    title: "Ports",
+    hint: "One stable port per name, exported under that name.",
+    keywords: ["port", "server", "collide"],
+    icon: NetworkIcon,
+  },
+  {
+    title: "Seed dependencies",
+    hint: "Paths copied from the main checkout into a new worktree that lacks them.",
+    keywords: ["copy", "clone", "dependencies", "seed"],
+    icon: CopyIcon,
+  },
+  {
+    title: "Artifacts",
+    hint: "Output a worktree can regenerate, with the command that rebuilds it.",
+    keywords: ["build output", "regenerate", "cache", "generated"],
+    icon: PackageIcon,
+  },
+];
 
 /**
  * The panes, in nav order, with the groups and rows each renders.
@@ -140,17 +181,15 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       /**
-       * THE MAIN ASSISTANT'S GROUP STOOD HERE, and the Agent's took its place
-       * (#531) — and the Agent's has since moved off General entirely, to a tab
-       * of its own under Runtime (#556). Dictation's group left by the same
-       * door and for a sharper reason (#544): it ships OFF, so the row a reader
-       * wants is the switch that turns it on, and a switch buried inside the
-       * pane everybody opens for something else is one nobody finds.
+       * DICTATION'S GROUP STOOD HERE, and left for a tab of its own (#544): it
+       * ships OFF, so the row a reader wants is the switch that turns it on, and
+       * a switch buried inside the pane everybody opens for something else is
+       * one nobody finds.
        *
-       * Both are declared on the `agent` and `dictation` pages below. What
+       * It is declared on the `dictation` page below. What
        * `settings-registry.test.ts` pins is that a row is declared on the pane
-       * that actually renders it — which is the drift either move would
-       * otherwise have introduced silently.
+       * that actually renders it — which is the drift that move would otherwise
+       * have introduced silently.
        */
       {
         title: "Generated text",
@@ -297,12 +336,24 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             icon: SparklesIcon,
           },
           {
+            title: "Model options",
+            hint: "New conversations in this project start with this model and these options.",
+            keywords: ["effort", "reasoning", "fast mode", "per project"],
+            icon: GaugeIcon,
+          },
+          {
             title: "Where new conversations start",
             hint: "The project's own checkout, or a worktree cut from it.",
             keywords: ["worktree", "checkout", "workspace", "branch"],
             icon: FolderGitIcon,
           },
         ],
+      },
+      {
+        // Rendered only for a project on this Mac; at All projects a search
+        // lands on the pane and the scope picker, which is the step to take.
+        title: "New worktrees",
+        rows: WORKTREE_PREPARATION_ROWS,
       },
       {
         // THE PLUGIN TOGGLES ARE NOT INDEXED, and that is the rule at the top
@@ -494,12 +545,15 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         title: "Push notifications",
         rows: [
           {
-            title: "Provision relay",
+            // NAVIGATE-ONLY. The pane is status only since relay v2: its rows
+            // are the phones themselves, values rather than copy, so there is
+            // no standing row to anchor to — the group heading is the title.
+            title: "Push notifications",
             // The words somebody types when notifications are not arriving —
             // they search for the symptom, not for "relay", which is a term
             // they have no reason to know.
-            hint: "Whether this Mac can send alerts to your phones, and the relay credential that lets it.",
-            keywords: ["notifications", "apns", "alerts", "push", "relay", "keychain", "phone", "not working"],
+            hint: "Whether this Mac can send alerts to your phones, and whether each one is actually being reached.",
+            keywords: ["notifications", "apns", "alerts", "push", "relay", "phone", "not working", "test notification"],
             icon: BellIcon,
           },
         ],
@@ -564,76 +618,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Camera, microphone, notifications, location, clipboard and screen sharing, per site and per browser profile.",
             keywords: ["camera", "microphone", "mic", "webcam", "notifications", "location", "geolocation", "clipboard", "screen share", "screen sharing", "permission", "permissions", "allow", "block", "revoke", "site"],
             icon: CameraIcon,
-          },
-        ],
-      },
-    ],
-  },
-  /**
-   * THE AGENT, ON ITS OWN PANE (#556) — every row of it, in the order the pane
-   * renders them.
-   *
-   * INDEXED THOUGH IT IS EXPERIMENTAL, for the reason the Main group before it
-   * was: a feature nobody can find is one nobody can switch off either. The
-   * keywords are what somebody types having SEEN the rail entry and wanting to
-   * know what it is — "main" among them, because this replaces what that word
-   * used to name and people keep typing it.
-   *
-   * SIX ROWS ON ONE PANE IS WHY THE PANE EXISTS. They were four rows in a group
-   * stacked between Links and Dictation on General, and the two the composer's
-   * pills already wrote — effort and access — had no settings home at all.
-   */
-  {
-    id: "agent",
-    label: "Agent",
-    icon: SparklesIcon,
-    groups: [
-      {
-        title: "Agent",
-        rows: [
-          {
-            title: "Agent (experimental)",
-            hint: "One built-in conversation per Mac for coordinating Telar work — no project, no checkout, running Telar's own loop.",
-            keywords: ["agent", "main", "assistant", "coordinator", "orchestrator", "delegate", "experimental", "rail", "briefing"],
-            icon: SparklesIcon,
-          },
-          {
-            /** Indexed by the words somebody types when a turn has just failed
-             *  and the message said "key": the pane is where it is fixed. */
-            title: "OpenCode Go key",
-            hint: "The credential the Agent calls OpenCode Go with. Stored with this Mac's engine state.",
-            keywords: ["agent", "key", "api key", "opencode", "go", "credential", "token", "401"],
-            icon: KeyRoundIcon,
-          },
-          {
-            title: "Model",
-            hint: "Which model OpenCode Go serves the Agent. Empty runs the default.",
-            keywords: ["agent", "model", "opencode", "go", "kimi"],
-            icon: SparklesIcon,
-          },
-          {
-            /** Findable by the wire name too: somebody who has read an API doc
-             *  types `reasoning_effort`, not "how hard it thinks". */
-            title: "Reasoning effort",
-            hint: "How hard the Agent's model thinks on each turn. Auto does not send the parameter at all.",
-            keywords: ["agent", "reasoning", "effort", "reasoning_effort", "thinking", "low", "medium", "high", "auto"],
-            icon: GaugeIcon,
-          },
-          {
-            /** "Approve" and "ask me" are what somebody types when they are
-             *  tired of answering the gate — or want to start being asked. */
-            title: "Access",
-            hint: "Whether you answer the Agent's approval gate or policy does. Neither widens which calls are gated.",
-            keywords: ["agent", "access", "approval", "approve", "ask", "auto", "permission", "gate", "confirm"],
-            icon: ShieldCheckIcon,
-          },
-          {
-            /** Indexed by "start over" and "clear", which is what somebody
-             *  looking for this calls it before they find the word Telar uses. */
-            title: "Reset conversation",
-            hint: "Start the Agent again with an empty thread. The old conversation is archived, not deleted.",
-            keywords: ["agent", "reset", "clear", "start over", "new conversation", "archive", "thread"],
-            icon: RotateCcwIcon,
           },
         ],
       },
@@ -941,16 +925,9 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     ],
   },
   /**
-   * STORAGE (#642) — and the reason its rows are indexed at all is the reason
-   * the pane exists: nobody knew `execution.sqlite` was a gigabyte, so nobody
-   * would think to look for a pane about it. What a person types here is a
-   * symptom ("disk full", "space"), not a destination.
-   *
-   * THE PER-CATEGORY ROWS ARE NOT INDEXED. Their titles are copy, but which of
-   * them EXIST depends on what this install happens to have on disk — a machine
-   * that never ran the data-science plugin has no Python row — and an index
-   * that found a row which is not there is worse than one that finds the pane.
-   * The two standing rows are: the total, and the location.
+   * STORAGE — what Telar deletes on its own, and where things live. What a
+   * person types here is a symptom ("disk full", "space"), so the cleanup rows
+   * carry those words.
    */
   {
     id: "storage",
@@ -958,31 +935,48 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     icon: HardDriveIcon,
     groups: [
       {
-        title: "What Telar is keeping",
+        title: "Worktrees",
         rows: [
           {
-            title: "Total",
-            hint: "How much disk Telar itself is using, by category, with a way to open each one in Finder.",
-            keywords: ["disk", "space", "size", "storage", "gigabytes", "full", "how big", "reveal", "finder", "sqlite", "database", "cache"],
-            icon: HardDriveIcon,
+            title: "Delete inactive worktrees",
+            hint: "Releases the worktree of a session inactive this many days; its branch and conversation are kept.",
+            keywords: ["cleanup", "clean up", "disk", "space", "free", "full", "reclaim", "checkout", "idle", "old", "days"],
+            icon: ClockIcon,
+          },
+          {
+            title: "Delete unchanged worktrees",
+            hint: "Releases the worktree of an idle session whose branch has no commits beyond the default branch.",
+            keywords: ["cleanup", "clean up", "disk", "space", "reclaim", "checkout", "unchanged", "empty", "branch"],
+            icon: GitBranchIcon,
+          },
+          {
+            title: "Delete worktrees of archived sessions",
+            hint: "Otherwise archiving keeps the worktree.",
+            keywords: ["cleanup", "clean up", "disk", "space", "reclaim", "checkout", "archive"],
+            icon: ArchiveIcon,
+          },
+          {
+            /**
+             * TWO ROWS CALLED "Location", ON ONE PANE, AND DELIBERATELY. One
+             * moves the reproducible worktrees; the other moves everything,
+             * including the history that nothing reproduces. The group tells
+             * them apart and is half the anchor.
+             */
+            title: "Location",
+            hint: "Where new worktrees are made, and how to put them on another drive without moving your history.",
+            keywords: ["worktree", "checkout", "external", "drive", "move", "space", "disk", "relocate"],
+            icon: FolderGitIcon,
           },
         ],
       },
       {
-        /**
-         * TWO ROWS CALLED "Location", ON ONE PANE, AND DELIBERATELY. One moves
-         * the reproducible 92%; the other moves everything including the
-         * history that nothing reproduces. The group is what tells them apart,
-         * and it is half the anchor, so both are findable and neither is
-         * mistaken for the other.
-         */
-        title: "Session checkouts",
+        title: "Logs",
         rows: [
           {
-            title: "Location",
-            hint: "Where session checkouts are made, and how to put them on another drive without moving your history.",
-            keywords: ["worktree", "checkout", "external", "drive", "move", "space", "disk", "12 gb", "relocate"],
-            icon: FolderGitIcon,
+            title: "Delete old logs",
+            hint: "Rotated logs only.",
+            keywords: ["cleanup", "clean up", "disk", "space", "logs", "rotate", "days"],
+            icon: ScrollTextIcon,
           },
         ],
       },

@@ -97,13 +97,10 @@ function rowTitle(command: Command): string {
  * WHAT THE FOLDED RANGE COUNTS — issue #569.
  *
  * The row draws `⌘1–⌘9` and a title, and neither can say the thing a reader
- * actually has to know: the numbers follow the rail's own order, and the Agent's
- * entry is part of that order when the Mac in front of you has one. Somebody
- * whose ⌘1 stopped opening their first conversation has to be able to find out
- * why on the page where the binding lives.
+ * actually has to know: the numbers follow the rail's own order, which is a
+ * rule and not a label.
  */
-const JUMP_HINT =
-  "The Nth entry in the rail, top to bottom as drawn — shelved rows and folded groups skipped. When the Agent is switched on it takes ⌘1 and conversations start at ⌘2.";
+const JUMP_HINT = "The Nth entry in the rail, top to bottom as drawn — shelved rows and folded groups skipped.";
 
 /**
  * The registry, as rows.

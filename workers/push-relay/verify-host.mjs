@@ -17,7 +17,7 @@ try {
   assert.equal(registered.status,200);
   const sent=await call(path+'/push','POST',{token:'0'.repeat(64),topic:'com.telar.mobile',sandbox:false,kind:'alert',collapseId:'0'.repeat(64),payload:{aps:{alert:'Telar transport verification'}}});
   assert.equal(sent.status,200);
-  assert.deepEqual(await sent.json(),{status:400});
+  assert.deepEqual(await sent.json(),{status:400,reason:'BadDeviceToken'});
   console.log('PASS: health, anonymous refusal, authenticated configuration, registration, APNs dummy-token rejection. No real notification sent.');
 } finally {
   assert.equal((await call(path,'DELETE')).status,200);

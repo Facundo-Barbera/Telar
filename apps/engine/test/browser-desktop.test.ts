@@ -68,6 +68,13 @@ test("calls hit POST /tool with the bearer, normalized name and validated args",
   const listed = await client.call("session_one", "browser_list_tabs", {});
   expect(textOf(listed)).toBe("ok from host");
   expect(seen[0]).toEqual({ scopeKey: "session_one", name: "browser_tabs", args: { action: "list" } });
+  // A resize's mode and preset are the HOST's vocabulary and cross the wire
+  // as themselves. Rewritten to numbers (the headless rule) `{mode: "fit"}`
+  // became a request for a fixed 1280×800, and the tab never returned to fit.
+  await client.call("session_one", "browser_resize", { mode: "fit" });
+  await client.call("session_one", "browser_resize", { preset: "phone" });
+  expect(seen[1]).toEqual({ scopeKey: "session_one", name: "browser_resize", args: { mode: "fit" } });
+  expect(seen[2]).toEqual({ scopeKey: "session_one", name: "browser_resize", args: { preset: "phone" } });
 });
 
 test("invalid arguments are refused on THIS side of the wire, naming the field", async () => {

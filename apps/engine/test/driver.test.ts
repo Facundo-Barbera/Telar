@@ -183,8 +183,12 @@ test("streamed deltas are coalesced per block, and a second block never joins th
     { type: "assistant_message", text: "abcd" },
     { type: "reasoning", text: "hmmm" },
   ]);
-  // …and six chunks cost the engine far fewer commands than six.
-  expect(sink.batches.length).toBeLessThanOrEqual(4);
+  // …and six chunks cost the engine far fewer commands than six. The bound
+  // counts each block's opening as its own command: a block start is flushed
+  // at once, so a thought with no text deltas is still visible while it runs.
+  expect(sink.batches.length).toBeLessThanOrEqual(5);
+  const deltaBatches = sink.batches.filter((batch) => batch.some((o) => o.kind === "content.delta"));
+  expect(deltaBatches.length).toBeLessThanOrEqual(2);
 });
 
 test("a closed block carries its ACCUMULATED text, so a reloaded session is not empty", async () => {
@@ -249,6 +253,84 @@ test("thinking blocks are captured as reasoning, which v1 discarded entirely", a
   expect(delta?.kind === "content.delta" && delta.stream).toBe("reasoning_text");
   // Reasoning must NOT contribute to the turn's final text.
   await expect(result).resolves.toMatchObject({ text: "" });
+});
+
+test("a thought with its text withheld still reaches the engine while it runs, with its size", async () => {
+  /**
+   * THE 6m50s OF NOTHING. Claude Code in Telar mode sends no thinking text —
+   * an empty block, deltas carrying only `estimated_tokens`, a signature, and
+   * `system/thinking_tokens`. The row used to be buffered until the block
+   * stopped, so the engine saw `turn.started` and then silence. Parked mid-
+   * thought here: everything asserted below arrived BEFORE the release.
+   */
+  let release!: () => void;
+  const parked = new Promise<void>((resolve) => (release = resolve));
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "stream_event", event: { type: "message_start", message: {} } };
+      yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "", estimated_tokens: 900 } } };
+      yield { type: "system", subtype: "thinking_tokens", estimated_tokens: 1200, estimated_tokens_delta: 300 };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } } };
+      await parked;
+      yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  const tokensReported = () =>
+    sink.observations.flatMap((o) => (o.kind === "item.updated" && o.item.detail.type === "reasoning" ? [o.item.detail.estimatedTokens] : []));
+  await until("the running estimate reached the sink", () => tokensReported().includes(1200));
+  const started = sink.observations.find((o) => o.kind === "item.started");
+  expect(started?.kind === "item.started" && started.item.detail.type).toBe("reasoning");
+  // One report per 500-token step crossed, not one per frame.
+  expect(tokensReported()).toEqual([900, 1200]);
+  expect(sink.observations.some((o) => o.kind === "item.completed")).toBeFalse();
+
+  release();
+  await result;
+  const closed = sink.observations.find((o) => o.kind === "item.completed");
+  // The final count rides the close, which is what a later reader sees.
+  expect(closed?.kind === "item.completed" && closed.detail).toEqual({ type: "reasoning", text: "", estimatedTokens: 1200 });
+});
+
+test("a tool row opens as the model starts writing the call, and the envelope updates it", async () => {
+  /**
+   * EIGHTEEN WRITES IN ONE BURST. The row used to open only from the assistant
+   * envelope, which the CLI sends once the WHOLE input is generated — so a long
+   * Write was invisible for as long as the model spent writing it.
+   */
+  let release!: () => void;
+  const parked = new Promise<void>((resolve) => (release = resolve));
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "stream_event", event: { type: "message_start", message: {} } };
+      yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "Write", input: {} } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"file_path":"/tmp/a.ts","content":"xx' } } };
+      await parked;
+      yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_1", name: "Write", input: { file_path: "/tmp/a.ts", content: "xx" } }] } };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  const startedFor = () => sink.observations.filter((o) => o.kind === "item.started" && o.item.id === "item_toolu_1");
+  await until("the tool row reached the sink", () => startedFor().length > 0);
+  const early = startedFor()[0];
+  expect(early?.kind === "item.started" && early.item).toMatchObject({ title: "Write", providerRefs: { itemId: "toolu_1" } });
+
+  release();
+  await result;
+  // Still ONE row: the envelope updates it rather than opening another.
+  expect(startedFor()).toHaveLength(1);
+  const updated = sink.observations.find((o) => o.kind === "item.updated" && o.item.id === "item_toolu_1");
+  expect(updated?.kind === "item.updated" && updated.item).toMatchObject({
+    title: "/tmp/a.ts",
+    detail: { type: "file_change", change: { path: "/tmp/a.ts", kind: "create" } },
+  });
+  const closed = sink.observations.find((o) => o.kind === "item.completed" && o.itemId === "item_toolu_1");
+  expect(closed?.kind === "item.completed" && closed.status).toBe("completed");
 });
 
 test("a tool call opens a row and its result closes the SAME row", async () => {
@@ -518,6 +600,124 @@ describe("the end-turn grace (#465)", () => {
     expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
     const toolClose = sink.observations.find((o) => o.kind === "item.completed" && o.itemId === "item_t1");
     expect(toolClose?.kind === "item.completed" && toolClose.status).toBe("completed");
+  });
+});
+
+describe("session_state_changed is the turn's end where the CLI sends it", () => {
+  // A grace far longer than any test: if a turn below ends, `idle` ended it.
+  const NEVER = { endTurnGraceMs: 600_000 };
+  const state = (value: string) => ({ type: "system", subtype: "session_state_changed", state: value });
+
+  test("the child is asked to send it", async () => {
+    let env: Record<string, string | undefined> | undefined;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ options }: { options: { env?: Record<string, string | undefined> } }) {
+        env = options.env;
+        yield { type: "result", subtype: "success" };
+      },
+    }) as never);
+    await run(driver).result;
+    expect(env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS).toBe("1");
+  });
+
+  test("a result the CLI sends before it is done does not end the turn; idle does", async () => {
+    /**
+     * The shape the SDK describes: a result can come out while the turn is
+     * still going (a held-back result flushed, a continuation behind it). With
+     * the CLI reporting state, that result is not the end — the continuation
+     * is still this turn's, and `idle` closes it.
+     */
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield state("running");
+          yield { type: "stream_event", event: { type: "message_start" } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "first part" }], stop_reason: "end_turn" } };
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+          // More of OUR main loop — it disarms the grace the result armed.
+          yield { type: "stream_event", event: { type: "message_start" } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: " and the rest" }], stop_reason: "end_turn" } };
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+          yield state("idle");
+          await new Promise(() => undefined);
+        },
+      }),
+      NEVER,
+    );
+    const { sink, result } = run(driver);
+    const resolved = await result;
+    expect(resolved.text).toContain("and the rest");
+    const texts = sink.observations.flatMap((o) => (o.kind === "item.started" && o.item.detail.type === "assistant_message" ? [o.item.id] : []));
+    expect(texts.length).toBe(2);
+  });
+
+  test("idle ends a turn whose result never came, without waiting out the grace", async () => {
+    // #465's stall, closed by the CLI's own word instead of by a timer. The
+    // reply's first frame echoes our send's uuid, as the CLI does: that is
+    // what makes a result-less `idle` provably ours.
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+          const first = await prompt[Symbol.asyncIterator]().next();
+          yield state("running");
+          yield { type: "stream_event", event: { type: "message_start" }, user_message_uuid: first.value!.uuid };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "the answer" }], stop_reason: "end_turn" } };
+          yield state("idle");
+          await new Promise(() => undefined);
+        },
+      }),
+      NEVER,
+    );
+    await expect(run(driver).result).resolves.toMatchObject({ text: "the answer" });
+  });
+
+  test("idle while a backgrounded agent runs ends the turn and leaves the agent alive", async () => {
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield state("running");
+          yield { type: "stream_event", event: { type: "message_start" } };
+          yield { type: "system", subtype: "task_started", task_id: "a1", tool_use_id: "toolu_a1", description: "Explore", task_type: "local_agent", is_backgrounded: true };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "launched it" }], stop_reason: "end_turn" } };
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+          yield state("idle");
+          await new Promise(() => undefined);
+        },
+      }),
+      NEVER,
+    );
+    const { sink, result } = run(driver);
+    await result;
+    expect(sink.observations.filter((o) => o.kind === "task.completed")).toHaveLength(0);
+  });
+
+  test("an idle before our reply has begun is someone else's, and ends nothing", async () => {
+    let release: (() => void) | undefined;
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          // The tail of an earlier turn, read first by this one.
+          yield state("idle");
+          yield state("running");
+          yield { type: "stream_event", event: { type: "message_start" } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "ours" }], stop_reason: "end_turn" } };
+          release?.();
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+          yield state("idle");
+          await new Promise(() => undefined);
+        },
+      }),
+      NEVER,
+    );
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const { result } = run(driver);
+    let settled = false;
+    void result.then(() => { settled = true; });
+    await released;
+    // The stray idle came before our text: had it ended the turn, the result
+    // would already be settled with nothing in it.
+    expect(settled).toBe(false);
+    await expect(result).resolves.toMatchObject({ text: "ours" });
   });
 });
 
@@ -1130,6 +1330,35 @@ describe("a provider wait is a row, not silence", () => {
       // Bounded: the response beginning closes it, so the stall has an end.
       const waitId = started?.kind === "item.started" ? started.item.id : "";
       expect(sink.observations.some((o) => o.kind === "item.completed" && o.itemId === waitId && o.status === "completed")).toBeTrue();
+    });
+
+    test("the wait it reports is never shorter than the threshold that opened it", async () => {
+      // CI read 19 against a 20 ms threshold: the timer keeps its own clock and
+      // `Date.now()` truncates. Frozen here, the wall clock says no time passed.
+      const driver = createClaudeDriver(
+        async () => ({
+          async *query() {
+            yield { type: "system", subtype: "status", status: "requesting" };
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            yield { type: "stream_event", event: { type: "message_start" } };
+            yield { type: "result", subtype: "success" };
+          },
+        }),
+        { providerSilenceMs: 20 },
+      );
+      const realNow = Date.now;
+      const frozen = realNow();
+      Date.now = () => frozen;
+      try {
+        const { sink, result } = run(driver);
+        await result;
+        const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+        const waitedMs =
+          started?.kind === "item.started" && started.item.detail.type === "provider_wait" ? started.item.detail.wait.waitedMs : undefined;
+        expect(waitedMs).toBe(20);
+      } finally {
+        Date.now = realNow;
+      }
     });
 
     test("a compaction's silence is not a stall: no row, however long it runs", async () => {
@@ -2255,6 +2484,95 @@ test("the level signal closes only background work; a missing agent is the turn-
   });
 });
 
+test("a BACKGROUNDED agent missing from the level signal is closed, and its late failure still lands", async () => {
+  /**
+   * The sweep spares a backgrounded agent (it outlives its turn), so before
+   * this the only thing that could close one was its own notification — and
+   * when that was lost the session read as busy for ever. The SDK lists
+   * backgrounded agents in the level, so its absence is the ending.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "a1", tool_use_id: "toolu_a1", description: "Explore", task_type: "local_agent", is_backgrounded: true };
+      yield { type: "system", subtype: "task_started", task_id: "a2", tool_use_id: "toolu_a2", description: "Audit", task_type: "local_agent", is_backgrounded: true };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a1", task_type: "local_agent", description: "Explore" }, { task_id: "a2", task_type: "local_agent", description: "Audit" }] };
+      // Both end. a1's notification is LOST; a2's arrives after the level and
+      // says it failed.
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [] };
+      yield { type: "system", subtype: "task_notification", task_id: "a2", tool_use_id: "toolu_a2", status: "failed", summary: "rate limited" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const last = new Map(
+    sink.observations.flatMap((o) => (o.kind === "task.completed" ? [[o.task.id, o.task] as const] : [])),
+  );
+  expect(last.get("task_toolu_a1")).toMatchObject({ kind: "agent", state: "completed" });
+  expect(last.get("task_toolu_a2")).toMatchObject({ kind: "agent", state: "failed", resultText: "rate limited" });
+});
+
+test("the level REPLACES the live set: a task dropped from a later list is healed even when that list was about something else", async () => {
+  // Not "the list went empty": a second task starting is the membership
+  // change that reveals the first one's lost ending.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "s1", tool_use_id: "toolu_s1", description: "tail the log", task_type: "local_bash", is_backgrounded: true };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "s1", task_type: "local_bash", description: "tail the log" }] };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a1", task_type: "local_agent", description: "Explore" }] };
+      yield { type: "system", subtype: "task_started", task_id: "a1", tool_use_id: "toolu_a1", description: "Explore", task_type: "local_agent", is_backgrounded: true };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.flatMap((o) => (o.kind === "task.completed" ? [o.task.id] : []));
+  expect(closed).toEqual(["task_toolu_s1"]);
+  // The entry that arrived before its bookend minted nothing of its own: the
+  // one row is keyed on the tool_use id its sub-agent's items are filed under.
+  const rows = new Set(sink.observations.flatMap((o) => (o.kind.startsWith("task.") && "task" in o ? [o.task.id] : [])));
+  expect(rows).toEqual(new Set(["task_toolu_s1", "task_toolu_a1"]));
+});
+
+test("an entry the level lists is background work, even when the patch saying so was lost", async () => {
+  // A foreground agent sent to the background: the level lists it, and the
+  // `task_updated{is_backgrounded}` edge never arrives. Without the level the
+  // turn-end sweep failed a live agent.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "a1", tool_use_id: "toolu_a1", description: "Audit", task_type: "local_agent" };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a1", task_type: "local_agent", description: "Audit" }] };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  expect(sink.observations.filter((o) => o.kind === "task.completed")).toHaveLength(0);
+  const last = sink.observations.filter((o) => o.kind === "task.progress").at(-1);
+  expect(last?.kind === "task.progress" && last.task).toMatchObject({ id: "task_toolu_a1", kind: "agent", backgrounded: true, state: "running" });
+});
+
+test("the level's ambient flag is carried onto a live row, both ways", async () => {
+  // The SDK re-sends the level when "an entry's `ambient` flag flips". The row
+  // stays; it just stops (and then resumes) counting as activity.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "w1", tool_use_id: "toolu_w1", description: "watch files", task_type: "local_bash", is_backgrounded: true };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "w1", task_type: "local_bash", description: "watch files", ambient: true }] };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "w1", task_type: "local_bash", description: "watch files" }] };
+      // An ambient entry with no row stays out: its edges cannot mint one.
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "w1", task_type: "local_bash", description: "watch files" }, { task_id: "amb", task_type: "local_bash", description: "housekeeping", ambient: true }] };
+      yield { type: "system", subtype: "task_progress", task_id: "amb", description: "housekeeping" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const flags = sink.observations.flatMap((o) => (o.kind === "task.progress" ? [o.task.ambient] : []));
+  expect(flags).toEqual([true, false]);
+  expect(sink.observations.some((o) => o.kind.startsWith("task.") && "task" in o && o.task.providerTaskId === "amb")).toBe(false);
+});
+
 test("an ambient task is the CLI's housekeeping and never becomes a row", async () => {
   // The SDK marks its own auto-started watchers `ambient` and says "hosts
   // should exclude them from activity indicators". Suppressed at the start
@@ -2417,6 +2735,30 @@ test("fast mode stays explicit, and Claude turns keep 1M enabled", async () => {
   expect(seen[0]).toMatchObject({ model: "claude-fable-5-1[1m]", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: { fastMode: true } });
   expect(seen[1]).toMatchObject({ model: "claude-opus-5", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
   expect(seen[2]).toMatchObject({ model: undefined, env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
+});
+
+test("MCP tool schemas are deferred behind tool search unless the environment says otherwise", async () => {
+  // 142 tools / ~38k tokens rode every request in the 24 Sep benchmark because
+  // Claude Code never switched tool search on by itself.
+  const seen: (Record<string, unknown> | undefined)[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      seen.push(input.options.env);
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const saved = process.env.ENABLE_TOOL_SEARCH;
+  try {
+    delete process.env.ENABLE_TOOL_SEARCH;
+    await run(driver, { model: "claude-opus-5-5[1m]" }).result;
+    process.env.ENABLE_TOOL_SEARCH = "false";
+    await run(driver, { model: "claude-opus-5-5[1m]", sessionId: "s-optout" }).result;
+  } finally {
+    if (saved === undefined) delete process.env.ENABLE_TOOL_SEARCH;
+    else process.env.ENABLE_TOOL_SEARCH = saved;
+  }
+  expect(seen[0]).toMatchObject({ ENABLE_TOOL_SEARCH: "true" });
+  expect(seen[1]).toMatchObject({ ENABLE_TOOL_SEARCH: "false" });
 });
 
 /**
@@ -4019,6 +4361,56 @@ describe("a turn the CLI started by itself is not this turn", () => {
     const closed = second.sink.observations.find((o) => o.kind === "task.completed");
     expect(closed?.kind === "task.completed" && closed.task).toMatchObject({ id: "task_toolu_bg", state: "completed", resultText: "WOKE" });
   });
+
+  /**
+   * THE DELTA COORDINATOR, 17:58 (run_ef835bec…): a wake opened the turn and a
+   * person's steer cut it 0.9s later, before its reply's first frame. The CLI
+   * never answered the wake's uuid, so every later reply — the steer's, and the
+   * nine messages steered after it — read as the CLI's own turn, each `result`
+   * was skipped as a stranger's, and the turn sat "Working" for 7m46s until
+   * Stop. Both shapes of the steer's answer: echoing the steer's own key, and
+   * carrying no key at all.
+   */
+  for (const echoes of [true, false]) {
+    test(`a steer that cuts the turn before its first frame is still answered in it (steer reply ${echoes ? "echoes its key" : "carries no key"})`, async () => {
+      let startedGenerating: (() => void) | undefined;
+      const generating = new Promise<void>((resolve) => {
+        startedGenerating = resolve;
+      });
+      let cut: (() => void) | undefined;
+      const wasCut = new Promise<void>((resolve) => {
+        cut = resolve;
+      });
+      const driver = createClaudeDriver(async () => ({
+        query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+          const iterator = prompt[Symbol.asyncIterator]();
+          async function* pump() {
+            // Turn 1: the process shows it echoes the key.
+            yield* reply((await iterator.next()).value!.uuid!, "first");
+            // Turn 2: cut before any frame of the reply.
+            const opened = (await iterator.next()).value!;
+            startedGenerating!();
+            await wasCut;
+            yield { type: "result", subtype: "interrupted", user_message_uuid: opened.uuid };
+            const steered = (await iterator.next()).value!;
+            const answer = reply(steered.uuid!, "answered the steer");
+            if (!echoes) for (const frame of answer) delete (frame as { user_message_uuid?: string }).user_message_uuid;
+            // Disowned, this result is skipped and the stream ends under a
+            // turn with no result — a rejection here, a hang against the
+            // real CLI, which keeps the stream open.
+            yield* answer;
+          }
+          return Object.assign(pump(), { interrupt: async () => void cut!() });
+        },
+      }) as never);
+      await expect(run(driver, { sessionId: `session_cut_${echoes}` }).result).resolves.toMatchObject({ text: "first" });
+      const steer = new SteerMailbox();
+      const second = run(driver, { sessionId: `session_cut_${echoes}`, steer });
+      await generating;
+      steer.push("change course");
+      await expect(second.result).resolves.toMatchObject({ text: "answered the steer" });
+    });
+  }
 
   test("a notification in a LATER turn lands on the row its tool-use opened — no ghost row", async () => {
     /**

@@ -214,7 +214,7 @@ export type InventoryDeps = {
   /** How a checkout is sized. Injected rather than imported so the classifier's
    *  tests never walk a real tree, and so the measurement stays the storage
    *  pane's — the rows have to sum to the figure that sent the person here. */
-  measure: (target: string) => Promise<{ bytes: number; partial: boolean }>;
+  measure: (target: string) => Promise<{ bytes?: number; partial: boolean }>;
 };
 
 /** `git worktree list --porcelain`, kept per path, including the `locked` line
@@ -363,6 +363,7 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
   const roots = [...new Set(input.roots.map((root) => path.resolve(root)))];
   const engineTree = input.engineRoot ? canonical(input.engineRoot) : undefined;
   let partial = false;
+  let measuring = false;
 
   type Draft = {
     path: string;
@@ -485,8 +486,11 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
         incomplete ??= proof.incomplete;
       }
 
+      // No `bytes` is "not sized yet" — the engine sizes checkouts in the
+      // background — and the inventory says so rather than showing a zero.
       const measured = await deps.measure(draft.path);
       bytes = measured.bytes;
+      measuring ||= bytes === undefined;
       partial ||= measured.partial;
 
       /**
@@ -552,6 +556,7 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
     roots,
     ...(input.blocker ? { blocker: input.blocker } : {}),
     partial,
+    ...(measuring ? { measuring: true } : {}),
     measuredAt: at,
   };
 }
@@ -568,10 +573,12 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
  */
 export function describeReclaim(results: readonly { ok: boolean; action?: string; refusal?: string; bytes?: number }[]): string {
   const parts: string[] = [];
+  const released = results.filter((result) => result.ok && result.action === "released").length;
   const archived = results.filter((result) => result.ok && result.action === "archived").length;
   const removed = results.filter((result) => result.ok && result.action === "removed").length;
   const freed = results.filter((result) => result.ok).reduce((sum, result) => sum + (result.bytes ?? 0), 0);
 
+  if (released > 0) parts.push(`Released ${released} checkout${released === 1 ? "" : "s"}; ${released === 1 ? "its session and branch are" : "their sessions and branches are"} kept, and the next message brings ${released === 1 ? "it" : "them"} back.`);
   if (archived > 0) parts.push(`Archived ${archived} session${archived === 1 ? "" : "s"} and gave back ${archived === 1 ? "its" : "their"} checkout${archived === 1 ? "" : "s"}.`);
   if (removed > 0) parts.push(`Removed ${removed} checkout${removed === 1 ? "" : "s"} that no session was holding.`);
   if (freed > 0) parts.push(`${formatBytes(freed)} back.`);
@@ -583,12 +590,14 @@ export function describeReclaim(results: readonly { ok: boolean; action?: string
   const confirm = count("needs-confirm") + count("confirm-mismatch");
   const missing = count("not-found");
   const failed = count("failed") + count("protected");
+  const unsafe = count("dirty") + count("unpushed") + count("process");
 
   if (inUse > 0) parts.push(`${inUse} ${inUse === 1 ? "is" : "are"} being worked in right now and ${inUse === 1 ? "was" : "were"} left alone.`);
   if (active > 0) parts.push(`${active} ${active === 1 ? "belongs" : "belong"} to a session that is still on the rail — settle ${active === 1 ? "it" : "them"} first.`);
   if (unreadable > 0) parts.push(`${unreadable} ${unreadable === 1 ? "is" : "are"} on a drive that is not connected, so nothing was touched.`);
   if (confirm > 0) parts.push(`${confirm} needed the name typed to confirm and ${confirm === 1 ? "was" : "were"} skipped.`);
   if (missing > 0) parts.push(`${missing} ${missing === 1 ? "was" : "were"} already gone.`);
+  if (unsafe > 0) parts.push(`${unsafe} had uncommitted changes, unpushed commits or a running process, and ${unsafe === 1 ? "was" : "were"} left alone.`);
   if (failed > 0) parts.push(`${failed} could not be given back.`);
 
   if (parts.length === 0) return "There was nothing to give back.";

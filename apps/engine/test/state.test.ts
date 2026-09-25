@@ -147,22 +147,22 @@ test("a windowed snapshot is the newest settled turns plus everything unsettled,
 
   const first = store.snapshotWindow("session_one", { limit: 2 });
   expect(first.turns.map((turn) => turn.runId)).toEqual(["run_4", "run_5", "run_live"]);
-  expect(first.page).toEqual({ before: "run_4", more: true });
+  expect(first.page).toEqual({ before: "run_4", more: true, total: 6 });
   // Items follow their turns — the window is what makes the read small.
   expect(first.items.map((item) => item.id).sort()).toEqual(["i_4", "i_5"]);
 
   const older = store.snapshotWindow("session_one", { limit: 2, before: "run_4" });
   expect(older.turns.map((turn) => turn.runId)).toEqual(["run_2", "run_3"]);
-  expect(older.page).toEqual({ before: "run_2", more: true });
+  expect(older.page).toEqual({ before: "run_2", more: true, total: 6 });
 
   const oldest = store.snapshotWindow("session_one", { limit: 2, before: "run_2" });
   expect(oldest.turns.map((turn) => turn.runId)).toEqual(["run_1"]);
-  expect(oldest.page).toEqual({ before: null, more: false });
+  expect(oldest.page).toEqual({ before: null, more: false, total: 6 });
 
   // A limit past the start is the whole history, first page, no cursor.
   const whole = store.snapshotWindow("session_one", { limit: 50 });
   expect(whole.turns).toHaveLength(6);
-  expect(whole.page).toEqual({ before: null, more: false });
+  expect(whole.page).toEqual({ before: null, more: false, total: 6 });
 
   expect(() => store.snapshotWindow("session_one", { limit: 2, before: "run_nope" })).toThrow(EngineStateError);
 });
@@ -1663,8 +1663,8 @@ test("a file patch cannot be asked for outside the session's own workspace", () 
   const store = new EngineStore(root(), () => 100, { git: () => ({ status: 0, stdout: "", stderr: "" }) });
   store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
   store.createSession({ id: "session_one", projectId: "project_one" });
-  expect(() => store.sessionFilePatch("session_one", "../../etc/passwd")).toThrow(EngineStateError);
-  expect(() => store.sessionFilePatch("session_one", "  ")).toThrow(EngineStateError);
+  expect(() => store.sessionFilePatchAsync("session_one", "../../etc/passwd")).toThrow(EngineStateError);
+  expect(() => store.sessionFilePatchAsync("session_one", "  ")).toThrow(EngineStateError);
 });
 
 test("a commit needs a message and the message has a ceiling", () => {
@@ -1690,39 +1690,39 @@ describe("cloneProject", () => {
     return { status: 0, stdout: "", stderr: "" };
   };
 
-  test("what landed is what gets registered, named after the folder git chose", () => {
+  test("what landed is what gets registered, named after the folder git chose", async () => {
     const parent = fs.realpathSync.native(root());
     const calls: string[][] = [];
     const store = new EngineStore(root(), () => 100, { git: cloningGit(calls) });
-    const project = store.cloneProject({ url: "https://github.com/owner/repo.git", parent });
+    const project = await store.cloneProject({ url: "https://github.com/owner/repo.git", parent });
     expect(project).toMatchObject({ name: "repo", root: path.join(parent, "repo") });
     // And it is in the registry, which is the half a two-call client could miss.
     expect(store.listProjects().map((entry) => entry.id)).toEqual([project.id]);
     expect(calls[0]).toEqual(["clone", "--", "https://github.com/owner/repo.git", path.join(parent, "repo")]);
   });
 
-  test("a name can be given, and a blank one falls back to the folder", () => {
+  test("a name can be given, and a blank one falls back to the folder", async () => {
     const parent = fs.realpathSync.native(root());
     const store = new EngineStore(root(), () => 100, { git: cloningGit() });
-    expect(store.cloneProject({ url: "https://x.test/a/one.git", parent, name: "Mine" }).name).toBe("Mine");
-    expect(store.cloneProject({ url: "https://x.test/a/two.git", parent, name: "   " }).name).toBe("two");
+    expect((await store.cloneProject({ url: "https://x.test/a/one.git", parent, name: "Mine" })).name).toBe("Mine");
+    expect((await store.cloneProject({ url: "https://x.test/a/two.git", parent, name: "   " })).name).toBe("two");
   });
 
-  test("a clone that failed registers nothing, and says why in git's own words", () => {
+  test("a clone that failed registers nothing, and says why in git's own words", async () => {
     const parent = fs.realpathSync.native(root());
     const store = new EngineStore(root(), () => 100, {
       git: () => ({ status: 128, stdout: "", stderr: "fatal: repository not found\n" }),
     });
-    expect(() => store.cloneProject({ url: "https://x.test/a/gone.git", parent })).toThrow(/repository not found/);
+    await expect(store.cloneProject({ url: "https://x.test/a/gone.git", parent })).rejects.toThrow(/repository not found/);
     expect(store.listProjects()).toEqual([]);
   });
 
-  test("a target that already exists is a conflict rather than a merge into it", () => {
+  test("a target that already exists is a conflict rather than a merge into it", async () => {
     const parent = fs.realpathSync.native(root());
     fs.mkdirSync(path.join(parent, "repo"));
     const calls: string[][] = [];
     const store = new EngineStore(root(), () => 100, { git: cloningGit(calls) });
-    expect(() => store.cloneProject({ url: "https://x.test/a/repo.git", parent })).toThrow(EngineStateError);
+    await expect(store.cloneProject({ url: "https://x.test/a/repo.git", parent })).rejects.toThrow(EngineStateError);
     // Refused before git ran, so nothing was written into somebody's folder.
     expect(calls).toEqual([]);
   });
@@ -2358,6 +2358,69 @@ test("an engine restart stops every session's background work — the idle-with-
   expect(restarted.readEvents("session_two").filter((event) => event.type === "task.completed")).toHaveLength(1);
 });
 
+test("once the turn ends, a backgrounded agent reads as monitoring, and paused or ambient work reads as nothing", () => {
+  /**
+   * THE COMPLAINT: a session whose turn had ended showed "Working" with its
+   * clock running, because one sub-agent was launched with `run_in_background`
+   * and `livenessOf` called any live agent working. Nothing was working in the
+   * foreground; the turn was waiting on a child.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
+  const claimed = store.claimNextTurn("worker_one")!;
+  const token = claimed.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_agent", providerTaskId: "a1", kind: "agent", backgrounded: true, state: "running", title: "Explore" } },
+  ]);
+  expect(store.getSession("session_one").activity).toBe("working");
+  store.completeTurn("session_one", "run_one", token, { text: "Launched" });
+  expect(store.getSession("session_one").activity).toBe("monitoring");
+
+  // PAUSED is alive but not moving: the row says paused, so the badge must not
+  // say busy.
+  store.reportSessionTasks("session_one", "worker_one", [
+    { kind: "task.progress", task: { id: "task_agent", providerTaskId: "a1", kind: "agent", backgrounded: true, state: "waiting" } },
+  ]);
+  expect(store.getSession("session_one").activity).toBe("idle");
+
+  // AMBIENT is the provider's housekeeping, excluded from activity by the SDK.
+  store.reportSessionTasks("session_one", "worker_one", [
+    { kind: "task.progress", task: { id: "task_agent", providerTaskId: "a1", kind: "agent", backgrounded: true, ambient: true, state: "running" } },
+  ]);
+  expect(store.getSession("session_one").activity).toBe("idle");
+});
+
+test("a close the level signal inferred yields to the notification that says the task failed", () => {
+  /**
+   * THE SDK SENDS THE LEVEL BEFORE THE BOOKEND. `background_tasks_changed`
+   * closes a backgrounded agent as a bare `completed`; its `task_notification`
+   * arrives a frame later saying `failed`. "The first ending is the ending"
+   * would keep the green row — for an agent that failed.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
+  const claimed = store.claimNextTurn("worker_one")!;
+  const token = claimed.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  const agent = { id: "task_agent", providerTaskId: "a1", kind: "agent" as const, backgrounded: true };
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { ...agent, state: "running" } },
+    { kind: "task.completed", task: { ...agent, state: "completed" } },
+    { kind: "task.completed", task: { ...agent, state: "failed", resultText: "could not reach the API" } },
+  ]);
+  expect(store.tasks("session_one")[0]).toMatchObject({ state: "failed", resultText: "could not reach the API" });
+
+  // A STATED ending is never rewritten: a completion that carried its result
+  // stays completed whatever arrives after it.
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "running" } },
+    { kind: "task.completed", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "completed", resultText: "done" } },
+    { kind: "task.completed", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "stopped" } },
+  ]);
+  expect(store.tasks("session_one").find((task) => task.id === "task_other")?.state).toBe("completed");
+});
+
 test("a provider turn is born running under a claim, and a human message sent meanwhile is steered into it", () => {
   const { store } = readyStore();
   const turn = store.openProviderTurn("session_one", {
@@ -2615,12 +2678,13 @@ test("a backgrounded agent outlives its turn, and a later report cannot resurrec
 
   const after = new Map(store.tasks("session_one").map((task) => [task.id, task]));
   // The attached agent is swept — no process reports for it any more. The
-  // detached one is spared exactly as a background shell would be, and it
-  // keeps the session working, not merely monitoring.
+  // detached one is spared exactly as a background shell would be — and, like
+  // one, it reads as monitoring: the turn has ended, nothing is working in the
+  // foreground.
   expect(after.get("task_attached")).toMatchObject({ state: "failed" });
   expect(after.get("task_detached")).toMatchObject({ state: "running", kind: "agent", backgrounded: true });
   expect(after.get("task_detached")?.failure).toBeUndefined();
-  expect(store.getSession("session_one").activity).toBe("working");
+  expect(store.getSession("session_one").activity).toBe("monitoring");
 
   // The next turn's driver has never heard of the sweep and reports the
   // ATTACHED agent (now closed) as still running. The first ending is the

@@ -597,6 +597,15 @@ export type ExecutionStoreOptions = {
 /** One authoritative execution database; legacy files become a migration backup.
  * Runtime adapters use the built-in SQLite API of Bun and Node/Electron.
  */
+/**
+ * A windowed snapshot's items: the rows of the turns it chose, and only those.
+ * Exported so a test can `EXPLAIN QUERY PLAN` the exact text and hold it to the
+ * `items_run` index — a plan that scanned `items` would price opening a
+ * conversation by its whole history again.
+ */
+export const ITEM_ROWS_FOR_RUNS_SQL =
+  "SELECT value FROM items WHERE session_id=? AND run_id IN (SELECT value FROM json_each(?)) ORDER BY ord";
+
 export class ExecutionStore {
   private readonly db: Database;
   private depth = 0;
@@ -2088,7 +2097,7 @@ export class ExecutionStore {
    */
   itemRowsForRuns(sessionId: string, runIds: readonly string[]): string[] {
     if (runIds.length === 0) return [];
-    return this.statement("SELECT value FROM items WHERE session_id=? AND run_id IN (SELECT value FROM json_each(?)) ORDER BY ord")
+    return this.statement(ITEM_ROWS_FOR_RUNS_SQL)
       .all(sessionId, JSON.stringify(runIds)).map((row) => String(row.value));
   }
 

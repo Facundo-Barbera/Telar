@@ -174,6 +174,64 @@ describe("readClaudeModels", () => {
     expect(prompted).toBeDefined();
   });
 
+  test("each model's default effort is what the CLI reports it would send", async () => {
+    // The CLI resolves it per model from the user's settings and caps, so the
+    // same handshake is asked model by model: switch, then read `applied`.
+    const applied: Record<string, string | null> = { "opus[1m]": "medium", sonnet: "xhigh", "claude-fable-5[1m]": null };
+    let current = "";
+    const asked: string[] = [];
+    const answer = await readClaudeModels(async () => ({
+      query: () => ({
+        supportedModels: async () => CLAUDE_ROWS,
+        setModel: async (model?: string) => {
+          asked.push(model ?? "");
+          current = model ?? "";
+        },
+        getSettings: async () => ({ applied: { model: current, effort: applied[current] ?? null } }),
+      }),
+    }));
+    const byId = new Map(answer.models.map((model) => [model.id, model]));
+    expect(byId.get("opus[1m]")?.defaultEffort).toBe("medium");
+    expect(byId.get("sonnet")?.defaultEffort).toBe("xhigh");
+    // `null` means no effort is sent: no default, never a guess.
+    expect(byId.get("claude-fable-5[1m]")?.defaultEffort).toBeUndefined();
+    // A model with no levels is not asked at all.
+    expect(asked).not.toContain("haiku");
+  });
+
+  test("a model the CLI will not switch to, or an SDK without getSettings, keeps the list", async () => {
+    const refused = await readClaudeModels(async () => ({
+      query: () => ({
+        supportedModels: async () => CLAUDE_ROWS,
+        setModel: async (model?: string) => {
+          if (model === "sonnet") throw new Error("Couldn't confirm model");
+        },
+        getSettings: async () => ({ applied: { effort: "high" } }),
+      }),
+    }));
+    expect(refused.models.map((model) => model.id)).toEqual(["opus[1m]", "claude-fable-5[1m]", "sonnet", "haiku"]);
+    expect(refused.models.find((model) => model.id === "sonnet")?.defaultEffort).toBeUndefined();
+    expect(refused.models.find((model) => model.id === "opus[1m]")?.defaultEffort).toBe("high");
+
+    const older = await readClaudeModels(async () => ({ query: () => ({ supportedModels: async () => CLAUDE_ROWS }) }));
+    expect(older.models.every((model) => model.defaultEffort === undefined)).toBe(true);
+  });
+
+  test("a default probe that hangs does not cost the model list", async () => {
+    const answer = await readClaudeModels(
+      async () => ({
+        query: () => ({
+          supportedModels: async () => CLAUDE_ROWS,
+          setModel: () => new Promise<void>(() => undefined),
+          getSettings: async () => ({ applied: { effort: "high" } }),
+        }),
+      }),
+      5,
+    );
+    expect(answer.models).toHaveLength(4);
+    expect(answer.models.every((model) => model.defaultEffort === undefined)).toBe(true);
+  });
+
   test("a provider that will not answer costs a sentence, not a hung popover", async () => {
     const answer = await readClaudeModels(
       async () => ({ query: () => ({ supportedModels: () => new Promise(() => undefined) }) }),

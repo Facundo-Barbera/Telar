@@ -8,5 +8,8 @@ export const BROWSER_BRIEFING =
   "The tools may be deferred: use available tool discovery/search for telar-browser and browser_list_tabs, " +
   "browser_navigate, browser_snapshot, or browser_resize before concluding they are unavailable. " +
   "List existing tabs before acting on a page the human refers to. Do not substitute another browser or profile. " +
+  "When a snapshot has no ref for what the screenshot shows (a canvas-drawn page), act by coordinates: " +
+  "browser_click/hover/drag take x,y in the screenshot's CSS pixels, browser_type with no target types into what has focus, " +
+  "and browser_paste fills a canvas spreadsheet from tab-separated rows. " +
   "When calling screenshot tools through a code runner, forward returned image content blocks to its image display helper " +
   "and print only text blocks; do not serialize base64 image data as text. Inspect the displayed image before claiming visual verification.";

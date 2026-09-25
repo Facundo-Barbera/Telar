@@ -101,9 +101,14 @@ export type JournalTurn = {
   items: JournalItem[];
   /** Sub-agents and background work launched by this turn. */
   tasks: JournalTask[];
+  /** When the engine took the message — for a passive arrival, WHEN it
+   *  arrived, which is what places it inside the turn that was running. */
+  acceptedAt?: number;
   /** When the provider actually started, for the live elapsed clock. Absent
    *  until the turn is claimed and running. */
   startedAt?: number;
+  /** When the turn reached a terminal state, however it got there. */
+  endedAt?: number;
   /**
    * When anything last happened on this turn — a row opened or closed, a delta,
    * a sub-agent reporting in.
@@ -161,6 +166,15 @@ export function taskRoster(snapshot: readonly Task[], journal: readonly JournalT
   const known = new Set(journal.map((task) => task.id));
   return [...journal, ...snapshot.filter((task) => !known.has(task.id)).map((task) => ({ ...task, items: [] }))];
 }
+
+const TERMINAL_EVENTS: ReadonlySet<EngineEvent["type"]> = new Set([
+  "turn.completed",
+  "turn.failed",
+  "turn.stopped",
+  "turn.ambiguous",
+  "turn.discarded",
+  "turn.steered",
+]);
 
 /** Merges a cursor page without duplicating durable journal records. */
 export function appendJournalEvents(existing: EngineEvent[], incoming: EngineEvent[]): EngineEvent[] {
@@ -226,7 +240,9 @@ export function projectJournal(
         ...(turn.held ? { held: true, heldReason: turn.held.reason } : {}),
         items: [],
         tasks: [],
+        acceptedAt: turn.acceptedAt,
         ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
+        ...(turn.completedAt ? { endedAt: turn.completedAt } : {}),
         resultText: turn.resultText ?? "",
         ...(turn.failure ? { failure: turn.failure.message, failureCode: turn.failure.code } : {}),
         ...(turn.failure?.resumeAt === undefined ? {} : { resumeAt: turn.failure.resumeAt }),
@@ -324,6 +340,9 @@ export function projectJournal(
      * by item stamps alone reads as silence while it is being written.
      */
     if (turn) turn.lastActivityAt = Math.max(turn.lastActivityAt ?? 0, event.at);
+    if (turn && TERMINAL_EVENTS.has(event.type)) turn.endedAt = event.at;
+    // A turn a lifted limit brought back is not over after all.
+    if (turn && event.type === "turn.requeued") delete turn.endedAt;
 
     switch (event.type) {
       case "turn.accepted":
@@ -350,6 +369,8 @@ export function projectJournal(
             ...(event.turn.held ? { held: true, heldReason: event.turn.held.reason } : {}),
             items: [],
             tasks: [],
+            acceptedAt: event.turn.acceptedAt,
+            ...(event.turn.completedAt ? { endedAt: event.turn.completedAt } : {}),
             resultText: "",
           });
         }
@@ -589,6 +610,78 @@ export function projectJournal(
     turn.tasks.sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
   }
   return [...byRun.values()];
+}
+
+/**
+ * A PASSIVE ARRIVAL IS DRAWN INSIDE THE TURN IT ARRIVED DURING.
+ *
+ * A peer's report, or a `result` nobody is waiting on, reaching a BUSY session
+ * is not a turn: the engine writes its row, holds it for the next idle moment
+ * and completes it at once. It is still a turn with its own sequence, though,
+ * and drawn as one it landed AFTER the running turn — below the working line
+ * while the turn ran, and after everything the turn went on to do once it ended.
+ * A coordinator with five workers ended every long turn with a column of them.
+ *
+ * So each one moves into the turn that was running when it was accepted, at
+ * its time among that turn's rows, the way a steered notice already sits. One
+ * with no such turn in view (an idle session with a report window, a page that
+ * does not reach back that far) stays a row of its own. A copy of the host is
+ * returned, never the projector's cached fold.
+ */
+export function hostPassiveArrivals(turns: readonly JournalTurn[]): JournalTurn[] {
+  const guestsOf = new Map<string, JournalTurn[]>();
+  const hosted = new Set<string>();
+  for (const [index, turn] of turns.entries()) {
+    const arrived = turn.acceptedAt;
+    if (turn.agentDelivery !== "passive" || !turn.notification || arrived === undefined) continue;
+    const host = turns
+      .slice(0, index)
+      .findLast(
+        (candidate) =>
+          candidate.agentDelivery !== "passive" &&
+          !candidate.decidedForBackgroundWork &&
+          candidate.startedAt !== undefined &&
+          candidate.startedAt <= arrived &&
+          (candidate.endedAt === undefined ? candidate.state === "claimed" || candidate.state === "running" : candidate.endedAt >= arrived),
+      );
+    if (!host) continue;
+    guestsOf.set(host.runId, [...(guestsOf.get(host.runId) ?? []), turn]);
+    hosted.add(turn.runId);
+  }
+  if (hosted.size === 0) return [...turns];
+  return turns
+    .filter((turn) => !hosted.has(turn.runId))
+    .map((turn) => {
+      const guests = guestsOf.get(turn.runId);
+      if (!guests) return turn;
+      const items = [...turn.items];
+      for (const guest of guests) {
+        const row = arrivalRow(guest);
+        const at = items.findIndex((item) => item.startedAt > row.startedAt);
+        items.splice(at === -1 ? items.length : at, 0, row);
+      }
+      return { ...turn, items };
+    });
+}
+
+/** The arrival's own notification row, or one built from the turn when the
+ *  page did not carry it. */
+function arrivalRow(guest: JournalTurn): JournalItem {
+  const own = guest.items.find((item) => item.detail.type === "notification");
+  if (own) return own;
+  const at = guest.acceptedAt ?? 0;
+  return {
+    id: `notification_${guest.runId}`,
+    runId: guest.runId,
+    sessionId: guest.notification!.fetch?.sessionId ?? "",
+    status: "completed",
+    title: guest.notification!.summary,
+    detail: { type: "notification", notification: guest.notification! },
+    startedAt: at,
+    completedAt: at,
+    openedBy: 0,
+    streamedText: "",
+  };
 }
 
 export function isActiveTurn(state: TurnState): boolean {

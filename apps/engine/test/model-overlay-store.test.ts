@@ -172,3 +172,33 @@ test("a manifest model pre-empts a hand-typed custom row for the same id, or an 
     expect(rows[0]).toMatchObject({ label: "Fable 5.1", source: "provider", efforts: ["high"] });
   })();
 });
+
+test("a chosen default is stored, cleared by null, and refused when it is not a model id", () => {
+  const engine = store();
+  expect(engine.setModelOverlay("claude", { default: "claude-opus-5-5[1m]" }).default).toBe("claude-opus-5-5[1m]");
+  // Absent leaves it alone; `null` hands the choice back to Telar.
+  expect(engine.setModelOverlay("claude", { hidden: [] }).default).toBe("claude-opus-5-5[1m]");
+  expect(engine.setModelOverlay("claude", { default: null }).default).toBeUndefined();
+  expect(() => engine.setModelOverlay("claude", { default: "has space" })).toThrow(EngineStateError);
+});
+
+test("the chosen default reaches the catalogue and the claim of a session that named no model", async () => {
+  const catalogue = async (driver: "claude" | "codex", now: () => number): Promise<ModelCatalogue> => ({
+    driver,
+    source: "provider",
+    readAt: now(),
+    models: [
+      { id: "fable[1m]", label: "Fable", isDefault: true, hidden: false, hiddenByUser: false, efforts: [], fastMode: false, source: "provider" },
+      { id: "opus[1m]", label: "Opus", isDefault: false, hidden: false, hiddenByUser: false, efforts: [], fastMode: false, source: "provider" },
+    ],
+  });
+  const engine = new EngineStore(root(), () => 100, { models: catalogue, manifest: { version: 1 } });
+  engine.setModelOverlay("claude", { default: "opus[1m]" });
+  const { models } = await engine.modelCatalogue("claude");
+  expect(models.filter((model) => model.isDefault).map((model) => model.id)).toEqual(["opus[1m]"]);
+  // The claim's fallback is private; `claimModelSelection` is what a turn with
+  // no model runs through, so read it the way the claim does.
+  const claim = (engine as unknown as { claimModelSelection: (d: string, s: undefined, i: string) => { model?: string } | undefined })
+    .claimModelSelection("claude", undefined, "claude");
+  expect(claim?.model).toBe("opus[1m]");
+});

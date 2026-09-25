@@ -479,17 +479,13 @@ test("a local session's diff says the checkout is shared, and a worktree session
   store.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
   await settled(store, "session_cut");
 
-  const local = store.sessionDiff("session_local");
+  const local = await store.sessionDiffAsync("session_local");
   expect(local.shared).toBe(true);
   // The flag withdraws a CLAIM, not the reading: the row is still there.
   expect(local.files.map((entry) => entry.path)).toEqual(["README.md"]);
-  expect(store.sessionDiff("session_cut").shared).toBeUndefined();
-
-  // The async reader, which is what every client actually calls, agrees.
-  expect((await store.sessionDiffAsync("session_local")).shared).toBe(true);
   expect((await store.sessionDiffAsync("session_cut")).shared).toBeUndefined();
   // And a project diff has no session to misattribute anything to.
-  expect(store.projectDiff("project_one").shared).toBeUndefined();
+  expect((await store.projectDiffAsync("project_one")).shared).toBeUndefined();
 });
 
 test("the worktree default yields on an unversioned project, but a stated worktree still throws", () => {
@@ -526,6 +522,10 @@ test("archiving frees the checkout and KEEPS the branch", async () => {
 
   // Work the session produced.
   execFileSync("git", ["commit", "-qm", "session work", "--allow-empty"], { cwd: session.workspace.path });
+
+  // Deleting the checkout on archive is an opt-in Storage switch now.
+
+  store.cleanup.setPolicy({ archived: true });
 
   const archived = store.archiveSession("session_one");
   expect(archived.state).toBe("archived");

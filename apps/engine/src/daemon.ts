@@ -26,6 +26,7 @@ import {
   WorkerTurnFailure,
   WorkerTurnFailureCode,
   type WakeKind,
+  type ComputerUseGrant,
   type EngineDiscovery,
   type EngineErrorCode,
   type EngineHealth,
@@ -47,7 +48,7 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
-import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
+import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, revealComputerUseHelper, type ComputerUseGate } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { readProjectIconBytes } from "./project-icon";
@@ -105,27 +106,19 @@ import {
   notesSocketConnectCard,
 } from "./notes-tools/socket";
 import type { NotesCapability } from "./notes-tools/tools";
-import { AGENT_SELF_ID, collectAgentTools } from "./agent/tools";
-import { PREFERENCES_NOTE_TITLE } from "./agent/memory";
-import { isAgentSelf } from "./agent/identity";
-import { AgentRuntime, type AgentRuntimeOptions } from "./agent/runtime";
-import { agentChatModel } from "./agent/model";
-import { readAgentModels } from "./models";
 import { DICTATION_OFF, DictationError } from "./dictation/token";
 import { dictationProvider } from "./dictation/provider";
-import { THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX } from "./agent/thread-log";
-import { INBOX_PAGE_DEFAULT, INBOX_PAGE_MAX } from "./agent/inbox";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
 import * as shelf from "./prompts";
 import { PreparedPromptsError } from "./prompts";
 import type { GhRunner } from "./github";
-import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
+import { retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import { reapNodeModules, reapReport } from "./node-modules-reap";
-import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
 import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
 import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
-import { measureStorage } from "./storage";
+import { checkoutRootsOf, measureStore, withCheckouts } from "./storage";
+import type { CheckoutSizesOptions } from "./checkout-sizes";
 import { describeOutcome } from "./worktrees-move";
 import { describeReclaim } from "./worktree-inventory";
 import type { VolumeDeps } from "./volumes";
@@ -156,20 +149,14 @@ type RegisteredWorker = {
 
 export type EngineDaemonOptions = {
   executionStorage?: "json" | "sqlite";
+  /** The background checkout sizer's seams (`checkout-sizes.ts`). Tests only. */
+  checkoutSizing?: CheckoutSizesOptions;
   engineRoot?: string;
   port?: number;
   now?: () => number;
   /**
-   * THE AGENT'S MODEL, INJECTED — the same seam `models` is, and for a sharper
-   * reason (#531). The key ladder's third rung reads the OpenCode CLI's own
-   * credential, so on a developer's machine the default factory finds a real
-   * key and a route test would quietly spend real calls against a real API.
-   * A test passes a scripted model; nothing in production passes anything.
-   */
-  agentModel?: AgentRuntimeOptions["model"];
-  /**
    * HOW THE ENGINE REACHES DEEPGRAM'S GRANT ENDPOINT — injected for `gh`'s
-   * reason and `agentModel`'s (#544). A route test that mints a dictation token
+   * reason (#544). A route test that mints a dictation token
    * must never spend a real Deepgram account, and a developer with a key
    * pasted into their own engine would otherwise have this suite doing exactly
    * that. Nothing in production passes anything; the default is `fetch`.
@@ -207,6 +194,9 @@ export type EngineDaemonOptions = {
   snoozeWakeSweepIntervalMs?: number;
   /** #543's sweep. 30 s by default — see the wiring for why not 60. */
   scheduleSweepIntervalMs?: number;
+  /** The automatic cleanup's cadence: 30 min, first run 5 min after start. */
+  cleanupIntervalMs?: number;
+  cleanupFirstDelayMs?: number;
   /**
    * Testable cadence for the request-deadline sweep — issue #541 D.
    *
@@ -322,6 +312,19 @@ export type EngineDaemonOptions = {
    * replaces the `supportedCommands()` handshake. Both default to the real thing.
    */
   providerSkills?: { env?: NodeJS.ProcessEnv; loadProviderCommands?: LoadProviderCommands };
+  /**
+   * Whether computer use WORKS here, remembered from the last probe — the one
+   * fact that decides whether a claim gets the `mac` server.
+   *
+   * INJECTED BY TESTS: a test daemon must never probe this machine's
+   * cua-driver, because probing a stopped daemon launches it and that is when
+   * it puts its permissions panel on screen. The default is the real gate.
+   */
+  computerUseGate?: ComputerUseGate;
+  /** INJECTED BY TESTS for the same reason: the real one runs `tccutil`. */
+  resetComputerUse?: () => Promise<{ reset: boolean; message?: string }>;
+  /** INJECTED BY TESTS: the real one raises macOS prompts and opens System Settings. */
+  grantComputerUse?: () => Promise<ComputerUseGrant>;
 };
 
 export type EngineDaemon = {
@@ -883,6 +886,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * generation fence as `wakeEmbeddedWorker`.
    */
   let cancelEmbeddedClaims: ((cancellations: StoppedClaim[]) => void) | undefined;
+  const computerUseGate = options.computerUseGate ?? createComputerUseGate();
   let store: EngineStore;
   try {
   store = new EngineStore(root, options.now, {
@@ -910,19 +914,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
     ...(options.git ? { git: options.git } : {}),
+    ...(options.checkoutSizing ? { checkoutSizing: options.checkoutSizing } : {}),
     ...(options.models ? { models: options.models } : {}),
     ...(options.volumes ? { volumes: options.volumes } : {}),
     ...(options.ambientEnv ? { ambientEnv: options.ambientEnv } : {}),
-    // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
-    // installing or removing a driver applies to the next turn. Injected here,
-    // not defaulted in the store, so tests never read the real machine. The
-    // first claim that resolves also wakes the Sky host app if that is the
-    // backend — cua self-launches — once per daemon, in the background.
-    computerUse: () => {
-      const resolved = resolveComputerUse();
-      if (resolved) launchComputerUseHost();
-      return resolved;
-    },
+    // Telar's computer use (cua-driver), answered from the gate's LAST PROBE —
+    // never probed per claim — so only a measured `granted` injects it. The
+    // binary is re-resolved per claim, so an uninstall applies to the next
+    // turn. Injected here, not defaulted in the store, so tests never read the
+    // real machine.
+    computerUse: () => computerUseGate.forClaim(),
   });
   } catch (error) { lock.release(); throw error; }
   /**
@@ -1034,21 +1035,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    */
   store.lockLiveWorktrees();
   /**
-   * AND WHAT THE MAIN SESSION LEFT — issue #531.
+   * AND WHAT THE BUILT-IN AGENT LEFT — issue #908.
    *
-   * THE KEY IS CARRIED FIRST, then the document goes. The order is the rule: the
-   * carry reads the `telar` login's secret, and a sweep that deleted before
-   * reading would lose the one thing the owner asked to keep. Both are
-   * best-effort and silent unless something actually went — see
-   * `agent/main-sweep.ts`.
+   * `<engineRoot>/agent/` is MOVED to `retired/agent-<stamp>/`, never deleted:
+   * it holds a key somebody pasted, and the Agent is being rebuilt outside
+   * Telar. Once per home, best-effort, one line when it moved or could not.
+   * See `retireAgentStore`.
    */
-  // THREE STATEMENTS, NOT ONE ARGUMENT LITERAL. The carry must read the `telar`
-  // login's secret before anything drops it, and an ordering rule that survives
-  // only as long as nobody reorders the keys of an object literal is not a rule.
-  const carriedKey = store.carryOverAgentKey();
-  const droppedSecrets = store.removeRetiredProviderSecrets();
-  const mainSwept = mainSweepReport({ carriedKey, droppedSecrets, removed: sweepMainSession(store.paths.root) });
-  if (mainSwept) process.stdout.write(`${mainSwept}\n`);
+  const retiredAgent = retireAgentReport(retireAgentStore(store.paths.root, options.now ?? Date.now));
+  if (retiredAgent) process.stdout.write(`${retiredAgent}\n`);
   /**
    * WHICH PROJECTS' DISKS ARE HERE — issue #534.
    *
@@ -1131,7 +1126,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * repeat once per engine life.
    *
    * NOTHING SCHEDULES THIS. It runs when a reader first opens the pane and
-   * again when one presses refresh — #629 is open because four timers in the
+   * again when one presses refresh (the checkouts' background sizer runs only
+   * while a reader keeps asking — see `checkout-sizes.ts`) — #629 is open because four timers in the
    * rail cost ~97,000 requests a day, and a directory's size does not change by
    * the second. The stale-while-revalidate the limits cache above uses would be
    * the wrong shape here for the same reason: there is nothing to revalidate
@@ -1141,32 +1137,50 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * traversals of a 13 GB tree on the same disk; the second joins the first.
    */
   const storageCache: { report?: StorageReport; inFlight?: Promise<StorageReport> } = {};
-  const readStorage = (refresh: boolean): Promise<StorageReport> => {
-    if (!refresh && storageCache.report) return Promise.resolve(storageCache.report);
-    /**
-     * BOTH ROOTS WHILE A SPLIT LASTS — #642 part 2.
-     *
-     * Changing where checkouts go affects the NEXT cut; the ones already cut
-     * stay where they are until they are moved or their sessions end. So for a
-     * while there are checkouts under two roots, and a "Session checkouts" row
-     * that counted only the configured one would under-report by exactly the
-     * gigabytes somebody changed the setting to get rid of.
-     */
+  /**
+   * BOTH ROOTS WHILE A SPLIT LASTS — #642 part 2.
+   *
+   * Changing where checkouts go affects the NEXT cut; the ones already cut
+   * stay where they are until they are moved or their sessions end. So for a
+   * while there are checkouts under two roots, and a "Session checkouts" row
+   * that counted only the configured one would under-report by exactly the
+   * gigabytes somebody changed the setting to get rid of.
+   */
+  const storageRoots = () => {
     const configured = rootOf(readWorktreesRoot(store.paths.root)) ?? defaultWorktreesRoot(store.paths.root);
     const fallback = defaultWorktreesRoot(store.paths.root);
-    storageCache.inFlight ??= measureStorage({
-      root: store.paths.root,
-      worktreesRoot: configured,
-      ...(configured === fallback ? {} : { alsoWorktrees: [fallback] }),
-    })
-      .then((report) => {
-        storageCache.report = report;
-        return report;
-      })
-      .finally(() => {
-        storageCache.inFlight = undefined;
-      });
-    return storageCache.inFlight;
+    return { configured, also: configured === fallback ? [] : [fallback] };
+  };
+  /**
+   * THE CHECKOUTS ARE NEVER WALKED HERE. The store's own categories are
+   * measured (and cached) as before; the checkouts row is folded in on every
+   * read from `store.checkoutSizes`, which sizes them in the background and
+   * says `measuring` until it has. See `checkout-sizes.ts` for why walking
+   * them on this path took the whole engine down with it.
+   */
+  const readStorage = async (refresh: boolean): Promise<StorageReport> => {
+    const { configured, also } = storageRoots();
+    if (refresh) store.checkoutSizes.invalidate();
+    let report = storageCache.report;
+    if (refresh || !report) {
+      storageCache.inFlight ??= measureStore({ root: store.paths.root, worktreesRoot: configured, alsoWorktrees: also })
+        .then((measured) => {
+          storageCache.report = measured;
+          return measured;
+        })
+        .finally(() => {
+          storageCache.inFlight = undefined;
+        });
+      report = await storageCache.inFlight;
+    }
+    const figure = store.checkoutSizes.figure(checkoutRootsOf({ worktreesRoot: configured, alsoWorktrees: also }));
+    return withCheckouts(report, figure, configured);
+  };
+  /** Checkouts were cut, moved or given back: the store figure is stale and the
+   *  sizer must look at the roots again (unchanged checkouts keep their size). */
+  const checkoutsChanged = () => {
+    storageCache.report = undefined;
+    store.checkoutSizes.relist();
   };
   const daemonId = crypto.randomUUID();
   /**
@@ -1409,6 +1423,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * A THROW HERE MUST NOT TAKE THE DAEMON DOWN, as above; the sweep already
    * catches per row.
    */
+  /**
+   * THE AUTOMATIC CLEANUP: once five minutes after start, then every thirty.
+   * With every switch off, a sweep reads one small document and stops.
+   */
+  const sweepCleanup = () => {
+    void store
+      .runCleanup()
+      .then(() => {
+        storageCache.report = undefined;
+      })
+      .catch(() => {
+        /* the next tick tries again */
+      });
+  };
+  const cleanupFirst = setTimeout(sweepCleanup, options.cleanupFirstDelayMs ?? 5 * 60 * 1000);
+  cleanupFirst.unref();
+  const cleanupSweeper = setInterval(sweepCleanup, options.cleanupIntervalMs ?? 30 * 60 * 1000);
+  cleanupSweeper.unref();
   const scheduleSweeper = setInterval(() => {
     try {
       store.sweepSchedules();
@@ -1474,20 +1506,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const sessionsSecret = () => (sessionsSecretCache ??= ensureSessionsSocketSecret(store.paths));
   let sessionsToolsCache: SocketTool[] | undefined;
   /**
-   * THE IN-PROCESS SESSIONS CAPABILITY, WITH OR WITHOUT A `self`.
-   *
-   * ONE BUILD, TWO CALLERS (#531). The outward MCP socket takes it with no
-   * `self` — a chat client is not a session and has nowhere to be woken, so the
-   * subscription tools refuse in words. The built-in Agent takes the same build
-   * with `self: { sessionId: "agent" }`, which is the only difference between
-   * them: it has somewhere to be woken and something to be attributed to.
-   *
-   * Written as a parameter rather than as a second object so a verb added to
-   * one is added to both — the drift this seam exists to prevent is exactly the
-   * kind nobody notices until an agent's tool answers differently from a chat
-   * client's.
+   * THE IN-PROCESS SESSIONS CAPABILITY, for the outward MCP socket. It has no
+   * `self`: a chat client is not a session and has nowhere to be woken, so the
+   * subscription tools refuse in words.
    */
-  const buildSessionsCapability = (self?: { sessionId: string }): SessionsCapability => {
+  const buildSessionsCapability = (): SessionsCapability => {
     /**
      * EVERY MEMBER DELEGATES TO A `store.*` METHOD THAT ALREADY EXISTS. There
      * is no validation here and
@@ -1500,10 +1523,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
      * shape on the wall carries it — provenance a list can show, nothing more.
      */
     return {
-      // ABSENT for the socket: a chat client on it is not a session and has
-      // nowhere to be woken, so the subscription tools refuse in words. PRESENT
-      // for the Agent, which has both.
-      ...(self ? { self } : {}),
       /**
        * THE SHELF IS THE STORE'S RULE, ASKED FOR RATHER THAN RE-IMPLEMENTED
        * (#515). This used to be `store.liveSessions()` — every session the
@@ -1515,51 +1534,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       list: async (options) => store.liveSessionRows({ all: options?.settled === true }),
       /**
-       * THE PRIVILEGE CEILING IS DECLARED HERE, BY THIS CODE — #541 G1, and for
-       * `origin`'s own reason: no tool shape on the wall carries it.
-       *
-       * ONLY WHEN THE CALLER IS A REAL SESSION. The Agent's build passes
-       * `AGENT_SELF_ID`, which is a LangGraph thread and not a session — it has
-       * no `runtimeMode` for a child to inherit, so there is nothing here to
-       * read and its creates keep the posture's default. That gap is named in
-       * the PR rather than papered over with a mode the Agent does not have.
-       *
-       * The SOCKET's build has no `self` at all: a chat client is the person's
-       * own, and a person's click has no creator to inherit from.
+       * NO PRIVILEGE CEILING (#541 G1) on this build: the socket's caller is the
+       * person's own chat client, and a person's click has no creator to inherit
+       * from. A SESSION's build (`worker.ts`) names itself as `ceilingFrom`.
        */
-      create: async (input) =>
-        store.createSession({
-          ...input,
-          origin: "session",
-          ...(self && !isAgentSelf(self.sessionId) ? { ceilingFrom: self.sessionId } : {}),
-        }),
+      create: async (input) => store.createSessionAsync({ ...input, origin: "session" }),
       /**
        * An agent's words, with no session to attribute them to: the caller is
        * the user's own chat client, outside any turn. Never the person's.
-       *
-       * THE AGENT'S BUILD PASSES ITS OWN NAME AS PROOF (#539), and that is the
-       * whole of the difference. It buys one thing — a human Stop on the
-       * recipient latches out peer sessions and not the Agent, which the person
-       * is typing at right now — and the store says in its answer when that
-       * latch was stepped over. The socket's build has no `self` and so sends
-       * unproven, exactly as before: a chat client is not the Agent.
        */
-      send: async (sessionId, input) =>
-        store.submitAgentTurn(sessionId, input, self && isAgentSelf(self.sessionId) ? { sessionId: AGENT_SELF_ID } : undefined),
-      /**
-       * ADDRESSING THE AGENT — issue #784, and this build has no proof to offer.
-       *
-       * The socket's caller is not a session, and the Agent's own build would be
-       * the Agent addressing itself; the store refuses both, in those words. It
-       * is still WIRED at this seam rather than omitted, so the refusal a model
-       * reads is the store's sentence about who may speak — not the wall's
-       * "this door cannot", which would be true of the worker too and is not.
-       *
-       * The SESSION's build of this wall is `worker.ts`, over HTTP, and that one
-       * carries the claim of the turn doing the sending.
-       */
-      sendToAgent: async (input) =>
-        store.sendToAgent(input, self && isAgentSelf(self.sessionId) ? { sessionId: AGENT_SELF_ID } : undefined),
+      send: async (sessionId, input) => store.submitAgentTurnAsync(sessionId, input),
       read: async (sessionId, after, options) => store.readEvents(sessionId, after, options?.limit),
       // The last event id, so the wall can serve "what happened lately" from
       // one page rather than by walking a journal to reach its end (#515).
@@ -1600,15 +1584,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     };
   };
 
-  /**
-   * THE QUERY PORT, BUILT ONCE FOR BOTH THINGS THAT WANT IT — the sessions wall
-   * (a session's, and the outward socket's) and the Agent's.
-   *
-   * Written as a function for `buildSessionsCapability`'s own reason: a read
-   * added to one of the two is added to both, and the drift this prevents is
-   * exactly the kind nobody notices until an agent's tool answers differently
-   * from a session's.
-   */
+  /** The query port for the in-process sessions wall — every read is the
+   *  query routes' own `store.*` method, so the two cannot answer differently. */
   function buildQueryCapability(): SessionsQueryCapability {
     return {
       find: async (query) => store.findSessions(query),
@@ -1628,12 +1605,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   let notesSecretCache: string | undefined;
   const notesSecret = () => (notesSecretCache ??= ensureNotesSocketSecret(store.paths));
   let notesToolsCache: SocketTool[] | undefined;
-  /**
-   * THE NOTEBOOK CAPABILITY, shared by the outward socket and the Agent for
-   * `buildSessionsCapability`'s reason — one build, so a rule added to one door
-   * is added to both. Neither has a `self`: a chat client has no project to
-   * default to, and neither has the Agent, which owns no checkout at all.
-   */
   const buildNotesCapability = (): NotesCapability => {
     /**
      * NO `self`: a chat client on this socket is not in a session and has no
@@ -1667,160 +1638,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   };
   const notesSocketTools = (): SocketTool[] => (notesToolsCache ??= collectNotesWallTools(buildNotesCapability()));
 
-  /** Every live `GET /v2/agent/stream`, so shutdown can end them — see the
-   *  route. A `Set` of teardown functions rather than of responses: the route
-   *  owns what ending one means. */
+  /** Every live event stream, so shutdown can end them — see the routes. A
+   *  `Set` of teardown functions rather than of responses: the route owns what
+   *  ending one means. */
   const openStreams = new Set<(() => void) & { end?: () => void }>();
 
-  /**
-   * THE BUILT-IN AGENT — one per machine, in this process (#531).
-   *
-   * BUILT EAGERLY AND OPENED LAZILY. Constructing it costs nothing: the runtime
-   * reads `agent.json` per call and opens `threads.sqlite` on the first turn,
-   * thread read or stream, so an engine whose Agent has never been switched on
-   * never grows a database. What being built early buys is the wake sink below,
-   * which has to be in place before any turn can end.
-   *
-   * ITS WALL IS REBUILT PER TURN, through the same two builders the outward
-   * socket uses, with a `self` of `agent`. See `agent/tools.ts` for why the
-   * daemon's capability is the right one and why neither build carries the
-   * request gate.
-   */
-  const agentRuntime: AgentRuntime = new AgentRuntime({
-    engineRoot: root,
-    tools: (): SocketTool[] =>
-      collectAgentTools({
-        sessions: buildSessionsCapability({ sessionId: AGENT_SELF_ID }),
-        notes: buildNotesCapability(),
-        // THE SAME SIX A SESSION GETS — see `buildQueryCapability`. Passed
-        // separately from `sessions` only because the two have different owners
-        // here; `collectAgentTools` merges them back into one wall (#516).
-        query: buildQueryCapability(),
-        /**
-         * "HOW ARE THINGS", IN ONE CALL — #570.
-         *
-         * TWO OWNERS, ONE CAPABILITY. The five reads about SESSIONS are the
-         * store's own — the same `liveSessionRows`, `turnOutline` and `requests`
-         * the rail and the query tools already use, so a fleet row and the rail's
-         * row cannot disagree about a session — and the two about the AGENT come
-         * from the runtime, which owns the standing document and the inbox. See
-         * `AgentRuntime.fleet`.
-         *
-         * `turnOutline` AT LIMIT 1 IS THE LAST-TURN READ. It is the projection
-         * #516 built for exactly this — state, when it ended, and the answer's
-         * opening line — so nothing here re-folds a turn a second way.
-         */
-        fleet: {
-          ...agentRuntime.fleet(),
-          rail: async () => {
-            const live = store.liveSessionRows({ all: false });
-            return { sessions: live.sessions, projects: live.projects };
-          },
-          subscribed: async () => [...new Set(store.subscriptionsFor(AGENT_SELF_ID).map((subscription) => subscription.targetSessionId))],
-          // ABSENT RATHER THAN THROWN: the Agent's notes outlive the sessions
-          // they name, and a status answer must not fail because one line of its
-          // own bookkeeping is stale.
-          session: async (sessionId) => {
-            try {
-              return store.getSession(sessionId);
-            } catch {
-              return undefined;
-            }
-          },
-          lastTurn: async (sessionId) => {
-            try {
-              const [newest] = store.turnOutline(sessionId, { limit: 1 }).turns;
-              return newest ? { state: newest.state, ...(newest.endedAt === undefined ? {} : { endedAt: newest.endedAt }), answer: newest.answer } : undefined;
-            } catch {
-              return undefined;
-            }
-          },
-          openRequests: async (sessionId) => {
-            try {
-              return store.requests(sessionId).filter((request) => request.state === "open").length;
-            } catch {
-              return 0;
-            }
-          },
-        },
-        // THE AGENT'S OWN, from the runtime being constructed here: it owns the
-        // standing document and the transcript's search index, and this closure
-        // is not called until a turn runs. See `AgentRuntime.memory`.
-        memory: agentRuntime.memory(),
-        /**
-         * THE ONE READ THAT LEAVES THIS MACHINE — #541's owner decision 4.
-         *
-         * BOTH VERBS ARE THE STORE'S OWN, which is what keeps this bounded: they
-         * are the same cached, timeout-guarded, injectable-`gh` reads the panel
-         * uses (`projectIssue`, `projectPull`), so an Agent asking about a pull
-         * request four times in a turn spends one round trip and the second is
-         * the same thirty-second cache the cockpit hits.
-         */
-        github: {
-          issue: (projectId, number) => store.projectIssue(projectId, number),
-          pull: (projectId, number) => store.projectPull(projectId, number),
-          projects: async () => store.listProjects().map((project) => ({ id: project.id, name: project.name })),
-        },
-      }),
-    model:
-      options.agentModel ??
-      ((input) =>
-        agentChatModel({
-          threadId: input.threadId,
-          ...(input.model ? { model: input.model } : {}),
-          // `reasoning_effort` on the wire, and only when somebody set it —
-          // see `agent/model.ts` for why it is omitted rather than defaulted.
-          ...(input.effort ? { effort: input.effort } : {}),
-          agentDir: path.join(root, "agent"),
-        })),
-    ...(options.now ? { now: options.now } : {}),
-    // THE SAME PARAGRAPH EVERY OTHER TURN ON THIS MACHINE GETS, under the same
-    // switch — `AgentOrientation.preamble`. A coordinator that did not know
-    // what Telar is would be the one conversation on the machine that did not.
-    orientation: () => (store.getAgentOrientation().preamble ? TELAR_ORIENTATION : undefined),
-    /**
-     * THE AGENT'S OWN NOTEBOOK — `notes/agent.json`, under the reserved id the
-     * sessions wall already knows it by (#541's owner decision 3).
-     *
-     * NOT A PROJECT'S NOTEBOOK, because the Agent owns no project and the
-     * preferences are not about one: pinning "Facundo prefers small PRs" to
-     * whichever repository happened to be busy that week would put a fact about
-     * a person in a strip about a codebase. It is a real note file in the real
-     * notes directory, so `notes_read` reaches it and nothing new had to be
-     * invented to hold it.
-     *
-     * REWRITTEN RATHER THAN ACCUMULATED — see `PREFERENCES_NOTE_TITLE`.
-     */
-    keepPreferences: (preferences) => {
-      const existing = notebook.readNotes(store.paths, AGENT_SELF_ID).find((note) => note.title === PREFERENCES_NOTE_TITLE);
-      if (existing) notebook.updateNote(store.paths, AGENT_SELF_ID, existing.id, { body: preferences, pinned: true });
-      else notebook.createNote(store.paths, AGENT_SELF_ID, { title: PREFERENCES_NOTE_TITLE, body: preferences, pinned: true, author: "session" });
-    },
-  });
-  /**
-   * A COMPLETION OR A PARKED REQUEST ON A SUBSCRIBED SESSION BECOMES AN INBOX
-   * ROW — and no turn at all (#541 A).
-   *
-   * The store fans subscriptions out and finds one subscriber that is not a
-   * session; this is where that one goes. Registered here rather than inside
-   * the runtime because the direction matters: the runtime knows about the
-   * store, and the store must not know about a graph.
-   *
-   * IT HANDS OVER THE NOTIFICATION WHOLE, the one `notification.ts` minted for
-   * every subscriber to this transition (#550), so the Agent's row and a
-   * session's notification item say the same sentence about the same fact.
-   */
-  store.setAgentWakeSink((wake) =>
-    agentRuntime.wake({ notification: wake.notification, ...(wake.inboxKind ? { inboxKind: wake.inboxKind } : {}) }),
-  );
-  /**
-   * AN APPROVAL THIS MACHINE PARKED BEFORE IT LAST STOPPED, FOUND AGAIN.
-   *
-   * AWAITED, so `GET /v2/agent` cannot answer "nothing pending" to a cockpit
-   * that is holding the very question. One bounded read of a thread that in the
-   * ordinary case does not exist — see `AgentRuntime.restore`.
-   */
-  await agentRuntime.restore();
 
   const execution = createExecutionPort(store, {
     registerWorker: async (workerId) => {
@@ -2117,291 +1939,31 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * ══ THE BUILT-IN AGENT — issue #531 ══
-       *
-       * Eight routes, and they are deliberately NOT under `/v2/sessions/`: the
-       * Agent is not a session, it has no id in that namespace, and a client
-       * that reached it through a session route would be told a conversation
-       * exists that `sessions_read` cannot open.
-       *
-       * THE RAIL DOES NOT READ ANY OF THESE. It gets `agent: { enabled }` off
-       * `/v2/sessions/live`, which it already polls — one flag, because a row
-       * that only shows a label needs nothing else. These are the pane's reads
-       * and the composer's writes.
+       * HOW A PROJECT'S WORKTREES ARE PREPARED — `workspace-config.ts`. The
+       * machine layer here; each project's overrides under its own id below.
+       * PUT, not PATCH: the pane sends the whole layer it edited, and a merge
+       * could not tell "remove this field" from "leave it alone".
        */
-      if (url.pathname === "/v2/agent" && (request.method === "GET" || request.method === "PATCH")) {
-        if (request.method === "PATCH") {
-          const input = await body(request);
-          // FORWARDED BY PRESENCE, unvalidated, like every other settings patch
-          // here: the shape lives beside the schema in `agent/store.ts`, and a
-          // second copy at this seam could disagree with it.
-          agentRuntime.patch({
-            ...("enabled" in input ? { enabled: input.enabled } : {}),
-            ...("model" in input ? { model: input.model } : {}),
-            // The composer's other two pills (#539). Same forwarding rule as the
-            // model beside them: presence, unvalidated, because the shape lives
-            // once beside the schema.
-            ...("effort" in input ? { effort: input.effort } : {}),
-            ...("access" in input ? { access: input.access } : {}),
-            ...("reset" in input ? { reset: input.reset } : {}),
-          });
-          /**
-           * THE KEY IS WRITE-ONLY, AND IS NOT PART OF THE SETTINGS DOCUMENT.
-           *
-           * Stored 0600 beside the thread rather than on `agent.json`, for
-           * `providerSecrets`' own reason: the settings document is handed to
-           * every client that opens the pane, and a key on it would be one
-           * redaction away from being echoed back to a browser. There is no
-           * redacted round trip to preserve either — the only field is one a
-           * person retypes, and an empty string clears it.
-           */
-          if ("apiKey" in input) store.setAgentKey(input.apiKey);
-        }
-        // THE CREDENTIAL RIDES ALONG, because the pane that reads this is the
-        // pane that decides whether to show a setup field, and asking in a
-        // second request would let the two disagree about one instant. Which
-        // RUNG answered, never the key.
-        writeJson(response, 200, { agent: agentRuntime.state(), credential: store.agentCredential() });
-        return;
-      }
-      /**
-       * WHAT THE AGENT MAY RUN, DESCRIBED.
-       *
-       * ITS OWN ROUTE because `/v2/models/:driver` is keyed by
-       * `ProviderDriverKind` and answers "what can this SESSION run" — and the
-       * Agent is not a session. Go's public endpoint, no credential (the docs
-       * publish it as open), merged with models.dev's descriptions and the
-       * transcribed route table — see `agent/catalogue.ts`.
-       *
-       * THE AGENT DIRECTORY IS PASSED BECAUSE THE DESCRIPTIONS ARE CACHED IN
-       * IT: models.dev's `api.json` is 4.6 MB, so it is read at most once a day
-       * into `<engineRoot>/agent/catalogue.json`. It still fails soft with the
-       * service's own words — an empty picker carrying the reason beats one
-       * full of ids that 404.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/agent/models") {
-        writeJson(response, 200, await readAgentModels(path.join(root, "agent")));
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/agent/turns") {
-        const input = await body(request);
-        const text = stringValue(input.text, "text") ?? "";
-        try {
-          /**
-           * `brief` IS THE VOICE CLIENT'S FLAG (#567) — telar-vr sends it, the
-           * cockpit does not. It shortens THIS turn's answer and is stored
-           * nowhere, so the same conversation read on a screen a minute later
-           * is unchanged. Absent and false are the same thing here.
-           */
-          writeJson(response, 201, {
-            ...agentRuntime.submit({ text, ...(input.brief === true ? { brief: true } : {}) }),
-            agent: agentRuntime.state(),
-          });
-        } catch (error) {
-          // A switched-off Agent and an empty message are both the caller's
-          // mistake, said in the sentence the runtime wrote for them.
-          throw new HttpError(409, "conflict", error instanceof Error ? error.message : String(error));
-        }
-        return;
-      }
-      if (request.method === "POST" && url.pathname.startsWith("/v2/agent/turns/") && url.pathname.endsWith("/cancel")) {
-        const runId = url.pathname.slice("/v2/agent/turns/".length, -"/cancel".length);
-        // STOPPED IS A FACT, NOT A 404. A run that already finished answers
-        // `false` rather than an error: a Stop pressed a beat late is not a
-        // client bug, and it must not paint a failure over a turn that worked.
-        writeJson(response, 200, { stopped: agentRuntime.cancel(runId || undefined), agent: agentRuntime.state() });
-        return;
-      }
-      /**
-       * THE TRANSCRIPT, FROM EITHER END (#580).
-       *
-       * `after=` is unchanged and still means "what is new" — it is what every
-       * poll and every stream reconnect rides. `tail=1` opens on the END, and
-       * `before=<id>` walks back from there; both answer `oldest`, the next
-       * `before`, and read `more` as "older rows are waiting".
-       *
-       * BACKWARD IS ASKED FOR AND NEVER INFERRED. A bare read still means
-       * "from the beginning", so a client built against the old route gets
-       * exactly what it got before rather than silently landing at the end of
-       * a conversation it meant to read from the start.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/agent/thread") {
-        const limit = positiveParam(url.searchParams.get("limit"), THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX, "limit");
-        const before = url.searchParams.get("before");
-        const tail = url.searchParams.get("tail");
-        if (before !== null || tail === "1" || tail === "true") {
-          writeJson(response, 200, agentRuntime.threadWindow({
-            ...(before === null ? {} : { before: positiveParam(before, 0, Number.MAX_SAFE_INTEGER, "before") }),
-            limit,
-          }));
+      if (url.pathname === "/v2/workspace" && (request.method === "GET" || request.method === "PUT")) {
+        if (request.method === "GET") {
+          writeJson(response, 200, { machine: store.workspace.machine() });
           return;
         }
-        writeJson(response, 200, agentRuntime.thread({
-          after: positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after"),
-          limit,
-        }));
-        return;
-      }
-      /**
-       * ══ THE WAKE INBOX — issue #541, section A ══
-       *
-       * WHAT REPLACED THE WAKE TURN. A completion on a subscribed session writes
-       * a row here and starts nothing; the next turn a person begins opens with
-       * a digest of what is unread. These two routes are what a client needs to
-       * draw the same thing the model was shown, and to clear it.
-       *
-       * BOUNDED LIKE EVERY OTHER READ IN THIS ENGINE (#515): `after` is an
-       * exclusive cursor, `limit` is clamped by the store, and `more` says
-       * whether the page stopped early. `unread=1` is the section above the
-       * composer; without it the route pages the whole inbox, which is what a
-       * "show everything" disclosure would ask for.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/agent/inbox") {
-        const unreadOnly = url.searchParams.get("unread");
-        writeJson(response, 200, agentRuntime.inbox({
-          after: positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after"),
-          limit: positiveParam(url.searchParams.get("limit"), INBOX_PAGE_DEFAULT, INBOX_PAGE_MAX, "limit"),
-          ...(unreadOnly === "1" || unreadOnly === "true" ? { unreadOnly: true } : {}),
-        }));
-        return;
-      }
-      /**
-       * MARK ROWS READ, BY ID.
-       *
-       * BY ID AND NEVER "EVERYTHING", for `resolveAgentRequest`'s reason: a
-       * client holding a stale list must not be able to clear rows that landed
-       * after it last looked. `read` is how many actually MOVED, so a second
-       * press of the same button answers `0` rather than claiming a write that
-       * did nothing.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/agent/inbox/read") {
         const input = await body(request);
-        const ids = Array.isArray(input.ids) ? input.ids.filter((id: unknown): id is number => typeof id === "number") : undefined;
-        if (!ids) throw new HttpError(400, "invalid_request", "ids must be a list of row ids");
-        if (ids.length > INBOX_PAGE_MAX) throw new HttpError(400, "invalid_request", `mark at most ${INBOX_PAGE_MAX} rows read at a time`);
-        writeJson(response, 200, agentRuntime.markInboxRead(ids));
+        const saved = store.workspace.setMachine(input.machine);
+        if (!saved.ok) throw new EngineStateError("invalid_request", saved.message);
+        writeJson(response, 200, { machine: saved.value });
         return;
       }
-      /**
-       * A SESSION ADDRESSING THE AGENT — issue #784.
-       *
-       * UNDER `/v2/agent` RATHER THAN `/v2/sessions/:id/turns/agent`, and the
-       * placement is the same argument this family was built on: the Agent is
-       * not a session and has no id in that namespace, so a route that reached
-       * it through one would promise a conversation `sessions_read` cannot open.
-       * It is also the difference the route names — that one submits a TURN, and
-       * this one writes a ROW and starts nothing.
-       *
-       * `proof` IS THE SENDING TURN'S OWN CLAIM, exactly as on `/turns/agent`:
-       * the store checks it is live and reads the sender off it, so a model
-       * cannot name a session it is not, and an unproven caller is refused
-       * rather than recorded anonymously. There is no anonymous arm here — a row
-       * with no sender has no fetch call, which is the whole of what it carries.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/agent/inbox/message") {
-        const input = await body(request);
-        const text = typeof input.input === "string" ? input.input : "";
-        if (!text) throw new HttpError(400, "invalid_request", "input is required");
-        const proof = input.proof as { sessionId?: unknown; runId?: unknown; claimToken?: unknown } | undefined;
-        if (typeof proof?.sessionId !== "string" || typeof proof.runId !== "string" || typeof proof.claimToken !== "string") {
-          throw new HttpError(400, "invalid_request", "a sender proof (sessionId, runId, claimToken) is required to address the Agent");
+      const projectWorkspace = /^\/v2\/projects\/([^/]+)\/workspace$/.exec(url.pathname);
+      if (projectWorkspace && (request.method === "GET" || request.method === "PUT")) {
+        const project = store.getProject(decodeURIComponent(projectWorkspace[1]!));
+        if (request.method === "PUT") {
+          const input = await body(request);
+          const saved = store.workspace.setOverrides(project.id, input.overrides);
+          if (!saved.ok) throw new EngineStateError("invalid_request", saved.message);
         }
-        const intent = input.intent === "task" || input.intent === "result" || input.intent === "blocker" ? input.intent : "report";
-        writeJson(response, 200, store.sendToAgent({ input: text, intent }, { sessionId: proof.sessionId, runId: proof.runId, claimToken: proof.claimToken }));
-        return;
-      }
-      if (request.method === "POST" && url.pathname.startsWith("/v2/agent/requests/")) {
-        const requestId = url.pathname.slice("/v2/agent/requests/".length);
-        const input = await body(request);
-        const decision = input.decision === "accept" ? "accept" : input.decision === "decline" ? "decline" : undefined;
-        if (!decision) throw new HttpError(400, "invalid_request", 'decision must be "accept" or "decline"');
-        // ANSWERED BY ID, so a client holding a stale question cannot approve
-        // the one that replaced it. `false` means it was already answered.
-        writeJson(response, 200, { resolved: agentRuntime.resolveRequest(requestId, decision), agent: agentRuntime.state() });
-        return;
-      }
-      /**
-       * THE ENGINE'S FIRST PUSH ROUTE, AND IT IS KEPT SMALL ON PURPOSE.
-       *
-       * Server-sent events over the same bearer auth as everything else: no
-       * second protocol, no upgrade, no library. `after` is a transcript cursor,
-       * so the contract is the one every other read here has — page what you
-       * missed, then watch.
-       *
-       * THE BACKLOG IS SENT FIRST, INSIDE THE SAME RESPONSE. A client that
-       * paged and then subscribed would have a gap between the two calls; this
-       * closes it by replaying from the caller's cursor before the live feed
-       * starts, on one connection.
-       *
-       * A DELTA IS NOT REPLAYABLE and is not replayed: it is live-only, and the
-       * assistant row that follows carries the whole text. A client joining
-       * mid-sentence sees the finished message a moment later rather than half
-       * of one for ever.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/agent/stream") {
-        const after = positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after");
-        response.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache, no-transform",
-          Connection: "keep-alive",
-        });
-        const send = (event: unknown) => {
-          try {
-            response.write(`data: ${JSON.stringify(event)}\n\n`);
-          } catch {
-            // The socket has gone; the close handler below unsubscribes.
-          }
-        };
-        /**
-         * ONE FRAME BEFORE ANYTHING ELSE, AND IT IS NOT POLITENESS.
-         *
-         * Measured: `writeHead` alone does not put the headers on the wire, so a
-         * client subscribing to a QUIET thread — one with no backlog to replay —
-         * sat in `await fetch(...)` until something happened to be said. Which is
-         * exactly backwards: the emptier the conversation, the longer the client
-         * hung waiting to be told it had connected. A comment frame flushes them
-         * and is ignored by every SSE reader.
-         */
-        response.write(": open\n\n");
-        for (const row of agentRuntime.thread({ after, limit: THREAD_PAGE_MAX }).rows) send({ type: "row", row });
-        const stop = agentRuntime.watch(send);
-        // A COMMENT FRAME ON A TIMER, because a stream that says nothing for
-        // twenty minutes is one a proxy closes. It is not an event and no
-        // client has to know about it.
-        const beat = setInterval(() => {
-          try {
-            response.write(": beat\n\n");
-          } catch {
-            /* the close handler is what actually tidies up */
-          }
-        }, 25_000);
-        beat.unref();
-        const finish = () => {
-          clearInterval(beat);
-          stop();
-          openStreams.delete(finish);
-        };
-        /**
-         * THE SHUTDOWN HAS TO BE ABLE TO END THIS.
-         *
-         * `server.close()` stops accepting and then WAITS for open connections,
-         * and an SSE stream is a connection that by design never ends — so a
-         * daemon with a cockpit watching the Agent would hang on close for ever.
-         * Registered here and ended in `close()` below, before the server is
-         * asked to shut: the client sees a clean end of stream and reconnects to
-         * whatever comes back up.
-         */
-        openStreams.add(finish);
-        request.on("close", finish);
-        response.on("close", finish);
-        (finish as { end?: () => void }).end = () => {
-          finish();
-          try {
-            response.end();
-          } catch {
-            /* already gone */
-          }
-        };
+        writeJson(response, 200, { workspace: await store.workspace.view(project) });
         return;
       }
       /**
@@ -2414,7 +1976,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * frames through a Mac that has no reason to see them is the second step's
        * problem, and may never be one — see `dictation/token.ts`.
        *
-       * MACHINE-SCOPED, like the session defaults and the Agent beside it: the
+       * MACHINE-SCOPED, like the session defaults beside it: the
        * desktop shell, a browser tab and a paired phone read one engine, and a
        * per-client key would be a key pasted once per device.
        */
@@ -2586,27 +2148,34 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * COMPUTER USE, MEASURED. The GET runs one real read-only call through
-       * the Sky client, because that is the only honest answer to "is the
-       * Automation grant in place" — and when the grant is still undecided,
-       * that same call is what makes macOS show its own prompt, which names
-       * the responsible app better than this daemon can from the inside.
-       * The POST wakes the host app the client drives.
+       * COMPUTER USE, MEASURED. The GET runs one real read-only `list_apps`
+       * through cua-driver, because that is the only honest answer to "does
+       * computer use work here" — and the gate KEEPS the answer, so this is
+       * also how a fresh grant reaches sessions: only a last answer of
+       * `granted` puts the `mac` server into a claim.
        */
       if (request.method === "GET" && url.pathname === "/v2/computer-use") {
-        writeJson(response, 200, { computerUse: await computerUseStatus() });
+        writeJson(response, 200, { computerUse: await computerUseGate.measure() });
         return;
       }
-      if (request.method === "POST" && url.pathname === "/v2/computer-use/host") {
-        openComputerUseHost();
-        writeJson(response, 200, { ok: true });
-        return;
-      }
-      // cua's native granting flow — CuaDriver.app requests Accessibility +
-      // Screen Recording, attributed to itself. Sky has no such command (its
-      // probe is the grant), so this reports what it did.
+      // Ask macOS for the grants — the bundled helper asks for itself, an
+      // external install through cua's own flow — and open the Settings list
+      // to finish in, answering what each step did. The grant reaches sessions
+      // at the next GET above, not here.
       if (request.method === "POST" && url.pathname === "/v2/computer-use/grant") {
-        writeJson(response, 200, grantComputerUseAccess());
+        writeJson(response, 200, await (options.grantComputerUse ?? grantComputerUseAccess)());
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/reveal") {
+        writeJson(response, 200, await revealComputerUseHelper());
+        return;
+      }
+      // "Remove permissions": the bundled helper's grants only. Re-measured at
+      // once so the gate stops handing sessions tools that now fail.
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/reset") {
+        const outcome = await (options.resetComputerUse ?? resetComputerUseAccess)();
+        if (outcome.reset) await computerUseGate.measure();
+        writeJson(response, 200, outcome);
         return;
       }
       /**
@@ -2633,9 +2202,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        *
        * `?refresh=1` RE-WALKS; without it the cached measurement comes back
        * with the timestamp it was taken at, and the pane shows the figure as of
-       * that moment. The first read of an engine's life waits for the walk —
-       * seconds on a large store — which is why the cockpit fetches this off
-       * the render path and never on a timer.
+       * that moment. The first read of an engine's life waits for the store's
+       * own walk — never the checkouts', whose row says `measuring` and fills
+       * in as the background sizer settles. The cockpit re-asks only while a
+       * row says `measuring`, and that asking is what keeps the sizer going.
        */
       if (request.method === "GET" && url.pathname === "/v2/storage") {
         writeJson(response, 200, { storage: await readStorage(url.searchParams.get("refresh") === "1") });
@@ -2768,7 +2338,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           } else throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path, or null for the default");
           // The figures are about to be wrong in the one way that matters, so
           // the next read measures rather than serving the old split.
-          storageCache.report = undefined;
+          checkoutsChanged();
         }
         const state = readWorktreesRoot(store.paths.root);
         writeJson(response, 200, {
@@ -2804,7 +2374,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           throw new HttpError(409, "conflict", cause instanceof Error ? cause.message : "the checkouts could not be moved");
         }
         // The figures moved by exactly this much, so the next read measures.
-        storageCache.report = undefined;
+        checkoutsChanged();
         writeJson(response, 200, { move: { ...outcome, summary: describeOutcome(outcome) } });
         return;
       }
@@ -2844,12 +2414,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           if (typeof item.path !== "string" || !item.path.trim()) {
             throw new HttpError(400, "invalid_request", "each item needs the checkout's path");
           }
-          return { path: item.path, ...(typeof item.confirm === "string" ? { confirm: item.confirm } : {}) };
+          return {
+            path: item.path,
+            ...(typeof item.confirm === "string" ? { confirm: item.confirm } : {}),
+            ...((item as { settled?: unknown }).settled === "archive" || (item as { settled?: unknown }).settled === "release"
+              ? { settled: (item as { settled: "archive" | "release" }).settled }
+              : {}),
+          };
         });
         const results = await store.reclaimWorktrees(items);
         // Gigabytes just moved, so the pane above this one must measure rather
         // than serve the split it read before the press.
-        storageCache.report = undefined;
+        checkoutsChanged();
         writeJson(response, 200, { reclaim: { results, summary: describeReclaim(results) } });
         return;
       }
@@ -3193,6 +2769,54 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const projectGit = /^\/v2\/projects\/([^/]+)\/git$/.exec(url.pathname);
       if (request.method === "GET" && projectGit) {
         writeJson(response, 200, { git: await store.projectGitAsync(decodeURIComponent(projectGit[1])) });
+        return;
+      }
+      /**
+       * A SESSION'S CHECKOUT: release it (delete the directory, keep the branch
+       * and the conversation), bring it back, or read its setup's log — see
+       * `worktree-release.ts` and `worktree-setup.ts`.
+       */
+      /**
+       * SETTINGS → STORAGE'S AUTOMATIC CLEANUP — `cleanup.ts`. GET reads a small
+       * document and never measures anything (#937); `run` sweeps now.
+       */
+      if (url.pathname === "/v2/cleanup" && (request.method === "GET" || request.method === "PUT")) {
+        if (request.method === "PUT") {
+          const saved = store.cleanup.setPolicy(await body(request));
+          if (!saved) throw new HttpError(400, "invalid_request", "inactive days must be 3, 7, 14 or 30; log days 7 or 30; the others true or false");
+        }
+        writeJson(response, 200, { cleanup: { policy: store.cleanup.policy(), ...(store.cleanup.last() ? { last: store.cleanup.last() } : {}), running: store.isCleanupRunning() } });
+        return;
+      }
+      if (url.pathname === "/v2/cleanup/run" && request.method === "POST") {
+        await store.runCleanup();
+        storageCache.report = undefined;
+        writeJson(response, 200, { cleanup: { policy: store.cleanup.policy(), ...(store.cleanup.last() ? { last: store.cleanup.last() } : {}), running: store.isCleanupRunning() } });
+        return;
+      }
+      const sessionWorktree = /^\/v2\/sessions\/([^/]+)\/worktree\/(release|restore)$/.exec(url.pathname);
+      if (sessionWorktree && request.method === "POST") {
+        const sessionId = decodeURIComponent(sessionWorktree[1]!);
+        if (sessionWorktree[2] === "restore") {
+          writeJson(response, 200, { session: store.restoreSessionWorktree(sessionId) });
+          return;
+        }
+        const released = await store.releaseSessionWorktree(sessionId, "manual");
+        if (!released.ok) {
+          throw new HttpError(409, "conflict", `the checkout was not released: ${released.refusal}${released.detail ? ` (${released.detail})` : ""}`);
+        }
+        writeJson(response, 200, { session: store.getSession(sessionId) });
+        return;
+      }
+      const sessionSetup = /^\/v2\/sessions\/([^/]+)\/setup$/.exec(url.pathname);
+      if (sessionSetup && request.method === "GET") {
+        const sessionId = decodeURIComponent(sessionSetup[1]!);
+        store.getSession(sessionId);
+        const after = Number(url.searchParams.get("after") ?? 0);
+        writeJson(response, 200, {
+          setup: store.setups.status(sessionId) ?? null,
+          ...store.setups.output(sessionId, Number.isFinite(after) && after > 0 ? after : 0),
+        });
         return;
       }
       /**
@@ -3843,7 +3467,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (request.method === "POST" && url.pathname === "/v2/projects/clone") {
         const input = await body(request);
         writeJson(response, 201, {
-          project: store.cloneProject({
+          project: await store.cloneProject({
             url: stringValue(input.url, "repository url")!,
             parent: stringValue(input.parent, "parent folder")!,
             ...(input.name === undefined ? {} : { name: stringValue(input.name, "project name")! }),
@@ -4095,6 +3719,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...("hidden" in input ? { hidden: input.hidden } : {}),
             ...("order" in input ? { order: input.order } : {}),
             ...("custom" in input ? { custom: input.custom } : {}),
+            ...("default" in input ? { default: input.default } : {}),
           }),
         });
         return;
@@ -4372,11 +3997,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * would have lost something.
        * ────────────────────────────────────────────────────────────────────
        *
-       * MIRRORS `/v2/agent/stream` FRAME FOR FRAME, and the mirroring is the
-       * point: one pattern in this daemon rather than two. The `: open` first,
-       * the replay inside the same response, the 25 s `: beat`, the
-       * `openStreams` registration — every one of those has its reason written
-       * out at that route and every one of them applies here verbatim.
+       * THE ENGINE'S SSE PATTERN, which `/run/stream` follows too: the
+       * `: open` first, the 25 s `: beat` (a stream silent for twenty minutes
+       * is one a proxy closes), and the `openStreams` registration. Each has
+       * its reason written out below.
        */
       if (request.method === "GET" && url.pathname === "/v2/sessions/stream") {
         response.writeHead(200, {
@@ -4392,9 +4016,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }
         };
         /**
-         * THE FLUSH, AND IT IS NOT POLITENESS — see `/v2/agent/stream`, where
-         * this was measured: `writeHead` alone does not put headers on the
-         * wire, so the QUIETEST feed hangs longest. A machine with nothing
+         * THE FLUSH, AND IT IS NOT POLITENESS. Measured (on the retired Agent
+         * stream, #531): `writeHead` alone does not put headers on the wire,
+         * so the QUIETEST feed hangs longest. A machine with nothing
          * happening is exactly when a client most needs to be told it is
          * connected.
          */
@@ -4402,8 +4026,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         /**
          * ── THERE IS NO `?after=` REPLAY HERE, AND THAT IS A FINDING ────────
          *
-         * `/v2/agent/stream` replays from a cursor inside the same response,
-         * and #586 asked for the same shape. IT CANNOT HAVE IT: an event id in
+         * #586 asked for a replay from a cursor inside the same response. IT
+         * CANNOT HAVE IT: an event id in
          * this engine is per session — `PRIMARY KEY(session_id, id)` in
          * `execution-store.ts` — so there is no machine-wide cursor for a
          * caller to hold or for this route to replay from. Accepting an
@@ -4434,8 +4058,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           openStreams.delete(finish);
         };
         // THE SHUTDOWN HAS TO BE ABLE TO END THIS, or `server.close()` waits
-        // for ever on a connection that by design never ends. Same reason and
-        // same machinery as the agent stream's.
+        // for ever on a connection that by design never ends. `close()` ends
+        // every `openStreams` entry before asking the server to shut, so the
+        // client sees a clean end of stream and reconnects to what comes back.
         openStreams.add(finish);
         request.on("close", finish);
         response.on("close", finish);
@@ -4543,7 +4168,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (request.method === "POST" && url.pathname === "/v2/sessions") {
         const input = await body(request);
         writeJson(response, 201, {
-          session: store.createSession({
+          session: await store.createSessionAsync({
             ...(input.draft === true ? { draft: true } : {}),
             id: stringValue(input.id, "session id", true),
             projectId: stringValue(input.projectId, "project id")!,
@@ -4917,6 +4542,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          * for every path once and a viewer asks for one file at a time.
          */
         if (request.method === "GET" && session.tail === "/files") {
+          // OPENING A RELEASED SESSION'S FILES BRINGS ITS CHECKOUT BACK, the way
+          // a message does; the listing answers once the re-cut lands.
+          store.restoreSessionWorktree(session.sessionId);
           const target = url.searchParams.get("path");
           if (target) {
             writeJson(response, 200, { file: await store.sessionFileAsync(session.sessionId, target) });
@@ -5015,7 +4643,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         if (request.method === "POST" && session.tail === "/git/commit") {
           const input = await body(request);
-          writeJson(response, 200, store.commitSessionWork(session.sessionId, stringValue(input.message, "commit message")!));
+          writeJson(response, 200, await store.commitSessionWork(session.sessionId, stringValue(input.message, "commit message")!));
           return;
         }
         if (request.method === "POST" && session.tail === "/git/push") {
@@ -5376,7 +5004,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const parsed = AgentTurnInput.safeParse(await body(request));
           if (!parsed.success) throw new HttpError(400, "invalid_request", "agent turn payload is invalid");
           const { proof, ...message } = parsed.data;
-          const result: TurnSubmissionResult = store.submitAgentTurn(session.sessionId, message, proof);
+          const result: TurnSubmissionResult = await store.submitAgentTurnAsync(session.sessionId, message, proof);
           writeJson(response, result.replayed ? 200 : 202, result);
           return;
         }
@@ -5406,7 +5034,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           if (store.claudeAdmissionNeedsCatalogue(session.sessionId, model.success ? model.data : undefined)) {
             void store.prepareClaudeCatalogue();
           }
-          const accepted = store.submitTurn(session.sessionId, {
+          const accepted = await store.submitTurnAsync(session.sessionId, {
             runId: stringValue(input.runId, "run id")!,
             input: stringValue(input.input, "turn input")!,
             ...(input.kind === "compact" ? { kind: "compact" as const } : {}),
@@ -5778,6 +5406,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       warmUp.unref();
     }
 
+    /**
+     * COMPUTER USE AT START, only against a cua daemon that is ALREADY
+     * running — the one probe that cannot draw a permissions panel on screen
+     * (see `createComputerUseGate`). So a machine that works has the tools from
+     * its first turn, and one that does not stays exactly as quiet as before.
+     * Fire-and-forget; the gate swallows its own failures.
+     */
+    void computerUseGate.measureIfHostRunning();
+
     let closed = false;
     return {
       discovery,
@@ -5808,29 +5445,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // After the worker, before the lock: a live Chromium holding a profile
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");
-        // THE AGENT'S STREAMS FIRST, and before the server: `server.close()`
+        // THE EVENT STREAMS FIRST, and before the server: `server.close()`
         // waits for open connections, and an SSE stream never closes itself.
         for (const stream of [...openStreams]) (stream.end ?? stream)();
         openStreams.clear();
         await closeServer(server);
-        // AFTER THE SERVER, so no stream route is still holding a watcher, and
-        // before the execution store: the Agent's thread is a database handle
-        // this process owns, and a daemon that left it open would leave the
-        // next reset unable to move the file.
-        store.setAgentWakeSink(undefined);
-        // AWAITED, and that is the whole of #539's item 5 in one line: the
-        // Agent's turn is a promise in THIS event loop, so stopping the engine
-        // ends it — there is nothing to outlive the daemon. `shutdown` aborts
-        // the live turn, waits for its `turn_done` to be written, and only then
-        // closes the thread file.
-        await agentRuntime.shutdown();
         clearInterval(workerPruner);
         clearInterval(delegationSweeper);
+        store.checkoutSizes.stop();
         // CLEARED RATHER THAN ONLY UNREF'D, unlike the two sweeps beside it,
         // because this one RESOLVES REQUESTS: a tick that landed between
         // `closeExecutionStore` and the process ending would be a write against
         // a store that has gone. The others only read or queue.
         clearInterval(requestDeadlineSweeper);
+        // No worktree setup outlives the engine that started it; a cleanup
+        // deletes, so it does not tick against a store that is closing.
+        store.setups.stopAll();
+        clearTimeout(cleanupFirst);
+        clearInterval(cleanupSweeper);
         removeOwnDiscovery(store, daemonId);
         store.closeExecutionStore();
         lock.release();
@@ -5840,6 +5472,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     clearInterval(workerPruner);
     clearInterval(delegationSweeper);
     clearInterval(requestDeadlineSweeper);
+    clearTimeout(cleanupFirst);
+    clearInterval(cleanupSweeper);
     server.close();
     store.closeExecutionStore();
     lock.release();

@@ -214,7 +214,6 @@ const SWEPT_FILES = [
   ["apps/ios/TelarMobile/Views/DiffView.swift", ""],
   ["apps/ios/TelarMobile/Views/Panel/FilesSurface.swift", ""],
   ["apps/ios/TelarMobile/Views/SessionSidebar.swift", ""],
-  ["apps/ios/TelarMobile/Views/AgentModelPickerSheet.swift", ""],
   ["apps/ios/TelarMobile/Views/InboxView.swift", ""],
   ["apps/ios/TelarMobile/Views/RequestViews.swift", ""],
   ["apps/ios/TelarMobile/Views/Panel/LatexSurface.swift", ""],
@@ -247,7 +246,6 @@ const SWEPT_FILES = [
   ["apps/ios/TelarMobile/Views/Panel/HtmlOutputView.swift", ""],
   ["apps/ios/TelarMobile/Views/DictationSettingsView.swift", ""],
   ["apps/ios/TelarMobile/Views/DictationCaretPill.swift", ""],
-  ["apps/ios/TelarMobile/Views/AgentSettingsView.swift", ""],
   ["apps/ios/TelarMobile/Views/MarkdownText.swift", ""],
   // Not a view: a `Font` stored on the highlighter's theme, which is why it
   // is the one swept file outside `Views/`. A count scoped to `Views/` misses
@@ -1799,8 +1797,8 @@ const CHECKS = [
    *     a substitute for the flag on a multi-file suite; it is the cover for the
    *     single-file run a flag on a script cannot reach.
    *
-   * THE THIRD CASE #740 ASKED THIS TO NOTICE: packages/env and
-   * packages/engine-client set no ceiling at all, which is consistent rather than
+   * THE THIRD CASE #740 ASKED THIS TO NOTICE: packages/engine-client
+   * sets no ceiling at all, which is consistent rather than
    * a trap — until someone adds `--timeout` to one of them for a good reason
    * without knowing any of this. The second rule is what has something to say
    * then, and it says it at the moment the flag is added rather than months later

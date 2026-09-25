@@ -10,6 +10,7 @@ import {
   ADDRESS_TOOLS,
   addressInputRoom,
   addressRowFitsTools,
+  describeDownload,
   zoomLabel,
 } from "./browser-live";
 // The bridge probe moved out of the surface so the surface could be split off
@@ -179,6 +180,18 @@ describe("the row's markup is the budget's own claim", () => {
     // every phase. A warning nobody can read is not a smaller warning.
     expect(source).toContain('title={`${extension.name ?? "Password manager"}: ${describeExtensionHealth(extension).text}`}');
     expect(source).not.toContain('<span className="max-w-48 truncate">{describeExtensionHealth(extension).text}</span>');
+  });
+});
+
+/** Downloads land with no dialog, so the strip is the only place a person
+ *  reads where one went. */
+describe("the download strip's sentence", () => {
+  const base = { scopeKey: "s", tabId: "t", path: "/fixture/Downloads/report.pdf", filename: "report.pdf" };
+  test("a finished download names its folder; the rest say what happened", () => {
+    expect(describeDownload({ ...base, state: "completed" })).toBe("Downloaded report.pdf to /fixture/Downloads");
+    expect(describeDownload({ ...base, state: "started" })).toBe("Downloading report.pdf…");
+    expect(describeDownload({ ...base, state: "interrupted" })).toBe("Download of report.pdf failed.");
+    expect(describeDownload({ ...base, state: "cancelled" })).toBe("Download of report.pdf was cancelled.");
   });
 });
 

@@ -4,6 +4,7 @@ const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
 const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress, zoomStep, ZOOM_STEPS, TAB_SELECT_CHORDS } = require("./browser-manager");
+const { installDownloadHandler } = require("./browser-downloads");
 
 class FakeDebugger extends EventEmitter {
   constructor() {
@@ -98,6 +99,9 @@ class FakeWebContents extends EventEmitter {
     return false;
   }
 
+  /** dom-ready's first act; a no-op here, recorded nowhere. */
+  setBackgroundThrottling() {}
+
   setWindowOpenHandler(handler) {
     this.windowOpenHandler = handler;
   }
@@ -141,8 +145,8 @@ class FakeWebContents extends EventEmitter {
    * `captureError` makes it fail, `captureEmpty` makes it answer a blank
    * frame.
    */
-  async capturePage() {
-    this.captures.push({ visibleAtCapture: this.view ? this.view.visible : null });
+  async capturePage(rect) {
+    this.captures.push({ visibleAtCapture: this.view ? this.view.visible : null, ...(rect ? { rect } : {}) });
     if (this.captureGate) await this.captureGate;
     if (this.captureError) throw this.captureError;
     return {
@@ -238,9 +242,13 @@ class FakeView {
     // Every radius this view was TOLD, in order — the manager writes only on
     // a change, so the list is the claim, not the last value.
     this.radii = [];
+    // And every canvas colour, the same way: the page's opaque base, or none.
+    this.canvases = [];
   }
 
-  setBackgroundColor() {}
+  setBackgroundColor(color) {
+    this.canvases.push(color);
+  }
 
   /** Electron 36+. Recorded rather than performed. */
   setBorderRadius(radius) {
@@ -332,6 +340,10 @@ function makeHarness(options = {}) {
         setPermissionCheckHandler() {},
         setDisplayMediaRequestHandler() {},
         setDevicePermissionHandler() {},
+        // The download handler's one event; `download` fires it as Chromium would.
+        downloadListeners: [],
+        on(event, listener) { if (event === "will-download") this.downloadListeners.push(listener); },
+        download(item, webContents) { for (const listener of this.downloadListeners) listener({}, item, webContents); },
       });
     }
     return sessions.get(partition);
@@ -404,6 +416,10 @@ function makeHarness(options = {}) {
     ...(options.onLoginEntryFinished ? { onLoginEntryFinished: options.onLoginEntryFinished } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
     ...(options.sessions ? { sessionFor } : {}),
+    // A fixture folder and an empty in-memory disk: no test reaches the real
+    // Downloads folder or writes anything.
+    downloadsPath: () => "/fixture/Downloads",
+    installDownloads: (ses, handlers) => installDownloadHandler(ses, { ...handlers, fs: { existsSync: () => false, mkdirSync() {} } }),
   });
   // Most tests do not care about profiles; a scope auto-binds the explicit
   // `none` profile on first tab so they exercise the rest of the manager.
@@ -1685,58 +1701,48 @@ describe("per-project browser profiles", () => {
   });
 
   /**
-   * WHAT DELETE MAY REFUSE ON (#430). The Delete button in Settings did
-   * nothing on any machine that had been used: the shell refused whenever any
-   * scope NAMED the profile, and every open session names one from the moment
-   * it opens. The rule is a fact about tabs, and it lives here now because the
-   * manager is what holds them.
+   * DELETE NEVER STRANDS A SESSION (#430). On a machine used before shared
+   * profiles, every old profile had tabs somewhere, so refusing on a tab meant
+   * Delete could never succeed. It moves the tabs instead.
    */
-  describe("whyProfileIsInUse — the live half of the delete rule", () => {
-    test("a session bound to the profile with nothing open does not block it", () => {
+  describe("deleteProfile — forgetting a profile moves what was browsing in it", () => {
+    test("a session with tabs in the profile moves to the default, and its tabs sleep there with their URLs", async () => {
       const { manager } = makeHarness();
-      const profile = manager.profiles.create({ label: "Spare" });
+      const fallback = manager.profiles.get(manager.profiles.defaultProfileId);
+      const work = manager.profiles.create({ label: "Work" });
       manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-      manager.setScopeProfile("s", profile.id);
-      // The binding is real — this is exactly the state that used to refuse.
-      expect(manager.scopeProfiles.get("s")).toBe(profile.id);
-      expect(manager.whyProfileIsInUse(profile.id)).toBeNull();
-      // And nothing at all points at a profile no session ever chose.
-      expect(manager.whyProfileIsInUse(manager.profiles.create({ label: "Untouched" }).id)).toBeNull();
-    });
-
-    test("a session with tabs open in it is refused, with a sentence naming the profile and the way out", async () => {
-      const { manager } = makeHarness();
-      const profile = manager.profiles.create({ label: "Work" });
-      manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-      manager.setScopeProfile("s", profile.id);
+      manager.setScopeProfile("s", work.id);
       await manager.createTab("s", "https://one.example");
-      expect(manager.whyProfileIsInUse(profile.id)).toBe(
-        "A session has a tab open in “Work”. Close it, or switch that session to another profile, first.",
-      );
       await manager.createTab("s", "https://two.example");
-      expect(manager.whyProfileIsInUse(profile.id)).toContain("2 tabs open in “Work”");
-      // Closing them gives the way out the sentence promised.
-      manager.closeTab("s", 1, "human");
-      manager.closeTab("s", 0, "human");
-      expect(manager.whyProfileIsInUse(profile.id)).toBeNull();
+
+      const removed = manager.deleteProfile(work.id);
+
+      expect(removed).toMatchObject({ id: work.id, label: "Work", sessions: 1, tabs: 2 });
+      expect(manager.profiles.get(work.id)).toBeNull();
+      expect(manager.scopeProfiles.get("s")).toBe(fallback.id);
+      expect(manager.scopeProfileOverrides.has("s")).toBe(false);
+      const tabs = manager.scopeTabs("s");
+      expect(tabs.map((tab) => tab.view)).toEqual([null, null]);
+      expect(tabs.every((tab) => tab.profileId === fallback.id && tab.partition === fallback.partition)).toBe(true);
+      expect(tabs.map((tab) => tab.url)).toEqual(["https://one.example/", "https://two.example/"]);
     });
 
-    test("a tab left behind by a session that switched profiles still holds the profile it was signed into", async () => {
+    test("a tab left in the profile after its session switched away is re-homed in the session's current profile", async () => {
       const { manager } = makeHarness();
       const old = manager.profiles.create({ label: "Old" });
       const next = manager.profiles.create({ label: "Next" });
       manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
       manager.setScopeProfile("s", old.id);
       await manager.createTab("s", "https://one.example");
-      // The switch moves the BINDING; the open page keeps its jar.
       manager.setScopeProfile("s", next.id);
-      expect(manager.whyProfileIsInUse(old.id)).toContain("“Old”");
-      // And the profile the session is now pointed at counts that same tab: a
-      // restore drops a whole scope whose profile the registry has forgotten.
-      expect(manager.whyProfileIsInUse(next.id)).toContain("“Next”");
+
+      expect(manager.deleteProfile(old.id)).toMatchObject({ sessions: 1, tabs: 1 });
+      expect(manager.scopeProfiles.get("s")).toBe(next.id);
+      expect(manager.scopeTabs("s")[0]).toMatchObject({ profileId: next.id, partition: next.partition, view: null });
     });
 
-    test("a remembered session's hibernated tabs count — they are what a delete would throw away", () => {
+    test("a remembered session's hibernated tabs move too, and the saved inventory names a profile that exists", () => {
+      let saved;
       const { manager } = makeHarness({
         tabStore: {
           load: () => ({
@@ -1750,21 +1756,29 @@ describe("per-project browser profiles", () => {
               },
             },
           }),
-          save: () => {},
+          save: (inventory) => { saved = inventory; },
           flushSync: () => {},
         },
       });
-      const restored = manager.profiles.get(manager.profiles.defaultProfileId);
-      expect(manager.scopeTabs("s1")).toHaveLength(1);
-      expect(manager.scopeTabs("s1")[0].view).toBeNull();
-      expect(manager.whyProfileIsInUse(restored.id)).toContain("a tab open in");
+      const spare = manager.profiles.create({ label: "Spare" });
+      manager.profiles.setDefault(spare.id);
+      const restored = manager.scopeTabs("s1")[0].profileId;
+
+      expect(manager.deleteProfile(restored)).toMatchObject({ sessions: 1, tabs: 1 });
+      expect(manager.scopeTabs("s1")[0].profileId).toBe(spare.id);
+      expect(manager.scopeProfiles.get("s1")).toBe(spare.id);
+      return Promise.resolve().then(() => {
+        expect(JSON.stringify(saved)).not.toContain(restored);
+      });
     });
 
-    test("nothing is refused for a blank or unknown profile id", () => {
+    test("the default is still refused, and nothing moves", async () => {
       const { manager } = makeHarness();
-      expect(manager.whyProfileIsInUse("")).toBeNull();
-      expect(manager.whyProfileIsInUse(undefined)).toBeNull();
-      expect(manager.whyProfileIsInUse("bp_00000000000000ff")).toBeNull();
+      const fallback = manager.profiles.get(manager.profiles.defaultProfileId);
+      manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+      await manager.createTab("s", "https://one.example");
+      expect(() => manager.deleteProfile(fallback.id)).toThrow("Make another profile the default first.");
+      expect(manager.scopeTabs("s")[0].view).not.toBeNull();
     });
   });
 
@@ -1923,10 +1937,12 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
 describe("per-tab viewports — intrinsic size independent of the column, presentation-only fit", () => {
   const { fitViewport, resolveViewport } = require("./browser-manager");
 
-  test("fitViewport scales down to fit and centres, never scales up", () => {
+  test("fitViewport scales down to fit, centres across and top-aligns, never scales up", () => {
     expect(fitViewport({ width: 1280, height: 800 }, { x: 10, y: 20, width: 640, height: 400 })).toEqual({ scale: 0.5, rect: { x: 10, y: 20, width: 640, height: 400 } });
-    expect(fitViewport({ width: 1280, height: 800 }, { x: 0, y: 0, width: 640, height: 600 })).toEqual({ scale: 0.5, rect: { x: 0, y: 100, width: 640, height: 400 } });
-    expect(fitViewport({ width: 390, height: 844 }, { x: 0, y: 0, width: 1000, height: 900 })).toEqual({ scale: 1, rect: { x: 305, y: 28, width: 390, height: 844 } });
+    // A stage taller than the fitted page: the page starts at the stage's
+    // top, as a device toolbar shows a screen — not centred over a band.
+    expect(fitViewport({ width: 1280, height: 800 }, { x: 0, y: 0, width: 640, height: 600 })).toEqual({ scale: 0.5, rect: { x: 0, y: 0, width: 640, height: 400 } });
+    expect(fitViewport({ width: 390, height: 844 }, { x: 0, y: 30, width: 1000, height: 900 })).toEqual({ scale: 1, rect: { x: 305, y: 30, width: 390, height: 844 } });
   });
 
   test("resolveViewport accepts presets and clamps custom sizes", () => {
@@ -1951,8 +1967,12 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     await manager.setVisible("s", true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const shown = debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1);
-    // Same intrinsic viewport; only the presentation scale changes.
-    expect(shown.params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false, scale: 0.5 });
+    // Same intrinsic viewport; only the presentation scale changes — and the
+    // page's widget stays the VIEW's size, not the override's: without
+    // `dontSetVisibleSize` Chromium grows it to 1280×800 past the view, a
+    // white slab below the page once the canvas is opaque.
+    expect(shown.params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false, scale: 0.5, dontSetVisibleSize: true });
+    expect(debug.commands.filter((c) => c.method === "Emulation.setVisibleSize").at(-1).params).toEqual({ width: 640, height: 400 });
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
     expect(manager.state("s").presentation).toMatchObject({ width: 1280, height: 800, scale: 0.5, rect: { width: 640, height: 400 } });
     // A CDP click from a snapshot's CSS point is dispatched at the NATIVE
@@ -2141,7 +2161,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     const debug = wc.debugger;
     const overrides = () => debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride");
     expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.5 });
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
     return { ...harness, tab, wc, debug, overrides };
   }
@@ -2163,7 +2183,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     expect(tab.debuggerReady).toBe(true);
     expect(overrides().length).toBe(before + 1);
     expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.5 });
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
   });
 
@@ -2174,10 +2194,10 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     await manager.setVisible("s", true);
     await tab.geometry.queue;
     expect(views).toHaveLength(2);
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     // The old debugger's detach arrives late, as a closing WebContents' does.
     old.emit("detach", {}, "target closed");
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     expect(tab.debuggerReady).toBe(true);
   });
 
@@ -2193,7 +2213,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     wc.closeDevTools();
     await tab.geometry.queue;
     expect(overrides().length).toBe(before + 2);
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     // The view itself never moved: the same fitted rect throughout.
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
   });
@@ -2220,7 +2240,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
     await tab.geometry.queue;
     expect(overrides().length).toBe(before + 1);
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
   });
 
   test("suspect 2: a rejected setDeviceMetricsOverride leaves the record unsettled, so the next pass retries", async () => {
@@ -2236,14 +2256,14 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     manager.setBounds("s", { x: 0, y: 0, width: 640, height: 300 });
     await tab.geometry.queue;
     expect(refusals).toBe(1);
-    expect(tab.viewportOverride).toBe("1280x800@0.5");
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
     expect(manager.emulationSettled(tab)).toBe(false);
     // The republish of the same bounds is not a fast-path frame while the
     // record is unsettled.
     manager.setBounds("s", { x: 0, y: 0, width: 640, height: 300 });
     await tab.geometry.queue;
     expect(overrides().at(-1).params).toMatchObject({ width: 1280, height: 800, scale: 0.375 });
-    expect(tab.viewportOverride).toBe("1280x800@0.375");
+    expect(tab.viewportOverride).toBe("1280x800@0.375 in 480x300");
   });
 
   test("suspect 3, ruled out: a cockpit zoom change alone re-sends a fixed tab's emulation with the zoom in its scale", async () => {
@@ -2255,7 +2275,7 @@ describe("the recorded emulation never outlives the real one (#917)", () => {
     expect(overrides().length).toBe(before + 1);
     expect(Math.abs(overrides().at(-1).params.scale - 0.45)).toBeLessThan(1e-9);
     expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 576, height: 360 });
-    expect(tab.viewportOverride).toBe("1280x800@0.45");
+    expect(tab.viewportOverride).toBe("1280x800@0.45 in 576x360");
   });
 
   test("suspect 4, ruled out: a fixed tab hidden and shown again — panel closed, or another tab in front — is re-emulated at the shown scale", async () => {
@@ -2426,6 +2446,208 @@ describe("fit-to-panel viewport mode", () => {
     const restored = new DesktopBrowserManager(window, { createId: () => "x", createView: () => new FakeView(), wait: async () => {}, profiles: manager.profiles, tabStore: { load: () => doc, save: () => {}, flushSync: () => {} } });
     restored.ensureAutoRelease = () => {};
     expect(restored.state("s").tabs[0].viewport).toEqual({ width: 640, height: 400, preset: null, mode: "fit" });
+  });
+
+  test("browser_resize {mode: \"fit\"} on a fixed tab puts it back in fit — native bounds, no emulation — and says so", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    const fixed = await manager.callTool("s", "browser_resize", { preset: "default" });
+    expect(textOf(fixed)).toContain("1280×800 (default)");
+    expect(manager.state("s").tabs[0].viewport).toEqual({ width: 1280, height: 800, preset: "default", mode: "fixed" });
+    expect(tab.viewportOverride).toBe("1280x800@0.5 in 640x400");
+    // The orchestrator's call, exactly as the engine now forwards it.
+    const back = await manager.callTool("s", "browser_resize", { mode: "fit" });
+    expect(back.isError).toBeFalsy();
+    expect(textOf(back)).toContain("640×400 (fit to panel");
+    expect(manager.state("s").tabs[0].viewport).toEqual({ width: 640, height: 400, preset: null, mode: "fit" });
+    expect(manager.state("s").presentation).toMatchObject({ mode: "fit", scale: 1, rect: { x: 0, y: 0, width: 640, height: 400 } });
+    expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 640, height: 400 });
+    expect(tab.viewportOverride).toBe("native");
+    expect(views[0].webContents.debugger.commands.at(-1).method).toBe("Emulation.clearDeviceMetricsOverride");
+  });
+});
+
+describe("a fixed tab's view is exactly the emulated page — bounds and emulation cannot disagree, and the page is top-aligned", () => {
+  /** The rectangle the page renders into (viewport × the scale last sent)
+   *  against the rectangle the view was given. Chromium lays the page out
+   *  at the emulated size whatever the view's size is, so any difference
+   *  here is either page painted outside the frame or a strip of nothing
+   *  inside it. */
+  function expectAgreed(view, rect) {
+    expect(view.bounds).toEqual(rect);
+    const last = view.webContents.debugger.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1);
+    const scale = last.params.scale ?? 1;
+    expect({ width: Math.round(last.params.width * scale), height: Math.round(last.params.height * scale) }).toEqual({ width: rect.width, height: rect.height });
+  }
+
+  test("through fit → fixed, the rail-reserved stage, a preset change and a cockpit zoom", async () => {
+    const { manager, setCockpitZoom, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    const view = views[0];
+    // The owner's stage: wider than tall for the standard page, so the fit
+    // is width-bound and the stage has room left under the page.
+    manager.setBounds("s", { x: 12, y: 40, width: 858, height: 790 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    // Fit: the view IS the stage, nothing emulated.
+    expect(view.bounds).toEqual({ x: 12, y: 40, width: 858, height: 790 });
+    expect(tab.viewportOverride).toBe("native");
+
+    await manager.resizeTab(tab, { preset: "default" });
+    await tab.geometry.queue;
+    // 1280×800 at 858/1280: 858×536, at the TOP of the stage (y: 40, not
+    // 40 + 127) — a device toolbar's screen, not a page floating mid-panel.
+    expectAgreed(view, { x: 12, y: 40, width: 858, height: 536 });
+    expect(manager.state("s").presentation).toMatchObject({ mode: "fixed", rect: { x: 12, y: 40, width: 858, height: 536 } });
+    expect(Math.abs(manager.state("s").presentation.scale - 858 / 1280)).toBeLessThan(1e-9);
+
+    // The renderer, now in fixed mode, republishes the stage inside its
+    // resize rails (12px off each axis). The view follows the smaller fit
+    // and so does the emulation — a full pass, not the drag fast path.
+    manager.setBounds("s", { x: 12, y: 40, width: 846, height: 778 });
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 12, y: 40, width: 846, height: 529 });
+
+    // A tall preset in the same stage: height-bound, centred across, top-aligned.
+    await manager.resizeTab(tab, { preset: "phone" });
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 255, y: 40, width: 360, height: 778 });
+
+    // The cockpit's own zoom rides both the bounds and the emulation scale.
+    await manager.resizeTab(tab, { preset: "default" });
+    setCockpitZoom(0.9);
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 11, y: 36, width: 761, height: 476 });
+  });
+
+  test("a hidden fixed tab is emulated at its own size, and shown again in a taller stage it is placed at the top, agreed", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    const view = views[0];
+    await manager.resizeTab(tab, { preset: "default" });
+    // Never shown: no bounds written, emulated at its own size, scale 1.
+    expect(view.bounds).toBeNull();
+    expect(view.webContents.debugger.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 600 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", false);
+    await tab.geometry.queue;
+    expect(view.webContents.debugger.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expectAgreed(view, { x: 0, y: 0, width: 640, height: 400 });
+  });
+});
+
+describe("the canvas under the page — opaque once a document is ready, none before", () => {
+  const NONE = "#00000000";
+  const WHITE = "#ffffff";
+
+  test("a fresh view has no canvas; dom-ready of a real document gives it an opaque white one; a blank tab takes it back", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s");
+    const tab = manager.activeTab("s");
+    const view = views[0];
+    const wc = view.webContents;
+    // Attached with no canvas: the first document has no frame yet, and an
+    // opaque underlay there is the white strip transparency was introduced for.
+    expect(view.canvases).toEqual([NONE]);
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    // The first document, edge by edge (the fake's loadURL fires them all at
+    // once): loading — the view is shown for it — then committed, still no
+    // canvas; dom-ready is the edge that paints it.
+    wc.emit("did-start-loading");
+    await tab.geometry.queue;
+    expect(view.visible).toBe(true);
+    wc.url = "https://one.example/";
+    wc.emit("did-navigate");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE]);
+    wc.emit("dom-ready");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE]);
+    wc.emit("did-stop-loading");
+    await tab.geometry.queue;
+    // A claim, not a pulse: later placements and dom-readys write nothing.
+    manager.setBounds("s", { x: 0, y: 0, width: 900, height: 500 });
+    await tab.geometry.queue;
+    wc.emit("dom-ready");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE]);
+    // The next page keeps it, the way a browser keeps its own canvas
+    // between documents — no dark flash between two light pages.
+    await manager.navigateTab(tab, "https://two.example/");
+    expect(view.canvases).toEqual([NONE, WHITE]);
+    wc.emit("dom-ready");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE]);
+    // Blank again (the page navigated itself to about:blank): the DOM start
+    // page is drawn under this view, so the canvas goes with the document.
+    await wc.loadURL("about:blank");
+    await tab.geometry.queue;
+    expect(view.visible).toBe(false);
+    expect(view.canvases).toEqual([NONE, WHITE, NONE]);
+    // about:blank's own dom-ready is no document.
+    wc.emit("dom-ready");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE, NONE]);
+    // THE BELT: a document that finished loading without this process seeing
+    // its dom-ready (a back/forward-cache restore fires none) is still a
+    // document to paint on.
+    await wc.loadURL("https://three.example/");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE, NONE, WHITE]);
+    // A renderer that went away took its document with it: the cockpit shows
+    // through until a reload, not a white rectangle where the page was.
+    wc.emit("render-process-gone");
+    await tab.geometry.queue;
+    expect(view.canvases).toEqual([NONE, WHITE, NONE, WHITE, NONE]);
+  });
+
+  test("a woken tab's new WebContents starts without a canvas again, until its document is ready", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    await tab.geometry.queue;
+    expect(views[0].canvases).toEqual([NONE, WHITE]);
+    manager.hibernateTab(tab);
+    // Hold the new WebContents' load open so the fresh view can be seen
+    // before its document is ready.
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const createView = manager.createView;
+    manager.createView = (options) => {
+      const view = createView(options);
+      view.webContents.loadGate = gate;
+      return view;
+    };
+    const woke = manager.wakeTab(tab);
+    await Promise.resolve();
+    expect(views[1].canvases).toEqual([NONE]);
+    release();
+    await woke;
+    await tab.geometry.queue;
+    expect(views[1].canvases).toEqual([NONE, WHITE]);
+  });
+
+  test("a tab in a window of its own keeps its canvas — the page is the whole window there", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    views[0].webContents.emit("dom-ready");
+    await tab.geometry.queue;
+    await manager.action("s", { action: "preview" });
+    await manager.applyGeometry(tab);
+    expect(views[0].canvases).toEqual([NONE, WHITE]);
   });
 });
 
@@ -2692,7 +2914,9 @@ describe("the panel's corner, and the frozen frame a menu opens over", () => {
 
     const freezing = manager.freezeView("s");
     await Promise.resolve();
-    expect(tab.view.webContents.captures).toEqual([{ visibleAtCapture: true }]);
+    // Cropped to the view's own size: a widget larger than its view must not
+    // come back as the page shrunk into a corner of a bigger frame.
+    expect(tab.view.webContents.captures).toEqual([{ visibleAtCapture: true, rect: { x: 0, y: 0, width: 640, height: 400 } }]);
     expect(view.visible).toBe(true);
 
     release();
@@ -3567,6 +3791,77 @@ describe("the page's context menu and its DevTools (#423)", () => {
   });
 });
 
+/**
+ * DOWNLOADS LAND WITH NO DIALOG — for the person and for the agent, which
+ * could never answer a native Save dialog. The handler's naming rules are
+ * browser-downloads.test.js's; these are the manager's half: it is seated on
+ * every partition, it tells both hands where a file went, and "Save Image As…"
+ * is the one download that still asks.
+ */
+describe("downloads save straight to the Downloads folder", () => {
+  function downloadItem(url, filename) {
+    const done = [];
+    return {
+      savePath: null,
+      getURL: () => url,
+      getFilename: () => filename,
+      setSavePath(target) { this.savePath = target; },
+      getSavePath() { return this.savePath ?? ""; },
+      once(event, listener) { if (event === "done") done.push(listener); },
+      finish(state) { for (const listener of done) listener({}, state); },
+    };
+  }
+
+  async function withTab() {
+    const harness = makeHarness({ sessions: true });
+    await harness.manager.createTab("session-a", "https://example.com");
+    const tab = harness.manager.scopeTabs("session-a")[0];
+    const wc = harness.views[0].webContents;
+    wc.id = 41;
+    return { ...harness, tab, wc, ses: harness.sessions.get(tab.partition) };
+  }
+
+  test("a link's download gets a path with no dialog, and the agent's console says where it landed", async () => {
+    const { messages, tab, wc, ses } = await withTab();
+    const item = downloadItem("https://example.com/report.pdf", "report.pdf");
+    ses.download(item, wc);
+    expect(item.savePath).toBe("/fixture/Downloads/report.pdf");
+    item.finish("completed");
+    expect(tab.console).toEqual([
+      { level: "info", text: "Download started: report.pdf is being saved to /fixture/Downloads/report.pdf" },
+      { level: "info", text: "Downloaded report.pdf to /fixture/Downloads/report.pdf" },
+    ]);
+    const pushed = messages.filter((message) => message.channel === "telar:browser:download").map((message) => message.payload);
+    expect(pushed).toEqual([
+      { scopeKey: "session-a", tabId: tab.id, state: "started", path: "/fixture/Downloads/report.pdf", filename: "report.pdf" },
+      { scopeKey: "session-a", tabId: tab.id, state: "completed", path: "/fixture/Downloads/report.pdf", filename: "report.pdf" },
+    ]);
+  });
+
+  test("a failed download is an error line, never a claim that a file is there", async () => {
+    const { tab, wc, ses } = await withTab();
+    const item = downloadItem("https://example.com/big.zip", "big.zip");
+    ses.download(item, wc);
+    item.finish("interrupted");
+    expect(tab.console.at(-1)).toEqual({ level: "error", text: "Download of big.zip failed; nothing was saved to /fixture/Downloads/big.zip" });
+  });
+
+  test("Save Image As… still prompts — and only that once", async () => {
+    const harness = await withTab();
+    const cat = "https://example.com/cat.png";
+    pick(rightClick(harness, harness.views[0], { hasImageContents: true, srcURL: cat }), "Save Image As…");
+    expect(harness.wc.downloads).toEqual([cat]);
+    const asked = downloadItem(cat, "cat.png");
+    harness.ses.download(asked, harness.wc);
+    // No save path is exactly the case Electron shows its Save dialog for.
+    expect(asked.savePath).toBeNull();
+    // The same image clicked as a plain link later is an ordinary download.
+    const plain = downloadItem(cat, "cat.png");
+    harness.ses.download(plain, harness.wc);
+    expect(plain.savePath).toBe("/fixture/Downloads/cat.png");
+  });
+});
+
 describe("view-source: is the one non-web scheme the tabs render", () => {
   test("it wraps an ordinary web page, and refuses anything else", () => {
     expect(normalizeUrl("view-source:https://example.com/a")).toBe("view-source:https://example.com/a");
@@ -3904,5 +4199,324 @@ describe("a focused page owns ⌘1..⌘9 (#660)", () => {
     manager.closeTab("s1", 1, "human");
     // A leak here leaves the rail's shortcut dead with no way back but a restart.
     expect(scopes.at(-1)).toEqual([]);
+  });
+});
+
+/**
+ * A PAGE DRAWN ON A CANVAS has no refs for what the screenshot shows, so the
+ * acting tools also take the screenshot's CSS pixels, type into whatever has
+ * focus, take chords, and paste/copy through the page's own clipboard events.
+ * The fake page answers the in-page reads from `page`: what sits at a point,
+ * the focused editable, and what the paste/copy events came back with.
+ */
+describe("acting on a page with no refs — coordinates, focus, chords, paste and copy", () => {
+  const { keyChord } = require("./browser-manager");
+
+  async function canvasTab({ mode = "fixed", page = {} } = {}) {
+    const harness = makeHarness();
+    const { manager, views } = harness;
+    await manager.createTab("s", "https://sheet.example/");
+    const tab = manager.activeTab("s");
+    if (mode === "fixed") {
+      // The narrow-panel case: 1280×800 shown in 640×400 → scale 0.5.
+      await manager.resizeTab(tab, { preset: "default" });
+      manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+      await manager.setVisible("s", true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } else {
+      manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+      await manager.setVisible("s", true);
+      await manager.resizeTab(tab, { mode: "fit" });
+    }
+    const debug = views[0].webContents.debugger;
+    const originalSend = debug.sendCommand.bind(debug);
+    debug.sendCommand = async (method, params) => {
+      const answer = await originalSend(method, params);
+      if (method !== "Runtime.evaluate") return answer;
+      const expression = String(params?.expression || "");
+      if (page.throws && !expression.includes("__telar_agent_cursor__")) {
+        return { exceptionDetails: { text: "Uncaught", exception: { description: "TypeError: frozen\n    at <anonymous>" } } };
+      }
+      if (expression.includes('new ClipboardEvent("paste"')) return { result: { value: page.paste } };
+      if (expression.includes('new ClipboardEvent("copy"')) return { result: { value: page.copy } };
+      if (expression.includes("elementFromPoint")) return { result: { value: page.atPoint ?? null } };
+      if (expression.includes("deepestFocus()")) return { result: { value: page.focused ?? null } };
+      return answer;
+    };
+    // A look at the page is what licenses acting on it.
+    await manager.callTool("s", "browser_snapshot", {});
+    const mouse = () => debug.commands.filter((c) => c.method === "Input.dispatchMouseEvent").map((c) => c.params);
+    return { ...harness, tab, debug, mouse };
+  }
+
+  test("a click by coordinates lands at the SCALED native point under a fixed tab at 0.5 and names what was there", async () => {
+    const { manager, mouse } = await canvasTab({ page: { atPoint: { role: "canvas", name: "" } } });
+    const result = await manager.callTool("s", "browser_click", { x: 300, y: 200 });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toBe("Clicked at (300, 200): canvas.");
+    expect(mouse().map(({ type, x, y }) => ({ type, x, y }))).toEqual([
+      { type: "mouseMoved", x: 150, y: 100 },
+      { type: "mousePressed", x: 150, y: 100 },
+      { type: "mouseReleased", x: 150, y: 100 },
+    ]);
+  });
+
+  test("under fit the screenshot IS the native viewport: the point is dispatched unscaled", async () => {
+    const { manager, mouse } = await canvasTab({ mode: "fit", page: { atPoint: { role: "gridcell", name: "B7" } } });
+    const result = await manager.callTool("s", "browser_click", { x: 300, y: 200, doubleClick: true });
+    expect(textOf(result)).toBe('Clicked at (300, 200): gridcell "B7".');
+    expect(mouse().find((p) => p.type === "mousePressed")).toMatchObject({ x: 300, y: 200, clickCount: 2 });
+  });
+
+  test("a point outside the screenshot's viewport, neither a ref nor a point, or both, is refused before any input", async () => {
+    const { manager, mouse } = await canvasTab();
+    const outside = await manager.callTool("s", "browser_click", { x: 1280, y: 10 });
+    expect(outside.isError).toBe(true);
+    expect(textOf(outside)).toBe("Error: (1280, 10) is outside the 1280×800 viewport of the screenshot. Scroll or resize, then take a fresh screenshot.");
+    const neither = await manager.callTool("s", "browser_click", {});
+    expect(neither.isError).toBe(true);
+    expect(textOf(neither)).toContain("Pass a target from browser_snapshot, or x and y");
+    const both = await manager.callTool("s", "browser_click", { target: "e1", x: 10, y: 10 });
+    expect(both.isError).toBe(true);
+    expect(textOf(both)).toContain("not both");
+    const half = await manager.callTool("s", "browser_hover", { x: 10 });
+    expect(half.isError).toBe(true);
+    expect(textOf(half)).toContain("x and y go together");
+    expect(mouse()).toEqual([]);
+  });
+
+  test("the ref path keeps its own words", async () => {
+    const { manager } = await canvasTab();
+    expect(textOf(await manager.callTool("s", "browser_click", { target: "e1", element: "Count" }))).toBe("Clicked Count.");
+  });
+
+  test("a click still lands when the page will not say what is at the point", async () => {
+    const { manager, mouse } = await canvasTab({ page: { throws: true } });
+    const result = await manager.callTool("s", "browser_click", { x: 10, y: 20 });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toBe("Clicked at (10, 20).");
+    expect(mouse().some((p) => p.type === "mousePressed")).toBe(true);
+  });
+
+  test("hover by coordinates moves the pointer to the scaled point and shows the agent cursor at the CSS point", async () => {
+    const { manager, mouse, messages } = await canvasTab({ page: { atPoint: { role: "button", name: "Bold" } } });
+    const result = await manager.callTool("s", "browser_hover", { x: 50, y: 60 });
+    expect(textOf(result)).toBe('Hovered at (50, 60): button "Bold".');
+    expect(mouse()).toEqual([{ type: "mouseMoved", x: 25, y: 30 }]);
+    expect(messages.filter((m) => m.channel === "telar:browser:pointer").at(-1).payload).toMatchObject({ phase: "move", x: 50, y: 60 });
+  });
+
+  test("a drag presses at the start, moves with the button held, and releases at the end", async () => {
+    const { manager, mouse } = await canvasTab();
+    const result = await manager.callTool("s", "browser_drag", { x: 100, y: 100, toX: 300, toY: 200 });
+    expect(textOf(result)).toBe("Dragged from (100, 100) to (300, 200).");
+    const events = mouse();
+    expect(events[0]).toEqual({ type: "mouseMoved", x: 50, y: 50 });
+    expect(events[1]).toMatchObject({ type: "mousePressed", x: 50, y: 50, button: "left" });
+    expect(events.at(-1)).toMatchObject({ type: "mouseReleased", x: 150, y: 100, button: "left" });
+    const held = events.slice(2, -1);
+    expect(held.length).toBeGreaterThan(1);
+    expect(held.every((p) => p.type === "mouseMoved" && p.button === "left")).toBe(true);
+    const off = await manager.callTool("s", "browser_drag", { x: 100, y: 100, toX: 100, toY: 900 });
+    expect(textOf(off)).toContain("(100, 900) is outside the 1280×800 viewport");
+  });
+
+  test("type with no target inserts at focus without clearing it, and refuses when nothing editable has focus", async () => {
+    const { manager, debug } = await canvasTab({ page: { focused: { role: "textbox", name: "Formula" } } });
+    const result = await manager.callTool("s", "browser_type", { text: "=SUM(A1:A3)" });
+    expect(textOf(result)).toBe('Typed into the focused textbox "Formula".');
+    expect(debug.commands.filter((c) => c.method === "Input.insertText").map((c) => c.params.text)).toEqual(["=SUM(A1:A3)"]);
+    expect(debug.commands.some((c) => c.method === "DOM.resolveNode" || c.method === "Runtime.callFunctionOn")).toBe(false);
+
+    const blank = await canvasTab();
+    const refused = await blank.manager.callTool("s", "browser_type", { text: "x" });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toBe("Error: Nothing editable has focus in this tab. Click into a field or a cell first (a spreadsheet's name box or formula bar), or pass a target.");
+    expect(blank.debug.commands.some((c) => c.method === "Input.insertText")).toBe(false);
+  });
+
+  test("keyChord speaks Electron's key names and modifiers", () => {
+    expect(keyChord("Control+A")).toEqual({ keyCode: "A", modifiers: ["control"] });
+    expect(keyChord("Meta+V")).toEqual({ keyCode: "V", modifiers: ["meta"] });
+    expect(keyChord("Shift+Tab")).toEqual({ keyCode: "Tab", modifiers: ["shift"] });
+    expect(keyChord("ArrowDown")).toEqual({ keyCode: "Down", modifiers: [] });
+    expect(keyChord("Alt+ArrowLeft")).toEqual({ keyCode: "Left", modifiers: ["alt"] });
+    expect(keyChord("Enter")).toEqual({ keyCode: "Enter", modifiers: [] });
+    expect(keyChord("ControlOrMeta+C", "darwin")).toEqual({ keyCode: "C", modifiers: ["meta"] });
+    expect(keyChord("ControlOrMeta+C", "linux")).toEqual({ keyCode: "C", modifiers: ["control"] });
+    expect(keyChord("Shift++")).toEqual({ keyCode: "+", modifiers: ["shift"] });
+    expect(keyChord("+")).toEqual({ keyCode: "+", modifiers: [] });
+    expect(keyChord("Cmd+Shift+Z")).toEqual({ keyCode: "Z", modifiers: ["meta", "shift"] });
+    expect(() => keyChord("Hyper+A")).toThrow("Unknown modifier Hyper in Hyper+A. Use Control, Meta, Alt, Shift or ControlOrMeta.");
+  });
+
+  test("browser_press_key sends a chord as one keyDown/keyUp carrying its modifiers", async () => {
+    const { manager, views } = await canvasTab();
+    const result = await manager.callTool("s", "browser_press_key", { key: "Meta+V" });
+    expect(textOf(result)).toBe("Pressed Meta+V.");
+    expect(views[0].webContents.inputEvents).toEqual([
+      { type: "keyDown", keyCode: "V", modifiers: ["meta"] },
+      { type: "keyUp", keyCode: "V", modifiers: ["meta"] },
+    ]);
+    const unknown = await manager.callTool("s", "browser_press_key", { key: "Hyper+A" });
+    expect(unknown.isError).toBe(true);
+    expect(views[0].webContents.inputEvents).toHaveLength(2);
+  });
+
+  test("paste: a page that handles the event takes it; otherwise the focused editable gets it inserted; otherwise it is refused", async () => {
+    const handled = await canvasTab({ page: { paste: { handled: true, editable: { role: "textbox", name: "" } } } });
+    const pasted = await handled.manager.callTool("s", "browser_paste", { text: "1\t2\n3\t4" });
+    expect(textOf(pasted)).toBe("Pasted 7 characters; the page handled the paste event.");
+    const expression = handled.debug.commands.find((c) => c.method === "Runtime.evaluate" && c.params.expression.includes('"paste"')).params;
+    expect(expression.returnByValue).toBe(true);
+    expect(expression.expression).toContain(JSON.stringify("1\t2\n3\t4"));
+    expect(handled.debug.commands.some((c) => c.method === "Input.insertText")).toBe(false);
+    // The system clipboard is never the route.
+    expect(handled.clipboard.text).toBe("");
+
+    const fallback = await canvasTab({ page: { paste: { handled: false, editable: { role: "textarea", name: "Notes" } } } });
+    const inserted = await fallback.manager.callTool("s", "browser_paste", { text: "hello" });
+    expect(textOf(inserted)).toBe('Inserted 5 characters at the focused textarea "Notes"; the page did not handle a paste event.');
+    expect(fallback.debug.commands.filter((c) => c.method === "Input.insertText").map((c) => c.params.text)).toEqual(["hello"]);
+
+    const nobody = await canvasTab({ page: { paste: { handled: false, editable: null } } });
+    const refused = await nobody.manager.callTool("s", "browser_paste", { text: "x" });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toBe("Error: Nothing took the paste: nothing editable has focus and the page did not handle a paste event. Click into a cell or field first.");
+  });
+
+  test("copy: the page's handler text verbatim, else the selection, else refused; capped at 16 KB", async () => {
+    const handler = await canvasTab({ page: { copy: "a\tb\nc\td" } });
+    expect(textOf(await handler.manager.callTool("s", "browser_copy", {}))).toBe("a\tb\nc\td");
+    const empty = await canvasTab({ page: { copy: "" } });
+    const refused = await empty.manager.callTool("s", "browser_copy", {});
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toBe("Error: Nothing is selected in this tab. Select text or cells first.");
+    const big = await canvasTab({ page: { copy: "é".repeat(10_000) } });
+    const capped = textOf(await big.manager.callTool("s", "browser_copy", {}));
+    expect(capped.endsWith("\n… [truncated]")).toBe(true);
+    expect(Buffer.byteLength(capped.replace("\n… [truncated]", ""))).toBeLessThanOrEqual(16 * 1024);
+    expect(capped).not.toContain("�");
+  });
+
+  /**
+   * THE IN-PAGE SCRIPTS THEMSELVES, run against a small fake DOM: the copy
+   * fallback to a textarea's selected range and to the document selection,
+   * and the focus walk into a frame's contenteditable body (where a canvas
+   * spreadsheet keeps focus).
+   */
+  test("the page scripts: copy falls back to the selection, and focus is found inside a frame's contenteditable body", async () => {
+    const vm = require("node:vm");
+    const { manager, debug } = await canvasTab({ page: { copy: "x", paste: { handled: true } } });
+    await manager.callTool("s", "browser_copy", {});
+    await manager.callTool("s", "browser_paste", { text: "1\t2" });
+    const sent = (needle) => debug.commands.find((c) => c.method === "Runtime.evaluate" && c.params.expression.includes(needle)).params.expression;
+    class DataTransfer { constructor() { this.data = new Map(); } setData(type, value) { this.data.set(type, value); } getData(type) { return this.data.get(type) || ""; } }
+    class ClipboardEvent { constructor(type, init) { this.type = type; Object.assign(this, init); } }
+    const run = (expression, document) => vm.runInNewContext(expression, { document, DataTransfer, ClipboardEvent });
+    const element = (fields) => ({ getAttribute: () => null, textContent: "", dispatchEvent: () => true, ...fields });
+
+    const copy = sent('"copy"');
+    const handler = element({ tagName: "DIV", dispatchEvent: (event) => { event.clipboardData.setData("text/plain", "a\tb"); return false; } });
+    expect(run(copy, { activeElement: handler, getSelection: () => "ignored" })).toBe("a\tb");
+    const textarea = element({ tagName: "TEXTAREA", value: "hello world", selectionStart: 6, selectionEnd: 11 });
+    expect(run(copy, { activeElement: textarea })).toBe("world");
+    const body = element({ tagName: "BODY", isContentEditable: false });
+    expect(run(copy, { activeElement: body, getSelection: () => "picked text" })).toBe("picked text");
+
+    const paste = sent('"paste"');
+    const cellBody = element({ tagName: "BODY", isContentEditable: true, textContent: "  Q3   totals " });
+    const frame = element({ tagName: "IFRAME", contentDocument: { activeElement: cellBody } });
+    expect(JSON.parse(JSON.stringify(run(paste, { activeElement: frame })))).toEqual({ handled: false, editable: { role: "body", name: "Q3 totals" } });
+    expect(JSON.parse(JSON.stringify(run(paste, { activeElement: body })))).toEqual({ handled: false, editable: null });
+    const checkbox = element({ tagName: "INPUT", type: "checkbox" });
+    expect(JSON.parse(JSON.stringify(run(paste, { activeElement: checkbox })))).toEqual({ handled: false, editable: null });
+  });
+
+  test("a page that throws while being read is answered in a sentence", async () => {
+    const { manager } = await canvasTab({ page: { throws: true } });
+    const result = await manager.callTool("s", "browser_copy", {});
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe("Error: The page threw while Telar read it (TypeError: frozen). Take a fresh screenshot and try again.");
+  });
+});
+
+/**
+ * THE WHITE SLAB UNDER A FIXED PAGE (after #922). `setDeviceMetricsOverride`
+ * without `dontSetVisibleSize` has Chromium resize the page's render widget to
+ * the override's own width×height (`WebContentsImpl::SetDeviceEmulationSize`)
+ * — 1280×800 in a view given 975×609. The page is drawn scaled into that
+ * widget's corner and the rest is canvas, overflowing the view to the window's
+ * edge: invisible while the canvas was transparent, white once it was opaque,
+ * and the whole oversized surface is what a frozen frame captured. A fake
+ * cannot paint, so these pin the commands; the Electron fit-zoom suite
+ * samples the pixels.
+ */
+describe("a fixed page's widget is the view's size, never the override's", () => {
+  // The owner's panel: the Default preset in a stage taller than the page.
+  const STAGE = { x: 8, y: 120, width: 975, height: 794 };
+
+  async function fixedInTallStage(zoom = 1) {
+    const harness = makeHarness();
+    const { manager, views, setCockpitZoom } = harness;
+    if (zoom !== 1) setCockpitZoom(zoom);
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    await manager.resizeTab(tab, { preset: "default" });
+    manager.setBounds("s", STAGE);
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    const debug = views[0].webContents.debugger;
+    const last = (method) => debug.commands.filter((c) => c.method === method).at(-1);
+    const count = (method) => debug.commands.filter((c) => c.method === method).length;
+    return { ...harness, tab, debug, last, count };
+  }
+
+  test("shown: the override leaves the widget alone and the widget is pinned to the view's bounds", async () => {
+    const { manager, views, last } = await fixedInTallStage();
+    const { rect } = manager.state("s").presentation;
+    // Top-aligned, full width, only as tall as the scaled page.
+    expect(rect).toEqual({ x: 8, y: 120, width: 975, height: 609 });
+    expect(views[0].bounds).toEqual(rect);
+    expect(last("Emulation.setDeviceMetricsOverride").params).toMatchObject({ width: 1280, height: 800, dontSetVisibleSize: true });
+    expect(last("Emulation.setVisibleSize").params).toEqual({ width: 975, height: 609 });
+  });
+
+  test("under the cockpit's zoom the widget is the view's own pixels, the same numbers setBounds was given", async () => {
+    const { views, last } = await fixedInTallStage(1.25);
+    const { width, height } = views[0].bounds;
+    expect({ width, height }).toEqual({ width: 1219, height: 761 });
+    expect(last("Emulation.setVisibleSize").params).toEqual({ width, height });
+  });
+
+  test("hidden, the widget takes the full viewport again; shown, it is pinned back to the view", async () => {
+    const { manager, tab, last, count } = await fixedInTallStage();
+    const pinned = count("Emulation.setVisibleSize");
+    await manager.setVisible("s", false);
+    await tab.geometry.queue;
+    // A hidden page needs a real widget for its captures and input.
+    expect(last("Emulation.setDeviceMetricsOverride").params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    expect(count("Emulation.setVisibleSize")).toBe(pinned);
+    await manager.setVisible("s", true);
+    await tab.geometry.queue;
+    expect(last("Emulation.setDeviceMetricsOverride").params).toMatchObject({ dontSetVisibleSize: true });
+    expect(count("Emulation.setVisibleSize")).toBe(pinned + 1);
+    expect(last("Emulation.setVisibleSize").params).toEqual({ width: 975, height: 609 });
+  });
+
+  test("a new panel size re-pins the widget even where the fit scale would round the same", async () => {
+    const { manager, tab, last } = await fixedInTallStage();
+    manager.setBounds("s", { ...STAGE, width: 800 });
+    await tab.geometry.queue;
+    expect(last("Emulation.setVisibleSize").params).toEqual({ width: 800, height: 500 });
+    expect(tab.viewportOverride).toBe("1280x800@0.625 in 800x500");
+  });
+
+  test("the frozen frame is cropped to the view's own pixels and painted back at the fitted rect", async () => {
+    const { manager, views } = await fixedInTallStage(1.25);
+    const frame = await manager.freezeView("s");
+    expect(views[0].webContents.captures.at(-1).rect).toEqual({ x: 0, y: 0, width: 1219, height: 761 });
+    // The rect stays in the panel's CSS pixels — what the renderer paints in.
+    expect(frame.rect).toEqual({ x: 8, y: 120, width: 975, height: 609 });
   });
 });

@@ -61,11 +61,12 @@ import {
   CircleAlertIcon,
   FolderGitIcon,
   FolderKanbanIcon,
+  GaugeIcon,
   ImageIcon,
   MonitorIcon,
   SparklesIcon,
 } from "lucide-react";
-import type { EnvMode, ModelSelection, PluginStatus, Project, ProviderDriverKind, ProviderInstance } from "@telar/engine-client";
+import type { EnvMode, ModelSelection, PluginStatus, Project, ProviderDriverKind, ProviderInstance, ProviderModel } from "@telar/engine-client";
 import { defaultInstanceIdForDriver, pluginEnabled, readProjectPlugins } from "@telar/engine-client";
 import type { PublicHost } from "@/lib/hosts/store";
 import type { ModelChoice } from "@/lib/models";
@@ -76,7 +77,8 @@ import { enablePatch, projectPluginSections } from "@/lib/plugins/sections";
 import { useSessionDefaults } from "@/lib/session-defaults";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { AgentControl } from "@/components/composer-controls";
+import { AgentControl, modelOptionsOf, ReasoningControl } from "@/components/composer-controls";
+import { useModelCatalogue } from "@/lib/model-catalogue-cache";
 import { ProjectIconPicker } from "@/components/projects/project-icon-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DataScienceSection } from "./data-science-section";
@@ -85,6 +87,7 @@ import { McpSection } from "./mcp-section";
 import { PluginSettings } from "./plugin-settings";
 import { RemoveProjectSection } from "./remove-project-section";
 import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { ProjectWorkspaceSection } from "./workspace-config-section";
 
 const api = createEngineApi();
 
@@ -254,6 +257,53 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
 }
 
 /**
+ * THE DEFAULT MODEL'S OPTIONS — effort and fast mode — with the composer's own
+ * reasoning control, so a project offers exactly what the composer offers for
+ * the same model. `models` is that model's catalogue, passed in rather than
+ * fetched so the row can be rendered without a network.
+ *
+ * ABSENT, NOT INERT, WHEN THE MODEL HAS NONE. Unlike the rows above, there is no
+ * setting here to teach: a model without options has nothing to set.
+ */
+export function ProjectModelOptionsRow({
+  driver,
+  choice,
+  instanceId,
+  models,
+  onChange,
+  status,
+  error,
+  unavailable,
+}: {
+  driver: ProviderDriverKind;
+  choice: ModelChoice;
+  instanceId?: string;
+  models?: readonly ProviderModel[];
+  onChange: (next: ModelChoice) => void;
+  status?: React.ReactNode;
+  error?: string;
+  unavailable?: string;
+}) {
+  const offered = modelOptionsOf(models ?? [], choice);
+  if (offered.efforts.length === 0 && !offered.fastMode) return null;
+  const set = choice.effort !== undefined || choice.fastMode !== undefined;
+  return (
+    <Row
+      label="Model options"
+      icon={GaugeIcon}
+      hint="New conversations in this project start with this model and these options."
+      info="Only the options the chosen model offers are shown. Picking a model that lacks one drops it, and the composer still overrides them for the conversation in front of you."
+      {...(status ? { status } : {})}
+      {...(error ? { error } : {})}
+      // CLEARS THE OPTIONS AND KEEPS THE MODEL; the model row's revert clears both.
+      {...(set ? { onRevert: () => onChange(choice.model ? { model: choice.model } : {}) } : {})}
+      control={<ReasoningControl driver={driver} choice={choice} {...(instanceId ? { instanceId } : {})} onChange={onChange} />}
+      {...(unavailable ? { unavailable: { reason: unavailable } } : {})}
+    />
+  );
+}
+
+/**
  * WHAT A CONVERSATION IN THIS PROJECT OPENS ON.
  *
  * BOTH ROWS HAVE THREE STATES, NOT TWO, and the third is the interesting one:
@@ -301,9 +351,9 @@ export function ProjectConversationRows({
    * so and refuses one — so clearing every field here is a `null`, which is the
    * same sentence the revert arrow writes.
    */
-  const commitModel = (next: ModelChoice) => {
+  const commitModel = (next: ModelChoice, field = "defaultModel") => {
     const named = next.model !== undefined || next.effort !== undefined || next.fastMode !== undefined;
-    if (!named) return writer?.save("defaultModel", { defaultModel: null });
+    if (!named) return writer?.save(field, { defaultModel: null });
     // The stored login when it is still this driver's, else this driver's own
     // default slot — a Claude selection must never keep a Codex instance id.
     const instanceId = storedDriver === driver && stored ? stored.instanceId : defaultInstanceIdForDriver(driver);
@@ -313,11 +363,13 @@ export function ProjectConversationRows({
       ...(next.effort !== undefined ? { effort: next.effort } : {}),
       ...(next.fastMode !== undefined ? { fastMode: next.fastMode } : {}),
     } as ModelSelection;
-    writer?.save("defaultModel", { defaultModel: selection });
+    writer?.save(field, { defaultModel: selection });
   };
 
   const errorFor = (field: string) => (writer?.error?.field === field ? writer.error.message : undefined);
   const savingFor = (field: string) => (writer?.busy === field ? <Badge variant="outline">Saving</Badge> : undefined);
+  const instanceId = stored?.instanceId && storedDriver === driver ? stored.instanceId : undefined;
+  const models = useModelCatalogue(driver, instanceId)?.models;
 
   return (
     // NO CAPTION, for General ▸ New sessions' reason: both rows below say what
@@ -339,12 +391,24 @@ export function ProjectConversationRows({
           <AgentControl
             driver={driver}
             choice={choice}
-            {...(stored?.instanceId && storedDriver === driver ? { instanceId: stored.instanceId } : {})}
-            onChange={commitModel}
+            {...(instanceId ? { instanceId } : {})}
+            onChange={(next) => commitModel(next)}
             onDriverChange={setPicked}
           />
         }
         {...(blockedReason(project, "set the model its conversations open on") ? { unavailable: { reason: blockedReason(project, "set the model its conversations open on")! } } : {})}
+      />
+      <ProjectModelOptionsRow
+        driver={driver}
+        choice={choice}
+        {...(instanceId ? { instanceId } : {})}
+        {...(models ? { models } : {})}
+        onChange={(next) => commitModel(next, "modelOptions")}
+        {...(savingFor("modelOptions") ? { status: savingFor("modelOptions") } : {})}
+        {...(errorFor("modelOptions") ? { error: errorFor("modelOptions") } : {})}
+        {...(blockedReason(project, "set the options its conversations open with")
+          ? { unavailable: blockedReason(project, "set the options its conversations open with")! }
+          : {})}
       />
       <Row
         label="Where new conversations start"
@@ -741,6 +805,8 @@ export function ProjectsPage() {
       {project && !project.hostId && (
         <>
           <McpSection scope={{ projectId: project.id, projectName: project.name }} />
+          {/* Keyed so one project's view never renders under another's name. */}
+          <ProjectWorkspaceSection key={project.id} projectId={project.id} />
           <ProjectPluginPanes project={project} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
         </>
       )}

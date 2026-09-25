@@ -12,6 +12,7 @@ const {
   PERMISSION_KINDS,
 } = require("./site-permissions");
 const { browserContextMenuTemplate } = require("./browser-context-menu");
+const { installDownloadHandler } = require("./browser-downloads");
 
 const CURSOR_MOVE_MS = 160;
 const CURSOR_CLICK_LEAD_MS = 40;
@@ -40,6 +41,28 @@ const VIEWPORT_MAX = 5_000;
 /** A rendered size is CSS width×height×scale²; bounded so a resize cannot
  *  ask the compositor for a wall of pixels. */
 const VIEWPORT_MAX_AREA = 5_000 * 3_000;
+
+/**
+ * THE CANVAS UNDER THE PAGE. A browser gives a page an opaque base to paint
+ * on — white, or Chromium's own dark canvas (#121212) when the root element
+ * opts into `color-scheme: dark` — and a page that paints no root background
+ * of its own (App Store Connect does not) relies on it. The view here used to
+ * be transparent for its whole life, so such a page drew its cards and grey
+ * sidebar text straight over the dark cockpit. Blink applies the dark-scheme
+ * canvas only over an opaque base (`LocalFrameView::ShouldUseColorAdjustBackground`,
+ * `kIfBaseNotTransparent`), so white is the right base for light AND dark
+ * pages: a dark page gets its own dark canvas on top of it.
+ *
+ * TRANSPARENT UNTIL THERE IS A DOCUMENT TO PAINT. A fresh view's first
+ * document is shown from `did-start-loading` (see `place`) and has no frame
+ * yet; an opaque base there is a white rectangle flashing over the themed
+ * panel until the first paint — the strip the transparency was introduced
+ * for. So the canvas goes opaque at `dom-ready` of a real document and back
+ * to nothing when the tab is blank again (`documentReady`); a navigation
+ * from one page to the next keeps it, the way a browser keeps its own.
+ */
+const PAGE_CANVAS = "#ffffff";
+const NO_CANVAS = "#00000000";
 
 /** A requested viewport → the clamped one, or a thrown reason. */
 function resolveViewport(input) {
@@ -93,12 +116,17 @@ function presetOf(viewport) {
 /**
  * PRESENTATION-ONLY FIT. The page keeps its intrinsic CSS viewport; when the
  * panel is narrower than that, the native view is scaled down to fit (never
- * up — a small page in a wide panel is shown at 1:1, centred). Returns the
- * scale and the native rect the view should occupy inside `bounds`.
+ * up — a small page in a wide panel is shown at 1:1). Returns the scale and
+ * the native rect the view should occupy inside `bounds`: centred across,
+ * TOP-ALIGNED — the way a browser's device toolbar shows an emulated screen.
+ * It used to centre vertically too, which put a band of nothing above a page
+ * shorter than the stage and read as the page sitting in the wrong place.
  * Measured in a real Electron (Astra's probe, 2026-09-06): bounds 640×400
  * with `Emulation.setDeviceMetricsOverride {1280×800, scale: 0.5}` keeps
  * innerWidth/innerHeight at 1280×800, native input maps through the scale on
  * its own, and CDP `Input.dispatch*` takes NATIVE (scaled) coordinates.
+ * The renderer draws its device frame with the same arithmetic
+ * (apps/web/lib/browser-viewport.ts `fitViewport`); the two move together.
  */
 function fitViewport(viewport, bounds) {
   const scale = Math.min(1, bounds.width / viewport.width, bounds.height / viewport.height);
@@ -108,7 +136,7 @@ function fitViewport(viewport, bounds) {
     scale,
     rect: {
       x: bounds.x + Math.max(0, Math.floor((bounds.width - width) / 2)),
-      y: bounds.y + Math.max(0, Math.floor((bounds.height - height) / 2)),
+      y: bounds.y,
       width,
       height,
     },
@@ -124,7 +152,8 @@ function fitViewport(viewport, bounds) {
  * gate already believed settled.
  */
 function emulationKey(target) {
-  return `${target.width}x${target.height}@${target.scale}`;
+  const key = `${target.width}x${target.height}@${target.scale}`;
+  return target.view ? `${key} in ${target.view.width}x${target.view.height}` : key;
 }
 
 /** How long a capture of a hidden view may take before it is an error rather
@@ -278,6 +307,136 @@ function errorResult(error) {
     content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
     isError: true,
   };
+}
+
+/**
+ * A KEY, OR A CHORD, IN ELECTRON'S NAMES. Models write keys the way the web
+ * (and Playwright) spells them — `ArrowDown`, `Control+A`, `ControlOrMeta+C`;
+ * `sendInputEvent` wants accelerator names and a separate modifiers array.
+ * The key is whatever follows the LAST `+`, so a trailing `++` is the plus
+ * key (`Shift++`), and a bare `+` is too. An unknown modifier is refused by
+ * name rather than typed as a letter: `Hyper+A` pressing A would be a quiet
+ * lie about what was pressed.
+ */
+const CHORD_MODIFIERS = {
+  control: "control", ctrl: "control",
+  meta: "meta", cmd: "meta", command: "meta",
+  alt: "alt", option: "alt",
+  shift: "shift",
+};
+const ELECTRON_KEY_NAMES = {
+  arrowup: "Up", arrowdown: "Down", arrowleft: "Left", arrowright: "Right",
+  escape: "Escape", esc: "Escape", enter: "Enter", return: "Return", space: "Space", " ": "Space",
+};
+
+function keyChord(key, platform = process.platform) {
+  const spec = String(key ?? "");
+  if (!spec) throw new Error("A key is required.");
+  let rest;
+  let name;
+  if (spec === "+") [rest, name] = ["", "+"];
+  else if (spec.endsWith("++")) [rest, name] = [spec.slice(0, -2), "+"];
+  else {
+    const cut = spec.lastIndexOf("+");
+    [rest, name] = cut < 0 ? ["", spec] : [spec.slice(0, cut), spec.slice(cut + 1)];
+  }
+  if (!name) throw new Error(`${spec} names no key after its modifiers. Write a chord like Control+A.`);
+  const modifiers = [];
+  for (const token of rest ? rest.split("+") : []) {
+    const lower = token.trim().toLowerCase();
+    const modifier = lower === "controlormeta" ? (platform === "darwin" ? "meta" : "control") : CHORD_MODIFIERS[lower];
+    if (!modifier) throw new Error(`Unknown modifier ${token || "(empty)"} in ${spec}. Use Control, Meta, Alt, Shift or ControlOrMeta.`);
+    if (!modifiers.includes(modifier)) modifiers.push(modifier);
+  }
+  return { keyCode: ELECTRON_KEY_NAMES[name.toLowerCase()] || name, modifiers };
+}
+
+/**
+ * WHAT RUNS IN THE PAGE FOR THE COORDINATE AND FOCUS TOOLS. A canvas-drawn
+ * page has no refs, so these read the DOM directly: what sits at a point,
+ * and what has focus. Focus is walked down through open shadow roots and
+ * same-origin frames because a spreadsheet keeps it on a contenteditable
+ * body INSIDE a frame — the top document's activeElement is just the iframe.
+ * Each is a function source, called with JSON arguments and returned by value.
+ */
+const PAGE_DESCRIBE = `
+  function describe(el) {
+    const attr = (name) => (el.getAttribute && el.getAttribute(name)) || "";
+    const role = attr("role") || String(el.tagName || "").toLowerCase();
+    const name = attr("aria-label") || attr("title") || attr("alt") || attr("placeholder") || String(el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 60);
+    return { role, name };
+  }`;
+const PAGE_FOCUS = `${PAGE_DESCRIBE}
+  function deepestFocus() {
+    let el = document.activeElement;
+    for (;;) {
+      if (el && el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      let inner = null;
+      try { inner = el && el.contentDocument ? el.contentDocument.activeElement : null; } catch (e) { inner = null; }
+      if (inner) { el = inner; continue; }
+      return el;
+    }
+  }
+  function isEditable(el) {
+    if (!el) return false;
+    if (el.tagName === "TEXTAREA") return true;
+    if (el.tagName === "INPUT") return !["button", "submit", "reset", "checkbox", "radio", "file", "image", "range", "color", "hidden"].includes(String(el.type || "text").toLowerCase());
+    return Boolean(el.isContentEditable);
+  }`;
+const PAGE_AT_POINT = `function (x, y) {${PAGE_DESCRIBE}
+  let el = document.elementFromPoint(x, y);
+  while (el && el.shadowRoot) {
+    const inner = el.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === el) break;
+    el = inner;
+  }
+  return el ? describe(el) : null;
+}`;
+const PAGE_FOCUSED_EDITABLE = `function () {${PAGE_FOCUS}
+  const el = deepestFocus();
+  return isEditable(el) ? describe(el) : null;
+}`;
+// A real paste hands the page a ClipboardEvent carrying a DataTransfer; a
+// false from dispatchEvent is the page's preventDefault — it took the text.
+const PAGE_PASTE = `function (text) {${PAGE_FOCUS}
+  const el = deepestFocus();
+  const target = el || document.body || document.documentElement;
+  const data = new DataTransfer();
+  data.setData("text/plain", text);
+  const handled = !target.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true, composed: true }));
+  return { handled, editable: isEditable(el) ? describe(el) : null };
+}`;
+// What the page's own copy handler wrote wins (a canvas spreadsheet's
+// selection is not a DOM selection); otherwise the selection itself.
+const PAGE_COPY = `function () {${PAGE_FOCUS}
+  const el = deepestFocus();
+  const target = el || document.body || document.documentElement;
+  const data = new DataTransfer();
+  const handled = !target.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true, composed: true }));
+  const written = data.getData("text/plain") || data.getData("text/html");
+  if (handled && written) return written;
+  if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT") && typeof el.selectionStart === "number") {
+    return String(el.value || "").slice(el.selectionStart, el.selectionEnd);
+  }
+  const doc = (el && el.ownerDocument) || document;
+  return doc.getSelection ? String(doc.getSelection()) : "";
+}`;
+const COPY_MAX_BYTES = 16 * 1024;
+
+/** `button "Save"`, or just `canvas` when the element has no name. */
+function pageLabel(described) {
+  return described.name ? `${described.role} "${described.name}"` : described.role;
+}
+
+function pointText(point) {
+  return `(${point.x}, ${point.y})`;
+}
+
+function capCopied(text) {
+  if (Buffer.byteLength(text) <= COPY_MAX_BYTES) return text;
+  // Cut on bytes, then drop a code point the cut split in half.
+  const cut = Buffer.from(text).subarray(0, COPY_MAX_BYTES).toString("utf8").replace(/�$/, "");
+  return `${cut}\n… [truncated]`;
 }
 
 /** Where words that are not an address go. Google for now; a setting can
@@ -835,6 +994,12 @@ class DesktopBrowserManager {
      *  with no partitions to seat rather than an error worth logging. */
     this.sessionFor = dependencies.sessionFor || electronSessionFor;
     this.preparedPartitions = new Set();
+    /** Where a download lands with no dialog — the OS's Downloads folder,
+     *  read per download. Injected so the tests never touch a real one. */
+    this.downloadsPath = dependencies.downloadsPath || (() => this.electron().app.getPath("downloads"));
+    this.installDownloads = dependencies.installDownloads || installDownloadHandler;
+    /** URLs "Save Image As…" handed to Chromium: the one download that asks. */
+    this.askedDownloads = new Set();
     /**
      * THE PERSISTED TAB INVENTORY (browser-tab-store.js). The manager owns
      * every tab's lifetime — not the panel, not the renderer — so a session's
@@ -1041,38 +1206,47 @@ class DesktopBrowserManager {
   }
 
   /**
-   * WHY FORGETTING THIS PROFILE WOULD TAKE A PAGE WITH IT — the sentence to
-   * refuse a delete with, or null when nothing this window holds is browsing
-   * in it. Live state only the manager has: the registry knows about project
-   * assignments and enforces those itself.
+   * FORGET A PROFILE, AND MOVE WHATEVER WAS BROWSING IN IT (#430, #476).
    *
-   * A BINDING IS NOT A REASON; A TAB IS (#430). Delete used to refuse whenever
-   * ANY scope in `scopeProfiles` named the profile — but a scope is bound the
-   * moment it opens (`declareProfile`), and every remembered scope is bound
-   * again at restore even with zero tabs, so on a machine that had been used
-   * for a while every row refused and there was no way out. A bound scope with
-   * nothing open loses nothing: its next tab walks the ladder again.
+   * Delete used to refuse while any tab — live or remembered — sat in the
+   * profile. Profiles made before shared profiles existed had tabs in dozens
+   * of sessions, so every row refused ("32 sessions have 41 tabs") and there
+   * was no way out short of closing them one session at a time.
    *
-   * WHAT WOULD ACTUALLY BREAK IS A TAB, and both kinds count. A tab signed
-   * into this jar (`profileId`) is the obvious one; a tab of ANOTHER profile in
-   * a session pointed at this one counts too, because `parseInventory` drops a
-   * whole scope whose profile id the registry no longer has — so deleting under
-   * it loses that session's remembered pages at the next restart. Hibernated
-   * and restored tabs are tabs: the panel draws them in the strip, and they are
-   * exactly what that restore would throw away.
+   * Now the registry forgets the record first (it still refuses the default),
+   * then each session pointed at the profile walks the ladder again, and each
+   * tab signed into it is put to sleep and re-homed in its session's new
+   * profile. A tab keeps its URL and wakes signed out; a session keeps its
+   * pages, because `parseInventory` would drop a whole scope whose profile id
+   * the registry no longer has. The cookie jar stays on disk, as ever.
    */
-  whyProfileIsInUse(profileId) {
-    const id = String(profileId || "").trim();
-    if (!id) return null;
-    const tabs = this.tabs.filter((tab) => tab.profileId === id || this.scopeProfiles.get(tab.scopeKey) === id);
-    if (!tabs.length) return null;
-    const sessions = new Set(tabs.map((tab) => tab.scopeKey)).size;
-    const label = this.profiles.get(id)?.label || "that profile";
-    return (
-      `${sessions === 1 ? "A session has" : `${sessions} sessions have`} ` +
-      `${tabs.length === 1 ? "a tab" : `${tabs.length} tabs`} open in “${label}”. ` +
-      `Close ${tabs.length === 1 ? "it" : "them"}, or switch ${sessions === 1 ? "that session" : "those sessions"} to another profile, first.`
-    );
+  deleteProfile(profileId) {
+    const removed = this.profiles.remove(profileId);
+    const id = removed.id;
+    const fallback = this.profiles.require(this.profiles.defaultProfileId);
+    const scopes = new Set();
+    for (const [scope, bound] of this.scopeProfiles) {
+      if (bound !== id) continue;
+      if (this.scopeProfileOverrides.get(scope) === id) this.scopeProfileOverrides.delete(scope);
+      const override = this.scopeProfileOverrides.get(scope);
+      const project = this.scopeProjects.get(scope);
+      const profile = override ? this.profiles.require(override) : project ? this.profiles.resolve(project) : fallback;
+      this.scopeProfiles.set(scope, profile.id);
+      scopes.add(scope);
+    }
+    this.drainProfileMigrations();
+    let tabs = 0;
+    for (const tab of this.tabs) {
+      if (tab.profileId !== id) continue;
+      this.hibernateTab(tab);
+      const profile = this.profiles.get(this.scopeProfiles.get(tab.scopeKey)) || fallback;
+      tab.profileId = profile.id;
+      tab.partition = profile.partition;
+      scopes.add(tab.scopeKey);
+      tabs += 1;
+    }
+    this.persist();
+    return { ...removed, sessions: scopes.size, tabs };
   }
 
   /** The extension host for a partition, created on first use. */
@@ -1185,6 +1359,38 @@ class DesktopBrowserManager {
     } catch (error) {
       console.error(`[telar-desktop] could not install site permission handlers on ${partition}: ${error && error.message ? error.message : error}`);
     }
+    try {
+      this.installDownloads(ses, {
+        directory: this.downloadsPath,
+        shouldAsk: (url) => this.askedDownloads.delete(url),
+        onStarted: (download) => this.reportDownload({ ...download, state: "started" }),
+        onFinished: (download) => this.reportDownload(download),
+      });
+    } catch (error) {
+      console.error(`[telar-desktop] could not install the download handler on ${partition}: ${error && error.message ? error.message : error}`);
+    }
+  }
+
+  /**
+   * A DOWNLOAD STARTED OR ENDED — told to both hands. The agent reads it as a
+   * console line on the tab that started it (browser_console_messages), which
+   * is how it learns where its file landed; the panel gets a push and shows a
+   * strip with a way to the file.
+   */
+  reportDownload({ state, path, filename, webContents }) {
+    let where = { scopeKey: this.visibleScopeKey ?? null, tabId: null };
+    try {
+      if (webContents && !webContents.isDestroyed()) where = this.locatePermission(webContents);
+    } catch {
+      // A contents gone mid-download still gets its strip, just unplaced.
+    }
+    const tab = this.tabs.find((candidate) => candidate.id === where.tabId);
+    const text =
+      state === "started" ? `Download started: ${filename} is being saved to ${path}`
+      : state === "completed" ? `Downloaded ${filename} to ${path}`
+      : `Download of ${filename} ${state === "cancelled" ? "was cancelled" : "failed"}; nothing was saved to ${path}`;
+    if (tab) pushCapped(tab.console, { level: state === "started" || state === "completed" ? "info" : "error", text });
+    if (!this.window.isDestroyed()) this.window.webContents.send("telar:browser:download", { ...where, state, path, filename });
   }
 
   /**
@@ -1887,6 +2093,7 @@ class DesktopBrowserManager {
     const place = () => {
       if (tab.view !== view || view.webContents.isDestroyed?.()) return;
       this.applyBorderRadius(tab, view);
+      this.applyCanvas(tab, view);
       // PREVIEWED: the view fills its own window and the panel's visibility
       // rules do not apply to it (#473).
       // A PREVIEWED TAB IS NOT THIS WINDOW'S, so the cockpit's zoom is not
@@ -1985,6 +2192,20 @@ class DesktopBrowserManager {
     if (tab.borderRadius === radius) return;
     tab.borderRadius = radius;
     view.setBorderRadius?.(radius);
+  }
+
+  /**
+   * THE CANVAS, WRITTEN ONLY ON A CHANGE — see PAGE_CANVAS for why it is
+   * opaque at all and why not from the start. Called from `place()`, which
+   * runs on every bounds publish, so it is the one writer and the pipeline's
+   * idempotence covers it: the edges that move `documentReady` (dom-ready, a
+   * tab going blank, a new WebContents) all run the pipeline already.
+   */
+  applyCanvas(tab, view) {
+    const canvas = tab.documentReady ? PAGE_CANVAS : NO_CANVAS;
+    if (tab.canvas === canvas) return;
+    tab.canvas = canvas;
+    view.setBackgroundColor(canvas);
   }
 
   applyVisibility() {
@@ -2095,8 +2316,13 @@ class DesktopBrowserManager {
     // are no pixels behind a start page, a previewed tab or a 1×1 panel.
     if (!this.isTabVisible(tab) || this.isBlank(tab) || this.previewing(tab)) return null;
     const rect = this.nativeRect(tab);
+    // CROPPED TO THE VIEW'S OWN SIZE, so the picture is exactly the pixels the
+    // live view shows at `rect`. A widget larger than its view (an emulation
+    // that resized it — see `syncViewport`) returned its whole surface: the
+    // page shrunk into a corner of a white frame, then drawn into `rect`.
+    const { width, height } = this.windowRect(rect);
     try {
-      const image = await withTimeout(tab.view.webContents.capturePage(), FREEZE_TIMEOUT_MS, FREEZE_TIMEOUT_MESSAGE);
+      const image = await withTimeout(tab.view.webContents.capturePage({ x: 0, y: 0, width, height }), FREEZE_TIMEOUT_MS, FREEZE_TIMEOUT_MESSAGE);
       if (!image || image.isEmpty()) return null;
       return { data: image.toPNG().toString("base64"), mimeType: "image/png", rect };
     } catch {
@@ -2187,10 +2413,13 @@ class DesktopBrowserManager {
   /** Everything a fresh view needs once it exists, whoever made the
    *  WebContents inside it. */
   attachView(tab, view) {
-    // Let the themed renderer host show through while a page is navigating.
-    // An opaque white native underlay otherwise appears as a strip whenever
-    // its bounds update a frame ahead of the surrounding right-panel layout.
-    view.setBackgroundColor("#00000000");
+    // No canvas yet: this WebContents has no document to paint, and an opaque
+    // white underlay would show as a strip wherever its bounds land a frame
+    // ahead of the panel's layout. `applyCanvas` turns it opaque once a
+    // document is ready — see PAGE_CANVAS.
+    tab.documentReady = false;
+    tab.canvas = undefined;
+    this.applyCanvas(tab, view);
     view.setVisible(false);
     this.window.contentView.addChildView(view);
     tab.view = view;
@@ -2755,6 +2984,13 @@ class DesktopBrowserManager {
       /** The scheme currently pushed to this WebContents, so a resync does not
        *  re-send it. Cleared with the view, like `viewportOverride`. */
       colorSchemeApplied: undefined,
+      /** This WebContents holds a real document with its DOM ready — the
+       *  point at which the view gets an opaque canvas (see PAGE_CANVAS).
+       *  False for a blank tab and for a fresh WebContents. */
+      documentReady: false,
+      /** The canvas colour last written to the view, so `applyCanvas` writes
+       *  only on a change. Reset with the view. */
+      canvas: undefined,
       /** This tab's own window while it is previewed out of the panel (#473).
        *  The view lives in that window's `contentView` meanwhile; the cockpit
        *  neither places nor hides it — see `previewing`. */
@@ -2808,6 +3044,10 @@ class DesktopBrowserManager {
       // DOM start page lives under a blank tab) — re-place through the
       // pipeline, which is idempotent when nothing changed.
       const blank = this.isBlank(tab);
+      // Blank again (navigated to about:blank, or the load that made it
+      // non-blank is gone): no document, no canvas — the start page below
+      // must not sit under an opaque white view (see PAGE_CANVAS).
+      if (blank) tab.documentReady = false;
       if (blank !== tab.wasBlank) { tab.wasBlank = blank; this.applyGeometry(tab).catch(() => {}); }
       this.emitState(tab.scopeKey);
     };
@@ -2859,6 +3099,11 @@ class DesktopBrowserManager {
     wc.on("dom-ready", () => {
       if (wc.isDestroyed()) return;
       wc.setBackgroundThrottling(false);
+      // A real document is ready to paint: the view gets its opaque canvas
+      // on the pipeline run below (see PAGE_CANVAS). about:blank is no
+      // document — the start page shows through it.
+      const url = wc.getURL();
+      tab.documentReady = Boolean(url) && url !== "about:blank";
       // Attach-and-apply, not apply-if-attached: a human navigation on a
       // never-inspected tab must land on the intrinsic viewport too.
       this.ensureViewport(tab).catch(() => {});
@@ -2870,6 +3115,16 @@ class DesktopBrowserManager {
     });
     wc.on("did-stop-loading", () => {
       tab.loading = false;
+      // A document that finished loading is a document to paint on, whether
+      // or not this process saw its dom-ready (a page restored from the
+      // back/forward cache fires none). dom-ready is the usual, earlier
+      // edge; this one is the belt (see PAGE_CANVAS). `sync` below takes it
+      // back for about:blank.
+      const url = wc.getURL();
+      if (url && url !== "about:blank" && !tab.documentReady) {
+        tab.documentReady = true;
+        this.applyGeometry(tab).catch(() => {});
+      }
       sync();
       this.finishDeferredHibernate(tab);
     });
@@ -2906,7 +3161,13 @@ class DesktopBrowserManager {
     wc.on("devtools-closed", () => this.devToolsEdge(tab));
     // A renderer that went away took its emulation with it; the reload's
     // dom-ready runs the pipeline, which must not find the record settled.
-    wc.on("render-process-gone", () => this.forgetEmulation(tab));
+    // It took its document too: until a reload, the view shows the cockpit
+    // through, not a white rectangle where the page was (see PAGE_CANVAS).
+    wc.on("render-process-gone", () => {
+      this.forgetEmulation(tab);
+      tab.documentReady = false;
+      this.applyGeometry(tab).catch(() => {});
+    });
     wc.on("destroyed", () => {
       if (tab.hibernating || tab.view !== view) return;
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
@@ -3165,11 +3426,15 @@ class DesktopBrowserManager {
       case "copy-image":
         wc.copyImageAt(Math.round(params?.x || 0), Math.round(params?.y || 0));
         break;
-      case "save-image-as":
-        // No `will-download` handler is installed, so Electron asks where —
-        // which is exactly what the "…" in the label promises.
-        wc.downloadURL(String(entry.value ?? ""));
+      case "save-image-as": {
+        // The one download that asks where, because the "…" in its label
+        // promises it: marked here, the handler leaves it without a save path
+        // and Electron shows its dialog. Every other download is silent.
+        const url = String(entry.value ?? "");
+        this.askedDownloads.add(url);
+        wc.downloadURL(url);
         break;
+      }
       case "replace-misspelling":
         wc.replaceMisspelling(String(entry.value ?? ""));
         break;
@@ -3685,13 +3950,27 @@ class DesktopBrowserManager {
     }
     const wanted = emulationKey(target);
     if (tab.viewportOverride === wanted) return;
+    // A SHOWN TAB KEEPS ITS WIDGET AT THE VIEW'S SIZE. Without
+    // `dontSetVisibleSize`, Chromium resizes the page's render widget to the
+    // override's width×height (`WebContentsImpl::SetDeviceEmulationSize`) —
+    // 1280×800 inside a 973×608 view. The page is drawn scaled into its
+    // top-left and the rest of that widget is the canvas, overflowing the
+    // view down to the window's edge: invisible while the canvas was
+    // transparent, a white slab once #922 made it opaque, and the shrunk
+    // frozen frame a `capturePage` of that widget returns. DevTools' own
+    // device mode sends the same flag; `setVisibleSize` then pins the widget
+    // to the view explicitly, undoing any size a hidden period left behind.
+    // A HIDDEN tab still gets the full size: it has no view bounds worth the
+    // name, and its captures and synthetic input need a real widget (above).
     await debug.sendCommand("Emulation.setDeviceMetricsOverride", {
       width: target.width,
       height: target.height,
       deviceScaleFactor: 1,
       mobile: false,
       ...(target.scale === 1 ? {} : { scale: target.scale }),
+      ...(target.view ? { dontSetVisibleSize: true } : {}),
     });
+    if (target.view) await debug.sendCommand("Emulation.setVisibleSize", target.view);
     tab.viewportOverride = wanted;
   }
 
@@ -3746,8 +4025,13 @@ class DesktopBrowserManager {
     // a size the view does not have — clipped at 0.9×, letterboxed at 1.1×
     // (#895). The CSS-space scale the renderer draws its frame with stays
     // unzoomed, which is why `state()` computes that one itself.
-    const scale = this.isTabVisible(tab) ? fitViewport(viewport, this.bounds).scale * this.cockpitZoom() : 1;
-    return { emulate: true, width: viewport.width, height: viewport.height, scale };
+    if (!this.isTabVisible(tab)) return { emulate: true, width: viewport.width, height: viewport.height, scale: 1 };
+    const scale = fitViewport(viewport, this.bounds).scale * this.cockpitZoom();
+    // THE WIDGET STAYS THE VIEW'S SIZE. `place` gives the view this rect;
+    // the emulation must not resize the page's widget past it (see
+    // `syncViewport`), so the size travels with the target and its key.
+    const native = this.windowRect(this.nativeRect(tab));
+    return { emulate: true, width: viewport.width, height: viewport.height, scale, view: { width: native.width, height: native.height } };
   }
 
   /**
@@ -3922,8 +4206,71 @@ class DesktopBrowserManager {
     }
   }
 
+  /**
+   * A POINT FROM THE SCREENSHOT, for a page whose content has no refs (a
+   * canvas). `null` means the call named a ref instead. The point is in the
+   * screenshot's CSS pixels — the tab's intrinsic viewport — so it is checked
+   * against that, and only `inputPoint` turns it into what CDP wants. Both a
+   * ref and a point is refused rather than one silently winning: the model
+   * meant one of them, and guessing which is how a click lands elsewhere.
+   */
+  coordinatesOf(tab, args) {
+    const hasTarget = String(args.target ?? "").trim() !== "";
+    const hasX = args.x !== undefined && args.x !== null;
+    const hasY = args.y !== undefined && args.y !== null;
+    if (hasTarget && (hasX || hasY)) throw new Error("Pass either a target from browser_snapshot or x and y from browser_take_screenshot, not both.");
+    if (hasTarget) return null;
+    if (!hasX && !hasY) throw new Error("Pass a target from browser_snapshot, or x and y in the CSS pixels of browser_take_screenshot's image.");
+    return this.viewportPoint(tab, args.x, args.y);
+  }
+
+  viewportPoint(tab, x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("x and y go together: pass both, as numbers in the CSS pixels of browser_take_screenshot's image.");
+    const point = { x, y };
+    const viewport = this.effectiveViewport(tab);
+    if (x < 0 || y < 0 || x >= viewport.width || y >= viewport.height) {
+      throw new Error(`${pointText(point)} is outside the ${viewport.width}×${viewport.height} viewport of the screenshot. Scroll or resize, then take a fresh screenshot.`);
+    }
+    return point;
+  }
+
+  /** Call one of the PAGE_* functions in the tab's top document. A page that
+   *  throws (a frozen realm, an overridden global) is answered in a sentence. */
+  async evaluateInPage(tab, fn, args = []) {
+    const debug = await this.ensureDebugger(tab);
+    const result = await debug.sendCommand("Runtime.evaluate", {
+      expression: `(${fn})(${args.map((value) => JSON.stringify(value)).join(", ")})`,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    if (result?.exceptionDetails) {
+      const detail = result.exceptionDetails.exception?.description || result.exceptionDetails.text || "an error";
+      throw new Error(`The page threw while Telar read it (${String(detail).split("\n")[0]}). Take a fresh screenshot and try again.`);
+    }
+    return result?.result?.value;
+  }
+
+  /** `: canvas` / `: button "Save"` for a result text — or nothing when the
+   *  point holds nothing or the page would not say. The input already landed;
+   *  a failed description must not turn it into an error. */
+  async labelAt(tab, point) {
+    try {
+      const described = await this.evaluateInPage(tab, PAGE_AT_POINT, [point.x, point.y]);
+      return described?.role ? `: ${pageLabel(described)}` : "";
+    } catch {
+      return "";
+    }
+  }
+
+  async focusedEditable(tab) {
+    return (await this.evaluateInPage(tab, PAGE_FOCUSED_EDITABLE)) || null;
+  }
+
   async click(tab, args, action) {
-    const point = await this.targetPoint(tab, args.target);
+    const at = this.coordinatesOf(tab, args);
+    // Named BEFORE the click: the click may well replace what was there.
+    const label = at ? await this.labelAt(tab, at) : "";
+    const point = at || await this.targetPoint(tab, args.target);
     await this.showAgentCursor(tab, point, "move");
     await this.wait(CURSOR_MOVE_MS);
     await this.showAgentCursor(tab, point, "click");
@@ -3938,10 +4285,58 @@ class DesktopBrowserManager {
     await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
     await debug.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: native.x, y: native.y, button, clickCount });
     await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: native.x, y: native.y, button, clickCount });
-    return okText(`Clicked ${args.element || args.target}.`);
+    return okText(at ? `Clicked at ${pointText(at)}${label}.` : `Clicked ${args.element || args.target}.`);
+  }
+
+  async hover(tab, args) {
+    const at = this.coordinatesOf(tab, args);
+    const label = at ? await this.labelAt(tab, at) : "";
+    const point = at || await this.targetPoint(tab, args.target);
+    await this.showAgentCursor(tab, point, "move");
+    const debug = await this.ensureDebugger(tab);
+    this.stampAgentInput(tab);
+    const native = this.inputPoint(tab, point);
+    await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
+    return okText(at ? `Hovered at ${pointText(at)}${label}.` : `Hovered ${args.element || args.target}.`);
+  }
+
+  /**
+   * A LEFT-BUTTON DRAG between two screenshot points: a range of cells, a
+   * slider, a shape. The moves in between carry the pressed button, and there
+   * are several of them, because a page that tracks a drag reads mousemoves
+   * with the button down — a press and a release alone would be a click.
+   */
+  async drag(tab, args, action) {
+    const values = [args.x, args.y, args.toX, args.toY];
+    if (values.some((value) => value === undefined || value === null)) {
+      throw new Error("browser_drag needs x, y, toX and toY in the CSS pixels of browser_take_screenshot's image.");
+    }
+    const from = this.viewportPoint(tab, args.x, args.y);
+    const to = this.viewportPoint(tab, args.toX, args.toY);
+    await this.showAgentCursor(tab, from, "move");
+    await this.wait(CURSOR_MOVE_MS);
+    const debug = await this.ensureDebugger(tab);
+    const mouse = (type, point, extra = {}) => {
+      const native = this.inputPoint(tab, point);
+      return debug.sendCommand("Input.dispatchMouseEvent", { type, x: native.x, y: native.y, ...extra });
+    };
+    if (action) this.checkpoint(action);
+    // One pointerdown for the press → one preload report expected.
+    this.stampAgentInput(tab, 1);
+    await mouse("mouseMoved", from);
+    await mouse("mousePressed", from, { button: "left", buttons: 1, clickCount: 1 });
+    const steps = 5;
+    for (let step = 1; step <= steps; step += 1) {
+      const point = { x: from.x + ((to.x - from.x) * step) / steps, y: from.y + ((to.y - from.y) * step) / steps };
+      await mouse("mouseMoved", point, { button: "left", buttons: 1 });
+    }
+    await mouse("mouseReleased", to, { button: "left", buttons: 0, clickCount: 1 });
+    await this.showAgentCursor(tab, to, "move");
+    return okText(`Dragged from ${pointText(from)} to ${pointText(to)}.`);
   }
 
   async type(tab, args, action) {
+    if (String(args.target ?? "").trim() === "") return this.typeAtFocus(tab, args, action);
     const backendNodeId = this.backendNode(tab, args.target);
     if (action) this.checkpoint(action);
     await this.callOnNode(
@@ -3949,9 +4344,31 @@ class DesktopBrowserManager {
       backendNodeId,
       "function(){ this.scrollIntoView({block:'center',inline:'center'}); this.focus(); if ('value' in this) { this.value=''; this.dispatchEvent(new Event('input',{bubbles:true})); } }",
     );
+    await this.insertText(tab, String(args.text ?? ""), args.slowly, action);
+    if (args.submit) await this.press(tab, { key: "Enter" }, action);
+    return okText(`Typed into ${args.element || args.target}.`);
+  }
+
+  /**
+   * TYPING WITH NO TARGET goes where focus already is — the cell a click
+   * selected, a spreadsheet's name box, a textarea the snapshot never
+   * surfaced. Nothing is cleared: the model put the caret there on purpose.
+   * With nothing editable focused the keys would fall on the page's own
+   * shortcuts, so that is refused instead of typed into the void.
+   */
+  async typeAtFocus(tab, args, action) {
+    const focused = await this.focusedEditable(tab);
+    if (!focused) {
+      throw new Error("Nothing editable has focus in this tab. Click into a field or a cell first (a spreadsheet's name box or formula bar), or pass a target.");
+    }
+    await this.insertText(tab, String(args.text ?? ""), args.slowly, action);
+    if (args.submit) await this.press(tab, { key: "Enter" }, action);
+    return okText(`Typed into the focused ${pageLabel(focused)}.`);
+  }
+
+  async insertText(tab, text, slowly, action) {
     const debug = await this.ensureDebugger(tab);
-    const text = String(args.text ?? "");
-    if (args.slowly) {
+    if (slowly) {
       for (const char of text) {
         if (action) this.checkpoint(action);
         this.stampAgentInput(tab); // insertText raises no keydown: nothing to expect
@@ -3963,18 +4380,58 @@ class DesktopBrowserManager {
       this.stampAgentInput(tab);
       await debug.sendCommand("Input.insertText", { text });
     }
-    if (args.submit) await this.press(tab, { key: "Enter" }, action);
-    return okText(`Typed into ${args.element || args.target}.`);
   }
 
   async press(tab, args, action) {
     const key = String(args.key || "");
     if (!key) throw new Error("A key is required.");
+    const { keyCode, modifiers } = keyChord(key);
     if (action) this.checkpoint(action);
-    this.stampAgentInput(tab, 1); // keyDown → one keydown report
-    tab.view.webContents.sendInputEvent({ type: "keyDown", keyCode: key });
-    tab.view.webContents.sendInputEvent({ type: "keyUp", keyCode: key });
+    // One keyDown — its modifiers ride on it, not as keydowns of their own →
+    // one keydown report.
+    this.stampAgentInput(tab, 1);
+    tab.view.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    tab.view.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
     return okText(`Pressed ${key}.`);
+  }
+
+  /**
+   * PASTE WITHOUT THE CLIPBOARD. Chromium has one clipboard — the system's —
+   * so a tab-scoped one cannot exist, and writing the human's clipboard to
+   * paste would clobber what they copied. Instead the page gets what a real
+   * paste delivers: a `paste` event carrying the text. A canvas spreadsheet
+   * takes tab-separated rows that way as a block of cells. A page that
+   * ignores the event but has an editable focused gets the text inserted.
+   */
+  async paste(tab, args, action) {
+    const text = typeof args.text === "string" ? args.text : "";
+    if (!text) throw new Error("browser_paste needs the text to paste.");
+    const count = Array.from(text).length;
+    if (action) this.checkpoint(action);
+    // A synthetic ClipboardEvent raises no pointerdown or keydown: nothing
+    // for the preload to report.
+    this.stampAgentInput(tab);
+    const outcome = (await this.evaluateInPage(tab, PAGE_PASTE, [text])) || {};
+    if (outcome.handled) return okText(`Pasted ${count} characters; the page handled the paste event.`);
+    if (!outcome.editable) {
+      throw new Error("Nothing took the paste: nothing editable has focus and the page did not handle a paste event. Click into a cell or field first.");
+    }
+    await this.insertText(tab, text, false, action);
+    return okText(`Inserted ${count} characters at the focused ${pageLabel(outcome.editable)}; the page did not handle a paste event.`);
+  }
+
+  /**
+   * COPY, READ BACK — never written to the system clipboard. The page's own
+   * copy handler is asked first (a canvas grid's selection lives in its
+   * model, not the DOM, and only the handler can serialize it); otherwise
+   * the DOM selection.
+   */
+  async copy(tab, action) {
+    if (action) this.checkpoint(action);
+    this.stampAgentInput(tab); // a synthetic copy event: nothing to report
+    const text = await this.evaluateInPage(tab, PAGE_COPY);
+    if (typeof text !== "string" || !text) throw new Error("Nothing is selected in this tab. Select text or cells first.");
+    return okText(capCopied(text));
   }
 
   async fillForm(tab, args, action) {
@@ -4453,16 +4910,10 @@ class DesktopBrowserManager {
         case "browser_fill_form": return this.fillForm(await target(), args, action);
         case "browser_select_option": return this.selectOption(await target(), args, action);
         case "browser_press_key": return this.press(await target(), args, action);
-        case "browser_hover": {
-          const tab = await target();
-          const point = await this.targetPoint(tab, args.target);
-          await this.showAgentCursor(tab, point, "move");
-          const debug = await this.ensureDebugger(tab);
-          this.stampAgentInput(tab);
-          const native = this.inputPoint(tab, point);
-          await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
-          return okText(`Hovered ${args.element || args.target}.`);
-        }
+        case "browser_hover": return this.hover(await target(), args);
+        case "browser_drag": return this.drag(await target(), args, action);
+        case "browser_paste": return this.paste(await target(), args, action);
+        case "browser_copy": return this.copy(await target(), action);
         case "browser_resize": {
           const tab = await target();
           const size = await this.resizeTab(tab, args);
@@ -4725,4 +5176,4 @@ function managerForScope(managers, scopeKey, fallback = null) {
   return best;
 }
 
-module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };
+module.exports = { DesktopBrowserManager, managerForScope, keyChord, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };

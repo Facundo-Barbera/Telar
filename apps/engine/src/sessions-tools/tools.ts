@@ -137,42 +137,10 @@ export type SessionsCapability = {
    */
   create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind }): Promise<Session>;
   /** Queue ONE turn. The `runId` is minted by the wall so a retry of the same
-   *  tool call cannot double-submit.
-   *
-   *  `stoppedByUser` IS AN ANSWER TO A SEND THAT WORKED, not an error (#539).
-   *  Only one sender ever sees it: the built-in Agent, which a human Stop on the
-   *  recipient does not latch out because a human is driving it. It means the
-   *  message landed on a session a PERSON had stopped, and the wall says so in
-   *  words. Optional at this seam — a capability whose sender is latched out
-   *  never reaches the case, so it simply never sets it. */
+   *  tool call cannot double-submit. */
   send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"] }): Promise<{
     turn: Turn;
     replayed: boolean;
-    stoppedByUser?: { at?: number };
-  }>;
-  /**
-   * THE SAME VERB, ADDRESSED TO THE BUILT-IN AGENT — issue #784.
-   *
-   * ITS OWN MEMBER RATHER THAN A RESERVED ID ON `send`, because there is no
-   * `Turn` to answer with. A message to the Agent leaves ONE INBOX ROW and
-   * starts nothing: no run, no queue, no delivery decision, no model call. A
-   * union return on `send` would have every caller of the ordinary path
-   * narrowing a shape it can never receive.
-   *
-   * NO `runId` ARGUMENT, and that is not an omission. The row's fetch call names
-   * the SENDER's session and the SENDER's live run — the only place the words
-   * are kept — and both come off the proof the implementation already holds. A
-   * wall-minted run id would name a turn nothing created.
-   *
-   * OPTIONAL AT THIS SEAM so a capability that cannot reach an Agent stays
-   * type-correct; `sessions_send` says so in words rather than failing.
-   */
-  sendToAgent?(input: { input: string; intent?: Turn["agentIntent"] }): Promise<{
-    /** Absent when the Agent is switched off or has no thread yet — nothing
-     *  kept the message, and the sender is told that rather than "sent". */
-    row?: { id: number; at: number };
-    /** What the Agent will actually see, quoted back to the sender. */
-    notice: string;
   }>;
   /** The journal after a cursor, at most `limit` rows of it. The STORE returns
    *  the whole tail when no limit is given; the bound is this wall's, because
@@ -190,7 +158,26 @@ export type SessionsCapability = {
    * lately" costs one page instead of walking 61,933 events to reach the end.
    */
   cursor?(sessionId: string): Promise<number>;
-  status(sessionId: string): Promise<{ session: Session; turns: Turn[]; pendingNotifications?: NotificationDetail[] }>;
+  /**
+   * THE SESSION AND ITS TURNS — AT LEAST THE NEWEST `recent` AND EVERY LIVE ONE.
+   *
+   * `recent` is a floor, not a filter: an implementation may hand back every
+   * turn (the in-process store does; it pays no serialisation), and one reached
+   * over HTTP reads a windowed snapshot instead of the whole history, which on a
+   * 1,200-turn session is 0.3 MB rather than 39 MB. `turnCount` is the session's
+   * whole count when `turns` may be a window; absent, `turns.length` is it.
+   * Omit `recent` to ask for every turn.
+   */
+  status(
+    sessionId: string,
+    options?: { recent?: number },
+  ): Promise<{ session: Session; turns: Turn[]; turnCount?: number; pendingNotifications?: NotificationDetail[] }>;
+  /**
+   * ONE TURN BY ITS RUN ID. Optional: without it the wall looks the turn up in
+   * `status`. A remote capability answers the recent case from a window and
+   * only falls back to the whole history for a turn older than that.
+   */
+  turn?(sessionId: string, runId: string): Promise<Turn | undefined>;
   /**
    * PAUSE, NOT A ONE-TURN STOP — `EngineStore.pauseSession`, stamped
    * `by: "session"`. A stop of one turn lets the worker take the next queued
@@ -238,7 +225,8 @@ export type SessionsCapability = {
   ): Promise<Subscription>;
   unsubscribe(subscriptionId: string, subscriberSessionId: string): Promise<boolean>;
   subscriptions(subscriberSessionId: string): Promise<Subscription[]>;
-  /** Every request a session has, open or resolved; the wall keeps the open ones. */
+  /** Every OPEN request a session has, plus possibly some resolved ones; the
+   *  wall keeps the open ones. */
   requests(sessionId: string): Promise<EngineRequest[]>;
   /** The implementation stamps `resolvedBy: "session"`; no shape carries it. */
   resolveRequest(
@@ -253,8 +241,8 @@ export type SessionsCapability = {
    * A SUB-PORT RATHER THAN SIX MORE MEMBERS, because they are answered by a
    * different half of the engine: the verbs above land on `EngineStore` methods
    * about a session's LIFE, and these land on the `turn_summary` projection and
-   * on indexed document spans. Grouping them is what lets the Agent's wall take
-   * this one object (`AgentWalls.query`) while it supplies the rest itself.
+   * on indexed document spans. Grouping them keeps the two halves separately
+   * implementable, each from its own side of the engine.
    *
    * REQUIRED, NOT OPTIONAL, AND THAT IS THE POINT OF THE PORT. `cursor` above is
    * optional because an implementation that cannot answer it has a documented
@@ -266,7 +254,6 @@ export type SessionsCapability = {
   query: SessionsQueryCapability;
 };
 
-import { AGENT_SELF_ID, isAgentSelf } from "../agent/identity";
 import { err, failure, fillWithin, json, ok, type ToolFactory } from "../tool-kit";
 import { deferredQuery, sessionQueryTools, type SessionsQueryCapability } from "./query";
 export type { ToolFactory };
@@ -303,26 +290,11 @@ const LIST = `Live sessions, and the projects one can be created in. Unsettled o
 
 const CREATE = `Start a NEW session on a project. It is a PEER: it does not report back, and creating it starts no work — sessions_send with intent task does. ${NOT_A_BYPASS}`;
 
-/**
- * THE AGENT TARGET IS ONE CLAUSE HERE, AND THE REST IS ELSEWHERE — #784.
- *
- * This string is resent WHOLE on every lap of every turn (`agent-tools.test.ts`
- * holds the ceiling), so the rule is that a clause buys its space out of
- * another clause. The address itself cannot live anywhere else — a model that
- * never reads it never learns the person is reachable — but the reasoning can,
- * and does: `orientation.ts` carries it once per session, and the answer's own
- * `note` carries it at the moment it matters, both free per lap.
- */
-const SEND = `Message another session, or the person — sessionId "${AGENT_SELF_ID}" is their Agent: one inbox row, no turn, read when they next speak. It is handed a NOTICE naming sessions_read, not your text — lead with the point. ${NOT_A_BYPASS}`;
+const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text — lead with the point. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
 
-/** The other half of `NO_SELF`, for the target rather than the sender: this door
- *  has no session to send FROM, so there is no sender to put on the row and no
- *  turn for its fetch call to name. The one caller this is — the outward
- *  sessions socket — is a client the person is typing at, and they have the
- *  Agent in front of them already. */
 /**
  * WHEN THE WAITING MAIL WILL MOVE, in one clause — the three cadences (#723,
  * #784), spelled once because `sessions_status` and `sessions_report_window`
@@ -339,9 +311,6 @@ function cadencePhrase(cadence: Session["reportWindowMinutes"]): string {
   return `, at most every ${cadence} minute${cadence === 1 ? "" : "s"}`;
 }
 
-const NO_AGENT =
-  "This door cannot address the Agent: a row in its inbox names the session that wrote it and the turn it spoke from, and this client is not a session. You are talking to a person who can reach their own Agent.";
-
 /**
  * A CALLER THAT IS NOT A SESSION CANNOT SCHEDULE — issue #543, and it is the
  * guard rather than a politeness.
@@ -352,7 +321,7 @@ const NO_AGENT =
  * is not a session, which the first sweep would disable hours later, long
  * after anyone could connect the dead row to the call that made it.
  *
- * The same shape as `NO_AGENT` above and for the same reason: the door that
+ * The same shape as `NO_SELF` above and for the same reason: the door that
  * hits this is the outward sessions socket, a client a person is typing at,
  * and they can ask their own session for it.
  */
@@ -1070,37 +1039,6 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         const text = String(args.input ?? "");
         const intent = args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report";
         /**
-         * THE RESERVED TARGET, BRANCHED BEFORE ANY OF THE TURN MACHINERY — #784.
-         *
-         * AHEAD OF THE RUN ID, deliberately. Everything below this exists to
-         * make a TURN idempotent on a wall-minted id; a message to the Agent
-         * creates no turn, and minting an id for it would name a run nothing
-         * ever ran and hand it to a model as something to read.
-         *
-         * A CAPABILITY THAT CANNOT REACH AN AGENT SAYS SO. The out-of-process
-         * worker and the daemon's own build both can; a door that does not —
-         * the outward sessions socket, whose caller is a person already talking
-         * to their Agent — refuses in words rather than by 404-ing an id the
-         * description just offered.
-         */
-        if (isAgentSelf(sessionId)) {
-          if (!capability.sendToAgent) return err(NO_AGENT);
-          try {
-            const { row, notice } = await capability.sendToAgent({ input: text, intent });
-            return json({
-              sessionId: AGENT_SELF_ID,
-              ...(row ? { inboxRowId: row.id } : {}),
-              delivered: row !== undefined,
-              recipientSees: notice,
-              note: row
-                ? "One row in the Agent's inbox. NO turn was started and nobody was interrupted — the person sees this the next time they speak, ranked against whatever else arrived. Do not wait for an acknowledgement: there is no turn to answer you."
-                : "NOT DELIVERED. The Agent is switched off on this machine, so there was no inbox to write to and nothing kept your message. Say it to a session instead, or say it again after somebody turns the Agent on.",
-            });
-          } catch (error) {
-            return err(`Could not reach the Agent: ${failure(error)}`);
-          }
-        }
-        /**
          * THE RUN ID BELONGS TO THE CALL, not to the model and not to this
          * invocation of the handler.
          *
@@ -1135,37 +1073,12 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           ? `run_${crypto.createHash("sha256").update(`sessions_send:${context.toolCallId}`).digest("hex").slice(0, 32)}`
           : `run_${crypto.randomUUID().replaceAll("-", "")}`;
         try {
-          const { turn, stoppedByUser } = await capability.send(sessionId, { runId, input: text, intent });
+          const { turn } = await capability.send(sessionId, { runId, input: text, intent });
           return json({
             sessionId,
             runId: turn.runId,
             state: turn.state,
             delivery: turn.agentDelivery,
-            /**
-             * THE SEND WORKED AND A PERSON HAD STOPPED THIS SESSION — both, and
-             * the second is not a footnote (#539).
-             *
-             * A human Stop latches peer sessions out entirely; this sender is
-             * exempt because the human is driving it. So the exemption is only
-             * defensible if it is VISIBLE: the model that just restarted a
-             * session somebody deliberately stopped is told so, in the answer to
-             * the call that did it, and can say it back to the person rather
-             * than discovering the Stop later as a mystery.
-             *
-             * The time is optional because a session latched before the stamp
-             * existed has none — then it is the fact without the clock, never a
-             * guessed one.
-             */
-            ...(stoppedByUser
-              ? {
-                  stoppedByUser: {
-                    ...(stoppedByUser.at !== undefined ? { at: stoppedByUser.at } : {}),
-                    note: stoppedByUser.at !== undefined
-                      ? `A PERSON STOPPED this session at ${new Date(stoppedByUser.at).toISOString()} and it has had no human message since. Your message went through anyway — the Stop latch holds peer sessions out, not you, because a human is driving you. Tell them you restarted it.`
-                      : "A PERSON STOPPED this session and it has had no human message since. Your message went through anyway — the Stop latch holds peer sessions out, not you, because a human is driving you. Tell them you restarted it.",
-                  },
-                }
-              : {}),
             // WHAT THE OTHER SIDE ACTUALLY SEES, quoted back. A sender that
             // believes its 6 KB report was read verbatim writes the next one
             // the same way; this is where that belief is corrected, with the
@@ -1305,7 +1218,9 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           const quiet = scoped.length - mine.length;
           let turn: Turn | undefined;
           try {
-            turn = (await capability.status(sessionId)).turns.find((candidate) => candidate.runId === runId);
+            turn = capability.turn
+              ? await capability.turn(sessionId, runId)
+              : (await capability.status(sessionId)).turns.find((candidate) => candidate.runId === runId);
           } catch {
             turn = undefined;
           }
@@ -1443,8 +1358,11 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               ? Math.min(args.turns, SUMMARY_TURNS_MAX)
               : SUMMARY_TURNS_DEFAULT;
           let turns: Turn[];
+          let turnCount: number;
           try {
-            turns = (await capability.status(sessionId)).turns;
+            const status = await capability.status(sessionId, { recent: wanted });
+            turns = status.turns;
+            turnCount = status.turnCount ?? turns.length;
           } catch (error) {
             return err(`Could not summarise "${sessionId}": ${failure(error)}`);
           }
@@ -1452,13 +1370,13 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           return json({
             sessionId,
             mode: "summary",
-            turnCount: turns.length,
+            turnCount,
             turns: summary,
             cursor: events.at(-1)?.id ?? 0,
             note:
-              turns.length === 0
+              turnCount === 0
                 ? "This session has taken no turns."
-                : `The last ${summary.length} of ${turns.length} turns. "did" lists what a turn's items were called, for turns inside the page this read covered. For a turn's whole answer or its events, call sessions_read with its runId; for raw events, mode: "events".`,
+                : `The last ${summary.length} of ${turnCount} turns. "did" lists what a turn's items were called, for turns inside the page this read covered. For a turn's whole answer or its events, call sessions_read with its runId; for raw events, mode: "events".`,
           });
         }
         /**
@@ -1521,9 +1439,9 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           typeof args.turns === "number" && Number.isSafeInteger(args.turns) && args.turns >= 1
             ? Math.min(args.turns, STATUS_TURNS_MAX)
             : STATUS_TURNS_DEFAULT;
-        let answer: { session: Session; turns: Turn[]; pendingNotifications?: NotificationDetail[] };
+        let answer: { session: Session; turns: Turn[]; turnCount?: number; pendingNotifications?: NotificationDetail[] };
         try {
-          answer = await capability.status(sessionId);
+          answer = await capability.status(sessionId, { recent: wanted });
         } catch (error) {
           return err(`Could not read the status of "${sessionId}": ${failure(error)}`);
         }
@@ -1542,7 +1460,8 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         const withLive = turns.slice(-wanted);
         for (const turn of live) if (!withLive.some((candidate) => candidate.runId === turn.runId)) withLive.push(turn);
         withLive.sort((left, right) => left.sequence - right.sequence);
-        const dropped = turns.length - withLive.length;
+        const turnCount = answer.turnCount ?? turns.length;
+        const dropped = turnCount - withLive.length;
         /**
          * A SESSION WITH NO CHECKOUT IS NOT RUNNING, WHATEVER ITS QUEUE SAYS —
          * issue #813.
@@ -1567,7 +1486,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           // THE TOTAL IS STATED WHETHER OR NOT THE LIST IS COMPLETE. A caller
           // handed five rows of a 685-turn session and no count will report
           // five as the session's whole life.
-          turnCount: turns.length,
+          turnCount,
           turns: withLive.map(turnLine),
           ...(dropped > 0 ? { turnsNotShown: dropped } : {}),
           /**
@@ -2009,13 +1928,13 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
      *
      * THEY ARE INSIDE `sessionsTools` RATHER THAN COMPOSED AT EACH DOOR, and
      * that is the whole of how the issue's "both deployments" requirement is
-     * met. This function has five callers — the outward MCP socket, the Codex
-     * run-socket, Claude's in-process registration in `driver.ts`, the
-     * out-of-process worker, and the cockpit Agent — and a wall assembled per
-     * caller is a wall that is complete at four of them. Composed here, a tool
-     * added to this array is on every door by construction.
+     * met. This function has four callers — the outward MCP socket, the Codex
+     * run-socket, Claude's in-process registration in `driver.ts`, and the
+     * out-of-process worker — and a wall assembled per caller is a wall that is
+     * complete at three of them. Composed here, a tool added to this array is
+     * on every door by construction.
      *
-     * `deferredQuery` IS NOT CEREMONY: one of those five binds this wall over a
+     * `deferredQuery` IS NOT CEREMONY: one of those four binds this wall over a
      * Proxy that throws until a turn is running, and reading `capability.query`
      * to compose the tools is a read at registration time. See its note.
      */
@@ -2039,8 +1958,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
      * the parent's `self` and this call would have succeeded against the parent
      * session. #877 retired the fan-out entirely, so there is no such child to
      * deny. What guards the rule now is one step earlier and does not depend on
-     * a list: a caller with no `self` is refused outright, and the Agent — a
-     * LangGraph thread rather than a session — is never handed the tool.
+     * a list: a caller with no `self` is refused outright.
      */
     tool(
       "sessions_schedule",

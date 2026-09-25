@@ -45,8 +45,7 @@
  * ── THE REAL COMPONENT AGAINST A STUBBED `fetch` ────────────────────────────
  * `mock.module` would replace `lib/model-catalogue-cache` for the whole run,
  * and the composer, the settings Models tab and the `/` menu all reach through
- * it — the same argument is written out in settings/agent-section.test.tsx.
- * Stubbing the two routes costs a few lines more and exercises the real hooks,
+ * it. Stubbing the two routes costs a few lines more and exercises the real hooks,
  * the real caching and the real family/generation/connection libs.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig

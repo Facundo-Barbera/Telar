@@ -85,14 +85,15 @@ const TOOLS: ReadonlyArray<{ key: AnnotationTool; label: string; hint: string; I
   { key: "pick", label: "Pick element", hint: "Hover the page, click to name an element", Icon: MousePointerClickIcon },
 ];
 
-/** How the frame sits inside the host: scaled down to fit, never up, centred.
- *  The same shape the shell's own `fitViewport` produces for the native view,
- *  which is why a fitted frame lands where the page used to be. */
+/** How the frame sits inside the host: scaled down to fit, never up, centred
+ *  across and top-aligned. The same shape the shell's own `fitViewport`
+ *  produces for the native view (and `lib/browser-viewport.ts` for the device
+ *  frame), which is why a fitted frame lands where the page used to be. */
 function fitFrame(frame: { width: number; height: number }, host: { width: number; height: number }) {
   const scale = Math.min(1, host.width / frame.width, host.height / frame.height);
   const width = frame.width * scale;
   const height = frame.height * scale;
-  return { scale, width, height, x: (host.width - width) / 2, y: (host.height - height) / 2 };
+  return { scale, width, height, x: (host.width - width) / 2, y: 0 };
 }
 
 /**

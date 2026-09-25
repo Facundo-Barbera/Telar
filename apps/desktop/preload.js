@@ -46,6 +46,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
 contextBridge.exposeInMainWorld("telarDesktop", {
   isDesktop: true,
+  // Settings → Links (link-routing.js): the cockpit claims this window's links
+  // while it can open them in its session's browser, and the main process
+  // hands each one it would have sent to the system browser back here instead.
+  links: {
+    setRouting: (on) => ipcRenderer.invoke("telar:links:set-routing", { on }),
+    onOpen: (listener) => on("telar:links:open", listener),
+  },
   browser: {
     suggestions: (scopeKey) => ipcRenderer.invoke("telar:browser:suggestions", scopeKey),
     removeSuggestion: (scopeKey, url) => ipcRenderer.invoke("telar:browser:remove-suggestion", { scopeKey, url }),
@@ -118,6 +125,11 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // What is still being asked, so a panel that remounted does not leave a page
     // waiting on a prompt nobody can see.
     permissionPrompts: (scopeKey) => ipcRenderer.invoke("telar:browser:permission-prompts", scopeKey),
+    // DOWNLOADS go straight to the Downloads folder with no dialog; this is
+    // where the panel hears one started or finished, and where it lands.
+    // Revealing it is the workspace handler's file reveal — the same guards.
+    onDownload: (listener) => on("telar:browser:download", listener),
+    revealDownload: (path) => ipcRenderer.invoke("telar:workspace:open", { path, kind: "file", reveal: true }),
     // Read: this session's profile, one origin or all of them (the lock popover),
     // or — with no scope — every decision this install holds, by profile, for
     // Settings ▸ Browser. Revoking takes one kind, or an origin's whole row.

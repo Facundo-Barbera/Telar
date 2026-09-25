@@ -39,7 +39,7 @@ import path from "node:path";
 
 /** Bumped whenever the words below change. The skill's front matter carries it,
  *  so a file on disk says which release wrote it. */
-export const ORIENTATION_VERSION = 5;
+export const ORIENTATION_VERSION = 7;
 
 /** The skill's name, which is also its directory and the `$telar` a person or a
  *  model types. One constant so the writer, the remover and the preamble that
@@ -138,15 +138,6 @@ It is not this CLI's own notion of a session, and not a chat thread.
   a turn somebody pays for. Completion already arrives on its own — and a
   coordinator that has your \`result\` is told your run ended on its transcript,
   not in a second turn.
-- **Reporting to the PERSON is \`sessions_send\` to \`agent\`.** That is the
-  built-in Agent — their own conversation, not a session. It writes ONE row in
-  their inbox and starts no turn: nobody is woken, no model is invoked, nothing
-  they are reading moves, and they see it ranked against everything else the
-  next time they speak. Asleep, in a meeting, away for a day — it costs them
-  nothing until they look. Reporting to a session instead makes a turn in a
-  conversation somebody is sitting in, which is what routine reports must not
-  do. Nothing else takes that id: you cannot read, stop, settle, diff or
-  subscribe to the Agent, and each of those refuses in words if you try.
 
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
 \`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,
@@ -276,6 +267,14 @@ they say "the browser" in Telar, this is what they mean.
 - Never substitute Chrome, Safari, another profile, or a headless browser.
 - \`browser_fill_secret\` fills a login from their 1Password without the value
   ever entering this conversation. Use it instead of asking them to paste one.
+- **No ref for what you can see?** A page drawn on a canvas (a spreadsheet, a
+  diagram) has none. Take \`browser_take_screenshot\` and act by coordinates:
+  \`browser_click\`, \`browser_hover\` and \`browser_drag\` take \`x\`,\`y\` in that
+  image's CSS pixels, and \`browser_type\` with no target types into whatever
+  then has focus. \`browser_press_key\` takes chords (\`Control+A\`, \`Meta+V\`).
+- In a spreadsheet drawn on a canvas, reach cells through its name box (type
+  \`B7\`, Enter) and formula bar; \`browser_paste\` tab-separated rows to fill
+  many cells at once, and \`browser_copy\` reads a selection back.
 
 ## The project notebook
 

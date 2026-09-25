@@ -5,33 +5,35 @@
  *
  * Claude and OpenCode sessions drive Mac apps through a desktop engine Telar
  * owns; Codex ships its own and keeps it, which is what the row's provider
- * badges say (#368). Two backends can supply Telar's:
+ * badges say (#368). One backend supplies Telar's: cua-driver (trycua/cua,
+ * MIT), bundled inside Telar.app as its own helper, "Computer Use for Telar".
+ * The helper holds its OWN Accessibility + Screen Recording grants — separate
+ * from any cua a person installed themselves — and "Grant access" asks macOS
+ * through it, so the prompts name it. "Remove permissions" clears those grants
+ * and nobody else's. Dev builds have no bundled helper and still use an
+ * external install, whose grants this row neither names nor removes.
  *
- *   - cua-driver (trycua/cua, MIT) — Telar's own. CuaDriver.app holds the
- *     Accessibility + Screen Recording grants, and "Grant access" runs cua's
- *     native flow, which launches the app through LaunchServices so the dialogs
- *     attribute to it.
- *   - Codex's Sky client — the proprietary fallback, reached over Apple events.
- *     Its grant is an Automation permission on whatever process macOS holds
- *     responsible, and "Test access" is the flow that raises that prompt.
+ * CODEX'S SKY CLIENT WENT. It was the proprietary fallback, and its service
+ * authenticates callers by OpenAI's Team ID on the parent/responsible process,
+ * so from Telar it only ever answered "-10000: Sender process is not
+ * authenticated". The row read that as "Not granted" and pointed at the
+ * Automation pane, which cannot fix it. A client that refuses its caller is
+ * "Not accepted" now, and nothing here pretends a switch will change that.
  *
- * Either way the answer is MEASURED — one real read-only call — never
- * remembered, so a stale grant can't lie to the reader.
+ * The answer is MEASURED — one real read-only call — never remembered, so a
+ * stale grant can't lie to the reader. And it is the CLAIM GATE: the engine
+ * gives sessions the desktop tools only when the last probe answered granted,
+ * so this row is the switch — they get the tools after a check here says Ready.
  *
  * THREE ROWS BECAME ONE (#357). "Engine", "Driver daemon" and "Access" were
  * three readouts of a single question — can a session drive this Mac — and a
- * reader had to combine three badges to answer it. Worse, two of the three were
- * unactionable trivia: which open-source project supplies the engine, and that
- * a daemon "launches automatically when a session first needs it", which is to
- * say there is nothing to do about it. What survives is the ONE state that
- * decides the feature and the ONE sentence that says how to fix it — the grant
- * names and where macOS hides the switch, which is what a person blocked here
- * actually needs.
+ * reader had to combine three badges to answer it. What survives is the ONE
+ * state that decides the feature and the ONE sentence that says how to fix it.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { MonitorIcon } from "lucide-react";
-import { driverTakesComputerUse, type ComputerUseStatus } from "@telar/engine-client";
+import { driverTakesComputerUse, type ComputerUseGrant, type ComputerUseStatus } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { DRIVER_LABEL, DRIVERS } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";
@@ -41,14 +43,17 @@ import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
 
-/** macOS's own deep link to the Automation pane — the Sky-backend fix. Inert
- *  in a browser tab, which is why the prose spells the path out too. */
-const AUTOMATION_PANE = "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation";
-
 /** What the row's state is CALLED. Ordered by what stops the feature first: an
  *  engine that is not installed cannot be ungranted, and one that is not running
  *  cannot be tested. */
-export type ComputerUseState = "checking" | "unknown" | "not-installed" | "not-running" | "not-granted" | "ready";
+export type ComputerUseState =
+  | "checking"
+  | "unknown"
+  | "not-installed"
+  | "not-running"
+  | "not-granted"
+  | "not-accepted"
+  | "ready";
 
 /**
  * The whole readout, from the probe. Pure and exported because it is the
@@ -60,12 +65,23 @@ export function computerUseState(input: { status?: ComputerUseStatus; checking: 
   if (!input.status) return "checking";
   if (!input.status.installed) return "not-installed";
   if (!input.status.hostRunning) return "not-running";
-  return input.status.permission === "granted" ? "ready" : "not-granted";
+  if (input.status.permission === "granted") return "ready";
+  // The client refused Telar as a caller — no grant in System Settings fixes that.
+  if (input.status.permission === "unauthenticated") return "not-accepted";
+  return "not-granted";
 }
+
+const GATE_INFO = "Sessions get the desktop tools only after a check here answers Ready.";
+/** Not inferable: a Settings list only names an app that has asked, or been added. */
+const FINDER_INFO = "If “Computer Use for Telar” is not in a System Settings list, Show in Finder and drag it in.";
+/** Not inferable from the button: whose grants go, and that they don't come back by themselves. */
+const REMOVE_INFO =
+  "Remove permissions clears only Telar's bundled helper, not a separately installed cua. Grant access again to use computer use.";
 
 const BADGE: Record<Exclude<ComputerUseState, "checking">, { label: string; variant: "secondary" | "outline" | "destructive" }> = {
   ready: { label: "Ready", variant: "secondary" },
   "not-granted": { label: "Not granted", variant: "destructive" },
+  "not-accepted": { label: "Not accepted", variant: "destructive" },
   "not-running": { label: "Not running", variant: "outline" },
   "not-installed": { label: "Not installed", variant: "outline" },
   unknown: { label: "Unknown", variant: "outline" },
@@ -73,13 +89,10 @@ const BADGE: Record<Exclude<ComputerUseState, "checking">, { label: string; vari
 
 /**
  * THE SENTENCE, ONLY WHERE THERE IS SOMETHING TO DO. A working setup says so
- * with its badge; the rest name the grant or the pane that fixes them.
- *
- * `isCua` changes the instruction and nothing else — the two backends are
- * granted in genuinely different places, which is the one fact about the
- * backend split a reader ever has to act on.
+ * with its badge; the rest name the grant that fixes them, or say plainly that
+ * nothing on this Mac will.
  */
-export function computerUseHint(state: ComputerUseState, isCua: boolean): string | undefined {
+export function computerUseHint(state: ComputerUseState, { bundled = false }: { bundled?: boolean } = {}): string | undefined {
   switch (state) {
     case "ready":
     case "checking":
@@ -87,13 +100,15 @@ export function computerUseHint(state: ComputerUseState, isCua: boolean): string
     case "unknown":
       return "Could not reach the engine. Retry to check again.";
     case "not-installed":
-      return "Install cua-driver (github.com/trycua/cua), or Codex, and Telar picks it up.";
+      return "Install cua-driver (github.com/trycua/cua) and Telar picks it up.";
     case "not-running":
-      return isCua ? "The driver launches when a session first needs it." : "Wake the host app, or start a session that needs it.";
+      return "The driver launches when a session first needs it.";
     case "not-granted":
-      return isCua
-        ? "cua-driver needs Accessibility + Screen Recording. “Grant access” launches CuaDriver.app so macOS attributes the prompts to it."
-        : "System Settings → Privacy & Security → Automation: enable the target under Telar (packaged) or the terminal (dev), then test again.";
+      // Bundled, the prompts name Telar's own helper — not an app the reader installed.
+      if (bundled) return "Computer use needs Accessibility + Screen Recording, turned on for “Computer Use for Telar” in System Settings.";
+      return "cua-driver needs Accessibility + Screen Recording. “Grant access” launches CuaDriver.app so macOS attributes the prompts to it.";
+    case "not-accepted":
+      return "The installed computer-use client does not accept Telar as a caller, so sessions are not given its tools.";
   }
 }
 
@@ -119,6 +134,23 @@ export function computerUseHint(state: ComputerUseState, isCua: boolean): string
  * withholds it from nor stay silent about one it supplies. Both directions of
  * that drift have now been shipped.
  */
+/**
+ * WHILE THE PERSON IS IN SYSTEM SETTINGS, what the next measurement means.
+ * `ready` ends the wait; Accessibility granted with Screen Recording still
+ * missing, after Grant opened the Accessibility list, asks again — which opens
+ * the Screen Recording list, the one left to finish; anything else keeps
+ * waiting. Pure, so the flow is testable without a Mac.
+ */
+export function grantFollowUp(opened: ComputerUseGrant["opened"], status: ComputerUseStatus | undefined): "done" | "next-pane" | "wait" {
+  if (status?.permission === "granted") return "done";
+  if (opened === "accessibility" && status?.missing?.length === 1 && status.missing[0] === "screen-recording") return "next-pane";
+  return "wait";
+}
+
+/** How often the pane re-measures while waiting on System Settings, and for how long. */
+export const GRANT_POLL_MS = 3_000;
+export const GRANT_WAIT_MS = 10 * 60_000;
+
 export function ComputerUseProviders() {
   const supplied = DRIVERS.filter(driverTakesComputerUse);
   const theirOwn = DRIVERS.filter((driver) => !driverTakesComputerUse(driver));
@@ -160,29 +192,90 @@ export function PermissionsSection() {
     return () => window.clearTimeout(task);
   }, [check]);
 
-  const isCua = status?.backend === "cua";
+  // Measures without the spinner: a poll every few seconds must not flicker
+  // the badge, and a failed poll is not news while the person is elsewhere.
+  const poll = useCallback(async () => {
+    try {
+      const next = (await api.computerUseStatus()).computerUse;
+      setStatus(next);
+      return next;
+    } catch {
+      return undefined;
+    }
+  }, []);
+
+  /** Which Settings list Grant last opened — set while waiting on the person. */
+  const [waiting, setWaiting] = useState<ComputerUseGrant["opened"] | "none">();
+  const [granting, setGranting] = useState(false);
 
   const grant = async () => {
+    setGranting(true);
+    setError(undefined);
     try {
-      await api.grantComputerUseAccess();
-      // The grant dialogs take a moment; re-measure after they've had one.
-      window.setTimeout(() => void check(), 2_500);
+      const answer = await api.grantComputerUseAccess();
+      // What went wrong on the way, in the backend's words — never swallowed.
+      if (answer.message) setError(answer.message);
+      if (!answer.started) return;
+      setWaiting(answer.opened ?? "none");
+    } catch {
+      setError("The engine did not answer.");
+    } finally {
+      setGranting(false);
+    }
+  };
+
+  // THE WAIT: re-measured every few seconds and whenever Telar is focused
+  // again, so the row flips to Ready by itself once the switches are on — the
+  // engine restarts the helper when a new grant needs it. Bounded, like cua's
+  // own gate.
+  useEffect(() => {
+    if (waiting === undefined) return;
+    let asked = false;
+    const tick = async () => {
+      const step = grantFollowUp(waiting === "none" ? undefined : waiting, await poll());
+      if (step === "done") setWaiting(undefined);
+      if (step === "next-pane" && !asked) {
+        asked = true;
+        const answer = await api.grantComputerUseAccess().catch(() => undefined);
+        if (answer?.message) setError(answer.message);
+        if (answer?.opened) setWaiting(answer.opened);
+      }
+    };
+    const timer = window.setInterval(() => void tick(), GRANT_POLL_MS);
+    const stop = window.setTimeout(() => setWaiting(undefined), GRANT_WAIT_MS);
+    window.addEventListener("focus", tick);
+    return () => {
+      window.clearInterval(timer);
+      window.clearTimeout(stop);
+      window.removeEventListener("focus", tick);
+    };
+  }, [waiting, poll]);
+
+  const reveal = async () => {
+    try {
+      if (!(await api.revealComputerUseHelper()).revealed) setError("Finder did not open.");
     } catch {
       setError("The engine did not answer.");
     }
   };
 
-  const wake = async () => {
+  // Asks first, in the row, like Reset conversation: the grants come back only
+  // through the macOS prompts again.
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const remove = async () => {
+    setConfirmingRemove(false);
     try {
-      await api.wakeComputerUseHost();
-      window.setTimeout(() => void check(), 1_500);
+      const answer = await api.resetComputerUseAccess();
+      await check();
+      if (!answer.reset && answer.message) setError(answer.message);
     } catch {
       setError("The engine did not answer.");
     }
   };
 
+  const bundled = status?.bundled === true;
   const state = computerUseState({ ...(status ? { status } : {}), checking, failed: !status && !checking && error !== undefined });
-  const hint = computerUseHint(state, isCua);
+  const hint = computerUseHint(state, { bundled });
 
   return (
     // NO CAPTION: the row's own sentence is the one that changes with the state,
@@ -192,6 +285,7 @@ export function PermissionsSection() {
       <Row
         label="Computer use"
         icon={MonitorIcon}
+        info={bundled ? `${GATE_INFO} ${FINDER_INFO} ${REMOVE_INFO}` : GATE_INFO}
         {...(hint ? { hint } : {})}
         // The backend's own words, verbatim, under the instruction rather than
         // instead of it — a failure is exactly when the fix is worth re-reading.
@@ -208,19 +302,15 @@ export function PermissionsSection() {
                 Retry
               </Button>
             )}
-            {state === "not-running" && !isCua && (
-              <Button size="sm" variant="outline" onClick={() => void wake()}>
-                Wake
-              </Button>
-            )}
-            {state === "not-granted" && isCua && (
-              <Button size="sm" variant="outline" disabled={checking} onClick={() => void grant()}>
+            {state === "not-granted" && (
+              <Button size="sm" variant="outline" disabled={checking || granting} onClick={() => void grant()}>
+                {granting && <Spinner className="size-3" />}
                 Grant access
               </Button>
             )}
-            {state === "not-granted" && !isCua && (
-              <Button size="sm" variant="ghost" onClick={() => window.open(AUTOMATION_PANE)}>
-                Open System Settings
+            {bundled && state === "not-granted" && (
+              <Button size="sm" variant="ghost" onClick={() => void reveal()}>
+                Show in Finder
               </Button>
             )}
             {status?.installed && (
@@ -228,6 +318,22 @@ export function PermissionsSection() {
                 Test access
               </Button>
             )}
+            {bundled &&
+              state !== "checking" &&
+              (confirmingRemove ? (
+                <>
+                  <Button size="sm" variant="destructive" disabled={checking} onClick={() => void remove()}>
+                    Confirm remove
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setConfirmingRemove(false)}>
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button size="sm" variant="outline" disabled={checking} onClick={() => setConfirmingRemove(true)}>
+                  Remove permissions
+                </Button>
+              ))}
           </div>
         }
       >

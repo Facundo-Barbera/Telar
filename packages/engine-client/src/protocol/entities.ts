@@ -645,6 +645,15 @@ export const SessionWorkspace = z.discriminatedUnion("mode", [
     branch: z.string().min(1),
     /** The commit the worktree was cut from, so a stale one is detectable. */
     baseRef: z.string().min(1).optional(),
+    /**
+     * THE CHECKOUT WAS DELETED; THE BRANCH AND THE CONVERSATION WERE NOT.
+     * `path` is still where it lives: the next message (or opening the
+     * session's files) re-cuts it there from `branch`. Absent on a session
+     * whose checkout is on disk.
+     */
+    released: z
+      .object({ at: Timestamp, reason: z.enum(["manual", "inactive", "unchanged", "archived"]) })
+      .optional(),
   }),
   /** No directory anywhere — see the note above. Nothing rides along: there is
    *  no branch to name and no base to diff against. */
@@ -1088,12 +1097,11 @@ export const Session = z.object({
    * WHEN THE PERSON PRESSED STOP — the companion stamp to the latch above, set
    * and cleared with it.
    *
-   * It exists because one sender is EXEMPT from the latch and still has to be
-   * told about it: the built-in Agent, which a human is driving turn by turn
-   * (#539). Its `sessions_send` goes through, and its tool answer says the
-   * session was stopped by the person and when — a sentence that needs a time,
-   * and `updatedAt` is not one (any later touch moves it). A peer session's
-   * send is still refused outright, so only the Agent ever reads this.
+   * It was added for the built-in Agent (#539), the one sender that was exempt
+   * from the latch and was told whose Stop it stepped over and when. That Agent
+   * is gone (#908) and every peer send is refused outright, so nothing reads it
+   * today; it is still written with the latch because `updatedAt` is not a
+   * stop time (any later touch moves it) and records already carry it.
    *
    * ABSENT ON A RECORD LATCHED BEFORE THIS FIELD EXISTED, which is why every
    * reader treats the time as optional and says "stopped by the person" without
@@ -1475,92 +1483,6 @@ export type SessionDefaults = z.infer<typeof SessionDefaults>;
  *  that never opens the settings page behaves exactly as it always has. */
 export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
 
-/**
- * THE BUILT-IN AGENT, AND EVERYTHING THIS MACHINE REMEMBERS ABOUT IT (#531).
- *
- * WHAT IT REPLACED, AND WHY THE SHAPE CHANGED. `MainSession` DESIGNATED a
- * conversation: it named a session id, and the coordinator was an ordinary
- * session wearing a briefing. The Agent is not a session at all — it has its
- * own identity, its own history and its own lifecycle, and Telar sessions are
- * resources it operates on through tools. So the id this document carries is a
- * THREAD id, and nothing in the rail has to exist for it to be real.
- *
- * ENVIRONMENT-SCOPED, like the documents above it: remote web, the desktop
- * shell and a paired phone must agree about whether the Agent exists, and a
- * per-browser copy would put an entry in one client's rail and not another's.
- */
-export const AgentSettings = z.object({
-  /** Off out of the box. A user who never opens the setting sees exactly the
-   *  Telar they had: no entry above the rail, no thread, no document. */
-  enabled: z.boolean(),
-  /**
-   * THE CONVERSATION, as LangGraph's `thread_id` and as OpenCode Go's
-   * `x-opencode-session`. One id, one conversation, both sides.
-   *
-   * IT OUTLIVES `enabled`, on the requirement the designation had before it:
-   * switching the Agent off keeps the thread, so switching it
-   * back on resumes the conversation that was already there rather than minting
-   * a second one. Absent means the Agent has never been switched on.
-   */
-  threadId: z.string().min(1).max(120).optional(),
-  /**
-   * WHICH MODEL THE AGENT RUNS, as the provider's own identifier. Absent means
-   * the default in `agent/go.ts` — a real id rather than a concept, spelled
-   * once so this document does not become a second place it lives. Never
-   * interpreted: it is whatever OpenCode Go serves, passed through.
-   */
-  model: z.string().min(1).max(120).optional(),
-  /**
-   * WHICH CONVERSATION THIS IS — bumped by a RESET and by nothing else.
-   *
-   * NARROW ON PURPOSE. Enabling or disabling does not start a new conversation
-   * — only a reset does, so only a reset moves this. It is
-   * what a client compares to know its cached transcript is about a thread that
-   * no longer exists.
-   *
-   * ABSENT MEANS ZERO, so a document written before this field parses rather
-   * than costing the thread.
-   */
-  generation: z.number().int().nonnegative().optional(),
-  /**
-   * HOW HARD THE MODEL SHOULD THINK — `reasoning_effort` on the wire (#539).
-   *
-   * THE NAME IS THE API'S, NOT OURS. OpenCode Go's surface is
-   * OpenAI-compatible, and `reasoning_effort` is that API's spelling for
-   * exactly this: a depth, not a token count. Three values rather than the
-   * seven OpenAI now accepts (`none` … `max`) because three is what a composer
-   * pill can be read at a glance, and because low/medium/high are the ones
-   * every model that supports the parameter at all understands.
-   *
-   * ABSENT MEANS THE PARAMETER IS NOT SENT — the provider's own default, and
-   * what every conversation before this field did. That distinction is the
-   * whole reason it is optional rather than defaulting to "medium": a model
-   * with no reasoning mode must not start receiving a field it will refuse.
-   */
-  effort: z.enum(["low", "medium", "high"]).optional(),
-  /**
-   * WHETHER THE AGENT ASKS BEFORE THE GATED CALLS (#539).
-   *
-   * `ask` is what shipped and stays the default: the approval gate parks an
-   * `interrupt()` and a person answers it. `auto` resolves those interrupts BY
-   * POLICY — the same `resolvedBy: "policy"` a session's runtime mode uses —
-   * so the Agent runs unattended.
-   *
-   * THE GATED LIST DOES NOT WIDEN, and that is the load-bearing half. `auto` is
-   * about who ANSWERS the question, never about which calls raise one:
-   * `needsApproval` is untouched, so the same calls are still gated, still
-   * ledgered and still written to the transcript as decisions. A setting that
-   * quietly enlarged what the Agent may do would be a different feature wearing
-   * this one's name.
-   */
-  access: z.enum(["ask", "auto"]).optional(),
-});
-export type AgentSettings = z.infer<typeof AgentSettings>;
-
-/** Off, and no thread yet — what an install that never opens Settings keeps
- *  doing, and what an unreadable document falls back to. */
-export const DEFAULT_AGENT_SETTINGS: AgentSettings = { enabled: false };
-
 /** Generous: a rail with a thousand project groups has other problems. The cap
  *  exists so a runaway client cannot grow this document without bound. */
 export const MAX_SIDEBAR_PROJECT_ORDER = 1000;
@@ -1618,22 +1540,31 @@ export type SidebarLayout = z.infer<typeof SidebarLayout>;
 export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] };
 
 /**
- * COMPUTER USE, MEASURED — the settings page's permission readout.
+ * COMPUTER USE, MEASURED — the settings page's permission readout, and since
+ * the claim gate, THE ONE FACT THAT DECIDES WHETHER A SESSION GETS THE TOOLS.
  *
- * Three facts with three different fixes, which is why they are not one enum:
- * the Codex plugin being absent is an install task, the Sky host app being
- * down is one button, and the Automation grant is a macOS decision keyed on a
- * responsible process the engine cannot reliably name from the inside. The
- * `permission` answer comes from ONE REAL read-only call — which is also the
- * granting flow, because an undecided grant makes macOS raise its own prompt.
+ * Separate facts with separate fixes, which is why they are not one enum: the
+ * driver being absent is an install task, and the grants are a macOS decision
+ * the driver's own flow requests. The `permission` answer comes from ONE REAL
+ * read-only call, and only `granted` puts the `mac` server into a claim.
+ *
+ * `unauthenticated` is the backend refusing TELAR AS A SENDER — not a grant
+ * the person can flip. Codex's bundled Sky client answered `-10000: Sender
+ * process is not authenticated` to every caller whose parent and responsible
+ * process were not OpenAI-signed, which is every caller Telar can be; the pane
+ * used to read that as "not granted" and point at the Automation pane, which
+ * could not fix it. `host-not-running` is kept so an older engine's answer
+ * still parses; the current one never produces it.
  */
-export const ComputerUsePermission = z.enum(["granted", "denied", "host-not-running", "unknown"]);
+export const ComputerUsePermission = z.enum(["granted", "denied", "unauthenticated", "host-not-running", "unknown"]);
 export type ComputerUsePermission = z.infer<typeof ComputerUsePermission>;
 
-/** Which engine is supplying the desktop: `cua` is Telar's own open-source
- *  driver (trycua/cua, MIT); `sky` is Codex's proprietary bundled client, the
- *  fallback. The pane names it so the reader knows what holds the grants. */
-export const ComputerUseBackend = z.enum(["cua", "sky"]);
+/** Which engine is supplying the desktop. `cua` is Telar's own open-source
+ *  driver (trycua/cua, MIT). Codex's proprietary Sky client used to be the
+ *  fallback and is gone: it authenticates callers by OpenAI's Team ID, so from
+ *  Telar it never answered anything but `-10000`. One value today; the pane
+ *  still names it so the reader knows what holds the grants. */
+export const ComputerUseBackend = z.enum(["cua"]);
 export type ComputerUseBackend = z.infer<typeof ComputerUseBackend>;
 
 /**
@@ -1671,17 +1602,43 @@ export function driverTakesComputerUse(driver: ProviderDriverKind): boolean {
   return COMPUTER_USE_DRIVERS.includes(driver);
 }
 
+/** The System Settings → Privacy & Security lists a grant is finished in. */
+export const ComputerUsePane = z.enum(["accessibility", "screen-recording"]);
+export type ComputerUsePane = z.infer<typeof ComputerUsePane>;
+
 export const ComputerUseStatus = z.object({
   installed: z.boolean(),
   hostRunning: z.boolean(),
+  /** True when the helper bundled inside Telar.app is what's in use — its
+   *  grants are its own, and only then can the pane remove them. */
+  bundled: z.boolean().optional(),
   /** Absent when not installed. */
   backend: ComputerUseBackend.optional(),
   /** Absent when not installed: there is nothing to measure. */
   permission: ComputerUsePermission.optional(),
   /** The backend's own words, when there were any. */
   message: z.string().optional(),
+  /** Bundled: the lists still missing the helper's grant, when measured. */
+  missing: z.array(ComputerUsePane).optional(),
 });
 export type ComputerUseStatus = z.infer<typeof ComputerUseStatus>;
+
+/**
+ * What "Grant access" DID, step by step, so the pane can say it rather than
+ * nothing. Bundled: whether the helper's daemon came up, whether it answered the
+ * prompt call, what it reported, and which Settings pane was opened for the
+ * person to finish in. `message` is the first thing that went wrong.
+ */
+export const ComputerUseGrant = z.object({
+  started: z.boolean(),
+  backend: ComputerUseBackend.optional(),
+  daemon: z.boolean().optional(),
+  prompted: z.boolean().optional(),
+  permission: ComputerUsePermission.optional(),
+  opened: ComputerUsePane.optional(),
+  message: z.string().optional(),
+});
+export type ComputerUseGrant = z.infer<typeof ComputerUseGrant>;
 
 /**
  * WHO WRITES THE WORDS THE HUMAN DIDN'T — t3 code's TextGeneration idea, on
@@ -3083,6 +3040,10 @@ export const WorktreeInventory = z.object({
   /** Something under a root could not be read — a permission, a drive that went
    *  away mid-walk. The sizes are then a floor rather than a figure. */
   partial: z.boolean(),
+  /** Some checkout has not been sized yet — its row has no `bytes` — because
+   *  sizing runs in the background rather than on this read. Absent when every
+   *  row that can have a size has one. */
+  measuring: z.boolean().optional(),
   measuredAt: Timestamp,
 });
 export type WorktreeInventory = z.infer<typeof WorktreeInventory>;
@@ -3103,6 +3064,12 @@ export type WorktreeInventory = z.infer<typeof WorktreeInventory>;
 export const WorktreeReclaimItem = z.object({
   path: z.string().min(1),
   confirm: z.string().optional(),
+  /**
+   * WHAT TO DO WITH A SETTLED SESSION'S CHECKOUT. `release` (the default)
+   * deletes the directory and keeps the session and its branch; the next
+   * message brings the checkout back. `archive` ends the session as well.
+   */
+  settled: z.enum(["release", "archive"]).optional(),
 });
 export type WorktreeReclaimItem = z.infer<typeof WorktreeReclaimItem>;
 
@@ -3121,6 +3088,12 @@ export type WorktreeReclaimItem = z.infer<typeof WorktreeReclaimItem>;
 export const WorktreeReclaimRefusal = z.enum([
   /** Nothing at that path any more — already gone, or never there. */
   "not-found",
+  /** Uncommitted changes, or Telar could not prove there are none. */
+  "dirty",
+  /** Commits on the branch that are on no remote. */
+  "unpushed",
+  /** A process — a run, a terminal — has its working directory inside. */
+  "process",
   /** The drive went away between the listing and the press. */
   "unreadable",
   /** A session started working in it. See `WorktreeLockReason`. */
@@ -3156,7 +3129,7 @@ export type WorktreeReclaimRefusal = z.infer<typeof WorktreeReclaimRefusal>;
 export const WorktreeReclaimResult = z.object({
   path: z.string().min(1),
   ok: z.boolean(),
-  action: z.enum(["archived", "removed"]).optional(),
+  action: z.enum(["released", "archived", "removed"]).optional(),
   /** The session that was archived, when one was. */
   sessionId: Id.optional(),
   refusal: WorktreeReclaimRefusal.optional(),

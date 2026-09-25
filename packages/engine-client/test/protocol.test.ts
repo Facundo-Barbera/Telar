@@ -31,6 +31,8 @@ import {
   Turn,
   autoResolution,
   livenessOf,
+  countsAsActivity,
+  isUnstatedEnding,
   requiresHuman,
   safeParseEvent,
   type Task,
@@ -464,7 +466,27 @@ describe("livenessOf — one definition of 'still working'", () => {
   test("a session with no running turn can still be working", () => {
     // The property that makes background tasks worth modelling at all: work
     // outlives the turn that launched it.
-    expect(livenessOf([task({ state: "waiting" })])).toBe("working");
+    expect(livenessOf([task({ state: "pending" })])).toBe("working");
+  });
+
+  test("a backgrounded agent is background work, not working", () => {
+    // Only asked with no turn running: the turn already walked away from it.
+    expect(livenessOf([task({ backgrounded: true })])).toBe("monitoring");
+    expect(livenessOf([task({ backgrounded: true }), task({ kind: "agent" })])).toBe("working");
+  });
+
+  test("paused and ambient tasks are not activity", () => {
+    expect(livenessOf([task({ state: "waiting" })])).toBeNull();
+    expect(livenessOf([task({ kind: "background", ambient: true })])).toBeNull();
+    expect(livenessOf([task({ ambient: true }), task({ kind: "background" })])).toBe("monitoring");
+    expect(countsAsActivity(task({ state: "waiting" }))).toBe(false);
+    expect(countsAsActivity(task({ state: "running" }))).toBe(true);
+  });
+
+  test("only a bare completion is an unstated ending", () => {
+    expect(isUnstatedEnding(task({ state: "completed" }))).toBe(true);
+    expect(isUnstatedEnding(task({ state: "completed", resultText: "done" }))).toBe(false);
+    expect(isUnstatedEnding(task({ state: "failed" }))).toBe(false);
   });
 });
 

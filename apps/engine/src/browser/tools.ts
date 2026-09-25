@@ -86,6 +86,9 @@ export const BrowserToolName = z.enum([
   "browser_console_messages",
   "browser_network_requests",
   "browser_fill_secret",
+  "browser_drag",
+  "browser_paste",
+  "browser_copy",
 ]);
 
 /** Named viewport sizes `browser_resize {preset}` accepts. The desktop host
@@ -109,7 +112,7 @@ export type BrowserToolDefinition = {
    *
    * UNDER 350 BYTES, ENFORCED BY A TEST (#515). Every description here is in
    * the context of every session that can browse, whether or not it ever opens
-   * a page — sixteen tools' worth of prose, paid for on every turn. Anything
+   * a page — nineteen tools' worth of prose, paid for on every turn. Anything
    * that needs more than a couple of sentences of reasoning belongs in this
    * file's header or in the `telar` skill, where a model reads it once and
    * only when it is relevant.
@@ -155,6 +158,27 @@ const targeted = {
 const tabId = {
   tabId: z.number().int().nonnegative().optional(),
 };
+
+/**
+ * WHERE THE SNAPSHOT HAS NO REF. A page drawn on a `<canvas>` (a spreadsheet,
+ * a diagram) exposes nothing to point at, so click and hover also take a point
+ * in `browser_take_screenshot`'s CSS pixels. Exactly one of the two: a ref and
+ * a point together would leave the host guessing which one was meant.
+ */
+const point = {
+  target: z.string().min(1).optional(),
+  element: z.string().optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+};
+const ONE_OF_TARGET_OR_POINT = {
+  message: "pass a target from browser_snapshot, or both x and y from a screenshot — not both",
+};
+function targetOrPoint(input: { target?: string; x?: number; y?: number }): boolean {
+  const hasPoint = input.x !== undefined || input.y !== undefined;
+  if (input.target !== undefined) return !hasPoint;
+  return input.x !== undefined && input.y !== undefined;
+}
 
 export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
@@ -212,19 +236,25 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_click",
-    description: "Click an element using a target from browser_snapshot, in the tab you are working in or the tabId you name.",
-    input: z.object({
-      ...targeted,
-      ...tabId,
-      doubleClick: z.boolean().optional(),
-      button: z.enum(["left", "right", "middle"]).optional(),
-    }),
+    description:
+      "Click by target from browser_snapshot, or at x,y in browser_take_screenshot's CSS pixels where the snapshot has no ref (a canvas-drawn page). In your tab or the tabId you name.",
+    input: z
+      .object({
+        ...point,
+        ...tabId,
+        doubleClick: z.boolean().optional(),
+        button: z.enum(["left", "right", "middle"]).optional(),
+      })
+      .refine(targetOrPoint, ONE_OF_TARGET_OR_POINT),
   },
   {
     name: "browser_type",
-    description: "Type text into an editable element, in the tab you are working in or the tabId you name.",
+    description:
+      "Type into an editable element by target or, with no target, into whatever has focus (say a cell you just clicked by x,y). In your tab or the tabId you name.",
     input: z.object({
-      ...targeted,
+      // Optional: absent means the focused element, which is not cleared first.
+      target: z.string().min(1).optional(),
+      element: z.string().optional(),
       ...tabId,
       text: z.string(),
       submit: z.boolean().optional(),
@@ -253,13 +283,21 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_press_key",
-    description: "Press a keyboard key, in the tab you are working in or the tabId you name.",
+    description:
+      "Press a key or a chord (Enter, Control+A, Meta+V, Shift+Tab), in the tab you are working in or the tabId you name.",
     input: z.object({ key: z.string().min(1), ...tabId }),
   },
   {
     name: "browser_hover",
-    description: "Move Telar's visible agent cursor over an element, in the tab you are working in or the tabId you name.",
-    input: z.object({ ...targeted, ...tabId }),
+    description:
+      "Move Telar's visible agent cursor over a target, or to x,y in screenshot CSS pixels where there is no ref. In your tab or the tabId you name.",
+    input: z.object({ ...point, ...tabId }).refine(targetOrPoint, ONE_OF_TARGET_OR_POINT),
+  },
+  {
+    name: "browser_drag",
+    description:
+      "Drag with the left button from x,y to toX,toY in screenshot CSS pixels — to select cells or move a shape on a canvas-drawn page. In your tab or the tabId you name.",
+    input: z.object({ x: z.number(), y: z.number(), toX: z.number(), toY: z.number(), ...tabId }),
   },
   {
     name: "browser_resize",
@@ -291,7 +329,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_console_messages",
     description:
-      "Read console messages from the tab you are working in, or the tabId you name. level is a floor and defaults to info; pass all for the quieter ones too. The answer is capped at 6 KB and the newest lines are the ones kept — raise level to see further back.",
+      "Read console messages from the tab you are working in, or the tabId you name. level is a floor and defaults to info; pass all for the quieter ones too. The answer is capped at 6 KB and the newest lines are the ones kept — raise level to see further back. Also lists downloads and their paths.",
     input: z.object({
       /** A FLOOR, not an exact match: "warning" answers warnings and errors. */
       level: z.enum(["error", "warning", "info", "debug"]).default("info"),
@@ -336,6 +374,23 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
       /** Press this after filling — the login button's snapshot ref. */
       submit: z.object({ ...targeted }).optional(),
     }),
+  },
+  /**
+   * NEITHER TOUCHES THE SYSTEM CLIPBOARD. Chromium has one clipboard, the
+   * user's, so a tab-scoped one cannot exist: paste hands the page the event a
+   * real paste delivers, and copy reads back what the page's own handler set.
+   */
+  {
+    name: "browser_paste",
+    description:
+      "Paste text into what has focus as a real paste does, never touching the clipboard. Tab-separated rows fill many spreadsheet cells at once. In your tab or the tabId you name.",
+    input: z.object({ text: z.string().min(1), ...tabId }),
+  },
+  {
+    name: "browser_copy",
+    description:
+      "Read what a copy would take — the page's copy text, else the selection — never touching the clipboard; reads cells selected on a canvas-drawn page. In your tab or the tabId you name.",
+    input: z.object({ ...tabId }),
   },
 ];
 

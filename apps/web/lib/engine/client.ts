@@ -20,7 +20,7 @@ import type {
   GitignoreRemoval,
   GitignoreResult,
   GitOverview,
-  ComputerUseBackend,
+  ComputerUseGrant,
   ComputerUseStatus,
   RememberedLogin,
   Schedule,
@@ -48,17 +48,14 @@ import type {
   InboxPolicy,
   AgentOrientation,
   EnvMode,
-  AgentAnswer,
-  AgentModelCatalogue,
-  AgentState,
-  AgentInboxAnswer,
-  AgentThreadAnswer,
   DictationAnswer,
   DictationProviderId,
   DictationDiagnosisAnswer,
   DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
+  CleanupPolicy,
+  CleanupState,
   JournalReclaim,
   JournalRetirement,
   RetentionBucket,
@@ -113,6 +110,9 @@ import type {
   WorkspaceFile,
   WorkspaceListing,
   WorkspaceWriteResult,
+  WorkspaceConfig,
+  ProjectWorkspaceOverrides,
+  ProjectWorkspaceView,
   SessionAssignment,
   PluginStatus,
   ProjectPlugins,
@@ -201,8 +201,8 @@ function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undef
  * next person costing a connection budget (#586).
  *
  * THE COCKPIT DOES OPEN A STREAMING FETCH, AND THE ENGINE DOES SERVE ONE. The
- * Agent screen holds `/api/agent/stream` for as long as it is open
- * (`lib/agent/thread.ts`), proxied to the engine's `/v2/agent/stream`. #82 is
+ * run feed holds one for as long as the masthead is mounted
+ * (`lib/run/status-stream.ts`). #82 is
  * not an argument against HAVING one — it is CLOSED, and its own slice 4 names
  * "one multiplexed per-client events channel… 1–2 regardless of activity" as
  * the durable answer. What it forbids is STACKING them.
@@ -219,7 +219,7 @@ function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undef
  *
  * THE BUDGET MUST BE SPENT DELIBERATELY, which is the live constraint. A
  * streaming fetch is a BARE `fetch` and so bypasses the gate below while still
- * holding one of the six: Agent screen open plus a sessions stream plus two
+ * holding one of the six: the run feed plus a sessions stream plus two
  * gated reads is four of six, leaving two for navigation. Workable, and it has
  * to be counted rather than discovered — an ungated stream nobody budgeted for
  * is exactly the shape #82 was filed about.
@@ -412,11 +412,6 @@ export type LiveSessionsPage = {
    *  behind `?all=1`. Absent from an engine that predates the filter, which
    *  means "you have everything", never "the shelf is empty". */
   settledCount?: number;
-  /** Whether this Mac has a built-in Agent (#531) — one flag, which is all a
-   *  pinned row showing a label needs. Rides this read for `inbox`'s reason:
-   *  the rail already polls it, per host, per tick. Absent is off, and so is an
-   *  engine older than the feature. */
-  agent?: { enabled: boolean };
   unchanged?: false;
 };
 
@@ -548,72 +543,17 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
     setSessionDefaults: (patch: { envMode?: EnvMode }) =>
       request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
-    /* -------------------------------------------------------------- *
-     * THE BUILT-IN AGENT — issue #531.
-     *
-     * NOT UNDER `/api/sessions/`, because the Agent is not one: its
-     * conversation is a thread rather than a journal, and a screen that
-     * reached it through a session route would be told a conversation exists
-     * that `sessionBootstrap` cannot open.
-     *
-     * The RAIL calls none of these — `liveSessions` above carries
-     * `agent: { enabled }`, which is the whole of what the entry needs.
-     * -------------------------------------------------------------- */
-    /** Whether this Mac has an Agent, which thread, whether a turn runs, and
-     *  the one approval it may be parked on. The credential rides along —
-     *  which RUNG answered, never the key. */
-    agent: () => request<AgentAnswer>(fetcher, "GET", "/api/agent"),
-    /** Switch it on, pick its model, choose its effort and access, paste its
-     *  key, or start again. `reset` archives the conversation and mints a new
-     *  thread; it is the only patch that moves `generation`. `effort` and
-     *  `access` take `""` to clear — see `EngineClient.setAgent`. */
-    setAgent: (patch: { enabled?: boolean; model?: string; effort?: string; access?: string; reset?: boolean; apiKey?: string }) =>
-      request<AgentAnswer>(fetcher, "PATCH", "/api/agent", patch),
-    /** What OpenCode Go serves the Agent, DESCRIBED — names, families, context
-     *  limits and the endpoint each id answers on (#551). FAILS SOFT in two
-     *  independent halves: `source.go === null` is an unreachable Go and an
-     *  empty list, `source.modelsDev === null` is a full list of undescribed
-     *  ids. Either way a `message` carries the reason rather than an error. */
-    agentModels: () => request<AgentModelCatalogue>(fetcher, "GET", "/api/agent/models"),
-    /** Say something. The run id comes back before the turn runs, so the
-     *  composer has something to name in a Cancel. */
-    sendAgentTurn: (text: string) =>
-      request<{ runId: string; queued: number; agent: AgentState }>(fetcher, "POST", "/api/agent/turns", { text }),
-    /** Stop the live turn, or drop a queued one. `stopped: false` means there
-     *  was nothing left to stop, which is a fact rather than an error. */
-    cancelAgentTurn: (runId: string) =>
-      request<{ stopped: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/turns/${encodeURIComponent(runId)}/cancel`),
-    /** The transcript, bounded by a count AND a byte budget — #515's rule.
-     *  `after` pages forward; `tail` opens on the LAST page and `before` walks
-     *  back from it (#580). Page until `more` is false. */
-    agentThread: (options: { after?: number; before?: number; tail?: boolean; limit?: number } = {}) => {
-      const query = new URLSearchParams();
-      if (options.after !== undefined) query.set("after", String(options.after));
-      if (options.before !== undefined) query.set("before", String(options.before));
-      if (options.tail) query.set("tail", "1");
-      if (options.limit !== undefined) query.set("limit", String(options.limit));
-      const suffix = query.toString();
-      return request<AgentThreadAnswer>(fetcher, "GET", `/api/agent/thread${suffix ? `?${suffix}` : ""}`);
-    },
-    /** Answer the parked approval BY ID, so a stale question cannot approve the
-     *  one that replaced it. `resolved: false` means it was already answered. */
-    resolveAgentRequest: (requestId: string, decision: "accept" | "decline") =>
-      request<{ resolved: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/requests/${encodeURIComponent(requestId)}`, { decision }),
-    /** THE WAKE INBOX (#541 A) — what a completion on a subscribed session writes
-     *  now that it no longer starts an Agent turn. `unreadOnly` is the strip
-     *  above the composer; without it this pages the whole inbox. */
-    agentInbox: (options: { after?: number; limit?: number; unreadOnly?: boolean } = {}) => {
-      const query = new URLSearchParams();
-      if (options.after !== undefined) query.set("after", String(options.after));
-      if (options.limit !== undefined) query.set("limit", String(options.limit));
-      if (options.unreadOnly) query.set("unread", "1");
-      const suffix = query.toString();
-      return request<AgentInboxAnswer>(fetcher, "GET", `/api/agent/inbox${suffix ? `?${suffix}` : ""}`);
-    },
-    /** Mark rows read BY ID, so a client holding a stale list cannot clear rows
-     *  that landed after it last looked. `read` is how many actually moved. */
-    markAgentInboxRead: (ids: readonly number[]) =>
-      request<{ read: number; unread: number }>(fetcher, "POST", "/api/agent/inbox/read", { ids: [...ids] }),
+    /** How worktrees are prepared — `protocol/workspace.ts`. Both writes are
+     *  whole-layer PUTs: the body IS the new layer, not a patch onto it. */
+    machineWorkspace: () => request<{ machine: WorkspaceConfig }>(fetcher, "GET", "/api/workspace"),
+    setMachineWorkspace: (machine: WorkspaceConfig) =>
+      request<{ machine: WorkspaceConfig }>(fetcher, "PUT", "/api/workspace", { machine }),
+    projectWorkspace: (projectId: string) =>
+      request<{ workspace: ProjectWorkspaceView }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/workspace`),
+    setProjectWorkspace: (projectId: string, overrides: ProjectWorkspaceOverrides) =>
+      request<{ workspace: ProjectWorkspaceView }>(fetcher, "PUT", `/api/projects/${encodeURIComponent(projectId)}/workspace`, {
+        overrides,
+      }),
     /* -------------------------------------------------------------- *
      * DICTATION — issue #544, first step.
      *
@@ -679,8 +619,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  call of an engine's life walks the store and is SLOW; every call after
      *  it returns that walk's answer with the moment it was taken, until
      *  `refresh` asks for another. Never put this on a timer (#629). */
-    storage: (options: { refresh?: boolean } = {}) =>
-      request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`),
+    /** `signal` both lets the pane hang up on unmount and keeps this read out
+     *  of the shared read budget — see `request`. */
+    storage: (options: { refresh?: boolean; signal?: AbortSignal } = {}) =>
+      request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`, undefined, options.signal),
     /** Compact the turn journal and return its freed pages to the filesystem —
      *  see `JournalReclaim`. SLOW and exclusive: the vacuum behind it rewrites
      *  the database under a lock. It drops rows a settled turn has superseded
@@ -696,8 +638,14 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  answer it. `bytes` costs a scan of every qualifying row's text where the
      *  counts beside it are index ranges, so ask only when a person is looking
      *  at the figure, and never on a timer (#629). */
-    retention: (options: { bytes?: boolean } = {}) =>
-      request<{ retention: RetentionPolicy; buckets: RetentionBucket[] }>(fetcher, "GET", `/api/storage/retention${options.bytes ? "?bytes=1" : ""}`),
+    retention: (options: { bytes?: boolean; signal?: AbortSignal } = {}) =>
+      request<{ retention: RetentionPolicy; buckets: RetentionBucket[] }>(
+        fetcher,
+        "GET",
+        `/api/storage/retention${options.bytes ? "?bytes=1" : ""}`,
+        undefined,
+        options.signal,
+      ),
     /** Set the window, or turn it off with `idleAfterDays: null`. A window with
      *  no export destination is refused — the copy comes before the delete. */
     setRetention: (patch: { idleAfterDays?: number | null; exportTo?: string | null }) =>
@@ -719,6 +667,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** Forget a row. There is no "run now" — it would start a turn with none of
      *  the sweep's re-aiming, so twice pressed means two turns. */
     deleteSchedule: (id: string) => request<{ deleted: boolean }>(fetcher, "DELETE", `/api/schedules/${encodeURIComponent(id)}`),
+    /** The automatic cleanup's switches and last result — see `CleanupState`. */
+    cleanup: () => request<{ cleanup: CleanupState }>(fetcher, "GET", "/api/cleanup"),
+    setCleanupPolicy: (patch: Partial<CleanupPolicy>) => request<{ cleanup: CleanupState }>(fetcher, "PUT", "/api/cleanup", patch),
+    /** Sweep now; answers when it is done. */
+    runCleanup: () => request<{ cleanup: CleanupState }>(fetcher, "POST", "/api/cleanup/run", {}),
     /** Where session checkouts go on this install — see `WorktreesRoot`. */
     worktreesRoot: () => request<{ worktreesRoot: WorktreesRoot }>(fetcher, "GET", "/api/worktrees-root"),
     /** Put them somewhere else from the next cut on; `null` restores the
@@ -733,9 +686,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `WorktreeVerdict` (#671). Each row carries a verdict rather than four
      *  columns to reason from: Telar proves merged, clean and unclaimed so a
      *  reader does not check three things by hand before daring to delete.
-     *  SLOW — a walk per checkout — and never cached, because every rung of
-     *  the classification is live and a cached verdict was true earlier. */
-    worktrees: () => request<{ inventory: WorktreeInventory }>(fetcher, "GET", "/api/worktrees"),
+     *  SLOW — git reads per checkout — and never cached, because every rung
+     *  of the classification is live and a cached verdict was true earlier.
+     *  Sizes are the engine's background measurement; see `measuring`. */
+    worktrees: (options: { signal?: AbortSignal } = {}) =>
+      request<{ inventory: WorktreeInventory }>(fetcher, "GET", "/api/worktrees", undefined, options.signal),
     /** Give checkouts back. THIS ARCHIVES SESSIONS: a settled session's
      *  checkout is released by putting that session down, which is the only
      *  supported way (settling deliberately does not release one, and nothing
@@ -783,7 +738,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `{ hidden: [] }` clears the hides and omitting `hidden` leaves them. */
     setModelOverlay: (
       instanceId: string,
-      patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[] },
+      patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[]; default?: string | null },
     ) =>
       request<{ overlay: ModelOverlay }>(
         fetcher,
@@ -1160,13 +1115,16 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     markSessionRead: (sessionId: string, runId: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/read`, { runId }),
     /** Computer use, measured — slow by design (one subprocess round trip in
-     *  the engine), and the probe doubles as the macOS granting flow. */
+     *  the engine). A granted answer is also what lets sessions claim the tools. */
     computerUseStatus: () => request<{ computerUse: ComputerUseStatus }>(fetcher, "GET", "/api/computer-use"),
-    /** Wake the Sky host app in the background. Idempotent. */
-    wakeComputerUseHost: () => request<{ ok: boolean }>(fetcher, "POST", "/api/computer-use/host", {}),
-    /** cua's native granting flow — CuaDriver.app requests the grants. No-op for Sky. */
-    grantComputerUseAccess: () =>
-      request<{ started: boolean; backend?: ComputerUseBackend }>(fetcher, "POST", "/api/computer-use/grant", {}),
+    /** Asks macOS for the grants — through Telar's bundled helper when there
+     *  is one, else through an external cua install. */
+    grantComputerUseAccess: () => request<ComputerUseGrant>(fetcher, "POST", "/api/computer-use/grant", {}),
+    /** Shows the bundled helper in Finder, to drag into a Settings list. */
+    revealComputerUseHelper: () => request<{ revealed: boolean }>(fetcher, "POST", "/api/computer-use/reveal", {}),
+    /** Clears the bundled helper's grants only; `reset: false` without one. */
+    resetComputerUseAccess: () =>
+      request<{ reset: boolean; message?: string }>(fetcher, "POST", "/api/computer-use/reset", {}),
     /** The logins a person allowed agents to fill without being asked again —
      *  metadata only, never a value. Revoking is the only write. */
     browserLogins: () => request<{ logins: RememberedLogin[] }>(fetcher, "GET", "/api/browser-logins"),

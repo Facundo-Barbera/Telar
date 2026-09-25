@@ -133,6 +133,13 @@ export type EngineStatePaths = {
   /** What a session is created with when nobody said — see `SessionDefaults`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   sessionDefaults: string;
+  /** How a project's worktrees are prepared — this Mac's defaults and every
+   *  project's overrides, in one document. See `workspace-config.ts`.
+   *  Environment-scoped like `sessionDefaults`: read when a worktree is cut. */
+  workspace: string;
+  /** The automatic cleanup's switches and last result — see `cleanup.ts`.
+   *  Environment-scoped: one policy for every project on this engine. */
+  cleanup: string;
   /** Where each project group sits in the rail — see `SidebarLayout`.
    *  Environment-scoped like `inbox`: one arrangement per engine, not per window. */
   sidebarLayout: string;
@@ -176,13 +183,23 @@ export type EngineStatePaths = {
    *  `/v2/usage` handler. */
   usageModelRates: string;
   /** What #523 designated as the Main session, until #531 dropped the
-   *  designation — see `main-sweep.ts`. Startup litter now, kept only long
-   *  enough to be swept once. */
+   *  designation. Litter with no reader; the sweep that removed it went with
+   *  the built-in Agent (#908), and it stays named here so a leftover copy is
+   *  not flagged as an undeclared file. */
   mainSession: string;
   /** The marker `sweepSpoolAndLooms` leaves once it has removed the Spool's
    *  and the Looms' leftovers, so a swept home does not walk both trees again
    *  on every later start — see `decommission-sweep.ts`. */
   decommissionMarker: string;
+  /**
+   * WHERE A DECOMMISSIONED FEATURE'S DATA IS SET ASIDE, not deleted — #908.
+   * `retired/agent-<stamp>/` is the built-in Agent's whole `agent/` directory,
+   * moved there once by `retireAgentStore`.
+   */
+  retired: string;
+  /** The marker `retireAgentStore` leaves once it has run, so a home is
+   *  handled once — see `decommission-sweep.ts`. */
+  agentRetiredMarker: string;
   /**
    * Chromium user-data-dirs for the HEADLESS browser runtime — `BrowserRuntime`
    * in `daemon.ts`, the provider a detached machine or a quit app falls back
@@ -246,6 +263,8 @@ export function statePaths(root: string): EngineStatePaths {
     subscriptions: path.join(resolved, "subscriptions.json"),
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
+    workspace: path.join(resolved, "workspace.json"),
+    cleanup: path.join(resolved, "cleanup.json"),
     sidebarLayout: path.join(resolved, "sidebar-layout.json"),
     appearance: path.join(resolved, "appearance.json"),
     engine: path.join(resolved, "engine.json"),
@@ -257,6 +276,8 @@ export function statePaths(root: string): EngineStatePaths {
     usageModelRates: path.join(resolved, "usage-model-rates.json"),
     mainSession: path.join(resolved, "main-session.json"),
     decommissionMarker: path.join(resolved, "decommissioned-spool-looms"),
+    retired: path.join(resolved, "retired"),
+    agentRetiredMarker: path.join(resolved, "decommissioned-agent"),
     browserProfiles: path.join(resolved, "browser-profiles"),
     diagnostics: path.join(resolved, "diagnostics"),
     nodeModulesReaped: path.join(resolved, "node-modules-reaped"),

@@ -126,7 +126,8 @@ describe("desktop external-link wiring", () => {
     );
     expect(mainCode).toContain("webContents.setWindowOpenHandler");
     expect(mainCode).toContain('webContents.on("will-navigate"');
-    expect(mainCode).toContain("openInSystemBrowser(decision.openExternal)");
+    // Through the Links claim (link-routing.js), which falls back to the OS.
+    expect(mainCode).toContain("linkRouting.handOff(webContents, decision.openExternal, openInSystemBrowser)");
     expect(mainCode).toContain("shell.openExternal(url).catch(");
     // The suppressed hand-off has to reach the log, not just the return value.
     expect(mainCode).toContain("decision.duplicateOf");

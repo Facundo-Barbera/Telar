@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { deviceLine, pausedLine, relayHeadline, type PushRelayStatus } from "./push-notifications-group";
+import { deviceLine, pausedLine, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
 
 /**
  * WHAT THE PANE SAYS ABOUT A PHONE THAT IS NOT RINGING — issues #579 and #584.
@@ -57,5 +57,25 @@ describe("the header badge", () => {
     expect(relayHeadline(status({}))).toEqual({ label: "Relay configured", ok: true });
     expect(relayHeadline(status({ relay: false }))).toEqual({ label: "APNs key configured", ok: true });
     expect(relayHeadline(status({ configured: false }))).toEqual({ label: "Not configured", ok: false });
+    // A phone that registered itself needs nothing provisioned on this Mac.
+    expect(relayHeadline(status({ relay: false, v2: true }))).toEqual({ label: "Ready", ok: true });
+  });
+});
+
+describe("the test notification sent after pairing", () => {
+  test("reads as working, or as the exact reason, and says whose refusal it was", () => {
+    expect(testLine({ at: 1, status: 200, relay: false })).toBe("Working — test notification delivered");
+    expect(testLine({ at: 1, status: 400, reason: "BadDeviceToken", relay: false })).toBe("Apple refused the test notification (400 BadDeviceToken)");
+    expect(testLine({ at: 1, status: 401, relay: true })).toBe("Relay refused the test notification (401)");
+    expect(testLine({ at: 1, status: 0, relay: true })).toBe("Test notification could not reach the relay");
+  });
+
+  test("comes first on the phone's line", () => {
+    expect(deviceLine(device({ transport: "v2", test: { at: 1, status: 200, relay: false } }), 0).startsWith("Working")).toBe(true);
+  });
+
+  test("a sandbox build is only a problem on v1", () => {
+    expect(deviceLine(device({ sandbox: true, transport: "v2" }), 0)).not.toContain("sandbox");
+    expect(deviceLine(device({ sandbox: true, transport: "v1" }), 0)).toContain("sandbox build");
   });
 });

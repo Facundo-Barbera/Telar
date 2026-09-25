@@ -39,6 +39,7 @@ import {
   displayToolName,
   isBackgroundWork,
   isTelarMcpServer,
+  isUnstatedEnding,
   parseToolName,
   qualifyTelarTool,
   TELAR_BROWSER_MCP_SERVER,
@@ -360,6 +361,29 @@ function claudeContextEnvForModel(model: string | undefined): Record<string, str
   if (model && !isClaudeLongContextFamily(model)) return undefined;
   return { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" };
 }
+
+/**
+ * DEFER MCP TOOL SCHEMAS. Measured on the 24 Sep benchmark: Telar's first
+ * request carried 142 tools (321 kB) against the terminal's 33 — computer use
+ * alone 136 kB — about 38k tokens more context on every call. Claude Code only
+ * turns tool search on by itself past ~10% of the window (100k tokens on 1M)
+ * and not at all behind a custom base URL, so it never did. Forced on here so
+ * the model sees tool NAMES and loads a schema when it needs one. An explicit
+ * `ENABLE_TOOL_SEARCH` in the engine's environment or the session's env patch
+ * wins — the patch is applied after this one.
+ */
+function claudeToolSearchEnv(base: Record<string, string | undefined>): Record<string, string> | undefined {
+  return base.ENABLE_TOOL_SEARCH === undefined ? { ENABLE_TOOL_SEARCH: "true" } : undefined;
+}
+
+/**
+ * ASK THE CLI TO SAY WHEN THE TURN IS OVER. `session_state_changed` is the
+ * SDK's "authoritative turn-over signal", but the CLI only sends it with this
+ * set (read off CLI 0.3.270: `if (env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS)
+ * emit(...)`). Carried in the same patch as tool search, so the session's own
+ * env patch still wins.
+ */
+const SESSION_STATE_ENV = { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" };
 
 /**
  * What the meter may ASSUME before the provider has said anything — and only
@@ -1307,6 +1331,7 @@ export function createClaudeDriver(
       const sdkEffort = claudeEffort(claudeEffortFor(model, effort));
       const userServers = claudeMcpServers(userMcpServers);
       const contextEnv = claudeContextEnvForModel(model);
+      const defaultEnv = { ...SESSION_STATE_ENV, ...claudeToolSearchEnv(process.env) };
 
       let finalText = "";
       let receivedPartialText = false;
@@ -1368,6 +1393,9 @@ export function createClaudeDriver(
        * waiting forever on a `result` that measurably does not always come.
        */
       let endTurnSeenAt: number | undefined;
+      /** Our main loop's successful `result` has been read — on a process that
+       *  reports session state, that is when an `idle` can be ours. */
+      let ownResultRead = false;
       let silenceTimer: ReturnType<typeof setTimeout> | undefined;
       const disarmProviderSilence = (): void => {
         if (silenceTimer === undefined) return;
@@ -1386,7 +1414,9 @@ export function createClaudeDriver(
           // the work, not a stall, and its own row already says what it is.
           if (waitItemId || compactionItemId) return;
           const id = itemId();
-          const wait: ProviderWaitDetail = { kind: "no_response", waitedMs: Date.now() - sentAt };
+          // The timer firing IS the proof the threshold passed; `Date.now()`
+          // truncates to whole ms and can read one short of it.
+          const wait: ProviderWaitDetail = { kind: "no_response", waitedMs: Math.max(providerSilenceMs, Date.now() - sentAt) };
           const detail: ItemDetail = { type: "provider_wait", wait };
           emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(wait) } });
           waitItemId = id;
@@ -1430,13 +1460,13 @@ export function createClaudeDriver(
        * empty reasoning and empty assistant messages from the snapshot. Found
        * by running it, not by a test; the test now exists.
        */
-      const openBlocks = new Map<string, { id: string; kind: "text" | "thinking"; text: string }>();
+      const openBlocks = new Map<string, OpenBlock>();
 
-      const closeBlock = (block: { id: string; kind: "text" | "thinking"; text: string }): TurnObservation => ({
+      const closeBlock = (block: OpenBlock): TurnObservation => ({
         kind: "item.completed",
         itemId: block.id,
         status: "completed",
-        detail: block.kind === "text" ? { type: "assistant_message", text: block.text } : { type: "reasoning", text: block.text },
+        detail: block.kind === "text" ? { type: "assistant_message", text: block.text } : reasoningDetail(block),
       });
       /** Tool rows keyed by `tool_use_id`, so a later `tool_result` closes the
        *  row its call opened rather than opening a second one. */
@@ -1602,7 +1632,10 @@ export function createClaudeDriver(
          * stated. Everything else on the patch is still folded in, so the
          * summary and the usage arrive either way.
          */
-        const state = known && isTerminalTaskState(known.state) ? known.state : patch.state;
+        // …except an ending nobody stated, which a stated worse one corrects —
+        // see `isUnstatedEnding`, and the store's copy of this rule.
+        const corrected = known !== undefined && isUnstatedEnding(known) && (patch.state === "failed" || patch.state === "stopped");
+        const state = known && isTerminalTaskState(known.state) && !corrected ? known.state : patch.state;
         const task: TaskSeed = {
           ...known,
           ...patch,
@@ -1701,11 +1734,18 @@ export function createClaudeDriver(
         ttft_ms?: number;
         num_turns?: number;
         patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
+        /** `system/thinking_tokens` only: the open thought's running size. */
+        estimated_tokens?: number;
+        /** `session_state_changed` only: `idle | running | requires_action`. */
+        state?: string;
         event?: {
           type?: string;
           index?: number;
-          content_block?: { type?: string };
-          delta?: { type?: string; text?: string; thinking?: string };
+          /** `id`/`name` on a `tool_use` block only. */
+          content_block?: { type?: string; id?: string; name?: string };
+          /** `estimated_tokens` rides `thinking_delta` when the CLI omits the
+           *  thinking text itself — a running total, not an increment. */
+          delta?: { type?: string; text?: string; thinking?: string; estimated_tokens?: number };
           /** `message_delta` only: the response's FINAL output token count.
            *  Every earlier report of it is a placeholder — see the pump. */
           usage?: unknown;
@@ -1871,13 +1911,20 @@ export function createClaudeDriver(
            * closed as `completed` with no failure and no resultText — the
            * notification that carried the summary may simply have been lost,
            * and inventing one would be fabrication. If that notification
-           * limps in later anyway, `emitTask`'s "first ending is the ending"
-           * keeps the state and still folds the summary in.
+           * limps in later anyway, `emitTask` folds its summary in, and lets
+           * a stated `failed`/`stopped` replace this bare `completed`
+           * (`isUnstatedEnding`).
            *
-           * ONLY background, and ONLY tasks whose SDK id THIS process minted
-           * or was seeded with (`taskIdsBySdkId`): an agent missing from a
-           * background-membership list means nothing — closing agents is the
-           * turn-end sweep's job. The SDK says the level is per-process ("reset to
+           * ONLY background WORK (`isBackgroundWork`), and ONLY tasks whose SDK
+           * id THIS process minted or was seeded with (`taskIdsBySdkId`). A
+           * FOREGROUND agent missing from a background-membership list means
+           * nothing — closing it is the turn-end sweep's job. A BACKGROUNDED
+           * agent is different: the SDK lists it ("a foreground agent being
+           * backgrounded" is one of the changes it announces), and the sweep
+           * spares it on purpose, so a lost notification left it running for
+           * ever with nothing else able to close it. If its notification does
+           * arrive and says it failed, `isUnstatedEnding` lets that stand.
+           * The SDK says the level is per-process ("reset to
            * the empty set whenever the session's CLI process (re)starts"),
            * which is exactly the memory's lifetime.
            *
@@ -1885,32 +1932,58 @@ export function createClaudeDriver(
            * ambient entry never becomes a row, but treating its presence as
            * absence would close a real task the payload still lists.
            */
-          const live = new Set(
-            (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
-              const entry = asRecord(raw);
-              const id = str(entry.task_id);
-              if (!id) return [];
-              // The one frame that states `task_type` for a task this process
-              // never announced. Remembered so the kind is read, not inferred
-              // from `is_backgrounded` — set for sub-agents and shells alike.
-              const taskType = str(entry.task_type);
-              if (taskType) taskTypesBySdkId.set(id, taskType);
-              return [id];
-            }),
-          );
-          // LATE METADATA CORRECTS AN EARLIER GUESS: a row minted before any
-          // frame stated its type carries a defaulted kind, and this payload is
-          // the statement. Re-announced so it lands even if nothing else about
-          // the task ever arrives. Live rows only — a settled one is history.
-          for (const sdkId of live) {
-            const rowId = taskIdsBySdkId.get(sdkId);
+          const entries = (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
+            const entry = asRecord(raw);
+            const id = str(entry.task_id);
+            if (!id) return [];
+            // The one frame that states `task_type` for a task this process
+            // never announced. Remembered so the kind is read, not inferred
+            // from `is_backgrounded` — set for sub-agents and shells alike.
+            const taskType = str(entry.task_type);
+            if (taskType) taskTypesBySdkId.set(id, taskType);
+            return [{ id, ambient: entry.ambient === true }];
+          });
+          const live = new Set(entries.map((entry) => entry.id));
+          /**
+           * EVERY LIVE ROW IS RECONCILED TO ITS ENTRY — the payload is the
+           * truth about these three facts, whatever the edges said:
+           *  - KIND: a row minted before any frame stated its type carries a
+           *    defaulted kind, and this payload is the statement.
+           *  - BACKGROUNDED: being listed IS being background work. A
+           *    foreground agent sent to the background shows up here before
+           *    its `task_updated` patch; if that patch is lost, the turn-end
+           *    sweep would otherwise fail a live agent.
+           *  - AMBIENT: the SDK flips it on a live entry ("or an entry's
+           *    `ambient` flag flips"). The row keeps existing — it may still
+           *    be shown — but stops counting as activity (`countsAsActivity`).
+           * Re-announced so it lands even if nothing else about the task ever
+           * arrives. Live rows only — a settled one is history.
+           *
+           * AN ENTRY WITH NO ROW MINTS NOTHING. The payload carries ids only,
+           * and the SDK says not to correlate it with the edge stream; the
+           * level usually PRECEDES `task_started`, whose `tool_use_id` is what
+           * a row's id — and every sub-agent item filed under it — is keyed
+           * on. A row minted here under the bare SDK id would split an agent
+           * from its own work. The ambient ones are remembered as suppressed,
+           * so their edges cannot mint one either.
+           */
+          for (const entry of entries) {
+            const rowId = taskIdsBySdkId.get(entry.id);
             const row = rowId ? knownTasks.get(rowId) : undefined;
-            if (!row || isTerminalTaskState(row.state)) continue;
-            const stated = taskKindForTypeOrUndefined(taskTypesBySdkId.get(sdkId));
-            if (stated && stated !== row.kind) emitTask("task.progress", sdkId, { state: row.state, kind: stated });
+            if (!row) {
+              if (entry.ambient) suppressedTasks.add(entry.id);
+              continue;
+            }
+            if (isTerminalTaskState(row.state)) continue;
+            const stated = taskKindForTypeOrUndefined(taskTypesBySdkId.get(entry.id));
+            const kind = stated && stated !== row.kind ? { kind: stated } : {};
+            const backgrounded = isBackgroundWork(row) ? {} : { backgrounded: true };
+            const ambient = (row.ambient === true) === entry.ambient ? {} : { ambient: entry.ambient };
+            if (Object.keys({ ...kind, ...backgrounded, ...ambient }).length === 0) continue;
+            emitTask("task.progress", entry.id, { state: row.state, ...kind, ...backgrounded, ...ambient });
           }
           for (const task of [...knownTasks.values()]) {
-            if (task.kind !== "background" || isTerminalTaskState(task.state)) continue;
+            if (!isBackgroundWork(task) || isTerminalTaskState(task.state)) continue;
             const sdkId = task.providerTaskId;
             if (!sdkId || !taskIdsBySdkId.has(sdkId) || live.has(sdkId)) continue;
             emitTask("task.completed", sdkId, { state: "completed" });
@@ -2521,7 +2594,7 @@ export function createClaudeDriver(
          * as one — see `canonicalEnvPatch`. `{}` and `{ KEY: undefined }` are
          * opposite instructions that `JSON.stringify` rendered identically.
          */
-        env: canonicalEnvPatch(env, contextEnv),
+        env: canonicalEnvPatch(defaultEnv, env, contextEnv),
         effort: sdkEffort ?? null,
         fastMode: fastMode ?? null,
         executable: executable ?? null,
@@ -2592,7 +2665,7 @@ export function createClaudeDriver(
 
       /** The child's environment with the patch's deletions APPLIED, resolved
        *  once so the query options and the fingerprint cannot disagree. */
-      const childEnv = resolveChildEnv(process.env, env, contextEnv);
+      const childEnv = resolveChildEnv(process.env, defaultEnv, env, contextEnv);
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
@@ -2843,6 +2916,7 @@ export function createClaudeDriver(
           wakeActive: false,
           lastUsedAt: Date.now(),
           echoesUserMessageUuid: false,
+          reportsSessionState: false,
         };
       };
 
@@ -2927,6 +3001,17 @@ export function createClaudeDriver(
        * until the next engine turn pumps them out.
        */
       const turnUuid = crypto.randomUUID();
+      /**
+       * EVERY SEND OF THIS TURN IS OURS, not only the first. A person's steer
+       * interrupts, and when it lands before the reply's first frame the CLI
+       * never answers `turnUuid` at all: it answers the steer. Keyed only on
+       * the first send, that reply (and every one after it) read as the CLI's
+       * own turn, its `result` was skipped as a stranger's, and the turn ran
+       * until someone pressed Stop — 7m46s on the Delta coordinator, with nine
+       * messages steered into a turn that could no longer end.
+       */
+      const ownSends = new Set<string>([turnUuid]);
+      let steerSent = false;
       if (persistent) {
         // The turn begins as one message pushed into the open stream. Stamped
         // as the person's only when it IS the person's — see `promptFromHuman`
@@ -3058,10 +3143,14 @@ export function createClaudeDriver(
                */
               const notifications = queued.map((message) => message.notification).filter((detail) => detail !== undefined);
               const allNotifications = !typedByAPerson && notifications.length === queued.length && notifications[0] !== undefined;
+              const steerUuid = crypto.randomUUID();
+              ownSends.add(steerUuid);
+              steerSent = true;
               runtime.feed.push({
                 type: "user",
                 message: { role: "user", content: claudeInitialContent(allNotifications ? claudeNotificationContent(text, notifications[0]!) : text, attachments) },
                 parent_tool_use_id: null,
+                uuid: steerUuid,
                 ...(allNotifications
                   ? { origin: claudeNotificationOrigin(notifications[0]!) }
                   : typedByAPerson
@@ -3236,14 +3325,17 @@ export function createClaudeDriver(
            */
           if (item.type === "stream_event" && item.event?.type === "message_start" && !parentToolUseId) {
             const sender = str(item.user_message_uuid);
-            if (sender === turnUuid) {
+            if (sender !== undefined && ownSends.has(sender)) {
               // Our reply has begun. Later message_starts INSIDE it (the
               // continuation after a tool round) carry no uuid — measured —
               // and are ours by position.
               ownTurnOpen = true;
               foreignTurn = undefined;
               runtime.echoesUserMessageUuid = true;
-            } else if (sender !== undefined || (runtime.echoesUserMessageUuid && !ownTurnOpen)) {
+            } else if (sender !== undefined || (runtime.echoesUserMessageUuid && !ownTurnOpen && !steerSent)) {
+              // (A senderless reply after a steer is the steer's answer: a
+              // steer can cut our first send before its reply began, and a
+              // turn that disowns the answer to its own message never ends.)
               // Another sender's turn, or — on a producer known to echo the
               // key — a turn with no sender at all before ours has begun:
               // the CLI's own. Its message_start carries no uuid (measured).
@@ -3286,7 +3378,7 @@ export function createClaudeDriver(
             const sender = str(item.user_message_uuid);
             const foreignResult =
               foreignTurn !== undefined ||
-              (sender !== undefined && sender !== turnUuid) ||
+              (sender !== undefined && !ownSends.has(sender)) ||
               // A CLI-originated turn that produced no message_start (a
               // notification answered without streaming) is still caught
               // by an origin that is NOT a person's — `human` is the one
@@ -3494,6 +3586,37 @@ export function createClaudeDriver(
             continue;
           }
 
+          // ── the CLI's own word on whether the turn is over ────────────
+          if (item.type === "system" && item.subtype === "session_state_changed") {
+            runtime.reportsSessionState = true;
+            /**
+             * `idle` ENDS THE TURN — once the turn is demonstrably ours: our
+             * reply has begun, or our result was read (a `/compact` answers
+             * with a result and no message start). An `idle` read before
+             * either is the tail of something earlier, such as the CLI's own
+             * wake-up, and ends nothing. Nor does one while a person's steer
+             * is unanswered: interrupting to deliver it can idle the CLI for
+             * a moment before it takes the steer, so once a steer went in,
+             * only an `idle` after a result counts.
+             *
+             * It comes after the result, so usage and text are already in.
+             * With the input stream open (as it always is here) the CLI sends
+             * it while BACKGROUNDED agents still run — read off the CLI: its
+             * "waiting_for_agents" phase notifies idle — and they are the
+             * tasks' business, not the turn's.
+             *
+             * `running` and `requires_action` change nothing here: the first
+             * is what the turn already is, and the second is a permission
+             * request the engine already holds as an open request.
+             */
+            if (str(item.state) === "idle" && foreignTurn === undefined && outstandingSteerCuts.size === 0 && (ownResultRead || (ownTurnOpen && !steerSent))) {
+              completed = true;
+              await flush();
+              if (persistent) break;
+            }
+            continue;
+          }
+
           if (item.type === "result") {
             /**
              * A SUB-AGENT'S RESULT IS THE SUB-AGENT'S, NEVER THE TURN'S. The
@@ -3631,6 +3754,25 @@ export function createClaudeDriver(
                 continue;
               }
             }
+            /**
+             * ON A PROCESS THAT REPORTS SESSION STATE, THE RESULT IS NOT THE END.
+             * `idle` is ("authoritative turn-over signal"), and it follows the
+             * result at once when the turn is really over. So the result only
+             * arms the end-turn grace: our main loop speaking again (a tool
+             * result, a new message) disarms it and the turn goes on, and
+             * `idle` ends it. If `idle` never comes — the CLI may hold it while
+             * background agents run — the grace settles the turn as a result
+             * always did, so this can end a turn later but never hold one.
+             */
+            if (persistent && runtime.reportsSessionState) {
+              ownResultRead = true;
+              // Steering stops here, as it did when the result ended the turn:
+              // a message arriving after it is the engine's to requeue.
+              turnDone = true;
+              endTurnSeenAt = Date.now();
+              await flush();
+              continue;
+            }
             completed = true;
             await flush();
             /**
@@ -3642,6 +3784,20 @@ export function createClaudeDriver(
              * stream's natural close, exactly as it always did.
              */
             if (persistent) break;
+            continue;
+          }
+
+          // ── a silent thought, still going ─────────────────────────────
+          // The CLI's own running estimate for the open thinking block, sent
+          // when it withholds the text. Names no block, so the owner's newest
+          // open thought is the one it is about.
+          if (item.type === "system" && item.subtype === "thinking_tokens") {
+            const open = openThinkingOf(openBlocks, parentToolUseId);
+            const progress = open ? noteThinkingTokens(open, item.estimated_tokens) : undefined;
+            if (progress) {
+              emit(progress);
+              flushSoon();
+            }
             continue;
           }
 
@@ -3662,14 +3818,9 @@ export function createClaudeDriver(
 
             if (event.type === "content_block_start") {
               const blockType = event.content_block?.type;
-              // TOOL BLOCKS ARE DELIBERATELY NOT OPENED HERE. Their input
-              // arrives as `input_json_delta` fragments that are only valid
-              // JSON once complete, and the assistant envelope below repeats
-              // every tool_use with its input already parsed. Opening in both
-              // places is how a row gets emitted twice.
               if (blockType === "text" || blockType === "thinking") {
                 const id = itemId();
-                openBlocks.set(index, { id, kind: blockType, text: "" });
+                openBlocks.set(index, { id, kind: blockType, text: "", ...(ownerTaskId ? { taskId: ownerTaskId } : {}) });
                 emit({
                   kind: "item.started",
                   item: {
@@ -3678,6 +3829,33 @@ export function createClaudeDriver(
                     ...(ownerTaskId ? { taskId: ownerTaskId } : {}),
                   },
                 });
+                // FLUSHED NOW, not with the first delta. A thought whose text
+                // the CLI omits has no text deltas at all, and waiting for one
+                // left minutes of a turn with nothing but `turn.started`.
+                await flush();
+                continue;
+              }
+              /**
+               * A TOOL ROW OPENS WHEN THE MODEL STARTS WRITING THE CALL, not
+               * when it has finished. The input streams as `input_json_delta`
+               * fragments and the assistant envelope only repeats the call once
+               * the WHOLE input exists — so a long Write was invisible for as
+               * long as the model spent writing it, and a response of eighteen
+               * of them arrived as one burst. Opened here with no input, under
+               * the id the envelope derives (`item_${id}`); the envelope then
+               * UPDATES the row rather than opening a second one.
+               *
+               * TodoWrite stays with the envelope: it is the plan row, keyed by
+               * turn, not a tool row keyed by call.
+               */
+              const useId = str(event.content_block?.id);
+              const name = str(event.content_block?.name);
+              if (blockType === "tool_use" && useId && name && name !== "TodoWrite" && !openTools.has(useId)) {
+                const seed = streamingToolSeed(useId, name, ownerTaskId);
+                openTools.set(useId, { id: seed.id, detail: seed.detail });
+                if (ours) openTopLevelTools.add(useId);
+                emit({ kind: "item.started", item: seed });
+                await flush();
               }
               continue;
             }
@@ -3685,6 +3863,11 @@ export function createClaudeDriver(
             if (event.type === "content_block_delta") {
               const open = openBlocks.get(index);
               if (!open) continue;
+              const progress = noteThinkingTokens(open, event.delta?.estimated_tokens);
+              if (progress) {
+                emit(progress);
+                flushSoon();
+              }
               const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
               if (typeof text !== "string" || text.length === 0) continue;
               open.text += text;
@@ -3834,9 +4017,12 @@ export function createClaudeDriver(
                   ...(ownerTaskId ? { taskId: ownerTaskId } : {}),
                   providerRefs: { itemId: useId },
                 };
+                // Already opened by its `content_block_start`: this is the
+                // same row, now with its input — an update, never a second row.
+                const streamed = openTools.has(useId);
                 openTools.set(useId, { id: seed.id, detail });
                 if (ours) openTopLevelTools.add(useId);
-                emit({ kind: "item.started", item: seed });
+                emit({ kind: streamed ? "item.updated" : "item.started", item: seed });
                 continue;
               }
               // With partial messages enabled the envelope REPEATS its text.
@@ -4021,7 +4207,7 @@ export function createClaudeDriver(
                 text: string;
                 usage: UsageSnapshot | undefined;
                 gate: SdkCanUseTool | undefined;
-                blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>;
+                blocks: Map<string, OpenBlock>;
                 tools: Map<string, { id: string; detail: ItemDetail }>;
                 /** The open provider-wait row, exactly as a human turn keeps one. */
                 waitItemId: string | undefined;
@@ -4345,23 +4531,42 @@ export function createClaudeDriver(
       async function pumpFrame(
         item: SdkFrame,
         ownerTaskId: string | undefined,
-        wake: { blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined,
+        wake: { blocks: Map<string, OpenBlock>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined,
       ): Promise<string> {
-        const blocks = wake?.blocks ?? new Map<string, { id: string; kind: "text" | "thinking"; text: string }>();
+        const blocks = wake?.blocks ?? new Map<string, OpenBlock>();
         const tools = wake?.tools ?? new Map<string, { id: string; detail: ItemDetail }>();
         let added = "";
+        // The silent thought's running size — see the turn pump's copy. The
+        // idle pump flushes after every frame, so there is nothing to schedule.
+        if (item.type === "system" && item.subtype === "thinking_tokens") {
+          const open = openThinkingOf(blocks, ownerTaskId);
+          const progress = open ? noteThinkingTokens(open, item.estimated_tokens) : undefined;
+          if (progress) emit(progress);
+          return added;
+        }
         if (item.type === "stream_event") {
           const event = item.event ?? {};
           const index = `${ownerTaskId ?? ""}#${typeof event.index === "number" ? event.index : -1}`;
           if (event.type === "content_block_start") {
             const blockType = event.content_block?.type;
+            const useId = str(event.content_block?.id);
+            const name = str(event.content_block?.name);
             if (blockType === "text" || blockType === "thinking") {
               const id = itemId();
-              blocks.set(index, { id, kind: blockType, text: "" });
+              blocks.set(index, { id, kind: blockType, text: "", ...(ownerTaskId ? { taskId: ownerTaskId } : {}) });
               emit({ kind: "item.started", item: { id, detail: blockType === "text" ? { type: "assistant_message", text: "" } : { type: "reasoning", text: "" }, ...(ownerTaskId ? { taskId: ownerTaskId } : {}) } });
+            } else if (wake && blockType === "tool_use" && useId && name && name !== "TodoWrite" && !tools.has(useId)) {
+              // Opened as the model starts writing the call — see the turn pump.
+              // Only inside a wake-up: with no turn the map is this frame's
+              // alone, so the envelope could not tell it had been opened.
+              const seed = streamingToolSeed(useId, name, ownerTaskId);
+              tools.set(useId, { id: seed.id, detail: seed.detail });
+              emit({ kind: "item.started", item: seed });
             }
           } else if (event.type === "content_block_delta") {
             const open = blocks.get(index);
+            const progress = open ? noteThinkingTokens(open, event.delta?.estimated_tokens) : undefined;
+            if (progress) emit(progress);
             const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
             if (open && typeof text === "string" && text.length > 0) {
               open.text += text;
@@ -4386,8 +4591,9 @@ export function createClaudeDriver(
             const isTask = name === "Task" || name === "Agent";
             const detail: ItemDetail = isTask ? { type: "task", taskId: `task_${useId}` } : itemDetailForToolCall(name, block.input);
             const title = isTask ? oneLine(str(asRecord(block.input).description) ?? str(asRecord(block.input).subagent_type) ?? name) : titleForToolCall(name, detail);
+            const streamed = tools.has(useId);
             tools.set(useId, { id: `item_${useId}`, detail });
-            emit({ kind: "item.started", item: { id: `item_${useId}`, detail, title, ...(ownerTaskId ? { taskId: ownerTaskId } : {}), providerRefs: { itemId: useId } } });
+            emit({ kind: streamed ? "item.updated" : "item.started", item: { id: `item_${useId}`, detail, title, ...(ownerTaskId ? { taskId: ownerTaskId } : {}), providerRefs: { itemId: useId } } });
           }
           return added;
         }
@@ -4407,6 +4613,82 @@ export function createClaudeDriver(
       }
     },
   };
+}
+
+/** A streamed text or thinking block between its start and stop. */
+type OpenBlock = {
+  id: string;
+  kind: "text" | "thinking";
+  text: string;
+  /** The task the row is filed under, repeated on every update — an
+   *  `item.updated` replaces the whole stored item. */
+  taskId?: string;
+  /** Thinking only: the provider's running size estimate, and the last value
+   *  actually reported (see `THINKING_TOKEN_STEP`). */
+  estimatedTokens?: number;
+  reportedTokens?: number;
+};
+
+/**
+ * HOW OFTEN A SILENT THOUGHT SAYS IT IS STILL GOING. Claude Code in Telar mode
+ * sends no thinking text at all — only a token estimate, on every delta — so
+ * without this a long thought is minutes of nothing reaching the engine. Each
+ * report is an engine command, so it moves by token STEP rather than per frame:
+ * one row rewrite per 500 tokens, and a step count a test can predict.
+ */
+const THINKING_TOKEN_STEP = 500;
+
+function reasoningDetail(block: OpenBlock): ItemDetail {
+  return {
+    type: "reasoning",
+    text: block.text,
+    ...(block.estimatedTokens === undefined ? {} : { estimatedTokens: block.estimatedTokens }),
+  };
+}
+
+/**
+ * Fold a running token estimate into an open thinking block. Returns the
+ * `item.updated` to emit when the estimate crossed a step boundary since the
+ * last report, and nothing otherwise.
+ */
+function noteThinkingTokens(block: OpenBlock, tokens: unknown): TurnObservation | undefined {
+  if (block.kind !== "thinking" || typeof tokens !== "number" || !Number.isFinite(tokens)) return undefined;
+  const rounded = Math.floor(tokens);
+  if (rounded <= (block.estimatedTokens ?? 0)) return undefined;
+  block.estimatedTokens = rounded;
+  if (Math.floor(rounded / THINKING_TOKEN_STEP) <= Math.floor((block.reportedTokens ?? 0) / THINKING_TOKEN_STEP)) return undefined;
+  block.reportedTokens = rounded;
+  return {
+    kind: "item.updated",
+    item: { id: block.id, detail: reasoningDetail(block), ...(block.taskId ? { taskId: block.taskId } : {}) },
+  };
+}
+
+/**
+ * The row a `tool_use` block opens before its input exists. Same id, detail
+ * shape and task filing the assistant envelope derives, so the envelope's
+ * `item.updated` lands on it. Titled by the tool until the input can say more.
+ */
+function streamingToolSeed(useId: string, name: string, ownerTaskId: string | undefined): ItemSeed {
+  const isTask = name === "Task" || name === "Agent";
+  const detail: ItemDetail = isTask ? { type: "task", taskId: `task_${useId}` } : itemDetailForToolCall(name, {});
+  const derived = isTask ? name : titleForToolCall(name, detail);
+  return {
+    id: `item_${useId}`,
+    detail,
+    title: derived === "(unknown)" ? name : derived,
+    ...(ownerTaskId ? { taskId: ownerTaskId } : {}),
+    providerRefs: { itemId: useId },
+  };
+}
+
+/** The newest open thinking block of one owner — what `system/thinking_tokens`,
+ *  which names no block index, is about. */
+function openThinkingOf(blocks: Map<string, OpenBlock>, owner: string | undefined): OpenBlock | undefined {
+  const prefix = `${owner ?? ""}#`;
+  let found: OpenBlock | undefined;
+  for (const [key, block] of blocks) if (block.kind === "thinking" && key.startsWith(prefix)) found = block;
+  return found;
 }
 
 /** The plain text of a user message's content — the CLI's own injected

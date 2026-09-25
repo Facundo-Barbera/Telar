@@ -35,7 +35,13 @@ afterEach(async () => {
 });
 
 async function ready() {
-  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
+  // The checkout sizer's passes back to back rather than on its low-priority
+  // timer, so a read that asks again sees it settle without a test sleeping.
+  const daemon = await startEngine({
+    models: stubModels,
+    engineRoot: root(),
+    checkoutSizing: { schedule: (next) => (queueMicrotask(next), { cancel: () => {} }) },
+  });
   daemons.push(daemon);
   return { daemon, client: new EngineClient(daemon.discovery) };
 }
@@ -114,9 +120,15 @@ test("the storage pane keeps counting the checkouts left behind by a change", as
   fs.writeFileSync(path.join(old, "big.bin"), Buffer.alloc(256 * 1024, 7));
 
   await client.setWorktreesRoot(path.join(root(), "checkouts"));
-  const { storage } = await client.storage({ refresh: true });
+  // Checkouts are sized in the background, so the row settles over reads —
+  // the pane's own way of asking — rather than on the first one.
+  let { storage } = await client.storage({ refresh: true });
+  for (let reads = 0; reads < 500 && storage.entries.some((entry) => (entry as { status?: string }).status === "measuring"); reads += 1) {
+    ({ storage } = await client.storage());
+  }
 
   const checkouts = storage.entries.find((entry) => entry.category === "worktrees");
+  expect((checkouts as { status?: string } | undefined)?.status).toBeUndefined();
   // Under-reporting here would hide exactly the gigabytes somebody changed the
   // setting in order to get rid of.
   expect(checkouts?.bytes ?? 0).toBeGreaterThanOrEqual(256 * 1024);

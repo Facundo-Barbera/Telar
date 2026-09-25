@@ -34,6 +34,14 @@
  * daemon's decision (see `readStorage` in daemon.ts) and it is driven by a
  * person opening a pane or pressing refresh, never by a timer.
  *
+ * EXCEPT THE CHECKOUTS, WHICH THE DAEMON NEVER WALKS HERE. On a real machine
+ * they are ~140 trees of ~75k files each, and walking them on the request path
+ * was millions of `lstat`s queued on libuv's four-thread pool — every other
+ * `fs.promises` call in the engine waited behind them, and the pane never
+ * finished. The daemon asks `measureStore` for the store's own categories and
+ * folds in `checkout-sizes.ts`'s background figure with `withCheckouts`.
+ * `measureStorage` still walks everything, for a caller that wants one number.
+ *
  * AND IT WRITES NOTHING. The pane it feeds is read-only in this pass — no
  * delete, no "clean up" — so there is no call here that could remove a byte.
  */
@@ -62,11 +70,13 @@ export const DIRECTORY_CATEGORIES: Readonly<Record<string, StorageCategory>> = {
   sessions: "sessions",
   python: "python",
   "browser-profiles": "browser-profiles",
-  agent: "agent",
   notes: "notes",
   dictation: "dictation",
   run: "run",
   diagnostics: "diagnostics",
+  // A decommissioned feature's data, set aside rather than deleted (#908 moved
+  // the built-in Agent's `agent/` here). Nothing reads it, so it is `other`.
+  retired: "other",
   // Configuration that outgrew a single file, so it reads under the same
   // heading as the JSON beside it rather than as a row of its own.
   orientation: "settings",
@@ -84,7 +94,6 @@ const CATEGORY_DIRECTORIES: Readonly<Partial<Record<StorageCategory, string>>> =
   sessions: "sessions",
   python: "python",
   "browser-profiles": "browser-profiles",
-  agent: "agent",
   notes: "notes",
   dictation: "dictation",
   run: "run",
@@ -156,7 +165,7 @@ const STAT_BATCH = 64;
  * deduplication is working: it reads the same either way. `package-caches.ts`
  * answers that question, and it answers it from `st_dev` rather than from bytes.
  */
-function bytesOf(stat: fs.Stats): number {
+export function bytesOf(stat: Pick<fs.Stats, "blocks" | "size">): number {
   const allocated = stat.blocks * 512;
   // macOS keeps a compressed file's data in an extended attribute and reports
   // no blocks for it. Reporting zero for a file that plainly holds bytes is
@@ -267,18 +276,8 @@ function targetOf(category: StorageCategory, root: string): Target {
   return { path: directory ? path.join(root, directory) : root, kind: "directory" };
 }
 
-/**
- * WHAT TELAR IS KEEPING, measured once.
- *
- * `worktreesRoot` IS A PARAMETER, and that is the whole of what #642 part 3
- * asked for structurally: a relocated category is a root passed in, walked
- * wherever it is, and reported under its own row — so a second relocatable
- * category is an addition here rather than a rewrite. It may sit inside the
- * store root (where it is today) or outside it (once it can be moved); the
- * inside case is skipped during the root's own walk so its bytes are counted in
- * its own row and not twice.
- */
-export async function measureStorage(input: {
+
+type StorageInput = {
   root: string;
   worktreesRoot: string;
   /**
@@ -292,22 +291,71 @@ export async function measureStorage(input: {
    */
   alsoWorktrees?: readonly string[];
   now?: number;
-}): Promise<StorageReport> {
+};
+
+/** The checkout roots an input names, resolved and without duplicates. */
+export function checkoutRootsOf(input: Pick<StorageInput, "worktreesRoot" | "alsoWorktrees">): string[] {
+  const worktrees = path.resolve(input.worktreesRoot);
+  return [worktrees, ...(input.alsoWorktrees ?? []).map((extra) => path.resolve(extra)).filter((extra) => extra !== worktrees)];
+}
+
+/**
+ * What the "Session checkouts" row says, however it was measured.
+ *
+ * `measuring` WHILE THE BACKGROUND JOB IS STILL WALKING: `bytes` is then the
+ * last settled figure where there is one and a floor where there is not, and
+ * `measured`/`of` say how far it has got.
+ */
+export type CheckoutFigure = {
+  bytes: number;
+  partial: boolean;
+  measuring: boolean;
+  measured?: number;
+  of?: number;
+};
+
+/**
+ * WHAT TELAR IS KEEPING, measured once.
+ *
+ * `worktreesRoot` IS A PARAMETER, and that is the whole of what #642 part 3
+ * asked for structurally: a relocated category is a root passed in, walked
+ * wherever it is, and reported under its own row — so a second relocatable
+ * category is an addition here rather than a rewrite. It may sit inside the
+ * store root (where it is today) or outside it (once it can be moved); the
+ * inside case is skipped during the root's own walk so its bytes are counted in
+ * its own row and not twice.
+ *
+ * THE WHOLE TREE, CHECKOUTS INCLUDED, in one call — which is why the daemon
+ * does not use it (see the header). It stays for a caller that wants a single
+ * settled number and can afford the walk.
+ */
+export async function measureStorage(input: StorageInput): Promise<StorageReport> {
+  const started = Date.now();
+  const seen = new Set<string>();
+  let bytes = 0;
+  let partial = false;
+  for (const target of checkoutRootsOf(input)) {
+    const checkouts = await walk(target, seen);
+    bytes += checkouts.bytes;
+    partial ||= checkouts.partial;
+  }
+  const store = await measureStore(input, seen);
+  return { ...withCheckouts(store, { bytes, partial, measuring: false }, input.worktreesRoot), tookMs: Date.now() - started };
+}
+
+/**
+ * THE STORE'S OWN CATEGORIES, WITHOUT THE CHECKOUTS — what the request path
+ * can afford. The checkout roots are skipped wherever they sit, so a root
+ * inside the store is neither walked here nor filed under "Everything else".
+ */
+export async function measureStore(input: StorageInput, seen = new Set<string>()): Promise<StorageReport> {
   const started = Date.now();
   const root = path.resolve(input.root);
   const worktrees = path.resolve(input.worktreesRoot);
-  const seen = new Set<string>();
   const bytes = new Map<StorageCategory, number>();
   let partial = false;
 
   const add = (category: StorageCategory, amount: number) => bytes.set(category, (bytes.get(category) ?? 0) + amount);
-
-  const alsoWorktrees = (input.alsoWorktrees ?? []).map((extra) => path.resolve(extra)).filter((extra) => extra !== worktrees);
-  for (const target of [worktrees, ...alsoWorktrees]) {
-    const checkouts = await walk(target, seen);
-    if (checkouts.bytes > 0) add("worktrees", checkouts.bytes);
-    partial ||= checkouts.partial;
-  }
 
   let children: fs.Dirent[] = [];
   try {
@@ -315,7 +363,7 @@ export async function measureStorage(input: {
   } catch {
     partial = true;
   }
-  const checkoutRoots = new Set([worktrees, ...alsoWorktrees]);
+  const checkoutRoots = new Set(checkoutRootsOf(input));
   for (const child of children) {
     const target = path.join(root, child.name);
     if (checkoutRoots.has(target)) continue; // Counted in its own row, wherever it is.
@@ -341,7 +389,7 @@ export async function measureStorage(input: {
   const entries: StorageEntry[] = [...bytes.entries()]
     .filter(([, amount]) => amount > 0)
     .map(([category, amount]) => {
-      const target = category === "worktrees" ? { path: worktrees, kind: "directory" as const } : targetOf(category, root);
+      const target = targetOf(category, root);
       return { category, bytes: amount, path: target.path, kind: target.kind };
     })
     // Largest first: the row somebody needs to see is the one they did not know
@@ -378,5 +426,35 @@ export async function measureStorage(input: {
     tookMs: Date.now() - started,
     partial,
     ...(caches.length > 0 ? { caches } : {}),
+  };
+}
+
+/**
+ * THE STORE'S REPORT WITH THE CHECKOUTS ROW FOLDED IN — cheap and pure, so the
+ * daemon can do it on every poll against a store report it measured once.
+ *
+ * A ROW WHILE MEASURING EVEN AT ZERO BYTES: a pane that dropped the row until
+ * the first checkout settled would say the checkouts cost nothing, which is the
+ * one answer this pane may never give by omission.
+ */
+export function withCheckouts(report: StorageReport, checkouts: CheckoutFigure, worktreesRoot: string): StorageReport {
+  const entries = report.entries.filter((entry) => entry.category !== "worktrees");
+  if (checkouts.bytes > 0 || checkouts.measuring) {
+    const status = checkouts.measuring ? "measuring" : checkouts.partial ? "partial" : undefined;
+    entries.push({
+      category: "worktrees",
+      bytes: checkouts.bytes,
+      path: path.resolve(worktreesRoot),
+      kind: "directory",
+      ...(status ? { status } : {}),
+      ...(checkouts.measuring && checkouts.of !== undefined ? { progress: { measured: checkouts.measured ?? 0, of: checkouts.of } } : {}),
+    });
+  }
+  entries.sort((left, right) => right.bytes - left.bytes);
+  return {
+    ...report,
+    total: entries.reduce((sum, entry) => sum + entry.bytes, 0),
+    entries,
+    partial: report.partial || checkouts.partial,
   };
 }

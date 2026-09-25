@@ -21,7 +21,8 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { WorktreesRoot } from "@telar/engine-client";
-import { WorktreesRootSection, worktreesRootHint } from "./worktrees-root-section";
+import { SettingsGroup } from "./settings-shell";
+import { WorktreesRootRows, worktreesRootHint } from "./worktrees-root-section";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -56,7 +57,11 @@ async function mount() {
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => {
-    root.render(<WorktreesRootSection />);
+    root.render(
+      <SettingsGroup title="Worktrees">
+        <WorktreesRootRows />
+      </SettingsGroup>,
+    );
     await settle();
   });
   await act(async () => {
@@ -72,7 +77,7 @@ async function mount() {
   };
 }
 
-describe("Settings ▸ Storage ▸ Session checkouts", () => {
+describe("Settings ▸ Storage ▸ Worktrees ▸ Location", () => {
   test("it never tells anybody to restart", async () => {
     answer = { kind: "configured", root: "/Volumes/TelarVR/checkouts", default: DEFAULT_ROOT, label: "TelarVR" };
     const view = await mount();
@@ -80,20 +85,20 @@ describe("Settings ▸ Storage ▸ Session checkouts", () => {
     view.unmount();
   });
 
-  test("it says the checkouts already cut stay where they are", async () => {
+  test("it says the worktrees already made stay where they are", async () => {
     // Otherwise the row reads as a promise that 12 GB just moved.
     answer = { kind: "configured", root: "/Volumes/TelarVR/checkouts", default: DEFAULT_ROOT, label: "TelarVR" };
     const view = await mount();
-    expect(view.host.textContent).toContain("Existing checkouts stay where they are");
+    expect(view.host.textContent).toContain("Existing worktrees stay where they are");
     view.unmount();
   });
 
-  test("the reproducibility asymmetry is on screen, not only in the commit message", async () => {
+  test("the reproducibility asymmetry is behind the row's ⓘ, not only in the commit message", async () => {
     const view = await mount();
-    const text = view.host.textContent ?? "";
-    expect(text.toLowerCase()).toContain("re-cut");
+    const info = view.host.querySelector("[data-info]")?.getAttribute("data-info") ?? "";
+    expect(info).toContain("can be recreated");
     // The sentence that makes this the safe half of #630 to relocate.
-    expect(text).toContain("the store itself cannot live there");
+    expect(info).toContain("the store itself cannot live there");
     view.unmount();
   });
 

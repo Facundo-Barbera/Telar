@@ -215,7 +215,7 @@ beforeEach(() => {
  * A composer whose draft is owned the way the cockpit owns it.
  * ------------------------------------------------------------------ */
 
-function Box({ kind }: { kind: "session" | "agent" }) {
+function Box({ kind }: { kind: "session" }) {
   const [draft, setDraft] = useState("");
   return (
     <>
@@ -507,16 +507,6 @@ describe("the mic button on a composer", () => {
     // nothing else — a live transcription printed in two places on one screen
     // is the thing that was taken out.
     expect(button.parentElement!.textContent).toBe("Listening");
-  });
-
-  test("the same button, on the Agent's composer", async () => {
-    // The Agent screen renders this same component with `kind="agent"`, which
-    // is what keeps one button from becoming two.
-    const host = await mounted(<Box kind="agent" />);
-    await press(micIn(host));
-    live!.open();
-    live!.say(results("summarise the rail", true));
-    expect(draftOf(host)).toBe("summarise the rail ");
   });
 
   test("a person typing mid-guess keeps their keystrokes and the dictation carries on", async () => {

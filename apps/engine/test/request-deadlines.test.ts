@@ -16,44 +16,31 @@
  * "a deadline with no default still waits" is the one clause a wrong
  * implementation passes every other test with. It is exercised directly, by
  * taking the passing case and removing ONLY the default: same deadline, same
- * clock, same sweep, and the request must still be open with the inbox
- * unmoved. A sweeper that resolved on the deadline alone would be green
- * everywhere else in this file.
- *
- * ── THE INBOX IS THE REAL ONE ───────────────────────────────────────────────
- * The sink writes into an actual `AgentInbox` over sqlite and the count comes
- * out of `unreadCount`, rather than from counting calls to a spy. A spy would
- * prove the store CALLED something; this proves a row a person can read exists.
+ * clock, same sweep, and the request must still be open. A sweeper that
+ * resolved on the deadline alone would be green everywhere else in this file.
  */
 import { afterEach, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { deadlineResolution } from "@telar/engine-client";
 import { EngineStateError, EngineStore } from "../src/state";
-import { AgentInbox, inboxRowFromNotification } from "../src/agent/inbox";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];
-const databases: Database[] = [];
 
 afterEach(() => {
   for (const store of stores.splice(0)) store.closeExecutionStore();
-  for (const database of databases.splice(0)) database.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
-const THREAD = "thread_one";
 const OPENED_AT = 1_000_000;
 
 type Harness = {
   store: EngineStore;
-  inbox: AgentInbox;
   token: string;
   /** Move the store's clock. Every deadline here is measured from `OPENED_AT`. */
   advance: (ms: number) => void;
-  unread: () => number;
 };
 
 function harness(runtimeMode: "approval-required" | "auto" = "approval-required"): Harness {
@@ -65,29 +52,13 @@ function harness(runtimeMode: "approval-required" | "auto" = "approval-required"
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one", title: "A worker" });
   store.updateSession("session_one", { runtimeMode });
-
-  const database = new Database(":memory:");
-  databases.push(database);
-  const inbox = new AgentInbox(database);
-  /**
-   * THE DAEMON'S OWN WIRING, in two lines: `setAgentWakeSink` → `wake()` →
-   * `inboxRowFromNotification` → `append`. Copied rather than mocked so the
-   * `inboxKind` override is exercised on the path that actually carries it.
-   */
-  store.setAgentWakeSink((wake) => {
-    const fields = inboxRowFromNotification(wake.notification, wake.inboxKind);
-    if (fields) inbox.append({ threadId: THREAD, at: now, ...fields });
-  });
-
   store.submitTurn("session_one", { runId: "run_one", input: "Do the thing" });
   const claimed = store.claimTurn("session_one", "worker_one")!;
   store.markRunning("session_one", "run_one", claimed.claim!.token);
   return {
     store,
-    inbox,
     token: claimed.claim!.token,
     advance: (ms) => { now = OPENED_AT + ms; },
-    unread: () => inbox.unreadCount(THREAD),
   };
 }
 
@@ -108,9 +79,8 @@ const command = { kind: "command_execution" as const, detail: { kind: "command_e
  * THE PASSING CASE, and the red that is the same case minus one field.
  * ------------------------------------------------------------------ */
 
-test("a deadline with a default resolves as `timeout` and writes exactly one inbox row", () => {
+test("a deadline with a default resolves as `timeout`", () => {
   const h = harness();
-  expect(h.unread()).toBe(0);
 
   const opened = h.store.openRequest("session_one", "run_one", h.token, {
     requestId: "req_deadline",
@@ -124,7 +94,6 @@ test("a deadline with a default resolves as `timeout` and writes exactly one inb
   h.advance(59_999);
   expect(h.store.sweepRequestDeadlines()).toEqual([]);
   expect(h.store.requests("session_one")[0]!.state).toBe("open");
-  expect(h.unread()).toBe(0);
 
   h.advance(60_000);
   expect(h.store.sweepRequestDeadlines()).toEqual(["req_deadline"]);
@@ -136,13 +105,6 @@ test("a deadline with a default resolves as `timeout` and writes exactly one inb
   expect(resolved.decision).toBe("accept");
   // The asker's own answer, carried through to whoever was blocked on it.
   expect(resolved.answers).toEqual({ base: "main" });
-
-  // EXACTLY ONE. Not "at least one" — a sweep that announced per tick would be
-  // green under `toBeGreaterThan` and would spam a person nightly.
-  expect(h.unread()).toBe(1);
-  const row = h.inbox.unread(THREAD)[0]!;
-  expect(row.kind).toBe("request_timeout");
-  expect(row.sessionId).toBe("session_one");
 });
 
 /**
@@ -170,7 +132,6 @@ test("a deadline with NO default resolves nothing, however long it sits", () => 
   expect(still.state).toBe("open");
   expect(still.resolvedBy).toBeUndefined();
   expect(still.decision).toBeUndefined();
-  expect(h.unread()).toBe(0);
 });
 
 test("a request with no deadline at all is never swept", () => {
@@ -179,7 +140,6 @@ test("a request with no deadline at all is never swept", () => {
   h.advance(86_400_000);
   expect(h.store.sweepRequestDeadlines()).toEqual([]);
   expect(h.store.requests("session_one")[0]!.state).toBe("open");
-  expect(h.unread()).toBe(0);
 });
 
 test("sweeping twice resolves once — the second pass has nothing left to find", () => {
@@ -193,8 +153,6 @@ test("sweeping twice resolves once — the second pass has nothing left to find"
   h.advance(5_000);
   expect(h.store.sweepRequestDeadlines()).toEqual(["req_once"]);
   expect(h.store.sweepRequestDeadlines()).toEqual([]);
-  // The count is the assertion: a second announcement would be a second row.
-  expect(h.unread()).toBe(1);
 });
 
 /* ------------------------------------------------------------------ *

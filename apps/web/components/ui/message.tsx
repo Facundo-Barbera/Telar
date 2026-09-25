@@ -6,6 +6,7 @@ import { memo } from "react";
 import { Streamdown } from "streamdown";
 import { math } from "@streamdown/math";
 import { cn } from "@/lib/utils";
+import { useLinkPolicy } from "@/lib/link-policy";
 import { rehypeDisplayStandaloneMath } from "@/lib/markdown-math";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 
@@ -114,6 +115,18 @@ const MATH_PLUGINS = { math } as const;
 const MATH_REHYPE = [rehypeDisplayStandaloneMath];
 
 /**
+ * LINKS ARE LINKS WHEN THE COCKPIT KEEPS THEM (Settings → Links).
+ *
+ * Streamdown's default draws a link as a `<button>` behind its own "open this
+ * link?" dialog, then `window.open`s it — no `href` for the cockpit's click
+ * handler to read, and a dialog in front of every click. That is why the
+ * setting never took: with it on, the destination is a tab in the session's
+ * own browser, with its address in view, so the gate has nothing left to
+ * guard and a plain anchor lets the click be routed. Off, the gate stays.
+ */
+const LINKS_UNGATED = { enabled: false } as const;
+
+/**
  * Markdown that tolerates being half-written.
  *
  * `parseIncompleteMarkdown` is what keeps a streaming answer from flickering
@@ -124,6 +137,7 @@ const MATH_REHYPE = [rehypeDisplayStandaloneMath];
 export const MessageResponse = memo(
   ({ className, streaming, children, rehypePlugins, plugins, ...props }: MessageResponseProps & { streaming?: boolean }) => {
     const revealed = useStreamingReveal(typeof children === "string" ? children : "", streaming === true);
+    const { openInSessionBrowser } = useLinkPolicy();
     return (
     <Streamdown
       className={cn("telar-markdown w-full text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", STREAMDOWN_LIST_SPACING, className)}
@@ -138,6 +152,7 @@ export const MessageResponse = memo(
       // goes: a fenced snippet in an answer is rarely a file, and the file
       // viewer already owns that gesture for things that are.
       controls={{ code: { copy: true, download: false }, table: true, mermaid: true }}
+      {...(openInSessionBrowser ? { linkSafety: LINKS_UNGATED } : {})}
       {...props}
     >
       {typeof children === "string" ? revealed : children}

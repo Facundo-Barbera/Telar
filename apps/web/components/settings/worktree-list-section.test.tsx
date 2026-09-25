@@ -191,8 +191,9 @@ describe("Settings ▸ Storage ▸ Checkouts", () => {
       view.button("Give back")!.click();
       await settle();
     });
-    expect(view.host.textContent).toContain("Archive 1 session");
-    expect(view.host.textContent).toContain("archives its session");
+    expect(view.host.textContent).toContain("Release 1 checkout");
+    expect(view.host.textContent).toContain("released, session kept");
+    expect(view.host.textContent).toContain("Archive those sessions instead");
     view.unmount();
   });
 
@@ -278,8 +279,47 @@ describe("the row's words", () => {
       row({ basename: "a", owner: { kind: "session", sessionId: "s1", lifecycle: "settled" }, bytes: 1024 ** 3 }),
       row({ basename: "b", bytes: 1024 ** 3 }),
     ]);
-    expect(sentence).toContain("Archive 1 session");
+    expect(sentence).toContain("Release 1 checkout");
     expect(sentence).toContain("Remove 1 checkout");
     expect(sentence).toContain("Branches are kept.");
+    expect(confirmSentence([row({ basename: "a", owner: { kind: "session", sessionId: "s1", lifecycle: "settled" } })], true)).toContain(
+      "Archive 1 session",
+    );
   });
+});
+
+/**
+ * A READ THAT OUTLIVES THE PANE IS HUNG UP ON. Git reads per checkout take
+ * seconds on a large install; left running, this read held one of the
+ * cockpit's two read slots and the sidebar queued behind it until a reload.
+ * The pane's zero-timeout is run by hand, so nothing here sleeps.
+ */
+test("closing the pane aborts a checkouts read the engine has not answered", async () => {
+  const signals: AbortSignal[] = [];
+  const queued: Array<() => void> = [];
+  const realSetTimeout = window.setTimeout;
+  window.setTimeout = ((run: () => void) => (queued.push(run), queued.length)) as typeof window.setTimeout;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.signal) signals.push(init.signal);
+    return new Promise<Response>(() => {});
+  }) as typeof fetch;
+  try {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<WorktreeListSection />);
+    });
+    await act(async () => {
+      for (const run of queued.splice(0)) run();
+    });
+    expect(signals.length).toBe(1);
+    expect(signals[0]!.aborted).toBe(false);
+
+    act(() => root.unmount());
+    host.remove();
+    expect(signals[0]!.aborted).toBe(true);
+  } finally {
+    window.setTimeout = realSetTimeout;
+  }
 });

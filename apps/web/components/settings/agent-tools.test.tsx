@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComputerUseStatus } from "@telar/engine-client";
-import { ComputerUseProviders, computerUseHint, computerUseState, PermissionsSection } from "./permissions-section";
+import { ComputerUseProviders, computerUseHint, computerUseState, grantFollowUp, GRANT_POLL_MS, GRANT_WAIT_MS, PermissionsSection } from "./permissions-section";
 
 const probe = (over: Partial<ComputerUseStatus> = {}) =>
   ({ installed: true, hostRunning: true, backend: "cua", permission: "granted", ...over }) as unknown as ComputerUseStatus;
@@ -26,10 +26,10 @@ test("the probe states each say something different, and a failure is not 'check
   // and `status` stayed undefined, so a `!status` branch said "Checking" forever.
   expect(computerUseState({ checking: true, failed: false })).toBe("checking");
   expect(computerUseState({ checking: false, failed: true })).toBe("unknown");
-  expect(computerUseHint("unknown", false)).toContain("Could not reach the engine");
+  expect(computerUseHint("unknown")).toContain("Could not reach the engine");
   // Neither may name an engine before one has been measured.
   for (const state of ["checking", "unknown"] as const) {
-    expect(computerUseHint(state, true) ?? "").not.toContain("cua-driver");
+    expect(computerUseHint(state) ?? "").not.toContain("cua-driver");
   }
 });
 
@@ -39,6 +39,7 @@ test("three rows became one readout, ordered by what stops the feature first", (
   // ungranted, and one that is not running cannot be tested.
   expect(computerUseState({ status: probe(), checking: false, failed: false })).toBe("ready");
   expect(computerUseState({ status: probe({ permission: "denied" }), checking: false, failed: false })).toBe("not-granted");
+  expect(computerUseState({ status: probe({ permission: "unauthenticated" }), checking: false, failed: false })).toBe("not-accepted");
   expect(computerUseState({ status: probe({ hostRunning: false, permission: "denied" }), checking: false, failed: false })).toBe("not-running");
   expect(computerUseState({ status: probe({ installed: false, hostRunning: false }), checking: false, failed: false })).toBe("not-installed");
 });
@@ -46,7 +47,7 @@ test("three rows became one readout, ordered by what stops the feature first", (
 test("a working setup says so with its badge and no sentence at all", () => {
   // "Open source — Telar holds the grants through CuaDriver.app" was an
   // implementation note printed at every reader who had nothing to fix.
-  expect(computerUseHint("ready", true)).toBeUndefined();
+  expect(computerUseHint("ready")).toBeUndefined();
   expect(permissions).not.toContain("Open source");
   expect(permissions).not.toContain("Codex's bundled client");
   expect(permissions).not.toContain("Launches automatically when a session first needs it");
@@ -54,11 +55,48 @@ test("a working setup says so with its badge and no sentence at all", () => {
 
 test("the security semantics survive the copy edit", () => {
   // Compacting must not drop what a person needs to act: which grants are
-  // required, and where macOS hides the switch.
-  expect(computerUseHint("not-granted", true)).toContain("Accessibility + Screen Recording");
-  expect(computerUseHint("not-granted", false)).toContain("Privacy & Security → Automation");
-  expect(computerUseHint("not-installed", false)).toContain("Install cua-driver");
+  // required, and what to install.
+  expect(computerUseHint("not-granted")).toContain("Accessibility + Screen Recording");
+  expect(computerUseHint("not-installed")).toContain("Install cua-driver");
   expect(logins).toContain("Telar asks before every fill");
+});
+
+test("a client that refuses Telar as its caller is 'Not accepted', not a grant to go find", () => {
+  // Sky answered "-10000: Sender process is not authenticated" to every call
+  // from Telar, and the row sent readers to an Automation pane that could not
+  // fix it. The refusal is its own state now, and the Sky fallback is gone.
+  const hint = computerUseHint("not-accepted") ?? "";
+  expect(hint).toContain("does not accept Telar");
+  expect(hint).not.toContain("Automation");
+  expect(computerUseHint("not-installed")).not.toContain("Codex");
+  expect(permissions).toContain('"Not accepted"');
+  expect(permissions).not.toContain("Privacy & Security → Automation");
+  expect(permissions).not.toContain("AUTOMATION_PANE");
+  expect(permissions).not.toContain("wakeComputerUseHost");
+});
+
+test("the row says the probe is the gate, behind its ⓘ", () => {
+  expect(permissions).toContain('const GATE_INFO = "Sessions get the desktop tools only after a check here answers Ready."');
+  expect(permissions).toContain("info={bundled ? `${GATE_INFO} ${FINDER_INFO} ${REMOVE_INFO}` : GATE_INFO}");
+});
+
+test("bundled, the prompts name Telar's helper, not an app the reader installed", () => {
+  const hint = computerUseHint("not-granted", { bundled: true }) ?? "";
+  expect(hint).toContain("Accessibility + Screen Recording");
+  expect(hint).toContain("Computer Use for Telar");
+  expect(hint).not.toContain("CuaDriver.app");
+  // Dev builds still drive an external install, and say so.
+  expect(computerUseHint("not-granted")).toContain("CuaDriver.app");
+  expect(computerUseHint("ready", { bundled: true })).toBeUndefined();
+});
+
+test("Remove permissions is the bundled helper's alone, and asks first", () => {
+  expect(permissions).toContain("{bundled &&");
+  expect(permissions).toContain('state !== "checking"');
+  expect(permissions).toContain("Confirm remove");
+  // What it removes and what it leaves is not inferable from the button: ⓘ.
+  expect(permissions).toContain("clears only Telar's bundled helper, not a separately installed cua");
+  expect(permissions).toContain("api.resetComputerUseAccess()");
 });
 
 test("the Computer use row says WHOSE sessions it governs, in one line", () => {
@@ -81,7 +119,7 @@ test("the Computer use row says WHOSE sessions it governs, in one line", () => {
   expect(permissions).toContain("driverTakesComputerUse");
   // It rides the row rather than the hint: the hint is the sentence that
   // changes with the state, and a working setup still has none.
-  expect(computerUseHint("ready", true)).toBeUndefined();
+  expect(computerUseHint("ready")).toBeUndefined();
   expect(permissions).toContain("<ComputerUseProviders />");
 });
 
@@ -152,4 +190,29 @@ test("the text stays readable with the switch off", () => {
   // on, so the disclosure is not nested under the preamble's own state.
   const disclosure = orientation.slice(orientation.indexOf("Show the text"));
   expect(disclosure).not.toContain("policy.preamble &&");
+});
+
+test("while System Settings is open the pane waits, moves on to Screen Recording, and flips to Ready by itself", () => {
+  const denied = (missing: ("accessibility" | "screen-recording")[]) => probe({ permission: "denied", missing });
+  expect(grantFollowUp("accessibility", denied(["accessibility", "screen-recording"]))).toBe("wait");
+  // Accessibility on, Screen Recording left: Grant again, which opens that list.
+  expect(grantFollowUp("accessibility", denied(["screen-recording"]))).toBe("next-pane");
+  // Already in the Screen Recording list: never loops back.
+  expect(grantFollowUp("screen-recording", denied(["screen-recording"]))).toBe("wait");
+  expect(grantFollowUp("screen-recording", probe())).toBe("done");
+  expect(grantFollowUp(undefined, probe())).toBe("done");
+  // Re-measured on a clock AND on focus, and bounded like cua's own gate.
+  expect(permissions).toContain("window.setInterval(() => void tick(), GRANT_POLL_MS)");
+  expect(permissions).toContain('window.addEventListener("focus", tick)');
+  expect(GRANT_POLL_MS).toBeLessThanOrEqual(5_000);
+  expect(GRANT_WAIT_MS).toBe(600_000);
+});
+
+test("Grant's failures reach the row, and the helper can be shown in Finder", () => {
+  expect(permissions).toContain("if (answer.message) setError(answer.message);");
+  expect(permissions).toContain("api.revealComputerUseHelper()");
+  expect(permissions).toContain("Show in Finder");
+  // Why Finder is there is not inferable from the button: ⓘ, not a hint.
+  expect(permissions).toContain("drag it in");
+  expect(computerUseHint("not-granted", { bundled: true })).not.toContain("Finder");
 });

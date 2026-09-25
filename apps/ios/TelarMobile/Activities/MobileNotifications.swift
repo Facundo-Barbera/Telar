@@ -21,6 +21,9 @@ struct PushRegistration: Encodable {
     var liveActivities: Bool = false
     var pushToStartToken: String? = nil
     var hostName: String? = nil
+    /// Relay v2: how this Mac sends to this phone without holding its tokens.
+    /// An older Mac ignores it and keeps using the fields above.
+    var relay: RelayCredential? = nil
 }
 struct PushStatus: Decodable { var configured: Bool }
 
@@ -147,6 +150,7 @@ struct PushStatus: Decodable { var configured: Bool }
         let authorization = await UNUserNotificationCenter.current().notificationSettings()
         let allowed = authorization.authorizationStatus == .authorized || authorization.authorizationStatus == .provisional
         var next = PushReadiness()
+        let relayTokens = currentRelayTokens(token)
         for host in settings.hosts {
             guard let api = settings.api(for: host.id) else { continue }
             let activities = Activity<SessionActivityAttributes>.activities.filter { $0.attributes.hostId == host.id.uuidString }
@@ -160,13 +164,14 @@ struct PushStatus: Decodable { var configured: Bool }
             #else
             let sandbox = false
             #endif
+            let relay = await PushRelayClient.shared.credential(for: host.id.uuidString, tokens: relayTokens)
             do {
                 let reply = try await api.registerPush(.init(hostId: host.id.uuidString, token: token,
                     topic: Bundle.main.bundleIdentifier ?? "com.telar.mobile", sandbox: sandbox,
                     enabled: enabled && allowed, completions: completions, previews: previews,
                     mutedSessions: mutedSessions, activities: subscriptions,
                     liveActivities: liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled,
-                    pushToStartToken: startToken, hostName: host.name))
+                    pushToStartToken: startToken, hostName: host.name, relay: relay))
                 // REGISTERED, AND TOLD IT WILL HEAR NOTHING. The Mac has this
                 // phone's token and no relay to send with; that is a fact about
                 // the Mac, and the banner says which one.
@@ -175,6 +180,20 @@ struct PushStatus: Decodable { var configured: Bool }
         }
         readiness = next
         status = next.statusLine(enabled: enabled, allowed: allowed)
+    }
+
+    /// What the relay should hold for this phone: one list across every Mac,
+    /// each Live Activity named by its session id (the name a Mac sends by).
+    private func currentRelayTokens(_ token: String) -> RelayTokens {
+        let activities = Activity<SessionActivityAttributes>.activities.compactMap { activity -> RelayTokens.Activity? in
+            guard let pushToken = activityTokens[activity.id],
+                  activity.activityState == .active || activity.activityState == .stale,
+                  activity.attributes.sessionId.range(of: #"^[A-Za-z0-9_-]{1,128}$"#, options: .regularExpression) != nil
+            else { return nil }
+            return .init(id: activity.attributes.sessionId, token: pushToken)
+        }
+        let starts = liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled
+        return RelayTokens(token: token, pushToStartToken: starts ? startToken : nil, activities: Array(activities.prefix(8)))
     }
 
     /**
@@ -199,12 +218,24 @@ struct PushStatus: Decodable { var configured: Bool }
         await enable()
     }
 
+    /// The Approve action on an alert: accept exactly the request it named.
+    /// False when that Mac is unknown here or refused, so the caller can say so.
+    func approve(_ approval: NotificationActions.Approval) async -> Bool {
+        guard let api = settings?.api(for: approval.ref.hostId) else { return false }
+        do {
+            try await api.resolveRequest(approval.ref.sessionId, requestId: approval.requestId, decision: .accept, reason: nil, answers: nil)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func refreshActivityPrivacy() async {
         for activity in Activity<SessionActivityAttributes>.activities {
             var state = activity.content.state
             if !previews { state.title = activity.attributes.sessionId == "__automatic__" ? "Telar work" : "Telar session" }
             else if let host = UUID(uuidString: activity.attributes.hostId),
-                    let snapshot = try? await settings?.api(for: host)?.session(state.sessionId ?? activity.attributes.sessionId) {
+                    let snapshot = try? await settings?.api(for: host)?.session(state.sessionId ?? activity.attributes.sessionId, window: SnapshotWindow(turns: 1)) {
                 state.title = snapshot.session.title
             }
             await activity.update(ActivityContent(state: state, staleDate: activity.content.staleDate))
@@ -243,6 +274,7 @@ struct PushStatus: Decodable { var configured: Bool }
                 topic: Bundle.main.bundleIdentifier ?? "com.telar.mobile", sandbox: sandbox,
                 enabled: false, completions: false, previews: false, mutedSessions: [], activities: []))
         }
+        await PushRelayClient.shared.revoke(host: host.uuidString)
 
         for ref in followed where ref.hostId == host { await unfollow(ref) }
     }
@@ -313,6 +345,7 @@ struct PushStatus: Decodable { var configured: Bool }
 final class MobileAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().setNotificationCategories(NotificationActions.categories)
         return true
     }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -322,6 +355,14 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         Task { @MainActor in MobileNotifications.shared.status = "Push registration failed. Check network and signing." }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        if response.actionIdentifier == NotificationActions.approve,
+           let approval = NotificationActions.approval(from: response.notification.request.content.userInfo) {
+            Task { @MainActor in
+                if !(await MobileNotifications.shared.approve(approval)) { await NotificationActions.reportFailure(approval) }
+                completionHandler()
+            }
+            return
+        }
         let url = (response.notification.request.content.userInfo["url"] as? String).flatMap(URL.init(string:))
         Task { @MainActor in
             if let url { MobileNotifications.shared.destination = ScopedSessionID(url: url) }

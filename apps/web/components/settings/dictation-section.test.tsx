@@ -39,9 +39,6 @@ describe("the Dictation pane is a destination of its own", () => {
 
   test("and the page renders it there rather than stacking it in General", () => {
     expect(nav).toContain('{active === "dictation" && <DictationSection />}');
-    // The old home. A pane in the nav whose section still renders inside
-    // General would draw it twice.
-    expect(nav).not.toContain("<AgentSection />\n          {/* AFTER THE AGENT");
   });
 });
 
