@@ -57,6 +57,7 @@ import Testing
         // container header for the service to read, unlike the web's.
         let items = query(keyterms: ["Telar"])
         #expect(values("model", in: items) == ["nova-3"])
+        #expect(values("numerals", in: items) == ["true"])
         #expect(values("encoding", in: items) == ["linear16"])
         #expect(values("sample_rate", in: items) == ["16000"])
         // 300 AND NOT 100: the headset saw monosyllables doubled at the lower

@@ -35,6 +35,9 @@
  * able to show that it is hearing something — see `transcript.ts` for why those
  * interim words are SHOWN and never inserted. `smart_format` punctuates, which
  * is the difference between a dictated sentence and a wall of lowercase.
+ * `numerals` writes "novecientos" as "900": smart formatting only promises that
+ * for English, and under `language=multi` Deepgram applies numerals to English,
+ * Spanish, French, German, Russian, Portuguese, Italian and Dutch.
  *
  * NO `encoding` OR `sample_rate` IS SENT, and that is deliberate: `MediaRecorder`
  * hands over a container (WebM/Opus, or MP4 on Safari) and Deepgram reads the
@@ -99,6 +102,7 @@ export function listenUrl(language: string, keyterms: readonly string[], base: s
   url.searchParams.set("model", "nova-3");
   url.searchParams.set("interim_results", "true");
   url.searchParams.set("smart_format", "true");
+  url.searchParams.set("numerals", "true");
   url.searchParams.set("language", language);
   // The one that ends an utterance on a pause rather than on the socket
   // closing, so a final lands while the person is still talking.
