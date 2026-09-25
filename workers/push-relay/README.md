@@ -9,7 +9,41 @@ Objects. It does not enable billing or paid services. Free quotas can stop
 notifications until the quota resets. This is a personal deployment, not a
 public registration service.
 
-## Provision and deploy
+## v2: self-service, no Mac provisioning
+
+v2 runs alongside v1 on the same Worker, under `/v2/`, and needs no host
+registry. It adds no secrets: it reads the App Attest team from
+`TELAR_APNS_TEAM_ID`, and bundle ids are fixed in code. The App IDs must have
+the App Attest capability enabled.
+
+| Who | Request | Proof |
+|---|---|---|
+| Phone | `GET /v2/challenge` → `{challenge}` | none; per-IP limited, single use, 5 minutes |
+| Phone | `POST /v2/devices` `{keyId, attestation, challenge, bundle, sandbox, token, pushToStartToken?, activities:[{id, token}]}` → `201 {handle}` | App Attest attestation over `SHA256(challenge)` |
+| Phone | `PUT /v2/devices/:handle` (refresh tokens), `DELETE` (forget everything) | `x-telar-assertion` over `"<METHOD> <path>\n<body>"` |
+| Phone | `POST /v2/devices/:handle/keys` `{pairing}` → `201 {keyId, sendKey}`; `DELETE …/keys/:keyId` | assertion as above |
+| Mac | `POST /v2/devices/:handle/push` `{kind:"alert"\|"liveactivity", start?, activity?, collapseId, payload}` → `{status, reason?}` | `x-telar-key`, `x-telar-timestamp` (ms), `x-telar-signature` = hex HMAC-SHA256(sendKey, `"<ts>\nPOST\n<path>\n<body>"`) |
+
+- **Tokens stay in the relay.** The Mac names a kind and, for a Live
+  Activity, the activity id the phone registered. The relay picks the token,
+  the topic (`<bundle>` or `<bundle>.push-type.liveactivity`) and the APNs host
+  (`sandbox` → `api.sandbox.push.apple.com`).
+- **Bundles:** `com.telar.mobile` and `com.telar.mobile.dev`.
+- **Keys:** there is one send key per pairing. Asking again for the same
+  `pairing` rotates that key. Each handle holds at most 16 keys. A key unused
+  for 60 days, or a handle the phone has not refreshed in 60 days, expires.
+- **Signatures:** a signature is refused outside ±5 minutes or if seen before.
+  Timestamps from one Mac must strictly increase.
+- **Limits:**
+  - per IP (IPv6 by /64): 30 challenges, 10 registrations, 240 phone requests
+    and 3,000 sends an hour;
+  - per handle: 120 sends a minute and 5,000 a day;
+  - across all of v2: 40,000 requests a day, answered with `503` and
+    `Retry-After`.
+- **Dead tokens:** a token Apple disowns is dropped. The handle and its keys
+  stay, and the phone's next refresh restores delivery.
+
+## Provision and deploy (v1)
 
 1. Run `swift workers/push-relay/provision-host.swift` on the Mac. It generates
    a random runtime credential in Keychain, or reuses its existing identity.

@@ -1,6 +1,9 @@
 // Personal relay: unique revocable host credentials, production Telar destinations only.
+// v2 (`v2.mjs`) runs alongside: phones register themselves with App Attest.
 import { DAY, DEAD_TOKEN, appleReason, digest, readJSON, reply } from './shared.mjs';
+import { handleV2 } from './v2.mjs';
 export { digest, readJSON };
+export { RelayGate, RelayDevice } from './v2.mjs';
 /**
  * ONE HOST'S DAILY CEILING — issue #584.
  *
@@ -34,6 +37,8 @@ export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
     if (request.method === 'GET' && path === '/health') return reply(200, { service: 'telar-push', version: 1 });
+    // v2 authenticates per phone and per pair, never with a host bearer.
+    if (path.startsWith('/v2/')) return handleV2(request, env, path);
     // Fail closed. No public enrollment endpoint and no app-wide embedded secret.
     let hosts;
     try { hosts = JSON.parse(env.HOSTS); } catch { return reply(503); }

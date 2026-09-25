@@ -8,7 +8,12 @@
   "observability": { "enabled": false },
   "durable_objects": { "bindings": [
     { "name": "HOST_STATE", "class_name": "RelayHost" },
-    { "name": "SIGNER", "class_name": "RelaySigner" }
+    { "name": "SIGNER", "class_name": "RelaySigner" },
+    { "name": "GATE", "class_name": "RelayGate" },
+    { "name": "DEVICE_STATE", "class_name": "RelayDevice" }
   ] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayHost", "RelaySigner"] }]
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RelayHost", "RelaySigner"] },
+    { "tag": "v2", "new_sqlite_classes": ["RelayGate", "RelayDevice"] }
+  ]
 }
