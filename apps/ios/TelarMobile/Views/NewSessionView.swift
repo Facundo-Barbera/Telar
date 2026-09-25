@@ -742,14 +742,15 @@ struct NewSessionDraftView: View {
                 saveTextDraft()
                 // createSession takes neither a model nor a runtime mode —
                 // they are session PATCHes, applied before the first turn runs.
-                let modelTouched = choice.model != nil || choice.effort != nil || choice.fastMode != nil
+                let modelTouched = choice.isTouched
                 if modelTouched || runtimeMode != nil {
                     var patch = SessionPatch()
                     if let runtimeMode { patch.runtimeMode = runtimeMode }
                     if modelTouched, let instanceId = session.providerInstanceId ?? session.model?.instanceId {
                         patch.model = ModelSelection(
                             instanceId: instanceId, model: choice.model,
-                            effort: choice.effort, fastMode: choice.fastMode
+                            effort: choice.effort, fastMode: choice.fastMode,
+                            serviceTier: choice.serviceTier, ultracode: choice.ultracode
                         )
                     }
                     try? await api.patchSession(session.id, patch: patch)

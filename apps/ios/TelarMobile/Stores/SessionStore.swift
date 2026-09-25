@@ -126,7 +126,8 @@ import Observation
         catalogue = try? await api.models(driver: driver)
     }
 
-    /// Change what runs the next turn — model, effort, fast mode, whole. The
+    /// Change what runs the next turn — model, effort, fast mode, service
+    /// tier, ultracode, whole. The
     /// instance is the session's own when it has one, else the first enabled
     /// instance for its driver — the engine validates the pair either way.
     func setModelChoice(_ choice: ModelChoice) async {
@@ -145,7 +146,8 @@ import Observation
                 self.sessionId,
                 patch: SessionPatch(model: ModelSelection(
                     instanceId: instanceId, model: choice.model,
-                    effort: choice.effort, fastMode: choice.fastMode
+                    effort: choice.effort, fastMode: choice.fastMode,
+                    serviceTier: choice.serviceTier, ultracode: choice.ultracode
                 ))
             )
         }

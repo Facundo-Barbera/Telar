@@ -125,3 +125,84 @@ enum ModelFamilies {
         }
     }
 }
+
+/// The per-model knobs beside the model list — which sections a row offers,
+/// which option is the provider's default, and what a tap stores. Kept apart
+/// from the view so the rules are testable without a menu.
+enum ModelOptions {
+    enum Section: Equatable { case reasoning, contextWindow, fastMode, serviceTier }
+
+    /// Menu order; a section a row does not publish is simply absent.
+    static func sections(row: ProviderModel?, family: ModelFamilies.Family?) -> [Section] {
+        guard let row else { return [] }
+        var out: [Section] = []
+        if !row.efforts.isEmpty { out.append(.reasoning) }
+        if ModelFamilies.windows(of: family).count > 1 { out.append(.contextWindow) }
+        if row.fastMode { out.append(.fastMode) }
+        if !(row.serviceTiers ?? []).isEmpty { out.append(.serviceTier) }
+        return out
+    }
+
+    // MARK: reasoning
+
+    static func offersUltracode(driver: String, row: ProviderModel?) -> Bool {
+        driver == "claude" && row?.efforts.contains("xhigh") == true
+    }
+
+    /// "Auto" is only a row while the provider's default level is unknown;
+    /// once known, the Default-marked level IS the automatic choice.
+    static func showsAutoEffort(_ row: ProviderModel) -> Bool { row.defaultEffort == nil }
+
+    static func isDefaultEffort(_ level: String, row: ProviderModel) -> Bool { row.defaultEffort == level }
+
+    /// Picking the default level stores nothing, so the session follows the
+    /// provider if its default moves.
+    static func storedEffort(for level: String, row: ProviderModel) -> String? {
+        isDefaultEffort(level, row: row) ? nil : level
+    }
+
+    static func isEffortSelected(_ level: String, choice: ModelChoice, row: ProviderModel) -> Bool {
+        if choice.ultracode == true { return false }
+        if let effort = choice.effort { return effort == level }
+        return isDefaultEffort(level, row: row)
+    }
+
+    /// What the pill names: the pick, else Ultracode, else the default level,
+    /// else Auto. Nil when the row has no reasoning control at all.
+    static func levelLabel(choice: ModelChoice, row: ProviderModel?) -> String? {
+        if let effort = choice.effort { return ModelFamilies.effortLabel(effort) }
+        if choice.ultracode == true { return "Ultracode" }
+        guard let row, !row.efforts.isEmpty else { return nil }
+        return row.defaultEffort.map(ModelFamilies.effortLabel) ?? "Auto"
+    }
+
+    // MARK: service tier
+
+    static func showsAutoTier(_ row: ProviderModel) -> Bool { row.defaultServiceTier == nil }
+
+    static func storedTier(for id: String, row: ProviderModel) -> String? {
+        row.defaultServiceTier == id ? nil : id
+    }
+
+    static func isTierSelected(_ id: String, choice: ModelChoice, row: ProviderModel) -> Bool {
+        (choice.serviceTier ?? row.defaultServiceTier) == id
+    }
+
+    // MARK: moving rows
+
+    /// Move to a row, DROPPING WHAT IT CANNOT HONOUR: an effort or tier it does
+    /// not list fails the turn; fast mode or ultracode it does not offer
+    /// silently does nothing.
+    static func moving(_ choice: ModelChoice, to row: ProviderModel, driver: String) -> ModelChoice {
+        var next = choice
+        next.driver = driver
+        next.model = row.id
+        if let effort = next.effort, !row.efforts.contains(effort) { next.effort = nil }
+        if next.fastMode == true, !row.fastMode { next.fastMode = nil }
+        if next.ultracode == true, !offersUltracode(driver: driver, row: row) { next.ultracode = nil }
+        if let tier = next.serviceTier, !(row.serviceTiers ?? []).contains(where: { $0.id == tier }) {
+            next.serviceTier = nil
+        }
+        return next
+    }
+}
