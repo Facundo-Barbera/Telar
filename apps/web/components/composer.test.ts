@@ -130,10 +130,35 @@ describe("the skills menu has something to ask before a session exists", () => {
 
 describe("the corner button is Stop only while a running turn has nothing typed", () => {
   test("a draft during a turn turns it back into Send, so a steer can be clicked", () => {
-    expect(composer).toContain("const stopping = busy && (escArmed || !draft.trim());");
+    // "Typed" includes a pasted picture — see the image-only block below.
+    expect(composer).toContain("const stopping = busy && (escArmed || !hasContent);");
     // Every place that used to read `busy` for the stop gesture reads `stopping`.
     expect(composer).toContain('type={stopping && !questionActive ? "button" : "submit"}');
     expect(composer).toContain("onClick={stopping && !questionActive ? onStop : undefined}");
     expect(composer).not.toContain("onClick={busy && !questionActive ? onStop : undefined}");
+  });
+});
+
+describe("a screenshot with no words is a message", () => {
+  const cockpit = strip("session-cockpit.tsx");
+
+  test("every send rule reads one content rule, and it counts attachments", () => {
+    // Send, the dimmed button and the Send/Stop choice used to read
+    // `draft.trim()` each; an image-only box was "nothing" to all three, so
+    // mid-turn the button said Stop over a pasted screenshot.
+    expect(composer).toContain("const hasContent = turnHasContent(draft, attachments.map((file) => file.type));");
+    expect(composer).toContain('if (!hasContent) return { ok: false, reason: "There is nothing to send." };');
+    expect(composer).toContain('!busy && !hasContent && "opacity-60"');
+    expect(composer).not.toMatch(/stopping = [^;]*draft\.trim\(\)/);
+  });
+
+  test("the cockpit sends it and seeds the title from the picture", () => {
+    expect(cockpit).toContain("if (!turnHasContent(draft, attachments.map((file) => file.type)) || browserDraftSendPending.current) return;");
+    expect(cockpit).toContain("title: seedSessionTitle(text, splitImages(files).images.map((file) => file.name)),");
+  });
+
+  test("the API route forwards an empty input rather than refusing it", () => {
+    const route = fs.readFileSync(path.join(dir, "../app/api/sessions/[sessionId]/turns/route.ts"), "utf8");
+    expect(route).toContain('input: typeof body.input === "string" ? body.input : requiredString(body.input, "Turn input"),');
   });
 });

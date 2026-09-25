@@ -43,7 +43,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import type { ClaudeConversation, EngineRequest, ProjectAvailability, ProviderDriverKind, ProviderSkills, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import { turnHasContent, type ClaudeConversation, type EngineRequest, type ProjectAvailability, type ProviderDriverKind, type ProviderSkills, type RuntimeMode, type Session, type UsageSnapshot } from "@telar/engine-client";
 import {
   advance as advanceQuestion,
   buildAnswers,
@@ -695,6 +695,10 @@ export function Composer({
   /** The Claude Code conversation picker is open (#616). */
   const [resuming, setResuming] = useState(false);
 
+  /** Words or a picture — a screenshot alone is a message. The engine's own
+   *  rule, so Send is never offered on something it would refuse. */
+  const hasContent = turnHasContent(draft, attachments.map((file) => file.type));
+
   const trySubmit = useCallback((): ComposerSubmit => {
     // A QUESTION ON SCREEN CHANGES WHAT SENDING MEANS: the box is that
     // question's custom answer, so Enter advances or answers the form.
@@ -716,10 +720,10 @@ export function Composer({
     }
     if (!ready) return { ok: false, reason: "This conversation is not ready yet." };
     if (driveAway) return { ok: false, reason: "The project's files are not reachable right now." };
-    if (!draft.trim()) return { ok: false, reason: "There is nothing to send." };
+    if (!hasContent) return { ok: false, reason: "There is nothing to send." };
     onSubmit();
     return { ok: true };
-  }, [questionActive, ready, driveAway, draft, onSubmit, fresh, onAdopt, onDraftChange]);
+  }, [questionActive, ready, driveAway, draft, hasContent, onSubmit, fresh, onAdopt, onDraftChange]);
 
   /* ---------------------------------------------------------------- *
    * THE PAGE API'S SIDE OF THE COMPOSER (#548) — see lib/page-api.ts.
@@ -1420,7 +1424,7 @@ export function Composer({
   // behind it is settled, leaving the session idle. It briefly said "Pause" —
   // it paused, and a person who pressed it had to press Resume before they
   // could say anything. See the cockpit's `stop`.
-  const stopping = busy && (escArmed || !draft.trim());
+  const stopping = busy && (escArmed || !hasContent);
   const submitLabel = escArmed ? "Press Escape again to stop" : stopping ? "Stop" : "Send";
   const questionSubmitLabel = isLastQuestion(qFields, qd)
     ? qFields.length === 1
@@ -1936,7 +1940,7 @@ export function Composer({
               onClick={stopping && !questionActive ? onStop : undefined}
               className={cn(
                 escArmed && !questionActive && "bg-destructive text-background hover:bg-destructive",
-                !busy && !draft.trim() && "opacity-60",
+                !busy && !hasContent && "opacity-60",
                 questionActive && !canAdvance(qFields, qd) && "opacity-60",
               )}
             >
