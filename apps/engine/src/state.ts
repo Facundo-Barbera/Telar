@@ -130,6 +130,7 @@ import {
   CustomProviderModel,
   DEFAULT_MODEL_OVERLAY,
   ModelOverlay as ModelOverlaySchema,
+  ModelCatalogue as ModelCatalogueSchema,
   type GitFilePatch,
   type GitReadFailure,
   type SessionDiff,
@@ -240,6 +241,8 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
+import { refuseCliSpawnUnderTest, resolveCliAsync } from "./cli-resolution";
+import { z } from "zod";
 import { inheritedOwnedEnv, providerEnvIsCredential, providerOwnsEnv, providerProcessEnv, stoppedInheriting } from "./provider-instances";
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
 import type { ClaudeConversation, ForkCut } from "./claude-fork";
@@ -744,6 +747,34 @@ const GITHUB_CACHE_MS = 30_000;
 /** Longer than the GitHub cache because the read is heavier — a whole
  *  subprocess — and the answer changes far less often. */
 const MODEL_CACHE_MS = 5 * 60_000;
+/** How often a served catalogue is compared with the installed CLI's version.
+ *  The comparison is a cached lookup unless the binary changed. */
+const MODEL_VERSION_CHECK_MS = 60_000;
+
+/** Which provider CLI is installed, and at which version. */
+export type InstalledCli = { installed: boolean; version?: string };
+
+/** The real lookup: `cli-resolution`'s async probe, cached per binary. Refused
+ *  under test (#532), which reads as "installed, version unknown" so a test
+ *  store never spawns and never skips a refresh it asked for. */
+async function installedCli(driver: ProviderDriverKind): Promise<InstalledCli> {
+  try {
+    refuseCliSpawnUnderTest(`${driver} --version`);
+  } catch {
+    return { installed: true };
+  }
+  try {
+    const resolution = await resolveCliAsync(driver);
+    return resolution.status === "missing" ? { installed: false } : { installed: true, ...(resolution.version ? { version: resolution.version } : {}) };
+  } catch {
+    return { installed: false };
+  }
+}
+
+/** One persisted entry: the provider's own answer, and the CLI version it came
+ *  from — which is what a later start compares to decide whether to re-ask. */
+const StoredCatalogueSchema = z.object({ catalogue: ModelCatalogueSchema, cliVersion: z.string().min(1).optional() });
+type StoredCatalogue = z.infer<typeof StoredCatalogueSchema>;
 
 /**
  * How far the DURABLE `Turn.lastProgressAt` may drift behind the in-memory
@@ -2471,6 +2502,7 @@ export class EngineStore {
   /** See the constructor: the real subprocess handshake unless a test says
    *  otherwise. */
   private readonly readModels: typeof readModelCatalogue;
+  private readonly cliVersion: (driver: ProviderDriverKind) => Promise<InstalledCli>;
   private readonly manifest: ModelManifest;
   /** The injected SYNCHRONOUS runner. Reached only through `git` below. */
   private readonly syncGit: GitRunner;
@@ -2542,9 +2574,20 @@ export class EngineStore {
   /** What there is to filter by, per project. In memory like every cache here: it
    *  describes somebody else's repository settings. */
   private readonly facetCache = new Map<string, GitHubFacets>();
-  /** In memory, like the GitHub cache and for the same reason: it describes
-   *  somebody else's installation, which changes without telling us. */
-  private readonly modelCache = new Map<ProviderDriverKind, ModelCatalogue>();
+  /** The last GOOD catalogue per provider, mirrored from `model-catalogues.json`
+   *  — see `modelCatalogue`. Loaded lazily, once. */
+  private modelCache: Map<ProviderDriverKind, StoredCatalogue> | undefined;
+  /** A provider that could not be read and has never been read well: its
+   *  answer, remembered in memory only, so a menu does not respawn it per open. */
+  private readonly modelFailures = new Map<ProviderDriverKind, ModelCatalogue>();
+  /** The refresh in flight per provider, so every reader shares one spawn. */
+  private readonly modelRefreshes = new Map<ProviderDriverKind, Promise<ModelCatalogue>>();
+  /** Refreshes run ONE AT A TIME, whichever provider they are for. */
+  private modelRefreshChain: Promise<unknown> = Promise.resolve();
+  /** When each provider's CLI version was last compared — see `modelCatalogue`. */
+  private readonly modelVersionCheckedAt = new Map<ProviderDriverKind, number>();
+  /** When each provider was last asked, successfully or not. */
+  private readonly modelAttemptedAt = new Map<ProviderDriverKind, number>();
   /** In-flight `prepareClaudeCatalogue`, so concurrent claims share one probe. */
   private claudeCataloguePrepare: Promise<void> | undefined;
   /** When the probe last failed — see `prepareClaudeCatalogue`. */
@@ -4568,6 +4611,10 @@ export class EngineStore {
        *  wants to prove an overlay reaches a menu should not have to spawn a
        *  `codex app-server` to do it. */
       models?: typeof readModelCatalogue;
+      /** Which version of a provider's CLI is installed, if any — the key a
+       *  persisted catalogue is refreshed on. Injected so a test never probes a
+       *  real binary; see `installedCli`. */
+      cliVersion?: (driver: ProviderDriverKind) => Promise<InstalledCli>;
       /** The model manifest (./model-manifest.ts). INJECTED BY TESTS ONLY —
        *  the default is the bundled one, and a test about the overlay should
        *  not have to know which models the manifest declares this week. */
@@ -4593,6 +4640,7 @@ export class EngineStore {
     this.onQueueChanged = options.onQueueChanged;
     this.onTurnsStopped = options.onTurnsStopped;
     this.readModels = options.models ?? readModelCatalogue;
+    this.cliVersion = options.cliVersion ?? installedCli;
     this.manifest = options.manifest ?? BUNDLED_MANIFEST;
     this.computerUse = options.computerUse;
     this.syncGit = options.git ?? defaultGitRunner;
@@ -6503,12 +6551,32 @@ export class EngineStore {
    * cache — a timer must never be able to hold this open.
    */
   /**
-   * Which models a provider says it has.
+   * Which models a provider says it has — ANSWERED AT ONCE WHENEVER IT HAS EVER
+   * BEEN ASKED.
    *
-   * CACHED FOR THE SAME REASON THE GITHUB READ IS, and harder: answering means
-   * spawning a `codex app-server`, initialising it and killing it. Five minutes
-   * is far longer than a person spends in a menu and far shorter than the time
-   * between a provider shipping a model and somebody wanting it.
+   * Asking means spawning the provider: measured on the owner's Mac, Codex's
+   * app-server answers in ~0.1 s, OpenCode's `models` in 1–2 s, and Claude's
+   * handshake plus the per-model effort probe (#959) in ~5.5 s. The cache used
+   * to be memory-only with a five-minute life, so every engine start, and every
+   * menu opened five minutes after the last, paid that wait in a spinner.
+   *
+   * SO THE LAST GOOD ANSWER IS PERSISTED (`model-catalogues.json`) AND SERVED
+   * FIRST — stale-while-revalidate. A provider's model list changes when its CLI
+   * updates or its service ships a model, both rare against how often a picker
+   * opens; showing yesterday's list for the second it takes to fetch today's is
+   * the right trade, and `refreshing` tells the client to read again for it.
+   *
+   * WHEN IT REFRESHES: past `MODEL_CACHE_MS`, when the CLI's `--version`
+   * changed since the stored read, on `force` (the refresh the Models tab
+   * sends), and once shortly after engine start (`prefetchModelCatalogues`).
+   *
+   * A FAILED REFRESH NEVER REPLACES A GOOD ANSWER. An empty list or an error
+   * keeps the stored one; only a provider that has never answered shows its
+   * error, and that failure is memoised in memory for the same five minutes so
+   * a menu cannot respawn it on every open.
+   *
+   * The PROVIDER's answer is per driver, as before; the instance selects only
+   * the overlay laid over it below.
    */
   async modelCatalogue(
     driver: ProviderDriverKind,
@@ -6517,15 +6585,31 @@ export class EngineStore {
     if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
       throw new EngineStateError("invalid_request", "unknown provider driver");
     }
-    const cached = this.modelCache.get(driver);
     let raw: ModelCatalogue;
-    if (cached && !options.force && this.now() - cached.readAt < MODEL_CACHE_MS) {
-      raw = structuredClone(cached);
+    const known = this.storedCatalogues().get(driver);
+    if (options.force) {
+      raw = await this.refreshModelCatalogue(driver);
+    } else if (known) {
+      raw = known.catalogue;
+      // STALE, OR POSSIBLY STALE: past its life, or not compared with the
+      // installed CLI for a minute. Either way the answer is this one, now.
+      // Past its life it is re-read outright (and `refreshing` says so below);
+      // otherwise the installed CLI's version decides, once a minute at most.
+      const checkedAt = this.modelVersionCheckedAt.get(driver);
+      const attemptedAt = this.modelAttemptedAt.get(driver);
+      // A provider that just failed to answer is not asked again on every open.
+      const retrying = attemptedAt !== undefined && this.now() - attemptedAt < MODEL_VERSION_CHECK_MS;
+      if (this.now() - known.catalogue.readAt >= MODEL_CACHE_MS && !retrying) {
+        void this.refreshModelCatalogue(driver).catch(() => undefined);
+      } else if (checkedAt === undefined || this.now() - checkedAt >= MODEL_VERSION_CHECK_MS) {
+        void this.revalidateModelCatalogue(driver).catch(() => undefined);
+      }
     } else {
-      raw = await this.readModels(driver, this.now);
-      this.modelCache.set(driver, raw);
-      raw = structuredClone(raw);
+      const failed = this.modelFailures.get(driver);
+      raw = failed && this.now() - failed.readAt < MODEL_CACHE_MS ? failed : await this.refreshModelCatalogue(driver);
     }
+    raw = structuredClone(raw);
+    if (this.modelRefreshes.has(driver)) raw.refreshing = true;
     /**
      * THE OVERLAY IS APPLIED HERE AND CACHED NOWHERE.
      *
@@ -6550,6 +6634,102 @@ export class EngineStore {
     // a row in the picker is curation, not a statement about what the CLI runs.
     if (driver === "claude") this.rememberClaudeDefault(raw.models, raw.cliVersion);
     return { ...raw, instanceId, models: applyModelOverlay(listed, overlay) };
+  }
+
+  /**
+   * Ask the provider again if its stored answer is old or its CLI changed.
+   * The version probe is `cli-resolution`'s, cached per binary and off the
+   * event loop, so this costs a spawn only when the binary itself changed.
+   */
+  private async revalidateModelCatalogue(driver: ProviderDriverKind): Promise<void> {
+    this.modelVersionCheckedAt.set(driver, this.now());
+    const known = this.storedCatalogues().get(driver);
+    const installed = await this.cliVersion(driver);
+    if (!installed.installed) return;
+    const changed = known !== undefined && known.cliVersion !== installed.version;
+    const attemptedAt = this.modelAttemptedAt.get(driver);
+    const retrying = attemptedAt !== undefined && this.now() - attemptedAt < MODEL_VERSION_CHECK_MS;
+    // A new CLI is always worth a read; an old answer is, unless one just failed.
+    if (changed || ((!known || this.now() - known.catalogue.readAt >= MODEL_CACHE_MS) && !retrying)) await this.refreshModelCatalogue(driver);
+  }
+
+  /**
+   * Read one provider's catalogue and keep it if it is good — shared by every
+   * concurrent reader, and queued behind any other provider's read, so a burst
+   * of menus or the start-up prefetch is one spawn at a time.
+   *
+   * Answers the fresh catalogue on success, the stored one when the read failed
+   * and there is one, and the failure only when nothing good was ever read.
+   */
+  private refreshModelCatalogue(driver: ProviderDriverKind): Promise<ModelCatalogue> {
+    const running = this.modelRefreshes.get(driver);
+    if (running) return running;
+    this.modelAttemptedAt.set(driver, this.now());
+    const work = this.modelRefreshChain.then(async (): Promise<ModelCatalogue> => {
+      const installed = await this.cliVersion(driver).catch((): InstalledCli => ({ installed: false }));
+      const read = await this.readModels(driver, this.now);
+      const known = this.storedCatalogues().get(driver);
+      if (read.models.length > 0) {
+        this.storeCatalogue(driver, { catalogue: read, ...(installed.version ? { cliVersion: installed.version } : {}) });
+        this.modelFailures.delete(driver);
+        return read;
+      }
+      if (known) return known.catalogue;
+      this.modelFailures.set(driver, read);
+      return read;
+    });
+    const shared = work.finally(() => {
+      if (this.modelRefreshes.get(driver) === shared) this.modelRefreshes.delete(driver);
+    });
+    this.modelRefreshes.set(driver, shared);
+    this.modelRefreshChain = shared.catch(() => undefined);
+    return shared;
+  }
+
+  /**
+   * READ EVERY INSTALLED PROVIDER ONCE, SOON AFTER START — so the first picker
+   * anybody opens has an answer that is not days old, and a provider installed
+   * since the last run gets one at all. One at a time (`refreshModelCatalogue`
+   * queues), and only where the stored answer is missing, old, or from another
+   * CLI version. Called by the daemon on a delay; never on a request path.
+   */
+  async prefetchModelCatalogues(drivers: readonly ProviderDriverKind[] = ["claude", "codex", "opencode"]): Promise<void> {
+    for (const driver of drivers) {
+      try {
+        await this.revalidateModelCatalogue(driver);
+      } catch {
+        // One provider that cannot be read must not stop the next.
+      }
+    }
+  }
+
+  private storedCatalogues(): Map<ProviderDriverKind, StoredCatalogue> {
+    if (this.modelCache) return this.modelCache;
+    const loaded = new Map<ProviderDriverKind, StoredCatalogue>();
+    try {
+      const stored = this.readDocument(this.paths.modelCatalogues) as { entries?: unknown } | undefined;
+      const parsed = StoredCatalogueSchema.array().safeParse(stored?.entries ?? []);
+      // A torn file costs the head start, not the picker: the next read refills it.
+      if (parsed.success) for (const entry of parsed.data) loaded.set(entry.catalogue.driver, entry);
+    } catch {
+      /* unreadable: start empty */
+    }
+    this.modelCache = loaded;
+    return loaded;
+  }
+
+  private storeCatalogue(driver: ProviderDriverKind, entry: StoredCatalogue): void {
+    const all = this.storedCatalogues();
+    // Never persisted with the per-answer flag, and never with an overlay: the
+    // file holds what the provider said, which is what `source` promises.
+    const { refreshing: _refreshing, instanceId: _instance, ...catalogue } = entry.catalogue;
+    all.set(driver, { ...entry, catalogue });
+    try {
+      this.writeDocument(this.paths.modelCatalogues, { version: STATE_VERSION, entries: [...all.values()] });
+    } catch (error) {
+      // Memory still has it; the next start simply reads the provider again.
+      console.error(`[engine] could not persist the ${driver} model catalogue: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**
@@ -7636,7 +7816,7 @@ export class EngineStore {
    * against), the selection is trusted as stored — it was picked off that list.
    */
   private supportedOptions(driver: ProviderDriverKind, selection: ModelSelection): ModelSelection | undefined {
-    const cached = this.modelCache.get(driver);
+    const cached = this.storedCatalogues().get(driver)?.catalogue;
     if (!cached) return selection;
     const listed = driver === "claude" ? applyModelManifest(cached.models, this.manifest, cached.cliVersion) : cached.models;
     const id = selection.model ?? listed.find((row) => row.isDefault)?.id;
@@ -10997,7 +11177,7 @@ export class EngineStore {
         return undefined;
       }
     })();
-    const cached = this.modelCache.get("claude");
+    const cached = this.storedCatalogues().get("claude")?.catalogue;
     if (cached) {
       const listed = applyModelManifest(cached.models, this.manifest, cached.cliVersion);
       return chosenDefault(listed, chosen)?.id ?? longDefaultOf(listed);

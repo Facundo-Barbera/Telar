@@ -197,6 +197,10 @@ export type EngineDaemonOptions = {
   /** The automatic cleanup's cadence: 30 min, first run 5 min after start. */
   cleanupIntervalMs?: number;
   cleanupFirstDelayMs?: number;
+  /** How long after start the model catalogues are refreshed in the
+   *  background — see `EngineStore.prefetchModelCatalogues`. `null` turns the
+   *  prefetch off, which is what a test that counts provider reads wants. */
+  modelPrefetchDelayMs?: number | null;
   /**
    * Testable cadence for the request-deadline sweep — issue #541 D.
    *
@@ -1439,6 +1443,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   };
   const cleanupFirst = setTimeout(sweepCleanup, options.cleanupFirstDelayMs ?? 5 * 60 * 1000);
   cleanupFirst.unref();
+  /**
+   * THE MODEL CATALOGUES, REFRESHED ONCE SOON AFTER START — so the first picker
+   * opened today answers from a list read today. Late enough not to compete
+   * with the start itself; one provider at a time inside the store; never on a
+   * request path. A picker opened before it runs still answers at once, from
+   * the catalogue persisted by the last run.
+   */
+  const modelPrefetch = options.modelPrefetchDelayMs === null
+    ? undefined
+    : setTimeout(() => void store.prefetchModelCatalogues().catch(() => undefined), options.modelPrefetchDelayMs ?? 5_000);
+  modelPrefetch?.unref();
   const cleanupSweeper = setInterval(sweepCleanup, options.cleanupIntervalMs ?? 30 * 60 * 1000);
   cleanupSweeper.unref();
   const scheduleSweeper = setInterval(() => {
@@ -5462,6 +5477,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // deletes, so it does not tick against a store that is closing.
         store.setups.stopAll();
         clearTimeout(cleanupFirst);
+        if (modelPrefetch) clearTimeout(modelPrefetch);
         clearInterval(cleanupSweeper);
         removeOwnDiscovery(store, daemonId);
         store.closeExecutionStore();
@@ -5473,6 +5489,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     clearInterval(delegationSweeper);
     clearInterval(requestDeadlineSweeper);
     clearTimeout(cleanupFirst);
+    if (modelPrefetch) clearTimeout(modelPrefetch);
     clearInterval(cleanupSweeper);
     server.close();
     store.closeExecutionStore();

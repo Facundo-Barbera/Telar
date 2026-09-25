@@ -48,6 +48,52 @@ export function forgetModelCatalogues(): void {
   for (const listener of listeners) listener();
 }
 
+/**
+ * READ ONE CATALOGUE, AND FOLLOW A REFRESH THE ENGINE SAYS IS ON ITS WAY.
+ *
+ * The engine answers from the last catalogue it persisted and asks the
+ * provider in the background (`refreshing`). So the picker never waits: it
+ * shows that answer now, and this reads again a moment later. When the newer
+ * one lands, it replaces the cached promise and bumps the generation, so every
+ * mounted picker re-reads through the invalidation it already listens to.
+ */
+const FOLLOW_MS = 1_500;
+const FOLLOW_TRIES = 8;
+
+function readCatalogue(key: string, driver: ProviderDriverKind, instanceId: string, tries = 0): Promise<ModelCatalogue> {
+  const pending = api.modelCatalogue(driver, instanceId ? { instanceId } : {}).then((result) => result.catalogue);
+  catalogues.set(key, pending);
+  // A failed read must not poison the cache — the next popover should try
+  // again rather than inherit the error for the life of the page.
+  void pending.catch(() => {
+    if (catalogues.get(key) === pending) catalogues.delete(key);
+  });
+  void pending
+    .then((first) => {
+      if (!first.refreshing || tries >= FOLLOW_TRIES || typeof window === "undefined") return;
+      window.setTimeout(() => {
+        // Superseded by a Settings edit or another follow meanwhile: stop.
+        if (catalogues.get(key) !== pending) return;
+        void api
+          .modelCatalogue(driver, instanceId ? { instanceId } : {})
+          .then(({ catalogue: next }) => {
+            if (catalogues.get(key) !== pending) return;
+            if (next.refreshing) {
+              void readCatalogue(key, driver, instanceId, tries + 1);
+              return;
+            }
+            if (next.readAt === first.readAt) return;
+            catalogues.set(key, Promise.resolve(next));
+            generation += 1;
+            for (const listener of listeners) listener();
+          })
+          .catch(() => undefined);
+      }, FOLLOW_MS);
+    })
+    .catch(() => undefined);
+  return pending;
+}
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -88,11 +134,7 @@ export function useModelCatalogues(targets: readonly ModelTarget[]): ReadonlyMap
         const [driver, instanceId] = key.split(":") as [ProviderDriverKind, string];
         let pending = catalogues.get(key);
         if (!pending) {
-          pending = api.modelCatalogue(driver, instanceId ? { instanceId } : {}).then((result) => result.catalogue);
-          catalogues.set(key, pending);
-          // A failed read must not poison the cache — the next popover should
-          // try again rather than inherit the error for the life of the page.
-          void pending.catch(() => catalogues.delete(key));
+          pending = readCatalogue(key, driver, instanceId);
         }
         void pending
           .then((result) => {
