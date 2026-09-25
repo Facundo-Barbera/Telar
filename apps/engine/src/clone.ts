@@ -28,7 +28,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import type { GitRunner } from "./worktree.js";
+import type { AsyncGitRunner, GitRunner } from "./worktree.js";
 
 /** A clone is a network operation on somebody else's server. The read timeouts
  *  in `worktree.ts` are sized for a local `rev-parse`; a cold clone of a large
@@ -82,8 +82,12 @@ export function repoFolderName(url: string): string | undefined {
  * shows in its own row, and the four of them (a URL that is not one, a parent
  * that is not a directory, a target that already exists, and git's own stderr)
  * read very differently to the person who pressed the button.
+ *
+ * ASYNC, AND THE STORE HANDS IT THE POOLED RUNNER. This used to run through
+ * the synchronous one, so a clone — minutes, by `CLONE_TIMEOUT_MS`'s own
+ * reckoning — was minutes of a daemon that answered nobody.
  */
-export function cloneRepository(git: GitRunner, input: { url: string; parent: string }): CloneOutcome {
+export async function cloneRepository(git: GitRunner | AsyncGitRunner, input: { url: string; parent: string }): Promise<CloneOutcome> {
   // ONE RULE, ONE PLACE. The palette lets somebody type `owner/repo`, and
   // expanding it here rather than there means the cockpit never has to hold an
   // opinion about which forge a bare pair belongs to.
@@ -108,7 +112,7 @@ export function cloneRepository(git: GitRunner, input: { url: string; parent: st
   // `--` ends the options, so even a URL that slipped the check above is an
   // operand. The cwd is the parent, so a relative target could not escape it
   // either; it is absolute anyway, which is what the register call needs.
-  const result = git(parentRoot, ["clone", "--", url, target], { timeoutMs: CLONE_TIMEOUT_MS });
+  const result = await git(parentRoot, ["clone", "--", url, target], { timeoutMs: CLONE_TIMEOUT_MS });
   if (result.status !== 0) {
     return { code: "failed", message: (result.stderr || result.stdout).trim() || `git clone exited with ${result.status}` };
   }

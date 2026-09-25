@@ -132,9 +132,8 @@ test("the store refuses a files or diff read on a session that has no directory"
   const engine = store();
   engine.createSession({ id: "session_main", driver: "codex" });
 
-  expect(() => engine.sessionFiles("session_main")).toThrow(/no working directory/);
-  expect(() => engine.sessionDiff("session_main")).toThrow(/no working directory/);
-  // Synchronously, even on the async reader: the refusal happens before the
+  // Synchronously, even on the async readers: the refusal happens before the
   // first await, which is where a caller wants it.
+  expect(() => engine.sessionFilesAsync("session_main")).toThrow(/no working directory/);
   expect(() => engine.sessionDiffAsync("session_main")).toThrow(/no working directory/);
 });

@@ -159,10 +159,11 @@ export type GitRunner = (cwd: string, args: string[], options?: GitRunOptions) =
  *
  * IT NO LONGER IS. The mutations run on `AsyncGitRunner`, and the ordering they
  * were bought with is `createWorktreeQueue`'s instead: one mutation at a time
- * per project, the rest awaiting, nothing holding the loop. The synchronous
- * runner survives for the single-shot reads that never had an ordering
- * requirement to trade for (`clone.ts`, `files.ts`, `gitOverview`, the branch
- * rename) — smaller children, and a separate question from this one.
+ * per project, the rest awaiting, nothing holding the loop. The reads followed
+ * (overview, diff, patch, file listing, clone, commit, branch rename): the store
+ * reaches the synchronous runner now ONLY for a `createSession`/`submitTurn`
+ * `rev-parse` that `EngineStore.withPrefetchedGit` did not already answer off
+ * the pool — an in-process caller (a wake, a test) rather than a request.
  *
  * Generous enough for a READ on a large checkout, small enough that a stall is a
  * stale branch label for a moment rather than a frozen app.
