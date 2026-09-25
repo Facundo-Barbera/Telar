@@ -49,6 +49,7 @@ import { useRunStatusFeed } from "@/lib/run/status-stream";
 import type { RunConfigurationView, RunView } from "@/lib/run/types";
 import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type TerminalEnding } from "@/lib/terminal-bridge";
 import { endTerminal, mayClose } from "@/lib/terminal-close";
+import { runAsChip } from "@/lib/terminal-reveal";
 export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
 import { attachTerminal, gridMeasurer, terminalKeyHandler } from "@/lib/terminal-session";
@@ -133,22 +134,6 @@ const RUN_TONE_DOT: Record<RunTone, string> = {
   good: "bg-success",
   bad: "bg-destructive",
 };
-
-/** A run, in the strip's own vocabulary. The chip's LABEL is the terminal's
- *  title, copied at launch ("web dev #2"), so renaming or deleting the recipe
- *  does not rewrite a chip that is already open.
- *
- *  THE TERMINAL ID IS HANDED ON ONLY WHILE IT IS OPEN. The engine keeps the id
- *  on an ended record, because it is the record's identity; the pane reads it
- *  as "attach to this live terminal", which an ended one no longer is. */
-function viewAsShell(run: RunView): { runId: string; configId: string; terminalId?: string; title?: string } {
-  return {
-    runId: run.runId,
-    configId: run.configId ?? "",
-    ...(isOpenTerminal(run) ? { terminalId: run.terminalId } : {}),
-    ...(run.title ? { title: run.title } : {}),
-  };
-}
 
 /** Can this run still say anything? Only while its terminal is open. */
 function isLiveRun(run: RunView | undefined): boolean {
@@ -308,6 +293,11 @@ export function TerminalSurface({
    *
    * `upsertRunShell` IS IDENTITY-STABLE, so a frame that changed nothing does
    * not rewrite the tab's params or re-render the strip.
+   *
+   * WHILE THIS SURFACE IS NOT MOUNTED the cockpit does the first rule's work
+   * instead, into this tab's params (`lib/terminal-reveal.ts`), and it uses the
+   * same `runAsChip` and the same run id — so when both are running they
+   * arrive at one chip, not two.
    */
   useEffect(() => {
     const status = runs.status;
@@ -323,10 +313,10 @@ export function TerminalSurface({
         let next = current;
         for (const shell of runShells(next)) {
           const view = terminals.find((run) => run.runId === shell.run!.runId);
-          if (view) next = upsertRunShell(next, viewAsShell(view));
+          if (view) next = upsertRunShell(next, runAsChip(view));
         }
         // Oldest first, so the strip's order matches the order they opened in.
-        for (const run of [...terminals].reverse()) if (isOpenTerminal(run)) next = upsertRunShell(next, viewAsShell(run));
+        for (const run of [...terminals].reverse()) if (isOpenTerminal(run)) next = upsertRunShell(next, runAsChip(run));
         return next;
       });
     }, 0);

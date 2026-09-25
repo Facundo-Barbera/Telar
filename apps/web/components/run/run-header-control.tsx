@@ -25,7 +25,7 @@
  * would ask whichever host the URL happens to name and two hosts can hold the
  * same session id.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDownIcon, CircleStopIcon, Loader2Icon, PlusIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { createRunApi, type RunApi } from "@/lib/run/api";
@@ -183,6 +183,7 @@ export function RunHeaderControl({
   hostId,
   api: injected,
   onWatchOutput,
+  onTerminals,
 }: {
   sessionId: string;
   /** Which Mac this session lives on. Absent means the local one. */
@@ -191,6 +192,13 @@ export function RunHeaderControl({
   api?: RunApi;
   /** Opens the right panel's Terminal tab — monitoring stays there. */
   onWatchOutput?: () => void;
+  /**
+   * EVERY ANSWER THE FEED HOLDS, handed to whoever puts new terminals in the
+   * panel (`lib/terminal-reveal.ts`). SHARED RATHER THAN READ TWICE: a second
+   * feed would be one more stream held open per window for the same frames,
+   * and this control is mounted exactly where a session can have terminals.
+   */
+  onTerminals?: (terminals: readonly RunView[]) => void;
 }) {
   const api = useMemo(() => injected ?? createRunApi(hostFetcher(hostId ?? LOCAL_HOST_ID)), [injected, hostId]);
 
@@ -216,6 +224,13 @@ export function RunHeaderControl({
    */
   const feed = useRunStatusFeed({ sessionId, ...(hostId ? { hostId } : {}), api });
   const refresh = feed.refresh;
+  const report = useRef(onTerminals);
+  useEffect(() => {
+    report.current = onTerminals;
+  });
+  useEffect(() => {
+    if (feed.status) report.current?.(feed.status.terminals ?? []);
+  }, [feed.status]);
   /**
    * THE WHOLE LIST, NOT THE NEWEST ONE. A session may have any number of
    * terminals open at once ("web dev", "web dev #2"), and a control that
