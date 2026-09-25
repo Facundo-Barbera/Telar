@@ -135,26 +135,20 @@ export function openNewPanelTab<Kind extends string>(state: PanelTabState<Kind>,
  * alone, and an agent that browses must not be what decides it. So `open` is
  * never touched.
  *
- * SELECTED ONLY WHERE NOBODY IS LOOKING. With the panel closed, or open on the
- * empty chooser, the tab becomes the active one, so the panel's next opening
- * shows what the agent is doing. With the panel open on another tab, the
- * person is reading that tab; this adds the new one beside it and leaves their
- * view — and with it their keyboard — exactly where it was.
+ * AND NEVER SELECTED. Which tab is active is the person's too, in every case:
+ * panel closed, open, empty or on another tab. The tab is added to the strip
+ * and the active one is left exactly as it was — so the next time the panel
+ * opens it shows what the person last had, and the agent's item is one click
+ * away beside it. An empty strip keeps no active tab either; the panel's own
+ * fallback decides what an empty selection shows.
  *
  * SAME OBJECT WHEN NOTHING CHANGES, because the caller runs this on every
  * agent browser event and a fresh object would rewrite the persisted panel
  * each time.
  */
 export function revealPanelTab<Kind extends string>(state: PanelTabState<Kind>, tab: PanelTabInstance<Kind>): PanelTabState<Kind> {
-  const present = state.tabs.some((entry) => entry.id === tab.id);
-  const unwatched = !state.open || activePanelTab(state) === undefined;
-  const activeTab = unwatched ? tab.id : state.activeTab;
-  if (present && activeTab === state.activeTab) return state;
-  return {
-    tabs: present ? state.tabs : [...state.tabs, tab],
-    ...(activeTab ? { activeTab } : {}),
-    open: state.open,
-  };
+  if (state.tabs.some((entry) => entry.id === tab.id)) return state;
+  return { ...state, tabs: [...state.tabs, tab] };
 }
 
 /**

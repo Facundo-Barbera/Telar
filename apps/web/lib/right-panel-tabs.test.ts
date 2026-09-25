@@ -605,24 +605,26 @@ describe("revealPanelTab", () => {
   const browser: PanelTabInstance = { id: "browser", kind: "browser", params: {} };
   const diff: PanelTabInstance = { id: "diff", kind: "diff", params: {} };
 
-  test("adds and selects the tab in a closed panel without opening it", () => {
-    const state: PanelTabState<string> = { tabs: [diff], activeTab: "diff", open: false };
-    expect(revealPanelTab(state, browser)).toEqual({ tabs: [diff, browser], activeTab: "browser", open: false });
+  test("an agent's item is added to the strip and NEVER selected, in every panel state", () => {
+    // The panel's focus is the person's alone: closed, open on another tab, or
+    // empty — the active tab and the panel's visibility come out as they went in.
+    const cases: PanelTabState<string>[] = [
+      { tabs: [diff], activeTab: "diff", open: false },
+      { tabs: [diff], activeTab: "diff", open: true },
+      { tabs: [], open: true },
+      { tabs: [], open: false },
+    ];
+    for (const state of cases) {
+      const next = revealPanelTab(state, browser);
+      expect(next.tabs.map((tab) => tab.id)).toEqual([...state.tabs.map((tab) => tab.id), "browser"]);
+      expect(next.activeTab).toBe(state.activeTab);
+      expect(next.open).toBe(state.open);
+    }
   });
 
-  test("in an open panel on another tab, adds it beside without moving the person's view", () => {
-    const state: PanelTabState<string> = { tabs: [diff], activeTab: "diff", open: true };
-    expect(revealPanelTab(state, browser)).toEqual({ tabs: [diff, browser], activeTab: "diff", open: true });
-  });
-
-  test("an open panel on the empty chooser shows it", () => {
-    const state: PanelTabState<string> = { tabs: [], open: true };
-    expect(revealPanelTab(state, browser)).toEqual({ tabs: [browser], activeTab: "browser", open: true });
-  });
-
-  test("selects the tab it already has when the panel is closed", () => {
+  test("a tab that is already there is left alone, selected or not", () => {
     const state: PanelTabState<string> = { tabs: [browser, diff], activeTab: "diff", open: false };
-    expect(revealPanelTab(state, browser)).toEqual({ tabs: [browser, diff], activeTab: "browser", open: false });
+    expect(revealPanelTab(state, browser)).toBe(state);
   });
 
   test("is the same object when there is nothing to change", () => {
