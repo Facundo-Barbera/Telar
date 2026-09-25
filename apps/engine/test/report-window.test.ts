@@ -328,8 +328,12 @@ test("a task, a blocker and an awaited result still arrive at once under a hold"
     store.submitAgentTurn("session_host", { runId, input: intent, intent }, proof);
   }
   // Three arrived and the routine report did not — counted on the queue rather
-  // than read off `agentDelivery`.
-  expect(queued(store).map((turn) => turn.runId)).toEqual(["run_task", "run_blocker", "run_result"]);
+  // than read off `agentDelivery`. The blocker and the result come from ONE
+  // run and the host has not started on either, so they arrive as one wake
+  // naming both — at once, which is the point here — rather than two.
+  const arrived = queued(store);
+  expect(arrived.map((turn) => turn.runId)).toEqual(["run_task", "run_blocker"]);
+  expect(arrived[1]!.notification!.entries!.map((entry) => entry.intent)).toEqual(["blocker", "result"]);
   expect(store.pendingNotifications("session_host")).toHaveLength(1);
 });
 

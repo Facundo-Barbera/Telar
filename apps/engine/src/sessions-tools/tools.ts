@@ -328,7 +328,7 @@ function cadencePhrase(cadence: Session["reportWindowMinutes"]): string {
 const NO_SESSION_TO_SCHEDULE =
   "This door has no session to schedule: a scheduled run is submitted INTO a conversation, and this client is not one. Ask a session to schedule itself.";
 
-const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request — a notification in YOUR session, so you can end this turn rather than poll. It is a PING; sessions_read fetches the outcome. A completion whose result you already received is recorded, not delivered again.`;
+const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request — a notification in YOUR session, so you can end this turn rather than poll. It is a PING; sessions_read fetches the outcome. A completion is recorded, not delivered, when you already have a message from that run or the run said nothing.`;
 
 const UNSUBSCRIBE = `Stop being woken by a session, by the id sessions_subscribe returned. Queued wakes are withdrawn. One that is not yours answers removed: false — not an error.`;
 
@@ -1061,7 +1061,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       SEND,
       {
         sessionId: z.string().min(1),
-        intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default) passive, for progress mid-task; task assigns work; result is your FINAL answer — send it last, it wakes an awaiting subscriber once and the completion that follows will not wake them again; blocker asks for intervention."),
+        intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default) passive, for progress mid-task; task assigns work; result is your FINAL answer — send it last; blocker asks for intervention. After any of these reaches a subscriber, your run completing does not wake them again."),
         input: z.string().min(1).describe("The whole message; it cannot see this conversation."),
       },
       async (args, context) => {

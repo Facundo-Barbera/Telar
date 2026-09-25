@@ -484,6 +484,8 @@ const TERMINAL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed
  * result is one the coordinator did NOT get to read, so its run's completion
  * still wakes.
  */
+/** The intents that speak for the run that sent them — see `messageDeliveredTo`. */
+const FOLDING_INTENTS: ReadonlySet<NonNullable<Turn["agentIntent"]>> = new Set(["report", "result", "blocker"]);
 const RESULT_DELIVERED_STATES: ReadonlySet<Turn["state"]> = new Set(["claimed", "running", "steering", "steered", "completed"]);
 
 /** The contract's own list, as a set, so an unknown mode is refused at the edge
@@ -9349,6 +9351,9 @@ export class EngineStore {
        */
       agentIntent?: Turn["agentIntent"];
       agentDelivery?: Turn["agentDelivery"];
+      /** A passive message whose notification was folded into a wake still
+       *  waiting in the queue — see `foldIntoWaitingMessage`. Not mail. */
+      foldedIntoWaitingWake?: boolean;
       agentSourceRunId?: string;
       /** The short line the MODEL reads in place of `input` — minted by
        *  `submitAgentTurn` and by nothing else. See `Turn.agentNotice`. */
@@ -9629,7 +9634,7 @@ export class EngineStore {
        * Mailing it would deliver, at the next idle, the very turn the rule
        * exists to prevent.
        */
-      if (turn.notification && !turn.wakeReason) this.holdNotification(sessionId, turn.notification);
+      if (turn.notification && !turn.wakeReason && !input.foldedIntoWaitingWake) this.holdNotification(sessionId, turn.notification);
       this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
       return { turn: structuredClone(turn), replayed: false };
     }
@@ -9797,7 +9802,7 @@ export class EngineStore {
      * in one day before this was found. Only a TERMINAL event removes a `once`
      * now, in `fireSubscriptions`, which is the one place that knows a turn
      * ended. Since #919 that completion is recorded rather than delivered once
-     * the result is in front of the model — see `resultDeliveredTo` — and the
+     * the result is in front of the model — see `messageDeliveredTo` — and the
      * contract asks for a result to be a run's LAST word.
      */
     const waiting = intent === "result" && sender.sessionId
@@ -9894,7 +9899,20 @@ export class EngineStore {
       ...(sender.sessionId ? { sender } : {}),
       ...(scope ? { scope } : {}),
     });
+    /**
+     * TWO MESSAGES FROM ONE RUN, ONE DELIVERY. A worker that sends a report and
+     * then a result in the same run, to a recipient that has not started on the
+     * first yet, used to queue two wakes and cost two turns for one errand. The
+     * second is folded into the first's notification (both bodies stay whole on
+     * their own turns, and the merged notice names both fetch calls); the
+     * second turn is written as history. Only while the first is still
+     * `queued` — once claimed it is in front of a model, and the second is news.
+     */
+    const folds = delivery === "wake" && proof && sender.sessionId && FOLDING_INTENTS.has(intent)
+      ? this.waitingMessageFrom(sessionId, sender.sessionId, proof.runId, input.runId)
+      : undefined;
     const result = this.submitTurn(sessionId, {
+      ...(folds ? { foldedIntoWaitingWake: true } : {}),
       runId: input.runId,
       /**
        * THE BODY STAYS ON THE TURN, EXACTLY AS SENT. A wake's and a request's
@@ -9905,7 +9923,7 @@ export class EngineStore {
        */
       input: input.input,
       ...(input.attachments ? { attachments: input.attachments } : {}),
-      origin: "session", sender, agentIntent: intent, agentDelivery: delivery,
+      origin: "session", sender, agentIntent: intent, agentDelivery: folds ? "passive" : delivery,
       ...(proof ? { agentSourceRunId: proof.runId } : {}),
       notification,
       agentNotice: notification.body,
@@ -9913,7 +9931,53 @@ export class EngineStore {
       // assignment in every surface that folds these turns.
       ...(scope ? { assignmentScope: scope } : {}),
     });
+    // A replay of a message already accepted changes nothing, folded or not.
+    if (folds && !result.replayed) this.foldIntoWaitingMessage(sessionId, folds, notification);
     return result;
+  }
+
+  /**
+   * The wake a peer's earlier message from THIS run is still waiting in, if
+   * any: queued, unread, a report/result/blocker, from the same sender and run.
+   * Past the delivery cap it is not offered, and the new message takes its own
+   * turn — a row rewritten a third time is one nobody can follow.
+   */
+  private waitingMessageFrom(sessionId: string, senderSessionId: string, sourceRunId: string, runId: string): string | undefined {
+    const turns = this.readQueue(sessionId).turns;
+    // The same run id again is a retried call, not a second message.
+    if (turns.some((candidate) => candidate.runId === runId)) return undefined;
+    const waiting = turns.find(
+      (candidate) =>
+        candidate.state === "queued" &&
+        !candidate.held &&
+        candidate.origin === "session" &&
+        !candidate.wakeReason &&
+        candidate.notification?.kind === "peer_message" &&
+        candidate.agentIntent !== undefined &&
+        FOLDING_INTENTS.has(candidate.agentIntent) &&
+        candidate.sender?.sessionId === senderSessionId &&
+        candidate.agentSourceRunId === sourceRunId,
+    );
+    if (!waiting?.notification) return undefined;
+    return (waiting.notification.deliveries ?? 1) + 1 > MAX_DELIVERIES ? undefined : waiting.runId;
+  }
+
+  /** Merge a peer message's notification into the wake `waitingMessageFrom`
+   *  found — `mergeIntoWaitingResult`'s rewrite, with `mergeNotifications`
+   *  because these are two messages rather than a message and its ending. */
+  private foldIntoWaitingMessage(sessionId: string, waitingRunId: string, notification: NotificationDetail): void {
+    const queue = this.readQueue(sessionId);
+    const waiting = queue.turns.find((candidate) => candidate.runId === waitingRunId);
+    if (!waiting?.notification || waiting.state !== "queued") return;
+    const at = this.now();
+    const merged: NotificationDetail = { ...mergeNotifications([waiting.notification, notification]), deliveries: (waiting.notification.deliveries ?? 1) + 1 };
+    waiting.notification = merged;
+    waiting.agentNotice = merged.body;
+    waiting.updatedAt = at;
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    this.rewriteNotificationItem(sessionId, waiting);
+    this.appendEvent(sessionId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
   }
 
   /**
@@ -12403,6 +12467,8 @@ export class EngineStore {
       ...(context.request ? { requestId: context.request.id } : {}),
       body: wakeMessage(kind, target, turn, context),
     });
+    // Asked once, not per subscriber: it is a fact about the run.
+    const silentTurn = kind === "turn_completed" && this.saidNothing(targetSessionId, turn);
     for (const subscription of hits) {
       const subscriberId = subscription.subscriberSessionId;
       if (subscriberId === targetSessionId) continue;
@@ -12442,7 +12508,7 @@ export class EngineStore {
        * now means "my final answer — send it last" and mid-task progress is a
        * `report` (see `sessions_send` and the `telar` skill). Under that
        * contract a completion arriving after its result is in front of the
-       * model is news the model already has, so `resultDeliveredTo` records
+       * model is news the model already has, so `messageDeliveredTo` records
        * it as a passive row and wakes nobody. A `turn_failed` or
        * `turn_stopped` still wakes — a run that fell over after reporting is
        * something to act on — as does an `always` subscriber, who asked to be
@@ -12490,10 +12556,18 @@ export class EngineStore {
        * the ordinary path. And only for `settled_only` — `always` is an opt-in
        * to interrupts that this rule does not quietly take back.
        */
+      /**
+       * AND A COMPLETION THAT SAYS NOTHING. A turn that journalled no answer and
+       * sent no message has no news in it — the measured case is the turn the
+       * driver opens to decide a tool call for background work (#891), whose
+       * whole answer is one engine sentence. Waking a coordinator on it cost a
+       * turn to read "Decided a tool call…". Recorded the same way, for the
+       * same reason: the row is history, not something to act on.
+       */
       if (
         kind === "turn_completed" &&
         (subscription.completionWake ?? "settled_only") === "settled_only" &&
-        this.resultDeliveredTo(subscriberId, targetSessionId, turn.runId)
+        (this.messageDeliveredTo(subscriberId, targetSessionId, turn.runId) || silentTurn)
       ) {
         const recorded: NotificationDetail = { ...notification, deliveries: 1 };
         try {
@@ -13263,7 +13337,16 @@ export class EngineStore {
   }
 
   /**
-   * HAS THIS RUN'S RESULT REACHED THE SUBSCRIBER'S MODEL — issue #919.
+   * HAS A MESSAGE FROM THIS RUN REACHED THE SUBSCRIBER'S MODEL — issue #919,
+   * widened from `result` to any report, result or blocker.
+   *
+   * WIDENED BECAUSE THE CONTRACT MADE REPORTS THE COMMON CASE. Since #919 a
+   * mid-task update is a `report` and `result` is a run's last word, so most
+   * workers send a report, finish, and the completion woke the coordinator a
+   * second time about the run it had just heard from — two turns for one
+   * event, all day. A message from the run is in front of the model; the run
+   * ending cleanly after it is news that does not need a turn. A `task` is
+   * not in the set: it hands work over rather than saying how this run went.
    *
    * THE SAME KEY AS `mergeIntoWaitingResult`: a `result` from the session
    * that acted, naming the run it acted in on `agentSourceRunId`. Where the
@@ -13277,12 +13360,42 @@ export class EngineStore {
    * "already read" would leave a shelved coordinator's result waiting for a
    * wake that never comes — the lost-message class #631 closed.
    */
-  private resultDeliveredTo(subscriberId: string, targetSessionId: string, runId: string): boolean {
+  /**
+   * A RUN THAT LEFT NOTHING FOR ANYONE TO READ.
+   *
+   * The driver's background-claim turn (`providerReason: background_task`)
+   * always qualifies: it exists to decide one tool call for work that outlived
+   * its turn, and its "answer" is the engine's own sentence. Any other turn
+   * qualifies when it ended with no answer text and journalled none on the way.
+   *
+   * A MESSAGE IT SENT DOES NOT NEED CHECKING HERE. It either woke the
+   * subscriber already (`messageDeliveredTo`, or folded into the waiting wake)
+   * or sits in its mailbox, which delivers it at the next idle whether or not
+   * this completion wakes anyone.
+   *
+   * Only the run's own rows are read — the warm cache or its indexed rows —
+   * and never the session's whole history. Without either, the answer text
+   * alone decides.
+   */
+  private saidNothing(sessionId: string, turn: Turn): boolean {
+    if (turn.origin === "provider" && turn.providerReason?.kind === "background_task") return true;
+    if (turn.resultText?.trim()) return false;
+    const cached = this.itemsCache.get(sessionId);
+    const items = cached
+      ? [...cached.values()].filter((item) => item.runId === turn.runId)
+      : this.itemsOnRows(sessionId)
+        ? this.itemRowsOf(sessionId, [turn.runId])
+        : [];
+    return !items.some((item) => item.detail.type === "assistant_message" && item.detail.text.trim().length > 0);
+  }
+
+  private messageDeliveredTo(subscriberId: string, targetSessionId: string, runId: string): boolean {
     return this.scanQueue(subscriberId).turns.some(
       (candidate) =>
         RESULT_DELIVERED_STATES.has(candidate.state) &&
         candidate.origin === "session" &&
-        candidate.agentIntent === "result" &&
+        candidate.agentIntent !== undefined &&
+        FOLDING_INTENTS.has(candidate.agentIntent) &&
         candidate.agentDelivery !== "passive" &&
         candidate.sender?.sessionId === targetSessionId &&
         candidate.agentSourceRunId === runId,
