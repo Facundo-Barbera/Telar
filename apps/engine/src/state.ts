@@ -9142,10 +9142,11 @@ export class EngineStore {
       throw new EngineStateError("invalid_request", "a schedule-origin turn names the schedule that started it");
     }
     const kind = input.kind === "compact" ? "compact" : undefined;
-    // A MESSAGE TO A RELEASED SESSION BRINGS ITS CHECKOUT BACK; the turn waits
-    // on `preparing` like it does for a first cut.
-    this.restoreSessionWorktree(sessionId);
     const session = this.getSession(sessionId);
+    // A MESSAGE TO A RELEASED SESSION BRINGS ITS CHECKOUT BACK; the turn waits
+    // on `preparing` like it does for a first cut. Checked on the read already
+    // made, so an ordinary message costs no extra parse of the queue.
+    if (session.workspace.mode === "worktree" && session.workspace.released) this.restoreSessionWorktree(sessionId);
     if (kind === "compact" && !PROVIDER_CAPABILITIES[session.driver].compaction)
       throw new EngineStateError("conflict", "this provider does not support manual compaction");
     const queue = this.readQueue(sessionId);
