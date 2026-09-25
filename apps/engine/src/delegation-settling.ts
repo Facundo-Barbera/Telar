@@ -23,10 +23,12 @@
  *      human settles it or the quiet clock does.
  *   2. THE COORDINATOR HAS TAKEN DELIVERY of the newest assignment — see
  *      `deliveryOf`. Handing work over and never hearing back is not "done".
- *   3. NOTHING IS PARKED ON IT AND IT IS NOT WORKING. The precedence every
- *      other settling rule is built on (`canSettle` in the web's
- *      `session-settling.ts`, `isSettled`'s first clause): the worst outcome of
- *      any rule that hides rows is hiding the one that needed you.
+ *   3. NOTHING IS PARKED ON IT, IT IS NOT WORKING, AND NO BACKGROUND WORK IS
+ *      STILL RUNNING. The precedence every other settling rule is built on
+ *      (`isSettled`'s first clause, and its refusal to let the CLOCK shelve
+ *      live background work): the worst outcome of any rule that hides rows is
+ *      hiding the one that needed you. `monitoring` is stricter here than for
+ *      a hand settle (`canSettle` allows it) because this settle is automatic.
  *   4. NO HUMAN DECISION IS STANDING. A pin says keep it; a settle is already
  *      done and is not ours to restamp; an errand somebody took back off the
  *      shelf is an argument the engine does not get to have twice.
@@ -185,7 +187,10 @@ export function delegationSettle(input: DelegationSettleInput): DelegationSettle
   // 3. Blockers, LAST of the standing conditions and deliberately after
   // delivery: a row held only because it is busy right now is still due, and
   // `dueAt` would be a lie if it were reported for one that will never settle.
-  if (input.activity === "blocked" || input.activity === "working" || input.activity === "queued") return {};
+  // `monitoring` too: a delegate whose errand is delivered but whose shell or
+  // sub-agent is still running has not finished, and a settle nobody asked for
+  // must not shelve it. Only a person may, and `canSettle` still lets them.
+  if (input.activity === "blocked" || input.activity === "working" || input.activity === "queued" || input.activity === "monitoring") return {};
 
   // 5. The grace.
   const dueAt = delivered + input.graceHours * HOUR_MS;
