@@ -24,6 +24,7 @@ import { sessionHref, type SidebarSession } from "@/lib/session-list";
 type DesktopCommandKeyBridge = {
   isDesktop?: boolean;
   commandKeys?: { onInvoke?: (listener: (id: string) => void) => (() => void) | undefined };
+  notifications?: { onOpen?: (listener: (path: unknown) => void) => (() => void) | undefined };
   app?: { openWindow?: (path: string) => Promise<unknown> };
 };
 
@@ -239,12 +240,19 @@ export function useCommandKeys(
     };
     window.addEventListener("keydown", onKeyDown);
     const offInvoke = desktop()?.commandKeys?.onInvoke?.((id) => run(id as CommandId));
+    // A click on one of the Mac's own notifications names a session's route
+    // (apps/desktop/desktop-notifications.js). Navigated in place, like a row
+    // click, so the window keeps its panels; only a path inside the app.
+    const offOpen = desktop()?.notifications?.onOpen?.((path) => {
+      if (typeof path === "string" && path.startsWith("/") && !path.startsWith("//") && !path.startsWith("/\\")) router.push(path);
+    });
 
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       offInvoke?.();
+      offOpen?.();
     };
-  }, [run]);
+  }, [run, router]);
 
   return run;
 }
