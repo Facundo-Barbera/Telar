@@ -1895,6 +1895,34 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * HOW A PROJECT'S WORKTREES ARE PREPARED — `workspace-config.ts`. The
+       * machine layer here; each project's overrides under its own id below.
+       * PUT, not PATCH: the pane sends the whole layer it edited, and a merge
+       * could not tell "remove this field" from "leave it alone".
+       */
+      if (url.pathname === "/v2/workspace" && (request.method === "GET" || request.method === "PUT")) {
+        if (request.method === "GET") {
+          writeJson(response, 200, { machine: store.workspace.machine() });
+          return;
+        }
+        const input = await body(request);
+        const saved = store.workspace.setMachine(input.machine);
+        if (!saved.ok) throw new EngineStateError("invalid_request", saved.message);
+        writeJson(response, 200, { machine: saved.value });
+        return;
+      }
+      const projectWorkspace = /^\/v2\/projects\/([^/]+)\/workspace$/.exec(url.pathname);
+      if (projectWorkspace && (request.method === "GET" || request.method === "PUT")) {
+        const project = store.getProject(decodeURIComponent(projectWorkspace[1]!));
+        if (request.method === "PUT") {
+          const input = await body(request);
+          const saved = store.workspace.setOverrides(project.id, input.overrides);
+          if (!saved.ok) throw new EngineStateError("invalid_request", saved.message);
+        }
+        writeJson(response, 200, { workspace: await store.workspace.view(project) });
+        return;
+      }
+      /**
        * ══ DICTATION — issue #544, first step ══
        *
        * TWO ROUTES, AND NEITHER OF THEM CARRIES AUDIO. The microphone is in the
