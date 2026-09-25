@@ -399,6 +399,7 @@ test("run_stop sends the signal it was asked for first, and the close escalates 
           signalled.push({ pid, signal: force ? "SIGKILL" : (signal ?? "SIGTERM") });
         },
         emptied: () => false,
+        liveness: () => "alive",
       },
       stopGraceMs: 60,
       closeSettleMs: 60,

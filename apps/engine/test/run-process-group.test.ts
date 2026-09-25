@@ -114,6 +114,39 @@ test("a close's one look: ESRCH is the only answer that means the group is empty
   expect(sent).toEqual([[-5, 0]]);
 });
 
+/**
+ * `liveness` IS NOT A RUN'S QUESTION ANY MORE, but the engine suite's own
+ * wrapper (`scripts/test-engine-bounded.mjs`) asks it about the test runner's
+ * group after the runner exits — the check that catches a test leaving a
+ * process behind. It stays three-valued, and it stays honest.
+ */
+test("the group can still say what is left of a tree, for the suite's own leak check", () => {
+  const sent: Array<[number, NodeJS.Signals | 0]> = [];
+  expect(posixProcessGroup((pid, signal) => void sent.push([pid, signal])).liveness(77)).toBe("alive");
+  expect(sent).toEqual([[-77, 0]]);
+  expect(
+    posixProcessGroup(() => {
+      throw errno("ESRCH");
+    }).liveness(5),
+  ).toBe("gone");
+  // EPERM is a group that exists and is not ours — alive, never gone.
+  expect(
+    posixProcessGroup(() => {
+      throw errno("EPERM");
+    }).liveness(5),
+  ).toBe("alive");
+
+  // Windows cannot be asked until a forceful taskkill says otherwise, and never
+  // about a pid it did not kill.
+  const group = windowsProcessGroup(fakeTaskkill(() => ({ status: 0 })).run);
+  expect(group.liveness(4242)).toBe("unanswerable");
+  group.stop(4242, false);
+  expect(group.liveness(4242)).toBe("unanswerable");
+  group.stop(4242, true);
+  expect(group.liveness(4242)).toBe("gone");
+  expect(group.liveness(4243)).toBe("unanswerable");
+});
+
 // ── the Windows group ──────────────────────────────────────────────────────
 
 /** A `taskkill` that records its argv and answers however the test wants. */

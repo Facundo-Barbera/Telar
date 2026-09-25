@@ -108,7 +108,9 @@ test("the run door answers, and the arm beside it still does", async () => {
   await expect(client.runConfigurations("session_one")).resolves.toMatchObject({ configurations: [] });
 
   // …and a refusal from the run surface is a refusal, not a crash.
-  await expect(client.runStatus("session_one")).resolves.toMatchObject({ history: [] });
+  // The session's terminals — a list, where there used to be one project-wide
+  // `active` run and its `history` ("Run = a new terminal").
+  await expect(client.runStatus("session_one")).resolves.toMatchObject({ terminals: [] });
 
   await submitTurnStillWorks(client, "run_after_run");
 });

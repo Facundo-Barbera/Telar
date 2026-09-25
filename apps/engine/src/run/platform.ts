@@ -9,8 +9,9 @@
  * Windows — and survivors kept a project's one deployment slot as `unknown`.
  * "Run = a new terminal" removed the slot and took liveness tracking with it:
  * a terminal owns its process, closing it ends the tree, and nothing asks the
- * kernel about a group outside a close. `emptied` is the one question left,
- * and it is part of closing — see its note.
+ * kernel about a group outside a close. `emptied` is the one question a run
+ * still asks, and it is part of closing. `liveness` stays for the engine
+ * suite's own wrapper, which asks it about the test runner — see its note.
  *
  * Windows is not packaged today (`apps/desktop` builds mac only); the branch
  * exists so that when it is, the seam is already here and already tested from
@@ -21,6 +22,15 @@ import { spawnSync } from "node:child_process";
 
 /** How a signal actually reaches a pid. Injected so a test can make one fail. */
 export type RunKill = (pid: number, signal: NodeJS.Signals | 0) => void;
+
+/**
+ * What is left of a process tree.
+ *
+ *   alive         something in it answered
+ *   gone          nothing is left, and we know that
+ *   unanswerable  THIS PLATFORM CANNOT BE ASKED. Never a synonym for `gone`.
+ */
+export type GroupLiveness = "alive" | "gone" | "unanswerable";
 
 export type RunProcessGroup = {
   /**
@@ -49,25 +59,36 @@ export type RunProcessGroup = {
    * platform cannot tell, which only costs a forceful pass that finds nothing.
    */
   emptied(pid: number): boolean;
+  /**
+   * IS ANYTHING STILL ALIVE IN THE TREE? NOT ASKED BY RUNS. The run manager
+   * stopped asking this with "Run = a new terminal"; its one caller is the
+   * engine suite's own wrapper (`scripts/test-engine-bounded.mjs`), which asks
+   * once after the test runner exits whether a test left something in its
+   * group — a question about the test runner, not about anybody's terminal.
+   * Three-valued on purpose: a platform that cannot be asked says so.
+   */
+  liveness(pid: number): GroupLiveness;
 };
 
 /** One signal to a negative pid reaches every descendant. */
 export function posixProcessGroup(kill: RunKill): RunProcessGroup {
+  const liveness = (pid: number): GroupLiveness => {
+    try {
+      kill(-pid, 0);
+      return "alive";
+    } catch (error) {
+      // ESRCH is the only answer that means gone. EPERM means it exists and is
+      // not ours, which is still very much alive.
+      return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "alive";
+    }
+  };
   return {
     detached: true,
     stop(pid, force, signal) {
       kill(-pid, force ? "SIGKILL" : (signal ?? "SIGTERM"));
     },
-    emptied(pid) {
-      try {
-        kill(-pid, 0);
-        return false;
-      } catch (error) {
-        // ESRCH is the only answer that means empty; EPERM is a group that
-        // exists and is not ours.
-        return (error as NodeJS.ErrnoException).code === "ESRCH";
-      }
-    },
+    emptied: (pid) => liveness(pid) === "gone",
+    liveness,
   };
 }
 
@@ -95,11 +116,25 @@ const TASKKILL_NOT_FOUND = 128;
  * There is no SIGINT to send and no handler on the other side to receive one.
  */
 export function windowsProcessGroup(taskkill: RunTaskkill = systemTaskkill): RunProcessGroup {
+  /**
+   * Pids this group force-terminated successfully: `taskkill /T /F` exiting 0
+   * is the only evidence this platform produces that a tree is gone. Bounded,
+   * because a set that only grows is a leak however slow; forgetting the oldest
+   * costs an `unanswerable` where a `gone` was available — the safe direction.
+   */
+  const terminated = new Set<number>();
+  const remember = (pid: number) => {
+    if (terminated.size >= 256) terminated.delete(terminated.values().next().value!);
+    terminated.add(pid);
+  };
   return {
     detached: false,
     stop(pid, force) {
       const result = taskkill(force ? ["/PID", String(pid), "/T", "/F"] : ["/PID", String(pid), "/T"]);
-      if (result.status === 0) return;
+      if (result.status === 0) {
+        if (force) remember(pid);
+        return;
+      }
       if (result.status === TASKKILL_NOT_FOUND) {
         const gone = new Error(`there is no process ${pid} to stop`) as NodeJS.ErrnoException;
         gone.code = "ESRCH";
@@ -113,6 +148,7 @@ export function windowsProcessGroup(taskkill: RunTaskkill = systemTaskkill): Run
     // Nothing here enumerates a tree, so the forceful pass always runs; on a
     // tree already gone it is a not-found, which reads as done.
     emptied: () => false,
+    liveness: (pid) => (terminated.has(pid) ? "gone" : "unanswerable"),
   };
 }
 
