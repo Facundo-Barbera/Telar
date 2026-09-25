@@ -67,7 +67,7 @@ import { Composer, MAX_ATTACHMENTS } from "./composer";
 import { ActivityGroup, groupNotificationTurns, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
-import { openLinksInSessionBrowser } from "@/lib/link-policy";
+import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import { SessionSchedules } from "./session/session-schedules";
@@ -2467,21 +2467,9 @@ export function SessionCockpit({
    * a surface that queries THIS project's issue 12 would show the wrong thing.
    */
   const projectRepo = useRef<Promise<string | undefined> | undefined>(undefined);
-  const onConversationClick = useCallback(
-    (event: React.MouseEvent) => {
-      // ON THE SOLO ROUTE A LINK IS JUST A LINK (#576). Both destinations this
-      // policy has — a forge tab and the session browser's tab — are surfaces
-      // of the right panel, which is not mounted here, so intercepting the
-      // click would swallow it. Left alone, the anchor does what an anchor does.
-      if (solo) return;
-      if (!openLinksInSessionBrowser()) return;
-      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      const anchor = (event.target as HTMLElement).closest?.("a[href]");
-      if (!anchor) return;
-      const href = anchor.getAttribute("href") ?? "";
-      if (!/^https?:\/\//i.test(href)) return;
-      event.preventDefault();
-      const forge = parseForgeLink(href);
+  const routeLink = useCallback(
+    (href: string, fromConversation = true) => {
+      const forge = fromConversation ? parseForgeLink(href) : undefined;
       void (async () => {
         if (forge && projectId) {
           projectRepo.current ??= createEngineApi(hostFetcher(hostId))
@@ -2504,11 +2492,36 @@ export function SessionCockpit({
           updatePanel((current) => ({ ...current, open: true }));
           return;
         }
-        window.open(href, "_blank", "noopener,noreferrer");
+        openInSystemBrowser(href);
       })();
     },
-    [solo, hostId, projectId, sessionId, showPanelTab, showSessionBrowser, updatePanel],
+    [hostId, projectId, sessionId, showPanelTab, showSessionBrowser, updatePanel],
   );
+  const onConversationClick = useCallback(
+    (event: React.MouseEvent) => {
+      // ON THE SOLO ROUTE A LINK IS JUST A LINK (#576). Both destinations this
+      // policy has — a forge tab and the session browser's tab — are surfaces
+      // of the right panel, which is not mounted here, so intercepting the
+      // click would swallow it. Left alone, the anchor does what an anchor does.
+      if (solo) return;
+      if (!openLinksInSessionBrowser()) return;
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = (event.target as HTMLElement).closest?.("a[href]");
+      if (!anchor) return;
+      const href = anchor.getAttribute("href") ?? "";
+      if (!/^https?:\/\//i.test(href)) return;
+      event.preventDefault();
+      routeLink(href);
+    },
+    [solo, routeLink],
+  );
+  // THE LINKS THIS HANDLER NEVER SEES — the right panel's, a modified click, a
+  // `window.open` — reach the desktop shell as popups; claiming them is what
+  // lets the shell hand them back here instead of to the system browser. They
+  // go to the session's browser only: most come from the panel, and an issue
+  // surface's "Open on GitHub" routed to the issue surface would do nothing.
+  // Not on the solo route, for the reason above.
+  useEffect(() => (solo ? undefined : claimLinks((href) => routeLink(href, false))), [solo, routeLink]);
 
   /**
    * Launch the session's browser by hand. The engine journals what it opened,

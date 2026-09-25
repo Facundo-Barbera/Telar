@@ -21,6 +21,7 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, se
 const { autoUpdater, CancellationToken } = require("electron-updater");
 const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 const { attachHostHeader } = require("./host-header");
+const { createLinkRouting } = require("./link-routing");
 const { startBrowserControlServer } = require("./browser-control-server");
 const { startRunTerminalServer } = require("./run-terminal-server");
 const tailscale = require("./tailscale");
@@ -1096,8 +1097,11 @@ function openInSystemBrowser(url) {
   });
 }
 
-function actOnLinkDecision(decision) {
-  if (decision.openExternal) openInSystemBrowser(decision.openExternal);
+// The Links setting, as far as this process can see it — see link-routing.js.
+const linkRouting = createLinkRouting();
+
+function actOnLinkDecision(decision, webContents) {
+  if (decision.openExternal) linkRouting.handOff(webContents, decision.openExternal, openInSystemBrowser);
   // The dedupe below deliberately drops the second arrival of one click, but a
   // dropped hand-off and a broken link look identical from the outside, so say
   // which one happened.
@@ -1114,7 +1118,7 @@ function applyExternalLinkPolicy(webContents, createPolicy) {
   const policy = createPolicy();
   webContents.setWindowOpenHandler(({ url }) => {
     const decision = policy.decide(url);
-    actOnLinkDecision(decision);
+    actOnLinkDecision(decision, webContents);
     return decision.action === "allow" ? { action: "allow" } : { action: "deny" };
   });
   // setWindowOpenHandler never sees a same-window navigation, and that is the
@@ -1125,7 +1129,7 @@ function applyExternalLinkPolicy(webContents, createPolicy) {
     const decision = policy.decide(url);
     if (decision.action === "allow") return;
     event.preventDefault();
-    actOnLinkDecision(decision);
+    actOnLinkDecision(decision, webContents);
   });
   // A window the app was allowed to open is still the app, so it gets the same
   // policy; otherwise every link inside it is one un-policed hop.
@@ -1235,6 +1239,8 @@ function createWindow(url) {
   // remounted Browser surface will publish fresh bounds and make it visible.
   win.webContents.on("did-start-loading", () => {
     manager.hideVisibleScope();
+    // The same for the Links claim: the reloaded cockpit claims again on mount.
+    linkRouting.set(win.webContents, false);
     /**
      * THE RENDERER THAT HELD THEM IS GOING AWAY, SO ITS CLAIMS DIE WITH IT
      * (#656). Both of these are a mirror of renderer state, and a renderer
@@ -3408,6 +3414,20 @@ ipcMain.handle("telar:metrics:runaway", () => lastRunawayNotice);
  * own address is the base, so a second window can only ever be the same app on
  * the same origin.
  */
+/**
+ * THE LINKS SETTING, CLAIMED BY THE PAGE THAT CAN HONOUR IT — see
+ * link-routing.js. A window's own top frame only: a native browser tab or a
+ * subframe claiming the window's links would be steering the human's clicks.
+ */
+ipcMain.handle("telar:links:set-routing", (event, input) => {
+  const asking = BrowserWindow.getAllWindows().find((candidate) => candidate.webContents === event.sender);
+  if (!asking || event.senderFrame !== event.sender.mainFrame) {
+    throw new Error("Only a Telar window may route its own links.");
+  }
+  linkRouting.set(event.sender, input?.on === true);
+  return { ok: true };
+});
+
 ipcMain.handle("telar:app:open-window", (event, input) => {
   const asking = BrowserWindow.getAllWindows().find((candidate) => candidate.webContents === event.sender);
   if (!asking || event.senderFrame !== event.sender.mainFrame) {
