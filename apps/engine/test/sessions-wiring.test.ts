@@ -45,6 +45,9 @@ function knownClaudeDefault(directory: string): string {
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 const workers: EngineWorker[] = [];
+/** The harness's own settle-poll client — not the worker's — so a test that
+ *  records `EngineClient` calls can leave the harness's reads out. */
+const harnessPollers = new WeakSet<EngineClient>();
 const sockets: SessionsToolSocket[] = [];
 
 const tmp = (prefix: string): string => {
@@ -244,9 +247,12 @@ async function turnWith(
   await worker.tick();
   // `tick` CLAIMS; it does not await the execution — `void this.execute(claim)`
   // is deliberate there, so the turn settling is what this waits on. The house
-  // idiom (see `worker.test.ts`).
+  // idiom (see `worker.test.ts`). The poll overlaps the driver body — nothing
+  // orders them — so it reads through a client of its own.
+  const poller = new EngineClient(daemon.discovery);
+  harnessPollers.add(poller);
   for (let attempt = 0; attempt < 200; attempt++) {
-    const turn = (await client.session(session.id)).turns[0];
+    const turn = (await poller.session(session.id)).turns[0];
     if (turn && turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running") break;
     await Bun.sleep(5);
   }
@@ -440,7 +446,7 @@ test("the worker reads status, a turn and requests through a window, never the w
   const original = EngineClient.prototype.session;
   let recording = false;
   EngineClient.prototype.session = function (this: EngineClient, ...args: Parameters<typeof original>) {
-    if (recording) windows.push(args[1] ?? "whole");
+    if (recording && !harnessPollers.has(this)) windows.push(args[1] ?? "whole");
     return original.apply(this, args);
   };
   try {
