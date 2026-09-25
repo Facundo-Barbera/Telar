@@ -3,15 +3,15 @@
  *
  * THE SESSION CONTEXT IS INJECTED, not read out of engine state, so this file
  * imports nothing that would drag the whole daemon into a unit test. The
- * daemon's mount point supplies a resolver that answers "which project is this
- * session's, and which tree is it sitting on"; every rule about singletons,
- * ownership and redaction lives below in the manager, which is what makes the
- * HTTP surface and the toolkit incapable of disagreeing.
+ * daemon's mount point supplies a resolver that answers "which session, which
+ * project, and which tree is it sitting on"; every rule about ownership and
+ * redaction lives below it, which is what makes the HTTP surface and the
+ * toolkit incapable of disagreeing.
  */
-import type { RunCapability, RunStatusAnswer } from "./capability";
+import type { RunCapability, RunStatusAnswer, RunTarget } from "./capability";
 import type { RunManager } from "./manager";
 import type { RunStore } from "./store";
-import { redactConfiguration, RunError, type RunConfigurationInput, type RunView } from "./types";
+import { isTerminal, redactConfiguration, RunError, type RunConfigurationInput, type RunView } from "./types";
 
 /** Who is asking, and from where. Resolved per call: a worktree can move. */
 export type RunSessionContext = {
@@ -32,24 +32,44 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
   const { store, manager } = deps;
 
   /**
-   * Resolve which run a call is about. `finished: "allow"` is for READS only:
-   * the most useful output to read is usually from the run that just died, so
-   * `run_output` with no id falls back to the newest run, while stop, restart
-   * and release keep refusing when nothing is actually deployed.
+   * Resolve which terminal a call is about — ALWAYS ONE OF THIS SESSION'S.
+   *
+   * An id from another session is `not_found` rather than acted on: a
+   * terminal belongs to the session whose panel it is in, and a conversation
+   * closing somebody else's dev server by a pasted id is the mistake this
+   * refuses.
+   *
+   * WITH NO ID, `reads` fall back to the newest terminal, open or not — the
+   * most useful output is usually from the one that just ended — while every
+   * verb that ACTS needs exactly one open terminal to mean. With two open the
+   * answer names them, because guessing which dev server to close is how the
+   * wrong one goes.
    */
-  const target = (runId?: string, finished: "allow" | "refuse" = "refuse"): RunView => {
-    const { projectId } = deps.context();
-    if (runId) {
-      const run = manager.run(runId);
-      // A run id from another project is a mistake worth naming rather than a
-      // cross-project action worth performing.
-      if (run.projectId !== projectId) throw new RunError("not_found", `no run ${runId} in this project`);
+  const target = (input: RunTarget | undefined, mode: "read" | "act"): RunView => {
+    const { sessionId } = deps.context();
+    const id = input?.terminalId ?? input?.runId;
+    if (id) {
+      let run: RunView;
+      try {
+        run = manager.run(id);
+      } catch {
+        throw new RunError("not_found", `this session has no terminal ${id}`);
+      }
+      if (run.sessionId !== sessionId) throw new RunError("not_found", `this session has no terminal ${id}`);
       return run;
     }
-    const active = manager.activeRun(projectId);
-    if (active) return active;
-    const latest = finished === "allow" ? manager.history(projectId)[0] : undefined;
-    if (!latest) throw new RunError("not_found", "nothing is running for this project");
+    const terminals = manager.terminals(sessionId);
+    const open = terminals.filter((run) => !isTerminal(run.status));
+    if (open.length === 1) return open[0]!;
+    if (open.length > 1) {
+      throw new RunError(
+        "invalid_request",
+        `this session has ${open.length} open terminals — ${open.map((run) => `"${run.title}" (${run.terminalId})`).join(", ")} — so say which one`,
+        { terminals: open.map((run) => ({ terminalId: run.terminalId, title: run.title })) },
+      );
+    }
+    const latest = mode === "read" ? terminals[0] : undefined;
+    if (!latest) throw new RunError("not_found", "this session has no open terminal");
     return latest;
   };
 
@@ -76,52 +96,44 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
 
     async status(): Promise<RunStatusAnswer> {
       const context = deps.context();
-      const active = manager.activeRun(context.projectId);
-      return {
-        ...(active ? { active } : {}),
-        history: manager.history(context.projectId),
-        sessionWorktreePath: context.worktreePath,
-      };
+      return { terminals: manager.terminals(context.sessionId), sessionWorktreePath: context.worktreePath };
     },
 
-    async start({ configId, replace }) {
+    // `replace` is read and dropped: every start opens a new terminal.
+    async start({ configId }) {
       const context = deps.context();
-      const config = store.get(context.projectId, configId);
-      const input = {
+      return await manager.start({
         projectId: context.projectId,
-        config,
+        sessionId: context.sessionId,
+        config: store.get(context.projectId, configId),
         worktreePath: context.worktreePath,
         ...(context.worktreeBranch ? { worktreeBranch: context.worktreeBranch } : {}),
-        sessionId: context.sessionId,
-      };
-      return replace ? await manager.replace(input) : await manager.start(input);
+      });
     },
 
     async stop(input) {
-      return await manager.stop(target(input?.runId).runId, input?.signal);
+      return await manager.close(target(input, "act").terminalId, input?.closedBy ?? "person", input?.signal);
     },
 
     async restart(input) {
-      return await manager.restart(target(input?.runId).runId);
-    },
-
-    async release({ runId }) {
-      return manager.release(target(runId).runId);
+      // A restart may reopen one that already ended — that is a re-run, and
+      // naming the ended one is how a caller asks for it.
+      const run = target(input, input?.terminalId ?? input?.runId ? "read" : "act");
+      return await manager.restart(run.terminalId, input?.closedBy ?? "person");
     },
 
     async output(input) {
-      return manager.output(target(input?.runId, "allow").runId, input?.after ?? 0, {
+      return manager.output(target(input, "read").terminalId, input?.after ?? 0, {
         ...(input?.tail === undefined ? {} : { tail: input.tail }),
         ...(input?.grep === undefined ? {} : { grep: input.grep }),
         ...(input?.stream === undefined ? {} : { stream: input.stream }),
       });
     },
 
-    // `"refuse"` LIKE THE KEYBOARD AND UNLIKE `output`: waiting on "whatever
-    // ran last" is waiting on nothing, and a timeout against a finished run
-    // would spend a minute of a turn saying so.
+    // `act` LIKE THE KEYBOARD AND UNLIKE `output`: waiting on "whatever ran
+    // last" is waiting on nothing.
     async wait(input) {
-      return await manager.wait(target(input.runId).runId, {
+      return await manager.wait(target(input, "act").terminalId, {
         ...(input.pattern === undefined ? {} : { pattern: input.pattern }),
         ...(input.ready === undefined ? {} : { ready: input.ready }),
         ...(input.exit === undefined ? {} : { exit: input.exit }),
@@ -129,22 +141,16 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
       });
     },
 
-    // `"allow"` for the same reason as `output`: the most useful thing to read
-    // is usually the run that just died, and a terminal showing its last screen
-    // is the point of keeping it.
     async bytes(input) {
-      return manager.bytes(target(input?.runId, "allow").runId, input?.after ?? 0);
+      return manager.bytes(target(input, "read").terminalId, input?.after ?? 0);
     },
 
-    // AND `"refuse"` HERE, which is the opposite default and deliberate: a
-    // keystroke aimed at "whatever ran last" is a keystroke aimed at nothing,
-    // and falling back to a finished run would swallow it silently.
     async write(input) {
-      return { delivered: await manager.write(target(input.runId).runId, input.data) };
+      return { delivered: await manager.write(target(input, "act").terminalId, input.data) };
     },
 
     async resize(input) {
-      return { resized: await manager.resize(target(input.runId).runId, input.cols, input.rows) };
+      return { resized: await manager.resize(target(input, "act").terminalId, input.cols, input.rows) };
     },
   };
 }

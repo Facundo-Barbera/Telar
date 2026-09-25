@@ -1,24 +1,23 @@
 /**
- * RUN ON A TERMINAL THE DESKTOP SHELL HOLDS — and the one guarantee that had to
- * be rebuilt rather than restated when the handle moved into another process.
+ * RUN ON A TERMINAL THE DESKTOP SHELL HOLDS — "Run = a new terminal".
  *
- * `manager.ts` could say "the pid is only ever used while our own
- * `ChildProcess` has not yet fired exit" because it held the child. It does not
- * any more. So the assertion this file is built around is the failure that
- * replaces it:
+ * The terminal owns its process; the engine records what the host tells it and
+ * tracks no liveness of its own. So the assertions this file is built around
+ * are about the WIRE:
  *
- *   WHEN THE CHANNEL DIES, THE RUN IS `unknown` AND STILL HOLDS ITS PROJECT'S
- *   SLOT — never `exited`.
- *
- * A test that the run settles `exited` on a healthy channel proves nothing
- * about that, so both are here and they are THE SAME SETUP WITH THE OPPOSITE
- * ANSWER: same manager, same recipe, same fake host; one has its channel
- * killed and one does not, and the slot is asserted in both directions. A
- * regression that stopped distinguishing them cannot pass both.
+ *   - `/open` carries the session that owns the terminal, its origin and its
+ *     title, and two opens are two terminals.
+ *   - A close is the host's `/close`, addressed by terminal id, and the record
+ *     says WHO closed it.
+ *   - A channel that drops is NOT a terminal that ended. The client
+ *     reconnects and asks `/state` once: a terminal the host still holds keeps
+ *     running; one it no longer holds is recorded closed by Telar. Nothing is
+ *     ever `unknown`, and nothing is ever held.
  *
  * BOTH REAL HALVES ARE IN THE LOOP. The desktop's `run-terminal-server.js` is
  * required here rather than re-implemented, because two hand-rolled ends of a
- * protocol agree with each other by construction and with nothing else.
+ * protocol agree with each other by construction and with nothing else. The
+ * host behind it is a fake only in that it starts no process.
  */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -49,11 +48,14 @@ const { startRunTerminalServer } = (await import(desktopServer)) as { startRunTe
 
 // ── a terminal host that is a fake only in that it starts no process ─────────
 
-type FakeTerminal = { id: string; pid: number };
+type OpenRequest = { shell?: string; cwd?: string; env?: Record<string, string>; sessionId?: string; origin?: string; title?: string };
+type FakeTerminal = { id: string; pid: number; sessionId?: string; origin?: string; title?: string };
 
 class FakeHost {
   readonly terminals = new Map<string, FakeTerminal>();
+  readonly opened: OpenRequest[] = [];
   readonly killed: Array<{ id: string; signal: string; owner: string }> = [];
+  readonly closed: Array<{ id: string; owner: string }> = [];
   /** What the engine typed, and under whose scope. The real host refuses an id
    *  whose owner is not the caller, so recording the owner is how this file
    *  notices a route that stopped naming one. */
@@ -62,28 +64,43 @@ class FakeHost {
   /** Set to make the host drop writes, the way it does for a terminal that has
    *  already ended — which is an answer, not an error. */
   refuseWrites = false;
+  /** Set to make the terminal ignore SIGINT, as a server that traps it would. */
+  ignoreKills = false;
   onData: (id: string, data: string) => void = () => {};
   onExit: (id: string, ending: unknown) => void = () => {};
   private sequence = 0;
   /** Set to make the spawn itself throw, the one thing that is `failed`. */
   failWith?: string;
 
-  open(request: { shell?: string; cwd?: string; env?: Record<string, string> }): unknown {
+  open(request: OpenRequest): unknown {
     const id = `term_${(this.sequence += 1).toString(36)}`;
+    this.opened.push(request);
     if (this.failWith) {
       const ending = { id, fate: "failed", error: this.failWith, at: Date.now() };
       return { id, pid: undefined, ending };
     }
-    const terminal = { id, pid: 40000 + this.sequence };
+    const terminal = { id, pid: 40000 + this.sequence, sessionId: request.sessionId, origin: request.origin ?? "run", title: request.title };
     this.terminals.set(id, terminal);
-    this.lastRequest = request;
     return { id, pid: terminal.pid };
   }
-  lastRequest?: { shell?: string; cwd?: string; env?: Record<string, string> };
+
+  get lastRequest(): OpenRequest | undefined {
+    return this.opened.at(-1);
+  }
 
   kill(id: string, signal: string, owner: string): boolean {
     if (!this.terminals.has(id)) return false;
     this.killed.push({ id, signal, owner });
+    if (!this.ignoreKills) this.end(id, { exitCode: 130 });
+    return true;
+  }
+
+  /** CLOSE = KILL: the real host's escalation, answered once it is over, with
+   *  the exit carrying why the host was ending it. */
+  async close(id: string, owner: string): Promise<boolean> {
+    if (!this.terminals.has(id)) return false;
+    this.closed.push({ id, owner });
+    this.end(id, { exitCode: 0, signal: "1", closed: "close" });
     return true;
   }
 
@@ -105,14 +122,24 @@ class FakeHost {
 
   /** node-pty's own exit event — the ONLY producer of `exited`. */
   exit(id: string, exitCode: number): void {
-    const terminal = this.terminals.get(id);
-    if (!terminal) return;
+    this.end(id, { exitCode });
+  }
+
+  /** The terminal ends without anybody on the channel hearing about it — what
+   *  a close while the engine was away looks like from the engine's side. */
+  forget(id: string): void {
     this.terminals.delete(id);
-    this.onExit(id, { id, pid: terminal.pid, fate: "exited", exitCode, at: Date.now() });
   }
 
   say(id: string, data: string): void {
     this.onData(id, data);
+  }
+
+  private end(id: string, detail: Record<string, unknown>): void {
+    const terminal = this.terminals.get(id);
+    if (!terminal) return;
+    this.terminals.delete(id);
+    this.onExit(id, { id, pid: terminal.pid, fate: "exited", at: Date.now(), ...detail });
   }
 }
 
@@ -126,8 +153,7 @@ const tempDirs: string[] = [];
 /**
  * NOTHING THIS FILE STARTS OUTLIVES IT. Every server here binds a loopback port
  * and every client holds an event stream open; a test that failed midway used
- * to leave both, and the rule in `docs/operations/dispatch-board.md` about not
- * leaving long-running things behind applies to a test's own leftovers first.
+ * to leave both.
  */
 afterEach(async () => {
   while (managers.length) {
@@ -137,19 +163,17 @@ afterEach(async () => {
       /* a manager that already failed is not a second failure */
     }
   }
-  while (clients.length) clients.pop()!.close();
+  while (clients.length) clients.pop()!.detach();
   while (servers.length) await servers.pop()!.close();
   while (tempDirs.length) fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
-async function harness(options: { heartbeatMs?: number; missedBeats?: number } = {}) {
-  const host = new FakeHost();
+async function serve(host: FakeHost, options: { port?: number; heartbeatMs?: number } = {}) {
   /** What came BACK over the channel for a renderer to draw — the redacted
-   *  mirror (#890). This is the desktop's side of it, collected where `main.js`
-   *  would instead hand each frame to whichever renderer adopted that id. */
+   *  mirror (#890). */
   const mirrored: Array<{ id: string; data: string; cursor?: number }> = [];
   const server = await startRunTerminalServer({
-    port: 0,
+    port: options.port ?? 0,
     token: "test-token",
     getTerminalHost: () => host,
     onMirror: (id, data, cursor) => mirrored.push({ id, data, ...(cursor === undefined ? {} : { cursor }) }),
@@ -158,14 +182,22 @@ async function harness(options: { heartbeatMs?: number; missedBeats?: number } =
   servers.push(server);
   host.onData = server.onData;
   host.onExit = server.onExit;
+  return { server, mirrored };
+}
+
+async function harness(options: { heartbeatMs?: number; missedBeats?: number } = {}) {
+  const host = new FakeHost();
+  const { server, mirrored } = await serve(host, options);
   const client = new RunTerminalClient({
     baseUrl: `http://127.0.0.1:${server.port}`,
     token: "test-token",
+    reconnectMs: 20,
+    reconnectMaxMs: 50,
     ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
     ...(options.missedBeats === undefined ? {} : { missedBeats: options.missedBeats }),
   });
   clients.push(client);
-  const manager = new RunManager({ launcher: terminalLauncher(client), groupDrainMs: 10, stopGraceMs: 150 });
+  const manager = new RunManager({ launcher: terminalLauncher(client), closeSettleMs: 150 });
   managers.push(manager);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-run-channel-"));
   tempDirs.push(dir);
@@ -184,6 +216,7 @@ const config = (overrides: Partial<RunConfiguration> = {}): RunConfiguration => 
 
 const input = (dir: string, overrides: Partial<StartRunInput> = {}): StartRunInput => ({
   projectId: "proj_1",
+  sessionId: "sess_1",
   config: config(),
   worktreePath: dir,
   ...overrides,
@@ -199,119 +232,178 @@ async function until(predicate: () => boolean, ms = 4000): Promise<boolean> {
   return predicate();
 }
 
-/** The conflict a held slot produces, or undefined if the slot was free. */
-async function secondStartRefusal(manager: RunManager, dir: string): Promise<{ code: string; status?: unknown } | undefined> {
-  try {
-    await manager.start(input(dir, { config: config({ id: "runcfg_2", name: "second" }) }));
-    return undefined;
-  } catch (error) {
-    const refusal = error as { code?: string; detail?: { status?: unknown } };
-    return { code: String(refusal.code), status: refusal.detail?.status };
-  }
-}
+// ── opening ──────────────────────────────────────────────────────────────────
 
-// ── the pair: same setup, opposite answers ───────────────────────────────────
+test("the engine tells the host which session owns the terminal, that it is a run, and what its tab says", async () => {
+  const { host, manager, dir } = await harness();
+  const first = await manager.start(input(dir));
+  const second = await manager.start(input(dir));
 
-test("a channel that dies leaves the run unknown and the project's slot still held", async () => {
-  const { host, server, manager, dir } = await harness();
-  const started = await manager.start(input(dir));
-  expect(started.status).toBe("running");
-  expect(host.terminals.size).toBe(1);
-
-  // The shell goes away without ever reporting how anything ended — the quiet
-  // failure the whole fate model exists for.
-  await server.close();
-
-  expect(await until(() => manager.run(started.runId).status === "unknown")).toBe(true);
-  const lost = manager.run(started.runId);
-  expect(lost.status).toBe("unknown");
-  // NOT `exited`, and not terminal: the slot is the thing being asserted.
-  expect(lost.exitCode).toBeUndefined();
-  expect(lost.error).toBeTruthy();
-
-  const refusal = await secondStartRefusal(manager, dir);
-  expect(refusal?.code).toBe("conflict");
-  expect(refusal?.status).toBe("unknown");
-  // And the project's active run is still this one, rather than nothing.
-  expect(manager.activeRun("proj_1")?.runId).toBe(started.runId);
+  expect(host.opened.map((request) => [request.sessionId, request.origin, request.title])).toEqual([
+    ["sess_1", "run", "dev"],
+    ["sess_1", "run", "dev #2"],
+  ]);
+  // Two terminals on the host, and neither blocked the other.
+  expect(host.terminals.size).toBe(2);
+  expect(first.terminalId).not.toBe(second.terminalId);
+  expect([first.status, second.status]).toEqual(["running", "running"]);
 });
 
-test("a live run names the terminal it is on, and stops naming it once the handle is gone", async () => {
+test("a live terminal names itself by the host's id, and keeps that name after it ends", async () => {
   /**
-   * #890: the cockpit draws a run as a shell in the Terminal strip, so the view
-   * has to carry a name the renderer can attach to. It is the HOST's id rather
-   * than a pid for the same reason every other verb uses one — an id is not
-   * reused — and it follows `pid`'s rule about when it may be published: while
-   * the handle is still ours, and not a moment after.
+   * #890: the cockpit draws a run as a chip in the Terminal strip, so the view
+   * carries the HOST's id. Since "Run = a new terminal" it is also the record's
+   * identity, so it stays after the end; the pid is what goes.
    */
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));
   const id = [...host.terminals.keys()][0]!;
   expect(started.terminalId).toBe(id);
-  expect(manager.activeRun("proj_1")?.terminalId).toBe(id);
+  expect(started.pid).toBeGreaterThan(0);
 
   host.exit(id, 0);
-  expect(await until(() => manager.run(started.runId).status === "exited")).toBe(true);
-  expect(manager.run(started.runId).terminalId).toBeUndefined();
+  expect(await until(() => manager.run(id).status === "exited")).toBe(true);
+  expect(manager.run(id).terminalId).toBe(id);
+  expect(manager.run(id).pid).toBeUndefined();
+  expect(manager.run(id).exitCode).toBe(0);
 });
 
-test("a healthy channel settles the same run exited and frees the slot", async () => {
+// ── closing ──────────────────────────────────────────────────────────────────
+
+test("closing goes to the host's /close by terminal id, and the record says who closed it", async () => {
+  const { host, manager, dir } = await harness();
+  const mine = await manager.start(input(dir));
+  const theirs = await manager.start(input(dir));
+
+  const closed = await manager.close(mine.terminalId, "person");
+  // BY ID, NEVER BY PID, and in the engine's own scope.
+  expect(host.closed).toEqual([{ id: mine.terminalId, owner: "engine" }]);
+  expect(closed.status).toBe("closed");
+  expect(closed.closedBy).toBe("person");
+  // Only that one: the other instance is still running.
+  expect(manager.run(theirs.terminalId).status).toBe("running");
+
+  const byAgent = await manager.close(theirs.terminalId, "agent");
+  expect(byAgent.closedBy).toBe("agent");
+});
+
+test("a Ctrl-C-shaped close sends the signal first, and closes only if that did not end it", async () => {
+  const { host, manager, dir } = await harness();
+  const polite = await manager.start(input(dir));
+  const closed = await manager.close(polite.terminalId, "agent", "SIGINT");
+  expect(host.killed).toEqual([{ id: polite.terminalId, signal: "SIGINT", owner: "engine" }]);
+  // SIGINT ended it, so no close was needed — and it is still recorded as a close.
+  expect(host.closed).toEqual([]);
+  expect(closed.status).toBe("closed");
+  expect(closed.closedBy).toBe("agent");
+
+  host.ignoreKills = true;
+  const stubborn = await manager.start(input(dir));
+  await manager.close(stubborn.terminalId, "person", "SIGINT");
+  expect(host.closed.map((entry) => entry.id)).toEqual([stubborn.terminalId]);
+});
+
+test("a terminal the host closes on its own — Telar quitting, a session closed — is recorded as Telar's", async () => {
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));
-  expect(started.status).toBe("running");
-
-  const id = [...host.terminals.keys()][0]!;
-  host.exit(id, 0);
-
-  expect(await until(() => manager.run(started.runId).status === "exited")).toBe(true);
-  expect(manager.run(started.runId).exitCode).toBe(0);
-  // The opposite half of the pair: here the slot IS free, so the second start
-  // succeeds where the test above required a refusal.
-  expect(manager.activeRun("proj_1")).toBeUndefined();
-  expect(await secondStartRefusal(manager, dir)).toBeUndefined();
+  host.onExit(started.terminalId, { id: started.terminalId, fate: "exited", exitCode: 0, signal: "1", closed: "quit" });
+  host.terminals.delete(started.terminalId);
+  expect(await until(() => manager.run(started.terminalId).status === "closed")).toBe(true);
+  expect(manager.run(started.terminalId).closedBy).toBe("telar");
 });
 
-test("a host that is connected but silent is lost too, and lands in the same place", async () => {
+test("a close the host cannot be asked for changes nothing, and says so", async () => {
+  const { server, manager, dir } = await harness();
+  const started = await manager.start(input(dir));
+  await server.close();
+  await expect(manager.close(started.terminalId, "person")).rejects.toThrow(/could not close/);
+  expect(manager.run(started.terminalId).status).toBe("running");
+  expect(manager.run(started.terminalId).closedBy).toBeUndefined();
+});
+
+// ── the channel dropping is not the terminal ending ──────────────────────────
+
+test("a channel that drops leaves the terminal running, and a reconnect re-lists it from the host", async () => {
+  const { host, server, manager, dir } = await harness();
+  const started = await manager.start(input(dir));
+  const port = server.port;
+
+  // The stream goes away without a word about any terminal.
+  await server.close();
+  servers.pop();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  expect(manager.run(started.terminalId).status).toBe("running");
+
+  // The host comes back on the same door and still holds the terminal: the
+  // client re-attaches, asks /state once, and the terminal carries on —
+  // including its output.
+  await serve(host, { port });
+  const id = started.terminalId;
+  expect(
+    await until(() => {
+      host.say(id, "still here\r\n");
+      return manager.output(id).lines.some((line) => line.text === "still here");
+    }),
+  ).toBe(true);
+  expect(manager.run(id).status).toBe("running");
+});
+
+test("a terminal the host no longer holds after a reconnect is recorded closed by Telar, never held", async () => {
+  const { host, server, manager, dir } = await harness();
+  const started = await manager.start(input(dir));
+  const port = server.port;
+  await server.close();
+  servers.pop();
+  // It ended while nobody was listening — the host is the only thing that
+  // could have ended it.
+  host.forget(started.terminalId);
+  await serve(host, { port });
+
+  expect(await until(() => manager.run(started.terminalId).status === "closed")).toBe(true);
+  expect(manager.run(started.terminalId).closedBy).toBe("telar");
+  // Nothing held: the next start goes straight through.
+  expect((await manager.start(input(dir))).status).toBe("running");
+});
+
+test("a host that is connected but silent is reconnected to, not written off", async () => {
   /**
-   * THE CASE A `close` TEST CANNOT REACH. A TCP connection survives a process
-   * that has stopped answering, so "the socket is open" and "the host is alive"
-   * are different facts — and a redactor of that difference is the heartbeat.
-   *
-   * Staged with a server that attaches and then never writes again, which is
-   * exactly what a wedged Electron main looks like from here. Nothing about the
-   * watchdog itself is faked.
+   * A TCP connection survives a process that has stopped answering, so the
+   * stream heartbeats and a watchdog notices silence. What that triggers now is
+   * a reconnect and one `/state` — never a verdict about the terminal.
    */
-  const { server, manager, dir } = await silentHarness({ heartbeatMs: 60, missedBeats: 2 });
+  const { server, manager, dir } = await silentHarness({ heartbeatMs: 40, missedBeats: 2 });
   const started = await manager.start(input(dir));
   expect(started.status).toBe("running");
-  expect(server.opened).toBe(1);
-
-  expect(await until(() => manager.run(started.runId).status === "unknown", 3000)).toBe(true);
-  expect(manager.run(started.runId).error).toContain("went quiet");
-  expect(manager.run(started.runId).exitCode).toBeUndefined();
-  expect((await secondStartRefusal(manager, dir))?.status).toBe("unknown");
-  // And the host never said anything, so nothing could have been rounded.
-  expect(server.opened).toBe(1);
+  expect(await until(() => server.attached >= 2 && server.stateReads >= 1, 3000)).toBe(true);
+  expect(manager.run(started.terminalId).status).toBe("running");
+  expect(manager.run(started.terminalId).exitCode).toBeUndefined();
 });
 
 /**
- * A host that answers `/open` and then holds the event stream open in silence.
- * Hand-rolled rather than the real server BECAUSE the real one heartbeats — the
- * thing under test here is what the engine does when nobody does.
+ * A host that answers `/open` and `/state` and holds the event stream open in
+ * silence. Hand-rolled rather than the real server BECAUSE the real one
+ * heartbeats — the thing under test here is what the engine does when nobody
+ * does.
  */
 async function silentHarness(options: { heartbeatMs: number; missedBeats: number }) {
-  const state = { opened: 0 };
+  const state = { attached: 0, stateReads: 0 };
   const server = http.createServer((request, response) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     if (url.pathname === "/events") {
+      state.attached += 1;
       response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
       response.write(`event: attached\ndata: {"heartbeatMs":${options.heartbeatMs}}\n\n`);
       return; // …and then nothing, ever.
     }
     if (url.pathname === "/open") {
-      state.opened += 1;
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ id: "term_silent", pid: 424242 }));
+      return;
+    }
+    if (url.pathname === "/state") {
+      state.stateReads += 1;
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ terminals: [{ id: "term_silent", pid: 424242 }] }));
       return;
     }
     response.writeHead(404).end();
@@ -335,9 +427,11 @@ async function silentHarness(options: { heartbeatMs: number; missedBeats: number
     token: "test-token",
     heartbeatMs: options.heartbeatMs,
     missedBeats: options.missedBeats,
+    reconnectMs: 20,
+    reconnectMaxMs: 50,
   });
   clients.push(client);
-  const manager = new RunManager({ launcher: terminalLauncher(client), groupDrainMs: 10, stopGraceMs: 150 });
+  const manager = new RunManager({ launcher: terminalLauncher(client), closeSettleMs: 150 });
   managers.push(manager);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-run-silent-"));
   tempDirs.push(dir);
@@ -346,25 +440,16 @@ async function silentHarness(options: { heartbeatMs: number; missedBeats: number
 
 // ── what the host may and may not say ────────────────────────────────────────
 
-test("a host that reports `unknown` holds the slot; it is never rounded to exited", async () => {
+test("a host from before this change that says `unknown` is read as gone — closed by Telar, nothing held", async () => {
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));
-  const id = [...host.terminals.keys()][0]!;
-  const terminal = host.terminals.get(id)!;
+  const id = started.terminalId;
   host.terminals.delete(id);
-  // The host's own words for "we stopped being able to vouch" — a kill it
-  // issued and never saw land.
-  host.onExit(id, {
-    id,
-    pid: terminal.pid,
-    fate: "unknown",
-    reason: `this terminal did not report an exit within 5000ms of being signalled; its process group (pid ${terminal.pid}) may still be running`,
-    at: Date.now(),
-  });
+  host.onExit(id, { id, fate: "unknown", reason: "this terminal did not report an exit within 5000ms of being signalled", at: Date.now() });
 
-  expect(await until(() => manager.run(started.runId).status === "unknown")).toBe(true);
-  expect(manager.run(started.runId).error).toContain("did not report an exit");
-  expect((await secondStartRefusal(manager, dir))?.status).toBe("unknown");
+  expect(await until(() => manager.run(id).status === "closed")).toBe(true);
+  expect(manager.run(id).closedBy).toBe("telar");
+  expect((await manager.start(input(dir))).status).toBe("running");
 });
 
 test("a bad command arrives as a nonzero exit with a real pid, not as `failed`-to-start", async () => {
@@ -374,53 +459,25 @@ test("a bad command arrives as a nonzero exit with a real pid, not as `failed`-t
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));
   expect(started.pid).toBeGreaterThan(0);
-  const id = [...host.terminals.keys()][0]!;
-  host.exit(id, 126);
+  host.exit(started.terminalId, 126);
 
-  expect(await until(() => manager.run(started.runId).status === "failed")).toBe(true);
-  const ended = manager.run(started.runId);
-  expect(ended.exitCode).toBe(126);
-  // `failed` here is terminal and frees the slot, which is right: the host
-  // OBSERVED the end. That is a different `failed` from a fork that threw.
-  expect(manager.activeRun("proj_1")).toBeUndefined();
+  expect(await until(() => manager.run(started.terminalId).status === "failed")).toBe(true);
+  expect(manager.run(started.terminalId).exitCode).toBe(126);
+  expect(manager.run(started.terminalId).closedBy).toBeUndefined();
 });
 
-test("a spawn that threw is `failed` with no process and no slot held", async () => {
-  // The one failure a caller may treat as terminal: there is no process to be
-  // uncertain about. Reported the same way the pipe launcher reports a spawn
-  // that emitted `error` — the run comes back `failed` rather than the call
-  // throwing, because the slot bookkeeping already succeeded.
+test("a spawn that threw is `failed` with no process", async () => {
+  // Reported the way the pipe launcher reports a spawn that emitted `error`:
+  // the terminal comes back `failed` rather than the call throwing.
   const { host, manager, dir } = await harness();
   host.failWith = "posix_spawnp failed";
   const started = await manager.start(input(dir));
   expect(started.status).toBe("failed");
   expect(started.error).toContain("posix_spawnp");
   expect(started.pid).toBeUndefined();
-  // Nothing was created, so nothing may hold the project.
-  expect(manager.activeRun("proj_1")).toBeUndefined();
   expect(host.terminals.size).toBe(0);
-  expect(await secondStartRefusal(manager, dir)).toBeUndefined();
-});
-
-// ── the pid never crosses the wire ───────────────────────────────────────────
-
-test("a stop names the terminal id, never the pid", async () => {
-  const { host, manager, dir } = await harness();
-  const started = await manager.start(input(dir));
-  const id = [...host.terminals.keys()][0]!;
-  const pid = manager.run(started.runId).pid;
-  expect(pid).toBeGreaterThan(0);
-
-  const stopping = manager.stop(started.runId);
-  expect(await until(() => host.killed.length > 0)).toBe(true);
-  expect(host.killed[0]!.id).toBe(id);
-  expect(host.killed[0]!.signal).toBe("SIGTERM");
-  // The id the host minted, and nothing that could be confused with the number
-  // the kernel may hand to somebody else.
-  expect(host.killed[0]!.id).not.toBe(String(pid));
-  host.exit(id, 0);
-  await stopping;
-  expect(manager.run(started.runId).status).toBe("exited");
+  host.failWith = undefined;
+  expect((await manager.start(input(dir))).status).toBe("running");
 });
 
 // ── the bytes, redacted ──────────────────────────────────────────────────────
@@ -428,27 +485,21 @@ test("a stop names the terminal id, never the pid", async () => {
 test("a secret in a run's environment is masked in captured PTY output, escapes intact", async () => {
   const { host, manager, dir } = await harness();
   const secret = "sk-live-7b3f91";
-  const started = await manager.start(
-    input(dir, { config: config({ env: [{ key: "TOKEN", value: secret, secret: true }] }) }),
-  );
-  const id = [...host.terminals.keys()][0]!;
+  const started = await manager.start(input(dir, { config: config({ env: [{ key: "TOKEN", value: secret, secret: true }] }) }));
+  const id = started.terminalId;
   // The host hands the engine what a shell wrote: colour, the value, a newline.
   host.say(id, `\x1b[32mdeploying\x1b[0m with ${secret}\r\n`);
-  expect(await until(() => manager.output(started.runId).lines.length > 0)).toBe(true);
+  expect(await until(() => manager.output(id).lines.length > 0)).toBe(true);
 
-  const line = manager.output(started.runId).lines[0]!.text;
+  const line = manager.output(id).lines[0]!.text;
   expect(line).not.toContain(secret);
   // The surrounding bytes AND the escapes survived — a guard that only asserted
   // the secret's absence would be satisfied by an empty or mangled line.
   expect(line).toBe(`\x1b[32mdeploying\x1b[0m with ${PTY_MASK.repeat(secret.length)}`);
-  expect(line).toContain("\x1b[32m");
-  expect(line).toContain("\x1b[0m");
-  // And the width is unchanged, which is what keeps a positioned screen intact.
   expect(line).toHaveLength(`\x1b[32mdeploying\x1b[0m with ${secret}`.length);
 
-  // The run's env is still readable as a key with its value withheld.
-  expect(manager.run(started.runId).env).toEqual([{ key: "TOKEN", secret: true }]);
-
+  // The env is still readable as a key with its value withheld.
+  expect(manager.run(id).env).toEqual([{ key: "TOKEN", secret: true }]);
   // And the real value did reach the process, which is the whole point of not
   // redacting the launch itself.
   expect(host.lastRequest?.env?.TOKEN).toBe(secret);
@@ -456,67 +507,50 @@ test("a secret in a run's environment is masked in captured PTY output, escapes 
 
 test("the engine attaches to the event stream before it starts anything", async () => {
   // A command that dies instantly would otherwise end before anyone was
-  // listening, leaving the run `starting` forever. The host's backlog and the
-  // client's attach-first both cover it; this asserts the outcome.
+  // listening. The host's backlog and the client's attach-first both cover it.
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));
-  const id = [...host.terminals.keys()][0]!;
-  host.say(id, "instant\r\n");
-  host.exit(id, 0);
-  expect(await until(() => manager.run(started.runId).status === "exited")).toBe(true);
-  expect(manager.output(started.runId).lines.map((line) => line.text)).toContain("instant");
+  host.say(started.terminalId, "instant\r\n");
+  host.exit(started.terminalId, 0);
+  expect(await until(() => manager.run(started.terminalId).status === "exited")).toBe(true);
+  expect(manager.output(started.terminalId).lines.map((line) => line.text)).toContain("instant");
 });
 
 // ── the keyboard, over the real server ───────────────────────────────────────
 
 test("keystrokes cross the real channel and reach the terminal the run started", async () => {
-  // THE WHOLE POINT OF THE WRITABLE DECISION, end to end: an installer asking
-  // `Proceed (Y/n)` is answerable without stopping the run — which would take
-  // the process outside the slot, the journal and the singleton.
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));
-  const id = [...host.terminals.keys()][0]!;
+  const id = started.terminalId;
 
-  expect(await manager.write(started.runId, "y\r")).toBe(true);
-  expect(await manager.resize(started.runId, 132, 43)).toBe(true);
+  expect(await manager.write(id, "y\r")).toBe(true);
+  expect(await manager.resize(id, 132, 43)).toBe(true);
 
-  // ADDRESSED BY ID AND SCOPED TO THE ENGINE. The id is the terminal the run
-  // started, not a pid and not a guess; the owner is what stops this channel
-  // reaching a shell a person opened in a Terminal tab.
+  // ADDRESSED BY ID AND SCOPED TO THE ENGINE.
   expect(host.wrote).toEqual([{ id, data: "y\r", owner: "engine" }]);
   expect(host.resized).toEqual([{ id, cols: 132, rows: 43, owner: "engine" }]);
 });
 
-test("a write the host drops is `false`, and the run is untouched by it", async () => {
-  // The desktop shell learns of an exit before the engine does, so a keystroke
-  // across that gap is the ordinary case. It must not settle the run, free the
-  // slot, or raise — all three of which a "the write failed" reading would.
+test("a write the host drops is `false`, and the terminal is untouched by it", async () => {
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));
   host.refuseWrites = true;
 
-  expect(await manager.write(started.runId, "y\r")).toBe(false);
-  expect(manager.run(started.runId).status).toBe("running");
-  expect(manager.activeRun("proj_1")?.runId).toBe(started.runId);
-  // And the control on the same host: writes work again the moment the host
-  // accepts them, so the `false` above was about the host and not about a
-  // manager that had given up on this run.
+  expect(await manager.write(started.terminalId, "y\r")).toBe(false);
+  expect(manager.run(started.terminalId).status).toBe("running");
   host.refuseWrites = false;
-  expect(await manager.write(started.runId, "n\r")).toBe(true);
+  expect(await manager.write(started.terminalId, "n\r")).toBe(true);
 });
 
-test("a run that has ended refuses the keyboard rather than writing into nothing", async () => {
+test("a terminal that has ended refuses the keyboard rather than writing into nothing", async () => {
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));
-  const id = [...host.terminals.keys()][0]!;
-  // The control first: while it is running, this is allowed.
-  expect(await manager.write(started.runId, "a")).toBe(true);
+  const id = started.terminalId;
+  expect(await manager.write(id, "a")).toBe(true);
 
   host.exit(id, 0);
-  expect(await until(() => manager.run(started.runId).status === "exited")).toBe(true);
-  await expect(manager.write(started.runId, "b")).rejects.toThrow(/not running/);
-  // Nothing was sent after the exit — a refusal that still wrote would satisfy
-  // a test that only caught the throw.
+  expect(await until(() => manager.run(id).status === "exited")).toBe(true);
+  await expect(manager.write(id, "b")).rejects.toThrow(/not running/);
   expect(host.wrote.map((entry) => entry.data)).toEqual(["a"]);
 });
 
@@ -525,107 +559,66 @@ test("a run that has ended refuses the keyboard rather than writing into nothing
 test("the byte view carries the redacted stream, escapes and columns intact", async () => {
   const { host, manager, dir } = await harness();
   const secret = "sk-live-7b3f91";
-  const started = await manager.start(
-    input(dir, { config: config({ env: [{ key: "TOKEN", value: secret, secret: true }] }) }),
-  );
-  const id = [...host.terminals.keys()][0]!;
-  // A positioned screen rather than a tidy line: this is the shape the line
-  // view is a DEGRADED reading of, and the reason the byte view exists.
+  const started = await manager.start(input(dir, { config: config({ env: [{ key: "TOKEN", value: secret, secret: true }] }) }));
+  const id = started.terminalId;
   const screen = `\x1b[2J\x1b[1;1Hkey=${secret}\x1b[2;1Hnext`;
   host.say(id, screen);
-  expect(await until(() => manager.bytes(started.runId).chunks.length > 0)).toBe(true);
+  expect(await until(() => manager.bytes(id).chunks.length > 0)).toBe(true);
 
-  const drawn = manager.bytes(started.runId).chunks.join("");
-  expect(drawn).not.toContain(secret);
-  // THE EQUALITY, not the absence: an empty or mangled buffer satisfies "the
-  // secret is gone" and fails this. Same length in as out, every escape at the
-  // offset it was written at.
+  const drawn = manager.bytes(id).chunks.join("");
   expect(drawn).toBe(`\x1b[2J\x1b[1;1Hkey=${PTY_MASK.repeat(secret.length)}\x1b[2;1Hnext`);
   expect(drawn).toHaveLength(screen.length);
-
-  // AND THE TWO VIEWS DO NOT REPLACE EACH OTHER. `/run/output` is still what an
-  // agent reads, and it still answers for the same run.
-  expect(manager.output(started.runId).cursor).toBeGreaterThanOrEqual(0);
 });
 
 // ── the mirror: what the cockpit's Terminal strip is allowed to draw ─────────
 
 test("the bytes mirrored back to the shell are the REDACTED ones, at the journal's own cursor", async () => {
-  /**
-   * THE DECISION #890 §2 ASKED FOR, ASSERTED END TO END. A run is a chip in the
-   * Terminal strip, so a renderer reads its PTY — and the desktop fans RAW
-   * node-pty bytes, which would draw a project's secrets. So the engine mirrors
-   * its redactor's OUTPUT back over the same channel, and THAT is what a
-   * renderer is given. One redactor, engine-side.
-   */
   const { host, manager, dir, mirrored } = await harness();
   const secret = "sk-live-7b3f91";
   const started = await manager.start(input(dir, { config: config({ env: [{ key: "TOKEN", value: secret, secret: true }] }) }));
-  const id = [...host.terminals.keys()][0]!;
+  const id = started.terminalId;
 
   host.say(id, `\x1b[32mup\x1b[0m with ${secret}`);
   expect(await until(() => mirrored.length > 0)).toBe(true);
 
-  // Addressed by the terminal's id, because that is the only name the two
-  // halves agree on and the only one a chip can attach by.
   expect(mirrored[0]!.id).toBe(id);
-  expect(mirrored[0]!.data).not.toContain(secret);
-  // BYTE FOR BYTE WHAT THE JOURNAL HOLDS — equality, not absence: a mangled or
-  // empty frame would satisfy "the secret is gone" and draw nothing.
-  expect(mirrored[0]!.data).toBe(manager.bytes(started.runId).chunks.join(""));
+  expect(mirrored[0]!.data).toBe(manager.bytes(id).chunks.join(""));
   expect(mirrored[0]!.data).toBe(`\x1b[32mup\x1b[0m with ${PTY_MASK.repeat(secret.length)}`);
-
-  // AND THE CURSOR IS THE RING'S OWN, so a chip that read its scrollback from
-  // `/run/bytes` can join these frames onto it without repeating or gapping a
-  // screen. It is the position a reader holds ONCE it has this chunk.
-  expect(mirrored[0]!.cursor).toBe(manager.bytes(started.runId).cursor);
+  expect(mirrored[0]!.cursor).toBe(manager.bytes(id).cursor);
 
   host.say(id, "more");
   expect(await until(() => mirrored.length > 1)).toBe(true);
-  expect(mirrored[1]!.cursor).toBe(manager.bytes(started.runId).cursor);
-  // The second frame carries only what is new — it is a frame, not a redraw —
-  // and resuming the ring from the FIRST cursor hands back exactly it.
-  expect(manager.bytes(started.runId, mirrored[0]!.cursor!).chunks.join("")).toBe(mirrored[1]!.data);
+  expect(mirrored[1]!.cursor).toBe(manager.bytes(id).cursor);
+  expect(manager.bytes(id, mirrored[0]!.cursor!).chunks.join("")).toBe(mirrored[1]!.data);
 });
 
-test("a shell that cannot take the mirror does not cost the run its slot", async () => {
-  // A repaint is not worth a deployment. The mirror is fire-and-forget on
-  // purpose (launcher.ts), so a host refusing it must leave the run running
-  // rather than turning into the `unknown` a failed KILL produces.
+test("a shell that cannot take the mirror does not cost the terminal anything", async () => {
+  // A repaint is not worth a terminal. The mirror is fire-and-forget, so a host
+  // refusing it — here, a host that has gone — leaves the terminal running.
   const { host, server, manager, dir } = await harness();
   const started = await manager.start(input(dir));
-  const id = [...host.terminals.keys()][0]!;
-  // The channel goes down in the one direction the mirror uses; the run's own
-  // fate is still whatever the host says it is.
-  host.say(id, "before");
-  expect(await until(() => manager.bytes(started.runId).chunks.length > 0)).toBe(true);
-  expect(manager.run(started.runId).status).toBe("running");
+  host.say(started.terminalId, "before");
+  expect(await until(() => manager.bytes(started.terminalId).chunks.length > 0)).toBe(true);
   await server.close();
-  // Losing the channel is `unknown` for its own reason — the host stopped
-  // reporting — and NOT because a mirror was refused: the run is only ever
-  // moved by `lost`/`exited`, which this asserts by the slot still being held.
-  expect(await until(() => manager.run(started.runId).status === "unknown")).toBe(true);
-  expect(manager.activeRun("proj_1")?.runId).toBe(started.runId);
+  servers.pop();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  expect(manager.run(started.terminalId).status).toBe("running");
 });
 
-test("the byte cursor resumes, and a cursor that went backwards means another run", async () => {
+test("the byte cursor resumes, and a cursor that went backwards means another terminal", async () => {
   const { host, manager, dir } = await harness();
   const started = await manager.start(input(dir));
-  const id = [...host.terminals.keys()][0]!;
+  const id = started.terminalId;
 
   host.say(id, "first");
-  expect(await until(() => manager.bytes(started.runId).cursor === 1)).toBe(true);
-  const first = manager.bytes(started.runId);
+  expect(await until(() => manager.bytes(id).cursor === 1)).toBe(true);
+  const first = manager.bytes(id);
   expect(first.chunks.join("")).toBe("first");
 
   host.say(id, "second");
-  expect(await until(() => manager.bytes(started.runId).cursor === 2)).toBe(true);
-  // Resuming from the cursor hands back ONLY what is new — the property a poll
-  // rests on, and the one a reader that re-drew everything would violate
-  // invisibly.
-  const next = manager.bytes(started.runId, first.cursor);
+  expect(await until(() => manager.bytes(id).cursor === 2)).toBe(true);
+  const next = manager.bytes(id, first.cursor);
   expect(next.chunks.join("")).toBe("second");
   expect(next.dropped).toBe(0);
-  // From the top, everything, in order.
-  expect(manager.bytes(started.runId, 0).chunks.join("")).toBe("firstsecond");
+  expect(manager.bytes(id, 0).chunks.join("")).toBe("firstsecond");
 });

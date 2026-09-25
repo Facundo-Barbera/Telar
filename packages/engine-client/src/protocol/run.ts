@@ -1,20 +1,17 @@
 /**
- * Run configurations and the one local deployment a project may have.
+ * Run configurations, and the terminals they open.
  *
  * TWO NOUNS, AND THE SPLIT IS THE MODEL. A RUN CONFIGURATION is a saved recipe
  * belonging to the PROJECT — a name, a command, a working directory, an
- * environment — and it outlives every conversation. A RUN is one execution of
- * it, and it belongs to the project too rather than to the session that pressed
- * play. Changing conversation neither switches nor kills a run; every session
- * looking at the project sees the same deployment.
+ * environment — and it outlives every conversation. A RUN is one TERMINAL
+ * opened from it ("Run = a new terminal"), and it belongs to the SESSION whose
+ * panel it opened in. Two presses are two terminals — "web dev", "web dev #2" —
+ * and neither blocks the other; closing a terminal ends what runs in it.
  *
- * THE WORKTREE IS ON THE RUN, EXPLICITLY, AND IS NEVER INFERRED. A configuration
- * says `apps/web`, not an absolute path, because the same recipe has to be
- * launchable from the project's checkout and from any worktree cut off it. Which
- * tree a run actually used is captured when it starts, because the session
- * reading it later may be sitting somewhere else — and a run silently
- * attributed to the reader's tree is how you stop a server you did not start.
- * `RunStatusAnswer` therefore carries BOTH the run's tree and the reader's.
+ * THE WORKTREE IS ON THE TERMINAL, EXPLICITLY, AND IS NEVER INFERRED. A
+ * configuration says `apps/web`, not an absolute path, because the same recipe
+ * has to be launchable from the project's checkout and from any worktree cut
+ * off it. Which tree a terminal actually used is captured when it opens.
  *
  * A SECRET HAS NO VALUE ON THIS WIRE. `RunEnvView` omits `value` entirely when
  * `secret` is true — not a masked string, absent — so a client cannot render one
@@ -103,25 +100,39 @@ export const RunConfigurationView = z.object({
 export type RunConfigurationView = z.infer<typeof RunConfigurationView>;
 
 /**
- * WHERE A RUN IS IN ITS LIFE — and `ready` is deliberately expensive to reach.
+ * WHERE A TERMINAL IS IN ITS LIFE — and `ready` is deliberately expensive.
  *
- *   starting  reserved and spawning; the project's slot is already held
- *   running   alive, with no readiness check or none answered yet
+ *   running   open, with no readiness check or none answered yet
  *   ready     ONLY after a readiness URL that was silent before the launch
  *             answered after it, with something other than a 5xx
  *   exited    ended on its own; `exitCode` says how
  *   failed    never started, or ended non-zero
- *   unknown   the engine cannot vouch for the process any more. The slot STAYS
- *             HELD and nothing is signalled — clearing it is `release`, an
- *             explicit human act.
+ *   closed    somebody closed the terminal; `closedBy` says who
+ *
+ * No `unknown` and no `starting`: there is no deployment slot to hold for a
+ * process Telar lost, and Telar does not track liveness — the engine records
+ * what the terminal host tells it.
  */
-export const RunStatus = z.enum(["starting", "running", "ready", "exited", "failed", "unknown"]);
+export const RunStatus = z.enum(["running", "ready", "exited", "failed", "closed"]);
 export type RunStatus = z.infer<typeof RunStatus>;
 
-/** A run that has stopped for good. `unknown` is NOT terminal: it holds the slot. */
+/** A terminal that has ended for good. */
 export function isTerminalRunStatus(status: RunStatus): boolean {
-  return status === "exited" || status === "failed";
+  return status === "exited" || status === "failed" || status === "closed";
 }
+
+/** Why a terminal exists: a saved configuration (`run`), or a command an agent
+ *  opened so the person can watch it (`agent`). */
+export const RunOrigin = z.enum(["run", "agent"]);
+export type RunOrigin = z.infer<typeof RunOrigin>;
+
+/**
+ * WHO CLOSED A TERMINAL: the person (the cockpit), an agent (a tool call), or
+ * Telar itself (quitting, or the host no longer holding it). Recorded so an
+ * agent can be told "the person closed it" and not reopen it unasked.
+ */
+export const RunClosedBy = z.enum(["person", "agent", "telar"]);
+export type RunClosedBy = z.infer<typeof RunClosedBy>;
 
 /**
  * WHY A RUN IS OR IS NOT CALLED READY — and how weak the claim really is.
@@ -149,67 +160,73 @@ export const RunOutputLine = z.object({
 });
 export type RunOutputLine = z.infer<typeof RunOutputLine>;
 
+/**
+ * ONE TERMINAL — open, or recently ended and kept for its output.
+ *
+ * IDENTITY IS `terminalId`: the desktop host's id for the pseudo-terminal (the
+ * name the cockpit's strip attaches by), or an engine-minted `pipe_…` id when
+ * there is no Electron. It stays on the record after the terminal ends.
+ */
 export const RunView = z.object({
+  terminalId: z.string(),
+  /** The same value as `terminalId`, under its old name, for one release. */
   runId: z.string(),
   projectId: z.string(),
-  configId: z.string(),
+  /** The session whose panel it lives in. The session OWNS it. */
+  sessionId: z.string(),
+  origin: RunOrigin,
+  /** What the tab says: the configuration's name, then `#2`, `#3`… */
+  title: z.string(),
+  /** The recipe it came from, when it came from one. */
+  configId: z.string().optional(),
   /** Copied at launch: renaming or deleting the recipe must not rewrite history. */
   configName: z.string(),
   command: z.string(),
-  /** The tree this run was launched from — not necessarily the reader's. */
+  /** The tree this terminal was launched from — not necessarily the reader's. */
   worktreePath: z.string(),
   worktreeBranch: z.string().optional(),
   cwd: z.string(),
-  /** The session that pressed play. Provenance only: it owns nothing. */
-  startedBySessionId: z.string().optional(),
   status: RunStatus,
   readiness: RunReadiness,
   readinessUrl: z.string().optional(),
-  /** Present only while the engine still holds the process handle. */
+  /** Present only while the terminal is open. */
   pid: z.number().optional(),
-  /**
-   * The desktop host's id for the pseudo-terminal this run is on, while it is
-   * on one — what the cockpit's Terminal strip attaches to (#890), and what an
-   * agent quotes to say where the output already is. Absent for a run with no
-   * terminal (no Electron) and for one whose handle is gone.
-   */
-  terminalId: z.string().optional(),
   startedAt: z.number(),
   endedAt: z.number().optional(),
   exitCode: z.number().optional(),
   signal: z.string().optional(),
-  /** Why it failed or went unknown, in a sentence. Redacted. */
+  /** Who closed it, when it was closed rather than ending by itself. */
+  closedBy: RunClosedBy.optional(),
+  /** Something worth knowing that did not stop the launch, e.g. "port 3000
+   *  already answers". A busy port warns; it never blocks. */
+  warning: z.string().optional(),
+  /** Why it failed, in a sentence. Redacted. */
   error: z.string().optional(),
   env: z.array(RunEnvView),
 });
 export type RunView = z.infer<typeof RunView>;
 
 /**
- * ONE RUN CHANGED — the frame `/run/stream` carries (#890).
+ * ONE TERMINAL CHANGED — the frame `/run/stream` carries (#890), for the
+ * session the stream is opened on.
  *
- * THE WHOLE VIEW IS ON IT, unlike the session feed's frames, and the reason is
- * that there is nothing to page back to: a run's status lives in the engine's
- * memory and the only read of it is `/run/status`, the poll this feed exists to
- * delete. The frame IS the state, so a reader that missed one is corrected by
- * the next rather than having to reconcile.
- *
- * `active` IS NOT A PROPERTY OF THE RUN and is deliberately not on `RunView`.
- * It answers "does this run hold the project's one deployment slot", which only
- * the engine can say: a released run stays `unknown` for ever with the slot
- * free, so a client re-deriving it from the status would show a ghost.
+ * THE WHOLE VIEW IS ON IT: a terminal's state lives in the engine's memory and
+ * the only read of it is `/run/status`, the poll this feed exists to delete.
+ * The frame IS the state, so a reader that missed one is corrected by the next.
  */
 export const RunStatusEvent = z.object({
   type: z.literal("run.status"),
   projectId: z.string(),
+  sessionId: z.string(),
   run: RunView,
-  active: z.boolean(),
 });
 export type RunStatusEvent = z.infer<typeof RunStatusEvent>;
 
+/** A session's terminals — a list, where there used to be one project-wide
+ *  `active` run and its `history`. */
 export const RunStatusAnswer = z.object({
-  active: RunView.optional(),
-  /** Newest first, the live one included. History is what makes an exit readable. */
-  history: z.array(RunView),
+  /** Newest first, open ones and recently ended ones. */
+  terminals: z.array(RunView),
   /** The tree the session reading this is sitting on. */
   sessionWorktreePath: z.string().optional(),
 });
@@ -311,8 +328,8 @@ export type RunWriteAnswer = z.infer<typeof RunWriteAnswer>;
 export const RunResizeAnswer = z.object({ resized: z.boolean() });
 export type RunResizeAnswer = z.infer<typeof RunResizeAnswer>;
 
-/** `replace` is opt-in and named: taking over a deployment somebody else is
- *  watching must be asked for, never inferred from an ordinary start. */
+/** `replace` is still accepted and means nothing: every start opens a new
+ *  terminal, and there is no deployment left to take over. */
 export const RunStartInput = z.object({ configId: z.string().min(1), replace: z.boolean().optional() });
 export type RunStartInput = z.infer<typeof RunStartInput>;
 

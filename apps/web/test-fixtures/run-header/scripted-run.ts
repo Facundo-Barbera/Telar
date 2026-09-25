@@ -10,7 +10,7 @@ import type { WorkspaceOpenBridge } from "../../lib/workspace-open";
 
 /** `empty` is the Setup case: a project with no saved recipe at all, which is
  *  the only scenario where the masthead offers a button that is not "Run". */
-export type Scenario = "idle" | "empty" | "ready" | "starting" | "foreign" | "lost" | "failed";
+export type Scenario = "idle" | "empty" | "ready" | "two" | "busy" | "failed";
 
 export const calls: string[] = [];
 const watchers = new Set<() => void>();
@@ -19,8 +19,12 @@ const state = { scenario: "idle" as Scenario, hostId: "local" as string | undefi
 const OURS = "/Users/x/code/telar";
 
 const view = (over: Partial<RunView> = {}): RunView => ({
-  runId: "run_1",
+  terminalId: "term_1",
+  runId: "term_1",
   projectId: "project_1",
+  sessionId: "session_1",
+  origin: "run",
+  title: "dev server",
   configId: "config_dev",
   configName: "dev server",
   command: "bun dev",
@@ -37,17 +41,21 @@ const view = (over: Partial<RunView> = {}): RunView => ({
 function answer(): RunStatusAnswer {
   switch (state.scenario) {
     case "ready":
-      return { active: view(), history: [view()], sessionWorktreePath: OURS };
-    case "starting":
-      return { active: view({ status: "starting" }), history: [], sessionWorktreePath: OURS };
-    case "foreign":
-      return { active: view({ worktreePath: "/Users/x/other-checkout" }), history: [], sessionWorktreePath: OURS };
-    case "lost":
-      return { active: view({ status: "unknown" }), history: [], sessionWorktreePath: OURS };
+      return { terminals: [view()], sessionWorktreePath: OURS };
+    case "two":
+      return {
+        terminals: [view({ terminalId: "term_2", runId: "term_2", title: "dev server #2", startedAt: 2 }), view()],
+        sessionWorktreePath: OURS,
+      };
+    case "busy":
+      return {
+        terminals: [view({ status: "running", warning: "port 3000 already answers, so something else may be serving http://localhost:3000; this terminal was opened anyway" })],
+        sessionWorktreePath: OURS,
+      };
     case "failed":
-      return { active: view({ status: "failed", error: "exited with code 1" }), history: [], sessionWorktreePath: OURS };
+      return { terminals: [view({ status: "failed", error: "exited with code 1" })], sessionWorktreePath: OURS };
     default:
-      return { history: [], sessionWorktreePath: OURS };
+      return { terminals: [], sessionWorktreePath: OURS };
   }
 }
 
@@ -96,24 +104,19 @@ export const bridge = {
     };
   },
   status: async () => answer(),
-  start: async (_sessionId: string, configId: string, replace?: boolean) => {
-    record(`start:${configId}${replace ? " REPLACE" : ""}`);
+  start: async (_sessionId: string, configId: string) => {
+    record(`start:${configId}`);
     state.scenario = "ready";
     return view({ configId });
   },
-  stop: async (_sessionId: string, runId?: string) => {
-    record(`stop:${runId}`);
+  stop: async (_sessionId: string, terminalId?: string) => {
+    record(`stop:${terminalId}`);
     state.scenario = "idle";
-    return view({ status: "exited" });
+    return view({ status: "closed", closedBy: "person" });
   },
-  restart: async (_sessionId: string, runId?: string) => {
-    record(`restart:${runId}`);
+  restart: async (_sessionId: string, terminalId?: string) => {
+    record(`restart:${terminalId}`);
     return view();
-  },
-  release: async (_sessionId: string, runId: string) => {
-    record(`release:${runId}`);
-    state.scenario = "idle";
-    return view({ status: "exited" });
   },
 } as unknown as RunApi;
 

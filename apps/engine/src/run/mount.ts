@@ -2,19 +2,15 @@
  * Everything the daemon needs to serve runs, behind one object.
  *
  * WHY THIS FILE EXISTS: TO MAKE THE SHARED HUNK TINY. Mounting Run used to mean
- * a dozen lines inside `daemon.ts` — construct a store, construct a manager,
- * recover, match a route, build a capability, adapt the error — and `daemon.ts`
- * is owned by somebody else and moves under us. A dozen lines of somebody else's
- * file is a dozen lines nobody tests and one careless splice deletes; that is
- * not hypothetical, it is what happened. So all of it lives here, in a file this
- * milestone owns and covers, and the daemon keeps three lines it can splice
- * around without understanding.
+ * a dozen lines inside `daemon.ts`, which is owned by somebody else and moves
+ * under us. So all of it lives here, in a file this feature owns and covers,
+ * and the daemon keeps three lines it can splice around without understanding.
  *
  * IT STILL DOES NOT IMPORT THE DAEMON. `handle` takes the method, the
  * session-scoped tail and the decoded body, and returns `undefined` when the
- * request is not a run request — so the caller falls through to its own routing
- * exactly as before. Refusals are thrown as `RunError`, whose `code` the caller
- * maps to its own HTTP shape; nothing here knows what an HttpError is.
+ * request is not a run request — so the caller falls through to its own
+ * routing. Refusals are thrown as `RunError`, whose `code` the caller maps to
+ * its own HTTP shape.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -33,22 +29,26 @@ export type RunMount = {
   /**
    * Serve one request, or answer `undefined` when it is not ours.
    *
-   * `context` resolves "which project and which worktree is this session" — the
-   * daemon's knowledge, read per request rather than captured, so a session that
-   * moves between worktrees is not answered from a stale one.
+   * `context` resolves "which session, project and worktree is this" — the
+   * daemon's knowledge, read per request rather than captured.
    */
   handle(method: string, tail: string, input: Record<string, unknown>, context: () => RunSessionContext): Promise<unknown> | undefined;
   /**
-   * Every run transition, for one project. THE ROUTE THAT USES THIS IS AN SSE
-   * ARM RATHER THAN A TABLE ENTRY, because `RunRoute` returns a value and a
+   * Every terminal transition, for ONE SESSION. THE ROUTE THAT USES THIS IS AN
+   * SSE ARM RATHER THAN A TABLE ENTRY, because `RunRoute` returns a value and a
    * stream does not have one — see `daemon.ts`.
    *
-   * SCOPED HERE RATHER THAN IN THE MANAGER: which project a connection may see
-   * is the session's business, and the manager is not told about sessions.
+   * SCOPED TO THE SESSION: a terminal belongs to the session whose panel it is
+   * in, and a connection that saw every session's terminals would be a read
+   * granted by a typo.
    */
-  watch(projectId: string, listener: (event: RunStatusEvent) => void): () => void;
-  /** Runs the last daemon did not see end. Reported, never adopted. */
-  recovered: RunView[];
+  watch(sessionId: string, listener: (event: RunStatusEvent) => void): () => void;
+  /**
+   * The terminals a previous engine opened that the host still holds,
+   * re-listed. Resolves once the host has been asked; nothing waits on it,
+   * because nothing is blocked by it.
+   */
+  recovered: Promise<RunView[]>;
   /** Whether runs go on a real pseudo-terminal the desktop shell holds. */
   terminalChannel: boolean;
   shutdown(): Promise<void>;
@@ -57,32 +57,36 @@ export type RunMount = {
 /**
  * Build the run surface under an engine home.
  *
- * `recover()` RUNS HERE, before this function returns, so a caller cannot bind a
- * port in front of a manager that has not yet read its own journal. What it
- * recovers is honest: a run the last daemon did not see end becomes `unknown`,
- * holds its project's slot, and is signalled by nobody.
+ * A RUN IS A TERMINAL IN THE SESSION'S PANEL WHEN THERE IS A PANEL TO PUT IT
+ * IN. The desktop shell exports the channel to its PTY host into this
+ * process's environment. When it is absent — `bun run src/main.ts`, a test, a
+ * headless deployment — a run is a detached child with pipes: multiple
+ * instances, no chip, the same byte path.
  */
 export function createRunMount(options: { root: string; env?: NodeJS.ProcessEnv }): RunMount {
   const dir = path.join(options.root, "run");
   fs.mkdirSync(dir, { recursive: true });
+  // The liveness journal a previous build kept. Nothing reads it any more, and
+  // left behind it would describe runs as "still running" for ever.
+  fs.rmSync(path.join(dir, "open-runs.json"), { force: true });
   const store = new RunStore(dir);
-  /**
-   * A RUN IS A TERMINAL SESSION WHEN THERE IS A TERMINAL TO PUT IT ON.
-   *
-   * The desktop shell exports the channel to its PTY host into this process's
-   * environment, the same way it already exports the browser control port. When
-   * it is absent — `bun run src/main.ts`, a test, a headless deployment — a run
-   * is a detached child with pipes, which is what it was before #198 and is not
-   * a fallback in any apologetic sense: there is genuinely no pseudo-terminal
-   * over there to be a client of.
-   */
   const channel = terminalChannelFromEnv(options.env ?? process.env);
   const client = channel ? new RunTerminalClient(channel) : undefined;
   const manager = new RunManager({
     journal: new RunJournalFile(dir),
     ...(client ? { launcher: terminalLauncher(client) } : {}),
   });
-  const recovered = manager.recover();
+  const recovered = manager
+    .recover({
+      configFor: (projectId, configId) => {
+        try {
+          return store.get(projectId, configId);
+        } catch {
+          return undefined;
+        }
+      },
+    })
+    .catch(() => []);
 
   return {
     store,
@@ -98,9 +102,9 @@ export function createRunMount(options: { root: string; env?: NodeJS.ProcessEnv 
         capability: storeRunCapability({ store, manager, context }),
       });
     },
-    watch(projectId, listener) {
+    watch(sessionId, listener) {
       return manager.watch((event) => {
-        if (event.projectId === projectId) listener(event);
+        if (event.sessionId === sessionId) listener(event);
       });
     },
     shutdown: () => manager.shutdown(),

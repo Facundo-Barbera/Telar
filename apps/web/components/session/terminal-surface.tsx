@@ -44,7 +44,7 @@ import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { createRunApi } from "@/lib/run/api";
 import { RunGlyph } from "@/lib/run/icons";
-import { statusLabel, statusTone, type RunTone } from "@/lib/run/presentation";
+import { isOpenTerminal, statusLabel, statusTone, type RunTone } from "@/lib/run/presentation";
 import { useRunStatusFeed } from "@/lib/run/status-stream";
 import type { RunConfigurationView, RunView } from "@/lib/run/types";
 import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type TerminalEnding } from "@/lib/terminal-bridge";
@@ -131,31 +131,27 @@ const RUN_TONE_DOT: Record<RunTone, string> = {
   working: "bg-warning",
   good: "bg-success",
   bad: "bg-destructive",
-  lost: "bg-muted-foreground/60",
 };
 
-/** A run, in the strip's own vocabulary. The chip's LABEL is the name the run
- *  copied at launch, so renaming or deleting the recipe does not rewrite a
- *  chip that is already open. */
+/** A run, in the strip's own vocabulary. The chip's LABEL is the terminal's
+ *  title, copied at launch ("web dev #2"), so renaming or deleting the recipe
+ *  does not rewrite a chip that is already open.
+ *
+ *  THE TERMINAL ID IS HANDED ON ONLY WHILE IT IS OPEN. The engine keeps the id
+ *  on an ended record, because it is the record's identity; the pane reads it
+ *  as "attach to this live terminal", which an ended one no longer is. */
 function viewAsShell(run: RunView): { runId: string; configId: string; terminalId?: string; title?: string } {
   return {
     runId: run.runId,
-    configId: run.configId,
-    ...(run.terminalId ? { terminalId: run.terminalId } : {}),
-    ...(run.configName ? { title: run.configName } : {}),
+    configId: run.configId ?? "",
+    ...(isOpenTerminal(run) ? { terminalId: run.terminalId } : {}),
+    ...(run.title ? { title: run.title } : {}),
   };
 }
 
-/**
- * Can this run still say anything?
- *
- * `unknown` COUNTS AS LIVE, and that is not a rounding. Telar lost contact with
- * the process; it very likely still exists and may still be writing. A pane
- * that stopped reading would show a screen that quietly stopped being true.
- */
+/** Can this run still say anything? Only while its terminal is open. */
 function isLiveRun(run: RunView | undefined): boolean {
-  if (!run) return false;
-  return run.status === "starting" || run.status === "running" || run.status === "ready" || run.status === "unknown";
+  return isOpenTerminal(run);
 }
 
 type Phase =
@@ -295,12 +291,11 @@ export function TerminalSurface({
   /**
    * FOLD THE RUN STATE ONTO THE STRIP.
    *
-   * TWO RULES, AND THEY ARE NOT THE SAME RULE TWICE. The ACTIVE run — the one
-   * holding the project's slot — always has a chip, which is what re-opens it
-   * on the next visit after somebody closed it and what puts one there for a
-   * run an agent started. Every chip already in the strip is kept CURRENT from
-   * history, whether or not its run is still active, because a run that just
-   * exited has to stop naming a terminal (its handle is gone) and show its exit
+   * TWO RULES, AND THEY ARE NOT THE SAME RULE TWICE. Every OPEN terminal of
+   * this session has a chip — a session may have several ("web dev", "web dev
+   * #2") — which is what puts one there for a run an agent started. Every chip
+   * already in the strip is kept CURRENT from the list, open or not, because a
+   * run that just ended has to stop naming a live terminal and show its exit
    * rather than sit for ever on the last state anyone saw.
    *
    * A CHIP IS NEVER REMOVED FROM HERE. Closing one is a person's gesture and an
@@ -315,14 +310,18 @@ export function TerminalSurface({
     // DEFERRED TO A TASK rather than called in the effect body: a synchronous
     // `setState` there is a cascading render, and this is the rule the cockpit's
     // own panel restore follows (`session-cockpit.tsx`) for the same reason.
+    // A PAIRED MAC MAY RUN AN OLDER ENGINE, whose answer has no `terminals`
+    // list; it reads as "none" rather than taking the strip down.
+    const terminals = status.terminals ?? [];
     const task = window.setTimeout(() => {
       setWorkspace((current) => {
         let next = current;
         for (const shell of runShells(next)) {
-          const view = status.history.find((run) => run.runId === shell.run!.runId);
+          const view = terminals.find((run) => run.runId === shell.run!.runId);
           if (view) next = upsertRunShell(next, viewAsShell(view));
         }
-        if (status.active) next = upsertRunShell(next, viewAsShell(status.active));
+        // Oldest first, so the strip's order matches the order they opened in.
+        for (const run of [...terminals].reverse()) if (isOpenTerminal(run)) next = upsertRunShell(next, viewAsShell(run));
         return next;
       });
     }, 0);
@@ -353,8 +352,7 @@ export function TerminalSurface({
   /** Every run this strip knows about, by id — the chips' status dots. */
   const runsById = useMemo(() => {
     const map = new Map<string, RunView>();
-    for (const run of runs.status?.history ?? []) map.set(run.runId, run);
-    if (runs.status?.active) map.set(runs.status.active.runId, runs.status.active);
+    for (const run of runs.status?.terminals ?? []) map.set(run.runId, run);
     return map;
   }, [runs.status]);
 

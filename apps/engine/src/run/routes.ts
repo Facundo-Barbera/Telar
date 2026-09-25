@@ -4,19 +4,19 @@
  * A TABLE THE DAEMON MOUNTS. This file deliberately imports nothing from
  * `daemon.ts` and writes no responses: each entry matches a session-scoped tail
  * (`/run/…`) and returns a value, and refusals are thrown as `RunError`, whose
- * `{ code, message }` shape the mount point adapts to its own `HttpError`. That
- * keeps the whole surface testable by calling `handle()` with a plain object,
- * and keeps a second writer out of the daemon's dispatch while it is being
- * restructured.
+ * `{ code, message }` shape the mount point adapts to its own `HttpError`.
  *
  * THE CONTEXT CARRIES A CAPABILITY, NOT THE ENGINE STORE, because resolving
- * "which project and which worktree is this session" is the daemon's knowledge
- * and nothing here should reach for it. The mount point builds the capability
- * with `storeRunCapability({ store, manager, context })` and hands it over.
+ * "which session, project and worktree is this" is the daemon's knowledge. The
+ * mount point builds the capability with `storeRunCapability(…)`.
+ *
+ * A TERMINAL IS NAMED BY `terminalId` ON EVERY ROUTE, and `runId` is still
+ * read as the same thing so a caller from before terminals keeps working.
+ * `/run/release` is gone: there is no slot left to release.
  */
 import { z } from "zod";
 import type { RunCapability } from "./capability";
-import { RunConfigurationInput, RunError } from "./types";
+import { RunClosedBy, RunConfigurationInput, RunError } from "./types";
 
 export type RunRouteContext = {
   /** Capture groups from `pattern`, in order. */
@@ -42,7 +42,7 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   return result.data;
 }
 
-const RunIdOnly = z.object({ runId: z.string().min(1).optional() });
+const Target = z.object({ terminalId: z.string().min(1).optional(), runId: z.string().min(1).optional() });
 
 export const runRoutes: RunRoute[] = [
   {
@@ -68,6 +68,8 @@ export const runRoutes: RunRoute[] = [
       return { removed: params[0] };
     },
   },
+  /** This session's terminals, newest first — a list, where there used to be
+   *  one project-wide `active` run. */
   {
     method: "GET",
     pattern: /^\/run\/status$/,
@@ -76,27 +78,25 @@ export const runRoutes: RunRoute[] = [
   {
     method: "POST",
     pattern: /^\/run\/start$/,
+    // `replace` still parses — an old caller sends it — and means nothing now.
     handle: async ({ capability, input }) =>
       await capability.start(parse(z.object({ configId: z.string().min(1), replace: z.boolean().optional() }), input)),
   },
+  /**
+   * CLOSE A TERMINAL. `signal` is a polite first word (a closed set of three),
+   * and `closedBy` is who is asking — absent means the person, which is what
+   * the cockpit is.
+   */
   {
     method: "POST",
     pattern: /^\/run\/stop$/,
     handle: async ({ capability, input }) =>
-      // `signal` IS THE POLITE ATTEMPT'S ONLY, and it is a closed set: three
-      // signals with distinct meanings to a process, rather than a field a
-      // caller could aim anywhere (#890).
-      await capability.stop(parse(RunIdOnly.extend({ signal: z.enum(["SIGTERM", "SIGINT", "SIGKILL"]).optional() }), input)),
+      await capability.stop(parse(Target.extend({ signal: z.enum(["SIGTERM", "SIGINT", "SIGKILL"]).optional(), closedBy: RunClosedBy.optional() }), input)),
   },
   {
     method: "POST",
     pattern: /^\/run\/restart$/,
-    handle: async ({ capability, input }) => await capability.restart(parse(RunIdOnly, input)),
-  },
-  {
-    method: "POST",
-    pattern: /^\/run\/release$/,
-    handle: async ({ capability, input }) => await capability.release(parse(z.object({ runId: z.string().min(1) }), input)),
+    handle: async ({ capability, input }) => await capability.restart(parse(Target.extend({ closedBy: RunClosedBy.optional() }), input)),
   },
   {
     method: "GET",
@@ -104,12 +104,11 @@ export const runRoutes: RunRoute[] = [
     handle: async ({ capability, input }) =>
       await capability.output(
         parse(
-          RunIdOnly.extend({
+          Target.extend({
             after: z.coerce.number().int().min(0).optional(),
-            // THE THREE NARROWINGS (#890). `z.coerce` on `tail` because these
-            // arrive as query strings; `grep` is compiled by the manager, which
-            // is what turns a bad pattern into "your argument was wrong"
-            // rather than into a parser's complaint about itself.
+            // THE THREE NARROWINGS (#890). `z.coerce` because these arrive as
+            // query strings; `grep` is compiled by the manager, which is what
+            // turns a bad pattern into "your argument was wrong".
             tail: z.coerce.number().int().min(1).max(1000).optional(),
             grep: z.string().min(1).max(500).optional(),
             stream: z.enum(["stdout", "stderr"]).optional(),
@@ -121,13 +120,9 @@ export const runRoutes: RunRoute[] = [
   /**
    * WAIT FOR ONE OF FOUR THINGS — the route that replaces `sleep 2 && curl`.
    *
-   * A POST, AND NOT FOR THE BODY'S SAKE. This is the one route here that HOLDS
-   * ITS CONNECTION, for up to a minute, which is a thing to do deliberately
-   * rather than to a path that reads like a cheap read.
-   *
-   * THE CEILING IS ENFORCED HERE AS WELL AS IN THE TOOL SCHEMA. The schema is
-   * the model's contract and the HTTP surface is everyone else's; a route that
-   * trusted the caller would let one park a worker for as long as it liked.
+   * A POST because it HOLDS ITS CONNECTION for up to a minute. THE CEILING IS
+   * ENFORCED HERE AS WELL AS IN THE TOOL SCHEMA: the HTTP surface is everyone
+   * else's contract.
    */
   {
     method: "POST",
@@ -135,7 +130,7 @@ export const runRoutes: RunRoute[] = [
     handle: async ({ capability, input }) =>
       await capability.wait(
         parse(
-          RunIdOnly.extend({
+          Target.extend({
             pattern: z.string().min(1).max(500).optional(),
             ready: z.boolean().optional(),
             exit: z.boolean().optional(),
@@ -145,39 +140,27 @@ export const runRoutes: RunRoute[] = [
         ),
       ),
   },
-  /**
-   * THE SAME WINDOW, IN BYTES — what the cockpit's emulator reads (#198).
-   *
-   * BESIDE `/run/output` RATHER THAN INSTEAD OF IT. The line view is what
-   * `run_output` hands an agent, and an agent wants lines rather than escape
-   * sequences; retiring it would also have left a session on a PAIRED MAC with
-   * nothing, since `terminalBridge()` is local-host only by design while this
-   * path goes over the ordinary host hop like every other run route.
-   */
+  /** THE SAME WINDOW, IN BYTES — what the cockpit's emulator reads (#198). */
   {
     method: "GET",
     pattern: /^\/run\/bytes$/,
     handle: async ({ capability, input }) =>
-      await capability.bytes(parse(RunIdOnly.extend({ after: z.coerce.number().int().min(0).optional() }), input)),
+      await capability.bytes(parse(Target.extend({ after: z.coerce.number().int().min(0).optional() }), input)),
   },
   /**
-   * AND THE KEYBOARD. The owner's decision for #198 is that a run's terminal is
-   * writable — `psql`, an installer's `Proceed (Y/n)`, a dev server's `r`.
-   *
-   * `data` MAY BE EMPTY AND MAY NOT BE ABSENT. A missing field is a caller
-   * that meant something and sent nothing; an empty string is a caller that
-   * meant nothing, which is cheap to honour and impossible to misread.
+   * AND THE KEYBOARD. `data` MAY BE EMPTY AND MAY NOT BE ABSENT: a missing
+   * field is a caller that meant something and sent nothing.
    */
   {
     method: "POST",
     pattern: /^\/run\/write$/,
-    handle: async ({ capability, input }) => await capability.write(parse(RunIdOnly.extend({ data: z.string() }), input)),
+    handle: async ({ capability, input }) => await capability.write(parse(Target.extend({ data: z.string() }), input)),
   },
   {
     method: "POST",
     pattern: /^\/run\/resize$/,
     handle: async ({ capability, input }) =>
-      await capability.resize(parse(RunIdOnly.extend({ cols: z.number().int().positive(), rows: z.number().int().positive() }), input)),
+      await capability.resize(parse(Target.extend({ cols: z.number().int().positive(), rows: z.number().int().positive() }), input)),
   },
 ];
 

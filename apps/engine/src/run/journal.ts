@@ -1,164 +1,123 @@
 /**
- * The one durable fact about a run: that we started it and had not seen it end.
+ * What a restarted engine needs to pick its terminals back up — and nothing
+ * about whether they are alive.
  *
- * WHY THIS EXISTS AT ALL, GIVEN THERE IS NO SUPERVISOR. Runs live in the
- * daemon's memory, and if the daemon dies uncleanly that memory goes with it —
- * along with every trace that a `bun run dev` is still holding port 3000. The
- * next daemon would then cheerfully accept "start the dev server" and hand the
- * human a port collision, which is the exact failure the singleton exists to
- * prevent. So one record is written BEFORE the spawn and removed when the run
- * ends cleanly, and whatever is left over on startup is read back as `unknown`.
+ * THIS USED TO BE A LIVENESS RECORD, AND IT IS NOT ANY MORE. It was written
+ * before each spawn and read back after a crash as an `unknown` run that held
+ * its project's one deployment slot until a person "released" it, because a
+ * dev server nobody could see might still be holding the port. "Run = a new
+ * terminal" removed the slot, the `unknown` and the release, and with them the
+ * reason to fear a record: nothing here can block a launch now.
  *
- * IT DOES NOT ADOPT ANYTHING. A recovered record is not a process handle: the
- * pid in it is a number from a previous boot of a previous daemon, and the
- * kernel may well have handed it to something else since. Nothing signals it,
- * nothing polls it, nothing claims it is alive. The record's only power is to
- * BLOCK the project's slot and tell a human where to look — and `release` is
- * how they say "I checked; it is gone".
+ * WHAT IS LEFT IS A NAME TAG. The desktop host keeps its terminals across an
+ * engine restart — the terminal owns its process, so the engine going down is
+ * not a reason to end a person's dev server. When a new engine starts it asks
+ * the host which terminals it holds (`GET /state`), and this file is how it
+ * tells which of those it opened and WHICH CONFIGURATION TO REDACT THEM WITH:
+ * the host's list carries a session and a title, never a secret, and output
+ * mirrored to the cockpit without its configuration's secrets would print
+ * them. So one entry per terminal is written once the host names it, and
+ * removed when it ends.
  *
- * The pid is recorded purely so that sentence can name it.
+ * ENTRIES THE HOST NO LONGER HOLDS ARE DROPPED WITHOUT A WORD. There is no
+ * orphan to show and no pid to go looking for: a terminal the host does not
+ * have has ended, and the host is the only one who could have ended it.
+ *
+ * A FILE THAT CANNOT BE READ IS TREATED AS EMPTY. That used to latch the
+ * engine into refusing every launch; with nothing left for this file to
+ * protect, a bad file costs only the re-listing, and the next write replaces
+ * it.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { atomicWrite } from "../atomic";
+import type { RunOrigin } from "./types";
 
-/** Enough to describe, to a human, a process we can no longer see. */
+/** Enough to re-attach a terminal the host still holds. No secret, no pid. */
 export type RunRecord = {
-  runId: string;
+  terminalId: string;
   projectId: string;
-  configId: string;
+  sessionId: string;
+  origin: RunOrigin;
+  title: string;
+  /** Where its secrets live — resolved again from the store on re-attach. */
+  configId?: string;
   configName: string;
   command: string;
   worktreePath: string;
   worktreeBranch?: string;
   cwd: string;
-  sessionId?: string;
+  readinessUrl?: string;
   startedAt: number;
-  /** The process-group leader we spawned. Reported, never signalled. */
-  pid?: number;
 };
 
 export type RunJournal = {
-  /** Upsert. Called before the spawn, and again once there is a pid. */
+  /** Upsert, once the host has named the terminal. */
   open(record: RunRecord): void;
-  close(runId: string): void;
+  close(terminalId: string): void;
   list(): RunRecord[];
+  /** Replace the whole set — what re-listing leaves behind. */
+  replace(records: RunRecord[]): void;
 };
 
-/**
- * The journal could not be read, so what it says is unknown.
- *
- * THIS IS NOT "THERE ARE NO RUNS". A file we cannot parse may describe a dev
- * server still holding port 3000, and the difference between "no records" and
- * "no answer" is the difference between letting the next launch proceed and
- * letting it collide. Every caller that would act on emptiness has to see this
- * instead.
- */
-export class RunJournalUnreadable extends Error {
-  constructor(
-    message: string,
-    /** What to tell a human, and what the file is called. */
-    readonly file: string,
-  ) {
-    super(message);
-    this.name = "RunJournalUnreadable";
-  }
-}
-
-/** A journal that forgets everything, for callers that want no durability. */
+/** A journal that forgets everything, for callers that want no re-listing. */
 export const nullRunJournal: RunJournal = {
   open() {},
   close() {},
   list: () => [],
+  replace() {},
 };
 
-/** Why this entry is not a record, or `undefined` when it is one. */
-function recordFault(value: unknown): string | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "an entry is not an object";
+function isRecord(value: unknown): value is RunRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  const strings = ["runId", "projectId", "configId", "configName", "command", "worktreePath", "cwd"] as const;
-  for (const field of strings) {
-    if (typeof record[field] !== "string" || !record[field]) return `an entry has no ${field}`;
+  for (const field of ["terminalId", "projectId", "sessionId", "title", "configName", "command", "worktreePath", "cwd"] as const) {
+    if (typeof record[field] !== "string" || !record[field]) return false;
   }
-  if (typeof record.startedAt !== "number" || !Number.isFinite(record.startedAt)) return "an entry has no startedAt";
-  const optionalStrings = ["worktreeBranch", "sessionId"] as const;
-  for (const field of optionalStrings) {
-    if (record[field] !== undefined && typeof record[field] !== "string") return `an entry has a malformed ${field}`;
+  if (record.origin !== "run" && record.origin !== "agent") return false;
+  for (const field of ["configId", "worktreeBranch", "readinessUrl"] as const) {
+    if (record[field] !== undefined && typeof record[field] !== "string") return false;
   }
-  if (record.pid !== undefined && (typeof record.pid !== "number" || !Number.isInteger(record.pid))) {
-    return "an entry has a malformed pid";
-  }
-  return undefined;
+  return typeof record.startedAt === "number" && Number.isFinite(record.startedAt);
 }
 
 /**
- * One small JSON file listing the runs believed to be live.
+ * One small JSON file of the terminals the engine opened and has not seen end.
  *
- * WRITTEN SYNCHRONOUSLY, ON PURPOSE. `open()` is called on the path to a spawn,
- * and a record that lands after the process does is a record that can be missed
- * by exactly the crash it exists for. It is a handful of bytes.
- *
- * A FILE WE CANNOT READ IS NOT AN EMPTY FILE. Reading a truncated, unreadable or
- * half-written journal as "no runs" is the worst possible answer: it is exactly
- * the situation where something IS probably still running, and answering "empty"
- * both frees the slot and — because `open()` rewrites the file from what it just
- * read — destroys the only evidence of what to look for. So anything other than
- * "this file does not exist" throws `RunJournalUnreadable`, the bad file is left
- * on disk untouched, and starting runs is what fails. The rest of the daemon is
- * not the journal's business and keeps working.
+ * NEVER THROWS OUT OF A READ. A missing, unreadable or malformed file is an
+ * empty list, and a malformed ENTRY is skipped rather than failing the others —
+ * the cost of either is one terminal the new engine does not re-list, which is
+ * a terminal that keeps running in the panel and can still be closed there.
  */
 export class RunJournalFile implements RunJournal {
   private readonly file: string;
 
   constructor(dir: string) {
-    this.file = path.join(dir, "open-runs.json");
+    this.file = path.join(dir, "open-terminals.json");
   }
 
   list(): RunRecord[] {
-    let raw: string;
-    try {
-      raw = fs.readFileSync(this.file, "utf8");
-    } catch (error) {
-      // ENOENT is the ONLY error that means "nothing was ever recorded". A
-      // permission or I/O failure means the records may exist and be hidden.
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw new RunJournalUnreadable(
-        `${this.file} could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"}), so Telar cannot tell whether processes from a previous run are still alive`,
-        this.file,
-      );
-    }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(fs.readFileSync(this.file, "utf8"));
     } catch {
-      throw new RunJournalUnreadable(`${this.file} is not valid JSON, so the runs it describes cannot be read back`, this.file);
+      return [];
     }
-    const runs = (parsed as { runs?: unknown } | null)?.runs;
-    if (!Array.isArray(runs)) {
-      throw new RunJournalUnreadable(`${this.file} does not contain a list of runs`, this.file);
-    }
-    // NO SILENT FILTERING. A record we cannot parse is a process we cannot
-    // describe; dropping it would quietly free the slot it was written to hold.
-    for (const entry of runs) {
-      const fault = recordFault(entry);
-      if (fault) throw new RunJournalUnreadable(`${this.file} is malformed: ${fault}`, this.file);
-    }
-    return runs as RunRecord[];
+    const terminals = (parsed as { terminals?: unknown } | null)?.terminals;
+    return Array.isArray(terminals) ? terminals.filter(isRecord) : [];
   }
 
   open(record: RunRecord): void {
-    const runs = this.list().filter((entry) => entry.runId !== record.runId);
-    runs.push(record);
-    this.save(runs);
+    this.replace([...this.list().filter((entry) => entry.terminalId !== record.terminalId), record]);
   }
 
-  close(runId: string): void {
-    const runs = this.list();
-    const next = runs.filter((entry) => entry.runId !== runId);
-    if (next.length !== runs.length) this.save(next);
+  close(terminalId: string): void {
+    const terminals = this.list();
+    const next = terminals.filter((entry) => entry.terminalId !== terminalId);
+    if (next.length !== terminals.length) this.replace(next);
   }
 
-  private save(runs: RunRecord[]): void {
-    atomicWrite(this.file, { runs });
+  replace(records: RunRecord[]): void {
+    atomicWrite(this.file, { terminals: records });
   }
 }

@@ -32,7 +32,6 @@ function stubClient() {
     startRun: verb("startRun"),
     stopRun: verb("stopRun"),
     restartRun: verb("restartRun"),
-    releaseRun: verb("releaseRun"),
     runOutput: verb("runOutput"),
     runBytes: verb("runBytes"),
     writeRun: verb("writeRun"),
@@ -68,11 +67,9 @@ async function everyCockpitCall() {
   await api.removeConfiguration("sess_1", "runcfg_1");
   await api.status("sess_1");
   await api.start("sess_1", "runcfg_1");
-  await api.start("sess_1", "runcfg_1", true);
   await api.stop("sess_1");
-  await api.stop("sess_1", "run_1");
+  await api.stop("sess_1", "term_1");
   await api.restart("sess_1");
-  await api.release("sess_1", "run_1");
   await api.output("sess_1");
   await api.output("sess_1", { runId: "run_1", after: 42 });
   await api.bytes("sess_1");
@@ -86,12 +83,12 @@ describe("the run route table", () => {
   test("serves every path the cockpit builds, and reaches a distinct verb for each", async () => {
     const { client, reached } = stubClient();
     const calls = await everyCockpitCall();
-    expect(calls.length).toBe(17);
+    expect(calls.length).toBe(15);
     for (const call of calls) await through(client, call);
     expect(reached.length).toBe(calls.length);
-    // All thirteen verbs exercised — a table missing one would still pass a
+    // All twelve verbs exercised — a table missing one would still pass a
     // per-path assertion by falling into a neighbouring entry.
-    expect(new Set(reached.map((entry) => entry.verb)).size).toBe(13);
+    expect(new Set(reached.map((entry) => entry.verb)).size).toBe(12);
   });
 
   test("the config id survives the round trip, encoded and back", async () => {
@@ -106,23 +103,25 @@ describe("the run route table", () => {
 
   test("the output cursor arrives as a number, and a junk one is dropped rather than sent as NaN", async () => {
     const { client, reached } = stubClient();
-    await through(client, { url: "/api/sessions/s/run/output?after=42&runId=run_1", method: "GET" });
-    expect(reached[0]!.args[1]).toEqual({ runId: "run_1", after: 42 });
+    await through(client, { url: "/api/sessions/s/run/output?after=42&runId=term_1", method: "GET" });
+    expect(reached[0]!.args[1]).toEqual({ terminalId: "term_1", after: 42 });
     await through(client, { url: "/api/sessions/s/run/output?after=later", method: "GET" });
     expect(reached[1]!.args[1]).toEqual({});
   });
 
-  test("stop and restart default to the project's active run", async () => {
+  test("stop and restart name the terminal by either of its names, or none", async () => {
     const { client, reached } = stubClient();
     await through(client, { url: "/api/sessions/s/run/stop", method: "POST", body: {} });
-    await through(client, { url: "/api/sessions/s/run/restart", method: "POST", body: { runId: "run_9" } });
+    await through(client, { url: "/api/sessions/s/run/restart", method: "POST", body: { runId: "term_9" } });
+    await through(client, { url: "/api/sessions/s/run/stop", method: "POST", body: { terminalId: "term_8" } });
     expect(reached[0]!.args).toEqual(["s", undefined]);
-    expect(reached[1]!.args).toEqual(["s", "run_9"]);
+    expect(reached[1]!.args).toEqual(["s", "term_9"]);
+    expect(reached[2]!.args).toEqual(["s", "term_8"]);
   });
 
-  test("release refuses without a run id instead of freeing whatever is active", async () => {
+  test("there is no release route any more — nothing is held to release", async () => {
     const { client, reached } = stubClient();
-    await expect(through(client, { url: "/api/sessions/s/run/release", method: "POST", body: {} })).rejects.toBeInstanceOf(RunRouteRefusal);
+    await expect(through(client, { url: "/api/sessions/s/run/release", method: "POST", body: { runId: "term_1" } })).rejects.toBeInstanceOf(RunRouteRefusal);
     expect(reached).toHaveLength(0);
   });
 
@@ -134,7 +133,7 @@ describe("the run route table", () => {
     const { client, reached } = stubClient();
     return (async () => {
       await through(client, { url: "/api/sessions/s/run/bytes?after=42&runId=run_1", method: "GET" });
-      expect(reached[0]).toEqual({ verb: "runBytes", args: ["s", { runId: "run_1", after: 42 }] });
+      expect(reached[0]).toEqual({ verb: "runBytes", args: ["s", { terminalId: "run_1", after: 42 }] });
       await through(client, { url: "/api/sessions/s/run/bytes?after=later", method: "GET" });
       expect(reached[1]!.args[1]).toEqual({});
     })();
@@ -143,7 +142,7 @@ describe("the run route table", () => {
   test("a write names the bytes it sends, and a resize names a usable geometry", async () => {
     const { client, reached } = stubClient();
     await through(client, { url: "/api/sessions/s/run/write", method: "POST", body: { runId: "run_1", data: "y\r" } });
-    expect(reached[0]).toEqual({ verb: "writeRun", args: ["s", { runId: "run_1", data: "y\r" }] });
+    expect(reached[0]).toEqual({ verb: "writeRun", args: ["s", { terminalId: "run_1", data: "y\r" }] });
     // Empty is a legitimate thing to send and must not be confused with absent.
     await through(client, { url: "/api/sessions/s/run/write", method: "POST", body: { data: "" } });
     expect(reached[1]!.args[1]).toEqual({ data: "" });

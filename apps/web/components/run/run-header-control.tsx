@@ -24,7 +24,7 @@ import { ChevronDownIcon, CircleStopIcon, Loader2Icon, PlusIcon, RotateCwIcon, S
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { createRunApi, type RunApi } from "@/lib/run/api";
 import { RunGlyph } from "@/lib/run/icons";
-import { runAction, statusLabel, statusTone, worktreeLabel, type RunTone } from "@/lib/run/presentation";
+import { latestOpenTerminal, statusLabel, statusTone, type RunTone } from "@/lib/run/presentation";
 import { useRunStatusFeed } from "@/lib/run/status-stream";
 import type { RunConfigurationDraft, RunConfigurationView, RunView } from "@/lib/run/types";
 import { Button } from "@/components/ui/button";
@@ -37,7 +37,6 @@ const TONE_DOT: Record<RunTone, string> = {
   working: "bg-warning",
   good: "bg-success",
   bad: "bg-destructive",
-  lost: "bg-muted-foreground/60",
 };
 
 type Channel = "configs";
@@ -140,7 +139,9 @@ export function RunHeaderControl({
   const feed = useRunStatusFeed({ sessionId, ...(hostId ? { hostId } : {}), api });
   const status = feed.status;
   const refresh = feed.refresh;
-  const active = status?.active;
+  /** The newest open terminal. A session may have several; this pill shows
+   *  one until the control is redesigned around the whole list. */
+  const active = latestOpenTerminal(status);
 
   /** Read on every open: a configuration added or renamed in the panel must
    *  not be invisible here until the page reloads. */
@@ -196,7 +197,6 @@ export function RunHeaderControl({
       setEditing(undefined);
     });
 
-  const action = status ? runAction(status) : undefined;
   const tone = active ? statusTone(active.status) : "idle";
   const label = active ? statusLabel(active) : "Run";
 
@@ -296,13 +296,7 @@ export function RunHeaderControl({
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">{label}</span>
                 {busy && <Loader2Icon className="size-3.5 shrink-0 animate-spin text-muted-foreground" />}
               </div>
-              {/* A run whose output belongs to another worktree is the one fact
-                  that makes the panel confusing if it goes unsaid. */}
-              {action?.kind === "switch" && (
-                <p className="text-2xs leading-snug text-warning">
-                  Deployed from {worktreeLabel(action.from)} — another tree. Starting here takes it over.
-                </p>
-              )}
+              {active?.warning && <p className="text-2xs leading-snug text-warning">{active.warning}</p>}
               {active?.readinessUrl && (
                 <a
                   href={active.readinessUrl}
@@ -330,14 +324,8 @@ export function RunHeaderControl({
                       <button
                         type="button"
                         disabled={busy}
-                        // Start, or restart the one already running. `replace`
-                        // is only sent for the deployment this session owns; a
-                        // foreign tree is warned about above instead.
-                        onClick={() =>
-                          void run(() =>
-                            live ? api.restart(sessionId, active?.runId) : api.start(sessionId, config.id, action?.kind === "replace"),
-                          )
-                        }
+                        // Start a terminal, or restart the open one.
+                        onClick={() => void run(() => (live ? api.restart(sessionId, active?.terminalId) : api.start(sessionId, config.id)))}
                         className={cn(
                           "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
                           live ? "bg-accent" : "hover:bg-accent/60",
@@ -372,7 +360,7 @@ export function RunHeaderControl({
                           aria-label={`Stop ${config.name}`}
                           title="Stop"
                           disabled={busy}
-                          onClick={() => void run(() => api.stop(sessionId, active?.runId))}
+                          onClick={() => void run(() => api.stop(sessionId, active?.terminalId))}
                         >
                           <CircleStopIcon />
                         </Button>
@@ -380,17 +368,6 @@ export function RunHeaderControl({
                     </div>
                   );
                 })
-              )}
-              {/* A slot Telar cannot vouch for is freed by a human saying so. */}
-              {action?.kind === "release" && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void run(() => api.release(sessionId, action.active.runId))}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/60"
-                >
-                  Forget the lost run
-                </button>
               )}
             </div>
 

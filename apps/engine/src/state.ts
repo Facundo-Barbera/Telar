@@ -257,7 +257,7 @@ import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defa
 import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
 import { checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal } from "./worktree-release";
-import { WorktreeSetups } from "./worktree-setup";
+import { SETUP_STOP_GRACE_MS, WorktreeSetups } from "./worktree-setup";
 import { CleanupStore, diskUsage, planWorktreeCleanup, sweepLogs } from "./cleanup";
 import { pipeLauncher } from "./run/launcher";
 import { processGroupFor } from "./run/platform";
@@ -4659,7 +4659,7 @@ export class EngineStore {
     this.cleanup = new CleanupStore(this.paths.cleanup);
     this.setups = new WorktreeSetups({
       directoryOf: (sessionId) => sessionDir(this.paths, sessionId),
-      launcher: pipeLauncher(processGroupFor(process.platform, (pid, signal) => process.kill(pid, signal))),
+      launcher: pipeLauncher(processGroupFor(process.platform, (pid, signal) => process.kill(pid, signal)), { graceMs: SETUP_STOP_GRACE_MS }),
       now: () => this.now(),
     });
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });

@@ -1,47 +1,45 @@
 /**
- * THE ENGINE'S END OF THE PTY CHANNEL, AND THE PLACE WHERE `unknown` IS
- * RE-DERIVED RATHER THAN REINVENTED.
+ * THE ENGINE'S END OF THE PTY CHANNEL — and, since "Run = a new terminal", a
+ * reporter rather than a witness.
  *
- * `manager.ts` can assert today that it never aims a signal at a stale pid
- * because it holds its own `ChildProcess`: "the pid is only ever used while our
- * own handle has not yet fired `exit`". Once the handle lives in Electron main
- * (`apps/desktop/terminal-host.js`), that sentence has to be rebuilt out of
- * three parts, and each one is load-bearing:
+ * The desktop host (`apps/desktop/terminal-host.js`) holds every terminal and
+ * owns what runs in it. This file forwards what the host says about the
+ * engine's terminals — their bytes, their exit, their close — and asks it to
+ * open, type into, resize and close them. Two rules survive from before, and
+ * one is new:
  *
  *   1. THE ENGINE NEVER NAMES A PID. Every verb addresses a TERMINAL ID, minted
- *      by the host and never reused. The host honours an id only while it still
- *      holds the handle that id names, which is exactly the property the
- *      `ChildProcess` used to supply. A pid appears in this file only as prose
- *      in a sentence a human will read.
- *   2. ONLY THE HOST MAY SAY `exited`, and it only says it when node-pty's own
- *      exit event fired with a code. Nothing here manufactures one.
- *   3. AND IF THE CHANNEL GOES, EVERYTHING ON IT IS `unknown`. This is the half
- *      that has no analogue in the single-process world, and it is the failure
- *      the whole design is aimed at: a host that dies quietly while something
- *      downstream frees a slot for a dev server that is still listening.
+ *      by the host and never reused; the host honours an id only while it
+ *      still holds the terminal it names. A pid appears in this file only as a
+ *      number the host reported.
+ *   2. ONLY THE HOST MAY SAY HOW A TERMINAL ENDED. Nothing here manufactures an
+ *      exit code.
+ *   3. A CHANNEL THAT DROPS IS NOT A TERMINAL THAT ENDED. This used to settle
+ *      every terminal on the channel `unknown`, which held a project's one
+ *      deployment slot until a person released it. There is no slot now, and
+ *      Telar does not track liveness: a dropped stream says something about the
+ *      wire, nothing about the processes. So the client re-attaches, and asks
+ *      the host once which terminals it still holds (`GET /state`). One it
+ *      still holds carries on; one it no longer holds has ended while we were
+ *      not listening, and is reported `gone` — the host is the only thing that
+ *      could have ended it.
  *
- * SO SILENCE IS NOT HEALTH. A TCP connection survives a process that has
- * stopped answering, so the stream heartbeats and this side runs a watchdog on
- * it. A stream that ends, errors, refuses to attach, or simply goes quiet all
- * land in the same place — `onLost`, with every live terminal reported
- * `unknown` and named. THERE IS NO PATH FROM A LOST CHANNEL TO `exited`.
+ * SILENCE IS STILL NOT HEALTH. A TCP connection survives a process that has
+ * stopped answering, so the stream heartbeats and a watchdog here notices when
+ * it stops. What the watchdog triggers is a reconnect, not a verdict.
  *
- * AND LOSS IS NOT UNDONE BY A RECONNECT. A terminal marked `unknown` stays
- * `unknown` even if the stream comes back and the host turns out to have been
- * fine, because `unknown` means "a human has not checked yet" and only
- * `release()` is a human checking. Re-attaching lets NEW runs start; it does
- * not retroactively vouch for an old one.
- *
- * WHAT THIS FILE DELIBERATELY DOES NOT DO IS ASK ABOUT A PROCESS GROUP. That
- * question — is `bun run dev &` still listening behind an exit code of 0 — stays
- * in `manager.ts`, asked with signal 0, which delivers nothing. The pid it asks
- * about was never this process's, and the honest reading of that is written at
- * the call site: the only way the answer can be wrong is by saying "alive" for a
- * pid the kernel has re-handed to a stranger, which holds the slot. Wrong in the
- * direction the singleton exists to be wrong in.
+ * THE RECONNECT IS A CHANNEL RETRY, NOT A POLL OF ANY PROCESS. It runs only
+ * while the engine has terminals on this channel, backs off to half a minute,
+ * and asks the host one question per success. Nothing here asks the operating
+ * system about a process group.
  */
 
-/** How the host describes the end of a terminal. Mirrors `TerminalFate`. */
+/**
+ * How the host describes the end of a terminal. Mirrors `TerminalFate`.
+ *
+ * `unknown` can still arrive from a host older than "Run = a new terminal";
+ * it is read as `gone` — ended without a code we saw — and holds nothing.
+ */
 export type TerminalEnding = {
   id: string;
   pid?: number;
@@ -49,10 +47,16 @@ export type TerminalEnding = {
   fate: "exited" | "failed" | "unknown";
   exitCode?: number;
   signal?: string;
-  /** Why it is `unknown`, in a sentence naming the pid. */
+  /** A legacy host's sentence for `unknown`. */
   reason?: string;
   /** Why it `failed` — the spawn threw and no process was created. */
   error?: string;
+  /**
+   * WHY THE HOST WAS ENDING IT, when it was the host that did: a single
+   * `close`, a whole `session` being closed, or Telar quitting. Absent for a
+   * process that ended by itself — `exit` typed at the prompt, a crash.
+   */
+  closed?: "close" | "session" | "quit";
   at?: number;
 };
 
@@ -63,6 +67,12 @@ export type TerminalOpenRequest = {
   env: Record<string, string>;
   cols?: number;
   rows?: number;
+  /** The session whose panel the terminal lives in. It owns the terminal. */
+  sessionId?: string;
+  /** Which of the two engine origins this is. The host refuses any other. */
+  origin?: "run" | "agent";
+  /** What the tab says. */
+  title?: string;
 };
 
 export type TerminalOpened = {
@@ -72,10 +82,34 @@ export type TerminalOpened = {
   ending?: TerminalEnding;
 };
 
+/** What `GET /state` says about one of the engine's terminals. Facts only. */
+export type TerminalFacts = {
+  id: string;
+  pid?: number;
+  sessionId?: string;
+  origin?: string;
+  title?: string;
+  cwd?: string;
+  startedAt?: number;
+};
+
+/** What `POST /active` answers: one `ps` snapshot, taken when asked. */
+export type TerminalActivity = {
+  id: string;
+  sessionId?: string;
+  origin?: string;
+  title?: string;
+  active: boolean;
+  processes: number;
+  command?: string;
+};
+
 /** What one terminal's owner wants to hear. */
 export type TerminalSink = {
   data(chunk: string): void;
   ending(ending: TerminalEnding): void;
+  /** The host no longer holds it, and we did not hear it end. */
+  gone(reason: string): void;
 };
 
 export type RunTerminalClientOptions = {
@@ -84,18 +118,18 @@ export type RunTerminalClientOptions = {
   fetch?: typeof fetch;
   /** Overridden by the host's `attached` frame when it names a different one. */
   heartbeatMs?: number;
-  /** How many heartbeats may be missed before the channel is called lost. */
+  /** How many heartbeats may be missed before the stream is called dropped. */
   missedBeats?: number;
-  now?: () => number;
+  /** The first reconnect delay; it doubles up to `reconnectMaxMs`. */
+  reconnectMs?: number;
+  reconnectMaxMs?: number;
 };
 
 const DEFAULT_HEARTBEAT_MS = 2_000;
-/**
- * Three, not one. A single missed beat is a busy event loop on either side —
- * calling a healthy host dead would hold a project's slot until a human
- * released it, which is expensive enough to be worth two more seconds.
- */
+/** Three, not one: a single missed beat is a busy event loop on either side. */
 const DEFAULT_MISSED_BEATS = 3;
+const DEFAULT_RECONNECT_MS = 1_000;
+const DEFAULT_RECONNECT_MAX_MS = 30_000;
 
 export class RunTerminalLost extends Error {
   constructor(message: string) {
@@ -109,14 +143,18 @@ export class RunTerminalClient {
   private readonly token: string;
   private readonly http: typeof fetch;
   private readonly missedBeats: number;
+  private readonly reconnectMs: number;
+  private readonly reconnectMaxMs: number;
   private heartbeatMs: number;
-  /** Terminals this client still vouches for, by id. */
+  /** The engine's terminals on this channel, by id. */
   private readonly sinks = new Map<string, TerminalSink>();
   private attaching?: Promise<void>;
   private attached = false;
   private controller?: AbortController;
   private watchdog?: ReturnType<typeof setTimeout>;
-  private closed = false;
+  private retry?: ReturnType<typeof setTimeout>;
+  private retryDelay: number;
+  private detached = false;
 
   constructor(options: RunTerminalClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -124,22 +162,24 @@ export class RunTerminalClient {
     this.http = options.fetch ?? fetch;
     this.heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
     this.missedBeats = options.missedBeats ?? DEFAULT_MISSED_BEATS;
+    this.reconnectMs = options.reconnectMs ?? DEFAULT_RECONNECT_MS;
+    this.reconnectMaxMs = options.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
+    this.retryDelay = this.reconnectMs;
   }
 
   /**
-   * Start a terminal for a run.
+   * Start a terminal.
    *
    * THE STREAM IS ATTACHED FIRST, ALWAYS. A command that fails instantly —
    * a missing binary exits 127 before this call returns — would otherwise end
-   * before anyone was listening, and the run would sit `starting` forever. The
-   * host also buffers frames it produced with nobody attached, so the two
-   * halves cover each other rather than one of them being relied on.
+   * before anyone was listening. The host also buffers frames it produced with
+   * nobody attached, so the two halves cover each other.
    */
   async open(request: TerminalOpenRequest, sink: TerminalSink): Promise<TerminalOpened> {
     await this.attach();
     const opened = (await this.post("/open", request)) as TerminalOpened;
     if (!opened || typeof opened.id !== "string") {
-      throw new RunTerminalLost("Telar's terminal host did not name the terminal it started, so this run cannot be tracked");
+      throw new RunTerminalLost("Telar's terminal host did not name the terminal it started, so it cannot be followed");
     }
     // A spawn that threw has no terminal to subscribe to, and the host has
     // already said so in the same answer.
@@ -149,11 +189,24 @@ export class RunTerminalClient {
   }
 
   /**
-   * Signal a terminal's whole tree, BY ID.
-   *
-   * The pid never crosses this call, which is the point: the host refuses an id
-   * whose handle it no longer holds, so a signal cannot be aimed at a number the
-   * kernel has since handed to somebody else.
+   * FOLLOW A TERMINAL THIS ENGINE DID NOT OPEN IN THIS LIFE — one a previous
+   * engine opened, which the host kept. Attached first for the same reason as
+   * `open`: its next bytes must have somewhere to go.
+   */
+  async adopt(id: string, sink: TerminalSink): Promise<void> {
+    await this.attach();
+    this.sinks.set(id, sink);
+  }
+
+  /** The engine's terminals the host holds right now. One read, no cache. */
+  async state(): Promise<TerminalFacts[]> {
+    const answer = (await this.request("GET", "/state")) as { terminals?: unknown };
+    return Array.isArray(answer?.terminals) ? (answer.terminals as TerminalFacts[]) : [];
+  }
+
+  /**
+   * One signal to a terminal's whole tree, BY ID — what a Ctrl-C-shaped stop
+   * sends before the close (`SIGINT` to a server that traps TERM).
    */
   async kill(id: string, signal: NodeJS.Signals): Promise<boolean> {
     const answer = (await this.post("/kill", { id, signal })) as { signalled?: boolean };
@@ -161,15 +214,36 @@ export class RunTerminalClient {
   }
 
   /**
-   * Keystrokes, BY ID.
-   *
-   * `false` IS AN ANSWER AND NOT A FAILURE. The host drops a write to a
-   * terminal it no longer holds, and it learns of an exit before we do, so a
-   * keystroke crossing that gap is the ordinary case rather than an error to
-   * raise at a person. A channel that is GONE is a different thing entirely and
-   * still throws `RunTerminalLost` out of `post` — there the stream's own
-   * `lose()` is already settling every terminal on it `unknown`, so nothing
-   * here has to do that bookkeeping a second time.
+   * CLOSE A TERMINAL, WHICH ENDS WHAT RUNS IN IT. The host sends a hangup to
+   * the shell, SIGTERM to every group on the terminal and SIGKILL a second
+   * later, and answers once that is over. The exit itself arrives on the
+   * stream, like every other ending. `false`: not ours, or already gone.
+   */
+  async close(id: string): Promise<boolean> {
+    const answer = (await this.post("/close", { id })) as { closed?: boolean };
+    return answer?.closed === true;
+  }
+
+  /** Close every terminal a session owns, whoever opened it. How many. */
+  async closeSession(sessionId: string): Promise<number> {
+    const answer = (await this.post("/close-session", { sessionId })) as { closed?: number };
+    return typeof answer?.closed === "number" ? answer.closed : 0;
+  }
+
+  /**
+   * IS ANYTHING RUNNING IN THESE TERMINALS — asked once, when somebody is about
+   * to be asked whether to close them. The host answers from one process table
+   * read; nothing here repeats the question.
+   */
+  async active(ids?: string[]): Promise<TerminalActivity[]> {
+    const answer = (await this.post("/active", ids ? { ids } : {})) as { terminals?: unknown };
+    return Array.isArray(answer?.terminals) ? (answer.terminals as TerminalActivity[]) : [];
+  }
+
+  /**
+   * Keystrokes, BY ID. `false` IS AN ANSWER AND NOT A FAILURE: the host drops a
+   * write to a terminal it no longer holds, and it learns of an exit before we
+   * do, so a keystroke crossing that gap is ordinary.
    *
    * NOTHING ON THIS PATH IS REDACTED, and that is not an oversight: redaction
    * covers what a PROCESS WRITES (`pty-stream.ts`), and never covered what a
@@ -182,61 +256,61 @@ export class RunTerminalClient {
 
   /**
    * THE REDACTED BYTES, HANDED BACK TO THE HOST SO THE COCKPIT MAY DRAW THEM
-   * (#890).
+   * (#890). The host fans RAW node-pty bytes, and a renderer reading those
+   * would draw a run's secrets unmasked — so the renderer is given these frames
+   * instead. ONE REDACTOR, ON THIS SIDE.
    *
-   * THE ARROW POINTS THE UNUSUAL WAY ON PURPOSE. Everything else on this
-   * channel is the engine asking the host to do something; this is the engine
-   * telling the host what a run's output looks like ONCE IT HAS BEEN THROUGH
-   * `pty-stream.ts`. The host fans RAW node-pty bytes, and a renderer reading
-   * those would draw a run's secrets unmasked — so the renderer is given these
-   * frames instead, and the raw ones stop at the channel. ONE REDACTOR, ON THIS
-   * SIDE: the cockpit sees byte-for-byte what the journal holds.
-   *
-   * `cursor` IS WHAT MAKES THE SEAM EXACT. A chip attaching to a run that is
-   * already going reads its scrollback from `/run/bytes` and follows these
-   * frames; without a position it could not tell a frame it has already drawn
-   * from a new one, and the join would either duplicate a screen or gap it.
-   * This is the reader's cursor AFTER this chunk, in `bytes()`'s own units.
-   *
-   * IT NEVER FAILS A RUN. A mirror that does not land costs the person a
-   * repaint they can get back by reopening the chip; taking the run `unknown`
-   * over it would be spending the project's deployment slot on a redraw.
+   * `cursor` is the reader's position AFTER this chunk, in `bytes()`'s units,
+   * so a chip joining a terminal already going can seam its scrollback onto
+   * these frames exactly.
    */
   async mirror(id: string, data: string, cursor: number): Promise<void> {
     await this.post("/mirror", { id, data, cursor });
   }
 
-  /** The surface drawing this terminal says how big it is; SIGWINCH is the
-   *  PTY's job. Same `false` rule as `write`. */
+  /** The surface drawing this terminal says how big it is. Same `false` rule. */
   async resize(id: string, cols: number, rows: number): Promise<boolean> {
     const answer = (await this.post("/resize", { id, cols, rows })) as { ok?: boolean };
     return answer?.ok === true;
   }
 
-  /** Stop listening. Kills nothing — that is policy, and policy is the manager's. */
-  close(): void {
-    this.closed = true;
+  /**
+   * STOP LISTENING, AND CLOSE NOTHING. The engine going down is not a reason to
+   * end a person's dev server: the host keeps its terminals, and the next
+   * engine re-lists them. Quitting Telar is what closes them, and that is the
+   * host's to do.
+   */
+  detach(): void {
+    this.detached = true;
     this.clearWatchdog();
+    this.clearRetry();
     this.controller?.abort();
     this.controller = undefined;
     this.attached = false;
     this.sinks.clear();
   }
 
-  /** Is this client still able to vouch for what it holds? */
+  /** Is the event stream attached right now? */
   get healthy(): boolean {
-    return this.attached && !this.closed;
+    return this.attached && !this.detached;
   }
 
   // ── the wire ─────────────────────────────────────────────────────────────
 
-  private async post(path: string, body: unknown): Promise<unknown> {
+  private post(path: string, body: unknown): Promise<unknown> {
+    return this.request("POST", path, body);
+  }
+
+  private async request(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
     let response: Response;
     try {
       response = await this.http(`${this.baseUrl}${path}`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" },
-        body: JSON.stringify(body),
+        method,
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch (error) {
       throw new RunTerminalLost(`Telar could not reach its terminal host: ${messageOf(error)}`);
@@ -250,7 +324,7 @@ export class RunTerminalClient {
 
   /** Attach once; concurrent callers share the same attempt. */
   private attach(): Promise<void> {
-    if (this.closed) return Promise.reject(new RunTerminalLost("Telar's terminal channel is closed"));
+    if (this.detached) return Promise.reject(new RunTerminalLost("Telar's terminal channel is closed"));
     if (this.attached) return Promise.resolve();
     if (!this.attaching) {
       this.attaching = this.openStream().finally(() => {
@@ -276,8 +350,9 @@ export class RunTerminalClient {
       throw new RunTerminalLost(`Telar's terminal host would not open an event stream (${response.status})`);
     }
     this.attached = true;
+    this.retryDelay = this.reconnectMs;
     this.armWatchdog();
-    // Deliberately not awaited: the pump runs for the life of the channel and
+    // Deliberately not awaited: the pump runs for the life of the stream and
     // resolving `attach()` is what lets the first `open` proceed.
     void this.pump(response.body, controller);
   }
@@ -300,13 +375,10 @@ export class RunTerminalClient {
           split = buffer.indexOf("\n\n");
         }
       }
-      // The host ended the stream. It did not tell us how any of these
-      // terminals finished, so we cannot say they finished.
-      this.lose("Telar's terminal host closed the channel this run was started on");
-    } catch (error) {
-      if (controller.signal.aborted && this.closed) return;
-      this.lose(`Telar lost the channel to its terminal host: ${messageOf(error)}`);
+    } catch {
+      if (controller.signal.aborted && this.detached) return;
     }
+    if (this.controller === controller) this.drop();
   }
 
   private frame(raw: string): void {
@@ -338,7 +410,7 @@ export class RunTerminalClient {
       const sink = this.sinks.get(ending.id);
       if (!sink) return;
       // One ending per terminal: the id is dropped before the callback so a
-      // duplicate frame cannot settle the same run twice.
+      // duplicate frame cannot settle the same terminal twice.
       this.sinks.delete(ending.id);
       sink.ending(ending);
     }
@@ -346,11 +418,12 @@ export class RunTerminalClient {
 
   private armWatchdog(): void {
     this.clearWatchdog();
-    if (this.closed) return;
+    if (this.detached) return;
     const timer = setTimeout(() => {
-      this.lose(
-        `Telar's terminal host went quiet for ${this.heartbeatMs * this.missedBeats}ms — it is no longer reporting whether the processes it started are alive`,
-      );
+      // A stream that went quiet is treated exactly like one that ended.
+      this.controller?.abort();
+      this.controller = undefined;
+      this.drop();
     }, this.heartbeatMs * this.missedBeats);
     timer.unref?.();
     this.watchdog = timer;
@@ -361,18 +434,51 @@ export class RunTerminalClient {
     this.watchdog = undefined;
   }
 
+  private clearRetry(): void {
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = undefined;
+  }
+
   /**
-   * THE CHANNEL IS GONE. Every terminal still on it becomes `unknown` — never
-   * `exited`, whatever the reason was — and each one is told once.
+   * THE STREAM IS GONE — and every terminal on it is left exactly as it was.
+   * A reconnect is scheduled while there is anything to reconnect for.
    */
-  private lose(reason: string): void {
-    if (!this.attached && this.sinks.size === 0) return;
+  private drop(): void {
     this.attached = false;
     this.clearWatchdog();
-    const orphans = [...this.sinks.entries()];
-    this.sinks.clear();
-    for (const [id, sink] of orphans) {
-      sink.ending({ id, fate: "unknown", reason });
+    this.scheduleReattach();
+  }
+
+  private scheduleReattach(): void {
+    if (this.detached || this.retry || this.sinks.size === 0) return;
+    const delay = this.retryDelay;
+    this.retryDelay = Math.min(this.retryDelay * 2, this.reconnectMaxMs);
+    const timer = setTimeout(() => {
+      this.retry = undefined;
+      void this.reattach();
+    }, delay);
+    timer.unref?.();
+    this.retry = timer;
+  }
+
+  /**
+   * Back on the stream, then ONE question: which of ours does the host still
+   * hold. Asked after the attach, so an exit the host buffered while we were
+   * away arrives as the exit it was rather than being guessed at.
+   */
+  private async reattach(): Promise<void> {
+    if (this.detached || this.sinks.size === 0) return;
+    try {
+      await this.attach();
+      const held = new Set((await this.state()).map((terminal) => terminal.id));
+      for (const [id, sink] of [...this.sinks]) {
+        if (held.has(id)) continue;
+        this.sinks.delete(id);
+        sink.gone("Telar's terminal host no longer has this terminal; it ended while the engine was not listening");
+      }
+    } catch {
+      this.attached = false;
+      this.scheduleReattach();
     }
   }
 }

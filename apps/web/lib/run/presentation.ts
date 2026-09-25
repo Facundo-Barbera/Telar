@@ -1,17 +1,15 @@
 /**
  * What the run surfaces SAY, decided away from the components that say it.
  *
- * The interesting decisions here are not cosmetic. Which button a human is
- * offered ("Start" vs "Replace" vs "Release") is the difference between
- * launching a second server on a taken port and being told the port is taken;
- * whether a readiness dot is green is a claim about a process we may not be able
- * to attribute anything to. Both are folds over the status answer, both are
- * wrong in ways a screenshot will not show, so both are tested as functions.
+ * The interesting decisions here are not cosmetic: whether a readiness dot is
+ * green is a claim about a process we may not be able to attribute anything
+ * to, and whether a label says "Running" is a claim about a terminal that may
+ * have ended. Both are folds over the status answer, both are wrong in ways a
+ * screenshot will not show, so both are tested as functions.
  *
- * NOTHING HERE INVENTS AN OPTIMISTIC ANSWER. When the engine says `unknown`, the
- * cockpit says the same thing to the human: Telar lost contact, here is the pid
- * it last saw, you tell us. That is less satisfying than a spinner and it is the
- * only honest state.
+ * A RUN IS A TERMINAL NOW ("Run = a new terminal"): a session has a LIST of
+ * them, any number open at once, and pressing Run opens another. There is no
+ * deployment slot, so there is no Replace, Switch or Release to choose from.
  */
 
 import type {
@@ -27,40 +25,35 @@ import type {
  *  so the editor can point at the field. The engine remains the authority. */
 export const MIN_SECRET_CHARS = 4;
 
-export type RunTone = "idle" | "working" | "good" | "bad" | "lost";
+export type RunTone = "idle" | "working" | "good" | "bad";
 
 export function statusTone(status: RunStatus): RunTone {
   switch (status) {
-    case "starting":
-      return "working";
     case "running":
       return "working";
     case "ready":
       return "good";
     case "failed":
       return "bad";
-    case "unknown":
-      return "lost";
     case "exited":
+    case "closed":
       return "idle";
   }
 }
 
 /** Present tense for the states a human can still act on; past tense once the
- *  run is over, because "Running" on a dead process is the lie that makes people
- *  hunt for a server that is not there. */
+ *  terminal has ended, because "Running" on a dead process is the lie that
+ *  makes people hunt for a server that is not there. */
 export function statusLabel(view: RunView): string {
   switch (view.status) {
-    case "starting":
-      return "Starting";
     case "running":
       return "Running";
     case "ready":
       return "Ready";
     case "failed":
       return "Failed";
-    case "unknown":
-      return "Lost contact";
+    case "closed":
+      return "Closed";
     case "exited":
       return view.exitCode === undefined || view.exitCode === 0 ? "Exited" : `Exited (${view.exitCode})`;
   }
@@ -70,9 +63,27 @@ export function statusLabel(view: RunView): string {
  *  already the whole story. Errors come from the engine already redacted. */
 export function statusDetail(view: RunView): string | undefined {
   if (view.error) return view.error;
+  if (view.warning) return `${view.warning.charAt(0).toUpperCase()}${view.warning.slice(1)}.`;
+  if (view.status === "closed") return view.closedBy === "agent" ? "Closed by the agent." : view.closedBy === "telar" ? "Closed by Telar." : "Closed.";
   if (view.status === "exited" && view.signal) return `Stopped by ${view.signal}.`;
   if (view.status === "failed" && view.exitCode !== undefined) return `Exited with code ${view.exitCode}.`;
   return undefined;
+}
+
+/** True while a terminal is open — what can still be closed, typed into or
+ *  waited on. */
+export function isOpenTerminal(view: RunView | undefined): boolean {
+  return view?.status === "running" || view?.status === "ready";
+}
+
+/**
+ * THE NEWEST OPEN TERMINAL, which is what the masthead summarises until the
+ * Run control is redesigned around the whole list. `undefined` when none is
+ * open.
+ */
+export function latestOpenTerminal(answer: RunStatusAnswer | undefined): RunView | undefined {
+  // `?? []`: a paired Mac on an older engine answers without the list.
+  return (answer?.terminals ?? []).find((run) => isOpenTerminal(run));
 }
 
 export function describeReadiness(readiness: RunReadiness, url?: string): string | undefined {
@@ -89,38 +100,6 @@ export function describeReadiness(readiness: RunReadiness, url?: string): string
       // about this process. Saying "ready" here would be a guess.
       return readiness.reason;
   }
-}
-
-export type RunAction =
-  | { kind: "start" }
-  /** Something is deployed on the SAME tree: stopping it is the ordinary way
-   *  to start a different configuration. */
-  | { kind: "replace"; active: RunView }
-  /** Deployed from a DIFFERENT tree — a takeover the human must mean, because
-   *  the thing it replaces is somebody else's working state. */
-  | { kind: "switch"; active: RunView; from: string }
-  /** Nothing to signal safely; the slot is only freed by a human saying so. */
-  | { kind: "release"; active: RunView }
-  | { kind: "wait"; active: RunView };
-
-/**
- * WHAT PRESSING THE BUTTON MEANS, given what is already deployed. The caller
- * renders one control; the label and the confirmation it needs come from here.
- */
-export function runAction(answer: RunStatusAnswer): RunAction {
-  const active = answer.active;
-  if (!active) return { kind: "start" };
-  if (active.status === "unknown") return { kind: "release", active };
-  if (active.status === "starting") return { kind: "wait", active };
-  const ours = answer.sessionWorktreePath;
-  if (ours && active.worktreePath !== ours) return { kind: "switch", active, from: active.worktreePath };
-  return { kind: "replace", active };
-}
-
-/** True when the live deployment came from a tree other than this session's —
- *  the fact that makes a run's output confusing if it is not stated. */
-export function worktreeMismatch(answer: RunStatusAnswer): boolean {
-  return runAction(answer).kind === "switch";
 }
 
 /** The last path segment, for a label; the full path stays in the title. */
@@ -190,8 +169,8 @@ export function draftIsSavable(draft: RunConfigurationDraft): boolean {
  * What was removed is a client for it that no longer has a screen to draw on.
  */
 
-/** Newest first, which is how a run list reads. History from the engine is
- *  already ordered; this makes the component independent of that. */
+/** Newest first, which is how a run list reads. The engine's list is already
+ *  ordered; this makes the component independent of that. */
 export function recentRuns(answer: RunStatusAnswer, limit = 5): RunView[] {
-  return [...answer.history].sort((a, b) => b.startedAt - a.startedAt).slice(0, limit);
+  return [...answer.terminals].sort((a, b) => b.startedAt - a.startedAt).slice(0, limit);
 }

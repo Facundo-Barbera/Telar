@@ -95,34 +95,28 @@ const alive = (pid: number): boolean => {
   }
 };
 
-test("a watcher is told every transition, with the whole view and who holds the slot", async () => {
+test("a watcher is told every transition, with the whole view and the session it belongs to", async () => {
   /**
    * #890: the cockpit stopped polling `/run/status`, so every state a person
-   * can see has to ARRIVE. Two properties are worth pinning. The frame carries
-   * the WHOLE view, because there is no journal to page back to. And `active`
-   * is the engine's own answer rather than something a reader guesses from the
-   * status — a released run stays `unknown` with the slot free, so a reader
-   * that inferred "not terminal, therefore deployed" would show a ghost.
+   * can see has to ARRIVE. The frame carries the WHOLE view, because there is
+   * no journal to page back to, and it names the SESSION, because a terminal
+   * is the session's and the stream is scoped to one.
    */
   const manager = runManager();
-  const seen: Array<{ status: string; active: boolean; runId: string }> = [];
+  const seen: Array<{ status: string; terminalId: string; sessionId: string }> = [];
   const stop = manager.watch((event) => {
     expect(event.type).toBe("run.status");
     expect(event.projectId).toBe("proj_1");
-    seen.push({ status: event.run.status, active: event.active, runId: event.run.runId });
+    seen.push({ status: event.run.status, terminalId: event.run.terminalId, sessionId: event.sessionId });
   });
 
   const tree = worktree();
   const started = await manager.start(input(tree, config("exit 0")));
   expect(await until(() => seen.some((frame) => frame.status === "exited"))).toBe(true);
 
-  // `starting` is announced too: the slot is held from that moment, and a
-  // surface that waited for `running` would show nothing across the spawn.
-  expect(seen[0]).toEqual({ status: "starting", active: true, runId: started.runId });
-  const last = seen[seen.length - 1]!;
-  expect(last.status).toBe("exited");
-  // The slot is free the moment the run is terminal, and the frame says so.
-  expect(last.active).toBe(false);
+  // The first frame is the terminal existing — named, and already running.
+  expect(seen[0]).toEqual({ status: "running", terminalId: started.terminalId, sessionId: "sess_a" });
+  expect(seen[seen.length - 1]!.status).toBe("exited");
 
   // Unsubscribing is real: a panel that closed must stop costing transitions.
   stop();
@@ -141,7 +135,11 @@ test("a run lands in the configured directory with the configured environment, a
   );
   expect(started.cwd).toBe(path.join(tree, "apps", "web"));
   expect(started.worktreePath).toBe(tree);
-  expect(started.startedBySessionId).toBe("sess_a");
+  expect(started.sessionId).toBe("sess_a");
+  expect(started.origin).toBe("run");
+  // No Electron here, so the engine minted the terminal's name itself.
+  expect(started.terminalId).toMatch(/^pipe_/);
+  expect(started.runId).toBe(started.terminalId);
 
   expect(await until(() => manager.run(started.runId).status === "exited")).toBe(true);
   const finished = manager.run(started.runId);
@@ -181,11 +179,11 @@ test("a working directory outside the worktree, or one that does not exist, is r
   const tree = worktree();
   await expect(manager.start(input(tree, config("ls", { cwd: "../.." })))).rejects.toThrow(/outside the worktree/);
   await expect(manager.start(input(tree, config("ls", { cwd: "nope" })))).rejects.toThrow(/no directory/);
-  // A refused start leaves no reservation behind.
-  expect(manager.activeRun("proj_1")).toBeUndefined();
+  // A refused start leaves no record behind.
+  expect(manager.terminals("sess_a")).toEqual([]);
 });
 
-test("stop takes the whole process group, so a background child does not survive it", async () => {
+test("closing takes the whole process group, so a background child does not survive it", async () => {
   const tree = worktree();
   const manager = runManager();
   const run = await manager.start(input(tree, config("sleep 30 & echo $! > child.pid; wait")));
@@ -195,81 +193,79 @@ test("stop takes the whole process group, so a background child does not survive
   const childPid = Number(fs.readFileSync(pidFile, "utf8").trim());
   expect(alive(childPid)).toBe(true);
 
-  const stopped = await manager.stop(run.runId);
-  expect(["exited", "failed"]).toContain(stopped.status);
+  const closed = await manager.close(run.terminalId, "person");
+  expect(closed.status).toBe("closed");
+  expect(closed.closedBy).toBe("person");
   expect(await until(() => !alive(childPid))).toBe(true);
-  // The slot is free again once the run is genuinely over.
-  expect(manager.activeRun("proj_1")).toBeUndefined();
 }, 15_000);
 
-test("a shell that ignores SIGTERM and keeps working is killed outright, and the run still ends", async () => {
+test("a shell that ignores SIGTERM and keeps working is killed outright, and the terminal still closes", async () => {
   const manager = runManager({ stopGraceMs: 500 });
   // The trap survives the group's SIGTERM and the loop restarts its sleep, so
   // only the escalation to SIGKILL can end this one.
   const run = await manager.start(input(worktree(), config("trap '' TERM; echo trapped; while :; do sleep 1; done")));
   // Wait for the trap to actually be installed — signalling before that would
   // test the default disposition instead of the escalation.
-  expect(await until(() => manager.output(run.runId).lines.some((line) => line.text === "trapped"))).toBe(true);
+  expect(await until(() => manager.output(run.terminalId).lines.some((line) => line.text === "trapped"))).toBe(true);
 
   const before = Date.now();
-  const stopped = await manager.stop(run.runId);
+  const closed = await manager.close(run.terminalId, "agent");
   expect(Date.now() - before).toBeGreaterThanOrEqual(500);
-  expect(["exited", "failed"]).toContain(stopped.status);
-  expect(stopped.signal).toBe("SIGKILL");
-  expect(manager.activeRun("proj_1")).toBeUndefined();
+  expect(closed.status).toBe("closed");
+  expect(closed.closedBy).toBe("agent");
+  expect(closed.signal).toBe("SIGKILL");
 }, 15_000);
 
-test("restart replaces the process but keeps the recipe, the worktree and the slot", async () => {
+test("restart closes the terminal and opens the same recipe on the same tree in a new one", async () => {
   const tree = worktree();
   const manager = runManager();
   const first = await manager.start(input(tree, config("sleep 30")));
-  const second = await manager.restart(first.runId);
+  const second = await manager.restart(first.terminalId, "agent");
 
-  expect(second.runId).not.toBe(first.runId);
+  expect(second.terminalId).not.toBe(first.terminalId);
   expect(second.command).toBe("sleep 30");
   expect(second.worktreePath).toBe(tree);
-  expect(manager.activeRun("proj_1")?.runId).toBe(second.runId);
-  expect(["exited", "failed"]).toContain(manager.run(first.runId).status);
+  expect(second.status).toBe("running");
+  expect(manager.run(first.terminalId).status).toBe("closed");
+  expect(manager.run(first.terminalId).closedBy).toBe("agent");
+  // The first one closed, so its number is free again.
+  expect(second.title).toBe("fixture");
 
-  await manager.stop(second.runId);
+  await manager.close(second.terminalId, "person");
 }, 15_000);
 
-test("nothing slips into the slot while a restart is between stop and start", async () => {
+/**
+ * THE PIPE FALLBACK KEEPS MULTIPLE INSTANCES. No Electron, no chip — and still
+ * no slot: two starts of one recipe are two processes, numbered, and closing
+ * one leaves the other running.
+ */
+test("the pipe fallback opens two instances of one recipe, and closing one leaves the other", async () => {
   const tree = worktree();
   const manager = runManager();
-  const first = await manager.start(input(tree, config("sleep 30")));
+  const [first, second] = await Promise.all([manager.start(input(tree, config("sleep 30"))), manager.start(input(tree, config("sleep 30")))]);
 
-  const restarting = manager.restart(first.runId);
-  // Synchronously after restart begins, the project is mid-transition.
-  await expect(manager.start(input(tree, config("sleep 30")))).rejects.toThrow(/being replaced/);
-  const second = await restarting;
+  expect(first!.terminalId).not.toBe(second!.terminalId);
+  expect([first!.title, second!.title].sort()).toEqual(["fixture", "fixture #2"]);
+  expect(first!.status).toBe("running");
+  expect(second!.status).toBe("running");
+  expect(alive(first!.pid!)).toBe(true);
+  expect(alive(second!.pid!)).toBe(true);
 
-  expect(manager.activeRun("proj_1")?.runId).toBe(second.runId);
-  await manager.stop(second.runId);
+  await manager.close(first!.terminalId, "person");
+  expect(await until(() => !alive(first!.pid!))).toBe(true);
+  expect(alive(second!.pid!)).toBe(true);
+  expect(manager.run(second!.terminalId).status).toBe("running");
+  expect(manager.terminals("sess_a").map((run) => run.terminalId).sort()).toEqual([first!.terminalId, second!.terminalId].sort());
 }, 15_000);
 
-test("replace is the deliberate takeover: it stops the live run and launches on this worktree", async () => {
-  const manager = runManager();
-  const theirs = worktree();
-  const mine = worktree();
-  const first = await manager.start(input(theirs, config("sleep 30")));
-
-  // Plain start refuses and names what is running and from where.
-  await expect(manager.start(input(mine, config("sleep 30")))).rejects.toThrow(new RegExp(theirs.replace(/[/\\]/g, "\\$&")));
-
-  const second = await manager.replace(input(mine, config("sleep 30")));
-  expect(second.worktreePath).toBe(mine);
-  expect(["exited", "failed"]).toContain(manager.run(first.runId).status);
-  await manager.stop(second.runId);
-}, 15_000);
-
-test("shutdown stops what it started rather than leaving orphans no daemon could adopt", async () => {
+test("shutdown closes the pipe fallback's children rather than leaving orphans nothing could reach", async () => {
   const manager = runManager();
   const run = await manager.start(input(worktree(), config("sleep 30")));
-  const pid = manager.run(run.runId).pid!;
+  const pid = manager.run(run.terminalId).pid!;
   expect(alive(pid)).toBe(true);
 
   await manager.shutdown();
   expect(await until(() => !alive(pid))).toBe(true);
-  expect(manager.activeRun("proj_1")).toBeUndefined();
+  expect(manager.run(run.terminalId).status).toBe("closed");
+  expect(manager.run(run.terminalId).closedBy).toBe("telar");
 }, 15_000);

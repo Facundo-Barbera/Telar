@@ -34,7 +34,7 @@ const FAMILY = ["border-border", "bg-background"];
 
 const runApi = {
   configurations: async () => ({ configurations: [] }),
-  status: async () => ({ history: [] }),
+  status: async () => ({ terminals: [] }),
 } as unknown as RunApi;
 
 /** The desktop bridge lives on `window`, and the Open button renders its

@@ -2024,9 +2024,9 @@ function reportVolumesChanged() {
 
 // --- The terminal surface (#198, W1) -----------------------------------------
 //
-// A REAL PTY LIVES IN THIS PROCESS. Why here and not in the engine, and what
-// `unknown` is for, are both in terminal-host.js — read that first; this file
-// only carries the wire.
+// A REAL PTY LIVES IN THIS PROCESS. Why here and not in the engine, and why a
+// terminal owns its process, are both in terminal-host.js — read that first;
+// this file only carries the wire.
 //
 // THE WIRE IS IPC, NOT A LOOPBACK PORT. browser-control-server.js is the right
 // template for a request/response lifecycle channel the ENGINE calls (which is

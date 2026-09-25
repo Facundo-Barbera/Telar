@@ -1,17 +1,13 @@
 /**
  * `RunCapability` out of `EngineClient` calls — the worker's copy.
  *
- * THE WORKER MUST NOT SPAWN THE PROCESS. Every verb here is an HTTP call to the
- * daemon, because a dev server spawned by a worker would be a child of ONE
- * conversation: it would die when that conversation ended and be invisible to
- * every other session. The daemon owns the process group, so the run outlives
- * whoever launched it — which is the entire point of the feature.
+ * THE WORKER MUST NOT OPEN THE TERMINAL ITSELF. Every verb here is an HTTP call
+ * to the daemon, because the daemon is what speaks to the desktop's terminal
+ * host — and a process a worker spawned would die with the worker instead of
+ * living in the session's panel where the person can see and close it.
  *
- * IT SPEAKS THE CLIENT'S TYPED VERBS, NOT A VOCABULARY OF ITS OWN. An earlier
- * draft invented RPC-ish method names (`configs/create`) that no route matched:
- * three verbs that typechecked, read fine, and would have 404'd the first time
- * an agent used them. Naming `EngineClient`'s methods means the compiler is what
- * keeps the two halves spelling the same thing.
+ * IT SPEAKS THE CLIENT'S TYPED VERBS, NOT A VOCABULARY OF ITS OWN, so the
+ * compiler is what keeps the two halves spelling the same thing.
  */
 import type { EngineClient } from "@telar/engine-client";
 import type { RunCapability } from "./capability";
@@ -26,13 +22,15 @@ export type RunClient = Pick<
   | "startRun"
   | "stopRun"
   | "restartRun"
-  | "releaseRun"
   | "runOutput"
   | "runWait"
   | "runBytes"
   | "writeRun"
   | "resizeRun"
 >;
+
+/** `terminalId`, or the same thing under its old name. */
+const idOf = (input?: { terminalId?: string; runId?: string }) => input?.terminalId ?? input?.runId;
 
 export function clientRunCapability(client: RunClient, sessionId: string): RunCapability {
   return {
@@ -44,22 +42,19 @@ export function clientRunCapability(client: RunClient, sessionId: string): RunCa
     },
     status: () => client.runStatus(sessionId),
     start: (input) => client.startRun(sessionId, input),
-    stop: (input) => client.stopRun(sessionId, input?.runId, input?.signal),
-    restart: (input) => client.restartRun(sessionId, input?.runId),
-    release: (input) => client.releaseRun(sessionId, input.runId),
+    stop: (input) =>
+      client.stopRun(sessionId, idOf(input), input?.signal, ...(input?.closedBy ? [{ closedBy: input.closedBy }] : [])),
+    restart: (input) => client.restartRun(sessionId, idOf(input), ...(input?.closedBy ? [{ closedBy: input.closedBy }] : [])),
     output: (input) => client.runOutput(sessionId, input ?? {}),
     /**
      * OVER HTTP LIKE EVERY OTHER VERB, and the worker waits on the SOCKET
-     * rather than on a loop of its own. The four conditions are facts the
-     * DAEMON holds — the lines, the readiness verdict, the status — so a worker
-     * that re-implemented this would be polling the daemon for state it could
-     * have been told about once, which is the shape #890 exists to remove.
+     * rather than on a loop of its own: the conditions are facts the DAEMON
+     * holds, so a worker that re-implemented this would be polling for them.
      */
     wait: (input) => client.runWait(sessionId, input),
     bytes: (input) => client.runBytes(sessionId, input ?? {}),
     // Present so the two implementations cannot disagree about the shape. The
-    // toolkit does not expose either — typing into a project's one deployment
-    // is a person's act on a surface they are looking at.
+    // toolkit does not expose either — typing is a person's act.
     write: (input) => client.writeRun(sessionId, input),
     resize: (input) => client.resizeRun(sessionId, input),
   };

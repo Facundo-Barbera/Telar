@@ -1,22 +1,19 @@
 /**
- * A project's saved launches, and the record of one actually running.
+ * A project's saved launches, and the terminals they open.
  *
  * TWO NOUNS, AND THE SPLIT IS THE WHOLE MODEL. A RUN CONFIGURATION is a saved
  * recipe that belongs to the PROJECT — a name, a command, a working directory,
  * environment variables — and it outlives every conversation. A RUN is one
- * execution of that recipe: it captured a worktree, a resolved cwd, a process
- * group and an exit code, and it belongs to the project too rather than to the
- * session that happened to press play. Changing conversation, or closing one,
- * neither switches nor kills a run; that is the point of keeping the run off
- * the session.
+ * TERMINAL opened from that recipe ("Run = a new terminal"): it captured a
+ * worktree, a resolved cwd and a title, and it belongs to the SESSION whose
+ * panel it was opened in. Pressing Run twice opens two terminals; neither
+ * blocks the other, and closing the terminal is what ends its process.
  *
  * THE CWD IS RELATIVE AND THE WORKTREE IS EXPLICIT. A configuration says
  * `apps/web`, not `/Users/…/apps/web`, because the same recipe has to be
  * launchable from the project's own checkout and from any worktree cut off it.
- * Which tree a run actually used is captured on the RUN — never inferred later,
- * because the session that reads it may be sitting on a different one, and a
- * run silently attributed to the reader's tree is how you stop a server you
- * did not start.
+ * Which tree a terminal actually used is captured on the TERMINAL — never
+ * inferred later, because the reader may be sitting on a different one.
  *
  * SECRET VALUES NEVER LEAVE THIS MODULE. An env var may be marked `secret`; the
  * stored document keeps its value because a launch needs it, and every read
@@ -164,24 +161,53 @@ export type RunConfigurationView = Omit<RunConfiguration, "env"> & {
 };
 
 /**
- * WHERE A RUN IS IN ITS LIFE — and `ready` is deliberately expensive to reach.
+ * WHERE A TERMINAL IS IN ITS LIFE — and `ready` is deliberately expensive.
  *
- *   starting  reserved and spawning; the slot is already held
- *   running   the process is alive and we have no readiness check, or it has
- *             not answered yet
+ *   running   the host started it; we have no readiness check, or it has not
+ *             answered yet
  *   ready     ONLY after a readiness URL that was silent before the launch
  *             answered after it. See `RunReadiness`.
  *   exited    the process ended on its own; `exitCode` says how
  *   failed    it never started, or ended non-zero
- *   unknown   we cannot vouch for the process any more. The slot STAYS HELD and
- *             nothing is signalled — see `release`.
+ *   closed    somebody closed the terminal, which ends what runs in it.
+ *             `closedBy` says who.
+ *
+ * THERE IS NO `unknown` AND NO `starting`, and both absences are the point of
+ * "Run = a new terminal". `unknown` held a project's one deployment slot
+ * whenever Telar could not vouch for a process; there is no slot now, and
+ * Telar does not track liveness at all — the terminal owns its process, and
+ * the engine records only what the host tells it (output, an exit, a close).
+ * `starting` covered a slot reserved before the spawn; a terminal record now
+ * exists from the moment the host names it.
  */
-export const RunStatus = z.enum(["starting", "running", "ready", "exited", "failed", "unknown"]);
+export const RunStatus = z.enum(["running", "ready", "exited", "failed", "closed"]);
 export type RunStatus = z.infer<typeof RunStatus>;
 
 export function isTerminal(status: RunStatus): boolean {
-  return status === "exited" || status === "failed";
+  return status === "exited" || status === "failed" || status === "closed";
 }
+
+/**
+ * WHY A TERMINAL EXISTS. `run` is a saved configuration a person or an agent
+ * started; `agent` is a command an agent opened so the person can watch it.
+ * The desktop host enforces the same pairing — the engine may open only these
+ * two, and a person's own shells (`user`) never pass through here.
+ */
+export const RunOrigin = z.enum(["run", "agent"]);
+export type RunOrigin = z.infer<typeof RunOrigin>;
+
+/**
+ * WHO CLOSED A TERMINAL — recorded so a later turn can tell an agent "the
+ * person closed it" rather than letting it read a close as a crash and reopen
+ * what somebody deliberately ended.
+ *
+ *   person  the cockpit (a chip, a tab, a Stop button)
+ *   agent   a tool call
+ *   telar   Telar itself: quitting, the engine going down, or the host no
+ *           longer holding the terminal when the engine looked again
+ */
+export const RunClosedBy = z.enum(["person", "agent", "telar"]);
+export type RunClosedBy = z.infer<typeof RunClosedBy>;
 
 /**
  * WHY A RUN IS OR IS NOT CALLED READY — and how weak the claim really is.
@@ -219,43 +245,61 @@ export type RunProbe = (url: string) => Promise<RunProbeResult>;
 /** One captured line. Streams are kept apart so a client can colour stderr. */
 export type RunOutputLine = { at: number; stream: "stdout" | "stderr"; text: string };
 
-/** A run as anyone outside the manager sees it. Never carries secret values. */
+/**
+ * A terminal as anyone outside the manager sees it. Never carries secret values.
+ *
+ * IDENTITY IS `terminalId`, and it stays on the record after the terminal
+ * ends — the finished ones are kept for their output, and a reader has to be
+ * able to name the one it is reading. On the desktop it is the host's own id
+ * for the pseudo-terminal, the name the cockpit's strip attaches by. Without
+ * Electron (the pipe fallback) the engine mints one in the same role, so a
+ * caller never has to know which launcher answered.
+ */
 export type RunView = {
+  terminalId: string;
+  /**
+   * THE SAME VALUE AS `terminalId`, under the name every caller from before
+   * terminals spells. Kept for one release so the `run_*` tools and today's
+   * cockpit keep working while they move to `terminalId`.
+   */
   runId: string;
   projectId: string;
-  configId: string;
+  /** The session whose panel this terminal lives in. It OWNS the terminal. */
+  sessionId: string;
+  origin: RunOrigin;
+  /** What the tab says: the configuration's name, then `#2`, `#3`… for more
+   *  instances open at once in the same session. */
+  title: string;
+  /** The recipe it came from, when it came from one. */
+  configId?: string;
   /** Copied at launch: renaming or deleting the recipe must not rewrite history. */
   configName: string;
   command: string;
-  /** The tree this run was launched from, absolute — shown, never inferred. */
+  /** The tree this terminal was launched from, absolute — shown, never inferred. */
   worktreePath: string;
   /** Its branch when the caller knew one. */
   worktreeBranch?: string;
   /** The resolved absolute working directory. */
   cwd: string;
-  /** The session that pressed play. Provenance only: it owns nothing. */
-  startedBySessionId?: string;
   status: RunStatus;
   readiness: RunReadiness;
   readinessUrl?: string;
+  /** Present only while the terminal is open. */
   pid?: number;
-  /**
-   * The desktop host's id for the pseudo-terminal this run is on, while it is
-   * on one. WHAT IT IS FOR IS POINTING: since #890 a run is a shell in the
-   * cockpit's Terminal strip, so the surface has to be able to name the terminal
-   * it should attach to, and an agent answering `run_status` can say where in
-   * the cockpit the output already is instead of describing it.
-   *
-   * ABSENT IS ORDINARY, TWICE OVER. A pipe-launched run (no Electron) never had
-   * a terminal; a finished one no longer has the handle that named it. Same rule
-   * as `pid`: it is published only while the handle is still ours.
-   */
-  terminalId?: string;
   startedAt: number;
   endedAt?: number;
   exitCode?: number;
   signal?: string;
-  /** Why it failed or went unknown, in a sentence. Redacted. */
+  /** Who closed it, when it was closed rather than ending by itself. */
+  closedBy?: RunClosedBy;
+  /**
+   * SOMETHING WORTH KNOWING THAT DID NOT STOP THE LAUNCH — today, that the
+   * readiness URL's port already answered before this terminal opened. A busy
+   * port warns and never blocks: a second instance of a dev server is often
+   * exactly what somebody asked for, and whether it collides is theirs to see.
+   */
+  warning?: string;
+  /** Why it failed, in a sentence. Redacted. */
   error?: string;
   /** Env keys that were set, with secret values withheld. */
   env: Array<{ key: string; value?: string; secret?: boolean }>;
@@ -273,7 +317,7 @@ export class RunError extends Error {
   constructor(
     readonly code: "invalid_request" | "not_found" | "conflict",
     message: string,
-    /** Structured detail a UI can act on — e.g. the run holding the slot. */
+    /** Structured detail a UI can act on — e.g. the terminals to choose from. */
     readonly detail?: Record<string, unknown>,
   ) {
     super(message);
@@ -281,8 +325,12 @@ export class RunError extends Error {
   }
 }
 
-export function newRunId(): string {
-  return `run_${randomBytes(8).toString("hex")}`;
+/**
+ * AN ID FOR A TERMINAL NO HOST NAMED — the pipe fallback's. Prefixed so it can
+ * never be mistaken for, or collide with, the desktop host's `term_…` ids.
+ */
+export function newPipeTerminalId(): string {
+  return `pipe_${randomBytes(8).toString("hex")}`;
 }
 
 export function newConfigId(): string {

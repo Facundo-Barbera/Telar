@@ -1242,10 +1242,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     },
   );
   /**
-   * RUN CONFIGURATIONS. The daemon owns the process group — a dev server
-   * spawned by a worker would die with its conversation — and `createRunMount`
-   * recovers its journal BEFORE returning, so the port is never bound in front
-   * of a manager that has not read it.
+   * RUN CONFIGURATIONS, and the terminals they open. The daemon is what talks
+   * to the desktop's terminal host — a process a worker spawned would die with
+   * its conversation instead of living in the session's panel. Re-listing the
+   * terminals a previous engine opened runs in the background: nothing waits
+   * on it, because nothing is blocked by it.
    */
   const runMount = createRunMount({ root: store.paths.root });
   const pluginStatuses = await pluginHost.startAll();
@@ -4816,9 +4817,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          * in the engine's memory and the only read of it is `/run/status` —
          * the poll this route exists to delete. See `RunStatusEvent`.
          *
-         * SCOPED TO THE SESSION'S PROJECT. A run belongs to a project, and a
-         * connection that saw every project's runs would be a cross-project
-         * read granted by a typo.
+         * SCOPED TO THE SESSION. A run is a terminal in one session's panel
+         * ("Run = a new terminal"), and a connection that saw every session's
+         * terminals would be a cross-session read granted by a typo.
          */
         if (request.method === "GET" && session.tail === "/run/stream") {
           const record = store.getSession(session.sessionId);
@@ -4829,7 +4830,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             Connection: "keep-alive",
           });
           response.write(": open\n\n");
-          const stop = runMount.watch(record.projectId, (event) => {
+          const stop = runMount.watch(record.id, (event) => {
             try {
               response.write(`data: ${JSON.stringify(event)}\n\n`);
             } catch {
@@ -5453,8 +5454,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // Kernels and compile jobs come back through their plugins' own
         // `onDispose`, bounded per cleanup, rather than a line per feature here.
         await pluginHost.disposeAll("shutdown");
-        // Runs are the one subprocess nothing else reaps: a dev server is
-        // deliberately not a child of any turn.
+        // A run on the desktop's terminal host is left running — it is the
+        // person's, and the next engine re-lists it; quitting Telar is what
+        // closes it. Only the pipe fallback's children are closed here,
+        // because nothing else could ever reach them.
         await runMount.shutdown();
         // Compile and tlmgr jobs are subprocesses of the same kind.
         // After the worker, before the lock: a live Chromium holding a profile

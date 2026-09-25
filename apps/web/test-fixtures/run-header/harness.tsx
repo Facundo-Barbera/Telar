@@ -4,10 +4,9 @@
  * scripted desktop workspace bridge, the pinned summary, and the panel toggle.
  *
  * Every button below changes what the scripted engine reports, so the states
- * a reader has to recognise — nothing deployed, ours running, ANOTHER tree's
- * deployment, a lost run — can each be opened and pressed. The ledger records
- * exactly what reached the client, which is how "start did not silently send
- * replace" is read off the outside rather than asserted.
+ * a reader has to recognise — nothing open, one terminal, two instances of the
+ * same recipe, a port that already answered — can each be opened and pressed.
+ * The ledger records exactly what reached the client.
  *
  * THE WHOLE CLUSTER, NOT THE TWO NEW CONTROLS, because the thing being judged
  * is now whether they read as one family — which cannot be seen one component
@@ -26,10 +25,9 @@ import { RailToggle } from "../../components/right-panel";
 const SCENARIOS: { name: string; scenario: Scenario }[] = [
   { name: "nothing deployed", scenario: "idle" },
   { name: "NO configuration (Setup)", scenario: "empty" },
-  { name: "ours, ready", scenario: "ready" },
-  { name: "ours, starting", scenario: "starting" },
-  { name: "ANOTHER tree", scenario: "foreign" },
-  { name: "lost run", scenario: "lost" },
+  { name: "one terminal, ready", scenario: "ready" },
+  { name: "two instances open", scenario: "two" },
+  { name: "port already answered", scenario: "busy" },
   { name: "failed", scenario: "failed" },
 ];
 

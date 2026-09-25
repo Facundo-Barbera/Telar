@@ -7,8 +7,12 @@
  * today, so every claim here is made the only way it honestly can be from this
  * machine: `processGroupFor` is asserted directly for `win32`, the Windows
  * group is driven with a fake `taskkill`, and that same real Windows group is
- * then put inside a real `RunManager` so the manager's own
- * unanswerable-group path runs against a real child process.
+ * then put inside a real `RunManager` running the pipe fallback.
+ *
+ * NO LIVENESS HERE ANY MORE. This file used to pin how an unanswerable group
+ * kept a project's slot `unknown`; "Run = a new terminal" removed the slot and
+ * the question with it. What is left is how a tree is STOPPED, and the one
+ * look a close takes when its leader exits (`emptied`).
  *
  * WHAT THIS FILE CANNOT CLAIM, STATED RATHER THAN IMPLIED: none of it proves
  * `taskkill /T` reaches a grandchild on a real Windows box. It proves that
@@ -17,8 +21,9 @@
  *
  * Nothing this file starts outlives it: every run is a `sh` command in a
  * `mkdtemp` worktree, managers are shut down after each test, and the one test
- * that deliberately spawns a NON-detached child kills it by pid in the test
- * itself, because a child with no group of its own cannot be cleaned up by one.
+ * that deliberately spawns a NON-detached child kills it through the fake
+ * `taskkill`, because a child with no group of its own cannot be cleaned up by
+ * one.
  */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -76,33 +81,70 @@ const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(c
 
 // ── the POSIX group ────────────────────────────────────────────────────────
 
-test("the POSIX group leads its own process group and asks about it with signal 0", () => {
+test("the POSIX group leads its own process group and signals all of it", () => {
   const sent: Array<[number, NodeJS.Signals | 0]> = [];
   const group = posixProcessGroup((pid, signal) => void sent.push([pid, signal]));
 
   expect(group.detached).toBe(true);
   group.stop(77, false);
   group.stop(77, true);
+  group.stop(77, false, "SIGINT");
   expect(sent).toEqual([
     [-77, "SIGTERM"],
     [-77, "SIGKILL"],
+    [-77, "SIGINT"],
   ]);
-
-  expect(group.liveness(77)).toBe("alive");
-  expect(sent.at(-1)).toEqual([-77, 0]);
 });
 
-test("ESRCH is the only POSIX answer that means gone — EPERM is a group that exists and is not ours", () => {
+test("a close's one look: ESRCH is the only answer that means the group is empty", () => {
+  expect(
+    posixProcessGroup(() => {
+      throw errno("ESRCH");
+    }).emptied(5),
+  ).toBe(true);
+  // EPERM is a group that exists and is not ours — not empty.
+  expect(
+    posixProcessGroup(() => {
+      throw errno("EPERM");
+    }).emptied(5),
+  ).toBe(false);
+  const sent: Array<[number, NodeJS.Signals | 0]> = [];
+  expect(posixProcessGroup((pid, signal) => void sent.push([pid, signal])).emptied(5)).toBe(false);
+  // It is asked with signal 0, which delivers nothing.
+  expect(sent).toEqual([[-5, 0]]);
+});
+
+/**
+ * `liveness` IS NOT A RUN'S QUESTION ANY MORE, but the engine suite's own
+ * wrapper (`scripts/test-engine-bounded.mjs`) asks it about the test runner's
+ * group after the runner exits — the check that catches a test leaving a
+ * process behind. It stays three-valued, and it stays honest.
+ */
+test("the group can still say what is left of a tree, for the suite's own leak check", () => {
+  const sent: Array<[number, NodeJS.Signals | 0]> = [];
+  expect(posixProcessGroup((pid, signal) => void sent.push([pid, signal])).liveness(77)).toBe("alive");
+  expect(sent).toEqual([[-77, 0]]);
   expect(
     posixProcessGroup(() => {
       throw errno("ESRCH");
     }).liveness(5),
   ).toBe("gone");
+  // EPERM is a group that exists and is not ours — alive, never gone.
   expect(
     posixProcessGroup(() => {
       throw errno("EPERM");
     }).liveness(5),
   ).toBe("alive");
+
+  // Windows cannot be asked until a forceful taskkill says otherwise, and never
+  // about a pid it did not kill.
+  const group = windowsProcessGroup(fakeTaskkill(() => ({ status: 0 })).run);
+  expect(group.liveness(4242)).toBe("unanswerable");
+  group.stop(4242, false);
+  expect(group.liveness(4242)).toBe("unanswerable");
+  group.stop(4242, true);
+  expect(group.liveness(4242)).toBe("gone");
+  expect(group.liveness(4243)).toBe("unanswerable");
 });
 
 // ── the Windows group ──────────────────────────────────────────────────────
@@ -129,23 +171,11 @@ test("Windows stops a tree with taskkill /T — the flag without which a shell's
     ["/PID", "4242", "/T"],
     ["/PID", "4242", "/T", "/F"],
   ]);
+  // Nothing here enumerates a tree, so a close always takes the forceful pass.
+  expect(group.emptied(4242)).toBe(false);
 });
 
-test("a Windows tree is unanswerable until a forceful taskkill says otherwise, and never for a pid it did not kill", () => {
-  const taskkill = fakeTaskkill(() => ({ status: 0 }));
-  const group = windowsProcessGroup(taskkill.run);
-
-  expect(group.liveness(4242)).toBe("unanswerable");
-  // A polite taskkill is not evidence: it may have posted WM_CLOSE to nothing.
-  group.stop(4242, false);
-  expect(group.liveness(4242)).toBe("unanswerable");
-  // A forceful one that exited 0 is.
-  group.stop(4242, true);
-  expect(group.liveness(4242)).toBe("gone");
-  expect(group.liveness(4243)).toBe("unanswerable");
-});
-
-test("taskkill's not-found exit is reported as ESRCH, which the manager reads as 'already stopped'", () => {
+test("taskkill's not-found exit is reported as ESRCH, which a close reads as 'already stopped'", () => {
   const group = windowsProcessGroup(fakeTaskkill(() => ({ status: 128 })).run);
   expect(() => group.stop(9, true)).toThrow(expect.objectContaining({ code: "ESRCH" }));
 });
@@ -161,17 +191,11 @@ test("the platform picks the group, and win32 picks the one that does not lead a
   expect(processGroupFor("win32", noop).detached).toBe(false);
   expect(processGroupFor("darwin", noop).detached).toBe(true);
   expect(processGroupFor("linux", noop).detached).toBe(true);
-  // The win32 one answers the group question the only honest way it can.
-  expect(processGroupFor("win32", noop).liveness(1)).toBe("unanswerable");
-  // And the POSIX one really does ask, through the injected kill.
-  let asked = 0;
-  processGroupFor("linux", () => void (asked += 1)).liveness(1);
-  expect(asked).toBe(1);
 });
 
 // ── the manager, driven by a Windows-shaped group ──────────────────────────
 
-test("the group decides whether a child leads one: under the Windows group the child has no group of its own", async () => {
+test("the group decides whether a child leads one, and closing under the Windows group takes the forceful pass", async () => {
   const taskkill = fakeTaskkill((args) => {
     const pid = Number(args[args.indexOf("/PID") + 1]);
     if (!args.includes("/F")) return { status: 1, stderr: "can only be terminated forcefully" };
@@ -189,10 +213,9 @@ test("the group decides whether a child leads one: under the Windows group the c
   const pid = run.pid!;
   expect(pid).toBeGreaterThan(0);
 
-  // THE OBSERVABLE DIFFERENCE, AND IT IS NOT A STRING BOTH STATES EMIT. A
-  // detached child leads a group whose id is its pid, so `kill(-pid, 0)`
-  // succeeds; this one was spawned with `detached: false` because the injected
-  // group says so, and `-pid` is therefore not a process group at all.
+  // THE OBSERVABLE DIFFERENCE. A detached child leads a group whose id is its
+  // pid, so `kill(-pid, 0)` succeeds; this one was spawned with `detached:
+  // false` because the injected group says so.
   expect(() => process.kill(pid, 0)).not.toThrow();
   expect(() => process.kill(-pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
 
@@ -200,62 +223,41 @@ test("the group decides whether a child leads one: under the Windows group the c
   const posix = runManager();
   const detached = await posix.start(input(worktree(), config("exec sleep 30")));
   expect(() => process.kill(-detached.pid!, 0)).not.toThrow();
-  await posix.stop(detached.runId);
+  await posix.close(detached.terminalId, "person");
 
-  const stopped = await manager.stop(run.runId);
-  expect(stopped.status).toBe("exited");
+  const closed = await manager.close(run.terminalId, "person");
+  expect(closed.status).toBe("closed");
+  expect(closed.closedBy).toBe("person");
   // The polite attempt happened and was allowed to fail; the forceful one did
   // the work — which is the whole reason `/F` is a second call and not the first.
   expect(taskkill.calls.map((call) => call.join(" "))).toEqual([`/PID ${pid} /T`, `/PID ${pid} /T /F`]);
 }, 15_000);
 
-test("a run that ends by itself where the group cannot be asked goes unknown and KEEPS the slot", async () => {
-  const taskkill = fakeTaskkill(() => ({ status: 0 }));
-  const manager = runManager({ processGroup: windowsProcessGroup(taskkill.run) });
-  const tree = worktree();
-
-  // Exits on its own, so nothing is left behind by this test whatever happens.
-  const run = await manager.start(input(tree, config("echo done")));
-  expect(await until(() => manager.run(run.runId).status !== "running")).toBe(true);
-
-  const settled = manager.run(run.runId);
-  expect(settled.status).toBe("unknown");
-  expect(settled.error).toMatch(/cannot ask whether the processes it started went with it/);
-  // Nothing was signalled on the way: an exit is not a reason to shoot.
-  expect(taskkill.calls).toEqual([]);
-
-  // The slot is the point. A platform that cannot account for a dev server must
-  // not hand the next launch a port that may still be taken.
-  await expect(manager.start(input(tree, config("echo again")))).rejects.toThrow(/lost contact/);
-  manager.release(run.runId);
-  const next = await manager.start(input(tree, config("echo again")));
-  expect(manager.activeRun("proj_1")?.runId).toBe(next.runId);
-  expect(await until(() => manager.run(next.runId).status !== "running")).toBe(true);
-  manager.release(next.runId);
-}, 15_000);
-
-test("an unanswerable group is not polled for the drain window — a question nobody can answer is asked once", async () => {
+test("a run that ends by itself is simply exited — nothing is asked, nothing is signalled, nothing is held", async () => {
+  /**
+   * THE CASE THAT USED TO HOLD A SLOT. On a platform that cannot enumerate a
+   * tree, an ordinary exit went `unknown` and blocked the project until a
+   * person released it. Now it is the exit it was.
+   */
   let asked = 0;
+  const taskkill = fakeTaskkill(() => ({ status: 0 }));
+  const group = windowsProcessGroup(taskkill.run);
   const manager = runManager({
     processGroup: {
-      detached: false,
-      stop: () => {},
-      liveness: () => {
+      ...group,
+      emptied: (pid) => {
         asked += 1;
-        return "unanswerable";
+        return group.emptied(pid);
       },
     },
-    // A drain window long enough that polling it would be many calls, not one.
-    groupDrainMs: 5_000,
   });
-  const run = await manager.start(input(worktree(), config("echo done")));
-  expect(await until(() => manager.run(run.runId).status === "unknown")).toBe(true);
-  /**
-   * THE COUNT IS THE PROOF, NOT THE CLOCK. An elapsed-time assertion would say
-   * the same thing and would also fail on a loaded machine for a reason that
-   * has nothing to do with this code; one call is a number the polling
-   * behaviour cannot produce, at any speed.
-   */
-  expect(asked).toBe(1);
-  manager.release(run.runId);
+  const tree = worktree();
+  const run = await manager.start(input(tree, config("echo done")));
+  expect(await until(() => manager.run(run.terminalId).status !== "running")).toBe(true);
+
+  expect(manager.run(run.terminalId).status).toBe("exited");
+  expect(taskkill.calls).toEqual([]);
+  expect(asked).toBe(0);
+  const next = await manager.start(input(tree, config("echo again")));
+  expect(next.status).toBe("running");
 }, 15_000);

@@ -82,7 +82,7 @@ type WorkerClient = Pick<
   | "ds"
   | "latex"
   // The run door: `clientRunCapability` speaks these verbs, and every one is an
-  // HTTP call to the daemon, which owns the process group.
+  // HTTP call to the daemon, which is what talks to the terminal host.
   | "runConfigurations"
   | "createRunConfiguration"
   | "updateRunConfiguration"
@@ -91,7 +91,6 @@ type WorkerClient = Pick<
   | "startRun"
   | "stopRun"
   | "restartRun"
-  | "releaseRun"
   | "runOutput"
   // AND WAITING IS THE DAEMON'S TOO (#890). The conditions are facts it holds —
   // the lines, the readiness verdict, the status — so the worker waits on this

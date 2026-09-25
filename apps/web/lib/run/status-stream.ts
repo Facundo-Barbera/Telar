@@ -37,23 +37,17 @@ import type { RunStatusAnswer, RunStatusEvent } from "./types";
  * PURE, AND EXPORTED BECAUSE THIS IS THE RULE WORTH TESTING. The hook below is
  * its only caller.
  *
- * `active` COMES FROM THE FRAME, never inferred from the run's status. A
- * released run stays `unknown` for ever with the project's slot free - that is
- * what `unknown` means - so a reader that read "not terminal, therefore
- * deployed" would show a ghost as the live deployment.
+ * A FRAME REPLACES ITS TERMINAL, BY `terminalId`, and touches no other: a
+ * session may have several open at once ("Run = a new terminal"), and one
+ * ending says nothing about the rest.
  *
- * HISTORY IS NEWEST-FIRST BY `startedAt`, matching `/run/status`, so a reader
- * cannot tell a folded answer from a freshly read one.
+ * NEWEST-FIRST BY `startedAt`, matching `/run/status`, so a reader cannot tell
+ * a folded answer from a freshly read one.
  */
 export function applyRunStatusEvent(answer: RunStatusAnswer | undefined, event: RunStatusEvent): RunStatusAnswer {
-  const base: RunStatusAnswer = answer ?? { history: [] };
-  const history = [event.run, ...base.history.filter((run) => run.runId !== event.run.runId)].sort((a, b) => b.startedAt - a.startedAt);
-  // A frame about a run that is NOT the holder must not clear an active run it
-  // has nothing to do with: an older run announcing its own exit says nothing
-  // about the one that replaced it.
-  const active = event.active ? event.run : base.active?.runId === event.run.runId ? undefined : base.active;
-  const rest: Omit<RunStatusAnswer, "active" | "history"> = base.sessionWorktreePath ? { sessionWorktreePath: base.sessionWorktreePath } : {};
-  return { ...rest, ...(active ? { active } : {}), history };
+  const base: RunStatusAnswer = answer ?? { terminals: [] };
+  const terminals = [event.run, ...(base.terminals ?? []).filter((run) => run.terminalId !== event.run.terminalId)].sort((a, b) => b.startedAt - a.startedAt);
+  return { ...(base.sessionWorktreePath ? { sessionWorktreePath: base.sessionWorktreePath } : {}), terminals };
 }
 
 export type RunStatusFeed = {

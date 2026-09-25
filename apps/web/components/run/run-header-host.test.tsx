@@ -48,7 +48,7 @@ describe("the pinned client", () => {
     const seen: string[] = [];
     const api = createRunApi(((path: string) => {
       seen.push(path);
-      return Promise.resolve(new Response(JSON.stringify({ history: [] }), { status: 200, headers: { "content-type": "application/json" } }));
+      return Promise.resolve(new Response(JSON.stringify({ terminals: [] }), { status: 200, headers: { "content-type": "application/json" } }));
     }) as unknown as typeof fetch);
     await api.status("session_1");
     expect(seen).toHaveLength(1);
