@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from "react";
 import { CLEANUP_INACTIVE_DAYS, CLEANUP_LOG_DAYS, type CleanupPolicy, type CleanupReport, type CleanupState, type RetentionPolicy } from "@telar/engine-client";
-import { ArchiveIcon, ClockIcon, GitMergeIcon, HistoryIcon, ScrollTextIcon } from "lucide-react";
+import { ArchiveIcon, ClockIcon, GitBranchIcon, HistoryIcon, ScrollTextIcon } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
 import { fmtAgo, formatBytes } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -140,12 +140,12 @@ export function CleanupSection() {
           }
         />
         <ToggleRow
-          icon={GitMergeIcon}
-          label="Delete merged worktrees"
-          hint="When its commits are already in the default branch."
-          checked={policy?.merged ?? false}
-          onCheckedChange={(merged) => void save({ merged })}
-          {...errorFor("merged")}
+          icon={GitBranchIcon}
+          label="Delete unchanged worktrees"
+          hint="Releases the worktree of an idle session whose branch has no commits beyond the default branch."
+          checked={policy?.unchanged ?? false}
+          onCheckedChange={(unchanged) => void save({ unchanged })}
+          {...errorFor("unchanged")}
         />
         <ToggleRow
           icon={ArchiveIcon}

@@ -14,7 +14,7 @@ afterAll(async () => {
 });
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
-const OFF: CleanupState = { policy: { inactiveDays: null, merged: false, archived: false, logsDays: null }, running: false };
+const OFF: CleanupState = { policy: { inactiveDays: null, unchanged: false, archived: false, logsDays: null }, running: false };
 const ROOT = "/store/worktrees";
 
 let state: CleanupState = OFF;
@@ -87,7 +87,7 @@ async function mount() {
 describe("Settings ▸ Storage ▸ automatic cleanup", () => {
   test("the four controls render, all off by default", async () => {
     const view = await mount();
-    for (const label of ["Delete inactive worktrees", "Delete merged worktrees", "Delete worktrees of archived sessions", "Delete old logs"]) {
+    for (const label of ["Delete inactive worktrees", "Delete unchanged worktrees", "Delete worktrees of archived sessions", "Delete old logs"]) {
       expect(view.text()).toContain(label);
     }
     const triggers = [...view.host.querySelectorAll('[aria-label="Delete inactive worktrees"], [aria-label="Delete old logs"]')];
@@ -108,7 +108,7 @@ describe("Settings ▸ Storage ▸ automatic cleanup", () => {
     putAnswer = (patch) => ({ ...state, policy: { ...state.policy, ...patch, inactiveDays: 7 } });
     const view = await mount();
     await view.click(view.switches()[0]!);
-    expect(calls.find((call) => call.method === "PUT")).toEqual({ url: "/api/cleanup", method: "PUT", body: { merged: true } });
+    expect(calls.find((call) => call.method === "PUT")).toEqual({ url: "/api/cleanup", method: "PUT", body: { unchanged: true } });
     expect(view.switches()[0]!.getAttribute("aria-checked")).toBe("true");
     expect(view.host.querySelector('[aria-label="Delete inactive worktrees"]')?.textContent).toContain("7 days");
     view.unmount();

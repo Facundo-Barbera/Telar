@@ -7679,7 +7679,7 @@ export class EngineStore {
    */
   async releaseSessionWorktree(
     sessionId: string,
-    reason: "manual" | "inactive" | "merged" | "archived",
+    reason: "manual" | "inactive" | "unchanged" | "archived",
     options: { strict?: boolean } = {},
   ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
     const session = this.getSession(sessionId);
@@ -7755,7 +7755,7 @@ export class EngineStore {
       for (const { sessionId, reason } of planWorktreeCleanup(candidates, policy, now)) {
         const session = this.getSession(sessionId);
         if (session.workspace.mode !== "worktree" || !session.projectId) continue;
-        if (reason === "merged" && !(await this.branchMerged(session.projectId, session.workspace))) continue;
+        if (reason === "unchanged" && !(await this.branchUnchanged(session.projectId, session.workspace.branch))) continue;
         if (!fs.existsSync(session.workspace.path)) continue;
         const bytes = await diskUsage(session.workspace.path);
         const result = await this.releaseSessionWorktree(sessionId, reason, { strict: true });
@@ -7791,20 +7791,17 @@ export class EngineStore {
   }
 
   /**
-   * HAS THIS BRANCH LANDED? Its own commits (past the base it was cut from)
-   * are all in the project's default branch. A branch with no commits of its
-   * own is a session that has not done anything yet, not a merged one.
+   * DOES THIS BRANCH HOLD ANYTHING THE DEFAULT BRANCH DOES NOT? Unchanged
+   * means zero commits in `<default>..<branch>`. A git read that did not
+   * answer is "changed" — the safe side, since this licenses a delete.
    */
-  private async branchMerged(projectId: string, workspace: { branch: string; baseRef?: string | undefined }): Promise<boolean> {
+  private async branchUnchanged(projectId: string, branch: string): Promise<boolean> {
     const project = this.getProject(projectId);
-    const tip = await this.worktreeGit(project.root, ["rev-parse", "--verify", "--quiet", `refs/heads/${workspace.branch}`]);
-    if (tip.status !== 0 || !tip.stdout.trim()) return false;
-    if (workspace.baseRef && tip.stdout.trim() === workspace.baseRef) return false;
     for (const base of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"]) {
       const exists = await this.worktreeGit(project.root, ["rev-parse", "--verify", "--quiet", base]);
       if (exists.status !== 0) continue;
-      const merged = await this.worktreeGit(project.root, ["merge-base", "--is-ancestor", `refs/heads/${workspace.branch}`, base]);
-      return merged.status === 0 && !merged.timedOut;
+      const ahead = await this.worktreeGit(project.root, ["rev-list", "--count", `${base}..refs/heads/${branch}`]);
+      return ahead.status === 0 && !ahead.timedOut && ahead.stdout.trim() === "0";
     }
     return false;
   }

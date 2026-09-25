@@ -71,8 +71,8 @@ export function planWorktreeCleanup(
   sessions: readonly CleanupCandidate[],
   policy: CleanupPolicy,
   now: number,
-): Array<{ sessionId: string; reason: "archived" | "inactive" | "merged" }> {
-  const plan: Array<{ sessionId: string; reason: "archived" | "inactive" | "merged" }> = [];
+): Array<{ sessionId: string; reason: "archived" | "inactive" | "unchanged" }> {
+  const plan: Array<{ sessionId: string; reason: "archived" | "inactive" | "unchanged" }> = [];
   for (const session of sessions) {
     if (session.released) continue;
     if (session.archived) {
@@ -81,8 +81,8 @@ export function planWorktreeCleanup(
     }
     if (policy.inactiveDays !== null && now - session.lastActiveAt >= policy.inactiveDays * DAY_MS) {
       plan.push({ sessionId: session.sessionId, reason: "inactive" });
-    } else if (policy.merged) {
-      plan.push({ sessionId: session.sessionId, reason: "merged" });
+    } else if (policy.unchanged) {
+      plan.push({ sessionId: session.sessionId, reason: "unchanged" });
     }
   }
   return plan;

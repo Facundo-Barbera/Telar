@@ -57,7 +57,7 @@ import {
   FolderGitIcon,
   FolderKanbanIcon,
   GaugeIcon,
-  GitMergeIcon,
+  GitBranchIcon,
   GitPullRequestIcon,
   GlobeIcon,
   HardDriveIcon,
@@ -941,10 +941,10 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             icon: ClockIcon,
           },
           {
-            title: "Delete merged worktrees",
-            hint: "When its commits are already in the default branch.",
-            keywords: ["cleanup", "clean up", "disk", "space", "reclaim", "checkout", "merged"],
-            icon: GitMergeIcon,
+            title: "Delete unchanged worktrees",
+            hint: "Releases the worktree of an idle session whose branch has no commits beyond the default branch.",
+            keywords: ["cleanup", "clean up", "disk", "space", "reclaim", "checkout", "unchanged", "empty", "branch"],
+            icon: GitBranchIcon,
           },
           {
             title: "Delete worktrees of archived sessions",

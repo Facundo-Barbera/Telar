@@ -35,9 +35,9 @@ test("the plan asks only what the switches ask, and never twice for a released c
   ];
   expect(planWorktreeCleanup(sessions, DEFAULT_CLEANUP_POLICY, now)).toEqual([]);
   expect(planWorktreeCleanup(sessions, { ...DEFAULT_CLEANUP_POLICY, inactiveDays: 30 }, now)).toEqual([{ sessionId: "old", reason: "inactive" }]);
-  expect(planWorktreeCleanup(sessions, { ...DEFAULT_CLEANUP_POLICY, archived: true, merged: true }, now)).toEqual([
-    { sessionId: "old", reason: "merged" },
-    { sessionId: "fresh", reason: "merged" },
+  expect(planWorktreeCleanup(sessions, { ...DEFAULT_CLEANUP_POLICY, archived: true, unchanged: true }, now)).toEqual([
+    { sessionId: "old", reason: "unchanged" },
+    { sessionId: "fresh", reason: "unchanged" },
     { sessionId: "archived", reason: "archived" },
   ]);
 });
@@ -121,21 +121,31 @@ test("the fixed rules hold whatever the switches say: uncommitted work is skippe
   expect(store.cleanup.last()).toMatchObject({ released: 0, skipped: 1 });
 });
 
-test("merged: a branch whose commits are in the default branch is released; one that did nothing is not", async () => {
-  const { store, root, checkout, branch } = await setup();
-  store.cleanup.setPolicy({ merged: true });
+test("unchanged: an idle session with no commits beyond the default branch is released; one with work is not", async () => {
+  const withWork = await setup();
+  fs.writeFileSync(path.join(withWork.checkout, "feature.txt"), "work\n");
+  git(withWork.checkout, "add", "-A");
+  git(withWork.checkout, "commit", "-qm", "feature");
+  git(withWork.checkout, "push", "-q", "origin", withWork.branch);
+  withWork.store.cleanup.setPolicy({ unchanged: true });
+  await withWork.store.runCleanup();
+  expect(fs.existsSync(withWork.checkout)).toBe(true);
+
+  const empty = await setup();
+  empty.store.cleanup.setPolicy({ unchanged: true });
+  await empty.store.runCleanup();
+  expect(fs.existsSync(empty.checkout)).toBe(false);
+  const session = empty.store.getSession("session_one");
+  expect(session.workspace.mode === "worktree" && session.workspace.released?.reason).toBe("unchanged");
+});
+
+test("unchanged never releases a session that is not idle", async () => {
+  const { store, checkout } = await setup();
+  store.submitTurn("session_one", { runId: "run_busy", input: "working" });
+  store.cleanup.setPolicy({ unchanged: true });
   await store.runCleanup();
   expect(fs.existsSync(checkout)).toBe(true);
-
-  fs.writeFileSync(path.join(checkout, "feature.txt"), "shipped\n");
-  git(checkout, "add", "-A");
-  git(checkout, "commit", "-qm", "feature");
-  git(checkout, "push", "-q", "origin", branch);
-  git(root, "fetch", "-q", "origin");
-  git(root, "push", "-q", "origin", `refs/remotes/origin/${branch}:refs/heads/main`);
-  git(root, "fetch", "-q", "origin");
-  await store.runCleanup();
-  expect(fs.existsSync(checkout)).toBe(false);
+  expect(store.cleanup.last()).toMatchObject({ released: 0, skipped: 1 });
 });
 
 test("archiving keeps the checkout unless the switch is on", async () => {

@@ -16,8 +16,11 @@ export const CLEANUP_LOG_DAYS = [7, 30] as const;
 export const CleanupPolicy = z.object({
   /** Release the checkout of a session inactive this many days. `null` is off. */
   inactiveDays: z.union([z.literal(3), z.literal(7), z.literal(14), z.literal(30)]).nullable(),
-  /** Release a checkout whose branch is already in the default branch. */
-  merged: z.boolean(),
+  /**
+   * Release the checkout of an idle session whose branch has no commits
+   * beyond the default branch — nothing in it that is not already there.
+   */
+  unchanged: z.boolean(),
   /** Release the checkout of an archived session. */
   archived: z.boolean(),
   /** Delete rotated logs older than this many days. `null` is off. */
@@ -25,7 +28,7 @@ export const CleanupPolicy = z.object({
 });
 export type CleanupPolicy = z.infer<typeof CleanupPolicy>;
 
-export const DEFAULT_CLEANUP_POLICY: CleanupPolicy = { inactiveDays: null, merged: false, archived: false, logsDays: null };
+export const DEFAULT_CLEANUP_POLICY: CleanupPolicy = { inactiveDays: null, unchanged: false, archived: false, logsDays: null };
 
 export const CleanupReport = z.object({
   at: z.number(),
