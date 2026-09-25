@@ -345,11 +345,28 @@ function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: Jou
   );
 }
 
+/** The provider's size estimate for a thought, when it gave one. */
+function reasoningTokens(item: JournalItem): number | undefined {
+  return item.detail.type === "reasoning" ? item.detail.estimatedTokens : undefined;
+}
+
+/**
+ * WHETHER A THOUGHT HAS ANYTHING TO SHOW. Text, obviously — but Claude Code in
+ * Telar mode withholds the text and reports only a running token estimate, so a
+ * thought still going, or one that says how long it was, is a row too. An
+ * empty settled block with no count is the provider opening a block and never
+ * filling it, which still paints nothing.
+ */
+function reasoningPaints(item: JournalItem): boolean {
+  return itemText(item).trim().length > 0 || running(item) || reasoningTokens(item) !== undefined;
+}
+
 /** Extended thinking. Italic, hairline-indented, quiet — never a card. */
 function ReasoningRow({ item }: { item: JournalItem }) {
   const [open, setOpen] = useState(false);
   const text = itemText(item);
-  if (!text.trim()) return null;
+  if (!reasoningPaints(item)) return null;
+  const tokens = reasoningTokens(item);
 
   if (running(item)) {
     return (
@@ -359,13 +376,27 @@ function ReasoningRow({ item }: { item: JournalItem }) {
             ✻
           </span>
           <Shimmer as="span" className="text-2xs font-medium">
-            Thinking
+            {tokens === undefined ? (text.trim() ? "Thinking" : "Thinking…") : `Thinking · ~${fmtTokens(tokens)} tokens`}
           </Shimmer>
         </div>
-        <p className="ml-5 border-l border-border/70 pl-3 text-xs leading-relaxed whitespace-pre-wrap italic">
-          {text}
-          <span className="ml-0.5 inline-block h-3 w-[2px] translate-y-0.5 animate-pulse bg-muted-foreground/70 align-middle" />
-        </p>
+        {text.trim() && (
+          <p className="ml-5 border-l border-border/70 pl-3 text-xs leading-relaxed whitespace-pre-wrap italic">
+            {text}
+            <span className="ml-0.5 inline-block h-3 w-[2px] translate-y-0.5 animate-pulse bg-muted-foreground/70 align-middle" />
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // Settled with only a count: there is nothing behind a disclosure, so none.
+  if (!text.trim()) {
+    return (
+      <div className={cn(ROW, "text-muted-foreground")}>
+        <span aria-hidden className="shrink-0">
+          ✻
+        </span>
+        <span className="min-w-0 flex-1 truncate italic">Thought · {fmtTokens(tokens ?? 0)} tokens</span>
       </div>
     );
   }
@@ -974,7 +1005,7 @@ function renderable(items: JournalItem[], tasks: readonly JournalTask[] = []): J
       const task = tasks.find((candidate) => candidate.id === taskId);
       return !task || transcriptTasks([task]).length > 0;
     }
-    return item.detail.type === "reasoning" ? itemText(item).trim().length > 0 : true;
+    return item.detail.type === "reasoning" ? reasoningPaints(item) : true;
   });
 }
 
