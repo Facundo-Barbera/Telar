@@ -1,4 +1,5 @@
 import { engineClient, engineErrorResponse, requestObject, requiredString } from "@/lib/engine/engine-server";
+import { emitSessionRead } from "@/lib/session-read-events";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,7 +20,10 @@ export async function POST(request: Request, context: Context) {
   try {
     const { sessionId } = await context.params;
     const input = await requestObject(request);
-    return Response.json(await (await engineClient()).markSessionRead(sessionId, requiredString(input.runId, "run id")));
+    const answer = await (await engineClient()).markSessionRead(sessionId, requiredString(input.runId, "run id"));
+    // Desktop notifications take their alert down on this (`session-read-events.ts`).
+    emitSessionRead(sessionId);
+    return Response.json(answer);
   } catch (error) {
     return engineErrorResponse(error);
   }
