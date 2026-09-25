@@ -2,8 +2,7 @@
 
 **Current direction (2026-08):** [`vision-2026-08.md`](vision-2026-08.md) — docs as
 the interface, verification as the gate, and environment leasing as the
-scarce-resource manager. Normative companion: [`env-contract-v1.md`](env-contract-v1.md)
-(implemented by `packages/env`). A visual summary lives in [`artifacts/`](artifacts/).
+scarce-resource manager. Normative companion: [`env-contract-v1.md`](env-contract-v1.md). A visual summary lives in [`artifacts/`](artifacts/).
 
 **Where Telar puts things is normative and lives here:**
 [`storage-shape.md`](storage-shape.md) — the four tiers, one rule each, and
