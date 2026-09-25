@@ -875,6 +875,43 @@ export function latestBrowserState(events: readonly EngineEvent[]): BrowserState
   return state;
 }
 
+/**
+ * HAS THE AGENT DRIVEN THE SESSION'S BROWSER since this panel mounted, past
+ * the last event already acted on?
+ *
+ * `browser.state.changed` is journalled after an agent's browser call that
+ * moved something (apps/engine/src/browser/socket.ts), so a fresh one with
+ * pages in it is "the agent has pages", which is when the panel's Browser tab
+ * must exist. One with no pages is not a reason to show an empty browser.
+ *
+ * `since` IS THE `display_open` GUARD. The journal replays from zero on every
+ * load, and without it every reload would put back a Browser tab the person
+ * closed last week. `after` keeps one event from acting twice as the array
+ * grows behind it — and returns where the caller should resume.
+ */
+export function agentBrowserActivity(events: readonly EngineEvent[], since: number, after: number): { acted: boolean; through: number } {
+  let acted = false;
+  let through = after;
+  for (const event of events) {
+    if (event.type !== "browser.state.changed" || event.at < since || event.id <= after) continue;
+    through = Math.max(through, event.id);
+    if (event.tabs.length > 0) acted = true;
+  }
+  return { acted, through };
+}
+
+/**
+ * THE NATIVE SCOPE TO DESTROY WHEN A PANEL TAB CLOSES, or undefined when the
+ * tab is not a desktop Browser. Closing the Browser tab used to only take it
+ * off the strip, and the pages behind it — the agent's included — kept
+ * running with nothing on screen. Every Browser instance releases its own
+ * scope: the first is the bare session id the agent drives
+ * (`browserScopeKey`), a second one would otherwise leak the same way.
+ */
+export function browserScopeToRelease(sessionId: string, tab: PanelTabInstance | undefined): string | undefined {
+  return tab?.kind === LIVE_BROWSER_TAB ? browserScopeKey(sessionId, tab.id) : undefined;
+}
+
 const LIVE_TASK_STATES = new Set<TaskState>(["pending", "running", "waiting"]);
 
 /**

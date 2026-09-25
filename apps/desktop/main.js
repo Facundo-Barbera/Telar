@@ -1904,7 +1904,9 @@ ipcMain.handle("telar:browser:freeze-view", (event, input) =>
   requireBrowserManager(event).freezeView(input?.scopeKey),
 );
 ipcMain.handle("telar:browser:release-scope", (event, input) =>
-  requireBrowserManager(event).releaseScope(input?.scopeKey, Boolean(input?.destroy)),
+  requireBrowserManager(event).releaseScope(input?.scopeKey, Boolean(input?.destroy), {
+    closedByPerson: Boolean(input?.closedByPerson),
+  }),
 );
 ipcMain.handle("telar:browser:adopt-scope", (event, input) =>
   requireBrowserManager(event).adoptScope(input?.fromScopeKey, input?.toScopeKey),

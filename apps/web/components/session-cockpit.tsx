@@ -68,7 +68,7 @@ import { Composer, MAX_ATTACHMENTS } from "./composer";
 // one function every notification verb in this app comes from (#572) — so this
 // header cannot name a happening differently from the row below it.
 import { ActivityGroup, groupNotificationTurns, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
-import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { agentBrowserActivity, browserPanelTab, browserScopeToRelease, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
@@ -93,6 +93,7 @@ import {
   openPanelTab,
   readPanelTabIds,
   readPanelTabs,
+  revealPanelTab,
   setPanelTabParams,
   writePanelTabs,
   clearPanelTabs,
@@ -2534,7 +2535,10 @@ export function SessionCockpit({
    */
 
   /**
-   * A PAGE THE ENGINE JUST OPENED GETS A TAB, the way it would in a browser.
+   * A PAGE THE ENGINE JUST OPENED GETS A TAB, the way it would in a browser —
+   * on the clients WITHOUT a native browser, where one panel tab per page is
+   * the only way to switch pages. The desktop shell's single Browser tab has
+   * its own rule, below.
    *
    * Only while the panel is ALREADY open, though. Opening a page is the agent's
    * decision, not yours, so it may not interrupt what you are reading — but if
@@ -2544,20 +2548,47 @@ export function SessionCockpit({
    */
   const seenPages = useRef<Set<string>>(new Set());
   useEffect(() => {
+    if (desktopBrowserBridge()) return;
     const pages = browser?.tabs ?? [];
     const fresh = pages.filter((page) => !seenPages.current.has(page.id));
     for (const page of pages) seenPages.current.add(page.id);
     if (fresh.length === 0) return;
     updatePanel((current) => {
       if (!current.open) return current;
-      // Desktop: one stable browser tab (the native strip lists the pages);
-      // other clients: one panel tab per page (their only way to switch).
-      // The engine's pages belong to the SESSION's own scope, which is the
-      // first Browser tab — see `showSessionBrowser`.
-      if (desktopBrowserBridge()) return addPanelTab(current, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} });
       return fresh.reduce((state, page) => openPanelTab(state, browserPanelTab(page.id)), current);
     });
   }, [browser, updatePanel]);
+
+  /**
+   * THE DESKTOP'S BROWSER TAB EXISTS WHENEVER THE AGENT HAS PAGES.
+   *
+   * The agent works in the session's own native scope, the first Browser tab
+   * (`showSessionBrowser`), and it may do so in the background. It used to get
+   * a tab only if the panel happened to be open, so an agent could browse for
+   * minutes with nothing anywhere saying it was — and closing the tab you could
+   * not see was the only way to stop it. Now every browser action it takes
+   * puts the tab in the strip.
+   *
+   * THE TAB, NEVER THE PANEL. Whether the panel shows is the person's alone,
+   * and `revealPanelTab` neither opens it nor moves the view of somebody
+   * reading another tab. The guard is `display_open`'s (`mountedAt`, below):
+   * only events from after this mount act, so a reload does not put back a
+   * tab the person closed.
+   *
+   * CLOSING IT IS HOW YOU STOP IT: see `onCloseTab`, which destroys the pages
+   * and leaves the agent a message. Its explicit reopen (`browser_tabs new`)
+   * journals a new page, which lands here and shows the tab again.
+   */
+  const browserEventsThrough = useRef(0);
+  const browserMountedAt = useRef(0);
+  useEffect(() => {
+    if (!desktopBrowserBridge()) return;
+    if (browserMountedAt.current === 0) browserMountedAt.current = Date.now();
+    const { acted, through } = agentBrowserActivity(events, browserMountedAt.current, browserEventsThrough.current);
+    browserEventsThrough.current = through;
+    if (!acted) return;
+    updatePanel((current) => revealPanelTab(current, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} }));
+  }, [events, updatePanel]);
 
   /**
    * A FILE THE AGENT ASKED TO SHOW OPENS THE PANEL — the deliberate exception
@@ -4267,6 +4298,10 @@ export function SessionCockpit({
             // StrictMode, and killing a shell is not something to do twice.
             const closing = findPanelTab(panel, id);
             if (closing?.kind === "terminal") endTerminalForTab(closing.params);
+            // CLOSING A BROWSER TAB CLOSES ITS PAGES, the agent's included, and
+            // tells the agent the person did it. Same reason for being out here.
+            const releasing = sessionId ? browserScopeToRelease(sessionId, closing) : undefined;
+            if (releasing) void desktopBrowserBridge()?.releaseScope?.(releasing, true, { closedByPerson: true }).catch(() => undefined);
             updatePanel((current) => closePanelTab(current, id));
           }}
           // A surface rewriting its own instance's params — the Diff's filter

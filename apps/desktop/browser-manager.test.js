@@ -3429,6 +3429,68 @@ describe("the main process holds a bounded amount (#296)", () => {
     expect(manager.diagnostics()).toMatchObject({ tabs: 1, liveViews: 0 });
   });
 
+  test("the person closing the browser destroys the agent's pages and its next call says so", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("s", "none");
+    await manager.createTab("s", "https://one.example/", "human");
+    await manager.callTool("s", "browser_tabs", { action: "new", url: "https://two.example/" });
+
+    manager.releaseScope("s", true, { closedByPerson: true });
+
+    expect(manager.scopeTabs("s")).toHaveLength(0);
+    // The binding stays, so the agent's own reopen is not refused as unbound.
+    expect(manager.profileOf("s")).toBe("none");
+    for (const [name, args] of [
+      ["browser_navigate", { url: "https://three.example/" }],
+      ["browser_snapshot", {}],
+      ["browser_tabs", { action: "list" }],
+    ]) {
+      const result = await manager.callTool("s", name, args);
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain("The person closed the browser for this session");
+      expect(textOf(result)).toContain("browser_tabs new");
+    }
+    // The navigate above must not have opened anything behind the refusal.
+    expect(manager.scopeTabs("s")).toHaveLength(0);
+
+    const reopened = await manager.callTool("s", "browser_tabs", { action: "new", url: "https://four.example/" });
+    expect(reopened.isError).toBeFalsy();
+    expect(manager.scopeTabs("s").map((tab) => tab.url)).toEqual(["https://four.example/"]);
+    const listed = await manager.callTool("s", "browser_tabs", { action: "list" });
+    expect(listed.isError).toBeFalsy();
+  });
+
+  test("the person reopening the browser clears the closed mark too", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("s", "none");
+    await manager.createTab("s", "https://one.example/", "agent");
+    manager.releaseScope("s", true, { closedByPerson: true });
+
+    await manager.createTab("s", "https://two.example/", "human");
+
+    const listed = await manager.callTool("s", "browser_tabs", { action: "list" });
+    expect(listed.isError).toBeFalsy();
+  });
+
+  test("closing a Browser that had no pages leaves the agent nothing to be told", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("s", "none");
+    manager.releaseScope("s", true, { closedByPerson: true });
+
+    const result = await manager.callTool("s", "browser_tabs", { action: "list" });
+    expect(textOf(result)).not.toContain("The person closed the browser");
+  });
+
+  test("a destroying release that is not the person's says nothing to the agent", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("s", "none");
+    await manager.createTab("s", "https://one.example/");
+    manager.releaseScope("s", true);
+
+    const result = await manager.callTool("s", "browser_tabs", { action: "list" });
+    expect(textOf(result)).not.toContain("The person closed the browser");
+  });
+
   test("adopting a scope's tabs forgets the scope they came from", async () => {
     const { manager } = makeHarness();
     manager.declareProfile("from", "none");

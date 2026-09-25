@@ -208,6 +208,11 @@ const MAX_LIVE_VIEWS = 6;
 // browser_tabs{new} answers an error naming the limit. t3code caps profiles
 // at 24; tabs churn faster, so half that.
 const MAX_TABS_PER_SCOPE = 12;
+/** What the agent reads after the person closed its session's browser. Names
+ *  the way back, because an agent told only "closed" either stops or retries
+ *  the same call forever. */
+const CLOSED_BY_PERSON_MESSAGE =
+  "The person closed the browser for this session, which closed the pages you had open in it. If you still need a browser, open it again with browser_tabs new.";
 
 // --- The shared-browser interaction model ----------------------------------
 // One tab, two hands, no owner. Direct human input WINS: while a human is
@@ -881,6 +886,21 @@ class DesktopBrowserManager {
      * asked it to touch. Read and cleared by `agentTab`.
      */
     this.agentTabClosed = new Map();
+    /**
+     * SCOPES THE PERSON CLOSED BY CLOSING THE PANEL'S BROWSER TAB.
+     *
+     * Closing that tab used to only take it off the strip, and the agent's
+     * pages kept running hidden behind it — a browser nobody could see, still
+     * being driven. Now it destroys the scope's pages (`releaseScope` with
+     * `closedByPerson`), and this remembers WHY they went, so the agent's next
+     * call is told the person closed the browser instead of acting on nothing
+     * or getting an empty tab list it has to guess about.
+     *
+     * CLEARED BY THE NEXT TAB THE SCOPE OPENS, whoever opens it: the agent's
+     * `browser_tabs new` is its explicit way back, and the person opening the
+     * Browser again means the question is moot.
+     */
+    this.scopesClosedByPerson = new Set();
     this.visibleScopeKey = null;
     this.bounds = { x: 0, y: 0, width: 1, height: 1 };
     /**
@@ -1783,6 +1803,9 @@ class DesktopBrowserManager {
     };
     consider(this.visibleScopeKey, SCOPE_CLAIM.visible);
     for (const scope of this.boundsByScope.keys()) consider(scope, SCOPE_CLAIM.panel);
+    // A browser the person closed HERE is still this window's to answer for:
+    // its pages are gone, but the explanation lives in this manager only.
+    for (const scope of this.scopesClosedByPerson) consider(scope, SCOPE_CLAIM.panel);
     for (const tab of this.tabs) if (tab.view) consider(tab.scopeKey, SCOPE_CLAIM.pages);
     return best;
   }
@@ -2746,6 +2769,7 @@ class DesktopBrowserManager {
     // belong to the profile it was opened in, whatever the session switches to
     // afterwards. `partitionOf` is what refuses an unbound scope.
     this.partitionOf(scope);
+    this.scopesClosedByPerson.delete(scope);
     const tab = this.newTabRecord(scope, this.activeProfile(scope), openedBy);
     const wasEmpty = this.scopeTabs(scope).length === 0;
     this.tabs.push(tab);
@@ -4735,6 +4759,13 @@ class DesktopBrowserManager {
   }
 
   async callToolInner(scope, name, args) {
+    // THE PERSON CLOSED THIS BROWSER, and every call but the explicit way
+    // back says so. Not a silent fresh tab: reopening a browser the person
+    // just closed is the agent's decision to make out loud, not a side effect
+    // of its next navigate. `createTab` clears the mark.
+    if (this.scopesClosedByPerson.has(scope) && !(name === "browser_tabs" && args.action === "new")) {
+      return errorResult(new Error(CLOSED_BY_PERSON_MESSAGE));
+    }
     const read = isReadTool(name, args);
     // AN EXTENSION'S OWN PAGES ARE NEVER A TARGET. A tab showing a
     // chrome-extension:// page (a popup, an unlock, a settings page) is the
@@ -4972,11 +5003,27 @@ class DesktopBrowserManager {
     this.activeTabIds.delete(scope);
     this.agentTabIds.delete(scope);
     this.agentTabClosed.delete(scope);
+    this.scopesClosedByPerson.delete(scope);
   }
 
-  releaseScope(scopeKey, destroy = false) {
+  /**
+   * `closedByPerson` IS THE PANEL'S BROWSER TAB BEING CLOSED, and it changes
+   * two things about a destroying release. The agent's next call is told why
+   * its pages went (`scopesClosedByPerson`). And the scope's profile binding
+   * STAYS: the session is not over, only its browser, and the engine binds
+   * once per turn — forgetting the binding here would make the agent's own
+   * `browser_tabs new`, later in the same turn, fail as an unbound scope.
+   */
+  releaseScope(scopeKey, destroy = false, { closedByPerson = false } = {}) {
     const scope = this.requireScope(scopeKey);
     const scoped = this.scopeTabs(scope);
+    // Only a browser that HAD pages was closed on anybody: a Browser tab
+    // opened and closed empty must not leave the agent an error about it.
+    if (destroy && closedByPerson && scoped.length) {
+      this.scopesClosedByPerson.add(scope);
+      this.agentTabIds.delete(scope);
+      this.agentTabClosed.delete(scope);
+    }
     // BEFORE the hibernate/remove pass empties the list: a destroyed scope's
     // tabs belong to nobody, and the idle transitions must still journal.
     if (destroy) {
@@ -4989,7 +5036,7 @@ class DesktopBrowserManager {
     // reported to whatever session next used the id — an error about a tab
     // belonging to a conversation that is over. And so does everything else
     // keyed by it: see `forgetScope`.
-    if (destroy && !this.scopeTabs(scope).length) this.forgetScope(scope);
+    if (destroy && !closedByPerson && !this.scopeTabs(scope).length) this.forgetScope(scope);
     this.emitState(scope);
   }
 
@@ -5098,7 +5145,8 @@ class DesktopBrowserManager {
         this.activeToolCalls.size +
         this.activeTabIds.size +
         this.agentTabIds.size +
-        this.agentTabClosed.size,
+        this.agentTabClosed.size +
+        this.scopesClosedByPerson.size,
       pendingPopups: this.pendingPopupTabs.size,
       uiHolds: this.uiHolds.size,
     };
@@ -5121,6 +5169,7 @@ class DesktopBrowserManager {
     this.activeTabIds.clear();
     this.agentTabIds.clear();
     this.agentTabClosed.clear();
+    this.scopesClosedByPerson.clear();
     this.boundsByScope.clear();
     this.radiusByScope.clear();
     this.lastAgentInputAt.clear();

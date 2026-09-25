@@ -22,6 +22,7 @@ import {
   openPanelTab,
   readPanelTabIds,
   readPanelTabs,
+  revealPanelTab,
   setPanelTabParams,
   writePanelTabs,
   type PanelTabInstance,
@@ -598,4 +599,36 @@ describe("round-trips instances", () => {
     expect(restored.activeTab).toBe("diff");
   });
 });
+});
+
+describe("revealPanelTab", () => {
+  const browser: PanelTabInstance = { id: "browser", kind: "browser", params: {} };
+  const diff: PanelTabInstance = { id: "diff", kind: "diff", params: {} };
+
+  test("adds and selects the tab in a closed panel without opening it", () => {
+    const state: PanelTabState<string> = { tabs: [diff], activeTab: "diff", open: false };
+    expect(revealPanelTab(state, browser)).toEqual({ tabs: [diff, browser], activeTab: "browser", open: false });
+  });
+
+  test("in an open panel on another tab, adds it beside without moving the person's view", () => {
+    const state: PanelTabState<string> = { tabs: [diff], activeTab: "diff", open: true };
+    expect(revealPanelTab(state, browser)).toEqual({ tabs: [diff, browser], activeTab: "diff", open: true });
+  });
+
+  test("an open panel on the empty chooser shows it", () => {
+    const state: PanelTabState<string> = { tabs: [], open: true };
+    expect(revealPanelTab(state, browser)).toEqual({ tabs: [browser], activeTab: "browser", open: true });
+  });
+
+  test("selects the tab it already has when the panel is closed", () => {
+    const state: PanelTabState<string> = { tabs: [browser, diff], activeTab: "diff", open: false };
+    expect(revealPanelTab(state, browser)).toEqual({ tabs: [browser, diff], activeTab: "browser", open: false });
+  });
+
+  test("is the same object when there is nothing to change", () => {
+    const watching: PanelTabState<string> = { tabs: [browser, diff], activeTab: "diff", open: true };
+    expect(revealPanelTab(watching, browser)).toBe(watching);
+    const already: PanelTabState<string> = { tabs: [browser], activeTab: "browser", open: false };
+    expect(revealPanelTab(already, browser)).toBe(already);
+  });
 });
