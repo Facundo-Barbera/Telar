@@ -637,7 +637,7 @@ function coalesceByKey(rows: Array<{ key: string; tag?: string }>, ranges: Array
 function planWindow(
   rows: Array<{ key: string; tag?: string }>,
   window: { limit: number; before?: string },
-): { chosen: Set<string>; page: { before: string | null; more: boolean } } {
+): { chosen: Set<string>; page: { before: string | null; more: boolean; total: number } } {
   let end = rows.length;
   if (window.before !== undefined) {
     end = rows.findIndex((row) => row.key === window.before);
@@ -652,7 +652,7 @@ function planWindow(
   const unsettled = window.before === undefined ? rows.filter(active) : [];
   return {
     chosen: new Set([...paged, ...unsettled].map((row) => row.key)),
-    page: { before: start > 0 ? (paged[0]?.key ?? null) : null, more: start > 0 },
+    page: { before: start > 0 ? (paged[0]?.key ?? null) : null, more: start > 0, total: rows.length },
   };
 }
 
@@ -8761,7 +8761,7 @@ export class EngineStore {
     items: Item[];
     tasks: Task[];
     requests: EngineRequest[];
-    page: { before: string | null; more: boolean };
+    page: { before: string | null; more: boolean; total: number };
   } {
     this.requireSession(sessionId);
     const plan = this.windowedTurns(sessionId, window);
@@ -8784,7 +8784,7 @@ export class EngineStore {
    * index (a queue written by an older engine, or edited behind the store's
    * back) this is the fold it has always been, over a document parsed whole.
    */
-  private windowedTurns(sessionId: string, window: { limit: number; before?: string }): { turns: Turn[]; page: { before: string | null; more: boolean } } {
+  private windowedTurns(sessionId: string, window: { limit: number; before?: string }): { turns: Turn[]; page: { before: string | null; more: boolean; total: number } } {
     const file = sessionQueueFile(this.paths, sessionId);
     const index = this.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
     if (!index) {
