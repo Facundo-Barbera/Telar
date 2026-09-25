@@ -61,6 +61,7 @@
       "terminal-host.js",
       "browser-manager.js",
       "browser-context-menu.js",
+      "browser-downloads.js",
       "browser-suggestions.js",
       "browser-tab-preload.js",
       "browser-control-server.js",
