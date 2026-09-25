@@ -136,3 +136,10 @@ describe("rowSubtitle", () => {
     expect(rowSubtitle({ workspacePath: "/" })).toEqual({ text: "/", kind: "path" });
   });
 });
+
+test("a turn that is only waiting says so, quietly, and still ticks", () => {
+  const badge = activityBadge({ activity: "working", activityDetail: { kind: "tool", waitingOn: "timer" } });
+  expect(badge).toMatchObject({ label: "Waiting", tone: "quiet", ticking: true });
+  expect(badge?.hint).toBe("The turn is running, but only waiting out a timer.");
+  expect(activityBadge({ activity: "working" })?.label).toBe("Working");
+});

@@ -16,6 +16,8 @@ import { ProjectPlugins } from "./plugins";
  * COLD, and reopening it starts a runtime that resumes from the stored cursor.
  */
 import { z } from "zod";
+import type { ItemDetail } from "./items";
+import { parseToolName } from "./tools";
 import {
   EnvMode,
   EnvironmentId,
@@ -621,6 +623,16 @@ export const SessionActivity = z.enum(["blocked", "working", "queued", "monitori
 export type SessionActivity = z.infer<typeof SessionActivity>;
 
 /**
+ * WHAT A BLOCKING CALL IS WAITING FOR, in words that are not a tool name.
+ *
+ *   run     a run to become ready, or to finish (`run_wait`)
+ *   timer   a foreground `sleep N`
+ *   task    background work to report (a blocking read of a task's output)
+ */
+export const WaitingOn = z.enum(["run", "timer", "task"]);
+export type WaitingOn = z.infer<typeof WaitingOn>;
+
+/**
  * THE FACTS A LABEL NEEDS BEYOND THE STATE ITSELF, one shape per state that
  * has any. Absent for the states that say everything by their name.
  *
@@ -638,8 +650,37 @@ export const SessionActivityDetail = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("session"), sessionId: Id, title: z.string().optional(), sessions: z.number().int().min(1) }),
   /** `scheduled`: the soonest wake. */
   z.object({ kind: z.literal("schedule"), at: Timestamp }),
+  /** `working`, but the turn's only open call is a wait — see `waitingToolOf`. */
+  z.object({ kind: z.literal("tool"), waitingOn: WaitingOn }),
 ]);
 export type SessionActivityDetail = z.infer<typeof SessionActivityDetail>;
+
+/**
+ * WHETHER AN OPEN CALL ONLY WAITS — the turn is running, but nothing is being
+ * generated or done, and it costs no model time until the wait ends.
+ *
+ * AN ALLOWLIST, the opposite of `TaskKind`'s denylist, and on purpose: the
+ * mistake that matters here is calling real work "waiting", which would tell a
+ * person they can look away from a turn that is actually doing something. A
+ * wait this does not know reads as Working, which is merely less specific.
+ *
+ * NOT THE SDK's `Monitor`. It returns at once with a task id and the watch runs
+ * in the background — it is background work, not a wait the turn sits in.
+ */
+export function waitingToolOf(detail: ItemDetail): WaitingOn | undefined {
+  if (detail.type === "command_execution") {
+    return /^\s*sleep\s+\d+(\.\d+)?[smhd]?\s*;?\s*$/.test(detail.command.command) ? "timer" : undefined;
+  }
+  if (detail.type === "mcp_tool_call" || detail.type === "dynamic_tool_call") {
+    const { tool } = parseToolName(detail.call.name);
+    if (tool === "run_wait") return "run";
+    if (tool === "TaskOutput" || tool === "BashOutput") {
+      const input = detail.call.input as { block?: unknown } | undefined;
+      return input?.block === true ? "task" : undefined;
+    }
+  }
+  return undefined;
+}
 
 /**
  * Where a session's work lands on disk. `worktree` sessions get a checkout of

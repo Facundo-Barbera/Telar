@@ -20,6 +20,8 @@ import {
   isBackgroundWork,
   isUnstatedEnding,
   livenessOf,
+  waitingToolOf,
+  type WaitingOn,
   AgentOrientation as AgentOrientationSchema,
   DEFAULT_AGENT_ORIENTATION,
   DEFAULT_INBOX_POLICY,
@@ -8310,7 +8312,15 @@ export class EngineStore {
       return { ...base, activity: "blocked", activityAt: since };
     }
     const running = turns.find((turn) => turn.state === "running");
-    if (running) return { ...base, activity: "working", activityAt: running.startedAt ?? running.updatedAt };
+    if (running) {
+      const waitingOn = this.onlyWaitingOn(session.id, running.runId);
+      return {
+        ...base,
+        activity: "working",
+        activityAt: running.startedAt ?? running.updatedAt,
+        ...(waitingOn ? { activityDetail: { kind: "tool" as const, waitingOn } } : {}),
+      };
+    }
     // A HELD MESSAGE IS NOT "QUEUED": nothing is about to pick it up. A
     // paused session with a backlog reads as idle to the activity fold; the
     // pause itself is on the record (`paused`), and clients say so from it.
@@ -8386,6 +8396,35 @@ export class EngineStore {
    * asks the three questions that mean "an answer is still coming" — an open
    * turn, a live request, live tasks — and none that could loop.
    */
+  /**
+   * What a running turn is waiting on, when waiting is ALL it is doing.
+   *
+   * Every open row of the turn must be a wait `waitingToolOf` recognises. One
+   * streaming message, one thought or one sub-agent row still open means the
+   * turn is doing something, and it reads as plain Working — a row left open by
+   * mistake errs the same way. Sub-agents' own rows (`taskId`) count too: a
+   * foreground agent at work is work.
+   *
+   * A WINDOW OF ONE RUN, never the projection: this runs on every fold of a
+   * running session, and the session's whole item history is not the question.
+   * So: the cache when it is warm (it is, on any session this engine is
+   * ingesting), the run's own rows when they are indexed, and otherwise NO
+   * ANSWER — a JSON-backed session with a cold cache reads as plain Working
+   * rather than paying a whole-document parse for a label.
+   */
+  private onlyWaitingOn(sessionId: string, runId: string): WaitingOn | undefined {
+    const cached = this.itemsCache.get(sessionId);
+    const items = cached
+      ? [...cached.values()].filter((item) => item.runId === runId)
+      : this.itemsOnRows(sessionId)
+        ? this.itemRowsOf(sessionId, [runId])
+        : [];
+    const open = items.filter((item) => item.status === "inProgress");
+    if (open.length === 0) return undefined;
+    const waits = open.map((item) => waitingToolOf(item.detail));
+    return waits.every((wait) => wait !== undefined) ? waits[0] : undefined;
+  }
+
   private busySince(sessionId: string): number | undefined {
     let turns: Turn[];
     try {

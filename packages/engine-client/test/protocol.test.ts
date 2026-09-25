@@ -31,6 +31,7 @@ import {
   Turn,
   autoResolution,
   livenessOf,
+  waitingToolOf,
   countsAsActivity,
   isUnstatedEnding,
   requiresHuman,
@@ -593,4 +594,26 @@ test("browser.control.changed parses, and an unknown controller degrades to a sk
     controller: "human",
   });
   expect(safeParseEvent({ ...base, type: "browser.control.changed", controller: "gremlin" })).toBeNull();
+});
+
+describe("waitingToolOf — only a call that merely waits", () => {
+  const call = (name: string, input?: unknown) => ({ type: "mcp_tool_call" as const, call: { name, server: "telar", ...(input === undefined ? {} : { input }) } });
+  const shell = (command: string) => ({ type: "command_execution" as const, command: { command } });
+
+  test("the three known waits", () => {
+    expect(waitingToolOf(call("mcp__telar__run_wait"))).toBe("run");
+    expect(waitingToolOf(shell("sleep 30"))).toBe("timer");
+    expect(waitingToolOf(shell("  sleep 2m"))).toBe("timer");
+    expect(waitingToolOf({ type: "dynamic_tool_call", call: { name: "TaskOutput", input: { task_id: "b1", block: true } } })).toBe("task");
+  });
+
+  test("anything that also does work is not a wait", () => {
+    expect(waitingToolOf(shell("sleep 5 && bun test"))).toBeUndefined();
+    expect(waitingToolOf(shell("bun test"))).toBeUndefined();
+    // A non-blocking read returns at once.
+    expect(waitingToolOf({ type: "dynamic_tool_call", call: { name: "TaskOutput", input: { task_id: "b1", block: false } } })).toBeUndefined();
+    // Monitor returns a task id at once; the watch is background work.
+    expect(waitingToolOf({ type: "dynamic_tool_call", call: { name: "Monitor", input: { description: "ci" } } })).toBeUndefined();
+    expect(waitingToolOf({ type: "assistant_message", text: "" })).toBeUndefined();
+  });
 });
