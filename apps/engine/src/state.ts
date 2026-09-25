@@ -175,6 +175,7 @@ import {
   type WorktreeReclaimItem,
   type WorktreeReclaimResult,
 } from "@telar/engine-client";
+import { WorkspaceConfigStore } from "./workspace-config";
 import { atomicWrite, atomicWriteText } from "./atomic";
 import { arrayElementRanges, parseSpan, type DocumentIndex } from "./document-window";
 import {
@@ -2422,6 +2423,8 @@ export class EngineStore {
   }
 
   readonly paths: EngineStatePaths;
+  /** How each project's worktrees are prepared — see `workspace-config.ts`. */
+  readonly workspace: WorkspaceConfigStore;
   private readonly notifier?: EngineNotifier;
   /** See the constructor: the daemon's in-process nudge to its embedded worker,
    *  absent unless the daemon injected it. */
@@ -4562,6 +4565,7 @@ export class EngineStore {
     this.volumes = options.volumes ?? {};
     this.ambientEnv = options.ambientEnv ?? process.env;
     this.paths = statePaths(root);
+    this.workspace = new WorkspaceConfigStore(this.paths.workspace);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
     const migrated = fs.existsSync(this.paths.executionStore) || fs.existsSync(path.join(root, "execution.sqlite"));

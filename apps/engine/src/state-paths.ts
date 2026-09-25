@@ -133,6 +133,10 @@ export type EngineStatePaths = {
   /** What a session is created with when nobody said — see `SessionDefaults`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   sessionDefaults: string;
+  /** How a project's worktrees are prepared — this Mac's defaults and every
+   *  project's overrides, in one document. See `workspace-config.ts`.
+   *  Environment-scoped like `sessionDefaults`: read when a worktree is cut. */
+  workspace: string;
   /** Where each project group sits in the rail — see `SidebarLayout`.
    *  Environment-scoped like `inbox`: one arrangement per engine, not per window. */
   sidebarLayout: string;
@@ -256,6 +260,7 @@ export function statePaths(root: string): EngineStatePaths {
     subscriptions: path.join(resolved, "subscriptions.json"),
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
+    workspace: path.join(resolved, "workspace.json"),
     sidebarLayout: path.join(resolved, "sidebar-layout.json"),
     appearance: path.join(resolved, "appearance.json"),
     engine: path.join(resolved, "engine.json"),

@@ -7,7 +7,9 @@ node_modules/
 !.env.example
 .DS_Store
 *.log
-.telar/
+.telar/*
+# The project's proposed workspace config is source — see protocol/workspace.ts.
+!.telar/workspace.json
 # Playwright MCP / test output (Verifier agent — generated per run)
 .playwright-mcp/
 test-results/

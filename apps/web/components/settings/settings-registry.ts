@@ -49,6 +49,7 @@ import {
   BookMarkedIcon,
   CameraIcon,
   CircleUserRoundIcon,
+  CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
   FolderGitIcon,
@@ -64,6 +65,8 @@ import {
   MicIcon,
   LockIcon,
   MonitorIcon,
+  NetworkIcon,
+  PackageIcon,
   PaletteIcon,
   PlugIcon,
   PlugZapIcon,
@@ -71,11 +74,51 @@ import {
   SlidersHorizontalIcon,
   SmartphoneIcon,
   SparklesIcon,
+  TerminalIcon,
   TimerIcon,
   TypeIcon,
+  VariableIcon,
   WrenchIcon,
 } from "lucide-react";
 import { indexSettings, type SettingsPageSpec } from "@/lib/settings-search";
+
+/**
+ * HOW A NEW WORKTREE IS PREPARED — the same five rows on two panes: this Mac's
+ * defaults on Storage, one project's answer on Projects. The group is half the
+ * anchor, so the two copies never collide.
+ */
+const WORKTREE_PREPARATION_ROWS: SettingsPageSpec["groups"][number]["rows"] = [
+  {
+    title: "Setup",
+    hint: "A command run in each new worktree, optionally holding the first turn until it finishes.",
+    keywords: ["install", "bootstrap", "prepare", "script", "timeout"],
+    icon: TerminalIcon,
+  },
+  {
+    title: "Environment",
+    hint: "Variables exported to the setup command.",
+    keywords: ["env", "variables", "export"],
+    icon: VariableIcon,
+  },
+  {
+    title: "Ports",
+    hint: "One stable port per name, exported under that name.",
+    keywords: ["port", "server", "collide"],
+    icon: NetworkIcon,
+  },
+  {
+    title: "Seed dependencies",
+    hint: "Paths copied from the main checkout into a new worktree that lacks them.",
+    keywords: ["copy", "clone", "dependencies", "seed"],
+    icon: CopyIcon,
+  },
+  {
+    title: "Artifacts",
+    hint: "Output a worktree can regenerate, with the command that rebuilds it.",
+    keywords: ["build output", "regenerate", "cache", "generated"],
+    icon: PackageIcon,
+  },
+];
 
 /**
  * The panes, in nav order, with the groups and rows each renders.
@@ -298,6 +341,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             icon: FolderGitIcon,
           },
         ],
+      },
+      {
+        // Rendered only for a project on this Mac; at All projects a search
+        // lands on the pane and the scope picker, which is the step to take.
+        title: "New worktrees",
+        rows: WORKTREE_PREPARATION_ROWS,
       },
       {
         // THE PLUGIN TOGGLES ARE NOT INDEXED, and that is the rule at the top
@@ -910,6 +959,10 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             icon: FolderGitIcon,
           },
         ],
+      },
+      {
+        title: "Worktree defaults",
+        rows: WORKTREE_PREPARATION_ROWS,
       },
       {
         title: "Store",

@@ -1,0 +1,15 @@
+{
+  "setup": { "command": "bun install --frozen-lockfile", "timeoutMs": 600000 },
+  "env": { "ELECTRON_SKIP_BINARY_DOWNLOAD": "1" },
+  "ports": { "names": ["TELAR_WEB_PORT"] },
+  "seedDependencies": { "paths": ["node_modules"] },
+  "artifacts": [
+    { "path": "apps/web/.next", "regen": "bun run dev, or bun run --cwd apps/web build" },
+    { "path": "apps/web/.next-desktop", "regen": "bun run desktop:package" },
+    { "path": "apps/desktop/release", "regen": "bun run desktop:package" },
+    { "path": "apps/engine/dist", "regen": "bun run --cwd apps/desktop build:app" },
+    { "path": "apps/desktop/vendor", "regen": "bun scripts/computer-use-helper.mjs" },
+    { "path": "apps/ios/DerivedData-*", "regen": "apps/ios/phone.sh" },
+    { "path": "node_modules", "regen": "bun install --frozen-lockfile" }
+  ]
+}
