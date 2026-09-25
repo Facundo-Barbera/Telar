@@ -50,6 +50,8 @@ export function relayHostId(): string | undefined { return relayConfig()?.id; }
 export async function relayDelivery(config: RelayConfig, record: PushRecord, delivery: Delivery): Promise<DeliveryResult> {
   // The available Apple key is production-only. Never claim sandbox readiness.
   if (record.sandbox || record.topic !== "com.telar.mobile") return { status: 400, relay: true };
+  // v1 is being retired and has no `background` kind; read sync is v2 or direct only.
+  if (delivery.kind === "background") return { status: 400, relay: true };
   const path = `/v1/devices/${encodeURIComponent(record.deviceId)}`;
   let registered = false;
   /** Refusals here are the RELAY's, never Apple's verdict on the token. */

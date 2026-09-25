@@ -11,8 +11,8 @@
  *      (`POST /v2/devices/:handle/keys`) and hands `{handle, keyId, sendKey}`
  *      to that Mac over the pairing channel it already has.
  *   3. The Mac sends by handle, HMAC-signing each request with its sendKey. It
- *      names WHAT to send (an alert, a Live Activity), never WHERE: the token
- *      and the topic are chosen here.
+ *      names WHAT to send (an alert, a Live Activity, a silent read-sync), never
+ *      WHERE: the token and the topic are chosen here.
  *
  * Every request the phone makes after registering carries an App Attest
  * assertion, so only that phone can change its tokens or mint and revoke keys.
@@ -21,7 +21,8 @@
  *
  * LIMITS, because the registration endpoint is public:
  *   - per IP, for each kind of request (`IP_LIMITS`);
- *   - per handle: 120 sends a minute and 5,000 a day, as for a v1 host;
+ *   - per handle: 120 sends a minute and 5,000 a day, as for a v1 host, of
+ *     which background (read-sync) pushes may spend only the first 4,000;
  *   - one global daily budget across all of v2 that answers 503 well before the
  *     Cloudflare account's 100k-a-day quota, which is shared with the updater
  *     (#584 took that down once).
@@ -47,6 +48,16 @@ const STALE = 60 * DAY;
 const SKEW = 300000;
 const KEYS_PER_HANDLE = 16;
 const HANDLE_MINUTE = 120, HANDLE_DAY = 5000;
+/**
+ * BACKGROUND PUSHES STOP WHERE THE LAST 1,000 OF A HANDLE'S DAY BEGIN. A silent
+ * read-sync only tidies the lock screen; an alert is the thing the budget is
+ * for. The Mac already sends at most one background push a minute per phone
+ * (`READ_SYNC_INTERVAL_S` in apps/web/lib/mobile/read-sync.ts), so this ceiling
+ * is only reached by a handle already deep in its day — and what is left then
+ * is kept for alerts and Live Activities. `HANDLE_BACKGROUND_CEILING` in the
+ * environment overrides it, for tests.
+ */
+export const BACKGROUND_CEILING = 4000;
 /** [requests, per window in ms] for each IP (IPv6 by /64). */
 export const IP_LIMITS = { challenge: [30, 3600000], register: [10, 3600000], phone: [240, 3600000], send: [3000, 3600000] };
 /** Every v2 request counts. Well below the account's shared 100k a day. */
@@ -239,6 +250,13 @@ export class RelayDevice {
     const bytes = Uint8Array.from(signature.match(/../g), h => parseInt(h, 16));
     if (!await crypto.subtle.verify('HMAC', hmac, bytes, new TextEncoder().encode(`${stamp}\n${request.method}\n${path}\n${text}`))) return reply(401);
 
+    // PARSED BEFORE THE LIMITS, so a background push can be held to its own
+    // ceiling. The signature above already vouches for the body.
+    let body;
+    try { body = JSON.parse(text); } catch { return reply(400); }
+    const background = body?.kind === 'background';
+    const ceiling = Number(this.env.HANDLE_BACKGROUND_CEILING) || BACKGROUND_CEILING;
+
     // One transaction for the replay check and both limits, as in v1.
     const minute = Math.floor(now / 60000), day = Math.floor(now / DAY);
     const allowed = await storage.transaction(async tx => {
@@ -250,6 +268,7 @@ export class RelayDevice {
       const budget = await tx.get('budget');
       const spent = budget?.day === day ? budget.count : 0;
       if (spent >= HANDLE_DAY) return 'day';
+      if (background && spent >= ceiling) return 'background';
       await tx.put(`seen:${signature}`, { until: Number(stamp) + SKEW });
       await tx.put('rate', { minute, count: count + 1 });
       await tx.put('budget', { day, count: spent + 1 });
@@ -259,18 +278,23 @@ export class RelayDevice {
     if (await storage.getAlarm() === null) await storage.setAlarm(now + 2 * SKEW);
     if (allowed === 'replay') return reply(401);
     if (allowed === 'day') return reply(429, { error: 'daily_budget' }, retryAfter((day + 1) * DAY - now));
+    // NO Retry-After: that header pauses the whole Mac (`pauseHost`), and alerts
+    // must keep flowing. The Mac just carries its reads to the next minute.
+    if (allowed === 'background') return reply(429, { error: 'background_budget' });
     if (allowed !== 'ok') return reply(429, {}, retryAfter(60000 - now % 60000));
 
-    let body;
-    try { body = JSON.parse(text); } catch { return reply(400); }
     const alert = body?.kind === 'alert', activity = body?.kind === 'liveactivity';
     const start = activity && body.start === true;
-    if ((!alert && !activity) || typeof body.collapseId !== 'string' || !/^[a-f0-9]{64}$/.test(body.collapseId) || !body.payload?.aps || new TextEncoder().encode(JSON.stringify(body.payload)).length > 4096) return reply(400);
+    // A BACKGROUND PUSH IS SILENT OR IT IS REFUSED. `aps` is exactly
+    // `content-available`, so this kind can never carry an alert, a sound or a
+    // badge at priority 5 under a push type Apple does not display.
+    if (background && JSON.stringify(body.payload?.aps) !== '{"content-available":1}') return reply(400);
+    if ((!alert && !activity && !background) || typeof body.collapseId !== 'string' || !/^[a-f0-9]{64}$/.test(body.collapseId) || !body.payload?.aps || new TextEncoder().encode(JSON.stringify(body.payload)).length > 4096) return reply(400);
     if (activity && !start && (typeof body.activity !== 'string' || !id.test(body.activity))) return reply(400);
     // WHERE is decided here, from what the phone registered, never by the Mac.
-    const token = alert ? device.token : start ? device.pushToStartToken : device.activities.find(a => a.id === body.activity)?.token;
+    const token = alert || background ? device.token : start ? device.pushToStartToken : device.activities.find(a => a.id === body.activity)?.token;
     if (!token) return reply(409, { error: 'not_registered' });
-    const topic = alert ? device.bundle : `${device.bundle}.push-type.liveactivity`;
+    const topic = alert || background ? device.bundle : `${device.bundle}.push-type.liveactivity`;
     try {
       const signed = await this.env.SIGNER.get(this.env.SIGNER.idFromName('apns')).fetch('https://internal/token');
       if (!signed.ok) return reply(503);
@@ -278,7 +302,9 @@ export class RelayDevice {
       // The key is "Sandbox & Production", so one JWT serves both hosts.
       const response = await fetch(`https://${device.sandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com'}/3/device/${token}`, {
         method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
-        headers: { authorization: `bearer ${jwt}`, 'apns-topic': topic, 'apns-push-type': body.kind, 'apns-priority': alert || start || body.payload.aps.event === 'end' ? '10' : '5', 'apns-expiration': String(Math.floor(now / 1000) + 3600), 'apns-collapse-id': body.collapseId },
+        // Background is always priority 5, as Apple requires, and carries no
+        // collapse id: nothing is displayed for it to collapse.
+        headers: { authorization: `bearer ${jwt}`, 'apns-topic': topic, 'apns-push-type': body.kind, 'apns-priority': alert || start || body.payload.aps.event === 'end' ? '10' : '5', 'apns-expiration': String(Math.floor(now / 1000) + 3600), ...(background ? {} : { 'apns-collapse-id': body.collapseId }) },
         body: JSON.stringify(body.payload),
       });
       let reason;
@@ -288,7 +314,7 @@ export class RelayDevice {
         // Only the dead token goes. The handle and its keys stay, so the next
         // refresh from the phone brings this pair back without re-pairing.
         const current = await storage.get('device');
-        if (alert) delete current.token;
+        if (alert || background) delete current.token;
         else if (start) delete current.pushToStartToken;
         else current.activities = current.activities.filter(a => a.id !== body.activity);
         await storage.put('device', current);

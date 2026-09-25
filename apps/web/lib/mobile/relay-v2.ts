@@ -7,9 +7,9 @@ import type { Delivery, DeliveryResult, PushRecord, RelayCredential } from "./pu
  * The phone registers itself with the relay (App Attest) and hands this Mac a
  * `{handle, keyId, sendKey}` in its `PUT /api/mobile/push`. Nothing on this Mac
  * is provisioned: no Keychain item, no host registry, no redeploy. The Mac says
- * WHAT to send (an alert, a Live Activity by session id, a push-to-start); the
- * relay picks the token, the topic and the APNs host from what the phone
- * registered. See `workers/push-relay/v2.mjs`.
+ * WHAT to send (an alert, a Live Activity by session id, a push-to-start, a
+ * silent read-sync); the relay picks the token, the topic and the APNs host
+ * from what the phone registered. See `workers/push-relay/v2.mjs`.
  *
  * THE URL IS COMPILED IN. `TELAR_PUSH_RELAY_URL` overrides it for a relay that
  * has moved (its own account, its own domain) without a phone having to say so;
@@ -49,7 +49,7 @@ export function signV2(sendKey: string, stamp: string, path: string, body: strin
 /** What the relay needs to pick the destination itself. */
 export function v2Body(delivery: Delivery): Record<string, unknown> | undefined {
   const base = { kind: delivery.kind, collapseId: delivery.collapseId, payload: delivery.payload };
-  if (delivery.kind === "alert") return base;
+  if (delivery.kind === "alert" || delivery.kind === "background") return base;
   if (delivery.payload.aps.event === "start") return { ...base, start: true };
   return delivery.activityId !== undefined && ACTIVITY.test(delivery.activityId) ? { ...base, activity: delivery.activityId } : undefined;
 }

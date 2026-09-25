@@ -4,6 +4,7 @@ import path from "node:path";
 import { ALERT_BODY, alertKind, signalKey, type AlertKind, type SessionSignal } from "./push";
 import { sessionHref } from "../session-list";
 import { remoteHome } from "../remote/store";
+import { onSessionRead } from "../session-read-events";
 
 /**
  * THE MAC'S OWN NOTIFICATIONS — fed by the push worker's pass, spoken over the
@@ -30,6 +31,7 @@ export const DESKTOP_NOTICE = "telar:desktop-notification";
 export const DESKTOP_APPROVE = "telar:desktop-notification:approve";
 export const DESKTOP_APPROVED = "telar:desktop-notification:approved";
 export const DESKTOP_PRESENCE = "telar:desktop-presence";
+export const DESKTOP_DISMISS = "telar:desktop-notification:dismiss";
 
 export type DesktopNotice = {
   type: typeof DESKTOP_NOTICE;
@@ -233,8 +235,19 @@ export async function handleDesktopMessage(message: unknown, resolve: Resolve, c
   try { channel.send?.({ type: DESKTOP_APPROVED, sessionId, requestId, ok }); } catch { /* shell gone */ }
 }
 
+/**
+ * READ ANYWHERE, GONE FROM THE MAC. A receipt accepted from the cockpit or the
+ * phone (`session-read-events.ts`) takes that session's banner down: the Mac's
+ * half of read sync. Ids only; a session with no banner up is a no-op there.
+ */
+export function dismissDesktop(sessionId: string, channel: Channel = process): void {
+  if (!validId(sessionId) || !desktopAttached(channel)) return;
+  try { channel.send?.({ type: DESKTOP_DISMISS, sessionId }); } catch { /* shell gone */ }
+}
+
 export function listenForDesktop(resolve: Resolve, channel: Channel = process): void {
   if (desktopGlobal.telarDesktopListening || !desktopAttached(channel)) return;
   desktopGlobal.telarDesktopListening = true;
   channel.on("message", (message: unknown) => { void handleDesktopMessage(message, resolve, channel); });
+  onSessionRead(sessionId => dismissDesktop(sessionId, channel));
 }

@@ -4,13 +4,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  DEFAULT_NOTIFY_ON, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_NOTICE, DESKTOP_NOTIFICATIONS_ENV, DESKTOP_PRESENCE,
+  DEFAULT_NOTIFY_ON, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_DISMISS, DESKTOP_NOTICE, DESKTOP_NOTIFICATIONS_ENV, DESKTOP_PRESENCE,
   NOTIFY_ON_VALUES, PRESENCE_STALE_MS,
-  desktopAttached, desktopNotices, emptyDesktopState, handleDesktopMessage, macTookAlert, notifyDesktop, notifyRoute,
+  desktopAttached, desktopNotices, dismissDesktop, listenForDesktop, emptyDesktopState, handleDesktopMessage, macTookAlert, notifyDesktop, notifyRoute,
   readNotifyOn, writeNotifyOn, type DesktopState, type NotifyOn, type Presence,
 } from "./desktop";
 import { notification, signalKey, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
 import { deliverRecord } from "./worker";
+import { emitSessionRead } from "../session-read-events";
 
 const working: SessionSignal = { id: "s1", title: "Private repository task", activity: "working", activityAt: 1000, projectId: "p1" };
 const blocked: SessionSignal = { ...working, activity: "blocked", activityAt: 2000 };
@@ -300,5 +301,26 @@ describe("where Notify on is kept", () => {
       writeFileSync(file, JSON.stringify({ notifyOn: "watch" }));
       expect(readNotifyOn(file)).toBe("mac");
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("read elsewhere takes the Mac's banner down", () => {
+  test("an accepted receipt sends the shell a dismiss for that session, ids only, and only when the shell is there", () => {
+    const old = process.env[DESKTOP_NOTIFICATIONS_ENV];
+    const sent: unknown[] = [];
+    const wire = { on: () => undefined, connected: true, send: (message: unknown) => (sent.push(message), true) };
+    try {
+      delete process.env[DESKTOP_NOTIFICATIONS_ENV];
+      dismissDesktop("s1", wire);
+      expect(sent).toEqual([]);
+      process.env[DESKTOP_NOTIFICATIONS_ENV] = "1";
+      dismissDesktop("x".repeat(300), wire);
+      expect(sent).toEqual([]);
+      listenForDesktop(async () => undefined, wire);
+      emitSessionRead("s1");
+      expect(sent).toEqual([{ type: DESKTOP_DISMISS, sessionId: "s1" }]);
+    } finally {
+      if (old === undefined) delete process.env[DESKTOP_NOTIFICATIONS_ENV]; else process.env[DESKTOP_NOTIFICATIONS_ENV] = old;
+    }
   });
 });

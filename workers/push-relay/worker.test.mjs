@@ -188,8 +188,8 @@ function relayEnv(extra={}) {
 const call=(env,path,init={})=>worker.fetch(new Request('https://relay'+path,init),env);
 const challengeFor=async(env,ip)=>(await (await call(env,'/v2/challenge',ip?{headers:{'cf-connecting-ip':ip}}:{})).json()).challenge;
 const tokensOf={token:'a'.repeat(64),pushToStartToken:'b'.repeat(64),activities:[{id:'session_1',token:'c'.repeat(64)}]};
-async function enroll({bundle='com.telar.mobile',sandbox=false,environment}={}) {
-  const p=await pki(), env=relayEnv({APPATTEST_ROOT:p.root});
+async function enroll({bundle='com.telar.mobile',sandbox=false,environment,extra={}}={}) {
+  const p=await pki(), env=relayEnv({APPATTEST_ROOT:p.root,...extra});
   const challenge=await challengeFor(env);
   const ph=await phone(p,{challenge,bundle,environment});
   const registered=await call(env,'/v2/devices',{method:'POST',body:JSON.stringify({keyId:ph.keyId,attestation:ph.attestation,challenge,bundle,sandbox,...tokensOf})});
@@ -240,6 +240,42 @@ test('v2: an attested phone hands a Mac a key, and the Mac sends without ever ho
       [`https://api.push.apple.com/3/device/${'c'.repeat(64)}`,'com.telar.mobile.push-type.liveactivity','5'],
       [`https://api.push.apple.com/3/device/${'b'.repeat(64)}`,'com.telar.mobile.push-type.liveactivity','10'],
     ]);
+  });
+});
+const background={kind:'background',collapseId:'e'.repeat(64),payload:{aps:{'content-available':1},read:{host:'h',sessions:['session_1']}}};
+test('v2: a background push is silent, priority 5, to the phone\'s own bundle, and carries no collapse id',async()=>{
+  const enrolled=await enroll();
+  const key=await pairKey(enrolled);
+  await withApple(()=>new Response(null,{status:200}),async calls=>{
+    assert.deepEqual(await (await macSend(enrolled,key,background)).json(),{status:200});
+    assert.deepEqual([calls[0].url,calls[0].headers['apns-topic'],calls[0].headers['apns-push-type'],calls[0].headers['apns-priority'],calls[0].headers['apns-collapse-id']],
+      [`https://api.push.apple.com/3/device/${'a'.repeat(64)}`,'com.telar.mobile','background','5',undefined]);
+    // Anything a person would see is refused: this kind is never an alert in disguise.
+    for(const aps of [{'content-available':1,alert:'hi'},{'content-available':1,sound:'default'},{alert:'hi'},{'content-available':0}])
+      assert.equal((await macSend(enrolled,key,{...background,payload:{aps}})).status,400);
+    assert.equal((await macSend(enrolled,key,{...background,payload:{aps:{'content-available':1},pad:'x'.repeat(4096)}})).status,400,'bounded');
+    assert.equal(calls.length,1);
+  });
+});
+test('v2: background pushes stop at their ceiling and the rest of the day stays for alerts, without pausing the Mac',async()=>{
+  const enrolled=await enroll({extra:{HANDLE_BACKGROUND_CEILING:'2'}});
+  const key=await pairKey(enrolled);
+  await withApple(()=>new Response(null,{status:200}),async()=>{
+    assert.equal((await macSend(enrolled,key,background)).status,200);
+    assert.equal((await macSend(enrolled,key,alert)).status,200);
+    const refused=await macSend(enrolled,key,background);
+    assert.equal(refused.status,429);
+    assert.equal(refused.headers.get('retry-after'),null,'a Retry-After would pause every alert on the Mac');
+    assert.equal((await refused.json()).error,'background_budget');
+    assert.equal((await macSend(enrolled,key,alert)).status,200,'alerts still go');
+  });
+});
+test('v2: a dead token found by a background push is dropped like an alert\'s',async()=>{
+  const enrolled=await enroll();
+  const key=await pairKey(enrolled);
+  await withApple(()=>Response.json({reason:'Unregistered'},{status:410}),async()=>{
+    assert.equal((await (await macSend(enrolled,key,background)).json()).status,410);
+    assert.equal((await macSend(enrolled,key,alert)).status,409);
   });
 });
 test('v2: a Debug build registers under the dev bundle and is sent through the sandbox host',async()=>{
