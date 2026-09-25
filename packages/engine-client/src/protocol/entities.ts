@@ -645,6 +645,15 @@ export const SessionWorkspace = z.discriminatedUnion("mode", [
     branch: z.string().min(1),
     /** The commit the worktree was cut from, so a stale one is detectable. */
     baseRef: z.string().min(1).optional(),
+    /**
+     * THE CHECKOUT WAS DELETED; THE BRANCH AND THE CONVERSATION WERE NOT.
+     * `path` is still where it lives: the next message (or opening the
+     * session's files) re-cuts it there from `branch`. Absent on a session
+     * whose checkout is on disk.
+     */
+    released: z
+      .object({ at: Timestamp, reason: z.enum(["manual", "inactive", "merged", "archived"]) })
+      .optional(),
   }),
   /** No directory anywhere — see the note above. Nothing rides along: there is
    *  no branch to name and no base to diff against. */
@@ -3055,6 +3064,12 @@ export type WorktreeInventory = z.infer<typeof WorktreeInventory>;
 export const WorktreeReclaimItem = z.object({
   path: z.string().min(1),
   confirm: z.string().optional(),
+  /**
+   * WHAT TO DO WITH A SETTLED SESSION'S CHECKOUT. `release` (the default)
+   * deletes the directory and keeps the session and its branch; the next
+   * message brings the checkout back. `archive` ends the session as well.
+   */
+  settled: z.enum(["release", "archive"]).optional(),
 });
 export type WorktreeReclaimItem = z.infer<typeof WorktreeReclaimItem>;
 
@@ -3073,6 +3088,12 @@ export type WorktreeReclaimItem = z.infer<typeof WorktreeReclaimItem>;
 export const WorktreeReclaimRefusal = z.enum([
   /** Nothing at that path any more — already gone, or never there. */
   "not-found",
+  /** Uncommitted changes, or Telar could not prove there are none. */
+  "dirty",
+  /** Commits on the branch that are on no remote. */
+  "unpushed",
+  /** A process — a run, a terminal — has its working directory inside. */
+  "process",
   /** The drive went away between the listing and the press. */
   "unreadable",
   /** A session started working in it. See `WorktreeLockReason`. */
@@ -3108,7 +3129,7 @@ export type WorktreeReclaimRefusal = z.infer<typeof WorktreeReclaimRefusal>;
 export const WorktreeReclaimResult = z.object({
   path: z.string().min(1),
   ok: z.boolean(),
-  action: z.enum(["archived", "removed"]).optional(),
+  action: z.enum(["released", "archived", "removed"]).optional(),
   /** The session that was archived, when one was. */
   sessionId: Id.optional(),
   refusal: WorktreeReclaimRefusal.optional(),

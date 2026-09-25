@@ -1531,6 +1531,24 @@ export class EngineClient {
   reclaimWorktrees(items: readonly WorktreeReclaimItem[]): Promise<{ reclaim: WorktreeReclaimOutcome }> {
     return this.request("POST", "/v2/worktrees/reclaim", { items });
   }
+  /** Delete a session's checkout and keep its branch and conversation. 409 with the reason when it is not safe. */
+  releaseSessionWorktree(sessionId: string): Promise<{ session: Session }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/worktree/release`, {});
+  }
+
+  /** Bring a released checkout back now, rather than on the next message. */
+  restoreSessionWorktree(sessionId: string): Promise<{ session: Session }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/worktree/restore`, {});
+  }
+
+  /** The worktree setup's status and the log lines after `after`. */
+  sessionSetup(
+    sessionId: string,
+    after = 0,
+  ): Promise<{ setup: { state: string; command: string; startedAt: number; endedAt?: number; exitCode?: number; detail?: string } | null; lines: { at: number; text: string }[]; cursor: number }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/setup?after=${after}`);
+  }
+
 
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */
   textGenPolicy(): Promise<{ textGen: TextGenPolicy }> {
