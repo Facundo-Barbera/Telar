@@ -1,5 +1,6 @@
 // Personal relay: unique revocable host credentials, production Telar destinations only.
-const reply = (status, body = {}, headers = {}) => Response.json(body, { status, headers: { 'cache-control': 'no-store', ...headers } });
+import { DAY, DEAD_TOKEN, appleReason, digest, readJSON, reply } from './shared.mjs';
+export { digest, readJSON };
 /**
  * ONE HOST'S DAILY CEILING — issue #584.
  *
@@ -11,25 +12,10 @@ const reply = (status, body = {}, headers = {}) => Response.json(body, { status,
  * caused the outage.
  */
 const DAILY_BUDGET = 5000;
-const DAY = 86400000;
-/** Apple names a rejection in its JSON body. ONLY that word travels back to the
- *  host: no provider body, no credential, no device token, no payload. */
-async function appleReason(response) {
-  try {
-    const value = JSON.parse(await response.text())?.reason;
-    return typeof value === 'string' && /^[A-Za-z]{1,64}$/.test(value) ? value : undefined;
-  } catch { return undefined; }
-}
-/** The four Apple reasons that mean the token itself is gone, so this relay can
- *  drop its own copy of the registration rather than hold it for a dead phone. */
-const DEAD_TOKEN = new Set(['BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered', 'ExpiredToken']);
 const hex = /^[a-f0-9]{64,512}$/i;
 const id = /^[a-zA-Z0-9_-]{1,128}$/;
 const encode = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 const json64 = value => encode(new TextEncoder().encode(JSON.stringify(value)));
-export async function digest(value) {
-  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))].map(x => x.toString(16).padStart(2,'0')).join('');
-}
 let provider;
 async function providerToken(env, storage) {
   const now = Math.floor(Date.now() / 1000);
@@ -43,20 +29,6 @@ async function providerToken(env, storage) {
   provider = { identity, at: now, jwt };
   if (storage) await storage.put('provider', provider);
   return jwt;
-}
-export async function readJSON(request, max = 16384) {
-  const reader = request.body?.getReader();
-  if (!reader) throw Error('body');
-  const chunks = []; let length = 0;
-  for (;;) {
-    const { value, done } = await reader.read(); if (done) break;
-    length += value.byteLength;
-    if (length > max) { await reader.cancel(); throw Error('size'); }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(length); let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk,offset); offset += chunk.length; }
-  return JSON.parse(new TextDecoder().decode(bytes));
 }
 export default {
   async fetch(request, env) {
