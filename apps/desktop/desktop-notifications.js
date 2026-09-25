@@ -27,6 +27,7 @@ const DESKTOP_NOTICE = "telar:desktop-notification";
 const DESKTOP_APPROVE = "telar:desktop-notification:approve";
 const DESKTOP_APPROVED = "telar:desktop-notification:approved";
 const DESKTOP_PRESENCE = "telar:desktop-presence";
+const DESKTOP_DISMISS = "telar:desktop-notification:dismiss";
 const KINDS = new Set(["blocked", "finished", "failed"]);
 
 const text = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max;
@@ -167,6 +168,11 @@ function createDesktopNotifier({ Notification, send, context, open }) {
   return {
     /** Everything the server child sends arrives here; anything else is ignored. */
     handleServerMessage(message) {
+      // READ ELSEWHERE (the cockpit or the phone): that session's banner is stale.
+      if (message?.type === DESKTOP_DISMISS) {
+        if (text(message.sessionId, 256)) live.get(message.sessionId)?.close();
+        return;
+      }
       if (message?.type === DESKTOP_APPROVED) {
         const path = pending.get(message.requestId);
         pending.delete(message.requestId);
@@ -189,6 +195,7 @@ module.exports = {
   DESKTOP_APPROVE,
   DESKTOP_APPROVED,
   DESKTOP_PRESENCE,
+  DESKTOP_DISMISS,
   ACTIVE_IDLE_SECONDS,
   PRESENCE_BEAT_MS,
   presenceMessage,

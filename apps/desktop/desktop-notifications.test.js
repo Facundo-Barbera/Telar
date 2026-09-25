@@ -4,7 +4,7 @@ const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE,
+  DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE, DESKTOP_DISMISS,
   ACTIVE_IDLE_SECONDS, PRESENCE_BEAT_MS, presenceMessage, createPresenceReporter,
   parseNotice, routeOf, shouldNotifyDesktop, createDesktopNotifier,
 } = require("./desktop-notifications");
@@ -52,7 +52,7 @@ const notice = (patch = {}) => ({
 describe("the channel's contract", () => {
   test("both halves spell the env var and message types the same", () => {
     const server = fs.readFileSync(path.join(__dirname, "../web/lib/mobile/desktop.ts"), "utf8");
-    for (const [name, value] of Object.entries({ DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE })) {
+    for (const [name, value] of Object.entries({ DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE, DESKTOP_DISMISS })) {
       expect(server).toContain(`export const ${name} = "${value}";`);
     }
   });
@@ -200,6 +200,24 @@ describe("the banner and its actions", () => {
     notifier.handleServerMessage(notice({ request: "r1" }));
     notifier.handleServerMessage(notice({ kind: "finished", body: "A session finished. Its result is ready to review." }));
     expect(FakeNotification.made[0].closed).toBe(true);
+    expect(notifier.liveCount()).toBe(1);
+  });
+});
+
+describe("read elsewhere", () => {
+  test("a dismiss closes that session's banner and no other, and junk is ignored", () => {
+    const { notifier, opened } = harness();
+    notifier.handleServerMessage(notice());
+    notifier.handleServerMessage(notice({ sessionId: "s2", path: "/projects/p1/sessions/s2" }));
+    const [first, second] = FakeNotification.made;
+    for (const junk of [{ type: DESKTOP_DISMISS }, { type: DESKTOP_DISMISS, sessionId: 7 }, { type: DESKTOP_DISMISS, sessionId: "x".repeat(300) }]) notifier.handleServerMessage(junk);
+    expect(notifier.liveCount()).toBe(2);
+    notifier.handleServerMessage({ type: DESKTOP_DISMISS, sessionId: "s1" });
+    expect([first.closed, second.closed]).toEqual([true, false]);
+    expect(notifier.liveCount()).toBe(1);
+    // Closing is not opening: the person did not click it here.
+    expect(opened).toEqual([]);
+    notifier.handleServerMessage({ type: DESKTOP_DISMISS, sessionId: "never-shown" });
     expect(notifier.liveCount()).toBe(1);
   });
 });
