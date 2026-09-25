@@ -112,7 +112,7 @@ const localization = (id, locale) => ({ type: "betaBuildLocalizations", id, attr
 const BUILDS_URL = `${API}/v1/builds?filter[app]=${APP_ID}&filter[version]=${BUILD_NUMBER}&fields[builds]=processingState`;
 const LOCALIZATIONS_URL = `${API}/v1/builds/b-1/betaBuildLocalizations`;
 const CREATE_LOCALIZATION_URL = `${API}/v1/betaBuildLocalizations`;
-const GROUPS_URL = `${API}/v1/apps/${APP_ID}/betaGroups?filter[name]=Nightly&filter[isInternalGroup]=false&fields[betaGroups]=name,isInternalGroup`;
+const GROUPS_URL = `${API}/v1/betaGroups?filter[app]=${APP_ID}&filter[name]=Nightly&filter[isInternalGroup]=false&fields[betaGroups]=name,isInternalGroup`;
 const ADD_URL = `${API}/v1/betaGroups/g-ext/relationships/builds`;
 const SUBMIT_URL = `${API}/v1/betaAppReviewSubmissions`;
 const CREATE_LOCALIZATION_BODY = {
