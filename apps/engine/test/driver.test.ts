@@ -1214,6 +1214,35 @@ describe("a provider wait is a row, not silence", () => {
       expect(sink.observations.some((o) => o.kind === "item.completed" && o.itemId === waitId && o.status === "completed")).toBeTrue();
     });
 
+    test("the wait it reports is never shorter than the threshold that opened it", async () => {
+      // CI read 19 against a 20 ms threshold: the timer keeps its own clock and
+      // `Date.now()` truncates. Frozen here, the wall clock says no time passed.
+      const driver = createClaudeDriver(
+        async () => ({
+          async *query() {
+            yield { type: "system", subtype: "status", status: "requesting" };
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            yield { type: "stream_event", event: { type: "message_start" } };
+            yield { type: "result", subtype: "success" };
+          },
+        }),
+        { providerSilenceMs: 20 },
+      );
+      const realNow = Date.now;
+      const frozen = realNow();
+      Date.now = () => frozen;
+      try {
+        const { sink, result } = run(driver);
+        await result;
+        const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+        const waitedMs =
+          started?.kind === "item.started" && started.item.detail.type === "provider_wait" ? started.item.detail.wait.waitedMs : undefined;
+        expect(waitedMs).toBe(20);
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
     test("a compaction's silence is not a stall: no row, however long it runs", async () => {
       // The provider announced it, so the quiet is the work. Measured: "The
       // model has not answered after 30s" stacked under "Compacting context…"

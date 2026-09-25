@@ -1401,7 +1401,9 @@ export function createClaudeDriver(
           // the work, not a stall, and its own row already says what it is.
           if (waitItemId || compactionItemId) return;
           const id = itemId();
-          const wait: ProviderWaitDetail = { kind: "no_response", waitedMs: Date.now() - sentAt };
+          // The timer firing IS the proof the threshold passed; `Date.now()`
+          // truncates to whole ms and can read one short of it.
+          const wait: ProviderWaitDetail = { kind: "no_response", waitedMs: Math.max(providerSilenceMs, Date.now() - sentAt) };
           const detail: ItemDetail = { type: "provider_wait", wait };
           emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(wait) } });
           waitItemId = id;

@@ -214,7 +214,7 @@ export type InventoryDeps = {
   /** How a checkout is sized. Injected rather than imported so the classifier's
    *  tests never walk a real tree, and so the measurement stays the storage
    *  pane's — the rows have to sum to the figure that sent the person here. */
-  measure: (target: string) => Promise<{ bytes: number; partial: boolean }>;
+  measure: (target: string) => Promise<{ bytes?: number; partial: boolean }>;
 };
 
 /** `git worktree list --porcelain`, kept per path, including the `locked` line
@@ -363,6 +363,7 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
   const roots = [...new Set(input.roots.map((root) => path.resolve(root)))];
   const engineTree = input.engineRoot ? canonical(input.engineRoot) : undefined;
   let partial = false;
+  let measuring = false;
 
   type Draft = {
     path: string;
@@ -485,8 +486,11 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
         incomplete ??= proof.incomplete;
       }
 
+      // No `bytes` is "not sized yet" — the engine sizes checkouts in the
+      // background — and the inventory says so rather than showing a zero.
       const measured = await deps.measure(draft.path);
       bytes = measured.bytes;
+      measuring ||= bytes === undefined;
       partial ||= measured.partial;
 
       /**
@@ -552,6 +556,7 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
     roots,
     ...(input.blocker ? { blocker: input.blocker } : {}),
     partial,
+    ...(measuring ? { measuring: true } : {}),
     measuredAt: at,
   };
 }

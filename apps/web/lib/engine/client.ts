@@ -617,8 +617,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  call of an engine's life walks the store and is SLOW; every call after
      *  it returns that walk's answer with the moment it was taken, until
      *  `refresh` asks for another. Never put this on a timer (#629). */
-    storage: (options: { refresh?: boolean } = {}) =>
-      request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`),
+    /** `signal` both lets the pane hang up on unmount and keeps this read out
+     *  of the shared read budget — see `request`. */
+    storage: (options: { refresh?: boolean; signal?: AbortSignal } = {}) =>
+      request<{ storage: StorageReport }>(fetcher, "GET", `/api/storage${options.refresh ? "?refresh=1" : ""}`, undefined, options.signal),
     /** Compact the turn journal and return its freed pages to the filesystem —
      *  see `JournalReclaim`. SLOW and exclusive: the vacuum behind it rewrites
      *  the database under a lock. It drops rows a settled turn has superseded
@@ -634,8 +636,14 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  answer it. `bytes` costs a scan of every qualifying row's text where the
      *  counts beside it are index ranges, so ask only when a person is looking
      *  at the figure, and never on a timer (#629). */
-    retention: (options: { bytes?: boolean } = {}) =>
-      request<{ retention: RetentionPolicy; buckets: RetentionBucket[] }>(fetcher, "GET", `/api/storage/retention${options.bytes ? "?bytes=1" : ""}`),
+    retention: (options: { bytes?: boolean; signal?: AbortSignal } = {}) =>
+      request<{ retention: RetentionPolicy; buckets: RetentionBucket[] }>(
+        fetcher,
+        "GET",
+        `/api/storage/retention${options.bytes ? "?bytes=1" : ""}`,
+        undefined,
+        options.signal,
+      ),
     /** Set the window, or turn it off with `idleAfterDays: null`. A window with
      *  no export destination is refused — the copy comes before the delete. */
     setRetention: (patch: { idleAfterDays?: number | null; exportTo?: string | null }) =>
@@ -671,9 +679,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  `WorktreeVerdict` (#671). Each row carries a verdict rather than four
      *  columns to reason from: Telar proves merged, clean and unclaimed so a
      *  reader does not check three things by hand before daring to delete.
-     *  SLOW — a walk per checkout — and never cached, because every rung of
-     *  the classification is live and a cached verdict was true earlier. */
-    worktrees: () => request<{ inventory: WorktreeInventory }>(fetcher, "GET", "/api/worktrees"),
+     *  SLOW — git reads per checkout — and never cached, because every rung
+     *  of the classification is live and a cached verdict was true earlier.
+     *  Sizes are the engine's background measurement; see `measuring`. */
+    worktrees: (options: { signal?: AbortSignal } = {}) =>
+      request<{ inventory: WorktreeInventory }>(fetcher, "GET", "/api/worktrees", undefined, options.signal),
     /** Give checkouts back. THIS ARCHIVES SESSIONS: a settled session's
      *  checkout is released by putting that session down, which is the only
      *  supported way (settling deliberately does not release one, and nothing

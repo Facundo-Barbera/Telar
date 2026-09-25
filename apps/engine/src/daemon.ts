@@ -117,7 +117,8 @@ import { retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms } 
 import { reapNodeModules, reapReport } from "./node-modules-reap";
 import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
 import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
-import { measureStorage } from "./storage";
+import { checkoutRootsOf, measureStore, withCheckouts } from "./storage";
+import type { CheckoutSizesOptions } from "./checkout-sizes";
 import { describeOutcome } from "./worktrees-move";
 import { describeReclaim } from "./worktree-inventory";
 import type { VolumeDeps } from "./volumes";
@@ -148,6 +149,8 @@ type RegisteredWorker = {
 
 export type EngineDaemonOptions = {
   executionStorage?: "json" | "sqlite";
+  /** The background checkout sizer's seams (`checkout-sizes.ts`). Tests only. */
+  checkoutSizing?: CheckoutSizesOptions;
   engineRoot?: string;
   port?: number;
   now?: () => number;
@@ -908,6 +911,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
     ...(options.git ? { git: options.git } : {}),
+    ...(options.checkoutSizing ? { checkoutSizing: options.checkoutSizing } : {}),
     ...(options.models ? { models: options.models } : {}),
     ...(options.volumes ? { volumes: options.volumes } : {}),
     ...(options.ambientEnv ? { ambientEnv: options.ambientEnv } : {}),
@@ -1119,7 +1123,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * repeat once per engine life.
    *
    * NOTHING SCHEDULES THIS. It runs when a reader first opens the pane and
-   * again when one presses refresh — #629 is open because four timers in the
+   * again when one presses refresh (the checkouts' background sizer runs only
+   * while a reader keeps asking — see `checkout-sizes.ts`) — #629 is open because four timers in the
    * rail cost ~97,000 requests a day, and a directory's size does not change by
    * the second. The stale-while-revalidate the limits cache above uses would be
    * the wrong shape here for the same reason: there is nothing to revalidate
@@ -1129,32 +1134,50 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * traversals of a 13 GB tree on the same disk; the second joins the first.
    */
   const storageCache: { report?: StorageReport; inFlight?: Promise<StorageReport> } = {};
-  const readStorage = (refresh: boolean): Promise<StorageReport> => {
-    if (!refresh && storageCache.report) return Promise.resolve(storageCache.report);
-    /**
-     * BOTH ROOTS WHILE A SPLIT LASTS — #642 part 2.
-     *
-     * Changing where checkouts go affects the NEXT cut; the ones already cut
-     * stay where they are until they are moved or their sessions end. So for a
-     * while there are checkouts under two roots, and a "Session checkouts" row
-     * that counted only the configured one would under-report by exactly the
-     * gigabytes somebody changed the setting to get rid of.
-     */
+  /**
+   * BOTH ROOTS WHILE A SPLIT LASTS — #642 part 2.
+   *
+   * Changing where checkouts go affects the NEXT cut; the ones already cut
+   * stay where they are until they are moved or their sessions end. So for a
+   * while there are checkouts under two roots, and a "Session checkouts" row
+   * that counted only the configured one would under-report by exactly the
+   * gigabytes somebody changed the setting to get rid of.
+   */
+  const storageRoots = () => {
     const configured = rootOf(readWorktreesRoot(store.paths.root)) ?? defaultWorktreesRoot(store.paths.root);
     const fallback = defaultWorktreesRoot(store.paths.root);
-    storageCache.inFlight ??= measureStorage({
-      root: store.paths.root,
-      worktreesRoot: configured,
-      ...(configured === fallback ? {} : { alsoWorktrees: [fallback] }),
-    })
-      .then((report) => {
-        storageCache.report = report;
-        return report;
-      })
-      .finally(() => {
-        storageCache.inFlight = undefined;
-      });
-    return storageCache.inFlight;
+    return { configured, also: configured === fallback ? [] : [fallback] };
+  };
+  /**
+   * THE CHECKOUTS ARE NEVER WALKED HERE. The store's own categories are
+   * measured (and cached) as before; the checkouts row is folded in on every
+   * read from `store.checkoutSizes`, which sizes them in the background and
+   * says `measuring` until it has. See `checkout-sizes.ts` for why walking
+   * them on this path took the whole engine down with it.
+   */
+  const readStorage = async (refresh: boolean): Promise<StorageReport> => {
+    const { configured, also } = storageRoots();
+    if (refresh) store.checkoutSizes.invalidate();
+    let report = storageCache.report;
+    if (refresh || !report) {
+      storageCache.inFlight ??= measureStore({ root: store.paths.root, worktreesRoot: configured, alsoWorktrees: also })
+        .then((measured) => {
+          storageCache.report = measured;
+          return measured;
+        })
+        .finally(() => {
+          storageCache.inFlight = undefined;
+        });
+      report = await storageCache.inFlight;
+    }
+    const figure = store.checkoutSizes.figure(checkoutRootsOf({ worktreesRoot: configured, alsoWorktrees: also }));
+    return withCheckouts(report, figure, configured);
+  };
+  /** Checkouts were cut, moved or given back: the store figure is stale and the
+   *  sizer must look at the roots again (unchanged checkouts keep their size). */
+  const checkoutsChanged = () => {
+    storageCache.report = undefined;
+    store.checkoutSizes.relist();
   };
   const daemonId = crypto.randomUUID();
   /**
@@ -2158,9 +2181,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        *
        * `?refresh=1` RE-WALKS; without it the cached measurement comes back
        * with the timestamp it was taken at, and the pane shows the figure as of
-       * that moment. The first read of an engine's life waits for the walk —
-       * seconds on a large store — which is why the cockpit fetches this off
-       * the render path and never on a timer.
+       * that moment. The first read of an engine's life waits for the store's
+       * own walk — never the checkouts', whose row says `measuring` and fills
+       * in as the background sizer settles. The cockpit re-asks only while a
+       * row says `measuring`, and that asking is what keeps the sizer going.
        */
       if (request.method === "GET" && url.pathname === "/v2/storage") {
         writeJson(response, 200, { storage: await readStorage(url.searchParams.get("refresh") === "1") });
@@ -2293,7 +2317,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           } else throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path, or null for the default");
           // The figures are about to be wrong in the one way that matters, so
           // the next read measures rather than serving the old split.
-          storageCache.report = undefined;
+          checkoutsChanged();
         }
         const state = readWorktreesRoot(store.paths.root);
         writeJson(response, 200, {
@@ -2329,7 +2353,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           throw new HttpError(409, "conflict", cause instanceof Error ? cause.message : "the checkouts could not be moved");
         }
         // The figures moved by exactly this much, so the next read measures.
-        storageCache.report = undefined;
+        checkoutsChanged();
         writeJson(response, 200, { move: { ...outcome, summary: describeOutcome(outcome) } });
         return;
       }
@@ -2374,7 +2398,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const results = await store.reclaimWorktrees(items);
         // Gigabytes just moved, so the pane above this one must measure rather
         // than serve the split it read before the press.
-        storageCache.report = undefined;
+        checkoutsChanged();
         writeJson(response, 200, { reclaim: { results, summary: describeReclaim(results) } });
         return;
       }
@@ -5350,6 +5374,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         await closeServer(server);
         clearInterval(workerPruner);
         clearInterval(delegationSweeper);
+        store.checkoutSizes.stop();
         // CLEARED RATHER THAN ONLY UNREF'D, unlike the two sweeps beside it,
         // because this one RESOLVES REQUESTS: a tick that landed between
         // `closeExecutionStore` and the process ending would be a write against

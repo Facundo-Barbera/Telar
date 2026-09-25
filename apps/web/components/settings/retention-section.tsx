@@ -38,7 +38,7 @@
  * comes back when they delete those files, rather than when the sweep runs.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { JournalRetirement, RetentionBucket, RetentionPolicy } from "@telar/engine-client";
 import { ArchiveIcon, FolderDownIcon, HistoryIcon } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
@@ -93,17 +93,27 @@ export function RetentionSection() {
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [swept, setSwept] = useState<string | undefined>(undefined);
 
+  /** The read in flight — `?bytes=1` scans every row's text — hung up on
+   *  unmount so it cannot hold a read slot after the pane has gone. */
+  const inFlight = useRef<AbortController | undefined>(undefined);
   const load = useCallback(async (bytes: boolean) => {
+    inFlight.current?.abort();
+    const own = new AbortController();
+    inFlight.current = own;
     setBusy(true);
     setFailure(undefined);
     try {
-      const answer = await api.retention(bytes ? { bytes: true } : {});
+      const answer = await api.retention({ ...(bytes ? { bytes: true } : {}), signal: own.signal });
+      if (own.signal.aborted) return;
       setPolicy(answer.retention);
       setBuckets(answer.buckets);
     } catch {
-      setFailure("Telar could not measure what a window would take — the engine did not answer.");
+      if (!own.signal.aborted) setFailure("Telar could not measure what a window would take — the engine did not answer.");
     } finally {
-      setBusy(false);
+      if (inFlight.current === own) {
+        inFlight.current = undefined;
+        setBusy(false);
+      }
     }
   }, []);
 
@@ -111,7 +121,11 @@ export function RetentionSection() {
    *  same reason: the pane paints before anything asks the engine to count. */
   useEffect(() => {
     const task = window.setTimeout(() => void load(false), 0);
-    return () => window.clearTimeout(task);
+    return () => {
+      window.clearTimeout(task);
+      inFlight.current?.abort();
+      inFlight.current = undefined;
+    };
   }, [load]);
 
   const save = async (patch: { idleAfterDays?: number | null; exportTo?: string | null }) => {

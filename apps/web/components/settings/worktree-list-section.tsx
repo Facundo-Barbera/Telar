@@ -48,7 +48,7 @@
  * the reassuring lie the composer's count already knows not to tell.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorktreeInventory, WorktreeReclaimResult, WorktreeRow } from "@telar/engine-client";
 import { FolderGitIcon, LockIcon, TriangleAlertIcon } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
@@ -209,15 +209,29 @@ export function WorktreeListSection() {
   const [results, setResults] = useState<WorktreeReclaimResult[]>();
   const [summary, setSummary] = useState<string>();
 
+  /**
+   * THE READ IN FLIGHT, SO IT CAN BE HUNG UP ON. Git reads per checkout take
+   * seconds on a large install, and a read that outlived the pane held one of
+   * the cockpit's two read slots until it finished — the sidebar queued behind
+   * it. The signal also exempts it from that budget; see `request`.
+   */
+  const inFlight = useRef<AbortController | undefined>(undefined);
   const load = useCallback(async () => {
+    inFlight.current?.abort();
+    const own = new AbortController();
+    inFlight.current = own;
     setBusy(true);
     setFailure(undefined);
     try {
-      setInventory((await api.worktrees()).inventory);
+      const { inventory: answer } = await api.worktrees({ signal: own.signal });
+      if (!own.signal.aborted) setInventory(answer);
     } catch {
-      setFailure("Telar could not list its checkouts — the engine did not answer.");
+      if (!own.signal.aborted) setFailure("Telar could not list its checkouts — the engine did not answer.");
     } finally {
-      setBusy(false);
+      if (inFlight.current === own) {
+        inFlight.current = undefined;
+        setBusy(false);
+      }
     }
   }, []);
 
@@ -228,7 +242,11 @@ export function WorktreeListSection() {
    */
   useEffect(() => {
     const task = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(task);
+    return () => {
+      window.clearTimeout(task);
+      inFlight.current?.abort();
+      inFlight.current = undefined;
+    };
   }, [load]);
 
   // Memoised on the inventory rather than recomputed: `?? []` mints a new array
@@ -296,6 +314,9 @@ export function WorktreeListSection() {
         // A floor, not a total, and said rather than quietly under-reported —
         // `StorageSection`'s rule, for the same reason.
         inventory?.partial ? "Something under the checkouts could not be read, so these sizes are a floor." : undefined,
+        // Sizing runs in the background, never on this read: a row without a
+        // size is one not measured yet, and Refresh picks up what has settled.
+        inventory?.measuring ? "Some sizes are still being measured." : undefined,
       ]
         .filter(Boolean)
         .join(" ")}

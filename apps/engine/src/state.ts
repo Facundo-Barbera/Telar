@@ -247,7 +247,7 @@ import type { ScheduleRow } from "./execution-store";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, type GitResult, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
-import { measureDirectory } from "./storage";
+import { CheckoutSizes, type CheckoutSizesOptions } from "./checkout-sizes";
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./worktrees-move";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
@@ -2460,6 +2460,12 @@ export class EngineStore {
    *  `defaultWorktreeGitRunner`. The same runner when a caller injected one. */
   private readonly worktreeGit: AsyncGitRunner;
   /**
+   * EVERY CHECKOUT'S SIZE, MEASURED IN THE BACKGROUND and shared by the two
+   * surfaces that show one — the storage row and the inventory's rows — so they
+   * cannot disagree and a checkout is never walked twice.
+   */
+  readonly checkoutSizes: CheckoutSizes;
+  /**
    * One worktree mutation at a time per project — the ordering the synchronous
    * runner used to buy by blocking the daemon (#496). In memory, like
    * `liveRevision`: one writer, in this process, and a restart has nothing in
@@ -4514,6 +4520,9 @@ export class EngineStore {
        * absent by default, so a store on its own tells nobody anything.
        */
       onTurnsStopped?: (cancellations: StoppedClaim[]) => void;
+      /** The background checkout sizer's seams — see `checkout-sizes.ts`.
+       *  INJECTED BY TESTS ONLY; the default walks the real disk. */
+      checkoutSizing?: CheckoutSizesOptions;
       git?: GitRunner;
       asyncGit?: AsyncGitRunner;
       gh?: GhRunner;
@@ -4561,6 +4570,7 @@ export class EngineStore {
     // runner still wins, and wins for both: a test that fakes git is faking the
     // whole of git, and two seams would let a fake apply to half of it.
     this.worktreeGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultWorktreeGitRunner);
+    this.checkoutSizes = new CheckoutSizes(options.checkoutSizing);
     this.gh = options.gh ?? defaultGhRunner;
     this.volumes = options.volumes ?? {};
     this.ambientEnv = options.ambientEnv ?? process.env;
@@ -11522,6 +11532,7 @@ export class EngineStore {
     const location = readWorktreesRoot(this.paths.root);
     const configured = rootOf(location);
     const fallback = defaultWorktreesRoot(this.paths.root);
+    const roots = configured && configured !== fallback ? [configured, fallback] : [fallback];
     const at = { now: this.now(), autoSettleAfterHours: this.getInboxPolicy().autoSettleAfterHours };
 
     const projects: InventoryProject[] = this.listProjects().map((project) => ({
@@ -11554,14 +11565,16 @@ export class EngineStore {
     return buildInventory(
       {
         git: this.worktreeGit,
-        // The storage pane's own walker, so a row and the "Session checkouts"
-        // figure that sent somebody here can never disagree by a gigabyte.
-        measure: (target) => measureDirectory(target),
+        // The storage pane's own background sizer, so a row and the "Session
+        // checkouts" figure that sent somebody here can never disagree by a
+        // gigabyte — and so this read never walks a checkout itself. A row
+        // not sized yet has no `bytes`, and the inventory says `measuring`.
+        measure: async (target) => this.checkoutSizes.peek(target, roots),
       },
       {
         // Both roots while a #642 move is half-done — `readStorage`'s reason,
         // and the same pair it passes.
-        roots: configured && configured !== fallback ? [configured, fallback] : [fallback],
+        roots,
         rootsReadable: location.kind !== "absent" && location.kind !== "unreadable",
         ...(worktreesRootBlocker(location) ? { blocker: worktreesRootBlocker(location)! } : {}),
         sessions,
