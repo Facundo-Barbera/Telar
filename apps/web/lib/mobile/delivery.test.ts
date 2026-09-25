@@ -3,9 +3,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isDeadToken, readPushRecords, saveRegistration, signalKey, writePushRecords, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
+import { ACTIVITY_REFRESH_S, ACTIVITY_STALE_S, isDeadToken, readPushRecords, saveRegistration, signalKey, writePushRecords, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
 import { relayDelivery } from "./relay";
-import { changedSessions, deliverRecord, heartbeatDue, ownRecords, pauseHost, pushPausedUntil, PARK_AFTER_FAILURES } from "./worker";
+import { changedSessions, deliverRecord, heartbeatDue, heartbeatWanted, ownRecords, pauseHost, pushPausedUntil, PARK_AFTER_FAILURES } from "./worker";
 
 /**
  * THE QUOTA FAILURE, COVERED — issue #584.
@@ -242,18 +242,25 @@ describe("waking on what moved, not on a timer", () => {
     expect([...changedSessions([working], undefined)]).toEqual([working.id]);
   });
 
-  test("the 60s heartbeat runs only for a registered Live Activity with live work", () => {
+  test("the heartbeat runs only for a registered Live Activity with live work, every two minutes", () => {
     const idle = record();
     const withActivity = record({ liveActivities: true, activities: [{ sessionId: working.id, token: "d".repeat(64), startedAt: 1 }] });
     // No Live Activity: nothing wakes on a quiet tick, which is what makes a
     // quiet hour cost zero relay calls.
-    expect(heartbeatDue([idle], [working], undefined, 60_000)).toBe(false);
+    expect(heartbeatDue([idle], [working], undefined, 120_000)).toBe(false);
     // Registered, but nothing is running — a card with no work behind it is over.
-    expect(heartbeatDue([withActivity], [{ ...working, activity: "idle" }], undefined, 60_000)).toBe(false);
-    expect(heartbeatDue([withActivity], [working], undefined, 60_000)).toBe(true);
-    // And not more often than once a minute.
-    expect(heartbeatDue([withActivity], [working], 30_000, 60_000)).toBe(false);
-    expect(heartbeatDue([withActivity], [working], 0, 60_000)).toBe(true);
+    expect(heartbeatDue([withActivity], [{ ...working, activity: "idle" }], undefined, 120_000)).toBe(false);
+    expect(heartbeatDue([withActivity], [working], undefined, 120_000)).toBe(true);
+    // Not more often than the refresh, which stays well inside the stale window.
+    expect(heartbeatDue([withActivity], [working], 60_000, 120_000)).toBe(false);
+    expect(heartbeatDue([withActivity], [working], 0, 120_000)).toBe(true);
+    expect(ACTIVITY_REFRESH_S * 2).toBeLessThan(ACTIVITY_STALE_S);
+  });
+
+  test("a followed session's card is kept fresh with the automatic card switched off", () => {
+    const followedOnly = record({ liveActivities: false, activities: [{ sessionId: working.id, token: "d".repeat(64), startedAt: 1 }] });
+    expect(heartbeatWanted([followedOnly], [{ ...working, activity: "blocked" }])).toBe(true);
+    expect(heartbeatDue([followedOnly], [working], undefined, 120_000)).toBe(true);
   });
 });
 
