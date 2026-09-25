@@ -329,7 +329,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_console_messages",
     description:
-      "Read console messages from the tab you are working in, or the tabId you name. level is a floor and defaults to info; pass all for the quieter ones too. The answer is capped at 6 KB and the newest lines are the ones kept — raise level to see further back.",
+      "Read console messages from the tab you are working in, or the tabId you name. level is a floor and defaults to info; pass all for the quieter ones too. The answer is capped at 6 KB and the newest lines are the ones kept — raise level to see further back. Downloads are listed here too, with the path each was saved to.",
     input: z.object({
       /** A FLOOR, not an exact match: "warning" answers warnings and errors. */
       level: z.enum(["error", "warning", "info", "debug"]).default("info"),
